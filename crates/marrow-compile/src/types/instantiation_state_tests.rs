@@ -289,11 +289,11 @@ fn add_declared_struct(
     name: &str,
     fields: Vec<(&str, GArg)>,
 ) -> TypeId {
-    let record_name = draft.intern_string(name);
+    let record_name = draft.intern_string(name).expect("a within-domain mint");
     let mut image_fields = Vec::with_capacity(fields.len());
     let mut field_infos = Vec::with_capacity(fields.len());
     for (field, ty) in fields {
-        let field_name = draft.intern_string(field);
+        let field_name = draft.intern_string(field).expect("a within-domain mint");
         image_fields.push(FieldDef {
             name: field_name,
             ty: ty.image(),
@@ -305,10 +305,12 @@ fn add_declared_struct(
             required: true,
         });
     }
-    let type_id = draft.add_record_type(RecordTypeDef {
-        name: record_name,
-        fields: image_fields,
-    });
+    let type_id = draft
+        .add_record_type(RecordTypeDef {
+            name: record_name,
+            fields: image_fields,
+        })
+        .expect("a within-domain mint");
     registry.structs.push(StructInfo {
         type_id,
         name: name.to_string(),
@@ -323,11 +325,13 @@ fn add_resource_record(
     draft: &mut DraftTxn<'_>,
     name: &str,
 ) -> TypeId {
-    let record_name = draft.intern_string(name);
-    let type_id = draft.add_record_type(RecordTypeDef {
-        name: record_name,
-        fields: Vec::new(),
-    });
+    let record_name = draft.intern_string(name).expect("a within-domain mint");
+    let type_id = draft
+        .add_record_type(RecordTypeDef {
+            name: record_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry.records.push(RecordInfo {
         type_id,
         name: name.to_string(),
@@ -343,11 +347,13 @@ fn add_resource_group(
     record: usize,
     name: &str,
 ) -> TypeId {
-    let group_name = draft.intern_string(name);
-    let type_id = draft.add_record_type(RecordTypeDef {
-        name: group_name,
-        fields: Vec::new(),
-    });
+    let group_name = draft.intern_string(name).expect("a within-domain mint");
+    let type_id = draft
+        .add_record_type(RecordTypeDef {
+            name: group_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry.records[record].groups.push(GroupInfo {
         name: name.to_string(),
         type_id,
@@ -920,11 +926,15 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
             .mint_type_instance(proof_draft, 0, &[text], site(28))
             .expect("the proof mints a new isolated row on the real registry");
         assert!(matches!(proof_row, TypeInstId::Record(_)));
-        let marker = proof_draft.intern_string("during-proof");
-        proof_draft.add_record_type(RecordTypeDef {
-            name: marker,
-            fields: Vec::new(),
-        });
+        let marker = proof_draft
+            .intern_string("during-proof")
+            .expect("a within-domain mint");
+        proof_draft
+            .add_record_type(RecordTypeDef {
+                name: marker,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let proof_collection = registry
             .instantiate_list(proof_draft, text)
             .expect("the proof mints a distinct collection on the real registry");
@@ -1131,11 +1141,15 @@ fn metadata_rejects_generic_ids_owned_by_declared_types() {
 
     let mut enum_registry = registry(vec![enum_template("Choice", name("T"))]);
     let mut enum_draft = fresh_draft();
-    let declared_name = enum_draft.intern_string("PlainChoice");
-    let declared_enum = enum_draft.add_enum_type(EnumTypeDef {
-        name: declared_name,
-        variants: Vec::new(),
-    });
+    let declared_name = enum_draft
+        .intern_string("PlainChoice")
+        .expect("a within-domain mint");
+    let declared_enum = enum_draft
+        .add_enum_type(EnumTypeDef {
+            name: declared_name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
     enum_registry.enums.push(EnumInfo {
         enum_id: declared_enum,
         name: "PlainChoice".to_string(),
@@ -1680,11 +1694,13 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
                     .expect("ordered seed row mints Ready"),
             );
         }
-        let orphan_name = draft.intern_string("Orphan");
-        let orphan = draft.add_record_type(RecordTypeDef {
-            name: orphan_name,
-            fields: Vec::new(),
-        });
+        let orphan_name = draft.intern_string("Orphan").expect("a within-domain mint");
+        let orphan = draft
+            .add_record_type(RecordTypeDef {
+                name: orphan_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         Rows {
             registry,
             draft,
@@ -2350,11 +2366,13 @@ fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
         .expect("aligned owners publish List<int>");
-    let orphan_name = draft.intern_string("Orphan");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = draft.intern_string("Orphan").expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry.collections.borrow_mut()[list.index() as usize] = CollSpec::List {
         elem: GArg::Struct(orphan),
     };
@@ -2364,7 +2382,8 @@ fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
         registry.with_metadata_session(|metadata| {
             let first = metadata.validate_type_arguments(&[GArg::Collection(list)]);
             let collection_replay = metadata.collection_spec(list);
-            let unrelated_replay = metadata.validate_type_arguments(&[GArg::Param(TypeParamIndex::from_position(7))]);
+            let unrelated_replay =
+                metadata.validate_type_arguments(&[GArg::Param(TypeParamIndex::from_position(7))]);
             Ok::<_, GenericInvariant>((first, collection_replay, unrelated_replay))
         })
     });
@@ -2572,18 +2591,30 @@ fn map_key_resolution_validates_metadata_before_semantic_refusal() {
         let mut draft = admitted(&mut draft_owner);
         let arg = match family {
             "struct" => {
-                let name = draft.intern_string("OrphanStruct");
-                GArg::Struct(draft.add_record_type(RecordTypeDef {
-                    name,
-                    fields: Vec::new(),
-                }))
+                let name = draft
+                    .intern_string("OrphanStruct")
+                    .expect("a within-domain mint");
+                GArg::Struct(
+                    draft
+                        .add_record_type(RecordTypeDef {
+                            name,
+                            fields: Vec::new(),
+                        })
+                        .expect("a within-domain mint"),
+                )
             }
             "enum" => {
-                let name = draft.intern_string("OrphanEnum");
-                GArg::Enum(draft.add_enum_type(EnumTypeDef {
-                    name,
-                    variants: Vec::new(),
-                }))
+                let name = draft
+                    .intern_string("OrphanEnum")
+                    .expect("a within-domain mint");
+                GArg::Enum(
+                    draft
+                        .add_enum_type(EnumTypeDef {
+                            name,
+                            variants: Vec::new(),
+                        })
+                        .expect("a within-domain mint"),
+                )
             }
             "collection" => GArg::Collection(coll(0)),
             _ => unreachable!("the hostile family table is closed"),
@@ -2716,11 +2747,13 @@ fn missing_nominal_map_key_stops_before_resolving_a_fresh_value() {
 fn struct_body_with_enum_id_fails_before_draft_mutation() {
     let registry = registry(vec![template("Good", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
-    let wrong_name = draft.intern_string("Wrong");
-    let wrong_id = draft.add_enum_type(EnumTypeDef {
-        name: wrong_name,
-        variants: Vec::new(),
-    });
+    let wrong_name = draft.intern_string("Wrong").expect("a within-domain mint");
+    let wrong_id = draft
+        .add_enum_type(EnumTypeDef {
+            name: wrong_name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let registry_before = stable_snapshot(&registry);
     let draft_before = draft.encode().expect("seeded draft encodes");
     let result = registry.fill_type_body(
@@ -2750,11 +2783,13 @@ fn struct_body_with_enum_id_fails_before_draft_mutation() {
 fn enum_body_with_record_id_fails_before_draft_mutation() {
     let registry = registry(vec![enum_template("Good", name("T"))]);
     let mut draft = fresh_draft();
-    let wrong_name = draft.intern_string("Wrong");
-    let wrong_id = draft.add_record_type(RecordTypeDef {
-        name: wrong_name,
-        fields: Vec::new(),
-    });
+    let wrong_name = draft.intern_string("Wrong").expect("a within-domain mint");
+    let wrong_id = draft
+        .add_record_type(RecordTypeDef {
+            name: wrong_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let registry_before = stable_snapshot(&registry);
     let draft_before = draft.encode().expect("seeded draft encodes");
     let result = registry.fill_type_body(
@@ -2784,9 +2819,11 @@ fn enum_body_with_record_id_fails_before_draft_mutation() {
 fn list_draft_ahead_misalignment_fails_without_exposing_an_index() {
     let registry = registry(Vec::new());
     let mut draft = fresh_draft();
-    draft.add_collection_type(CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Text),
-    });
+    draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .expect("a within-domain mint");
     let before = stable_snapshot(&registry);
     let draft_before = draft.encode().expect("seeded draft encodes");
     let result = registry.instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int));
@@ -2846,10 +2883,12 @@ fn collection_drift_blocks_a_cache_hit_without_exposing_the_prior_index() {
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
         .expect("aligned owners mint the first List");
     assert_eq!(list, coll(0));
-    draft.add_collection_type(CollectionTypeDef::Map {
-        key: ImageType::scalar(Scalar::Text),
-        value: ImageType::scalar(Scalar::Bool),
-    });
+    draft
+        .add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Text),
+            value: ImageType::scalar(Scalar::Bool),
+        })
+        .expect("a within-domain mint");
     let before = stable_snapshot(&registry);
     let draft_before = draft.encode().expect("drifted draft encodes");
 
@@ -2876,11 +2915,13 @@ fn published_collection_metadata_is_revalidated_without_a_watermark() {
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
         .expect("aligned owners publish List<int>");
-    let orphan_name = draft.intern_string("Orphan");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = draft.intern_string("Orphan").expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry.collections.borrow_mut()[list.index() as usize] = CollSpec::List {
         elem: GArg::Struct(orphan),
     };
@@ -3076,16 +3117,24 @@ fn commit_ready_state_hostile_branches_are_exact_and_read_only() {
 fn durable_anchor_reports_every_missing_target_without_fallback_tokens() {
     let registry = registry(Vec::new());
     let mut draft = fresh_draft();
-    let record_name = draft.intern_string("OrphanRecord");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: record_name,
-        fields: Vec::new(),
-    });
-    let enum_name = draft.intern_string("OrphanEnum");
-    let enum_id = draft.add_enum_type(EnumTypeDef {
-        name: enum_name,
-        variants: Vec::new(),
-    });
+    let record_name = draft
+        .intern_string("OrphanRecord")
+        .expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: record_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
+    let enum_name = draft
+        .intern_string("OrphanEnum")
+        .expect("a within-domain mint");
+    let enum_id = draft
+        .add_enum_type(EnumTypeDef {
+            name: enum_name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let owner_before = stable_snapshot(&registry);
     let draft_before = draft_snapshot(&draft);
 
@@ -3110,7 +3159,10 @@ fn durable_anchor_reports_every_missing_target_without_fallback_tokens() {
             GArg::Collection(coll(0)),
             GenericInvariant::TypeArgumentTargetMissing(GArg::Collection(coll(0))),
         ),
-        (GArg::Param(TypeParamIndex::from_position(7)), GenericInvariant::TypeArgumentParameter(TypeParamIndex::from_position(7))),
+        (
+            GArg::Param(TypeParamIndex::from_position(7)),
+            GenericInvariant::TypeArgumentParameter(TypeParamIndex::from_position(7)),
+        ),
     ] {
         assert_eq!(garg_anchor_spelling(&registry, arg), Err(expected));
         assert_eq!(stable_snapshot(&registry), owner_before);

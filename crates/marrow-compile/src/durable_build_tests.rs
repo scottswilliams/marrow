@@ -131,11 +131,15 @@ mod generic_enum_shape_tests {
         )
         .expect("the test registry stays within the ledger budget");
         assert!(build_diagnostics.is_empty());
-        let name = draft.intern_string("Unavailable");
-        let unavailable = draft.add_enum_type(marrow_image::EnumTypeDef {
-            name,
-            variants: Vec::new(),
-        });
+        let name = draft
+            .intern_string("Unavailable")
+            .expect("a within-domain mint");
+        let unavailable = draft
+            .add_enum_type(marrow_image::EnumTypeDef {
+                name,
+                variants: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
@@ -371,13 +375,15 @@ mod declaration_command_bound_tests {
 
         let mut draft = fresh_draft();
         let commands = commands(&mut draft);
-        let type_name = draft.intern_string("R");
-        let record = draft.add_record_type(RecordTypeDef {
-            name: type_name,
-            fields: Vec::new(),
-        });
+        let type_name = draft.intern_string("R").expect("a within-domain mint");
+        let record = draft
+            .add_record_type(RecordTypeDef {
+                name: type_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-        let root_name = draft.intern_string("r");
+        let root_name = draft.intern_string("r").expect("a within-domain mint");
         draft
             .declare_product(
                 &admitted_plan(),
@@ -401,9 +407,11 @@ mod declaration_command_bound_tests {
                 },
             )
             .expect("the Product is declared");
-        let src = draft.intern_string("src/main.mw");
-        let main_name = draft.intern_string("main");
-        let zero = draft.intern_int(0);
+        let src = draft
+            .intern_string("src/main.mw")
+            .expect("a within-domain mint");
+        let main_name = draft.intern_string("main").expect("a within-domain mint");
+        let zero = draft.intern_int(0).expect("a within-domain mint");
         let code = vec![Instr::ConstLoad(zero), Instr::Return];
         let spans = (0..code.len())
             .map(|index| SpanEntry {

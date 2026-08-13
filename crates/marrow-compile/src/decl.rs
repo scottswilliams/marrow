@@ -57,6 +57,16 @@ pub(crate) struct DeclarationLedgerFull;
 pub(crate) enum DeclareError {
     LedgerFull(DeclarationLedgerFull),
     IndexDrift(DeclarationIndexDrift),
+    /// A draft mint refused at the image builder surface's carrier domain. The
+    /// admitted source envelope makes the refusal unreachable, so it aborts at the
+    /// compiler invariant boundary, never as a source refusal.
+    BuilderDomain(marrow_image::DraftStateError),
+}
+
+impl From<marrow_image::DraftStateError> for DeclareError {
+    fn from(refusal: marrow_image::DraftStateError) -> Self {
+        Self::BuilderDomain(refusal)
+    }
 }
 
 impl From<DeclarationLedgerFull> for DeclareError {

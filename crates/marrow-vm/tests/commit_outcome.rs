@@ -48,17 +48,23 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let record_name = draft.intern_string("Counter");
-    let field_name = draft.intern_string("value");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: record_name,
-        fields: vec![FieldDef {
-            name: field_name,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
-    let root_name = draft.intern_string("counters");
+    let record_name = draft
+        .intern_string("Counter")
+        .expect("a within-domain mint");
+    let field_name = draft.intern_string("value").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: record_name,
+            fields: vec![FieldDef {
+                name: field_name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
+    let root_name = draft
+        .intern_string("counters")
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
     let value = draft.value_scalar(Scalar::Int);
@@ -100,13 +106,17 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
         )
         .expect("the root placement is a canonical path of this occurrence");
     let site = draft.request_site(&handle).expect("the binding is live");
-    let key = draft.intern_int(1);
-    let value = draft.intern_int(7);
-    let one = draft.intern_int(1);
-    let zero = draft.intern_int(0);
+    let key = draft.intern_int(1).expect("a within-domain mint");
+    let value = draft.intern_int(7).expect("a within-domain mint");
+    let one = draft.intern_int(1).expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let helper = if matches!(post_commit_fault, PostCommitFault::Helper) {
-        let helper_name = draft.intern_string("faultingHelper");
-        let source = draft.intern_string("src/main.mw");
+        let helper_name = draft
+            .intern_string("faultingHelper")
+            .expect("a within-domain mint");
+        let source = draft
+            .intern_string("src/main.mw")
+            .expect("a within-domain mint");
         let helper_code = vec![
             Instr::ConstLoad(one),
             Instr::ConstLoad(zero),
@@ -162,8 +172,12 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     }
     code.push(Instr::Return);
     let export_name = if mutating { "write" } else { "read" };
-    let name = draft.intern_string(export_name);
-    let source = draft.intern_string("src/main.mw");
+    let name = draft
+        .intern_string(export_name)
+        .expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let function = draft
         .add_function(FunctionDef {
             name,

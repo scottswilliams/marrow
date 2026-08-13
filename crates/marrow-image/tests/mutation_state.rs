@@ -53,11 +53,13 @@ fn one_field_members(draft: &mut DraftTxn<'_>) -> Vec<DeclarationMemberDef> {
 
 /// Declare the one fixture Product (one record type, one field member) under `plan`.
 fn declare_fixture_product(draft: &mut DraftTxn<'_>, plan: &AdmittedGraphInputPlan) {
-    let name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let members = one_field_members(draft);
     draft
         .declare_product(plan, LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
@@ -70,7 +72,9 @@ fn admit_fixture_root(
     plan: &AdmittedGraphInputPlan,
     placement: [u8; 16],
 ) -> AdmittedRoot {
-    let name = draft.intern_string(std::str::from_utf8(&placement[..1]).unwrap_or("r"));
+    let name = draft
+        .intern_string(std::str::from_utf8(&placement[..1]).unwrap_or("r"))
+        .expect("a within-domain mint");
     draft
         .add_root_occurrence(
             plan,
@@ -87,8 +91,10 @@ fn admit_fixture_root(
 
 /// A zero-argument unit function of `code`, appended and expected to be admitted.
 fn unit_function(draft: &mut DraftTxn<'_>, name: &str, code: Vec<Instr>) -> FuncId {
-    let name = draft.intern_string(name);
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string(name).expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     draft
         .add_function(FunctionDef {
             name,
@@ -123,7 +129,7 @@ fn a_refused_occurrence_leaves_no_live_row_and_spends_no_budget() {
     let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     declare_fixture_product(&mut draft, &plan);
-    let name = draft.intern_string("r");
+    let name = draft.intern_string("r").expect("a within-domain mint");
     // The ids need not be distinct: the ordinal domain, not identity, is what the
     // preflight refuses.
     let indexes = vec![
@@ -158,7 +164,7 @@ fn a_refused_occurrence_leaves_no_live_row_and_spends_no_budget() {
     );
     // ... the budget is unspent, so a well-formed occurrence still admits under the
     // one-root plan ...
-    let second_name = draft.intern_string("s");
+    let second_name = draft.intern_string("s").expect("a within-domain mint");
     draft
         .add_root_occurrence(
             &plan,
@@ -189,7 +195,9 @@ fn the_string_pool_admits_past_its_cap_and_only_encode_refuses() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     for n in 0..=MAX_STRINGS {
-        draft.intern_string(&format!("s{n}"));
+        draft
+            .intern_string(&format!("s{n}"))
+            .expect("a within-domain mint");
     }
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -204,7 +212,9 @@ fn the_string_pool_admits_past_its_cap_and_only_encode_refuses() {
 fn an_over_long_string_is_admitted_and_only_encode_refuses() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.intern_string(&"x".repeat(MAX_STRING_BYTES + 1));
+    draft
+        .intern_string(&"x".repeat(MAX_STRING_BYTES + 1))
+        .expect("a within-domain mint");
     assert_eq!(
         draft.encode().map(|_| ()),
         Err(ImageBuildError::StringTooLong),
@@ -219,7 +229,7 @@ fn the_const_pool_admits_past_its_cap_and_only_encode_refuses() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     for n in 0..=MAX_CONSTS {
-        draft.intern_int(n as i64);
+        draft.intern_int(n as i64).expect("a within-domain mint");
     }
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -234,12 +244,14 @@ fn the_const_pool_admits_past_its_cap_and_only_encode_refuses() {
 fn the_type_table_admits_past_its_cap_and_only_encode_refuses() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("R");
+    let name = draft.intern_string("R").expect("a within-domain mint");
     for _ in 0..=MAX_TYPES {
-        draft.add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        });
+        draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
     }
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -254,12 +266,14 @@ fn the_type_table_admits_past_its_cap_and_only_encode_refuses() {
 fn the_enum_table_admits_past_its_cap_and_only_encode_refuses() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("E");
+    let name = draft.intern_string("E").expect("a within-domain mint");
     for _ in 0..=MAX_ENUMS {
-        draft.add_enum_type(EnumTypeDef {
-            name,
-            variants: Vec::new(),
-        });
+        draft
+            .add_enum_type(EnumTypeDef {
+                name,
+                variants: Vec::new(),
+            })
+            .expect("a within-domain mint");
     }
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -275,9 +289,11 @@ fn the_collection_table_admits_past_its_cap_and_only_encode_refuses() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     for _ in 0..=MAX_COLLECTIONS {
-        draft.add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        });
+        draft
+            .add_collection_type(CollectionTypeDef::List {
+                elem: ImageType::scalar(Scalar::Int),
+            })
+            .expect("a within-domain mint");
     }
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -345,7 +361,7 @@ fn the_test_entry_table_admits_past_its_cap_and_only_encode_refuses() {
     for n in 0..=MAX_TEST_ENTRIES {
         let label = format!("t{n}");
         let func = unit_function(&mut draft, &label, vec![Instr::Return]);
-        let name = draft.intern_string(&label);
+        let name = draft.intern_string(&label).expect("a within-domain mint");
         draft.add_test_entry(name, func);
     }
     assert_eq!(
@@ -364,11 +380,13 @@ fn the_test_entry_table_admits_past_its_cap_and_only_encode_refuses() {
 fn set_record_fields_with_a_foreign_id_is_refused() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("R");
-    draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("R").expect("a within-domain mint");
+    draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     assert_eq!(
         draft.set_record_fields(TypeId::from_index(5), Vec::new()),
         Err(DraftStateError::ForeignDraft),
@@ -384,11 +402,13 @@ fn set_record_fields_with_a_foreign_id_is_refused() {
 fn set_enum_variants_with_a_foreign_id_is_refused() {
     let mut other_owner = ImageDraft::new();
     let mut other = admitted(&mut other_owner);
-    let name = other.intern_string("E");
-    let foreign = other.add_enum_type(EnumTypeDef {
-        name,
-        variants: Vec::new(),
-    });
+    let name = other.intern_string("E").expect("a within-domain mint");
+    let foreign = other
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
 
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
@@ -405,12 +425,14 @@ fn set_enum_variants_with_a_foreign_id_is_refused() {
 fn a_second_fill_of_one_row_is_refused_without_overwriting() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("R");
-    let field = draft.intern_string("f");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("R").expect("a within-domain mint");
+    let field = draft.intern_string("f").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     draft
         .set_record_fields(
             record,
@@ -665,8 +687,10 @@ fn a_failed_function_append_leaves_no_function_row() {
 
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("f");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     assert!(
         draft
             .add_function(FunctionDef {
@@ -704,13 +728,17 @@ fn a_discarded_proof_rolls_back_the_intern_text_compound() {
     draft.commit();
     let proof_const = {
         let mut proof = admitted(&mut draft_owner);
-        proof.intern_text("throwaway-text")
+        proof
+            .intern_text("throwaway-text")
+            .expect("a within-domain mint")
     };
     let mut draft = admitted(&mut draft_owner);
     let after = draft.encode().expect("a fitting draft").bytes;
     assert_eq!(before, after, "the compound appended nothing that survived");
 
-    let re_minted = draft.intern_text("throwaway-text");
+    let re_minted = draft
+        .intern_text("throwaway-text")
+        .expect("a within-domain mint");
     assert_eq!(
         re_minted.index(),
         proof_const.index(),
@@ -762,8 +790,10 @@ fn a_rewound_and_reappended_row_refuses_the_operand_minted_before_the_rewind() {
         old_site, new_site,
         "the two operands carry one logical ordinal and compare equal",
     );
-    let name = draft.intern_string("f");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     assert!(
         draft
             .add_function(FunctionDef {

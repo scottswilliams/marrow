@@ -26,9 +26,11 @@ fn answer_id() -> ExportId {
 fn return_const_image(value: i64) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("answer");
-    let source = draft.intern_string("src/main.mw");
-    let konst = draft.intern_int(value);
+    let name = draft.intern_string("answer").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let konst = draft.intern_int(value).expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -79,8 +81,12 @@ fn relocating_the_project_yields_identical_image_bytes() {
 fn range_guard_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("guarded");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft
+        .intern_string("guarded")
+        .expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -113,12 +119,16 @@ fn range_guard_image() -> Vec<u8> {
 fn forged_list_positional_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("forged");
-    let source = draft.intern_string("src/main.mw");
-    let coll = draft.add_collection_type(CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Int),
-    });
-    let index = draft.intern_int(100);
+    let name = draft.intern_string("forged").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let coll = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
+    let index = draft.intern_int(100).expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -149,13 +159,17 @@ fn forged_list_positional_image() -> Vec<u8> {
 fn forged_map_positional_image(read: Instr) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("forged");
-    let source = draft.intern_string("src/main.mw");
-    let coll = draft.add_collection_type(CollectionTypeDef::Map {
-        key: ImageType::scalar(Scalar::Int),
-        value: ImageType::scalar(Scalar::Int),
-    });
-    let index = draft.intern_int(5);
+    let name = draft.intern_string("forged").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let coll = draft
+        .add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Int),
+            value: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
+    let index = draft.intern_int(5).expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -208,13 +222,17 @@ fn a_forged_out_of_range_positional_read_faults_run_corruption() {
 fn forged_map_remove_absent_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("forged");
-    let source = draft.intern_string("src/main.mw");
-    let coll = draft.add_collection_type(CollectionTypeDef::Map {
-        key: ImageType::scalar(Scalar::Int),
-        value: ImageType::scalar(Scalar::Int),
-    });
-    let key = draft.intern_int(7);
+    let name = draft.intern_string("forged").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let coll = draft
+        .add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Int),
+            value: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
+    let key = draft.intern_int(7).expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -246,13 +264,17 @@ fn forged_map_remove_absent_image() -> Vec<u8> {
 fn forged_map_remove_wrong_key_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("forged");
-    let source = draft.intern_string("src/main.mw");
-    let coll = draft.add_collection_type(CollectionTypeDef::Map {
-        key: ImageType::scalar(Scalar::Int),
-        value: ImageType::scalar(Scalar::Int),
-    });
-    let key = draft.intern_text("x");
+    let name = draft.intern_string("forged").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let coll = draft
+        .add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Int),
+            value: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
+    let key = draft.intern_text("x").expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -283,10 +305,12 @@ fn forged_map_remove_wrong_key_image() -> Vec<u8> {
 fn forged_map_remove_non_map_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("forged");
-    let source = draft.intern_string("src/main.mw");
-    let base = draft.intern_int(1);
-    let key = draft.intern_int(7);
+    let name = draft.intern_string("forged").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let base = draft.intern_int(1).expect("a within-domain mint");
+    let key = draft.intern_int(7).expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,

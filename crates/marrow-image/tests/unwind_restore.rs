@@ -32,15 +32,24 @@ fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
 /// declaration, a root occurrence, a requested site, and a function, export, and test
 /// entry spending that site — seeded by `seed` so two passes touch distinct rows.
 fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
-    let name = txn.intern_string(&format!("n{seed}"));
-    let source = txn.intern_string("src/main.mw");
-    txn.intern_int(i64::from(seed));
-    txn.intern_text(&format!("t{seed}"));
-    txn.intern_date(i32::from(seed));
-    let record = txn.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = txn
+        .intern_string(&format!("n{seed}"))
+        .expect("a within-domain mint");
+    let source = txn
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    txn.intern_int(i64::from(seed))
+        .expect("a within-domain mint");
+    txn.intern_text(&format!("t{seed}"))
+        .expect("a within-domain mint");
+    txn.intern_date(i32::from(seed))
+        .expect("a within-domain mint");
+    let record = txn
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     txn.set_record_fields(
         record,
         vec![FieldDef {
@@ -50,10 +59,12 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
         }],
     )
     .expect("a reserved row fills once");
-    let enum_id = txn.add_enum_type(EnumTypeDef {
-        name,
-        variants: Vec::new(),
-    });
+    let enum_id = txn
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
     txn.set_enum_variants(
         enum_id,
         vec![VariantDef {
@@ -65,7 +76,8 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
     .expect("a reserved row fills once");
     txn.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Int),
-    });
+    })
+    .expect("a within-domain mint");
     txn.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let value = txn.value_scalar(Scalar::Int);
     let mut product = PRODUCT_ID;
@@ -119,7 +131,9 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
         .expect("the site ref is live");
     txn.add_export(ExportId::of_local("m", &format!("n{seed}")), func);
     // A test entry's function is never also exported, so the entry gets its own body.
-    let test_name = txn.intern_string(&format!("t_n{seed}"));
+    let test_name = txn
+        .intern_string(&format!("t_n{seed}"))
+        .expect("a within-domain mint");
     let test_func = txn
         .add_function(FunctionDef {
             name: test_name,

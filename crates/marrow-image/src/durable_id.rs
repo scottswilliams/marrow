@@ -1104,7 +1104,7 @@ mod tests {
         byte: u8,
         keys: Vec<KeyColumn>,
     ) -> DeclarationMemberDef {
-        let name = draft.intern_string("nested");
+        let name = draft.intern_string("nested").expect("a within-domain mint");
         DeclarationMemberDef {
             parent,
             shape: DeclarationMemberShape::Branch {
@@ -1128,11 +1128,13 @@ mod tests {
     /// The record is surface, not identity — it is excluded from the contract preimage —
     /// so every graph below binds the same empty one and no hex moves with it.
     fn entry_record(draft: &mut ImageDraft) -> TypeId {
-        let name = draft.intern_string("Entry");
-        draft.add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        })
+        let name = draft.intern_string("Entry").expect("a within-domain mint");
+        draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint")
     }
 
     /// State one Product and one root occurrence over it in a fresh draft.
@@ -1154,7 +1156,7 @@ mod tests {
         draft.set_application_identity(application);
         let record = entry_record(&mut draft);
         let commands = members(&mut draft);
-        let name = draft.intern_string("root");
+        let name = draft.intern_string("root").expect("a within-domain mint");
         draft
             .declare_product(&plan(), id(0x0d), record, commands)
             .expect("a well-formed flat declaration");
@@ -2085,7 +2087,7 @@ mod tests {
         draft.set_application_identity(id(0x0a));
         let record = entry_record(&mut draft);
         let int = draft.value_shapes_mut().scalar(Scalar::Int);
-        let name = draft.intern_string("root");
+        let name = draft.intern_string("root").expect("a within-domain mint");
         draft
             .declare_product(
                 &plan(),

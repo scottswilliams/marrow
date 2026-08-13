@@ -399,6 +399,7 @@ mod builtins;
 mod diagnostics;
 mod durable;
 mod exprs;
+mod literals;
 mod ltype;
 mod registry;
 mod stmts;
@@ -421,6 +422,24 @@ pub(crate) use self::registry::{
 pub(crate) use self::types::parse_int;
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
+    /// Run one checked draft mint. A carrier-domain refusal is unreachable under
+    /// the admitted source envelope, so it is remembered as the lowering invariant —
+    /// the body aborts at the invariant boundary — and the current path stops with
+    /// `None`, never a diagnostic against the source.
+    fn checked_mint<T>(
+        &mut self,
+        mint: impl FnOnce(&mut DraftTxn<'d>) -> Result<T, marrow_image::DraftStateError>,
+    ) -> Option<T> {
+        match mint(self.draft) {
+            Ok(value) => Some(value),
+            Err(refusal) => {
+                self.invariant
+                    .get_or_insert(LowerInvariant::BuilderDomain(refusal));
+                None
+            }
+        }
+    }
+
     /// A fresh lowerer over an empty body, for one function or test body. The
     /// shared field set has this single owner; `ret` and `body_kind` are the only
     /// per-body-kind inputs.
@@ -893,8 +912,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if self.failed || self.terminal_rejection() {
             return Ok(BodyOutcome::Refused);
         }
-        let name_id = self.draft.intern_string(name);
-        let source_id = self.draft.intern_string(self.file.as_str());
+        let name_id = self.draft.intern_string(name)?;
+        let source_id = self.draft.intern_string(self.file.as_str())?;
         let code = std::mem::take(&mut self.code);
         let spans = std::mem::take(&mut self.spans);
         let code_spans = std::mem::take(&mut self.full_spans);
@@ -1706,16 +1725,24 @@ mod generic_cache_boundary_tests {
     }
 
     fn orphan_enum_and_struct(draft: &mut DraftTxn<'_>) -> (EnumId, TypeId) {
-        let enum_name = draft.intern_string("OrphanEnum");
-        let enum_id = draft.add_enum_type(EnumTypeDef {
-            name: enum_name,
-            variants: Vec::new(),
-        });
-        let struct_name = draft.intern_string("OrphanStruct");
-        let struct_id = draft.add_record_type(RecordTypeDef {
-            name: struct_name,
-            fields: Vec::new(),
-        });
+        let enum_name = draft
+            .intern_string("OrphanEnum")
+            .expect("a within-domain mint");
+        let enum_id = draft
+            .add_enum_type(EnumTypeDef {
+                name: enum_name,
+                variants: Vec::new(),
+            })
+            .expect("a within-domain mint");
+        let struct_name = draft
+            .intern_string("OrphanStruct")
+            .expect("a within-domain mint");
+        let struct_id = draft
+            .add_record_type(RecordTypeDef {
+                name: struct_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         (enum_id, struct_id)
     }
 
@@ -2435,8 +2462,8 @@ mod generic_cache_boundary_tests {
             .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Option);
-        draft.intern_int(1);
-        draft.intern_int(2);
+        draft.intern_int(1).expect("a within-domain mint");
+        draft.intern_int(2).expect("a within-domain mint");
         let draft_before = draft.encode().expect("seeded draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
         let functions = FunctionRegistry::empty(DeclarationBudget::default());

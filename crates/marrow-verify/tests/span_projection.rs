@@ -20,8 +20,12 @@ fn linear_span_image(with_spans: bool) -> Vec<u8> {
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let source = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("linearSpans");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft
+        .intern_string("linearSpans")
+        .expect("a within-domain mint");
     let mut code = Vec::with_capacity(INSTRUCTION_COUNT);
     for _ in 0..2_047 {
         code.push(Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)));

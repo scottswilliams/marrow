@@ -69,11 +69,13 @@ fn field_id(n: usize) -> LedgerIdBytes {
 /// wide distinct demand set, since a demand is named by a declaration node and every
 /// field is its own node.
 fn declare_wide_product(draft: &mut DraftTxn<'_>, fields: usize) {
-    let type_name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields: Vec::new(),
-    });
+    let type_name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let value = draft.value_scalar(Scalar::Int);
     draft
@@ -98,7 +100,9 @@ fn declare_wide_product(draft: &mut DraftTxn<'_>, fields: usize) {
 /// Append one singleton root occurrence over the declared Product, seeded by `n` so each
 /// root has its own spelling and placement.
 fn admit_root(draft: &mut DraftTxn<'_>, n: u8) -> AdmittedRoot {
-    let name = draft.intern_string(&format!("r{n}"));
+    let name = draft
+        .intern_string(&format!("r{n}"))
+        .expect("a within-domain mint");
     draft
         .add_root_occurrence(
             &admitted_plan(),
@@ -235,13 +239,15 @@ const COMPONENT_ID: [u8; 16] = [0x37; 16];
 fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let type_name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields: Vec::new(),
-    });
+    let type_name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let branch_name = draft.intern_string("b");
+    let branch_name = draft.intern_string("b").expect("a within-domain mint");
     let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
@@ -278,7 +284,7 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
             ],
         )
         .expect("a well-formed declaration");
-    let root_name = draft.intern_string("r");
+    let root_name = draft.intern_string("r").expect("a within-domain mint");
     let root = draft
         .add_root_occurrence(
             &admitted_plan(),
@@ -508,11 +514,13 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
     // and member set that share nothing with the first.
     let mut right_owner = ImageDraft::new();
     let mut right = admitted(&mut right_owner);
-    let type_name = right.intern_string("S");
-    let record = right.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields: Vec::new(),
-    });
+    let type_name = right.intern_string("S").expect("a within-domain mint");
+    let record = right
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     right.set_application_identity(LedgerIdBytes::from_bytes([0x0f; 16]));
     let value = right.value_scalar(Scalar::Text);
     right
@@ -530,7 +538,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
             }],
         )
         .expect("a well-formed declaration");
-    let root_name = right.intern_string("s");
+    let root_name = right.intern_string("s").expect("a within-domain mint");
     let right_root = right
         .add_root_occurrence(
             &admitted_plan(),
@@ -609,7 +617,9 @@ fn a_crossing_before_a_proof_survives_the_proof() {
     draft.commit();
     {
         let mut proof = admitted(&mut owner);
-        let _ = proof.intern_string("throwaway");
+        let _ = proof
+            .intern_string("throwaway")
+            .expect("a within-domain mint");
     }
     assert!(
         matches!(owner.encode(), Err(ImageBuildError::TooManySites)),
@@ -621,11 +631,13 @@ fn a_crossing_before_a_proof_survives_the_proof() {
 /// graph — one field where the draft holds several. Two declarations wearing one identity,
 /// which the draft records as a sticky conflict and the encoder refuses.
 fn redeclare_divergent(draft: &mut DraftTxn<'_>) {
-    let type_name = draft.intern_string("D");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields: Vec::new(),
-    });
+    let type_name = draft.intern_string("D").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
@@ -688,7 +700,9 @@ fn a_product_conflict_before_a_proof_survives_the_proof() {
     draft.commit();
     {
         let mut proof = admitted(&mut owner);
-        let _ = proof.intern_string("throwaway");
+        let _ = proof
+            .intern_string("throwaway")
+            .expect("a within-domain mint");
     }
     assert!(
         matches!(owner.encode(), Err(ImageBuildError::ProductGraphConflict)),
@@ -707,7 +721,9 @@ fn a_discarded_proof_leaves_the_draft_byte_identical() {
     draft.commit();
     {
         let mut proof = admitted(&mut owner);
-        let _ = proof.intern_string("throwaway");
+        let _ = proof
+            .intern_string("throwaway")
+            .expect("a within-domain mint");
         let extra = admit_root(&mut proof, 0x33);
         demand_every_leaf(&mut proof, &extra, &members);
     }
@@ -759,8 +775,12 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     // row moves, so it must invalidate neither ref.
     {
         let mut txn = admitted(&mut owner);
-        let name = txn.intern_string("discarded");
-        let source = txn.intern_string("src/main.mw");
+        let name = txn
+            .intern_string("discarded")
+            .expect("a within-domain mint");
+        let source = txn
+            .intern_string("src/main.mw")
+            .expect("a within-domain mint");
         txn.add_function(FunctionDef {
             name,
             source,
@@ -777,8 +797,10 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     // Deterministic ordinal reuse: the byte-identical root re-appends at the ordinal the
     // rolled-back root held, with a fresh stamp.
     let _reused = admit_root(&mut txn, 0x23);
-    let name = txn.intern_string("f");
-    let source = txn.intern_string("src/main.mw");
+    let name = txn.intern_string("f").expect("a within-domain mint");
+    let source = txn
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     assert!(
         txn.add_function(FunctionDef {
             name,
@@ -815,7 +837,7 @@ fn a_sites_crossing_beside_a_consts_crossing_yields_the_canonical_minimum() {
         let mut draft = admitted(&mut owner);
         let cross_consts = |draft: &mut DraftTxn<'_>| {
             for value in 0..=(marrow_image::bounds::MAX_CONSTS as i64) {
-                draft.intern_int(value);
+                draft.intern_int(value).expect("a within-domain mint");
             }
         };
         let cross_sites = |draft: &mut DraftTxn<'_>, excess: &AdmittedRoot| {
@@ -879,7 +901,9 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
         }
     };
     for n in 0..ROOTS {
-        let name = draft.intern_string(&format!("r{n}"));
+        let name = draft
+            .intern_string(&format!("r{n}"))
+            .expect("a within-domain mint");
         let admitted = draft
             .add_root_occurrence(
                 &admitted_plan(),
@@ -969,11 +993,13 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
 
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let type_name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields: Vec::new(),
-    });
+    let type_name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let value = draft.value_scalar(Scalar::Int);
     let mut commands = Vec::with_capacity(2 * GROUPS);
@@ -999,7 +1025,9 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         .expect("a well-formed declaration");
 
     for n in 0..ROOTS {
-        let name = draft.intern_string(&format!("r{n}"));
+        let name = draft
+            .intern_string(&format!("r{n}"))
+            .expect("a within-domain mint");
         let admitted = draft
             .add_root_occurrence(
                 &admitted_plan(),

@@ -2156,7 +2156,11 @@ fn lower_declared_tests(
                 code: result.code,
                 code_spans: result.code_spans,
             });
-            let name_id = txn.intern_string(&test.name);
+            let name_id = txn.intern_string(&test.name).map_err(|refusal| {
+                PhaseStop::Invariant(InvariantCause::Generic(GenericInvariant::BuilderDomain(
+                    refusal,
+                )))
+            })?;
             txn.add_test_entry(name_id, result.func);
             txn.commit();
             entries.push(TestEntry {

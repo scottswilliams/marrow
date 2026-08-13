@@ -27,8 +27,10 @@ const RECORD_WIDTH: usize = 4_096;
 const ENUM_WIDTH: usize = 256;
 
 fn add_main(draft: &mut DraftTxn<'_>) {
-    let name = draft.intern_string("main");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let code = vec![Instr::Return];
     let function = draft
         .add_function(FunctionDef {
@@ -51,19 +53,23 @@ fn add_main(draft: &mut DraftTxn<'_>) {
 fn record_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let record_name = draft.intern_string("Wide");
+    let record_name = draft.intern_string("Wide").expect("a within-domain mint");
     let mut fields = Vec::with_capacity(RECORD_WIDTH);
     for index in 0..RECORD_WIDTH {
         fields.push(FieldDef {
-            name: draft.intern_string(&format!("field{index:04}")),
+            name: draft
+                .intern_string(&format!("field{index:04}"))
+                .expect("a within-domain mint"),
             ty: ImageType::scalar(Scalar::Int),
             required: index % 2 == 0,
         });
     }
-    draft.add_record_type(RecordTypeDef {
-        name: record_name,
-        fields,
-    });
+    draft
+        .add_record_type(RecordTypeDef {
+            name: record_name,
+            fields,
+        })
+        .expect("a within-domain mint");
     add_main(&mut draft);
     draft.encode().expect("below-cap record image").bytes
 }
@@ -71,19 +77,23 @@ fn record_image() -> Vec<u8> {
 fn enum_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let enum_name = draft.intern_string("Choice");
+    let enum_name = draft.intern_string("Choice").expect("a within-domain mint");
     let mut variants = Vec::with_capacity(ENUM_WIDTH);
     for index in 0..ENUM_WIDTH {
         variants.push(VariantDef {
-            name: draft.intern_string(&format!("variant{index:03}")),
+            name: draft
+                .intern_string(&format!("variant{index:03}"))
+                .expect("a within-domain mint"),
             category: index % 2 == 1,
             payload: Vec::new(),
         });
     }
-    draft.add_enum_type(EnumTypeDef {
-        name: enum_name,
-        variants,
-    });
+    draft
+        .add_enum_type(EnumTypeDef {
+            name: enum_name,
+            variants,
+        })
+        .expect("a within-domain mint");
     add_main(&mut draft);
     draft.encode().expect("below-cap enum image").bytes
 }
@@ -91,29 +101,33 @@ fn enum_image() -> Vec<u8> {
 fn repeated_names_across_rows_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let field_name = draft.intern_string("value");
+    let field_name = draft.intern_string("value").expect("a within-domain mint");
     for record in ["First", "Second"] {
-        let name = draft.intern_string(record);
-        draft.add_record_type(RecordTypeDef {
-            name,
-            fields: vec![FieldDef {
-                name: field_name,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            }],
-        });
+        let name = draft.intern_string(record).expect("a within-domain mint");
+        draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: vec![FieldDef {
+                    name: field_name,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                }],
+            })
+            .expect("a within-domain mint");
     }
-    let variant_name = draft.intern_string("ready");
+    let variant_name = draft.intern_string("ready").expect("a within-domain mint");
     for item in ["Left", "Right"] {
-        let name = draft.intern_string(item);
-        draft.add_enum_type(EnumTypeDef {
-            name,
-            variants: vec![VariantDef {
-                name: variant_name,
-                category: false,
-                payload: Vec::new(),
-            }],
-        });
+        let name = draft.intern_string(item).expect("a within-domain mint");
+        draft
+            .add_enum_type(EnumTypeDef {
+                name,
+                variants: vec![VariantDef {
+                    name: variant_name,
+                    category: false,
+                    payload: Vec::new(),
+                }],
+            })
+            .expect("a within-domain mint");
     }
     add_main(&mut draft);
     draft

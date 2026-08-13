@@ -34,21 +34,27 @@ fn draft_with_record(field_count: usize) -> ImageDraft {
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let src = draft.intern_string("src/main.mw");
-    let type_name = draft.intern_string("Wide");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let type_name = draft.intern_string("Wide").expect("a within-domain mint");
     let fields = (0..field_count)
         .map(|i| FieldDef {
-            name: draft.intern_string(&format!("f{i}")),
+            name: draft
+                .intern_string(&format!("f{i}"))
+                .expect("a within-domain mint"),
             ty: int(),
             required: false,
         })
         .collect();
-    draft.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields,
-    });
-    let name = draft.intern_string("main");
-    let zero = draft.intern_int(0);
+    draft
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields,
+        })
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = spans(&code);
     let main = draft

@@ -63,39 +63,47 @@ fn groups_image() -> VerifiedImage {
 
     // The `details` group's own leaf record (one sparse `pages`), then the `Book` record
     // whose trailing group slot references it.
-    let details_name = draft.intern_string("Book.details");
-    let pages = draft.intern_string("pages");
-    let details_record = draft.add_record_type(RecordTypeDef {
-        name: details_name,
-        fields: vec![FieldDef {
-            name: pages,
-            ty: ImageType::scalar(Scalar::Int),
-            required: false,
-        }],
-    });
-    let book = draft.intern_string("Book");
-    let title = draft.intern_string("title");
-    let details = draft.intern_string("details");
-    let book_record = draft.add_record_type(RecordTypeDef {
-        name: book,
-        fields: vec![
-            FieldDef {
-                name: title,
-                ty: ImageType::scalar(Scalar::Text),
-                required: true,
-            },
-            FieldDef {
-                name: details,
-                ty: ImageType::Record {
-                    idx: details_record,
-                    optional: false,
+    let details_name = draft
+        .intern_string("Book.details")
+        .expect("a within-domain mint");
+    let pages = draft.intern_string("pages").expect("a within-domain mint");
+    let details_record = draft
+        .add_record_type(RecordTypeDef {
+            name: details_name,
+            fields: vec![FieldDef {
+                name: pages,
+                ty: ImageType::scalar(Scalar::Int),
+                required: false,
+            }],
+        })
+        .expect("a within-domain mint");
+    let book = draft.intern_string("Book").expect("a within-domain mint");
+    let title = draft.intern_string("title").expect("a within-domain mint");
+    let details = draft
+        .intern_string("details")
+        .expect("a within-domain mint");
+    let book_record = draft
+        .add_record_type(RecordTypeDef {
+            name: book,
+            fields: vec![
+                FieldDef {
+                    name: title,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
                 },
-                required: true,
-            },
-        ],
-    });
+                FieldDef {
+                    name: details,
+                    ty: ImageType::Record {
+                        idx: details_record,
+                        optional: false,
+                    },
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
 
-    let root = draft.intern_string("books");
+    let root = draft.intern_string("books").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
     let text_value = draft.value_scalar(Scalar::Text);
@@ -161,16 +169,18 @@ fn groups_image() -> VerifiedImage {
         SemanticTarget::GroupEntry,
     );
 
-    let src = draft.intern_string("src/main.mw");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let book_ty_idx = book_record;
     let details_ty_idx = details_record;
 
     // seed(): create book 1 with title "hi" and details{pages:384}.
     {
-        let name = draft.intern_string("seed");
-        let key = draft.intern_int(1);
-        let title_const = draft.intern_text("hi");
-        let pages_const = draft.intern_int(384);
+        let name = draft.intern_string("seed").expect("a within-domain mint");
+        let key = draft.intern_int(1).expect("a within-domain mint");
+        let title_const = draft.intern_text("hi").expect("a within-domain mint");
+        let pages_const = draft.intern_int(384).expect("a within-domain mint");
         let code = vec![
             Instr::TxnBegin,
             Instr::ConstLoad(key),         // root key
@@ -216,9 +226,11 @@ fn groups_image() -> VerifiedImage {
 
     // replaceGroup(): replace ^books[1].details with {pages:500}.
     {
-        let name = draft.intern_string("replaceGroup");
-        let key = draft.intern_int(1);
-        let pages_const = draft.intern_int(500);
+        let name = draft
+            .intern_string("replaceGroup")
+            .expect("a within-domain mint");
+        let key = draft.intern_int(1).expect("a within-domain mint");
+        let pages_const = draft.intern_int(500).expect("a within-domain mint");
         let code = vec![
             Instr::TxnBegin,
             Instr::ConstLoad(key),
@@ -245,8 +257,10 @@ fn groups_image() -> VerifiedImage {
 
     // eraseGroup(): erase ^books[1].details (clears the group's leaves).
     {
-        let name = draft.intern_string("eraseGroup");
-        let key = draft.intern_int(1);
+        let name = draft
+            .intern_string("eraseGroup")
+            .expect("a within-domain mint");
+        let key = draft.intern_int(1).expect("a within-domain mint");
         let code = vec![
             Instr::TxnBegin,
             Instr::ConstLoad(key),
@@ -280,8 +294,8 @@ fn add_read(
     op: Instr,
     record: marrow_image::TypeId,
 ) {
-    let name_id = draft.intern_string(name);
-    let key = draft.intern_int(1);
+    let name_id = draft.intern_string(name).expect("a within-domain mint");
+    let key = draft.intern_int(1).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(key), op, Instr::Return];
     let ret = ImageType::Record {
         idx: record,

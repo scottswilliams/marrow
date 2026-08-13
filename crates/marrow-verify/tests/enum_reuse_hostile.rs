@@ -54,30 +54,32 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// Add the enum type `Access { reader, writer, admin }` (all empty-payload) and return
 /// its table index.
 fn access_enum(draft: &mut DraftTxn<'_>) -> marrow_image::EnumId {
-    let name = draft.intern_string("Access");
-    let reader = draft.intern_string("reader");
-    let writer = draft.intern_string("writer");
-    let admin = draft.intern_string("admin");
-    draft.add_enum_type(EnumTypeDef {
-        name,
-        variants: vec![
-            VariantDef {
-                name: reader,
-                category: false,
-                payload: vec![],
-            },
-            VariantDef {
-                name: writer,
-                category: false,
-                payload: vec![],
-            },
-            VariantDef {
-                name: admin,
-                category: false,
-                payload: vec![],
-            },
-        ],
-    })
+    let name = draft.intern_string("Access").expect("a within-domain mint");
+    let reader = draft.intern_string("reader").expect("a within-domain mint");
+    let writer = draft.intern_string("writer").expect("a within-domain mint");
+    let admin = draft.intern_string("admin").expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![
+                VariantDef {
+                    name: reader,
+                    category: false,
+                    payload: vec![],
+                },
+                VariantDef {
+                    name: writer,
+                    category: false,
+                    payload: vec![],
+                },
+                VariantDef {
+                    name: admin,
+                    category: false,
+                    payload: vec![],
+                },
+            ],
+        })
+        .expect("a within-domain mint")
 }
 
 /// The identity of one `Access` enum shape: its sum id and its three member ids. A
@@ -86,11 +88,12 @@ type AccessShape = ([u8; 16], [[u8; 16]; 3]);
 
 /// Mint the durable value shape of an `Access` field into `draft`'s value arena.
 fn access_shape(draft: &mut DraftTxn<'_>, (sum, members): AccessShape) -> ValueShapeNodeId {
-    draft.value_enum(
-        id(sum),
-        members.iter().map(|m| (id(*m), Vec::new())).collect(),
-    )
-    .expect("a within-bounds shape appends")
+    draft
+        .value_enum(
+            id(sum),
+            members.iter().map(|m| (id(*m), Vec::new())).collect(),
+        )
+        .expect("a within-bounds shape appends")
 }
 
 /// A one-root image ("grants", int key) whose `Access` record carries two enum fields.
@@ -112,25 +115,27 @@ fn build(
         idx: enum_idx,
         optional: false,
     };
-    let first = draft.intern_string("first");
-    let second = draft.intern_string("second");
-    let rec_name = draft.intern_string("Grant");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: rec_name,
-        fields: vec![
-            FieldDef {
-                name: first,
-                ty,
-                required: true,
-            },
-            FieldDef {
-                name: second,
-                ty,
-                required: true,
-            },
-        ],
-    });
-    let root_name = draft.intern_string("grants");
+    let first = draft.intern_string("first").expect("a within-domain mint");
+    let second = draft.intern_string("second").expect("a within-domain mint");
+    let rec_name = draft.intern_string("Grant").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: rec_name,
+            fields: vec![
+                FieldDef {
+                    name: first,
+                    ty,
+                    required: true,
+                },
+                FieldDef {
+                    name: second,
+                    ty,
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let root_name = draft.intern_string("grants").expect("a within-domain mint");
     draft
         .declare_product(
             &admitted_plan(),
@@ -177,8 +182,10 @@ fn build(
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
     );
-    let src = draft.intern_string("src/main.mw");
-    let fname = draft.intern_string("f");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let fname = draft.intern_string("f").expect("a within-domain mint");
     let code = vec![Instr::LocalGet(0), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
@@ -435,57 +442,65 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
     };
     let int = ImageType::scalar(Scalar::Int);
 
-    let group_rec_name = draft.intern_string("Marks");
-    let mark = draft.intern_string("mark");
-    let group_record = draft.add_record_type(RecordTypeDef {
-        name: group_rec_name,
-        fields: vec![FieldDef {
-            name: mark,
-            ty: int,
-            required: true,
-        }],
-    });
-    let branch_rec_name = draft.intern_string("Note");
-    let body = draft.intern_string("body");
-    let branch_record = draft.add_record_type(RecordTypeDef {
-        name: branch_rec_name,
-        fields: vec![FieldDef {
-            name: body,
-            ty: int,
-            required: true,
-        }],
-    });
-    let root_rec_name = draft.intern_string("Grant");
-    let count = draft.intern_string("count");
-    let access_name = draft.intern_string("access");
-    let marks = draft.intern_string("marks");
-    let root_record = draft.add_record_type(RecordTypeDef {
-        name: root_rec_name,
-        fields: vec![
-            FieldDef {
-                name: count,
+    let group_rec_name = draft.intern_string("Marks").expect("a within-domain mint");
+    let mark = draft.intern_string("mark").expect("a within-domain mint");
+    let group_record = draft
+        .add_record_type(RecordTypeDef {
+            name: group_rec_name,
+            fields: vec![FieldDef {
+                name: mark,
                 ty: int,
                 required: true,
-            },
-            FieldDef {
-                name: access_name,
-                ty: access,
+            }],
+        })
+        .expect("a within-domain mint");
+    let branch_rec_name = draft.intern_string("Note").expect("a within-domain mint");
+    let body = draft.intern_string("body").expect("a within-domain mint");
+    let branch_record = draft
+        .add_record_type(RecordTypeDef {
+            name: branch_rec_name,
+            fields: vec![FieldDef {
+                name: body,
+                ty: int,
                 required: true,
-            },
-            FieldDef {
-                name: marks,
-                ty: ImageType::Record {
-                    idx: group_record,
-                    optional: false,
+            }],
+        })
+        .expect("a within-domain mint");
+    let root_rec_name = draft.intern_string("Grant").expect("a within-domain mint");
+    let count = draft.intern_string("count").expect("a within-domain mint");
+    let access_name = draft.intern_string("access").expect("a within-domain mint");
+    let marks = draft.intern_string("marks").expect("a within-domain mint");
+    let root_record = draft
+        .add_record_type(RecordTypeDef {
+            name: root_rec_name,
+            fields: vec![
+                FieldDef {
+                    name: count,
+                    ty: int,
+                    required: true,
                 },
-                required: true,
-            },
-        ],
-    });
-    let notes = draft.intern_string("notes");
+                FieldDef {
+                    name: access_name,
+                    ty: access,
+                    required: true,
+                },
+                FieldDef {
+                    name: marks,
+                    ty: ImageType::Record {
+                        idx: group_record,
+                        optional: false,
+                    },
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let notes = draft.intern_string("notes").expect("a within-domain mint");
 
     for (position, root) in spec.roots.iter().enumerate() {
-        let name = draft.intern_string(if position == 0 { "a" } else { "b" });
+        let name = draft
+            .intern_string(if position == 0 { "a" } else { "b" })
+            .expect("a within-domain mint");
         let int_value = draft.value_scalar(Scalar::Int);
         let enum_value = spec_enum_shape(&mut draft, root);
         // Flat commands, in pre-order: the two direct fields, the group and its one
@@ -584,8 +599,10 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
         );
     }
 
-    let src = draft.intern_string("src/main.mw");
-    let fname = draft.intern_string("f");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let fname = draft.intern_string("f").expect("a within-domain mint");
     let code = vec![Instr::LocalGet(0), Instr::Return];
     let func = draft
         .add_function(FunctionDef {

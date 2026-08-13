@@ -27,9 +27,11 @@ fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
 fn exporting_owner() -> ImageDraft {
     let mut owner = ImageDraft::new();
     let mut draft = admitted(&mut owner);
-    let name = draft.intern_string("main");
-    let source = draft.intern_string("src/main.mw");
-    draft.intern_int(0);
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    draft.intern_int(0).expect("a within-domain mint");
     let main = draft
         .add_function(FunctionDef {
             name,
@@ -89,7 +91,8 @@ fn a_savepoint_stays_stale_after_a_rollback_restores_its_bytes() {
     let before = owner.savepoint();
     {
         let mut txn = admitted(&mut owner);
-        txn.intern_string("discarded");
+        txn.intern_string("discarded")
+            .expect("a within-domain mint");
         // The armed guard drops here: the logical state is restored byte for byte.
     }
     assert_eq!(
@@ -131,13 +134,15 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
     let before = owner.encode().expect("the base draft encodes").bytes;
     {
         let mut txn = admitted(&mut owner);
-        let name = txn.intern_string("Extra");
-        let field = txn.intern_string("f");
-        txn.intern_text("extra-text");
-        let record = txn.add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        });
+        let name = txn.intern_string("Extra").expect("a within-domain mint");
+        let field = txn.intern_string("f").expect("a within-domain mint");
+        txn.intern_text("extra-text").expect("a within-domain mint");
+        let record = txn
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         txn.set_record_fields(
             record,
             vec![FieldDef {
@@ -150,20 +155,23 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
         txn.add_enum_type(EnumTypeDef {
             name,
             variants: Vec::new(),
-        });
+        })
+        .expect("a within-domain mint");
         txn.add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
-        });
+        })
+        .expect("a within-domain mint");
         let int = txn.value_scalar(Scalar::Int);
-        txn.value_struct(vec![int, int]).expect("a within-bounds shape appends");
+        txn.value_struct(vec![int, int])
+            .expect("a within-bounds shape appends");
     }
     let after = owner.encode().expect("the restored draft encodes").bytes;
     assert_eq!(before, after, "the armed inverse is byte-exact");
     // The interning indexes were restored with the pool: the same text re-mints the
     // same ordinal, so a stale index entry cannot alias a discarded row.
     let mut txn = admitted(&mut owner);
-    let re_minted = txn.intern_text("extra-text");
-    let twin = txn.intern_text("extra-text");
+    let re_minted = txn.intern_text("extra-text").expect("a within-domain mint");
+    let twin = txn.intern_text("extra-text").expect("a within-domain mint");
     assert_eq!(re_minted, twin);
 }
 
@@ -173,12 +181,14 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
 fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
     let mut owner = ImageDraft::new();
     let mut txn = admitted(&mut owner);
-    let name = txn.intern_string("R");
-    let field = txn.intern_string("f");
-    let record = txn.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = txn.intern_string("R").expect("a within-domain mint");
+    let field = txn.intern_string("f").expect("a within-domain mint");
+    let record = txn
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     txn.commit();
     let before = owner.encode().expect("the reserved draft encodes").bytes;
     {
@@ -217,45 +227,49 @@ fn each_active_kind_admits_its_crossing_and_the_fence_refuses_it() {
         Kind {
             cross: |txn| {
                 for index in 0..=MAX_STRINGS {
-                    txn.intern_string(&format!("s{index:05}"));
+                    txn.intern_string(&format!("s{index:05}"))
+                        .expect("a within-domain mint");
                 }
             },
             verdict: ImageBuildError::TooManyStrings,
         },
         Kind {
             cross: |txn| {
-                txn.intern_string(&"x".repeat(MAX_STRING_BYTES + 1));
+                txn.intern_string(&"x".repeat(MAX_STRING_BYTES + 1))
+                    .expect("a within-domain mint");
             },
             verdict: ImageBuildError::StringTooLong,
         },
         Kind {
             cross: |txn| {
                 for value in 0..=(MAX_CONSTS as i64) {
-                    txn.intern_int(value);
+                    txn.intern_int(value).expect("a within-domain mint");
                 }
             },
             verdict: ImageBuildError::TooManyConsts,
         },
         Kind {
             cross: |txn| {
-                let name = txn.intern_string("T");
+                let name = txn.intern_string("T").expect("a within-domain mint");
                 for _ in 0..=MAX_TYPES {
                     txn.add_record_type(RecordTypeDef {
                         name,
                         fields: Vec::new(),
-                    });
+                    })
+                    .expect("a within-domain mint");
                 }
             },
             verdict: ImageBuildError::TooManyTypes,
         },
         Kind {
             cross: |txn| {
-                let name = txn.intern_string("E");
+                let name = txn.intern_string("E").expect("a within-domain mint");
                 for _ in 0..=MAX_ENUMS {
                     txn.add_enum_type(EnumTypeDef {
                         name,
                         variants: Vec::new(),
-                    });
+                    })
+                    .expect("a within-domain mint");
                 }
             },
             verdict: ImageBuildError::TooManyEnums,
@@ -265,7 +279,8 @@ fn each_active_kind_admits_its_crossing_and_the_fence_refuses_it() {
                 for _ in 0..=MAX_COLLECTIONS {
                     txn.add_collection_type(CollectionTypeDef::List {
                         elem: ImageType::scalar(Scalar::Int),
-                    });
+                    })
+                    .expect("a within-domain mint");
                 }
             },
             verdict: ImageBuildError::TooManyCollections,
@@ -305,11 +320,13 @@ fn the_roots_crossing_is_admitted_and_the_fence_refuses_it() {
     let product = LedgerIdBytes::from_bytes([0x0d; 16]);
     let mut owner = ImageDraft::new();
     let mut txn = admitted(&mut owner);
-    let name = txn.intern_string("R");
-    let record = txn.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = txn.intern_string("R").expect("a within-domain mint");
+    let record = txn
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     txn.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
     let value = txn.value_scalar(Scalar::Int);
     txn.declare_product(
@@ -328,7 +345,9 @@ fn the_roots_crossing_is_admitted_and_the_fence_refuses_it() {
     .expect("a well-formed declaration");
     let mut roots = 0u32;
     let mut admit_one = |txn: &mut DraftTxn<'_>| {
-        let name = txn.intern_string(&format!("r{roots:05}"));
+        let name = txn
+            .intern_string(&format!("r{roots:05}"))
+            .expect("a within-domain mint");
         let mut placement = [0x60u8; 16];
         placement[0] = (roots & 0xff) as u8;
         placement[1] = ((roots >> 8) & 0xff) as u8;
@@ -389,21 +408,27 @@ fn an_intern_text_at_the_const_cap_commits_its_whole_compound() {
     {
         let mut txn = admitted(&mut owner);
         for value in 0..(MAX_CONSTS as i64) {
-            txn.intern_int(value);
+            txn.intern_int(value).expect("a within-domain mint");
         }
-        txn.intern_text("the crossing text");
+        txn.intern_text("the crossing text")
+            .expect("a within-domain mint");
         assert_eq!(
             txn.encode().map(|_| ()),
             Err(ImageBuildError::TooManyConsts),
             "the compound committed the N+1 constant and the Consts candidate",
         );
         // The compound's string half committed: re-interning is a hit, not a growth.
-        let first = txn.intern_string("the crossing text");
-        let again = txn.intern_string("the crossing text");
+        let first = txn
+            .intern_string("the crossing text")
+            .expect("a within-domain mint");
+        let again = txn
+            .intern_string("the crossing text")
+            .expect("a within-domain mint");
         assert_eq!(first, again, "the compound's string row is retained");
         // A later Strings crossing outranks Consts without erasing it.
         for index in 0..=MAX_STRINGS {
-            txn.intern_string(&format!("s{index:05}"));
+            txn.intern_string(&format!("s{index:05}"))
+                .expect("a within-domain mint");
         }
         assert_eq!(
             txn.encode().map(|_| ()),

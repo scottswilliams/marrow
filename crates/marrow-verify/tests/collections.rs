@@ -32,10 +32,14 @@ fn image_with(colls: &[CollectionTypeDef], code: Vec<Instr>, ret: ImageType) -> 
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     for coll in colls {
-        draft.add_collection_type(*coll);
+        draft
+            .add_collection_type(*coll)
+            .expect("a within-domain mint");
     }
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
     let spans = spans(&code);
     let main = draft
         .add_function(FunctionDef {
@@ -74,10 +78,14 @@ const MAP_STR_INT: CollectionTypeDef = CollectionTypeDef::Map {
 fn a_well_formed_list_program_verifies_and_seals() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.add_collection_type(LIST_INT);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let five = draft.intern_int(5);
+    draft
+        .add_collection_type(LIST_INT)
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let five = draft.intern_int(5).expect("a within-domain mint");
     let code = vec![
         Instr::ListNew(marrow_image::CollTypeId::from_index(0)),
         Instr::ConstLoad(five),
@@ -107,9 +115,13 @@ fn a_well_formed_list_program_verifies_and_seals() {
 fn a_well_formed_map_program_verifies() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.add_collection_type(MAP_STR_INT);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
+    draft
+        .add_collection_type(MAP_STR_INT)
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
     let code = vec![
         Instr::MapNew(marrow_image::CollTypeId::from_index(0)),
         Instr::MapLen,
@@ -141,9 +153,13 @@ fn a_list_new_index_out_of_range_is_refused_by_the_producer() {
     // Only one collection type exists, so `ListNew(9)` names no collection.
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.add_collection_type(LIST_INT);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
+    draft
+        .add_collection_type(LIST_INT)
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
     let code = vec![
         Instr::ListNew(marrow_image::CollTypeId::from_index(9)),
         Instr::ListLen,
@@ -189,10 +205,14 @@ fn a_list_append_element_type_mismatch_rejects() {
     // Appending a bool to a `List[int]` is a per-opcode type violation.
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.add_collection_type(LIST_INT);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let flag = draft.intern_bool(true);
+    draft
+        .add_collection_type(LIST_INT)
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let flag = draft.intern_bool(true).expect("a within-domain mint");
     let code = vec![
         Instr::ListNew(marrow_image::CollTypeId::from_index(0)),
         Instr::ConstLoad(flag),
@@ -247,11 +267,15 @@ fn a_well_formed_text_split_join_program_verifies() {
     // and yields the list, join consumes the list and a text and yields a text.
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.add_collection_type(LIST_STR);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let hay = draft.intern_text("a,b,c");
-    let sep = draft.intern_text(",");
+    draft
+        .add_collection_type(LIST_STR)
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let hay = draft.intern_text("a,b,c").expect("a within-domain mint");
+    let sep = draft.intern_text(",").expect("a within-domain mint");
     let code = vec![
         Instr::ConstLoad(hay),
         Instr::ConstLoad(sep),
@@ -283,11 +307,15 @@ fn a_text_split_naming_a_non_string_list_rejects() {
     // `List[string]`; the hostile image is rejected rather than run.
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.add_collection_type(LIST_INT);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let hay = draft.intern_text("a,b");
-    let sep = draft.intern_text(",");
+    draft
+        .add_collection_type(LIST_INT)
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let hay = draft.intern_text("a,b").expect("a within-domain mint");
+    let sep = draft.intern_text(",").expect("a within-domain mint");
     let code = vec![
         Instr::ConstLoad(hay),
         Instr::ConstLoad(sep),
@@ -320,10 +348,14 @@ fn a_text_join_on_a_non_string_list_rejects() {
     // `TextJoin` requires a `List[string]`; a `List[int]` operand is rejected.
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.add_collection_type(LIST_INT);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let sep = draft.intern_text(",");
+    draft
+        .add_collection_type(LIST_INT)
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let sep = draft.intern_text(",").expect("a within-domain mint");
     let code = vec![
         Instr::ListNew(marrow_image::CollTypeId::from_index(0)),
         Instr::ConstLoad(sep),

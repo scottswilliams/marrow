@@ -1208,8 +1208,8 @@ mod decisive_saturation {
     #[test]
     fn an_over_ceiling_span_table_saturates_at_the_decisive_byte() {
         let mut draft = ImageDraft::new();
-        let src = draft.intern_string("s");
-        let name = draft.intern_string("f");
+        let src = draft.intern_string("s").expect("a within-domain mint");
+        let name = draft.intern_string("f").expect("a within-domain mint");
         draft
             .add_function(FunctionDef {
                 name,
@@ -1237,9 +1237,9 @@ mod decisive_saturation {
     #[test]
     fn an_over_ceiling_function_table_saturates_at_the_decisive_byte() {
         let mut draft = ImageDraft::new();
-        let src = draft.intern_string("s");
-        let name = draft.intern_string("f");
-        let zero = draft.intern_int(0);
+        let src = draft.intern_string("s").expect("a within-domain mint");
+        let name = draft.intern_string("f").expect("a within-domain mint");
+        let zero = draft.intern_int(0).expect("a within-domain mint");
         let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 400)
             .chain([Instr::Return])
             .collect();
@@ -1266,7 +1266,9 @@ mod decisive_saturation {
     fn an_over_ceiling_string_pool_saturates_at_the_decisive_byte() {
         let mut draft = ImageDraft::new();
         for index in 0..200 {
-            draft.intern_string(&format!("{index:04}{}", "x".repeat(3_996)));
+            draft
+                .intern_string(&format!("{index:04}{}", "x".repeat(3_996)))
+                .expect("a within-domain mint");
         }
         assert_eq!(
             saturated(|counter| {
@@ -1288,11 +1290,13 @@ mod decisive_saturation {
             }
             level
         };
-        let type_name = draft.intern_string("R");
-        let record = draft.add_record_type(crate::draft::RecordTypeDef {
-            name: type_name,
-            fields: Vec::new(),
-        });
+        let type_name = draft.intern_string("R").expect("a within-domain mint");
+        let record = draft
+            .add_record_type(crate::draft::RecordTypeDef {
+                name: type_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let plan = crate::draft::AdmittedGraphInputPlan::admit(1, 1, 4)
             .expect("a small census is admitted");
         let product = crate::durable_id::LedgerIdBytes::from_bytes([0x0d; 16]);
@@ -1311,7 +1315,7 @@ mod decisive_saturation {
                 }],
             )
             .expect("a well-formed declaration");
-        let root_name = draft.intern_string("r");
+        let root_name = draft.intern_string("r").expect("a within-domain mint");
         draft
             .add_root_occurrence(
                 &plan,

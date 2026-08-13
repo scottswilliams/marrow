@@ -923,25 +923,31 @@ mod index_site_partition {
     fn field_leaf_schema() -> (ImageDraft, PlannedSiteRef, CollTypeId) {
         let mut draft_owner = ImageDraft::new();
         let mut draft = admitted(&mut draft_owner);
-        let counter = draft.intern_string("Counter");
-        let value = draft.intern_string("value");
-        let label = draft.intern_string("label");
-        let record = draft.add_record_type(RecordTypeDef {
-            name: counter,
-            fields: vec![
-                FieldDef {
-                    name: value,
-                    ty: ImageType::scalar(Scalar::Int),
-                    required: true,
-                },
-                FieldDef {
-                    name: label,
-                    ty: ImageType::scalar(Scalar::Text),
-                    required: false,
-                },
-            ],
-        });
-        let root_name = draft.intern_string("counters");
+        let counter = draft
+            .intern_string("Counter")
+            .expect("a within-domain mint");
+        let value = draft.intern_string("value").expect("a within-domain mint");
+        let label = draft.intern_string("label").expect("a within-domain mint");
+        let record = draft
+            .add_record_type(RecordTypeDef {
+                name: counter,
+                fields: vec![
+                    FieldDef {
+                        name: value,
+                        ty: ImageType::scalar(Scalar::Int),
+                        required: true,
+                    },
+                    FieldDef {
+                        name: label,
+                        ty: ImageType::scalar(Scalar::Text),
+                        required: false,
+                    },
+                ],
+            })
+            .expect("a within-domain mint");
+        let root_name = draft
+            .intern_string("counters")
+            .expect("a within-domain mint");
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         let int_value = draft.value_scalar(Scalar::Int);
         let text_value = draft.value_scalar(Scalar::Text);
@@ -1000,16 +1006,20 @@ mod index_site_partition {
             members[0].path(),
             SemanticTarget::FieldLeaf,
         );
-        let list_ty = draft.add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        });
+        let list_ty = draft
+            .add_collection_type(CollectionTypeDef::List {
+                elem: ImageType::scalar(Scalar::Int),
+            })
+            .expect("a within-domain mint");
         draft.commit();
         (draft_owner, value_site, list_ty)
     }
 
     fn install(draft: &mut DraftTxn<'_>, forged: Instr) -> Vec<u8> {
-        let src = draft.intern_string("src/main.mw");
-        let name = draft.intern_string("probe");
+        let src = draft
+            .intern_string("src/main.mw")
+            .expect("a within-domain mint");
+        let name = draft.intern_string("probe").expect("a within-domain mint");
         let code = vec![forged, Instr::Return];
         let spans = (0..code.len())
             .map(|index| SpanEntry {

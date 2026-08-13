@@ -2079,9 +2079,8 @@ pub fn driver(): int {
 #[test]
 fn a_type_parameter_past_the_u16_domain_does_not_alias_ordinal_zero() {
     // The control: the shape at width two is a mismatch.
-    let diagnostics = compile_err(
-        "module main\n\nfn wrap<A, B>(a: A, b: B): B {\n    return a\n}\n",
-    );
+    let diagnostics =
+        compile_err("module main\n\nfn wrap<A, B>(a: A, b: B): B {\n    return a\n}\n");
     assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
 
     // The same shape at width 65,537: the last parameter's position exceeds `u16`.

@@ -34,8 +34,10 @@ fn verify_conv(setup: impl FnOnce(&mut DraftTxn<'_>) -> Vec<Instr>) -> Result<()
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
     let mut code = setup(&mut draft);
     code.push(Instr::ConvString);
     code.push(Instr::Return);
@@ -58,30 +60,32 @@ fn verify_conv(setup: impl FnOnce(&mut DraftTxn<'_>) -> Vec<Instr>) -> Result<()
 
 /// Add a bare two-member `Color` enum, returning its ENUMS index.
 fn color_enum(draft: &mut DraftTxn<'_>) -> EnumId {
-    let name = draft.intern_string("Color");
-    let red = draft.intern_string("red");
-    let green = draft.intern_string("green");
-    draft.add_enum_type(EnumTypeDef {
-        name,
-        variants: vec![
-            VariantDef {
-                name: red,
-                category: false,
-                payload: vec![],
-            },
-            VariantDef {
-                name: green,
-                category: false,
-                payload: vec![],
-            },
-        ],
-    })
+    let name = draft.intern_string("Color").expect("a within-domain mint");
+    let red = draft.intern_string("red").expect("a within-domain mint");
+    let green = draft.intern_string("green").expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![
+                VariantDef {
+                    name: red,
+                    category: false,
+                    payload: vec![],
+                },
+                VariantDef {
+                    name: green,
+                    category: false,
+                    payload: vec![],
+                },
+            ],
+        })
+        .expect("a within-domain mint")
 }
 
 #[test]
 fn conv_string_accepts_a_bare_scalar() {
     let result = verify_conv(|draft| {
-        let n = draft.intern_int(7);
+        let n = draft.intern_int(7).expect("a within-domain mint");
         vec![Instr::ConstLoad(n)]
     });
     assert!(result.is_ok(), "a bare scalar renders: {result:?}");
@@ -102,9 +106,11 @@ fn conv_string_accepts_a_bare_enum() {
 #[test]
 fn conv_string_rejects_a_bare_list() {
     let result = verify_conv(|draft| {
-        let idx = draft.add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        });
+        let idx = draft
+            .add_collection_type(CollectionTypeDef::List {
+                elem: ImageType::scalar(Scalar::Int),
+            })
+            .expect("a within-domain mint");
         vec![Instr::ListNew(idx)]
     });
     assert!(
@@ -116,17 +122,19 @@ fn conv_string_rejects_a_bare_list() {
 #[test]
 fn conv_string_rejects_a_bare_record() {
     let result = verify_conv(|draft| {
-        let name = draft.intern_string("Point");
-        let field = draft.intern_string("x");
-        draft.add_record_type(RecordTypeDef {
-            name,
-            fields: vec![FieldDef {
-                name: field,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            }],
-        });
-        let n = draft.intern_int(1);
+        let name = draft.intern_string("Point").expect("a within-domain mint");
+        let field = draft.intern_string("x").expect("a within-domain mint");
+        draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: vec![FieldDef {
+                    name: field,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                }],
+            })
+            .expect("a within-domain mint");
+        let n = draft.intern_int(1).expect("a within-domain mint");
         vec![
             Instr::ConstLoad(n),
             Instr::RecordNew(marrow_image::TypeId::from_index(0)),
@@ -141,10 +149,12 @@ fn conv_string_rejects_a_bare_record() {
 #[test]
 fn conv_string_rejects_a_bare_map() {
     let result = verify_conv(|draft| {
-        let idx = draft.add_collection_type(CollectionTypeDef::Map {
-            key: ImageType::scalar(Scalar::Text),
-            value: ImageType::scalar(Scalar::Int),
-        });
+        let idx = draft
+            .add_collection_type(CollectionTypeDef::Map {
+                key: ImageType::scalar(Scalar::Text),
+                value: ImageType::scalar(Scalar::Int),
+            })
+            .expect("a within-domain mint");
         vec![Instr::MapNew(idx)]
     });
     assert!(
@@ -157,7 +167,7 @@ fn conv_string_rejects_a_bare_map() {
 fn conv_string_rejects_an_optional_scalar() {
     // `int` wrapped to `int?` is an optional operand — not renderable through ConvString.
     let result = verify_conv(|draft| {
-        let n = draft.intern_int(7);
+        let n = draft.intern_int(7).expect("a within-domain mint");
         vec![Instr::ConstLoad(n), Instr::SomeWrap]
     });
     assert!(

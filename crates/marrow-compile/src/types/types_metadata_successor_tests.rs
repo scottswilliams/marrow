@@ -391,11 +391,15 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let id = mint_ready(&registry, &mut draft, 0);
-    let orphan_name = draft.intern_string("OrphanStruct");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = draft
+        .intern_string("OrphanStruct")
+        .expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry.generics.borrow_mut().type_insts[0].args = vec![GArg::Struct(orphan)];
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
@@ -455,11 +459,15 @@ fn malformed_reserved_option_ready_metadata_is_hidden_from_all_readers() {
     let option = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
         .expect("control Option is Ready");
-    let orphan_name = draft.intern_string("OrphanStruct");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = draft
+        .intern_string("OrphanStruct")
+        .expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry.generics.borrow_mut().type_insts[0].args = vec![GArg::Struct(orphan)];
     let id = TypeInstId::Enum(option);
     let owner_before = owner_snapshot(&registry);
@@ -659,11 +667,15 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         GArg::Enum(option) => option,
         _ => panic!("resource field is Option-shaped"),
     };
-    let orphan_name = draft.intern_string("OrphanStruct");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = draft
+        .intern_string("OrphanStruct")
+        .expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry
         .generics
         .borrow_mut()
@@ -798,11 +810,15 @@ fn reserved_result_valid_length_checks_both_argument_targets() {
                 TypeInstId::Record(_) => None,
             })
             .expect("control Result is Ready");
-        let orphan_name = draft.intern_string("OrphanResultArgument");
-        let orphan = draft.add_record_type(RecordTypeDef {
-            name: orphan_name,
-            fields: Vec::new(),
-        });
+        let orphan_name = draft
+            .intern_string("OrphanResultArgument")
+            .expect("a within-domain mint");
+        let orphan = draft
+            .add_record_type(RecordTypeDef {
+                name: orphan_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let args = if invalid_ok {
             vec![GArg::Struct(orphan), GArg::Scalar(ScalarType::Bool)]
         } else {
@@ -862,7 +878,9 @@ fn seed_collection(
             value: value.image(),
         },
     };
-    let id = draft.add_collection_type(def);
+    let id = draft
+        .add_collection_type(def)
+        .expect("a within-domain mint");
     assert_eq!(id.index() as usize, registry.collections.borrow().len());
     registry.collections.borrow_mut().push(spec);
     id
@@ -874,11 +892,15 @@ fn seed_collection(
 fn orphan_record_draft() -> (DraftTxn<'static>, marrow_image::TypeId) {
     let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
     let mut draft = admitted(draft_owner);
-    let name = draft.intern_string("OrphanRecord");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft
+        .intern_string("OrphanRecord")
+        .expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     (draft, record)
 }
 
@@ -888,11 +910,15 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
     let (group_draft, _) = orphan_record_draft();
 
     let mut enum_draft = fresh_txn();
-    let enum_name = enum_draft.intern_string("OrphanEnum");
-    let enum_id = enum_draft.add_enum_type(EnumTypeDef {
-        name: enum_name,
-        variants: Vec::new(),
-    });
+    let enum_name = enum_draft
+        .intern_string("OrphanEnum")
+        .expect("a within-domain mint");
+    let enum_id = enum_draft
+        .add_enum_type(EnumTypeDef {
+            name: enum_name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
 
     let observations = vec![
         target_case(fresh_txn(), GArg::Nominal(NominalId(0))),
@@ -927,16 +953,24 @@ fn missing_collection_target_is_rejected_before_table_indexing() {
 fn resource_target_fixture() -> (TypeRegistry, DraftTxn<'static>, TypeId, TypeId) {
     let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
     let mut draft = admitted(draft_owner);
-    let group_name = draft.intern_string("Details");
-    let group_id = draft.add_record_type(RecordTypeDef {
-        name: group_name,
-        fields: Vec::new(),
-    });
-    let root_name = draft.intern_string("Resource");
-    let root_id = draft.add_record_type(RecordTypeDef {
-        name: root_name,
-        fields: Vec::new(),
-    });
+    let group_name = draft
+        .intern_string("Details")
+        .expect("a within-domain mint");
+    let group_id = draft
+        .add_record_type(RecordTypeDef {
+            name: group_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
+    let root_name = draft
+        .intern_string("Resource")
+        .expect("a within-domain mint");
+    let root_id = draft
+        .add_record_type(RecordTypeDef {
+            name: root_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let mut registry = test_registry(vec![struct_template("Box", &["T"])]);
     registry.records.push(RecordInfo {
         type_id: root_id,
@@ -958,11 +992,15 @@ fn wrong_family_record_targets_are_rejected_before_ready_publication() {
     let (root_group_registry, root_group_draft, root_group_id, _) = resource_target_fixture();
 
     let mut struct_draft = fresh_txn();
-    let struct_name = struct_draft.intern_string("Point");
-    let struct_id = struct_draft.add_record_type(RecordTypeDef {
-        name: struct_name,
-        fields: Vec::new(),
-    });
+    let struct_name = struct_draft
+        .intern_string("Point")
+        .expect("a within-domain mint");
+    let struct_id = struct_draft
+        .add_record_type(RecordTypeDef {
+            name: struct_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let mut struct_registry = test_registry(vec![struct_template("Box", &["T"])]);
     struct_registry.structs.push(StructInfo {
         type_id: struct_id,
@@ -1014,11 +1052,15 @@ fn in_range_collections_recursively_validate_every_nested_target() {
 
     let list_registry = test_registry(vec![struct_template("Box", &["T"])]);
     let mut list_draft = fresh_txn();
-    let orphan_name = list_draft.intern_string("OrphanStruct");
-    let orphan = list_draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = list_draft
+        .intern_string("OrphanStruct")
+        .expect("a within-domain mint");
+    let orphan = list_draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let list = seed_collection(
         &list_registry,
         &mut list_draft,
@@ -1050,11 +1092,15 @@ fn in_range_collections_recursively_validate_every_nested_target() {
 
     let nested_registry = test_registry(vec![struct_template("Box", &["T"])]);
     let mut nested_draft = fresh_txn();
-    let orphan_name = nested_draft.intern_string("OrphanEnum");
-    let orphan = nested_draft.add_enum_type(EnumTypeDef {
-        name: orphan_name,
-        variants: Vec::new(),
-    });
+    let orphan_name = nested_draft
+        .intern_string("OrphanEnum")
+        .expect("a within-domain mint");
+    let orphan = nested_draft
+        .add_enum_type(EnumTypeDef {
+            name: orphan_name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let inner = seed_collection(
         &nested_registry,
         &mut nested_draft,
@@ -1132,7 +1178,12 @@ fn template_proof_parameter_stays_local_to_the_guard() {
     let mut guard = admitted(&mut draft_owner);
     let proof_draft = &mut guard;
     let id = registry
-        .mint_type_instance(proof_draft, 0, &[GArg::Param(TypeParamIndex::from_position(0))], site())
+        .mint_type_instance(
+            proof_draft,
+            0,
+            &[GArg::Param(TypeParamIndex::from_position(0))],
+            site(),
+        )
         .expect("proof-only parameter is legal");
     let (args, body) = {
         let generics = registry.generics.borrow();
@@ -1152,21 +1203,26 @@ fn template_proof_parameter_stays_local_to_the_guard() {
 
     let mut expected_owner = ImageDraft::new();
     let mut expected = admitted(&mut expected_owner);
-    let box_name = expected.intern_string("Box");
-    let field_name = expected.intern_string("t");
-    let expected_box = expected.add_record_type(RecordTypeDef {
-        name: box_name,
-        fields: vec![FieldDef {
-            name: field_name,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
+    let box_name = expected.intern_string("Box").expect("a within-domain mint");
+    let field_name = expected.intern_string("t").expect("a within-domain mint");
+    let expected_box = expected
+        .add_record_type(RecordTypeDef {
+            name: box_name,
+            fields: vec![FieldDef {
+                name: field_name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
 
     assert_eq!(args, vec![GArg::Param(TypeParamIndex::from_position(0))]);
     assert_eq!(
         body,
-        BodySnapshot::Struct(vec![("t".to_string(), GArg::Param(TypeParamIndex::from_position(0)))])
+        BodySnapshot::Struct(vec![(
+            "t".to_string(),
+            GArg::Param(TypeParamIndex::from_position(0))
+        )])
     );
     assert_eq!(id, TypeInstId::Record(expected_box));
     assert_eq!(draft_fingerprint(proof_draft), draft_fingerprint(&expected));
@@ -1184,11 +1240,13 @@ fn unknown_value_target_is_not_an_ordinary_zero_edge_node() {
     let registry = test_registry(vec![struct_template("Outer", &["T"])]);
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("Orphan");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("Orphan").expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
 
     let rejected = match registry.mint_type_instance(&mut draft, 0, &[GArg::Struct(orphan)], site())
     {
@@ -1203,16 +1261,24 @@ fn unknown_value_target_is_not_an_ordinary_zero_edge_node() {
 fn valid_group_adds_no_value_containment_edge() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let root_name = draft.intern_string("Resource");
-    let root = draft.add_record_type(RecordTypeDef {
-        name: root_name,
-        fields: Vec::new(),
-    });
-    let group_name = draft.intern_string("Details");
-    let group = draft.add_record_type(RecordTypeDef {
-        name: group_name,
-        fields: Vec::new(),
-    });
+    let root_name = draft
+        .intern_string("Resource")
+        .expect("a within-domain mint");
+    let root = draft
+        .add_record_type(RecordTypeDef {
+            name: root_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
+    let group_name = draft
+        .intern_string("Details")
+        .expect("a within-domain mint");
+    let group = draft
+        .add_record_type(RecordTypeDef {
+            name: group_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let mut registry = test_registry(vec![struct_template("Outer", &["T"])]);
     registry.records.push(RecordInfo {
         type_id: root,
@@ -1258,22 +1324,26 @@ fn valid_collection_target_remains_accepted() {
 
     let mut expected_owner = ImageDraft::new();
     let mut expected = admitted(&mut expected_owner);
-    let expected_collection = expected.add_collection_type(CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Int),
-    });
-    let box_name = expected.intern_string("Box");
-    let field_name = expected.intern_string("t");
-    let expected_box = expected.add_record_type(RecordTypeDef {
-        name: box_name,
-        fields: vec![FieldDef {
-            name: field_name,
-            ty: ImageType::Collection {
-                idx: expected_collection,
-                optional: false,
-            },
-            required: true,
-        }],
-    });
+    let expected_collection = expected
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
+    let box_name = expected.intern_string("Box").expect("a within-domain mint");
+    let field_name = expected.intern_string("t").expect("a within-domain mint");
+    let expected_box = expected
+        .add_record_type(RecordTypeDef {
+            name: box_name,
+            fields: vec![FieldDef {
+                name: field_name,
+                ty: ImageType::Collection {
+                    idx: expected_collection,
+                    optional: false,
+                },
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
 
     assert_eq!(collection, expected_collection);
     assert_eq!(id, TypeInstId::Record(expected_box));
@@ -1383,7 +1453,7 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             let _ = param;
             13
         }
-        GenericInvariant::ValueShapeDomain(refusal) => {
+        GenericInvariant::BuilderDomain(refusal) => {
             let _ = refusal;
             22
         }
@@ -1506,11 +1576,15 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     let (struct_draft, record) = orphan_record_draft();
     let (group_draft, _) = orphan_record_draft();
     let mut enum_draft = fresh_txn();
-    let enum_name = enum_draft.intern_string("OrphanEnum");
-    let enum_id = enum_draft.add_enum_type(EnumTypeDef {
-        name: enum_name,
-        variants: Vec::new(),
-    });
+    let enum_name = enum_draft
+        .intern_string("OrphanEnum")
+        .expect("a within-domain mint");
+    let enum_id = enum_draft
+        .add_enum_type(EnumTypeDef {
+            name: enum_name,
+            variants: Vec::new(),
+        })
+        .expect("a within-domain mint");
 
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
@@ -1546,11 +1620,15 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     assert_exact_target_invariant(root_registry, root_draft, GArg::Group(root_id));
 
     let mut struct_draft = fresh_txn();
-    let struct_name = struct_draft.intern_string("Point");
-    let struct_id = struct_draft.add_record_type(RecordTypeDef {
-        name: struct_name,
-        fields: Vec::new(),
-    });
+    let struct_name = struct_draft
+        .intern_string("Point")
+        .expect("a within-domain mint");
+    let struct_id = struct_draft
+        .add_record_type(RecordTypeDef {
+            name: struct_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let mut struct_registry = test_registry(vec![struct_template("Box", &["T"])]);
     struct_registry.structs.push(StructInfo {
         type_id: struct_id,
@@ -1571,18 +1649,25 @@ fn argument_targets_report_exact_private_causes_without_publication() {
         &[GArg::Param(TypeParamIndex::from_position(7))],
         site(),
     ));
-    assert_eq!(invariant, GenericInvariant::TypeArgumentParameter(TypeParamIndex::from_position(7)));
+    assert_eq!(
+        invariant,
+        GenericInvariant::TypeArgumentParameter(TypeParamIndex::from_position(7))
+    );
     assert_eq!(owner_snapshot(&registry), owner_before);
     assert_eq!(draft_fingerprint(&draft), draft_before);
 
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let orphan_name = draft.intern_string("NestedOrphan");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = draft
+        .intern_string("NestedOrphan")
+        .expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let collection = seed_collection(
         &registry,
         &mut draft,
@@ -1649,11 +1734,15 @@ fn ready_readers_preserve_the_exact_argument_invariant() {
     let option = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
         .expect("control Option is Ready");
-    let orphan_name = draft.intern_string("ReaderOrphan");
-    let orphan = draft.add_record_type(RecordTypeDef {
-        name: orphan_name,
-        fields: Vec::new(),
-    });
+    let orphan_name = draft
+        .intern_string("ReaderOrphan")
+        .expect("a within-domain mint");
+    let orphan = draft
+        .add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     registry
         .generics
         .borrow_mut()
@@ -1711,11 +1800,15 @@ fn ready_readers_preserve_the_exact_argument_invariant() {
                 TypeInstId::Record(_) => None,
             })
             .expect("control Result is Ready");
-        let orphan_name = draft.intern_string("ResultReaderOrphan");
-        let orphan = draft.add_record_type(RecordTypeDef {
-            name: orphan_name,
-            fields: Vec::new(),
-        });
+        let orphan_name = draft
+            .intern_string("ResultReaderOrphan")
+            .expect("a within-domain mint");
+        let orphan = draft
+            .add_record_type(RecordTypeDef {
+                name: orphan_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let args = if invalid_ok {
             vec![GArg::Struct(orphan), GArg::Scalar(ScalarType::Bool)]
         } else {

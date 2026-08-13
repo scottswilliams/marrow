@@ -2114,7 +2114,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     CollSpec::Map { .. } => Instr::MapLen,
                 };
                 self.push(len, span);
-                let zero = self.draft.intern_int(0);
+                let zero = self.checked_mint(|draft| draft.intern_int(0))?;
                 self.push(Instr::ConstLoad(zero), span);
                 self.push(Instr::EqInt, span);
                 Some(LTy::bare_scalar(ScalarType::Bool))
@@ -2517,7 +2517,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return None;
         };
         let bytes = decoded.as_bytes();
-        let const_id = match scalar {
+        let minted = match scalar {
             ScalarType::Date => match marrow_temporal::parse_date(bytes) {
                 Some(days) => self.draft.intern_date(days),
                 None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
@@ -2536,6 +2536,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             )]
             _ => unreachable!("caller passes only a temporal scalar"),
         };
+        let const_id = self.checked_mint(|_| minted)?;
         self.push(Instr::ConstLoad(const_id), span);
         Some(LTy::bare_scalar(scalar))
     }
@@ -2734,7 +2735,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(unsupported(self.file, *lit_span, "this string literal"));
             return None;
         };
-        let const_id = self.draft.intern_text(&decoded);
+        let const_id = self.checked_mint(|draft| draft.intern_text(&decoded))?;
         self.push(Instr::Unreachable(const_id), span);
         Some(CallResult::Diverges)
     }
@@ -2779,7 +2780,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.fail(unsupported(self.file, *lit_span, "this string literal"));
             return None;
         };
-        let const_id = self.draft.intern_text(&decoded);
+        let const_id = self.checked_mint(|draft| draft.intern_text(&decoded))?;
         self.push(Instr::Todo(const_id), span);
         Some(CallResult::Diverges)
     }

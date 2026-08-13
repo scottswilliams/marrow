@@ -11,11 +11,10 @@ use marrow_image::bounds::{
     MAX_ADMITTED_ROOT_OCCURRENCES, MAX_DURABLE_DEPTH, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
 };
 use marrow_image::{
-    DraftStateError,
-    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
-    DurableContractGraph, DurableGraphInputRefusal, DurableIndexComponent, DurableIndexShape,
-    ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry, TypeId,
+    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DraftStateError,
+    DraftTxn, DurableContractGraph, DurableGraphInputRefusal, DurableIndexComponent,
+    DurableIndexShape, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
+    KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry, TypeId,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -62,13 +61,15 @@ fn encode_root(
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let members = members(&mut draft);
-    let type_name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields: Vec::new(),
-    });
+    let type_name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let root_name = draft.intern_string("r");
+    let root_name = draft.intern_string("r").expect("a within-domain mint");
     draft
         .declare_product(
             &admitted_plan(),
@@ -92,9 +93,11 @@ fn encode_root(
             },
         )
         .expect("the Product is declared");
-    let src = draft.intern_string("src/main.mw");
-    let main_name = draft.intern_string("main");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let main_name = draft.intern_string("main").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len())
         .map(|index| SpanEntry {
@@ -292,11 +295,13 @@ fn a_command_vector_wider_than_its_budget_appends_no_row() {
     let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let value = draft.value_scalar(Scalar::Int);
     let two = vec![
         DeclarationMemberDef {
@@ -343,11 +348,13 @@ fn a_second_distinct_product_past_its_plan_budget_is_refused_and_appends_no_row(
 
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let value = draft.value_scalar(Scalar::Int);
     let one_field = |id| {
         vec![DeclarationMemberDef {
@@ -426,11 +433,13 @@ fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
 
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let value = draft.value_scalar(Scalar::Int);
     let members = vec![DeclarationMemberDef {
         parent: None,
@@ -443,8 +452,8 @@ fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
     draft
         .declare_product(&plan, product, record, members.clone())
         .expect("one Product fits the budget");
-    let first_name = draft.intern_string("a");
-    let second_name = draft.intern_string("b");
+    let first_name = draft.intern_string("a").expect("a within-domain mint");
+    let second_name = draft.intern_string("b").expect("a within-domain mint");
     draft
         .add_root_occurrence(
             &plan,
@@ -538,11 +547,13 @@ const OVER_DEEP_STEPS: usize = 8_000;
 fn a_draft_refuses_an_over_deep_command_vector() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
 
     assert!(
         draft
@@ -593,11 +604,13 @@ fn the_member_nesting_bound_admits_its_own_depth_and_refuses_one_more() {
     for (depth, within_bound) in [(MAX_DURABLE_DEPTH, true), (MAX_DURABLE_DEPTH + 1, false)] {
         let mut draft_owner = ImageDraft::new();
         let mut draft = admitted(&mut draft_owner);
-        let name = draft.intern_string("R");
-        let record = draft.add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        });
+        let name = draft.intern_string("R").expect("a within-domain mint");
+        let record = draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         assert_eq!(
             draft
                 .declare_product(

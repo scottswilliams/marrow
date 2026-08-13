@@ -183,12 +183,11 @@ impl AdmittedGraphInputPlan {
 /// The wide-ordinal issuance check: the carrier domain is the `u32` the id newtypes
 /// hold, not a public policy maximum — an over-policy table still mints the N+1 id
 /// (the nonblocking provisional-commit law) and the image is refused at the encode
-/// fence by the policy walk. A table whose length leaves the `u32` domain cannot
-/// exist in addressable memory before the process fails to allocate, so the checked
-/// conversion is total over every constructible draft; it is spelled checked rather
-/// than cast so the issuance domain is stated where the id is minted.
-pub(crate) fn wide_ordinal(len: usize) -> u32 {
-    u32::try_from(len).expect("an owned table's row count is within the wide u32 ordinal domain")
+/// fence by the policy walk. A caller at the `u32` boundary receives the closed
+/// carrier-domain refusal before any owner mutates; the production compiler's
+/// envelope proof makes that arm unreachable and maps it to a compiler invariant.
+pub(crate) fn wide_ordinal(len: usize) -> Result<u32, DraftStateError> {
+    u32::try_from(len).map_err(|_| DraftStateError::CarrierDomain)
 }
 
 /// A logical string-pool id, stable across the sort the encoder performs.
@@ -895,43 +894,46 @@ impl<'d> DraftTxn<'d> {
         self.armed = false;
     }
 
-    pub fn intern_string(&mut self, text: &str) -> StrId {
+    pub fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
         self.draft.intern_string(text)
     }
 
-    pub fn intern_int(&mut self, value: i64) -> ConstId {
+    pub fn intern_int(&mut self, value: i64) -> Result<ConstId, DraftStateError> {
         self.draft.intern_int(value)
     }
 
-    pub fn intern_bool(&mut self, value: bool) -> ConstId {
+    pub fn intern_bool(&mut self, value: bool) -> Result<ConstId, DraftStateError> {
         self.draft.intern_bool(value)
     }
 
-    pub fn intern_text(&mut self, text: &str) -> ConstId {
+    pub fn intern_text(&mut self, text: &str) -> Result<ConstId, DraftStateError> {
         self.draft.intern_text(text)
     }
 
-    pub fn intern_date(&mut self, days: i32) -> ConstId {
+    pub fn intern_date(&mut self, days: i32) -> Result<ConstId, DraftStateError> {
         self.draft.intern_date(days)
     }
 
-    pub fn intern_instant(&mut self, nanos: i128) -> ConstId {
+    pub fn intern_instant(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
         self.draft.intern_instant(nanos)
     }
 
-    pub fn intern_duration(&mut self, nanos: i128) -> ConstId {
+    pub fn intern_duration(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
         self.draft.intern_duration(nanos)
     }
 
-    pub fn add_record_type(&mut self, def: RecordTypeDef) -> TypeId {
+    pub fn add_record_type(&mut self, def: RecordTypeDef) -> Result<TypeId, DraftStateError> {
         self.draft.add_record_type(def)
     }
 
-    pub fn add_enum_type(&mut self, def: EnumTypeDef) -> EnumId {
+    pub fn add_enum_type(&mut self, def: EnumTypeDef) -> Result<EnumId, DraftStateError> {
         self.draft.add_enum_type(def)
     }
 
-    pub fn add_collection_type(&mut self, def: CollectionTypeDef) -> CollTypeId {
+    pub fn add_collection_type(
+        &mut self,
+        def: CollectionTypeDef,
+    ) -> Result<CollTypeId, DraftStateError> {
         self.draft.add_collection_type(def)
     }
 
@@ -1225,12 +1227,14 @@ impl ImageDraft {
 
     /// Intern a string, returning its logical id. Repeated interning of the same
     /// text returns the same id — the duplicate hit mutates nothing, including at a
-    /// full table, so dedup runs before any policy observation.
-    pub(crate) fn intern_string(&mut self, text: &str) -> StrId {
+    /// full table, so dedup runs before any policy observation. The mint is checked:
+    /// a table at the `u32` carrier boundary is the closed carrier-domain refusal
+    /// before any owner mutates.
+    pub(crate) fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
         if let Some(&id) = self.string_index.get(text) {
-            return id;
+            return Ok(id);
         }
-        let id = StrId(wide_ordinal(self.strings.len()));
+        let id = StrId(wide_ordinal(self.strings.len())?);
         if text.len() > bounds::MAX_STRING_BYTES {
             self.ledger.observe(
                 TablePolicyKind::StringBytes,
@@ -1245,45 +1249,63 @@ impl ImageDraft {
                 CurrentValidationOccurrence::at_row(bounds::MAX_STRINGS as u32),
             );
         }
-        id
+        Ok(id)
     }
 
-    pub(crate) fn intern_int(&mut self, value: i64) -> ConstId {
+    pub(crate) fn intern_int(&mut self, value: i64) -> Result<ConstId, DraftStateError> {
         self.intern_const(ConstValue::Int(value))
     }
 
-    pub(crate) fn intern_bool(&mut self, value: bool) -> ConstId {
+    pub(crate) fn intern_bool(&mut self, value: bool) -> Result<ConstId, DraftStateError> {
         self.intern_const(ConstValue::Bool(value))
     }
 
     /// Intern a text constant, interning its backing string as needed: the whole
     /// compound — string row, constant row, both index entries, and every newly
-    /// crossed policy kind — lands as one unit.
-    pub(crate) fn intern_text(&mut self, text: &str) -> ConstId {
-        let str_id = self.intern_string(text);
+    /// crossed policy kind — lands as one unit, and the whole compound's coupled
+    /// preparation (both dedup lookups and both carrier domains) is read-only and
+    /// complete before the first insert, so a refusal can never leave half the
+    /// compound behind.
+    pub(crate) fn intern_text(&mut self, text: &str) -> Result<ConstId, DraftStateError> {
+        match self.string_index.get(text).copied() {
+            Some(str_id) => {
+                if let Some(&id) = self.const_index.get(&ConstValue::Text(str_id)) {
+                    return Ok(id);
+                }
+                wide_ordinal(self.consts.len())?;
+            }
+            None => {
+                // A fresh string implies a fresh `Text` constant — its `StrId` does
+                // not exist yet, so no constant can hold it — and both mints must be
+                // inside their carrier domains before either lands.
+                wide_ordinal(self.strings.len())?;
+                wide_ordinal(self.consts.len())?;
+            }
+        }
+        let str_id = self.intern_string(text)?;
         self.intern_const(ConstValue::Text(str_id))
     }
 
     /// Intern a `date` constant (days since the Unix epoch).
-    pub(crate) fn intern_date(&mut self, days: i32) -> ConstId {
+    pub(crate) fn intern_date(&mut self, days: i32) -> Result<ConstId, DraftStateError> {
         self.intern_const(ConstValue::Date(days))
     }
 
     /// Intern an `instant` constant (signed nanoseconds since the epoch).
-    pub(crate) fn intern_instant(&mut self, nanos: i128) -> ConstId {
+    pub(crate) fn intern_instant(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
         self.intern_const(ConstValue::Instant(nanos))
     }
 
     /// Intern a `duration` constant (signed nanoseconds).
-    pub(crate) fn intern_duration(&mut self, nanos: i128) -> ConstId {
+    pub(crate) fn intern_duration(&mut self, nanos: i128) -> Result<ConstId, DraftStateError> {
         self.intern_const(ConstValue::Duration(nanos))
     }
 
-    fn intern_const(&mut self, value: ConstValue) -> ConstId {
+    fn intern_const(&mut self, value: ConstValue) -> Result<ConstId, DraftStateError> {
         if let Some(&id) = self.const_index.get(&value) {
-            return id;
+            return Ok(id);
         }
-        let id = ConstId(wide_ordinal(self.consts.len()));
+        let id = ConstId(wide_ordinal(self.consts.len())?);
         self.consts.push(value);
         self.const_index.insert(value, id);
         if self.consts.len() > bounds::MAX_CONSTS {
@@ -1292,11 +1314,14 @@ impl ImageDraft {
                 CurrentValidationOccurrence::at_row(bounds::MAX_CONSTS as u32),
             );
         }
-        id
+        Ok(id)
     }
 
-    pub(crate) fn add_record_type(&mut self, def: RecordTypeDef) -> TypeId {
-        let id = TypeId(wide_ordinal(self.types.len()));
+    pub(crate) fn add_record_type(
+        &mut self,
+        def: RecordTypeDef,
+    ) -> Result<TypeId, DraftStateError> {
+        let id = TypeId(wide_ordinal(self.types.len())?);
         self.types.push(def);
         self.types_fill.push(FillState::Unfilled);
         if self.types.len() > bounds::MAX_TYPES {
@@ -1305,11 +1330,11 @@ impl ImageDraft {
                 CurrentValidationOccurrence::at_row(bounds::MAX_TYPES as u32),
             );
         }
-        id
+        Ok(id)
     }
 
-    pub(crate) fn add_enum_type(&mut self, def: EnumTypeDef) -> EnumId {
-        let id = EnumId(wide_ordinal(self.enums.len()));
+    pub(crate) fn add_enum_type(&mut self, def: EnumTypeDef) -> Result<EnumId, DraftStateError> {
+        let id = EnumId(wide_ordinal(self.enums.len())?);
         self.enums.push(def);
         self.enums_fill.push(FillState::Unfilled);
         if self.enums.len() > bounds::MAX_ENUMS {
@@ -1318,7 +1343,7 @@ impl ImageDraft {
                 CurrentValidationOccurrence::at_row(bounds::MAX_ENUMS as u32),
             );
         }
-        id
+        Ok(id)
     }
 
     /// The number of collection types already appended to this draft.
@@ -1336,8 +1361,11 @@ impl ImageDraft {
     /// identity and dedups by the *source* element/key/value types (so `List[Age]`
     /// and `List[int]` stay distinct even though a nominal element erases to the same
     /// image `int`), minting one row here per distinct source instantiation.
-    pub(crate) fn add_collection_type(&mut self, def: CollectionTypeDef) -> CollTypeId {
-        let id = CollTypeId(wide_ordinal(self.colls.len()));
+    pub(crate) fn add_collection_type(
+        &mut self,
+        def: CollectionTypeDef,
+    ) -> Result<CollTypeId, DraftStateError> {
+        let id = CollTypeId(wide_ordinal(self.colls.len())?);
         self.colls.push(def);
         if self.colls.len() > bounds::MAX_COLLECTIONS {
             self.ledger.observe(
@@ -1345,7 +1373,7 @@ impl ImageDraft {
                 CurrentValidationOccurrence::at_row(bounds::MAX_COLLECTIONS as u32),
             );
         }
-        id
+        Ok(id)
     }
 
     /// Admit one durable **Product declaration**: its canonical member/value graph and
@@ -2015,7 +2043,7 @@ mod ledger_corruption_tests {
             .begin_transaction(owner.savepoint())
             .expect("a fresh savepoint admits");
         for value in 0..=(crate::bounds::MAX_CONSTS as i64) {
-            txn.intern_int(value);
+            txn.intern_int(value).expect("a within-domain mint");
         }
         txn.commit();
         owner
@@ -2077,16 +2105,20 @@ mod collection_count_tests {
         let mut draft = ImageDraft::new();
         assert_eq!(draft.collection_type_count(), 0);
 
-        let list = draft.add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        });
+        let list = draft
+            .add_collection_type(CollectionTypeDef::List {
+                elem: ImageType::scalar(Scalar::Int),
+            })
+            .expect("a within-domain mint");
         assert_eq!(list.index(), 0);
         assert_eq!(draft.collection_type_count(), 1);
 
-        let map = draft.add_collection_type(CollectionTypeDef::Map {
-            key: ImageType::scalar(Scalar::Text),
-            value: ImageType::scalar(Scalar::Bool),
-        });
+        let map = draft
+            .add_collection_type(CollectionTypeDef::Map {
+                key: ImageType::scalar(Scalar::Text),
+                value: ImageType::scalar(Scalar::Bool),
+            })
+            .expect("a within-domain mint");
         assert_eq!(map.index(), 1);
         assert_eq!(draft.collection_type_count(), 2);
     }
@@ -2125,7 +2157,7 @@ mod site_binding_tests {
     fn one_root() -> (ImageDraft, super::AdmittedRoot) {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
-        let name = draft.intern_string("r");
+        let name = draft.intern_string("r").expect("a within-domain mint");
         let value = draft.value_shapes_mut().scalar(Scalar::Int);
         draft
             .declare_product(
@@ -2230,7 +2262,7 @@ mod site_binding_tests {
             let mut proof = draft
                 .begin_transaction(draft.savepoint())
                 .expect("a fresh savepoint admits");
-            let name = proof.intern_string("r");
+            let name = proof.intern_string("r").expect("a within-domain mint");
             let value = proof.value_scalar(Scalar::Int);
             proof
                 .declare_product(
@@ -2277,7 +2309,7 @@ mod site_binding_tests {
 
         // The same ordinals are re-minted deterministically; the handle must still not
         // authenticate the replacement.
-        let name = draft.intern_string("r");
+        let name = draft.intern_string("r").expect("a within-domain mint");
         let value = draft.value_shapes_mut().scalar(Scalar::Int);
         draft
             .declare_product(
@@ -2324,7 +2356,7 @@ mod site_binding_tests {
 
         let mut draft = ImageDraft::new();
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
-        let name = draft.intern_string("r");
+        let name = draft.intern_string("r").expect("a within-domain mint");
         let value = draft.value_shapes_mut().scalar(Scalar::Int);
         draft
             .declare_product(
@@ -2440,9 +2472,9 @@ mod row_access_tests {
     #[test]
     fn the_borrowed_export_and_test_rows_mirror_what_was_added() {
         let mut draft = ImageDraft::new();
-        let source = draft.intern_string("s");
-        let alpha = draft.intern_string("alpha");
-        let zeta = draft.intern_string("zeta");
+        let source = draft.intern_string("s").expect("a within-domain mint");
+        let alpha = draft.intern_string("alpha").expect("a within-domain mint");
+        let zeta = draft.intern_string("zeta").expect("a within-domain mint");
         let mut funcs = Vec::new();
         for name in [zeta, alpha] {
             funcs.push(
@@ -2486,9 +2518,9 @@ mod row_access_tests {
     #[test]
     fn the_test_entry_permutation_orders_rows_by_remapped_name() {
         let mut draft = ImageDraft::new();
-        let source = draft.intern_string("s");
-        let zeta = draft.intern_string("zeta");
-        let alpha = draft.intern_string("alpha");
+        let source = draft.intern_string("s").expect("a within-domain mint");
+        let zeta = draft.intern_string("zeta").expect("a within-domain mint");
+        let alpha = draft.intern_string("alpha").expect("a within-domain mint");
         for name in [zeta, alpha] {
             let func = draft
                 .add_function(FunctionDef {

@@ -36,9 +36,11 @@ fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
 fn storeless_base() -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let main = draft
         .add_function(FunctionDef {
             name,
@@ -82,9 +84,13 @@ fn string_corpus(target: usize) -> ImageDraft {
     }
     let mut draft = admitted(&mut owner);
     for index in 0..full_rows {
-        draft.intern_string(&format!("{index:04}{}", "x".repeat(FULL - 4)));
+        draft
+            .intern_string(&format!("{index:04}{}", "x".repeat(FULL - 4)))
+            .expect("a within-domain mint");
     }
-    draft.intern_string(&format!("rem-{}", "y".repeat(delta - 2 - 4)));
+    draft
+        .intern_string(&format!("rem-{}", "y".repeat(delta - 2 - 4)))
+        .expect("a within-domain mint");
     draft.commit();
     owner
 }
@@ -125,12 +131,20 @@ fn the_full_function_partition_is_refused_by_measurement() {
     let started = Instant::now();
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let generic_src = draft.intern_string("src/generic.mw");
-    let mono_src = draft.intern_string("src/main.mw");
-    let test_src = draft.intern_string("src/tests.mw");
-    let g_name = draft.intern_string("instance");
-    let m_name = draft.intern_string("mono");
-    let zero = draft.intern_int(0);
+    let generic_src = draft
+        .intern_string("src/generic.mw")
+        .expect("a within-domain mint");
+    let mono_src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let test_src = draft
+        .intern_string("src/tests.mw")
+        .expect("a within-domain mint");
+    let g_name = draft
+        .intern_string("instance")
+        .expect("a within-domain mint");
+    let m_name = draft.intern_string("mono").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 64)
         .chain([Instr::Return])
         .collect();
@@ -153,7 +167,9 @@ fn the_full_function_partition_is_refused_by_measurement() {
         }
     }
     for index in 0..tests {
-        let name = draft.intern_string(&format!("t{index}"));
+        let name = draft
+            .intern_string(&format!("t{index}"))
+            .expect("a within-domain mint");
         let func = draft
             .add_function(FunctionDef {
                 name,
@@ -183,10 +199,14 @@ fn the_full_function_partition_is_refused_by_measurement() {
 fn the_span_heavy_draft_is_refused_by_measurement() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     for index in 0..2 {
-        let name = draft.intern_string(&format!("f{index}"));
+        let name = draft
+            .intern_string(&format!("f{index}"))
+            .expect("a within-domain mint");
         draft
             .add_function(FunctionDef {
                 name,
@@ -217,9 +237,11 @@ fn the_span_heavy_draft_is_refused_by_measurement() {
 fn span_count_draft(count: usize) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let main = draft
         .add_function(FunctionDef {
             name,
@@ -273,15 +295,19 @@ fn the_compact_expansion_regression_is_refused_decisively() {
     let value = {
         let mut level = draft.value_scalar(Scalar::Int);
         for _ in 0..31 {
-            level = draft.value_struct(vec![level; 64]).expect("a within-bounds shape appends");
+            level = draft
+                .value_struct(vec![level; 64])
+                .expect("a within-bounds shape appends");
         }
         level
     };
-    let type_name = draft.intern_string("R");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: type_name,
-        fields: Vec::new(),
-    });
+    let type_name = draft.intern_string("R").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     draft
         .declare_product(
             &admitted_plan(),
@@ -297,7 +323,7 @@ fn the_compact_expansion_regression_is_refused_decisively() {
             }],
         )
         .expect("a well-formed declaration");
-    let root_name = draft.intern_string("r");
+    let root_name = draft.intern_string("r").expect("a within-domain mint");
     draft
         .add_root_occurrence(
             &admitted_plan(),
@@ -313,9 +339,11 @@ fn the_compact_expansion_regression_is_refused_decisively() {
             },
         )
         .expect("the Product is declared");
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let main = draft
         .add_function(FunctionDef {
             name,
@@ -343,26 +371,36 @@ fn the_compact_expansion_regression_is_refused_decisively() {
 fn linear_draft(scale: usize) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 32)
         .chain([Instr::Return])
         .collect();
     for index in 0..64 * scale {
-        let name = draft.intern_string(&format!("ty{index}"));
-        let field = draft.intern_string(&format!("fy{index}"));
-        draft.add_record_type(RecordTypeDef {
-            name,
-            fields: vec![marrow_image::FieldDef {
-                name: field,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            }],
-        });
+        let name = draft
+            .intern_string(&format!("ty{index}"))
+            .expect("a within-domain mint");
+        let field = draft
+            .intern_string(&format!("fy{index}"))
+            .expect("a within-domain mint");
+        draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: vec![marrow_image::FieldDef {
+                    name: field,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                }],
+            })
+            .expect("a within-domain mint");
     }
     let mut main = None;
     for index in 0..96 * scale {
-        let name = draft.intern_string(&format!("f{index}"));
+        let name = draft
+            .intern_string(&format!("f{index}"))
+            .expect("a within-domain mint");
         let func = draft
             .add_function(FunctionDef {
                 name,

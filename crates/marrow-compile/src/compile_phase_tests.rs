@@ -139,7 +139,7 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         GenericInvariant::TypeArgumentOrderViolation { .. } => "type argument order violation",
         GenericInvariant::TypeArgumentTargetMissing(_) => "type argument target missing",
         GenericInvariant::TypeArgumentParameter(_) => "concrete type argument is a parameter",
-        GenericInvariant::ValueShapeDomain(_) => "value shape outside the builder domain",
+        GenericInvariant::BuilderDomain(_) => "value shape outside the builder domain",
         GenericInvariant::CollectionIndexMismatch { kind, .. } => match kind {
             CollectionKind::List => "List owner mismatch",
             CollectionKind::Map => "Map owner mismatch",
@@ -661,8 +661,12 @@ fn image_build_errors_classify_without_a_fabricated_location() {
 fn a_hostile_image_draft_retains_the_direct_too_many_locals_error() {
     let mut draft_owner = marrow_image::ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("hostile");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft
+        .intern_string("hostile")
+        .expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let Ok(local_count) = u16::try_from(marrow_image::bounds::MAX_LOCALS + 1) else {
         panic!("the current image local bound has a representable hostile successor")
     };

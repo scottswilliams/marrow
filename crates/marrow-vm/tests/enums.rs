@@ -15,33 +15,35 @@ use marrow_vm::{Value, run};
 /// An enum `Shape { dot, circle(int), rect(int, int) }` interned into `draft`,
 /// returning its enum index.
 fn shape_enum(draft: &mut DraftTxn<'_>) -> marrow_image::EnumId {
-    let name = draft.intern_string("Shape");
-    let dot = draft.intern_string("dot");
-    let circle = draft.intern_string("circle");
-    let rect = draft.intern_string("rect");
-    draft.add_enum_type(EnumTypeDef {
-        name,
-        variants: vec![
-            VariantDef {
-                name: dot,
-                category: false,
-                payload: vec![],
-            },
-            VariantDef {
-                name: circle,
-                category: false,
-                payload: vec![ImageType::scalar(Scalar::Int)],
-            },
-            VariantDef {
-                name: rect,
-                category: false,
-                payload: vec![
-                    ImageType::scalar(Scalar::Int),
-                    ImageType::scalar(Scalar::Int),
-                ],
-            },
-        ],
-    })
+    let name = draft.intern_string("Shape").expect("a within-domain mint");
+    let dot = draft.intern_string("dot").expect("a within-domain mint");
+    let circle = draft.intern_string("circle").expect("a within-domain mint");
+    let rect = draft.intern_string("rect").expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![
+                VariantDef {
+                    name: dot,
+                    category: false,
+                    payload: vec![],
+                },
+                VariantDef {
+                    name: circle,
+                    category: false,
+                    payload: vec![ImageType::scalar(Scalar::Int)],
+                },
+                VariantDef {
+                    name: rect,
+                    category: false,
+                    payload: vec![
+                        ImageType::scalar(Scalar::Int),
+                        ImageType::scalar(Scalar::Int),
+                    ],
+                },
+            ],
+        })
+        .expect("a within-domain mint")
 }
 
 fn build_and_run(
@@ -51,8 +53,10 @@ fn build_and_run(
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let name = draft.intern_string("f");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let (ret, code) = build(&mut draft);
     let spans = (0..code.len())
         .map(|index| SpanEntry {
@@ -87,7 +91,7 @@ fn construct_then_read_the_variant_tag() {
     // Shape::circle(2) then EnumTag == 1 (circle is variant index 1).
     let result = build_and_run(|draft| {
         let shape = shape_enum(draft);
-        let two = draft.intern_int(2);
+        let two = draft.intern_int(2).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -109,8 +113,8 @@ fn read_a_payload_leaf() {
     // Shape::rect(3, 5) then EnumPayloadGet(rect, field 1) == 5.
     let result = build_and_run(|draft| {
         let shape = shape_enum(draft);
-        let three = draft.intern_int(3);
-        let five = draft.intern_int(5);
+        let three = draft.intern_int(3).expect("a within-domain mint");
+        let five = draft.intern_int(5).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -136,7 +140,7 @@ fn equality_compares_variant_and_payload() {
     // Shape::circle(2) == Shape::circle(2) is true.
     let result = build_and_run(|draft| {
         let shape = shape_enum(draft);
-        let two = draft.intern_int(2);
+        let two = draft.intern_int(2).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Bool),
             vec![
@@ -160,8 +164,8 @@ fn equality_compares_variant_and_payload() {
     // Different payloads compare unequal.
     let result = build_and_run(|draft| {
         let shape = shape_enum(draft);
-        let two = draft.intern_int(2);
-        let three = draft.intern_int(3);
+        let two = draft.intern_int(2).expect("a within-domain mint");
+        let three = draft.intern_int(3).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Bool),
             vec![

@@ -69,36 +69,44 @@ fn two_root_branch_draft(
 ) -> (PlannedSiteRef, marrow_image::CollTypeId, PlannedSiteRef) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
-    let book = draft.intern_string("Book");
-    let title = draft.intern_string("title");
-    let subtitle = draft.intern_string("subtitle");
-    let a_record = draft.add_record_type(RecordTypeDef {
-        name: book,
-        fields: vec![
-            FieldDef {
-                name: title,
+    let book = draft.intern_string("Book").expect("a within-domain mint");
+    let title = draft.intern_string("title").expect("a within-domain mint");
+    let subtitle = draft
+        .intern_string("subtitle")
+        .expect("a within-domain mint");
+    let a_record = draft
+        .add_record_type(RecordTypeDef {
+            name: book,
+            fields: vec![
+                FieldDef {
+                    name: title,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
+                },
+                FieldDef {
+                    name: subtitle,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: false,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let notes = draft.intern_string("notes").expect("a within-domain mint");
+    let notes_qualified = draft
+        .intern_string("Book.notes")
+        .expect("a within-domain mint");
+    let notes_text = draft.intern_string("text").expect("a within-domain mint");
+    let notes_record = draft
+        .add_record_type(RecordTypeDef {
+            name: notes_qualified,
+            fields: vec![FieldDef {
+                name: notes_text,
                 ty: ImageType::scalar(Scalar::Text),
                 required: true,
-            },
-            FieldDef {
-                name: subtitle,
-                ty: ImageType::scalar(Scalar::Text),
-                required: false,
-            },
-        ],
-    });
-    let notes = draft.intern_string("notes");
-    let notes_qualified = draft.intern_string("Book.notes");
-    let notes_text = draft.intern_string("text");
-    let notes_record = draft.add_record_type(RecordTypeDef {
-        name: notes_qualified,
-        fields: vec![FieldDef {
-            name: notes_text,
-            ty: ImageType::scalar(Scalar::Text),
-            required: true,
-        }],
-    });
-    let a_root = draft.intern_string("books");
+            }],
+        })
+        .expect("a within-domain mint");
+    let a_root = draft.intern_string("books").expect("a within-domain mint");
     let text_value = draft.value_scalar(Scalar::Text);
     // Commands 0/1/2 are the Product's direct members; command 3 nests under the branch.
     draft
@@ -162,17 +170,21 @@ fn two_root_branch_draft(
         )
         .expect("the Product is declared");
 
-    let tally = draft.intern_string("Tally");
-    let count = draft.intern_string("count");
-    let b_record = draft.add_record_type(RecordTypeDef {
-        name: tally,
-        fields: vec![FieldDef {
-            name: count,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
-    let b_root = draft.intern_string("tallies");
+    let tally = draft.intern_string("Tally").expect("a within-domain mint");
+    let count = draft.intern_string("count").expect("a within-domain mint");
+    let b_record = draft
+        .add_record_type(RecordTypeDef {
+            name: tally,
+            fields: vec![FieldDef {
+                name: count,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
+    let b_root = draft
+        .intern_string("tallies")
+        .expect("a within-domain mint");
     let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
@@ -216,9 +228,11 @@ fn two_root_branch_draft(
         members[2].path(),
         SemanticTarget::WholePayload,
     );
-    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Text),
-    });
+    let list_ty = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .expect("a within-domain mint");
     let subtitle_site = site(
         draft,
         a.occurrence(),
@@ -229,8 +243,10 @@ fn two_root_branch_draft(
 }
 
 fn build_export(draft: &mut DraftTxn<'_>, code: Vec<Instr>) {
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("f").expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -338,8 +354,10 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
         Instr::Pop,
         Instr::Return,
     ];
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("f").expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -370,7 +388,7 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let (_branch_site, _list_ty, subtitle_site) = two_root_branch_draft(&mut draft);
-    let value = draft.intern_text("x");
+    let value = draft.intern_text("x").expect("a within-domain mint");
     // Mint Id(^tallies, k) into slot 1, then name slot 1 as the strict set's key-path over a
     // ^books field site. Both roots key on int, so only the identity's root distinguishes them.
     let code = vec![
@@ -389,8 +407,10 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
         },
         Instr::Return,
     ];
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("f").expect("a within-domain mint");
     let func = draft
         .add_function(FunctionDef {
             name,

@@ -64,16 +64,18 @@ fn member_id(n: usize) -> LedgerIdBytes {
 fn roots_corpus(roots: usize) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let resource = draft.intern_string("R");
-    let field = draft.intern_string("v");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: resource,
-        fields: vec![FieldDef {
-            name: field,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
+    let resource = draft.intern_string("R").expect("a within-domain mint");
+    let field = draft.intern_string("v").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: resource,
+            fields: vec![FieldDef {
+                name: field,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let value = draft.value_scalar(Scalar::Int);
     draft
@@ -92,7 +94,9 @@ fn roots_corpus(roots: usize) -> ImageDraft {
         )
         .expect("a well-formed declaration");
     for n in 0..roots {
-        let name = draft.intern_string(&format!("r{n}"));
+        let name = draft
+            .intern_string(&format!("r{n}"))
+            .expect("a within-domain mint");
         let admitted = draft
             .add_root_occurrence(
                 &admitted_plan(),
@@ -231,21 +235,27 @@ const WIDE_FIELDS: usize = 64;
 fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let resource = draft.intern_string("R");
+    let resource = draft.intern_string("R").expect("a within-domain mint");
     let field_names: Vec<_> = (0..WIDE_FIELDS)
-        .map(|n| draft.intern_string(&format!("f{n}")))
+        .map(|n| {
+            draft
+                .intern_string(&format!("f{n}"))
+                .expect("a within-domain mint")
+        })
         .collect();
-    let record = draft.add_record_type(RecordTypeDef {
-        name: resource,
-        fields: field_names
-            .iter()
-            .map(|name| FieldDef {
-                name: *name,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            })
-            .collect(),
-    });
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: resource,
+            fields: field_names
+                .iter()
+                .map(|name| FieldDef {
+                    name: *name,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                })
+                .collect(),
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let value = draft.value_scalar(Scalar::Int);
     draft
@@ -269,7 +279,9 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
         .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
         .expect("declared");
     for n in 0..roots {
-        let name = draft.intern_string(&format!("r{n}"));
+        let name = draft
+            .intern_string(&format!("r{n}"))
+            .expect("a within-domain mint");
         let admitted = draft
             .add_root_occurrence(
                 &admitted_plan(),

@@ -29,8 +29,10 @@ fn a_direct_call_runs() {
     // double(n) = n + n ; caller() = double(21) == 42
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let double_name = draft.intern_string("double");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let double_name = draft.intern_string("double").expect("a within-domain mint");
     let double_code = vec![
         Instr::LocalGet(0),
         Instr::LocalGet(0),
@@ -48,8 +50,8 @@ fn a_direct_call_runs() {
             code: double_code,
         })
         .expect("every site operand is live");
-    let caller_name = draft.intern_string("caller");
-    let arg = draft.intern_int(21);
+    let caller_name = draft.intern_string("caller").expect("a within-domain mint");
+    let arg = draft.intern_int(21).expect("a within-domain mint");
     let caller_code = vec![
         Instr::ConstLoad(arg),
         Instr::Call(double.index()),
@@ -86,9 +88,11 @@ fn a_direct_call_runs() {
 fn the_vm_run_entry_takes_a_typed_function_index() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("answer");
-    let forty_two = draft.intern_int(42);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("answer").expect("a within-domain mint");
+    let forty_two = draft.intern_int(42).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(forty_two), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
@@ -125,8 +129,10 @@ fn the_vm_run_entry_takes_a_typed_function_index() {
 fn a_self_recursive_call_rejects_as_a_cycle() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("loops");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("loops").expect("a within-domain mint");
     let code = vec![Instr::Call(0), Instr::Return];
     let func = draft
         .add_function(FunctionDef {

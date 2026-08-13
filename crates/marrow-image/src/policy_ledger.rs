@@ -256,11 +256,13 @@ mod tests {
     /// Declare one Product wide enough that demanding every field leaf under two roots
     /// crosses `MAX_SITES`, and append one root over it.
     fn declare_wide(draft: &mut DraftTxn<'_>) {
-        let name = draft.intern_string("R");
-        let record = draft.add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        });
+        let name = draft.intern_string("R").expect("a within-domain mint");
+        let record = draft
+            .add_record_type(RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
         let value = draft.value_scalar(Scalar::Int);
         draft
@@ -285,7 +287,9 @@ mod tests {
     /// Demand every field leaf of the declared Product under one fresh root, seeded by
     /// `seed`.
     fn demand_every_leaf_under_a_fresh_root(draft: &mut DraftTxn<'_>, seed: u8, leaves: usize) {
-        let name = draft.intern_string(&format!("r{seed}"));
+        let name = draft
+            .intern_string(&format!("r{seed}"))
+            .expect("a within-domain mint");
         let root = draft
             .add_root_occurrence(
                 &admitted_plan(),
@@ -317,7 +321,7 @@ mod tests {
             .begin_transaction(owner.savepoint())
             .expect("a fresh savepoint admits");
         for value in 0..=(bounds::MAX_CONSTS as i64) {
-            txn.intern_int(value);
+            txn.intern_int(value).expect("a within-domain mint");
         }
         txn.commit();
         owner

@@ -77,17 +77,19 @@ fn build_two_roots(
 ) -> (PlannedSiteRef, PlannedSiteRef) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
-    let a_field_name = draft.intern_string("name");
-    let a_rec_name = draft.intern_string("Asset");
-    let a_rec = draft.add_record_type(RecordTypeDef {
-        name: a_rec_name,
-        fields: vec![FieldDef {
-            name: a_field_name,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
-    let a_root = draft.intern_string("assets");
+    let a_field_name = draft.intern_string("name").expect("a within-domain mint");
+    let a_rec_name = draft.intern_string("Asset").expect("a within-domain mint");
+    let a_rec = draft
+        .add_record_type(RecordTypeDef {
+            name: a_rec_name,
+            fields: vec![FieldDef {
+                name: a_field_name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
+    let a_root = draft.intern_string("assets").expect("a within-domain mint");
     let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
@@ -113,17 +115,19 @@ fn build_two_roots(
         )
         .expect("the Product is declared");
 
-    let b_field_name = draft.intern_string("count");
-    let b_rec_name = draft.intern_string("Tally");
-    let b_rec = draft.add_record_type(RecordTypeDef {
-        name: b_rec_name,
-        fields: vec![FieldDef {
-            name: b_field_name,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
-    let b_root = draft.intern_string(b_name);
+    let b_field_name = draft.intern_string("count").expect("a within-domain mint");
+    let b_rec_name = draft.intern_string("Tally").expect("a within-domain mint");
+    let b_rec = draft
+        .add_record_type(RecordTypeDef {
+            name: b_rec_name,
+            fields: vec![FieldDef {
+                name: b_field_name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
+    let b_root = draft.intern_string(b_name).expect("a within-domain mint");
     let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
@@ -170,8 +174,10 @@ fn build_export(
     params: Vec<ImageType>,
     ret: ImageType,
 ) {
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("f").expect("a within-domain mint");
     let local_count = params.len() as u16;
     let func = draft
         .add_function(FunctionDef {
@@ -279,23 +285,27 @@ fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
 /// compiler builds them.
 fn build_shared_product(draft: &mut DraftTxn<'_>) -> TypeId {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let field_name = draft.intern_string("name");
-    let rec_name = draft.intern_string("Asset");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: rec_name,
-        fields: vec![FieldDef {
-            name: field_name,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
+    let field_name = draft.intern_string("name").expect("a within-domain mint");
+    let rec_name = draft.intern_string("Asset").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: rec_name,
+            fields: vec![FieldDef {
+                name: field_name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
     // A second record type, so a forged entry-record index is in range and the rejection
     // is the Product's, not a bounds check.
-    let other_name = draft.intern_string("Other");
-    draft.add_record_type(RecordTypeDef {
-        name: other_name,
-        fields: vec![],
-    });
+    let other_name = draft.intern_string("Other").expect("a within-domain mint");
+    draft
+        .add_record_type(RecordTypeDef {
+            name: other_name,
+            fields: vec![],
+        })
+        .expect("a within-domain mint");
     let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
@@ -309,7 +319,7 @@ fn build_shared_product(draft: &mut DraftTxn<'_>) -> TypeId {
         ("assets", A_PLACEMENT, A_KEY),
         ("tallies", B_PLACEMENT, B_KEY),
     ] {
-        let root_name = draft.intern_string(name);
+        let root_name = draft.intern_string(name).expect("a within-domain mint");
         let root = draft
             .add_root_occurrence(
                 &admitted_plan(),
@@ -424,7 +434,7 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let record = build_shared_product(&mut draft);
-    let root_name = draft.intern_string("extra");
+    let root_name = draft.intern_string("extra").expect("a within-domain mint");
     let int_value = draft.value_scalar(Scalar::Int);
     // A second declaration of the same Product identity carrying a different member id.
     draft

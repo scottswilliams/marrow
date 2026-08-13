@@ -36,7 +36,12 @@ impl TypeEnv<'_> {
         self.params
             .iter()
             .position(|slot| slot.name == name)
-            .map(|index| (TypeParamIndex::from_position(index), self.params[index].binding))
+            .map(|index| {
+                (
+                    TypeParamIndex::from_position(index),
+                    self.params[index].binding,
+                )
+            })
     }
 
     /// The constraint on the type parameter at `index`, in the abstract pass.

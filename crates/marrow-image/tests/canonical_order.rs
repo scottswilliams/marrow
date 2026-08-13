@@ -62,9 +62,9 @@ fn function(name: StrId, source: StrId) -> FunctionDef {
 fn the_string_pool_is_emitted_byte_sorted() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.intern_string("pear");
-    draft.intern_string("apple");
-    draft.intern_string("mango");
+    draft.intern_string("pear").expect("a within-domain mint");
+    draft.intern_string("apple").expect("a within-domain mint");
+    draft.intern_string("mango").expect("a within-domain mint");
     let image = draft.encode().expect("a tiny draft encodes");
 
     let mut expected = Vec::new();
@@ -83,11 +83,11 @@ fn the_string_pool_is_emitted_byte_sorted() {
 fn the_const_pool_is_emitted_in_wire_byte_order() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    draft.intern_text("a");
-    draft.intern_int(-1);
-    draft.intern_bool(true);
-    draft.intern_int(5);
-    draft.intern_int(0);
+    draft.intern_text("a").expect("a within-domain mint");
+    draft.intern_int(-1).expect("a within-domain mint");
+    draft.intern_bool(true).expect("a within-domain mint");
+    draft.intern_int(5).expect("a within-domain mint");
+    draft.intern_int(0).expect("a within-domain mint");
     let image = draft.encode().expect("a tiny draft encodes");
 
     let mut expected = Vec::new();
@@ -111,7 +111,9 @@ fn the_const_pool_is_emitted_in_wire_byte_order() {
 fn the_export_table_is_emitted_in_ascending_id_order() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let source = draft.intern_string("src/main.mw");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let mut named: Vec<(ExportId, &str)> = ["a", "b", "c"]
         .into_iter()
         .map(|item| (ExportId::of_local("", item), item))
@@ -121,7 +123,7 @@ fn the_export_table_is_emitted_in_ascending_id_order() {
     // Insert in descending id order, so emission order can only come from the sort.
     let mut bound = Vec::new();
     for (id, item) in named.iter().rev() {
-        let name = draft.intern_string(item);
+        let name = draft.intern_string(item).expect("a within-domain mint");
         let func = draft
             .add_function(function(name, source))
             .expect("every site operand is live");
@@ -146,10 +148,10 @@ fn the_export_table_is_emitted_in_ascending_id_order() {
 fn the_test_entry_table_is_emitted_in_ascending_name_order() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let source = draft.intern_string("s");
+    let source = draft.intern_string("s").expect("a within-domain mint");
     let mut funcs = Vec::new();
     for text in ["zeta", "alpha", "mid"] {
-        let name = draft.intern_string(text);
+        let name = draft.intern_string(text).expect("a within-domain mint");
         let func = draft
             .add_function(function(name, source))
             .expect("every site operand is live");

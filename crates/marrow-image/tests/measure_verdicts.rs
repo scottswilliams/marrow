@@ -48,11 +48,10 @@ use marrow_image::bounds::{
 };
 use marrow_image::{
     CollTypeId, CollectionTypeDef, ConstId, DeclarationMemberDef, DeclarationMemberShape,
-    DraftStateError, DraftTxn,
-    DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId,
-    FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    RecordTypeDef, RootId, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId, TypeId,
-    ValueShapeNodeId, VariantDef,
+    DraftStateError, DraftTxn, DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef,
+    ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
+    KeyColumn, LedgerIdBytes, RecordTypeDef, RootId, RootOccurrenceDef, Scalar, SemanticTarget,
+    SpanEntry, StrId, TypeId, ValueShapeNodeId, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -491,10 +490,10 @@ impl Fixture {
         let type_name = if self.forged_record_name {
             StrId::from_index(FORGED_RECORD_NAME)
         } else {
-            draft.intern_string("R")
+            draft.intern_string("R").expect("a within-domain mint")
         };
         let fields = if self.wide_record {
-            let field_name = draft.intern_string("wide");
+            let field_name = draft.intern_string("wide").expect("a within-domain mint");
             vec![
                 FieldDef {
                     name: field_name,
@@ -504,7 +503,7 @@ impl Fixture {
                 MAX_RECORD_FIELDS + 1
             ]
         } else if self.forged_field_type {
-            let field_name = draft.intern_string("f");
+            let field_name = draft.intern_string("f").expect("a within-domain mint");
             vec![FieldDef {
                 name: field_name,
                 ty: FORGED_TYPE,
@@ -513,33 +512,41 @@ impl Fixture {
         } else {
             Vec::new()
         };
-        let record = draft.add_record_type(RecordTypeDef {
-            name: type_name,
-            fields,
-        });
+        let record = draft
+            .add_record_type(RecordTypeDef {
+                name: type_name,
+                fields,
+            })
+            .expect("a within-domain mint");
         if self.application {
             draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         }
         if self.forged_enum_name {
-            draft.add_enum_type(EnumTypeDef {
-                name: StrId::from_index(FORGED_ENUM_NAME),
-                variants: Vec::new(),
-            });
+            draft
+                .add_enum_type(EnumTypeDef {
+                    name: StrId::from_index(FORGED_ENUM_NAME),
+                    variants: Vec::new(),
+                })
+                .expect("a within-domain mint");
         }
         if self.wide_enum_definition {
-            let name = draft.intern_string("WideEnum");
-            let variant_name = draft.intern_string("v");
-            draft.add_enum_type(EnumTypeDef {
-                name,
-                variants: vec![
-                    VariantDef {
-                        name: variant_name,
-                        category: false,
-                        payload: Vec::new(),
-                    };
-                    MAX_VARIANTS + 1
-                ],
-            });
+            let name = draft
+                .intern_string("WideEnum")
+                .expect("a within-domain mint");
+            let variant_name = draft.intern_string("v").expect("a within-domain mint");
+            draft
+                .add_enum_type(EnumTypeDef {
+                    name,
+                    variants: vec![
+                        VariantDef {
+                            name: variant_name,
+                            category: false,
+                            payload: Vec::new(),
+                        };
+                        MAX_VARIANTS + 1
+                    ],
+                })
+                .expect("a within-domain mint");
         }
         if self.wide_enum_value_node {
             // The over-wide value node is the typed surface refusal (post-build
@@ -562,7 +569,7 @@ impl Fixture {
             },
         }];
         if self.branch_wide_key {
-            let branch_name = draft.intern_string("b");
+            let branch_name = draft.intern_string("b").expect("a within-domain mint");
             members.push(DeclarationMemberDef {
                 parent: None,
                 shape: DeclarationMemberShape::Branch {
@@ -593,7 +600,7 @@ impl Fixture {
             });
         }
         if self.forged_branch_record {
-            let branch_name = draft.intern_string("fb");
+            let branch_name = draft.intern_string("fb").expect("a within-domain mint");
             members.push(DeclarationMemberDef {
                 parent: None,
                 shape: DeclarationMemberShape::Branch {
@@ -639,7 +646,7 @@ impl Fixture {
                 )
                 .expect("a well-formed declaration");
         }
-        let root_name = draft.intern_string("r");
+        let root_name = draft.intern_string("r").expect("a within-domain mint");
         let indexes = if self.dangling_index_scan {
             vec![DurableIndexShape {
                 id: seeded_id(0x77, 0),
@@ -669,13 +676,15 @@ impl Fixture {
                 },
             )
             .expect("the Product is declared");
-        let src = draft.intern_string("src/main.mw");
+        let src = draft
+            .intern_string("src/main.mw")
+            .expect("a within-domain mint");
         let main_name = if self.forged_function_name {
             StrId::from_index(OUT_OF_RANGE)
         } else {
-            draft.intern_string("main")
+            draft.intern_string("main").expect("a within-domain mint")
         };
-        let zero = draft.intern_int(0);
+        let zero = draft.intern_int(0).expect("a within-domain mint");
         let mut code = body(self.code, zero);
         code.extend(self.extra_instrs.iter().cloned());
         if self.dangling_traversal {
@@ -744,7 +753,7 @@ impl Fixture {
             draft.add_export(ExportId::of_local("", "dup"), main);
         }
         if let Some(extra) = self.extra_function {
-            let aux_name = draft.intern_string("aux");
+            let aux_name = draft.intern_string("aux").expect("a within-domain mint");
             draft
                 .add_function(FunctionDef {
                     name: aux_name,
@@ -765,30 +774,36 @@ impl Fixture {
             // inside MAX_STRING_BYTES, the count far inside MAX_STRINGS, and the sum
             // past MAX_IMAGE_BYTES (524,288) on its own.
             for index in 0..132 {
-                draft.intern_string(&format!("{:04}{}", index, "x".repeat(4000)));
+                draft
+                    .intern_string(&format!("{:04}{}", index, "x".repeat(4000)))
+                    .expect("a within-domain mint");
             }
         }
         if self.forged_test_entry_target {
-            let entry_name = draft.intern_string("tt");
+            let entry_name = draft.intern_string("tt").expect("a within-domain mint");
             draft.add_test_entry(entry_name, forged_func_id());
         }
         if self.forged_export_target {
             draft.add_export(ExportId::of_local("", "ghost"), forged_func_id());
         }
         if self.forged_enum_payload_type {
-            let name = draft.intern_string("P");
-            let variant_name = draft.intern_string("pv");
-            draft.add_enum_type(EnumTypeDef {
-                name,
-                variants: vec![VariantDef {
-                    name: variant_name,
-                    category: false,
-                    payload: vec![FORGED_TYPE],
-                }],
-            });
+            let name = draft.intern_string("P").expect("a within-domain mint");
+            let variant_name = draft.intern_string("pv").expect("a within-domain mint");
+            draft
+                .add_enum_type(EnumTypeDef {
+                    name,
+                    variants: vec![VariantDef {
+                        name: variant_name,
+                        category: false,
+                        payload: vec![FORGED_TYPE],
+                    }],
+                })
+                .expect("a within-domain mint");
         }
         if self.forged_collection_elem {
-            draft.add_collection_type(CollectionTypeDef::List { elem: FORGED_TYPE });
+            draft
+                .add_collection_type(CollectionTypeDef::List { elem: FORGED_TYPE })
+                .expect("a within-domain mint");
         }
         if let Some(policy) = self.policy {
             apply_policy(policy, &mut draft);
@@ -840,8 +855,8 @@ fn body(code: Code, zero: ConstId) -> Vec<Instr> {
 fn forged_func_id() -> FuncId {
     let mut other_owner = ImageDraft::new();
     let mut other = admitted(&mut other_owner);
-    let src = other.intern_string("s");
-    let name = other.intern_string("f");
+    let src = other.intern_string("s").expect("a within-domain mint");
+    let name = other.intern_string("f").expect("a within-domain mint");
     let def = FunctionDef {
         name,
         source: src,
@@ -869,48 +884,60 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
         // The base draft interns a handful of strings, so a full extra pool is over.
         Overflow::Strings => {
             for index in 0..MAX_STRINGS {
-                draft.intern_string(&format!("s{index}"));
+                draft
+                    .intern_string(&format!("s{index}"))
+                    .expect("a within-domain mint");
             }
         }
         Overflow::StringBytes => {
-            draft.intern_string(&"x".repeat(MAX_STRING_BYTES + 1));
+            draft
+                .intern_string(&"x".repeat(MAX_STRING_BYTES + 1))
+                .expect("a within-domain mint");
         }
         // Zero is already interned by the base draft, so the pool ends one past the cap.
         Overflow::Consts => {
             for value in 1..=MAX_CONSTS as i64 {
-                draft.intern_int(value);
+                draft.intern_int(value).expect("a within-domain mint");
             }
         }
         Overflow::Types => {
-            let name = draft.intern_string("T");
+            let name = draft.intern_string("T").expect("a within-domain mint");
             for _ in 0..MAX_TYPES {
-                draft.add_record_type(RecordTypeDef {
-                    name,
-                    fields: Vec::new(),
-                });
+                draft
+                    .add_record_type(RecordTypeDef {
+                        name,
+                        fields: Vec::new(),
+                    })
+                    .expect("a within-domain mint");
             }
         }
         Overflow::Enums => {
-            let name = draft.intern_string("E");
+            let name = draft.intern_string("E").expect("a within-domain mint");
             for _ in 0..=MAX_ENUMS {
-                draft.add_enum_type(EnumTypeDef {
-                    name,
-                    variants: Vec::new(),
-                });
+                draft
+                    .add_enum_type(EnumTypeDef {
+                        name,
+                        variants: Vec::new(),
+                    })
+                    .expect("a within-domain mint");
             }
         }
         Overflow::Collections => {
             for _ in 0..=MAX_COLLECTIONS {
-                draft.add_collection_type(CollectionTypeDef::List {
-                    elem: ImageType::scalar(Scalar::Int),
-                });
+                draft
+                    .add_collection_type(CollectionTypeDef::List {
+                        elem: ImageType::scalar(Scalar::Int),
+                    })
+                    .expect("a within-domain mint");
             }
         }
         // The admitted plan permits exactly one occurrence past the root bound, so the
         // graph is complete and the encoder — not the intake — reports the cap.
         Overflow::Roots => {
             for index in 0..MAX_ROOTS {
-                let name = draft.intern_string(&format!("extra{index}"));
+                let name = draft
+                    .intern_string(&format!("extra{index}"))
+                    .expect("a within-domain mint");
                 draft
                     .add_root_occurrence(
                         &admitted_plan(),
@@ -932,11 +959,13 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
         // fills the table, and the root's whole-payload demand is the crossing.
         Overflow::Sites => {
             let value = draft.value_scalar(Scalar::Int);
-            let entry_name = draft.intern_string("S");
-            let entry = draft.add_record_type(RecordTypeDef {
-                name: entry_name,
-                fields: Vec::new(),
-            });
+            let entry_name = draft.intern_string("S").expect("a within-domain mint");
+            let entry = draft
+                .add_record_type(RecordTypeDef {
+                    name: entry_name,
+                    fields: Vec::new(),
+                })
+                .expect("a within-domain mint");
             let members = (0..MAX_SITES)
                 .map(|index| DeclarationMemberDef {
                     parent: None,
@@ -950,7 +979,7 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
             let fields = draft
                 .declare_product(&admitted_plan(), seeded_id(0x31, 0), entry, members)
                 .expect("a well-formed declaration");
-            let root_name = draft.intern_string("sites");
+            let root_name = draft.intern_string("sites").expect("a within-domain mint");
             let root = draft
                 .add_root_occurrence(
                     &admitted_plan(),
@@ -988,8 +1017,10 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
             draft.request_site(&payload).expect("a live demand");
         }
         Overflow::Functions => {
-            let name = draft.intern_string("f");
-            let src = draft.intern_string("src/extra.mw");
+            let name = draft.intern_string("f").expect("a within-domain mint");
+            let src = draft
+                .intern_string("src/extra.mw")
+                .expect("a within-domain mint");
             for _ in 0..MAX_FUNCTIONS {
                 draft
                     .add_function(FunctionDef {
@@ -1007,10 +1038,14 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
         // Each extra export targets its own structurally valid function, honoring v0's
         // one-export-per-function relation while only the export table crosses its cap.
         Overflow::Exports => {
-            let src = draft.intern_string("src/extra.mw");
-            let zero = draft.intern_int(0);
+            let src = draft
+                .intern_string("src/extra.mw")
+                .expect("a within-domain mint");
+            let zero = draft.intern_int(0).expect("a within-domain mint");
             for index in 0..MAX_EXPORTS {
-                let name = draft.intern_string(&format!("extra{index}"));
+                let name = draft
+                    .intern_string(&format!("extra{index}"))
+                    .expect("a within-domain mint");
                 let func = draft
                     .add_function(FunctionDef {
                         name,
@@ -1029,9 +1064,13 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
         // the unique-test-function, export/test-disjointness, and unit-return relations
         // while only the test-entry table crosses its cap.
         Overflow::TestEntries => {
-            let src = draft.intern_string("src/tests.mw");
+            let src = draft
+                .intern_string("src/tests.mw")
+                .expect("a within-domain mint");
             for index in 0..=MAX_TEST_ENTRIES {
-                let name = draft.intern_string(&format!("t{index}"));
+                let name = draft
+                    .intern_string(&format!("t{index}"))
+                    .expect("a within-domain mint");
                 let func = draft
                     .add_function(FunctionDef {
                         name,

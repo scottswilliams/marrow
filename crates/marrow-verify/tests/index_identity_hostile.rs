@@ -74,31 +74,33 @@ struct Graph {
 }
 
 fn build_graph(draft: &mut DraftTxn<'_>) -> Graph {
-    let rec = draft.intern_string("Rec");
-    let title = draft.intern_string("title");
-    let shelf = draft.intern_string("shelf");
-    let isbn = draft.intern_string("isbn");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: rec,
-        fields: vec![
-            FieldDef {
-                name: title,
-                ty: ImageType::scalar(Scalar::Text),
-                required: true,
-            },
-            FieldDef {
-                name: shelf,
-                ty: ImageType::scalar(Scalar::Text),
-                required: true,
-            },
-            FieldDef {
-                name: isbn,
-                ty: ImageType::scalar(Scalar::Text),
-                required: true,
-            },
-        ],
-    });
-    let root = draft.intern_string("r");
+    let rec = draft.intern_string("Rec").expect("a within-domain mint");
+    let title = draft.intern_string("title").expect("a within-domain mint");
+    let shelf = draft.intern_string("shelf").expect("a within-domain mint");
+    let isbn = draft.intern_string("isbn").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: rec,
+            fields: vec![
+                FieldDef {
+                    name: title,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
+                },
+                FieldDef {
+                    name: shelf,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
+                },
+                FieldDef {
+                    name: isbn,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let root = draft.intern_string("r").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let text = draft.value_scalar(Scalar::Text);
     draft
@@ -163,9 +165,11 @@ fn build_graph(draft: &mut DraftTxn<'_>) -> Graph {
         &lookup_path,
         SemanticTarget::IndexLookup,
     );
-    let list_int = draft.add_collection_type(marrow_image::CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Int),
-    });
+    let list_int = draft
+        .add_collection_type(marrow_image::CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
     Graph {
         entry_site,
         scan_site,
@@ -197,8 +201,10 @@ fn build_export(
     params: Vec<ImageType>,
     ret: ImageType,
 ) {
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("f").expect("a within-domain mint");
     let local_count = params.len() as u16;
     let func = draft
         .add_function(FunctionDef {
@@ -309,8 +315,9 @@ fn a_scan_list_of_the_wrong_element_type_is_refused() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let g = build_graph(&mut draft);
-    let list_text =
-        draft.add_collection_type(marrow_image::CollectionTypeDef::List { elem: text() });
+    let list_text = draft
+        .add_collection_type(marrow_image::CollectionTypeDef::List { elem: text() })
+        .expect("a within-domain mint");
     // The scanned identity key is `int`, so a `List[string]` frozen type is refused.
     let code = vec![
         Instr::LocalGet(0),

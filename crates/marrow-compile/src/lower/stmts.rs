@@ -1270,7 +1270,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } else {
                 self.push(Instr::LocalGet(scrut_slot), arm.span);
                 self.push(Instr::EnumTag, arm.span);
-                let konst = self.draft.intern_int(variant_index as i64);
+                let Some(konst) = self.checked_mint(|draft| draft.intern_int(variant_index as i64))
+                else {
+                    return Flow::Rejected;
+                };
                 self.push(Instr::ConstLoad(konst), arm.span);
                 self.push(Instr::EqInt, arm.span);
                 Some(self.push_jif(arm.span))
@@ -1533,7 +1536,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Flow::Rejected;
         };
         self.push(Instr::LocalSet(hi_slot), span);
-        let step_const = self.draft.intern_int(stride);
+        let Some(step_const) = self.checked_mint(|draft| draft.intern_int(stride)) else {
+            return Flow::Rejected;
+        };
 
         // The advance sits at the loop top and the first entry skips it, so `continue`
         // jumps to the advance and always makes progress toward the bound.
@@ -2468,10 +2473,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let Some(index_slot) = self.alloc_slot(span) else {
             return PositionalWalkOutcome::Rejected;
         };
-        let neg_one = self.draft.intern_int(-1);
+        let Some(neg_one) = self.checked_mint(|draft| draft.intern_int(-1)) else {
+            return PositionalWalkOutcome::Rejected;
+        };
         self.push(Instr::ConstLoad(neg_one), span);
         self.push(Instr::LocalSet(index_slot), span);
-        let one = self.draft.intern_int(1);
+        let Some(one) = self.checked_mint(|draft| draft.intern_int(1)) else {
+            return PositionalWalkOutcome::Rejected;
+        };
 
         let top = self.here();
         // index += 1
@@ -2708,7 +2717,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             )]
             let lb = lb.expect("division has a right operand");
             self.push(Instr::LocalGet(lb), span);
-            let zero = self.draft.intern_int(0);
+            let Some(zero) = self.checked_mint(|draft| draft.intern_int(0)) else {
+                return Flow::Rejected;
+            };
             self.push(Instr::ConstLoad(zero), span);
             self.push(Instr::EqInt, span);
             let to_nonzero = self.push_jif(span);

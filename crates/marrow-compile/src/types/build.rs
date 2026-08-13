@@ -1061,11 +1061,11 @@ pub(super) fn declare_structs<'a>(
             ));
             continue;
         }
-        let name_id = draft.intern_string(&decl.name);
+        let name_id = draft.intern_string(&decl.name)?;
         let type_id = draft.add_record_type(RecordTypeDef {
             name: name_id,
             fields: Vec::new(),
-        });
+        })?;
         registry.structs.push(StructInfo {
             type_id,
             name: decl.name.clone(),
@@ -1217,7 +1217,7 @@ fn struct_fields(
             }
             Err(ResolveError::Invariant(invariant)) => return Err(invariant),
         };
-        let field_name_id = draft.intern_string(&field.name);
+        let field_name_id = draft.intern_string(&field.name)?;
         field_defs.push(FieldDef {
             name: field_name_id,
             ty: field_ty.image(),
@@ -1316,11 +1316,11 @@ pub(super) fn declare_enums<'a>(
                 .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        let name_id = draft.intern_string(&decl.name);
+        let name_id = draft.intern_string(&decl.name)?;
         let enum_id = draft.add_enum_type(EnumTypeDef {
             name: name_id,
             variants: Vec::new(),
-        });
+        })?;
         registry.enums.push(EnumInfo {
             enum_id,
             name: decl.name.clone(),
@@ -1404,7 +1404,7 @@ fn enum_variants(
     declared: DeclarationSite<'_>,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
-) -> Result<DeclarationOccurrence<EnumVariants>, DeclarationIndexDrift> {
+) -> Result<DeclarationOccurrence<EnumVariants>, BuildError> {
     let file = declared.file;
     let mut variants = Vec::new();
     let mut variant_defs = Vec::new();
@@ -1457,7 +1457,7 @@ fn enum_variants(
         else {
             continue;
         };
-        let name_id = draft.intern_string(&member.name);
+        let name_id = draft.intern_string(&member.name)?;
         variant_defs.push(VariantDef {
             name: name_id,
             category: false,
@@ -1588,11 +1588,11 @@ pub(super) fn declare_records<'a>(
             ));
             continue;
         }
-        let name_id = draft.intern_string(&resource.name);
+        let name_id = draft.intern_string(&resource.name)?;
         let type_id = draft.add_record_type(RecordTypeDef {
             name: name_id,
             fields: Vec::new(),
-        });
+        })?;
         registry.records.push(RecordInfo {
             type_id,
             name: resource.name.clone(),
@@ -1704,13 +1704,13 @@ fn fill_record(
                     diagnostics,
                 )?;
                 let anchor = format!("{}.{}", resource.name, group.name);
-                let group_name_id = draft.intern_string(&anchor);
+                let group_name_id = draft.intern_string(&anchor)?;
                 let group_type_id = draft.add_record_type(RecordTypeDef {
                     name: group_name_id,
                     fields: leaf_defs,
-                });
+                })?;
                 group_slot_defs.push(FieldDef {
-                    name: draft.intern_string(&group.name),
+                    name: draft.intern_string(&group.name)?,
                     ty: ImageType::Record {
                         idx: group_type_id,
                         optional: false,
@@ -1736,12 +1736,14 @@ fn fill_record(
     let fields = registry.accepted_members(&resource.name);
     let mut field_defs: Vec<FieldDef> = fields
         .iter()
-        .map(|field| FieldDef {
-            name: draft.intern_string(&field.name),
-            ty: field.ty.image(),
-            required: field.required,
+        .map(|field| {
+            Ok(FieldDef {
+                name: draft.intern_string(&field.name)?,
+                ty: field.ty.image(),
+                required: field.required,
+            })
         })
-        .collect();
+        .collect::<Result<_, BuildError>>()?;
     // The record is group-inclusive: its top-level field slots followed by one
     // group-record slot per unkeyed group, in declaration order. The verifier ties the
     // field slots to the durable member tree's fields and each trailing group slot to a
@@ -1922,11 +1924,13 @@ fn build_group_leaves(
     let fields = registry.accepted_members(&anchor);
     let field_defs = fields
         .iter()
-        .map(|leaf| FieldDef {
-            name: draft.intern_string(&leaf.name),
-            ty: leaf.ty.image(),
-            required: leaf.required,
+        .map(|leaf| {
+            Ok(FieldDef {
+                name: draft.intern_string(&leaf.name)?,
+                ty: leaf.ty.image(),
+                required: leaf.required,
+            })
         })
-        .collect();
+        .collect::<Result<_, BuildError>>()?;
     Ok((fields, field_defs))
 }

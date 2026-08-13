@@ -89,9 +89,11 @@ fn key_id(ordinal: usize) -> LedgerIdBytes {
 }
 
 fn add_main(draft: &mut DraftTxn<'_>) {
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len())
         .map(|index| SpanEntry {
@@ -123,18 +125,22 @@ fn maximum_draft() -> ImageDraft {
         .expect("a fresh savepoint admits");
     let int = draft.value_scalar(Scalar::Int);
 
-    let entry_name = draft.intern_string("R");
+    let entry_name = draft.intern_string("R").expect("a within-domain mint");
     let entry_fields: Vec<FieldDef> = (0..MEMBERS)
         .map(|ordinal| FieldDef {
-            name: draft.intern_string(&format!("f{ordinal}")),
+            name: draft
+                .intern_string(&format!("f{ordinal}"))
+                .expect("a within-domain mint"),
             ty: ImageType::scalar(Scalar::Int),
             required: true,
         })
         .collect();
-    let entry = draft.add_record_type(RecordTypeDef {
-        name: entry_name,
-        fields: entry_fields,
-    });
+    let entry = draft
+        .add_record_type(RecordTypeDef {
+            name: entry_name,
+            fields: entry_fields,
+        })
+        .expect("a within-domain mint");
 
     let members: Vec<DeclarationMemberDef> = (0..MEMBERS)
         .map(|ordinal| DeclarationMemberDef {
@@ -158,7 +164,9 @@ fn maximum_draft() -> ImageDraft {
         .expect("a well-formed declaration");
 
     for ordinal in 0..OCCURRENCES {
-        let name = draft.intern_string(&format!("r{ordinal}"));
+        let name = draft
+            .intern_string(&format!("r{ordinal}"))
+            .expect("a within-domain mint");
         let (placement, key) = if ordinal == 0 {
             (
                 LedgerIdBytes::from_bytes(PLACEMENT_ID),
@@ -286,11 +294,13 @@ fn journey() {
     let mut refused = refused_owner
         .begin_transaction(refused_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let name = refused.intern_string("R");
-    let record = refused.add_record_type(RecordTypeDef {
-        name,
-        fields: Vec::new(),
-    });
+    let name = refused.intern_string("R").expect("a within-domain mint");
+    let record = refused
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        })
+        .expect("a within-domain mint");
     let value = refused.value_scalar(Scalar::Int);
     let two: Vec<DeclarationMemberDef> = (0..2)
         .map(|ordinal| DeclarationMemberDef {

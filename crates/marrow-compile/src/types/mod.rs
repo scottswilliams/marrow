@@ -361,7 +361,25 @@ impl From<DeclareError> for BuildError {
         match error {
             DeclareError::LedgerFull(full) => full.into(),
             DeclareError::IndexDrift(drift) => drift.into(),
+            DeclareError::BuilderDomain(refusal) => {
+                Self::Invariant(GenericInvariant::BuilderDomain(refusal))
+            }
         }
+    }
+}
+
+/// A draft mint refused at the builder surface's carrier domain is a compiler
+/// coherence failure everywhere in the production compiler: the admitted source
+/// envelope cannot reach the `u32` carrier boundary.
+impl From<marrow_image::DraftStateError> for GenericInvariant {
+    fn from(refusal: marrow_image::DraftStateError) -> Self {
+        Self::BuilderDomain(refusal)
+    }
+}
+
+impl From<marrow_image::DraftStateError> for BuildError {
+    fn from(refusal: marrow_image::DraftStateError) -> Self {
+        Self::Invariant(GenericInvariant::BuilderDomain(refusal))
     }
 }
 
@@ -371,6 +389,12 @@ impl From<DeclareError> for BuildError {
 pub(crate) enum ResolveError {
     Refusal(ResolveRefusal),
     Invariant(GenericInvariant),
+}
+
+impl From<marrow_image::DraftStateError> for ResolveError {
+    fn from(refusal: marrow_image::DraftStateError) -> Self {
+        Self::Invariant(GenericInvariant::BuilderDomain(refusal))
+    }
 }
 
 impl From<ResolveRefusal> for ResolveError {
@@ -486,7 +510,7 @@ pub(crate) enum GenericInvariant {
     /// compiler's own width pre-guards and in-draft leaf minting make the refusal
     /// unreachable, so an occurrence is a compiler coherence failure, never a
     /// source refusal.
-    ValueShapeDomain(marrow_image::DraftStateError),
+    BuilderDomain(marrow_image::DraftStateError),
     CollectionIndexMismatch {
         kind: CollectionKind,
         cache_index: usize,
@@ -2356,18 +2380,18 @@ impl TypeRegistry {
         // Reserve the image index and a provisional cache row before filling, so a
         // member that names this same instantiation finds its identity and the fill
         // terminates without making an unfinished body semantically readable.
-        let name_id = draft.intern_string(&template_info.name);
+        let name_id = draft.intern_string(&template_info.name)?;
         let id = if template_info.is_enum() {
             let enum_id = draft.add_enum_type(EnumTypeDef {
                 name: name_id,
                 variants: Vec::new(),
-            });
+            })?;
             TypeInstId::Enum(enum_id)
         } else {
             let type_id = draft.add_record_type(RecordTypeDef {
                 name: name_id,
                 fields: Vec::new(),
-            });
+            })?;
             TypeInstId::Record(type_id)
         };
         let inst_index = {
@@ -2589,7 +2613,7 @@ impl TypeRegistry {
         for (fname, fty) in fields {
             let arg = self.resolve_garg_env(draft, fty, &subst, site)?;
             defs.push(FieldDef {
-                name: draft.intern_string(fname),
+                name: draft.intern_string(fname)?,
                 ty: arg.image(),
                 required: true,
             });
@@ -2657,7 +2681,7 @@ impl TypeRegistry {
                 payload.push((field.name.clone(), arg));
             }
             defs.push(VariantDef {
-                name: draft.intern_string(&variant.name),
+                name: draft.intern_string(&variant.name)?,
                 category: false,
                 payload: leaves,
             });
@@ -3421,7 +3445,7 @@ impl TypeRegistry {
         // release outcome. The reuse probe above compares the looked-up row against the
         // spec it carries and rejects a mismatch as `MintIndexDrift`, so an index that
         // fell out of step with the draft is refused at the next read in either profile.
-        let id = draft.add_collection_type(spec.definition());
+        let id = draft.add_collection_type(spec.definition())?;
         debug_assert_eq!(id.index() as usize, cache_index);
         let mut collections = self.collections.borrow_mut();
         debug_assert_eq!(collections.len(), cache_index);

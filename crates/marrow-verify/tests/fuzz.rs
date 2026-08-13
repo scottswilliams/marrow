@@ -80,9 +80,11 @@ fn seed() -> u64 {
 fn a_good_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let answer = draft.intern_int(42);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let answer = draft.intern_int(42).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(answer), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
@@ -111,54 +113,62 @@ fn a_good_image() -> Vec<u8> {
 fn a_nested_value_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let src = draft.intern_string("src/main.mw");
-    let outer = draft.intern_string("Outer");
-    let inner = draft.intern_string("Inner");
-    let ename = draft.intern_string("E");
-    let f_inner = draft.intern_string("inner");
-    let f_tag = draft.intern_string("tag");
-    let f_n = draft.intern_string("n");
-    let v_only = draft.intern_string("only");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let outer = draft.intern_string("Outer").expect("a within-domain mint");
+    let inner = draft.intern_string("Inner").expect("a within-domain mint");
+    let ename = draft.intern_string("E").expect("a within-domain mint");
+    let f_inner = draft.intern_string("inner").expect("a within-domain mint");
+    let f_tag = draft.intern_string("tag").expect("a within-domain mint");
+    let f_n = draft.intern_string("n").expect("a within-domain mint");
+    let v_only = draft.intern_string("only").expect("a within-domain mint");
     // Inner is record 0, Outer is record 1 (Outer references Inner and E).
-    draft.add_record_type(RecordTypeDef {
-        name: inner,
-        fields: vec![FieldDef {
-            name: f_n,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
-    draft.add_record_type(RecordTypeDef {
-        name: outer,
-        fields: vec![
-            FieldDef {
-                name: f_inner,
-                ty: ImageType::Record {
-                    idx: TypeId::from_index(0),
-                    optional: false,
-                },
+    draft
+        .add_record_type(RecordTypeDef {
+            name: inner,
+            fields: vec![FieldDef {
+                name: f_n,
+                ty: ImageType::scalar(Scalar::Int),
                 required: true,
-            },
-            FieldDef {
-                name: f_tag,
-                ty: ImageType::Enum {
-                    idx: EnumId::from_index(0),
-                    optional: false,
+            }],
+        })
+        .expect("a within-domain mint");
+    draft
+        .add_record_type(RecordTypeDef {
+            name: outer,
+            fields: vec![
+                FieldDef {
+                    name: f_inner,
+                    ty: ImageType::Record {
+                        idx: TypeId::from_index(0),
+                        optional: false,
+                    },
+                    required: true,
                 },
-                required: true,
-            },
-        ],
-    });
-    draft.add_enum_type(EnumTypeDef {
-        name: ename,
-        variants: vec![VariantDef {
-            name: v_only,
-            category: false,
-            payload: Vec::new(),
-        }],
-    });
-    let answer = draft.intern_int(42);
-    let name = draft.intern_string("main");
+                FieldDef {
+                    name: f_tag,
+                    ty: ImageType::Enum {
+                        idx: EnumId::from_index(0),
+                        optional: false,
+                    },
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name: ename,
+            variants: vec![VariantDef {
+                name: v_only,
+                category: false,
+                payload: Vec::new(),
+            }],
+        })
+        .expect("a within-domain mint");
+    let answer = draft.intern_int(42).expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(answer), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
@@ -235,25 +245,31 @@ fn structured_prefix_of_a_good_image_never_panics() {
 fn a_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let counter = draft.intern_string("Counter");
-    let value = draft.intern_string("value");
-    let label = draft.intern_string("label");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: counter,
-        fields: vec![
-            FieldDef {
-                name: value,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            },
-            FieldDef {
-                name: label,
-                ty: ImageType::scalar(Scalar::Text),
-                required: false,
-            },
-        ],
-    });
-    let root = draft.intern_string("counters");
+    let counter = draft
+        .intern_string("Counter")
+        .expect("a within-domain mint");
+    let value = draft.intern_string("value").expect("a within-domain mint");
+    let label = draft.intern_string("label").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: counter,
+            fields: vec![
+                FieldDef {
+                    name: value,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                },
+                FieldDef {
+                    name: label,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: false,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let root = draft
+        .intern_string("counters")
+        .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
     let int_value = draft.value_scalar(Scalar::Int);
@@ -311,8 +327,10 @@ fn a_durable_image() -> Vec<u8> {
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("put");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("put").expect("a within-domain mint");
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
@@ -371,25 +389,31 @@ fn mutated_durable_images_never_panic_the_verifier() {
 fn an_indexed_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let counter = draft.intern_string("Counter");
-    let value = draft.intern_string("value");
-    let label = draft.intern_string("label");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: counter,
-        fields: vec![
-            FieldDef {
-                name: value,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            },
-            FieldDef {
-                name: label,
-                ty: ImageType::scalar(Scalar::Text),
-                required: false,
-            },
-        ],
-    });
-    let root = draft.intern_string("counters");
+    let counter = draft
+        .intern_string("Counter")
+        .expect("a within-domain mint");
+    let value = draft.intern_string("value").expect("a within-domain mint");
+    let label = draft.intern_string("label").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: counter,
+            fields: vec![
+                FieldDef {
+                    name: value,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                },
+                FieldDef {
+                    name: label,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: false,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let root = draft
+        .intern_string("counters")
+        .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
     let int_value = draft.value_scalar(Scalar::Int);
@@ -487,25 +511,31 @@ fn mutated_indexed_durable_images_never_panic_the_verifier() {
 fn a_strict_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let counter = draft.intern_string("Counter");
-    let value = draft.intern_string("value");
-    let label = draft.intern_string("label");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: counter,
-        fields: vec![
-            FieldDef {
-                name: value,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            },
-            FieldDef {
-                name: label,
-                ty: ImageType::scalar(Scalar::Text),
-                required: false,
-            },
-        ],
-    });
-    let root = draft.intern_string("counters");
+    let counter = draft
+        .intern_string("Counter")
+        .expect("a within-domain mint");
+    let value = draft.intern_string("value").expect("a within-domain mint");
+    let label = draft.intern_string("label").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: counter,
+            fields: vec![
+                FieldDef {
+                    name: value,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                },
+                FieldDef {
+                    name: label,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: false,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let root = draft
+        .intern_string("counters")
+        .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
     let int_value = draft.value_scalar(Scalar::Int);
@@ -569,9 +599,11 @@ fn a_strict_durable_image() -> Vec<u8> {
         members[1].path(),
         SemanticTarget::FieldLeaf,
     );
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("tag");
-    let text = draft.intern_text("x");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("tag").expect("a within-domain mint");
+    let text = draft.intern_text("x").expect("a within-domain mint");
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
@@ -636,52 +668,64 @@ fn mutated_strict_durable_images_never_panic_the_verifier() {
 fn a_group_branch_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let book = draft.intern_string("Book");
-    let title = draft.intern_string("title");
+    let book = draft.intern_string("Book").expect("a within-domain mint");
+    let title = draft.intern_string("title").expect("a within-domain mint");
     // The group's own leaf record, referenced by the root record's trailing group slot.
-    let details_qualified = draft.intern_string("Book.details");
-    let details_pages = draft.intern_string("pages");
-    let details_record = draft.add_record_type(RecordTypeDef {
-        name: details_qualified,
-        fields: vec![FieldDef {
-            name: details_pages,
-            ty: ImageType::scalar(Scalar::Int),
-            required: false,
-        }],
-    });
+    let details_qualified = draft
+        .intern_string("Book.details")
+        .expect("a within-domain mint");
+    let details_pages = draft.intern_string("pages").expect("a within-domain mint");
+    let details_record = draft
+        .add_record_type(RecordTypeDef {
+            name: details_qualified,
+            fields: vec![FieldDef {
+                name: details_pages,
+                ty: ImageType::scalar(Scalar::Int),
+                required: false,
+            }],
+        })
+        .expect("a within-domain mint");
     // The group-inclusive root record: the `title` field slot followed by the `details`
     // group record slot, tying to the member tree's field then group member.
-    let details = draft.intern_string("details");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: book,
-        fields: vec![
-            FieldDef {
-                name: title,
+    let details = draft
+        .intern_string("details")
+        .expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: book,
+            fields: vec![
+                FieldDef {
+                    name: title,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
+                },
+                FieldDef {
+                    name: details,
+                    ty: ImageType::Record {
+                        idx: details_record,
+                        optional: false,
+                    },
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let root = draft.intern_string("books").expect("a within-domain mint");
+    let notes = draft.intern_string("notes").expect("a within-domain mint");
+    let notes_qualified = draft
+        .intern_string("Book.notes")
+        .expect("a within-domain mint");
+    let notes_text = draft.intern_string("text").expect("a within-domain mint");
+    let notes_record = draft
+        .add_record_type(RecordTypeDef {
+            name: notes_qualified,
+            fields: vec![FieldDef {
+                name: notes_text,
                 ty: ImageType::scalar(Scalar::Text),
                 required: true,
-            },
-            FieldDef {
-                name: details,
-                ty: ImageType::Record {
-                    idx: details_record,
-                    optional: false,
-                },
-                required: true,
-            },
-        ],
-    });
-    let root = draft.intern_string("books");
-    let notes = draft.intern_string("notes");
-    let notes_qualified = draft.intern_string("Book.notes");
-    let notes_text = draft.intern_string("text");
-    let notes_record = draft.add_record_type(RecordTypeDef {
-        name: notes_qualified,
-        fields: vec![FieldDef {
-            name: notes_text,
-            ty: ImageType::scalar(Scalar::Text),
-            required: true,
-        }],
-    });
+            }],
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
     let int_value = draft.value_scalar(Scalar::Int);
@@ -794,9 +838,11 @@ fn a_group_branch_durable_image() -> Vec<u8> {
         branch_members[0].path(),
         SemanticTarget::FieldLeaf,
     );
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("label");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("label").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len() as u32)
         .map(|instr_index| SpanEntry {
@@ -846,88 +892,95 @@ fn a_widened_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     // Enum `Access { a, b(int) }` — `b` carries an int payload leaf.
-    let access = draft.intern_string("Access");
-    let a = draft.intern_string("a");
-    let b = draft.intern_string("b");
-    draft.add_enum_type(EnumTypeDef {
-        name: access,
-        variants: vec![
-            VariantDef {
-                name: a,
-                category: false,
-                payload: Vec::new(),
-            },
-            VariantDef {
-                name: b,
-                category: false,
-                payload: vec![ImageType::scalar(Scalar::Int)],
-            },
-        ],
-    });
+    let access = draft.intern_string("Access").expect("a within-domain mint");
+    let a = draft.intern_string("a").expect("a within-domain mint");
+    let b = draft.intern_string("b").expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name: access,
+            variants: vec![
+                VariantDef {
+                    name: a,
+                    category: false,
+                    payload: Vec::new(),
+                },
+                VariantDef {
+                    name: b,
+                    category: false,
+                    payload: vec![ImageType::scalar(Scalar::Int)],
+                },
+            ],
+        })
+        .expect("a within-domain mint");
     // Struct `Pair { x:int, y:string }` at record index 0.
-    let pair = draft.intern_string("Pair");
-    let x = draft.intern_string("x");
-    let y = draft.intern_string("y");
-    let pair_ty = draft.add_record_type(RecordTypeDef {
-        name: pair,
-        fields: vec![
-            FieldDef {
-                name: x,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            },
-            FieldDef {
-                name: y,
-                ty: ImageType::scalar(Scalar::Text),
-                required: true,
-            },
-        ],
-    });
+    let pair = draft.intern_string("Pair").expect("a within-domain mint");
+    let x = draft.intern_string("x").expect("a within-domain mint");
+    let y = draft.intern_string("y").expect("a within-domain mint");
+    let pair_ty = draft
+        .add_record_type(RecordTypeDef {
+            name: pair,
+            fields: vec![
+                FieldDef {
+                    name: x,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                },
+                FieldDef {
+                    name: y,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
     // Resource `W { id:int, kind:Access, owner:Pair }` at record index 1.
-    let w = draft.intern_string("W");
-    let idn = draft.intern_string("id");
-    let kindn = draft.intern_string("kind");
-    let ownern = draft.intern_string("owner");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: w,
-        fields: vec![
-            FieldDef {
-                name: idn,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            },
-            FieldDef {
-                name: kindn,
-                ty: ImageType::Enum {
-                    idx: EnumId::from_index(0),
-                    optional: false,
+    let w = draft.intern_string("W").expect("a within-domain mint");
+    let idn = draft.intern_string("id").expect("a within-domain mint");
+    let kindn = draft.intern_string("kind").expect("a within-domain mint");
+    let ownern = draft.intern_string("owner").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: w,
+            fields: vec![
+                FieldDef {
+                    name: idn,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
                 },
-                required: true,
-            },
-            FieldDef {
-                name: ownern,
-                ty: ImageType::Record {
-                    idx: pair_ty,
-                    optional: false,
+                FieldDef {
+                    name: kindn,
+                    ty: ImageType::Enum {
+                        idx: EnumId::from_index(0),
+                        optional: false,
+                    },
+                    required: true,
                 },
-                required: false,
-            },
-        ],
-    });
-    let root = draft.intern_string("ws");
+                FieldDef {
+                    name: ownern,
+                    ty: ImageType::Record {
+                        idx: pair_ty,
+                        optional: false,
+                    },
+                    required: false,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
+    let root = draft.intern_string("ws").expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
     let int_value = draft.value_scalar(Scalar::Int);
     let text_value = draft.value_scalar(Scalar::Text);
     // An `Option[int]`-shaped enum and a dense `struct { int, text }`.
-    let enum_value = draft.value_enum(
-        ledger([0x50; 16]),
-        vec![
-            (ledger([0x51; 16]), Vec::new()),
-            (ledger([0x52; 16]), vec![int_value]),
-        ],
-    )
-    .expect("a within-bounds shape appends");
+    let enum_value = draft
+        .value_enum(
+            ledger([0x50; 16]),
+            vec![
+                (ledger([0x51; 16]), Vec::new()),
+                (ledger([0x52; 16]), vec![int_value]),
+            ],
+        )
+        .expect("a within-bounds shape appends");
     let struct_value = draft
         .value_struct(vec![int_value, text_value])
         .expect("a within-bounds shape appends");
@@ -979,9 +1032,11 @@ fn a_widened_durable_image() -> Vec<u8> {
             },
         )
         .expect("the Product is declared");
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("label");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("label").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len() as u32)
         .map(|instr_index| SpanEntry {
@@ -1031,21 +1086,23 @@ fn mutated_widened_durable_images_never_panic_the_verifier() {
 fn a_multi_site_durable_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let rec = draft.intern_string("Row");
+    let rec = draft.intern_string("Row").expect("a within-domain mint");
     let mut field_defs = Vec::new();
     for name in ["a", "b", "c", "d"] {
-        let field = draft.intern_string(name);
+        let field = draft.intern_string(name).expect("a within-domain mint");
         field_defs.push(FieldDef {
             name: field,
             ty: ImageType::scalar(Scalar::Int),
             required: true,
         });
     }
-    let record = draft.add_record_type(RecordTypeDef {
-        name: rec,
-        fields: field_defs,
-    });
-    let root = draft.intern_string("rows");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: rec,
+            fields: field_defs,
+        })
+        .expect("a within-domain mint");
+    let root = draft.intern_string("rows").expect("a within-domain mint");
     let application = ledger([0x0a; 16]);
     let placement = ledger([0x0b; 16]);
     draft.set_application_identity(application);
@@ -1105,9 +1162,11 @@ fn a_multi_site_durable_image() -> Vec<u8> {
             SemanticTarget::FieldLeaf,
         );
     }
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("label");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("label").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let func = draft
         .add_function(FunctionDef {

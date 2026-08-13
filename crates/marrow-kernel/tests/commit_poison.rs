@@ -79,18 +79,24 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let record_name = draft.intern_string("Counter");
-    let field_name = draft.intern_string("value");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: record_name,
-        fields: vec![FieldDef {
-            name: field_name,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
+    let record_name = draft
+        .intern_string("Counter")
+        .expect("a within-domain mint");
+    let field_name = draft.intern_string("value").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: record_name,
+            fields: vec![FieldDef {
+                name: field_name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let root_name = draft.intern_string("counters");
+    let root_name = draft
+        .intern_string("counters")
+        .expect("a within-domain mint");
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
     let value = draft.value_scalar(Scalar::Int);
     draft
@@ -144,8 +150,8 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     let field_site = draft
         .request_site(&field_handle)
         .expect("the binding is live");
-    let key = draft.intern_text("vm");
-    let value = draft.intern_int(7);
+    let key = draft.intern_text("vm").expect("a within-domain mint");
+    let value = draft.intern_int(7).expect("a within-domain mint");
     let mut code = vec![
         Instr::TxnBegin,
         Instr::ConstLoad(key),
@@ -159,8 +165,10 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
         VmWrite::SetRequired => code.push(Instr::DurSetRequired(field_site)),
     }
     code.extend([Instr::TxnCommit, Instr::Return]);
-    let name = draft.intern_string("write");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("write").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let function = draft
         .add_function(FunctionDef {
             name,

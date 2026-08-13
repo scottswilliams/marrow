@@ -56,28 +56,32 @@ struct Level {
 /// The base struct level `{ v: int, w: string }`: one value-shape node over two
 /// scalars, and the materialized record the durable field's declared type must be.
 fn base_level(draft: &mut DraftTxn<'_>) -> Level {
-    let v = draft.intern_string("v");
-    let w = draft.intern_string("w");
-    let name = draft.intern_string("S0");
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: vec![
-            FieldDef {
-                name: v,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            },
-            FieldDef {
-                name: w,
-                ty: ImageType::scalar(Scalar::Text),
-                required: true,
-            },
-        ],
-    });
+    let v = draft.intern_string("v").expect("a within-domain mint");
+    let w = draft.intern_string("w").expect("a within-domain mint");
+    let name = draft.intern_string("S0").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: vec![
+                FieldDef {
+                    name: v,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                },
+                FieldDef {
+                    name: w,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: true,
+                },
+            ],
+        })
+        .expect("a within-domain mint");
     let int = draft.value_scalar(Scalar::Int);
     let text = draft.value_scalar(Scalar::Text);
     Level {
-        shape: draft.value_struct(vec![int, text]).expect("a within-bounds shape appends"),
+        shape: draft
+            .value_struct(vec![int, text])
+            .expect("a within-bounds shape appends"),
         ty: record_type(record),
     }
 }
@@ -85,18 +89,24 @@ fn base_level(draft: &mut DraftTxn<'_>) -> Level {
 /// One more enclosing level over `inner`: a single-leaf struct, so the chain's depth
 /// grows by one per level while its expansion grows by one node.
 fn enclosing_level(draft: &mut DraftTxn<'_>, ordinal: usize, inner: Level) -> Level {
-    let field = draft.intern_string("inner");
-    let name = draft.intern_string(&format!("S{ordinal}"));
-    let record = draft.add_record_type(RecordTypeDef {
-        name,
-        fields: vec![FieldDef {
-            name: field,
-            ty: inner.ty,
-            required: true,
-        }],
-    });
+    let field = draft.intern_string("inner").expect("a within-domain mint");
+    let name = draft
+        .intern_string(&format!("S{ordinal}"))
+        .expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: vec![FieldDef {
+                name: field,
+                ty: inner.ty,
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
     Level {
-        shape: draft.value_struct(vec![inner.shape]).expect("a within-bounds shape appends"),
+        shape: draft
+            .value_struct(vec![inner.shape])
+            .expect("a within-bounds shape appends"),
         ty: record_type(record),
     }
 }
@@ -117,18 +127,22 @@ fn encode_corpus(fields: usize, levels: &dyn Fn(&mut DraftTxn<'_>) -> Vec<Level>
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
     let levels = levels(&mut draft);
-    let entry_name = draft.intern_string("R");
+    let entry_name = draft.intern_string("R").expect("a within-domain mint");
     let entry_fields: Vec<FieldDef> = (0..fields)
         .map(|ordinal| FieldDef {
-            name: draft.intern_string(&format!("f{ordinal}")),
+            name: draft
+                .intern_string(&format!("f{ordinal}"))
+                .expect("a within-domain mint"),
             ty: levels[ordinal % levels.len()].ty,
             required: true,
         })
         .collect();
-    let entry = draft.add_record_type(RecordTypeDef {
-        name: entry_name,
-        fields: entry_fields,
-    });
+    let entry = draft
+        .add_record_type(RecordTypeDef {
+            name: entry_name,
+            fields: entry_fields,
+        })
+        .expect("a within-domain mint");
     let members: Vec<DeclarationMemberDef> = (0..fields)
         .map(|ordinal| DeclarationMemberDef {
             parent: None,
@@ -148,7 +162,9 @@ fn encode_corpus(fields: usize, levels: &dyn Fn(&mut DraftTxn<'_>) -> Vec<Level>
             members,
         )
         .expect("a well-formed declaration");
-    let root_name = draft.intern_string("counters");
+    let root_name = draft
+        .intern_string("counters")
+        .expect("a within-domain mint");
     draft
         .add_root_occurrence(
             &admitted_plan(),
@@ -169,9 +185,11 @@ fn encode_corpus(fields: usize, levels: &dyn Fn(&mut DraftTxn<'_>) -> Vec<Level>
 }
 
 fn add_main(draft: &mut DraftTxn<'_>) {
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let zero = draft.intern_int(0);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let name = draft.intern_string("main").expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
     let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len())
         .map(|index| SpanEntry {

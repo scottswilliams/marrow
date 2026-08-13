@@ -112,8 +112,10 @@ fn encode(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> V
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let name = draft.intern_string("f");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let (ret, code) = build(&mut draft);
     let spans = (0..code.len())
         .map(|index| SpanEntry {
@@ -162,8 +164,8 @@ fn build_and_run(
 fn locals_and_arithmetic_compute_a_value() {
     // let a = 6; let b = 7; return a * b  == 42
     let result = build_and_run(|draft| {
-        let six = draft.intern_int(6);
-        let seven = draft.intern_int(7);
+        let six = draft.intern_int(6).expect("a within-domain mint");
+        let seven = draft.intern_int(7).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -184,8 +186,8 @@ fn locals_and_arithmetic_compute_a_value() {
 #[test]
 fn int_min_rem_negative_one_faults_overflow() {
     let result = build_and_run(|draft| {
-        let min = draft.intern_int(i64::MIN);
-        let neg_one = draft.intern_int(-1);
+        let min = draft.intern_int(i64::MIN).expect("a within-domain mint");
+        let neg_one = draft.intern_int(-1).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -202,7 +204,7 @@ fn int_min_rem_negative_one_faults_overflow() {
 #[test]
 fn neg_int_min_faults_overflow() {
     let result = build_and_run(|draft| {
-        let min = draft.intern_int(i64::MIN);
+        let min = draft.intern_int(i64::MIN).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![Instr::ConstLoad(min), Instr::IntNeg, Instr::Return],
@@ -214,8 +216,8 @@ fn neg_int_min_faults_overflow() {
 #[test]
 fn rem_by_zero_faults_divide_by_zero() {
     let result = build_and_run(|draft| {
-        let five = draft.intern_int(5);
-        let zero = draft.intern_int(0);
+        let five = draft.intern_int(5).expect("a within-domain mint");
+        let zero = draft.intern_int(0).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -235,8 +237,8 @@ fn rem_by_zero_faults_divide_by_zero() {
 fn int_div_truncates_toward_zero() {
     for (a, b, quotient) in [(7, 2, 3), (-7, 2, -3), (7, -2, -3), (-7, -2, 3), (6, 3, 2)] {
         let result = build_and_run(|draft| {
-            let av = draft.intern_int(a);
-            let bv = draft.intern_int(b);
+            let av = draft.intern_int(a).expect("a within-domain mint");
+            let bv = draft.intern_int(b).expect("a within-domain mint");
             (
                 ImageType::scalar(Scalar::Int),
                 vec![
@@ -254,8 +256,8 @@ fn int_div_truncates_toward_zero() {
 #[test]
 fn div_by_zero_faults_divide_by_zero() {
     let result = build_and_run(|draft| {
-        let five = draft.intern_int(5);
-        let zero = draft.intern_int(0);
+        let five = draft.intern_int(5).expect("a within-domain mint");
+        let zero = draft.intern_int(0).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -274,8 +276,8 @@ fn div_by_zero_faults_divide_by_zero() {
 #[test]
 fn int_min_div_negative_one_faults_overflow() {
     let result = build_and_run(|draft| {
-        let min = draft.intern_int(i64::MIN);
-        let neg_one = draft.intern_int(-1);
+        let min = draft.intern_int(i64::MIN).expect("a within-domain mint");
+        let neg_one = draft.intern_int(-1).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -294,7 +296,9 @@ fn int_min_div_negative_one_faults_overflow() {
 #[test]
 fn unreachable_faults() {
     let result = build_and_run(|draft| {
-        let text = draft.intern_text("cannot happen");
+        let text = draft
+            .intern_text("cannot happen")
+            .expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![Instr::Unreachable(text)],
@@ -308,7 +312,7 @@ fn unreachable_faults() {
 #[test]
 fn unreachable_with_non_text_operand_rejects() {
     let result = seal(|draft| {
-        let int_const = draft.intern_int(7);
+        let int_const = draft.intern_int(7).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![Instr::Unreachable(int_const)],
@@ -329,8 +333,8 @@ fn text_ordering_is_lexicographic() {
         ("Z", "a", Instr::TextLt, true), // 'Z' (0x5A) < 'a' (0x61)
     ] {
         let result = build_and_run(|draft| {
-            let av = draft.intern_text(a);
-            let bv = draft.intern_text(b);
+            let av = draft.intern_text(a).expect("a within-domain mint");
+            let bv = draft.intern_text(b).expect("a within-domain mint");
             (
                 ImageType::scalar(Scalar::Bool),
                 vec![
@@ -349,7 +353,7 @@ fn text_ordering_is_lexicographic() {
 #[test]
 fn scalar_conversions_render_and_encode() {
     let to_string_int = build_and_run(|draft| {
-        let n = draft.intern_int(-42);
+        let n = draft.intern_int(-42).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Text),
             vec![Instr::ConstLoad(n), Instr::ConvString, Instr::Return],
@@ -358,7 +362,7 @@ fn scalar_conversions_render_and_encode() {
     assert_eq!(to_string_int, Ok(Some(Value::Text("-42".into()))));
 
     let to_string_bool = build_and_run(|draft| {
-        let b = draft.intern_bool(true);
+        let b = draft.intern_bool(true).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Text),
             vec![Instr::ConstLoad(b), Instr::ConvString, Instr::Return],
@@ -367,7 +371,7 @@ fn scalar_conversions_render_and_encode() {
     assert_eq!(to_string_bool, Ok(Some(Value::Text("true".into()))));
 
     let to_bytes = build_and_run(|draft| {
-        let s = draft.intern_text("hi");
+        let s = draft.intern_text("hi").expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Bytes),
             vec![Instr::ConstLoad(s), Instr::ConvBytesText, Instr::Return],
@@ -384,7 +388,7 @@ fn scalar_conversions_render_and_encode() {
 fn bytes_equality_and_ordering() {
     // bytes("ab") == bytes("ab")
     let eq = build_and_run(|draft| {
-        let ab = draft.intern_text("ab");
+        let ab = draft.intern_text("ab").expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Bool),
             vec![
@@ -401,8 +405,8 @@ fn bytes_equality_and_ordering() {
 
     // bytes("ab") < bytes("b")
     let lt = build_and_run(|draft| {
-        let ab = draft.intern_text("ab");
-        let b = draft.intern_text("b");
+        let ab = draft.intern_text("ab").expect("a within-domain mint");
+        let b = draft.intern_text("b").expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Bool),
             vec![
@@ -424,9 +428,9 @@ fn bytes_equality_and_ordering() {
 fn checked_add_overflow_transfers_to_handler() {
     // instr 3 is the out_of_range handler.
     let result = build_and_run(|draft| {
-        let max = draft.intern_int(i64::MAX);
-        let one = draft.intern_int(1);
-        let sentinel = draft.intern_int(-1);
+        let max = draft.intern_int(i64::MAX).expect("a within-domain mint");
+        let one = draft.intern_int(1).expect("a within-domain mint");
+        let sentinel = draft.intern_int(-1).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -446,9 +450,9 @@ fn checked_add_overflow_transfers_to_handler() {
 #[test]
 fn checked_add_success_falls_through() {
     let result = build_and_run(|draft| {
-        let two = draft.intern_int(2);
-        let three = draft.intern_int(3);
-        let sentinel = draft.intern_int(-1);
+        let two = draft.intern_int(2).expect("a within-domain mint");
+        let three = draft.intern_int(3).expect("a within-domain mint");
+        let sentinel = draft.intern_int(-1).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -468,9 +472,9 @@ fn checked_add_success_falls_through() {
 #[test]
 fn checked_div_min_neg_one_transfers_to_handler() {
     let result = build_and_run(|draft| {
-        let min = draft.intern_int(i64::MIN);
-        let neg_one = draft.intern_int(-1);
-        let sentinel = draft.intern_int(0);
+        let min = draft.intern_int(i64::MIN).expect("a within-domain mint");
+        let neg_one = draft.intern_int(-1).expect("a within-domain mint");
+        let sentinel = draft.intern_int(0).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -491,8 +495,8 @@ fn checked_div_min_neg_one_transfers_to_handler() {
 #[test]
 fn checked_op_with_non_int_operand_rejects() {
     let result = seal(|draft| {
-        let flag = draft.intern_bool(true);
-        let one = draft.intern_int(1);
+        let flag = draft.intern_bool(true).expect("a within-domain mint");
+        let one = draft.intern_int(1).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -514,7 +518,7 @@ fn text_concat_over_the_limit_faults() {
     // doubling an accumulator: 4K → 8K → 16K → 32K → 64K → (128K faults).
     let seed = "x".repeat(4 * 1024);
     let result = build_and_run(move |draft| {
-        let a = draft.intern_text(&seed);
+        let a = draft.intern_text(&seed).expect("a within-domain mint");
         let mut code = vec![Instr::ConstLoad(a), Instr::LocalSet(0)];
         for _ in 0..5 {
             code.push(Instr::LocalGet(0));
@@ -533,7 +537,7 @@ fn text_concat_over_the_limit_faults() {
 fn unreachable_instruction_rejects() {
     // A second Return after the first is never reached.
     let rejection = seal(|draft| {
-        let one = draft.intern_int(1);
+        let one = draft.intern_int(1).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![
@@ -551,7 +555,7 @@ fn unreachable_instruction_rejects() {
 fn falling_off_the_end_rejects() {
     // No Return: control falls off the end.
     let rejection = seal(|draft| {
-        let one = draft.intern_int(1);
+        let one = draft.intern_int(1).expect("a within-domain mint");
         (ImageType::scalar(Scalar::Int), vec![Instr::ConstLoad(one)])
     });
     assert_eq!(rejection.err(), Some("image.function".to_string()));
@@ -561,7 +565,7 @@ fn falling_off_the_end_rejects() {
 fn return_type_mismatch_rejects() {
     // Returns a bool where the return type is int.
     let rejection = seal(|draft| {
-        let flag = draft.intern_bool(true);
+        let flag = draft.intern_bool(true).expect("a within-domain mint");
         (
             ImageType::scalar(Scalar::Int),
             vec![Instr::ConstLoad(flag), Instr::Return],

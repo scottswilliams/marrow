@@ -30,33 +30,35 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 
 /// Add a `Shape { dot, circle(int), rect(int, int) }` enum to `draft`.
 fn shape(draft: &mut DraftTxn<'_>) -> EnumId {
-    let name = draft.intern_string("Shape");
-    let dot = draft.intern_string("dot");
-    let circle = draft.intern_string("circle");
-    let rect = draft.intern_string("rect");
-    draft.add_enum_type(EnumTypeDef {
-        name,
-        variants: vec![
-            VariantDef {
-                name: dot,
-                category: false,
-                payload: vec![],
-            },
-            VariantDef {
-                name: circle,
-                category: false,
-                payload: vec![ImageType::scalar(Scalar::Int)],
-            },
-            VariantDef {
-                name: rect,
-                category: false,
-                payload: vec![
-                    ImageType::scalar(Scalar::Int),
-                    ImageType::scalar(Scalar::Int),
-                ],
-            },
-        ],
-    })
+    let name = draft.intern_string("Shape").expect("a within-domain mint");
+    let dot = draft.intern_string("dot").expect("a within-domain mint");
+    let circle = draft.intern_string("circle").expect("a within-domain mint");
+    let rect = draft.intern_string("rect").expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![
+                VariantDef {
+                    name: dot,
+                    category: false,
+                    payload: vec![],
+                },
+                VariantDef {
+                    name: circle,
+                    category: false,
+                    payload: vec![ImageType::scalar(Scalar::Int)],
+                },
+                VariantDef {
+                    name: rect,
+                    category: false,
+                    payload: vec![
+                        ImageType::scalar(Scalar::Int),
+                        ImageType::scalar(Scalar::Int),
+                    ],
+                },
+            ],
+        })
+        .expect("a within-domain mint")
 }
 
 /// Encode `draft` (adding `f` as a storeless export over `code` returning `ret`)
@@ -68,8 +70,10 @@ fn verify_fn(
     code: Vec<Instr>,
 ) -> String {
     let mut draft = admitted(&mut owner);
-    let name = draft.intern_string("f");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let local_count = params.len() as u16 + 4;
     let func = draft
         .add_function(FunctionDef {
@@ -99,8 +103,10 @@ fn encode_fn(
     code: Vec<Instr>,
 ) -> Result<(), ImageBuildError> {
     let mut draft = admitted(&mut owner);
-    let name = draft.intern_string("f");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let local_count = params.len() as u16 + 4;
     let func = draft
         .add_function(FunctionDef {
@@ -122,7 +128,7 @@ fn a_well_formed_enum_image_verifies() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let enum_idx = shape(&mut draft);
-    let two = draft.intern_int(2);
+    let two = draft.intern_int(2).expect("a within-domain mint");
     // f(): int = Shape::circle(2) then read its payload leaf.
     let code = vec![
         Instr::ConstLoad(two),
@@ -200,23 +206,25 @@ fn an_enum_return_index_out_of_range_is_refused_by_the_producer() {
 fn a_duplicate_variant_name_rejects_at_table() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let name = draft.intern_string("E");
-    let a = draft.intern_string("a");
-    draft.add_enum_type(EnumTypeDef {
-        name,
-        variants: vec![
-            VariantDef {
-                name: a,
-                category: false,
-                payload: vec![],
-            },
-            VariantDef {
-                name: a, // same name string index
-                category: false,
-                payload: vec![],
-            },
-        ],
-    });
+    let name = draft.intern_string("E").expect("a within-domain mint");
+    let a = draft.intern_string("a").expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![
+                VariantDef {
+                    name: a,
+                    category: false,
+                    payload: vec![],
+                },
+                VariantDef {
+                    name: a, // same name string index
+                    category: false,
+                    payload: vec![],
+                },
+            ],
+        })
+        .expect("a within-domain mint");
     let code = vec![Instr::Return];
     assert_eq!(
         verify_fn(
@@ -269,7 +277,7 @@ fn an_out_of_range_payload_field_rejects_at_function() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let enum_idx = shape(&mut draft);
-    let two = draft.intern_int(2);
+    let two = draft.intern_int(2).expect("a within-domain mint");
     // circle has one payload field (index 0); reading field 5 is out of range.
     let code = vec![
         Instr::ConstLoad(two),
@@ -306,22 +314,26 @@ fn a_collection_enum_payload_leaf_rejects_at_table() {
     // trust boundary.
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let list_int = draft.add_collection_type(CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Int),
-    });
-    let name = draft.intern_string("Holder");
-    let wrap = draft.intern_string("wrap");
-    draft.add_enum_type(EnumTypeDef {
-        name,
-        variants: vec![VariantDef {
-            name: wrap,
-            category: false,
-            payload: vec![ImageType::Collection {
-                idx: list_int,
-                optional: false,
+    let list_int = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
+    let name = draft.intern_string("Holder").expect("a within-domain mint");
+    let wrap = draft.intern_string("wrap").expect("a within-domain mint");
+    draft
+        .add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![VariantDef {
+                name: wrap,
+                category: false,
+                payload: vec![ImageType::Collection {
+                    idx: list_int,
+                    optional: false,
+                }],
             }],
-        }],
-    });
+        })
+        .expect("a within-domain mint");
     let code = vec![Instr::Return];
     assert_eq!(
         verify_fn(
@@ -344,8 +356,10 @@ fn a_truncated_enum_table_rejects_at_envelope() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let _ = shape(&mut draft);
-    let name = draft.intern_string("f");
-    let source = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let source = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
     let code = vec![Instr::Return];
     let func = draft
         .add_function(FunctionDef {

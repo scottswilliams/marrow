@@ -73,29 +73,33 @@ fn traversal_image() -> VerifiedImage {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
 
-    let book = draft.intern_string("Book");
-    let title = draft.intern_string("title");
-    let book_record = draft.add_record_type(RecordTypeDef {
-        name: book,
-        fields: vec![FieldDef {
-            name: title,
-            ty: ImageType::scalar(Scalar::Text),
-            required: true,
-        }],
-    });
-    let note = draft.intern_string("Note");
-    let text = draft.intern_string("text");
-    let note_record = draft.add_record_type(RecordTypeDef {
-        name: note,
-        fields: vec![FieldDef {
-            name: text,
-            ty: ImageType::scalar(Scalar::Text),
-            required: true,
-        }],
-    });
+    let book = draft.intern_string("Book").expect("a within-domain mint");
+    let title = draft.intern_string("title").expect("a within-domain mint");
+    let book_record = draft
+        .add_record_type(RecordTypeDef {
+            name: book,
+            fields: vec![FieldDef {
+                name: title,
+                ty: ImageType::scalar(Scalar::Text),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
+    let note = draft.intern_string("Note").expect("a within-domain mint");
+    let text = draft.intern_string("text").expect("a within-domain mint");
+    let note_record = draft
+        .add_record_type(RecordTypeDef {
+            name: note,
+            fields: vec![FieldDef {
+                name: text,
+                ty: ImageType::scalar(Scalar::Text),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
 
-    let root = draft.intern_string("books");
-    let notes = draft.intern_string("notes");
+    let root = draft.intern_string("books").expect("a within-domain mint");
+    let notes = draft.intern_string("notes").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
     let text_value = draft.value_scalar(Scalar::Text);
@@ -165,28 +169,32 @@ fn traversal_image() -> VerifiedImage {
         members[1].path(),
         SemanticTarget::WholePayload,
     );
-    let list_int = draft.add_collection_type(CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Int),
-    });
+    let list_int = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .expect("a within-domain mint");
 
-    let src = draft.intern_string("src/main.mw");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
 
     // The mutating seed: create three books and two notes under book 1. Its write
     // demand widens the attachment ceiling so the store can be populated.
     {
-        let name = draft.intern_string("seed");
-        let title_const = draft.intern_text("t");
+        let name = draft.intern_string("seed").expect("a within-domain mint");
+        let title_const = draft.intern_text("t").expect("a within-domain mint");
         let mut code = vec![Instr::TxnBegin];
         for id in [1i64, 2, 3] {
-            let key = draft.intern_int(id);
+            let key = draft.intern_int(id).expect("a within-domain mint");
             code.push(Instr::ConstLoad(key)); // root key
             code.push(Instr::ConstLoad(title_const)); // title (a string const)
             code.push(Instr::RecordNew(book_record));
             code.push(Instr::DurCreateEntry(root_entry.clone()));
         }
-        let book_one = draft.intern_int(1);
+        let book_one = draft.intern_int(1).expect("a within-domain mint");
         for pos in [10i64, 20] {
-            let branch_key = draft.intern_int(pos);
+            let branch_key = draft.intern_int(pos).expect("a within-domain mint");
             code.push(Instr::ConstLoad(book_one)); // root key
             code.push(Instr::ConstLoad(branch_key)); // branch key
             code.push(Instr::ConstLoad(title_const)); // text
@@ -224,7 +232,7 @@ fn traversal_image() -> VerifiedImage {
                            limit: u32,
                            from: bool,
                            ancestor: bool| {
-        let name_id = draft.intern_string(name);
+        let name_id = draft.intern_string(name).expect("a within-domain mint");
         let mut code = Vec::new();
         let params = if from || ancestor {
             vec![ImageType::scalar(Scalar::Int)]
@@ -268,7 +276,7 @@ fn traversal_image() -> VerifiedImage {
                            site: &PlannedSiteRef,
                            limit: u32,
                            ancestor: bool| {
-        let name_id = draft.intern_string(name);
+        let name_id = draft.intern_string(name).expect("a within-domain mint");
         let mut code = Vec::new();
         let params = if ancestor {
             vec![ImageType::scalar(Scalar::Int)]
@@ -482,17 +490,19 @@ fn a_branch_traversal_scopes_to_its_parent_entry() {
 fn wide_key_image() -> (VerifiedImage, u16) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let rec = draft.intern_string("Rec");
-    let v = draft.intern_string("v");
-    let record = draft.add_record_type(RecordTypeDef {
-        name: rec,
-        fields: vec![FieldDef {
-            name: v,
-            ty: ImageType::scalar(Scalar::Int),
-            required: true,
-        }],
-    });
-    let root = draft.intern_string("big");
+    let rec = draft.intern_string("Rec").expect("a within-domain mint");
+    let v = draft.intern_string("v").expect("a within-domain mint");
+    let record = draft
+        .add_record_type(RecordTypeDef {
+            name: rec,
+            fields: vec![FieldDef {
+                name: v,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
+    let root = draft.intern_string("big").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
     let value = draft.value_scalar(Scalar::Int);
@@ -532,17 +542,21 @@ fn wide_key_image() -> (VerifiedImage, u16) {
         big.placement_path(),
         SemanticTarget::WholePayload,
     );
-    let list_str = draft.add_collection_type(CollectionTypeDef::List {
-        elem: ImageType::scalar(Scalar::Text),
-    });
-    let src = draft.intern_string("src/main.mw");
+    let list_str = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .expect("a within-domain mint");
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
 
     // A one-entry mutating seed: its presence gives the program write demand so the
     // ceiling admits the direct bulk seeding below.
     {
-        let name = draft.intern_string("seed");
-        let key = draft.intern_text("k");
-        let value = draft.intern_int(0);
+        let name = draft.intern_string("seed").expect("a within-domain mint");
+        let key = draft.intern_text("k").expect("a within-domain mint");
+        let value = draft.intern_int(0).expect("a within-domain mint");
         let code = vec![
             Instr::TxnBegin,
             Instr::ConstLoad(key),
@@ -568,7 +582,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
 
     // The read export freezes up to MAX_TRAVERSAL_BOUND keys and returns the list.
     {
-        let name = draft.intern_string("all");
+        let name = draft.intern_string("all").expect("a within-domain mint");
         let code = vec![
             Instr::DurIterateBounded {
                 site: root_entry.clone(),

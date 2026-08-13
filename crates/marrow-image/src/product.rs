@@ -1733,7 +1733,9 @@ mod tests {
                 parent: None,
                 shape: DeclarationMemberShape::Branch {
                     placement: id(0x30),
-                    name: ImageDraft::new().intern_string("notes"),
+                    name: ImageDraft::new()
+                        .intern_string("notes")
+                        .expect("a within-domain mint"),
                     record: TypeId(7),
                     keys: vec![KeyColumn {
                         scalar: Scalar::Int,

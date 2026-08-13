@@ -1346,7 +1346,7 @@ fn build_one(
         .iter()
         .map(|built| built.shape.clone())
         .collect();
-    let root_name = draft.intern_string(&store.root.root);
+    let root_name = draft.intern_string(&store.root.root)?;
     let admitted = draft.add_root_occurrence(
         plan,
         product,
@@ -1806,7 +1806,7 @@ impl<'a> IdentityResolver<'a> {
         match values.value_enum(sum, members) {
             Ok(node) => node,
             Err(refusal) => {
-                self.remember_invariant(GenericInvariant::ValueShapeDomain(refusal));
+                self.remember_invariant(GenericInvariant::BuilderDomain(refusal));
                 values.value_scalar(ScalarType::Int.image())
             }
         }
@@ -1823,8 +1823,21 @@ impl<'a> IdentityResolver<'a> {
         match values.value_struct(leaves) {
             Ok(node) => node,
             Err(refusal) => {
-                self.remember_invariant(GenericInvariant::ValueShapeDomain(refusal));
+                self.remember_invariant(GenericInvariant::BuilderDomain(refusal));
                 values.value_scalar(ScalarType::Int.image())
+            }
+        }
+    }
+
+    /// Consume one checked draft mint: a carrier-domain refusal is unreachable under
+    /// the admitted source envelope, so it aborts the durable build at the compiler
+    /// invariant boundary and the current path stops with `None`.
+    fn checked_mint<T>(&mut self, minted: Result<T, marrow_image::DraftStateError>) -> Option<T> {
+        match minted {
+            Ok(value) => Some(value),
+            Err(refusal) => {
+                self.remember_invariant(GenericInvariant::BuilderDomain(refusal));
+                None
             }
         }
     }
@@ -2016,12 +2029,21 @@ impl<'a> IdentityResolver<'a> {
                 ));
                 let record_fields =
                     self.build_member_tree(nodes, cursor.below(at, &path), draft, records, group);
-                let record_name = draft.intern_string(&path);
-                let record = draft.add_record_type(RecordTypeDef {
+                let minted = draft.intern_string(&path);
+                let Some(record_name) = self.checked_mint(minted) else {
+                    return;
+                };
+                let minted = draft.add_record_type(RecordTypeDef {
                     name: record_name,
                     fields: record_fields,
                 });
-                let name = draft.intern_string(&group.name);
+                let Some(record) = self.checked_mint(minted) else {
+                    return;
+                };
+                let minted = draft.intern_string(&group.name);
+                let Some(name) = self.checked_mint(minted) else {
+                    return;
+                };
                 nodes[at].declare(DeclarationMemberShape::Branch {
                     placement,
                     name,
@@ -2153,8 +2175,9 @@ impl<'a> IdentityResolver<'a> {
         // The record field mirrors the durable member: same order, same scalar, same
         // required flag. The branch entry's whole-payload read/create/replace flows
         // through this record type.
+        let minted = draft.intern_string(&field.name);
         let record_field = FieldDef {
-            name: draft.intern_string(&field.name),
+            name: self.checked_mint(minted)?,
             ty: ImageType::scalar(scalar.image()),
             required: field.required,
         };

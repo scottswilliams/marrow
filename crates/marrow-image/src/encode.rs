@@ -746,27 +746,31 @@ mod counted_equals_emitted {
     /// A storeless draft whose insertion orders disagree with every canonical order.
     fn storeless() -> ImageDraft {
         let mut draft = ImageDraft::new();
-        let source = draft.intern_string("src/main.mw");
-        let zeta = draft.intern_string("zeta");
-        let alpha = draft.intern_string("alpha");
-        let record_name = draft.intern_string("record");
-        let field_name = draft.intern_string("field");
-        let enum_name = draft.intern_string("choice");
-        let variant_one = draft.intern_string("one");
-        let variant_two = draft.intern_string("two");
+        let source = draft
+            .intern_string("src/main.mw")
+            .expect("a within-domain mint");
+        let zeta = draft.intern_string("zeta").expect("a within-domain mint");
+        let alpha = draft.intern_string("alpha").expect("a within-domain mint");
+        let record_name = draft.intern_string("record").expect("a within-domain mint");
+        let field_name = draft.intern_string("field").expect("a within-domain mint");
+        let enum_name = draft.intern_string("choice").expect("a within-domain mint");
+        let variant_one = draft.intern_string("one").expect("a within-domain mint");
+        let variant_two = draft.intern_string("two").expect("a within-domain mint");
 
-        let text = draft.intern_text("zeta");
-        draft.intern_int(-1);
-        draft.intern_int(0);
-        draft.intern_bool(true);
-        draft.intern_date(20_000);
-        draft.intern_instant(7);
-        draft.intern_duration(-7);
+        let text = draft.intern_text("zeta").expect("a within-domain mint");
+        draft.intern_int(-1).expect("a within-domain mint");
+        draft.intern_int(0).expect("a within-domain mint");
+        draft.intern_bool(true).expect("a within-domain mint");
+        draft.intern_date(20_000).expect("a within-domain mint");
+        draft.intern_instant(7).expect("a within-domain mint");
+        draft.intern_duration(-7).expect("a within-domain mint");
 
-        let record = draft.add_record_type(RecordTypeDef {
-            name: record_name,
-            fields: Vec::new(),
-        });
+        let record = draft
+            .add_record_type(RecordTypeDef {
+                name: record_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let mut fills = draft
             .begin_transaction(draft.savepoint())
             .expect("a fresh savepoint admits");
@@ -788,10 +792,12 @@ mod counted_equals_emitted {
             )
             .expect("the reserved row fills once");
         fills.commit();
-        let choice = draft.add_enum_type(crate::draft::EnumTypeDef {
-            name: enum_name,
-            variants: Vec::new(),
-        });
+        let choice = draft
+            .add_enum_type(crate::draft::EnumTypeDef {
+                name: enum_name,
+                variants: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let mut fills = draft
             .begin_transaction(draft.savepoint())
             .expect("a fresh savepoint admits");
@@ -813,13 +819,17 @@ mod counted_equals_emitted {
             )
             .expect("the reserved row fills once");
         fills.commit();
-        let list = draft.add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        });
-        draft.add_collection_type(CollectionTypeDef::Map {
-            key: ImageType::scalar(Scalar::Text),
-            value: ImageType::scalar(Scalar::Bool),
-        });
+        let list = draft
+            .add_collection_type(CollectionTypeDef::List {
+                elem: ImageType::scalar(Scalar::Int),
+            })
+            .expect("a within-domain mint");
+        draft
+            .add_collection_type(CollectionTypeDef::Map {
+                key: ImageType::scalar(Scalar::Text),
+                value: ImageType::scalar(Scalar::Bool),
+            })
+            .expect("a within-domain mint");
 
         let mut funcs = Vec::new();
         for name in [zeta, alpha] {
@@ -896,15 +906,19 @@ mod counted_equals_emitted {
     fn durable() -> ImageDraft {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(id(0x01));
-        let record_name = draft.intern_string("entry");
-        let keyed = draft.intern_string("keyed");
-        let indexed = draft.intern_string("indexed");
-        let branch_name = draft.intern_string("branch");
+        let record_name = draft.intern_string("entry").expect("a within-domain mint");
+        let keyed = draft.intern_string("keyed").expect("a within-domain mint");
+        let indexed = draft
+            .intern_string("indexed")
+            .expect("a within-domain mint");
+        let branch_name = draft.intern_string("branch").expect("a within-domain mint");
 
-        let entry = draft.add_record_type(RecordTypeDef {
-            name: record_name,
-            fields: Vec::new(),
-        });
+        let entry = draft
+            .add_record_type(RecordTypeDef {
+                name: record_name,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
         let leaf = draft.value_shapes_mut().scalar(Scalar::Int);
         let pair = draft.value_shapes_mut().struct_shape(vec![leaf, leaf]);
         let sum = draft.value_shapes_mut().enum_shape(
@@ -1247,9 +1261,11 @@ mod counted_equals_emitted {
     #[ignore = "measurement harness: run with --ignored and record the printed numbers"]
     fn measure_the_layout_scratch_for_the_full_function_partition() {
         let mut draft = ImageDraft::new();
-        let source = draft.intern_string("src/main.mw");
-        let name = draft.intern_string("f");
-        let zero = draft.intern_int(0);
+        let source = draft
+            .intern_string("src/main.mw")
+            .expect("a within-domain mint");
+        let name = draft.intern_string("f").expect("a within-domain mint");
+        let zero = draft.intern_int(0).expect("a within-domain mint");
         let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 64)
             .chain([Instr::Return])
             .collect();
