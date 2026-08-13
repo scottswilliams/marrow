@@ -1140,7 +1140,7 @@ type ResolvedStructFields = (Vec<FieldInfo>, Vec<FieldDef>);
 
 fn struct_fields(
     draft: &mut DraftTxn<'_>,
-    registry: &TypeRegistry,
+    registry: &mut TypeRegistry,
     declared: DeclarationSite<'_>,
     decl: &StructDecl,
     diagnostics: &mut DiagnosticCollector,
@@ -1779,7 +1779,7 @@ fn member_conflict(
 /// never reaches a concrete record.
 fn resource_member(
     draft: &mut DraftTxn<'_>,
-    registry: &TypeRegistry,
+    registry: &mut TypeRegistry,
     at: DeclarationSite<'_>,
     field: &FieldDecl,
     subject: &str,

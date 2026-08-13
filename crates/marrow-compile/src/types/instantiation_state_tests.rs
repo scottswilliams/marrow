@@ -396,7 +396,7 @@ fn assert_metadata_unchanged(
 }
 
 fn active_registry() -> TypeRegistry {
-    let registry = registry(vec![template("Active", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Active", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     registry
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(1))
@@ -532,7 +532,7 @@ fn settlement_precommit_faults_are_exact_and_read_only() {
 
 #[test]
 fn nonsettlement_cache_faults_are_exact_and_read_only() {
-    let registry = active_registry();
+    let mut registry = active_registry();
     registry.generics.borrow_mut().fill_batch_start = None;
     registry.generics.borrow_mut().fill_rows.clear();
     let id = registry.generics.borrow().type_insts[0].id;
@@ -577,7 +577,7 @@ fn nonsettlement_cache_faults_are_exact_and_read_only() {
 
 #[test]
 fn failed_fill_rejects_reverse_dependent_rows_without_poisoning_siblings() {
-    let registry = registry(vec![
+    let mut registry = registry(vec![
         template("Good", vec![("value", name("T"))]),
         template(
             "Outer",
@@ -629,7 +629,7 @@ fn failed_fill_rejects_reverse_dependent_rows_without_poisoning_siblings() {
 
 #[test]
 fn collection_substitution_edges_reject_dependents_of_a_failed_outer_row() {
-    let registry = registry(vec![
+    let mut registry = registry(vec![
         template(
             "Outer",
             vec![
@@ -666,7 +666,7 @@ fn mixed_fill_refusals_join_to_limit_without_poisoning_an_independent_row() {
         vec![(0, ResolveRefusal::Unsupported), (1, ResolveRefusal::Limit)],
         vec![(1, ResolveRefusal::Limit), (0, ResolveRefusal::Unsupported)],
     ] {
-        let registry = registry(vec![
+        let mut registry = registry(vec![
             template("Outer", vec![("value", name("T"))]),
             template("Dependency", vec![("value", name("T"))]),
             template("Sibling", vec![("value", name("T"))]),
@@ -745,7 +745,7 @@ fn mixed_fill_refusals_join_to_limit_without_poisoning_an_independent_row() {
 
 #[test]
 fn divergent_limit_rejects_dependents_and_reports_once() {
-    let registry = registry(vec![template(
+    let mut registry = registry(vec![template(
         "Grow",
         vec![("next", apply("Grow", vec![apply("List", vec![name("T")])]))],
     )]);
@@ -784,7 +784,7 @@ fn divergent_limit_rejects_dependents_and_reports_once() {
 
 #[test]
 fn rejected_rows_are_displayable_but_not_semantic_or_anchor_ready() {
-    let registry = registry(vec![enum_template(
+    let mut registry = registry(vec![enum_template(
         "Bad",
         apply("Missing", vec![name("T")]),
     )]);
@@ -992,7 +992,7 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
 
 #[test]
 fn proof_clone_validates_every_ready_row_even_when_ids_are_duplicated() {
-    let registry = registry(vec![template("Box", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     registry
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
@@ -1039,7 +1039,7 @@ fn proof_clone_validates_every_ready_row_even_when_ids_are_duplicated() {
 
 #[test]
 fn metadata_rejects_distinct_ids_with_the_same_semantic_cache_key() {
-    let registry = registry(vec![template("Box", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     let first = registry
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(3))
@@ -1402,7 +1402,7 @@ fn metadata_rejects_resource_record_collisions_with_static_record_owners() {
 
 #[test]
 fn metadata_rejects_cyclic_ready_arguments_before_display_or_durable_use() {
-    let registry = registry(vec![
+    let mut registry = registry(vec![
         template("Inner", vec![("value", name("T"))]),
         template("Outer", vec![("value", name("T"))]),
     ]);
@@ -1595,7 +1595,7 @@ fn generic_predecessor_order_survives_collection_expansion() {
 #[test]
 fn collection_predecessor_validation_preserves_missing_target_precedence() {
     for (corrupt, missing) in [(0, coll(0)), (1, coll(1)), (2, coll(2))] {
-        let registry = registry(vec![template("A", vec![("value", name("T"))])]);
+        let mut registry = registry(vec![template("A", vec![("value", name("T"))])]);
         let mut draft = fresh_draft();
         let a = registry
             .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(11))
@@ -1670,7 +1670,7 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
     }
 
     fn rows() -> Rows {
-        let registry = registry(vec![
+        let mut registry = registry(vec![
             template("Earlier", vec![("value", name("T"))]),
             template("Owner", vec![("value", name("T"))]),
             template("Forward", vec![("value", name("T"))]),
@@ -2005,7 +2005,7 @@ fn proof_clone_collections_borrow_conflict_fails_without_unwinding() {
 /// the dedicated Option/Result readers.
 #[test]
 fn ready_reserved_option_and_result_readers_preserve_arguments() {
-    let registry = registry(reserved_templates());
+    let mut registry = registry(reserved_templates());
     let mut draft = fresh_draft();
     let option = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
@@ -2106,7 +2106,7 @@ fn reserved_readers_require_the_fixed_member_contract_not_only_template_agreemen
 
 #[test]
 fn metadata_directory_builds_follow_immutable_operation_boundaries() {
-    let registry = registry(vec![template("Box", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     let (fresh, fresh_builds) = count_metadata_directory_builds(|| {
         registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
@@ -2183,7 +2183,7 @@ fn metadata_directory_builds_follow_immutable_operation_boundaries() {
 
 #[test]
 fn validated_nested_collection_spelling_reuses_one_metadata_session() {
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     let inner = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
@@ -2270,7 +2270,7 @@ fn deep_collection_spelling_and_anchor_use_iterative_activity_owners() {
 
 #[test]
 fn metadata_directory_construction_failure_never_enters_a_session() {
-    let registry = registry(vec![template("Box", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     let first = registry
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
@@ -2310,7 +2310,7 @@ fn metadata_directory_construction_failure_never_enters_a_session() {
 
 #[test]
 fn one_metadata_session_classifies_both_reserved_families() {
-    let registry = registry(reserved_templates());
+    let mut registry = registry(reserved_templates());
     let mut draft = fresh_draft();
     let option = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
@@ -2358,7 +2358,7 @@ fn one_metadata_session_classifies_both_reserved_families() {
 
 #[test]
 fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
@@ -2393,7 +2393,7 @@ fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
 /// shape through any semantic reader, for both Option and Result.
 #[test]
 fn filling_and_rejected_reserved_option_and_result_rows_are_hidden() {
-    let registry = registry(reserved_templates());
+    let mut registry = registry(reserved_templates());
     let mut draft = fresh_draft();
     let option = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
@@ -2466,7 +2466,7 @@ fn assert_reserved_rows_hidden(registry: &TypeRegistry, option: EnumId, result: 
 /// an expectation unwind.
 #[test]
 fn missing_reserved_template_fails_without_unwinding() {
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     let registry_before = stable_snapshot(&registry);
     let draft_before = draft.encode().expect("empty draft encodes");
@@ -2522,7 +2522,7 @@ fn resolve_garg_reports_exact_missing_option_and_result_templates() {
             .into_iter()
             .filter(|template| template.reserved != Some(reserved))
             .collect();
-        let registry = registry(templates);
+        let mut registry = registry(templates);
         let args = match reserved {
             Reserved::Option => vec![name("int")],
             Reserved::Result => vec![name("int"), name("string")],
@@ -2553,7 +2553,7 @@ fn resolve_garg_reports_exact_wrong_option_and_result_template_kinds() {
             .position(|candidate| candidate.reserved == Some(reserved))
             .expect("reserved template exists");
         templates[template].body = TemplateBody::Struct(Vec::new());
-        let registry = registry(templates);
+        let mut registry = registry(templates);
         let args = match reserved {
             Reserved::Option => vec![name("int")],
             Reserved::Result => vec![name("int"), name("string")],
@@ -2583,7 +2583,7 @@ fn resolve_garg_reports_exact_wrong_option_and_result_template_kinds() {
 fn map_key_resolution_validates_metadata_before_semantic_refusal() {
     let annotation = apply("Map", vec![name("K"), name("int")]);
     for family in ["struct", "enum", "collection"] {
-        let registry = registry(Vec::new());
+        let mut registry = registry(Vec::new());
         let mut draft_owner = ImageDraft::new();
         let mut draft = admitted(&mut draft_owner);
         let arg = match family {
@@ -2669,7 +2669,7 @@ fn map_key_resolution_validates_metadata_before_semantic_refusal() {
     assert_eq!(stable_snapshot(&declared_registry), owner_before);
     assert_eq!(draft_snapshot(&declared_draft), draft_before);
 
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     let valid = apply("Map", vec![name("int"), name("string")]);
     let (resolved, builds) =
@@ -2684,7 +2684,7 @@ fn missing_nominal_map_key_stops_before_resolving_a_fresh_value() {
     let annotation = apply("Map", vec![name("K"), apply("List", vec![name("int")])]);
     let missing = GArg::Nominal(NominalId(0));
     let subst = vec![("K".to_string(), missing)];
-    let registry = make_registry(Vec::new());
+    let mut registry = make_registry(Vec::new());
     let mut draft = fresh_draft();
     let owner_before = stable_snapshot(&registry);
     let draft_before = draft_snapshot(&draft);
@@ -2742,7 +2742,7 @@ fn missing_nominal_map_key_stops_before_resolving_a_fresh_value() {
 /// before interning field names or mutating either draft table.
 #[test]
 fn struct_body_with_enum_id_fails_before_draft_mutation() {
-    let registry = registry(vec![template("Good", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Good", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     let wrong_name = draft.intern_string("Wrong").expect("a within-domain mint");
     let wrong_id = draft
@@ -2778,7 +2778,7 @@ fn struct_body_with_enum_id_fails_before_draft_mutation() {
 /// before interning member names or mutating either draft table.
 #[test]
 fn enum_body_with_record_id_fails_before_draft_mutation() {
-    let registry = registry(vec![enum_template("Good", name("T"))]);
+    let mut registry = registry(vec![enum_template("Good", name("T"))]);
     let mut draft = fresh_draft();
     let wrong_name = draft.intern_string("Wrong").expect("a within-domain mint");
     let wrong_id = draft
@@ -2814,7 +2814,7 @@ fn enum_body_with_record_id_fails_before_draft_mutation() {
 /// owner, before a usable collection index can escape.
 #[test]
 fn list_draft_ahead_misalignment_fails_without_exposing_an_index() {
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     draft
         .add_collection_type(CollectionTypeDef::List {
@@ -2842,7 +2842,7 @@ fn list_draft_ahead_misalignment_fails_without_exposing_an_index() {
 /// The Map owner has the same no-index-on-misalignment boundary.
 #[test]
 fn map_cache_ahead_misalignment_fails_without_exposing_an_index() {
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     registry.collections.borrow_mut().push(CollSpec::Map {
         key: GArg::Scalar(ScalarType::Int),
@@ -2874,7 +2874,7 @@ fn map_cache_ahead_misalignment_fails_without_exposing_an_index() {
 /// escape or reach collection_spec.
 #[test]
 fn collection_drift_blocks_a_cache_hit_without_exposing_the_prior_index() {
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
@@ -2907,7 +2907,7 @@ fn collection_drift_blocks_a_cache_hit_without_exposing_the_prior_index() {
 
 #[test]
 fn published_collection_metadata_is_revalidated_without_a_watermark() {
-    let registry = registry(vec![template("Box", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
@@ -2940,7 +2940,7 @@ fn published_collection_metadata_is_revalidated_without_a_watermark() {
 
 #[test]
 fn aligned_collection_wrappers_publish_consecutive_indices() {
-    let registry = registry(Vec::new());
+    let mut registry = registry(Vec::new());
     let mut draft = fresh_draft();
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
@@ -2980,7 +2980,7 @@ fn take_generic_invariant<T>(result: Result<T, ResolveError>) -> GenericInvarian
 
 #[test]
 fn record_id_with_enum_body_fails_every_ready_boundary_exactly() {
-    let registry = registry(vec![template("Box", vec![("value", name("T"))])]);
+    let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     let id = registry
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
@@ -3022,7 +3022,7 @@ fn record_id_with_enum_body_fails_every_ready_boundary_exactly() {
 
 #[test]
 fn enum_id_with_struct_body_fails_every_ready_boundary_exactly() {
-    let registry = registry(reserved_templates());
+    let mut registry = registry(reserved_templates());
     let mut draft = fresh_draft();
     let enum_id = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
@@ -3224,7 +3224,7 @@ fn durable_prevalidation_reaches_nested_and_phantom_generic_arguments() {
     for fields in [vec![("value", name("T"))], Vec::new()] {
         let mut templates = reserved_templates();
         templates.push(template("Outer", fields));
-        let registry = registry(templates);
+        let mut registry = registry(templates);
         let mut draft = fresh_draft();
         let inner = registry
             .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
@@ -3379,7 +3379,7 @@ store ^holders[id: int]: Holder
 
 #[test]
 fn value_cycle_invariant_precedes_and_preserves_source_diagnostics() {
-    let registry = registry(reserved_templates());
+    let mut registry = registry(reserved_templates());
     let mut draft = fresh_draft();
     let enum_id = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))

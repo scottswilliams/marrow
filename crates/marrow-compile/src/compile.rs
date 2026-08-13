@@ -1485,7 +1485,7 @@ fn run_semantic(
     let signatures = {
         let mut txn = admitted(&mut draft);
         let signatures = match FunctionRegistry::build(
-            &records,
+            &mut records,
             &mut txn,
             &durable,
             &functions,

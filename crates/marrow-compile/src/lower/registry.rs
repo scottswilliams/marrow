@@ -148,7 +148,7 @@ impl FunctionRegistry {
     /// image's monomorphic slots are the same sequence.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
-        records: &TypeRegistry,
+        records: &mut TypeRegistry,
         draft: &mut DraftTxn<'_>,
         durable: &DurableRegistry,
         functions: &[DeclaredFn<'_>],

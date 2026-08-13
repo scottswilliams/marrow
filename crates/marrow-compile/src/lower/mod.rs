@@ -1420,7 +1420,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let list = records
             .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
             .expect("List<int> mints");
@@ -1552,7 +1552,7 @@ mod generic_cache_boundary_tests {
             let mut draft = draft_owner
                 .begin_transaction(draft_owner.savepoint())
                 .expect("a fresh savepoint admits");
-            let records = generic_enum_registry(&mut draft);
+            let mut records = generic_enum_registry(&mut draft);
             let (orphan_enum, orphan_struct) = orphan_enum_and_struct(&mut draft);
             let arg = match family {
                 "struct" => GArg::Struct(orphan_struct),
@@ -1570,7 +1570,7 @@ mod generic_cache_boundary_tests {
 
             let (result, builds) = count_metadata_directory_builds(|| {
                 resolve_type(
-                    &records,
+                    &mut records,
                     &mut draft,
                     &DurableRegistry::empty(DeclarationBudget::default()),
                     &annotation,
@@ -1621,7 +1621,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let missing = GArg::Nominal(NominalId(0));
         let params = [TypeParamSlot {
             name: "K".to_string(),
@@ -1632,7 +1632,7 @@ mod generic_cache_boundary_tests {
 
         let (resolved, builds) = count_metadata_directory_builds(|| {
             resolve_type(
-                &records,
+                &mut records,
                 &mut draft,
                 &DurableRegistry::empty(DeclarationBudget::default()),
                 &annotation,

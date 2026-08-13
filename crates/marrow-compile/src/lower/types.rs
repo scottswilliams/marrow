@@ -60,7 +60,7 @@ impl TypeEnv<'_> {
 /// owner for signature building and body lowering, so the two can never disagree on
 /// a parameter's type.
 pub(super) fn param_type(
-    records: &TypeRegistry,
+    records: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     ty: &TypeExpr,
@@ -112,25 +112,19 @@ pub(super) fn param_type(
 /// and declared type names; the no-nested-optional rule applies to the expanded
 /// form, so an alias cannot smuggle a doubled optional.
 pub(super) fn resolve_type(
-    records: &TypeRegistry,
+    records: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     annotation: &TypeExpr,
     env: TypeEnv,
     site: MintSite<'_>,
 ) -> Result<LTy, ResolveError> {
-    resolve_expanded(
-        records,
-        draft,
-        durable,
-        &records.expand(annotation),
-        env,
-        site,
-    )
+    let expanded = records.expand(annotation);
+    resolve_expanded(records, draft, durable, &expanded, env, site)
 }
 
 fn resolve_expanded(
-    records: &TypeRegistry,
+    records: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     annotation: &TypeExpr,
@@ -226,7 +220,7 @@ fn resolve_expanded(
 /// abstract type parameter in the once-checked template pass; its constraint then
 /// stands in for the concrete one during revalidation.
 fn resolve_generic(
-    records: &TypeRegistry,
+    records: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     head: &str,

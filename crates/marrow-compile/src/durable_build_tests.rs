@@ -37,7 +37,7 @@ mod generic_enum_shape_tests {
     fn ready_option_reaches_the_durable_enum_shape_owner() {
         let mut draft = fresh_draft();
         let mut build_diagnostics = DiagnosticCollector::new();
-        let records = TypeRegistry::build(
+        let mut records = TypeRegistry::build(
             &mut draft,
             &[],
             &[],
@@ -178,7 +178,7 @@ mod generic_enum_shape_tests {
     fn ready_enum_with_struct_body_is_not_contextualized_or_resolved() {
         let mut draft = fresh_draft();
         let mut build_diagnostics = DiagnosticCollector::new();
-        let records = TypeRegistry::build(
+        let mut records = TypeRegistry::build(
             &mut draft,
             &[],
             &[],

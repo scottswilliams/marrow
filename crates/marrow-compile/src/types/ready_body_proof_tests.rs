@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn ready_body_proof_is_exact_selective_and_allows_ready_back_edges() {
     let make_registry = registry;
-    let registry = make_registry(vec![
+    let mut registry = make_registry(vec![
         template(
             "Outer",
             vec![
@@ -131,7 +131,7 @@ fn ready_body_proof_is_exact_selective_and_allows_ready_back_edges() {
             template("Right", vec![("left", apply("Left", vec![name("T")]))]),
         ],
     ] {
-        let recursive = make_registry(templates);
+        let mut recursive = make_registry(templates);
         let mut recursive_draft = fresh_draft();
         let root = recursive
             .mint_type_instance(
@@ -334,7 +334,7 @@ fn ready_body_matcher_preserves_alias_precedence_over_template_parameters() {
 
 #[test]
 fn ready_enum_payload_targets_are_checked_before_shape_or_durable_projection() {
-    let registry = registry(vec![
+    let mut registry = registry(vec![
         enum_template("Outer", apply("Inner", vec![name("T")])),
         template("Inner", vec![("value", name("T"))]),
     ]);

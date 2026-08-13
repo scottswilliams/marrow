@@ -1940,7 +1940,7 @@ impl TypeRegistry {
 
     /// The image enum index of the reserved `Option[inner]`, minting it on first use.
     pub(crate) fn instantiate_reserved_option(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         inner: GArg,
         site: MintSite<'_>,
@@ -2098,7 +2098,7 @@ impl TypeRegistry {
     /// `None` for an optional, the resource record, or a name not yet
     /// declared as a value type.
     pub(crate) fn resolve_garg(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         annotation: &TypeExpr,
         site: MintSite<'_>,
@@ -2111,7 +2111,7 @@ impl TypeRegistry {
     /// expression is already alias-expanded.
     #[inline(always)]
     fn resolve_garg_env(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
@@ -2121,7 +2121,7 @@ impl TypeRegistry {
     }
 
     fn resolve_garg_expanded(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
@@ -2168,7 +2168,7 @@ impl TypeRegistry {
     }
 
     fn resolve_list_garg(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
@@ -2182,7 +2182,7 @@ impl TypeRegistry {
     }
 
     fn resolve_map_garg(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
@@ -2198,7 +2198,7 @@ impl TypeRegistry {
     }
 
     fn resolve_template_garg(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         head: &str,
         args: &[TypeExpr],
@@ -2349,7 +2349,7 @@ impl TypeRegistry {
     /// `check.instantiation_limit` diagnostic.
     #[inline(always)]
     pub(crate) fn mint_type_instance(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
@@ -2360,7 +2360,7 @@ impl TypeRegistry {
 
     #[inline(never)]
     fn mint_type_instance_with_requirement<R: ReadyInstanceRequirement>(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
@@ -2470,7 +2470,7 @@ impl TypeRegistry {
     /// Mint one generic struct only after the registry proves the template and the
     /// returned row are both record-shaped and Ready.
     pub(crate) fn mint_struct_instance(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
@@ -2507,7 +2507,7 @@ impl TypeRegistry {
     /// Mint one generic enum constructor and return only the exact Ready member
     /// selected during source-template inference.
     pub(crate) fn mint_enum_variant_instance(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
@@ -2565,7 +2565,7 @@ impl TypeRegistry {
     /// body. A member refusal returns its typed `Unsupported` or `Limit` variant for
     /// outermost dependency settlement.
     fn fill_type_body(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         id: TypeInstId,
@@ -2589,30 +2589,38 @@ impl TypeRegistry {
     }
 
     fn fill_struct_type_body(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         id: TypeInstId,
         args: &[GArg],
         site: MintSite<'_>,
     ) -> Result<InstBody, ResolveError> {
-        let template_info = self.template_for_args(template, args)?;
-        let subst: Vec<(String, GArg)> = template_info
-            .type_params
-            .iter()
-            .map(|(name, _)| name.clone())
-            .zip(args.iter().copied())
-            .collect();
-        let TemplateBody::Struct(fields) = &template_info.body else {
-            return Err(GenericInvariant::TypeBodyKindMismatch {
-                id,
-                body: TypeInstKind::Enum,
-            }
-            .into());
+        let (subst, fields) = {
+            let template_info = self.template_for_args(template, args)?;
+            let subst: Vec<(String, GArg)> = template_info
+                .type_params
+                .iter()
+                .map(|(name, _)| name.clone())
+                .zip(args.iter().copied())
+                .collect();
+            let TemplateBody::Struct(fields) = &template_info.body else {
+                return Err(GenericInvariant::TypeBodyKindMismatch {
+                    id,
+                    body: TypeInstKind::Enum,
+                }
+                .into());
+            };
+            // The declaration list is copied out rather than held: resolving a field
+            // mints through the exclusively held registry, and no read of a template
+            // may stay live across that. The copy is exact — `type_templates` is fixed
+            // after build — and costs the same order per instantiation as the resolved
+            // and definition vectors this fill already builds from it.
+            (subst, fields.clone())
         };
         let mut resolved = Vec::with_capacity(fields.len());
         let mut defs = Vec::with_capacity(fields.len());
-        for (fname, fty) in fields {
+        for (fname, fty) in &fields {
             let arg = self.resolve_garg_env(draft, fty, &subst, site)?;
             defs.push(FieldDef {
                 name: draft.intern_string(fname)?,
@@ -2639,32 +2647,38 @@ impl TypeRegistry {
     }
 
     fn fill_enum_type_body(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         template: usize,
         id: TypeInstId,
         args: &[GArg],
         site: MintSite<'_>,
     ) -> Result<InstBody, ResolveError> {
-        let template_info = self.template_for_args(template, args)?;
-        let subst: Vec<(String, GArg)> = template_info
-            .type_params
-            .iter()
-            .map(|(name, _)| name.clone())
-            .zip(args.iter().copied())
-            .collect();
-        let TemplateBody::Enum(variants) = &template_info.body else {
-            return Err(GenericInvariant::TypeBodyKindMismatch {
-                id,
-                body: TypeInstKind::Struct,
-            }
-            .into());
+        let (subst, variants, enum_name) = {
+            let template_info = self.template_for_args(template, args)?;
+            let subst: Vec<(String, GArg)> = template_info
+                .type_params
+                .iter()
+                .map(|(name, _)| name.clone())
+                .zip(args.iter().copied())
+                .collect();
+            let TemplateBody::Enum(variants) = &template_info.body else {
+                return Err(GenericInvariant::TypeBodyKindMismatch {
+                    id,
+                    body: TypeInstKind::Struct,
+                }
+                .into());
+            };
+            // Copied out for the same reason as a struct fill: a payload resolution
+            // mints through the exclusively held registry, so no template read may
+            // stay live across it.
+            (subst, variants.clone(), template_info.name.clone())
         };
-        let enum_name = &template_info.name;
+        let enum_name = enum_name.as_str();
         let mut reported = false;
         let mut resolved = Vec::with_capacity(variants.len());
         let mut defs = Vec::with_capacity(variants.len());
-        for variant in variants {
+        for variant in &variants {
             let mut payload = Vec::with_capacity(variant.payload.len());
             let mut leaves = Vec::with_capacity(variant.payload.len());
             for field in &variant.payload {
@@ -3363,7 +3377,7 @@ impl TypeRegistry {
     /// `List[Age]` and `List[int]` stay distinct rows even though both erase to
     /// `List[int]` in the image.
     pub(crate) fn instantiate_list(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         elem: GArg,
     ) -> Result<CollTypeId, ResolveError> {
@@ -3397,7 +3411,7 @@ impl TypeRegistry {
     /// The image COLLTYPES index of `Map[key, value]`, minting it on first use and
     /// reusing it thereafter, deduped by source key/value types.
     pub(crate) fn instantiate_map(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         key: GArg,
         value: GArg,
@@ -3407,7 +3421,7 @@ impl TypeRegistry {
     }
 
     fn instantiate_collection(
-        &self,
+        &mut self,
         draft: &mut DraftTxn<'_>,
         spec: CollSpec,
     ) -> Result<CollTypeId, ResolveError> {

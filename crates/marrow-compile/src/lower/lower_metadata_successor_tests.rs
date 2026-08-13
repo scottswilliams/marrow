@@ -25,7 +25,7 @@ fn function(source: &str) -> FunctionDecl {
 }
 
 fn cache_ahead_registry() -> TypeRegistry {
-    let registry = TypeRegistry::empty(DeclarationBudget::default());
+    let mut registry = TypeRegistry::empty(DeclarationBudget::default());
     let mut donor_owner = ImageDraft::new();
     let mut donor = admitted(&mut donor_owner);
     let _ = registry.instantiate_list(&mut donor, GArg::Scalar(ScalarType::Int));

@@ -328,7 +328,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
     let mut draft_owner = marrow_image::ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let mut diagnostics = DiagnosticCollector::new();
-    let records = crate::types::TypeRegistry::build(
+    let mut records = crate::types::TypeRegistry::build(
         &mut draft,
         &[],
         &[],
@@ -352,7 +352,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
     .expect("an empty project builds an empty durable registry");
     let mut draft = admitted(&mut draft_owner);
     crate::lower::FunctionRegistry::build(
-        &records,
+        &mut records,
         &mut draft,
         &durable,
         functions,
