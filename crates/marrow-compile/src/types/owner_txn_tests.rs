@@ -371,3 +371,144 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
         );
     }
 }
+
+/// The three registry owners an abandoned batch previously kept: the reserved image
+/// function base, the lazily built metadata row directory, and the reservation queue's
+/// front entry.
+///
+/// Each is asserted as an artifact — the exact base, the directory's presence, the exact
+/// queue contents — and each case first shows the owner changing inside the batch, so no
+/// arm can pass by never reaching its owner.
+#[test]
+fn an_abandoned_batch_restores_the_function_base_the_metadata_cache_and_the_queue_front() {
+    let scalar = GArg::Scalar(ScalarType::Int);
+
+    // The reserved function base is ordinary registry state, so a batch that moves it and
+    // is abandoned leaves the base admission captured.
+    {
+        let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+        let mut owner = ImageDraft::new();
+        records.set_fn_base(37);
+        {
+            let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
+                .expect("a settled registry admits an ordinary batch");
+            let (registry, _) = batch.parts();
+            registry.set_fn_base(99);
+            assert_eq!(
+                registry.generics.borrow().fn_base,
+                99,
+                "the case reached the function base before the abort",
+            );
+        }
+        assert_eq!(records.generics.borrow().fn_base, 37);
+    }
+
+    // The metadata row directory is a cache the registry may not hold at all. Rewinding
+    // an extant directory is not the inverse of building the first one, so a batch that
+    // opens the first session must leave the registry holding none.
+    {
+        let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+        let mut owner = ImageDraft::new();
+        assert!(
+            records.row_directory.borrow().is_none(),
+            "a fresh registry holds no directory",
+        );
+        {
+            let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
+                .expect("a settled registry admits an ordinary batch");
+            let (registry, _) = batch.parts();
+            registry
+                .with_metadata_session(|_| Ok::<(), GenericInvariant>(()))
+                .expect("the batch opens a metadata session");
+            assert!(
+                registry.row_directory.borrow().is_some(),
+                "the case built the directory before the abort",
+            );
+        }
+        assert!(
+            records.row_directory.borrow().is_none(),
+            "an abandoned batch leaves the registry the directory it had: none",
+        );
+    }
+
+    // The reservation queue: a batch's appends are undone and the entry the drain driver
+    // is working on is still at the front, because the driver reads it rather than
+    // removing it.
+    {
+        let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+        let mut owner = ImageDraft::new();
+        records
+            .reserve_fn_instance(7, vec![scalar], site(5))
+            .expect("the settled seed function row reserves");
+        let front = records.peek_fn_pending().expect("the seed entry is queued");
+        assert_eq!(front, (7, vec![scalar], 0));
+        let queued_before: Vec<_> = records
+            .generics
+            .borrow()
+            .fn_queue
+            .iter()
+            .map(|inst| (inst.template, inst.args.clone(), inst.func))
+            .collect();
+        assert_eq!(queued_before.len(), 1);
+        {
+            let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
+                .expect("a settled registry admits an ordinary batch");
+            let (registry, _) = batch.parts();
+            registry
+                .reserve_fn_instance(9, vec![GArg::Scalar(ScalarType::Text)], site(12))
+                .expect("the batch reserves a further instance");
+            assert_eq!(
+                registry.generics.borrow().fn_queue.len(),
+                2,
+                "the case appended to the queue before the abort",
+            );
+        }
+        let queued_after: Vec<_> = records
+            .generics
+            .borrow()
+            .fn_queue
+            .iter()
+            .map(|inst| (inst.template, inst.args.clone(), inst.func))
+            .collect();
+        assert_eq!(
+            queued_after, queued_before,
+            "the abandoned batch's appends are gone and the front entry is intact",
+        );
+        assert_eq!(records.peek_fn_pending(), Some(front));
+    }
+}
+
+/// The two owners the inverse deliberately does not restore, pinned as a decision rather
+/// than left as an omission.
+///
+/// `limit` and `collection_payloads` are diagnostic payload. The phase places diagnostics
+/// exclusively in the predecessor substrate's custody — the draft guard never owns,
+/// copies, journals, or exposes them — and this inverse mirrors that boundary rather than
+/// opening a second custody over the same rows. What decides whether a batch's
+/// diagnostics become visible is the settlement capability a committed or rolled-back
+/// guard produces, not a registry rollback.
+#[test]
+fn an_abandoned_batch_leaves_the_diagnostic_owners_to_their_own_custody() {
+    assert_eq!(
+        super::owner_txn::UNRESTORED_DIAGNOSTIC_OWNERS,
+        ["limit", "collection_payloads"],
+    );
+
+    let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+    let mut owner = ImageDraft::new();
+    assert!(matches!(records.generics.borrow().limit, LimitState::Open));
+    {
+        let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
+            .expect("a settled registry admits an ordinary batch");
+        let (registry, _) = batch.parts();
+        registry.record_limit(site(3), "the pinned subject");
+        assert!(matches!(
+            registry.generics.borrow().limit,
+            LimitState::Pending(_)
+        ));
+    }
+    assert!(
+        matches!(records.generics.borrow().limit, LimitState::Pending(_)),
+        "the recorded limit stays with the diagnostic substrate across an abandoned batch",
+    );
+}

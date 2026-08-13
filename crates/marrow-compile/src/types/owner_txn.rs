@@ -20,10 +20,17 @@ pub(crate) struct RegistryInverse {
     pub(super) collections: usize,
     pub(super) fn_insts: usize,
     pub(super) fn_queue: usize,
+    /// The reserved image function base. It is ordinary registry state rather than
+    /// diagnostic custody, so a batch that moves it restores it.
+    pub(super) fn_base: u16,
     pub(super) build_invariant: Option<GenericInvariant>,
     pub(super) prior_argument_domain: ArgumentDomain,
     pub(super) entry_records: usize,
     pub(super) entry_enums: usize,
+    /// Whether the reused metadata row directory existed at admission. Rewinding an
+    /// extant directory to its captured ceilings is not the inverse of *creating* one:
+    /// a batch that opened the first directory must leave the registry with none.
+    pub(super) row_directory_present: bool,
     /// Present only for an isolated template proof: the owners the proof runs without,
     /// swapped whole out of the registry at admission and re-seated whole when the
     /// proof's effects are erased. An ordinary batch swaps nothing — the shared
@@ -31,6 +38,26 @@ pub(crate) struct RegistryInverse {
     /// diagnostic substrate's custody, never to this inverse.
     pub(super) isolation: Option<ProofIsolation>,
 }
+
+/// The two `Monomorph` owners this inverse deliberately does not restore, and why.
+///
+/// `limit` and `collection_payloads` are the instantiation-limit terminal and the
+/// ordered collection-payload diagnostic buffer. Both are diagnostic payload, which the
+/// phase places exclusively in the predecessor substrate's custody: `DraftTxn` never
+/// owns, copies, journals, or exposes it, and this inverse mirrors that boundary rather
+/// than opening a second custody for the same rows. What governs whether a batch's
+/// diagnostics become visible is the settlement capability a committed or rolled-back
+/// guard produces, not a registry rollback.
+///
+/// An isolated template proof is the one exception, and it is not a restoration of
+/// these owners either: it *swaps them out* at admission so the throwaway pass cannot
+/// reach the live ones at all, then puts the live owners back whole.
+///
+/// This is stated here because [`TypeRegistry::admit_generic_owners`] destructures
+/// `Monomorph` exhaustively: a new owner cannot be added without a decision recorded at
+/// one of these two places.
+#[cfg(test)]
+pub(super) const UNRESTORED_DIAGNOSTIC_OWNERS: [&str; 2] = ["limit", "collection_payloads"];
 
 /// The live owners an isolated template proof runs without.
 pub(super) struct ProofIsolation {

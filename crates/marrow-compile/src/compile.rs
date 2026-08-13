@@ -1855,7 +1855,10 @@ fn registry_phases(
     // them — carried by the three artifacts above, not by an empty diagnostic set.
     let mut drain_lowered_every_instance = true;
     if function_bodies.is_some() && test_bodies.is_some() {
-        while let Some((template_index, args, reserved)) = records.next_fn_pending() {
+        // The entry is read, not removed: it leaves the queue only after the batch that
+        // lowers it has settled, so an abandoned batch restores a queue that still holds
+        // the work it did not do.
+        while let Some((template_index, args, reserved)) = records.peek_fn_pending() {
             let template = &resolution.generics.templates()[template_index];
             // One admitted generic-owner batch per drained instance body.
             let mut batch = GenericOwnerTxn::begin(records, draft)
@@ -1883,6 +1886,7 @@ fn registry_phases(
                 }
             };
             batch.commit();
+            records.consume_fn_pending();
             let Some(result) = lowered_body else {
                 drain_lowered_every_instance = false;
                 break;

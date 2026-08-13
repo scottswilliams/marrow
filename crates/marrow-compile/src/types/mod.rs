@@ -3156,15 +3156,15 @@ impl TypeRegistry {
 
     /// Set the base image function index for generic function instantiations, once
     /// every monomorphic function and test has consumed its index.
-    pub(crate) fn set_fn_base(&self, base: u16) {
-        self.generics.borrow_mut().fn_base = base;
+    pub(crate) fn set_fn_base(&mut self, base: u16) {
+        self.generics.get_mut().fn_base = base;
     }
 
     /// Reserve the image function index for `(fn template, args)`, minting and
     /// enqueuing a fresh instance on first request and reusing it thereafter. A shared
     /// bound refusal records the first coherent mint site and returns `Err(Limit)`.
     pub(crate) fn reserve_fn_instance(
-        &self,
+        &mut self,
         template: usize,
         args: Vec<GArg>,
         site: MintSite<'_>,
@@ -3224,12 +3224,27 @@ impl TypeRegistry {
 
     /// The next generic function instance awaiting body lowering: its template index,
     /// concrete arguments, and reserved image function index.
-    pub(crate) fn next_fn_pending(&self) -> Option<(usize, Vec<GArg>, u16)> {
+    ///
+    /// This *reads* the front entry and leaves the queue alone. Removing it is
+    /// [`Self::consume_fn_pending`], which the drain driver calls only once the batch that
+    /// lowered the entry has settled. The split is what makes the queue invertible: an
+    /// inverse that captures a length can undo the batch's appends, but it cannot put
+    /// back a front entry the driver removed before the batch was even admitted, and
+    /// reinstating one would mean an allocating call on the restore path.
+    pub(crate) fn peek_fn_pending(&self) -> Option<(usize, Vec<GArg>, u16)> {
         self.generics
-            .borrow_mut()
+            .borrow()
             .fn_queue
-            .pop_front()
-            .map(|inst| (inst.template, inst.args, inst.func))
+            .front()
+            .map(|inst| (inst.template, inst.args.clone(), inst.func))
+    }
+
+    /// Remove the entry [`Self::peek_fn_pending`] reported, after its batch settled.
+    ///
+    /// A batch only ever appends to the back, so the front entry after settlement is
+    /// still the one that was lowered.
+    pub(crate) fn consume_fn_pending(&mut self) {
+        self.generics.get_mut().fn_queue.pop_front();
     }
 
     /// Drain the one owner-ordered generic outcome: replace the active live
@@ -3791,10 +3806,12 @@ impl TypeRegistry {
             collections,
             fn_insts: generics.fn_insts.len(),
             fn_queue: generics.fn_queue.len(),
+            fn_base: generics.fn_base,
             build_invariant: generics.build_invariant,
             prior_argument_domain: generics.argument_domain,
             entry_records,
             entry_enums,
+            row_directory_present: self.row_directory.borrow().is_some(),
             isolation: Some(ProofIsolation {
                 // Whole-owner swap: the proof pass gets a fresh live collector and
                 // the prior owner is saved intact for exit to re-seat.
@@ -3845,15 +3862,38 @@ impl TypeRegistry {
             .try_borrow()
             .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?
             .len();
+        // Destructured exhaustively: a new generic owner stops this compiling until it is
+        // captured here or deliberately excluded beside the two the inverse names in
+        // `UNRESTORED_DIAGNOSTIC_OWNERS`. The fill owners are bound to `_` because
+        // admission above has just proved every one of them empty, which is what makes
+        // the captured lengths a complete description of the batch.
+        let Monomorph {
+            type_insts,
+            type_index: _,
+            fn_base,
+            fn_insts,
+            fn_index: _,
+            fn_queue,
+            fill_batch_start: _,
+            fill_rows: _,
+            fill_stack: _,
+            fill_failures: _,
+            limit: _,
+            collection_payloads: _,
+            build_invariant,
+            argument_domain,
+        } = &*generics;
         Ok(RegistryInverse {
-            type_insts: generics.type_insts.len(),
+            type_insts: type_insts.len(),
             collections,
-            fn_insts: generics.fn_insts.len(),
-            fn_queue: generics.fn_queue.len(),
-            build_invariant: generics.build_invariant,
-            prior_argument_domain: generics.argument_domain,
+            fn_insts: fn_insts.len(),
+            fn_queue: fn_queue.len(),
+            fn_base: *fn_base,
+            build_invariant: *build_invariant,
+            prior_argument_domain: *argument_domain,
             entry_records,
             entry_enums,
+            row_directory_present: self.row_directory.borrow().is_some(),
             isolation: None,
         })
     }
@@ -3871,10 +3911,12 @@ impl TypeRegistry {
             collections,
             fn_insts,
             fn_queue,
+            fn_base,
             build_invariant,
             prior_argument_domain,
             entry_records,
             entry_enums,
+            row_directory_present,
             isolation,
         } = inverse;
         {
@@ -3890,6 +3932,7 @@ impl TypeRegistry {
                 }
             }
             generics.fn_queue.truncate(fn_queue);
+            generics.fn_base = fn_base;
             generics.fill_batch_start = None;
             generics.fill_rows.clear();
             generics.fill_stack.clear();
@@ -3913,8 +3956,14 @@ impl TypeRegistry {
                 }
             }
         }
-        if let Some(directory) = self.row_directory.get_mut().as_mut() {
-            directory.rewind_to(entry_records, entry_enums, type_insts, collections);
+        if row_directory_present {
+            if let Some(directory) = self.row_directory.get_mut().as_mut() {
+                directory.rewind_to(entry_records, entry_enums, type_insts, collections);
+            }
+        } else {
+            // The batch opened the first directory. Rewinding it to the captured ceilings
+            // would leave a directory the registry did not have; taking it is the inverse.
+            *self.row_directory.get_mut() = None;
         }
     }
     // drop-path audit sentinel: end of TypeRegistry::restore_generic_owners
