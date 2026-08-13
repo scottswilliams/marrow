@@ -2382,16 +2382,10 @@ impl TypeRegistry {
         // terminates without making an unfinished body semantically readable.
         let name_id = draft.intern_string(&template_info.name)?;
         let id = if template_info.is_enum() {
-            let enum_id = draft.add_enum_type(EnumTypeDef {
-                name: name_id,
-                variants: Vec::new(),
-            })?;
+            let enum_id = draft.reserve_enum_type(name_id)?;
             TypeInstId::Enum(enum_id)
         } else {
-            let type_id = draft.add_record_type(RecordTypeDef {
-                name: name_id,
-                fields: Vec::new(),
-            })?;
+            let type_id = draft.reserve_record_type(name_id)?;
             TypeInstId::Record(type_id)
         };
         let inst_index = {

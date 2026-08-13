@@ -1062,10 +1062,7 @@ pub(super) fn declare_structs<'a>(
             continue;
         }
         let name_id = draft.intern_string(&decl.name)?;
-        let type_id = draft.add_record_type(RecordTypeDef {
-            name: name_id,
-            fields: Vec::new(),
-        })?;
+        let type_id = draft.reserve_record_type(name_id)?;
         registry.structs.push(StructInfo {
             type_id,
             name: decl.name.clone(),
@@ -1317,10 +1314,7 @@ pub(super) fn declare_enums<'a>(
             continue;
         }
         let name_id = draft.intern_string(&decl.name)?;
-        let enum_id = draft.add_enum_type(EnumTypeDef {
-            name: name_id,
-            variants: Vec::new(),
-        })?;
+        let enum_id = draft.reserve_enum_type(name_id)?;
         registry.enums.push(EnumInfo {
             enum_id,
             name: decl.name.clone(),
@@ -1589,10 +1583,7 @@ pub(super) fn declare_records<'a>(
             continue;
         }
         let name_id = draft.intern_string(&resource.name)?;
-        let type_id = draft.add_record_type(RecordTypeDef {
-            name: name_id,
-            fields: Vec::new(),
-        })?;
+        let type_id = draft.reserve_record_type(name_id)?;
         registry.records.push(RecordInfo {
             type_id,
             name: resource.name.clone(),

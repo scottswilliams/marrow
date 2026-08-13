@@ -428,10 +428,7 @@ fn a_second_fill_of_one_row_is_refused_without_overwriting() {
     let name = draft.intern_string("R").expect("a within-domain mint");
     let field = draft.intern_string("f").expect("a within-domain mint");
     let record = draft
-        .add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        })
+        .reserve_record_type(name)
         .expect("a within-domain mint");
     draft
         .set_record_fields(

@@ -9,7 +9,7 @@ use marrow_image::bounds::{
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftStateError, DraftTxn,
     EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -137,12 +137,7 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
         let name = txn.intern_string("Extra").expect("a within-domain mint");
         let field = txn.intern_string("f").expect("a within-domain mint");
         txn.intern_text("extra-text").expect("a within-domain mint");
-        let record = txn
-            .add_record_type(RecordTypeDef {
-                name,
-                fields: Vec::new(),
-            })
-            .expect("a within-domain mint");
+        let record = txn.reserve_record_type(name).expect("a within-domain mint");
         txn.set_record_fields(
             record,
             vec![FieldDef {
@@ -176,21 +171,21 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
 }
 
 /// A fill of a pre-transaction reserved row is journaled and reverted: after the
-/// rollback the row holds its prior definition and spends its one fill again.
+/// rollback the row is `Vacant` again — the fence-distinct reservation state — and
+/// spends its one fill again.
 #[test]
 fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
     let mut owner = ImageDraft::new();
     let mut txn = admitted(&mut owner);
     let name = txn.intern_string("R").expect("a within-domain mint");
     let field = txn.intern_string("f").expect("a within-domain mint");
-    let record = txn
-        .add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        })
-        .expect("a within-domain mint");
+    let record = txn.reserve_record_type(name).expect("a within-domain mint");
     txn.commit();
-    let before = owner.encode().expect("the reserved draft encodes").bytes;
+    assert_eq!(
+        owner.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("vacant record type")),
+        "a reservation left vacant is the fence's coherence invariant",
+    );
     {
         let mut txn = admitted(&mut owner);
         txn.set_record_fields(
@@ -202,13 +197,21 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
             }],
         )
         .expect("the reserved row fills once");
+        assert!(txn.encode().is_ok(), "the filled draft encodes");
     }
-    let after = owner.encode().expect("the restored draft encodes").bytes;
-    assert_eq!(before, after, "the displaced definition moved back");
+    assert_eq!(
+        owner.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("vacant record type")),
+        "the rollback reverted the fill, so the row is vacant again",
+    );
     let mut txn = admitted(&mut owner);
     txn.set_record_fields(record, Vec::new())
         .expect("the reverted row spends its one fill again");
     txn.commit();
+    assert!(
+        owner.encode().is_ok(),
+        "the explicit empty fill is a valid filled-empty definition, distinct from vacant",
+    );
 }
 
 // ---- Per-kind nonblocking N+1 ledger deltas, observed through the public fence.
@@ -440,5 +443,48 @@ fn an_intern_text_at_the_const_cap_commits_its_whole_compound() {
         owner.encode().expect("the restored draft encodes").bytes,
         clean,
         "rollback restored both tables, both indexes, and the exact prior ledger",
+    );
+}
+
+/// A complete definition never spends a fill: a record or enum added with its
+/// definition is not a reservation, so a later "fill" is the typed double-fill
+/// refusal, never a replacement. Only a reserved row admits exactly one fill, and a
+/// reserved row left vacant is the fence's coherence invariant while an explicit
+/// empty fill is a valid filled-empty definition.
+#[test]
+fn a_complete_definition_is_not_replaceable_and_vacancy_is_fence_distinct() {
+    let mut owner = ImageDraft::new();
+    let mut txn = admitted(&mut owner);
+    let name = txn.intern_string("R").expect("a within-domain mint");
+    let complete = txn
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: vec![FieldDef {
+                name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint");
+    assert_eq!(
+        txn.set_record_fields(complete, Vec::new()),
+        Err(DraftStateError::IncoherentToken),
+        "a complete definition is not a reservation and admits no fill",
+    );
+    let enum_name = txn.intern_string("E").expect("a within-domain mint");
+    let complete_enum = txn
+        .add_enum_type(EnumTypeDef {
+            name: enum_name,
+            variants: vec![VariantDef {
+                name: enum_name,
+                category: false,
+                payload: Vec::new(),
+            }],
+        })
+        .expect("a within-domain mint");
+    assert_eq!(
+        txn.set_enum_variants(complete_enum, Vec::new()),
+        Err(DraftStateError::IncoherentToken),
+        "a complete enum definition is not a reservation and admits no fill",
     );
 }

@@ -930,6 +930,17 @@ impl<'d> DraftTxn<'d> {
         self.draft.add_enum_type(def)
     }
 
+    /// Reserve a `Vacant` record row for a two-pass forward reference; it admits
+    /// exactly one later fill and is the fence's coherence invariant if never filled.
+    pub fn reserve_record_type(&mut self, name: StrId) -> Result<TypeId, DraftStateError> {
+        self.draft.reserve_record_type(name)
+    }
+
+    /// Reserve a `Vacant` enum row (see [`Self::reserve_record_type`]).
+    pub fn reserve_enum_type(&mut self, name: StrId) -> Result<EnumId, DraftStateError> {
+        self.draft.reserve_enum_type(name)
+    }
+
     pub fn add_collection_type(
         &mut self,
         def: CollectionTypeDef,
@@ -1317,13 +1328,38 @@ impl ImageDraft {
         Ok(id)
     }
 
+    /// Add a record type with its **complete** definition: the row never spends a
+    /// fill, so a later "fill" is the typed double-fill refusal, never a
+    /// replacement. A two-pass forward reference reserves with
+    /// [`Self::reserve_record_type`] instead.
     pub(crate) fn add_record_type(
         &mut self,
         def: RecordTypeDef,
     ) -> Result<TypeId, DraftStateError> {
+        self.append_record_type(def, FillState::Filled)
+    }
+
+    /// Reserve a record row for a two-pass forward reference: the row is `Vacant` —
+    /// distinct from a valid filled-empty definition — admits exactly one later
+    /// fill, and is the fence's coherence invariant if it is never filled.
+    pub(crate) fn reserve_record_type(&mut self, name: StrId) -> Result<TypeId, DraftStateError> {
+        self.append_record_type(
+            RecordTypeDef {
+                name,
+                fields: Vec::new(),
+            },
+            FillState::Unfilled,
+        )
+    }
+
+    fn append_record_type(
+        &mut self,
+        def: RecordTypeDef,
+        fill: FillState,
+    ) -> Result<TypeId, DraftStateError> {
         let id = TypeId(wide_ordinal(self.types.len())?);
         self.types.push(def);
-        self.types_fill.push(FillState::Unfilled);
+        self.types_fill.push(fill);
         if self.types.len() > bounds::MAX_TYPES {
             self.ledger.observe(
                 TablePolicyKind::Types,
@@ -1333,10 +1369,32 @@ impl ImageDraft {
         Ok(id)
     }
 
+    /// Add an enum type with its **complete** definition (see
+    /// [`Self::add_record_type`]).
     pub(crate) fn add_enum_type(&mut self, def: EnumTypeDef) -> Result<EnumId, DraftStateError> {
+        self.append_enum_type(def, FillState::Filled)
+    }
+
+    /// Reserve an enum row for a two-pass forward reference (see
+    /// [`Self::reserve_record_type`]).
+    pub(crate) fn reserve_enum_type(&mut self, name: StrId) -> Result<EnumId, DraftStateError> {
+        self.append_enum_type(
+            EnumTypeDef {
+                name,
+                variants: Vec::new(),
+            },
+            FillState::Unfilled,
+        )
+    }
+
+    fn append_enum_type(
+        &mut self,
+        def: EnumTypeDef,
+        fill: FillState,
+    ) -> Result<EnumId, DraftStateError> {
         let id = EnumId(wide_ordinal(self.enums.len())?);
         self.enums.push(def);
-        self.enums_fill.push(FillState::Unfilled);
+        self.enums_fill.push(fill);
         if self.enums.len() > bounds::MAX_ENUMS {
             self.ledger.observe(
                 TablePolicyKind::Enums,
@@ -1781,6 +1839,14 @@ impl ImageDraft {
     }
     pub(crate) fn types(&self) -> &[RecordTypeDef] {
         &self.types
+    }
+    /// Per-record fill state, in lockstep with `types`, for the fence's vacancy check.
+    pub(crate) fn types_fill(&self) -> &[FillState] {
+        &self.types_fill
+    }
+    /// Per-enum fill state, in lockstep with `enums`, for the fence's vacancy check.
+    pub(crate) fn enums_fill(&self) -> &[FillState] {
+        &self.enums_fill
     }
     pub(crate) fn enums(&self) -> &[EnumTypeDef] {
         &self.enums

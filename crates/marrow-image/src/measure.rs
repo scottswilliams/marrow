@@ -81,7 +81,8 @@
 use crate::bounds;
 use crate::digest::image_id;
 use crate::draft::{
-    CollTypeId, CollectionTypeDef, ConstId, ConstValue, ImageBuildError, ImageDraft, StrId, TypeId,
+    CollTypeId, CollectionTypeDef, ConstId, ConstValue, FillState, ImageBuildError, ImageDraft,
+    StrId, TypeId,
 };
 use crate::durable_id::{DurableContractId, DurableGraphTooLarge};
 use crate::encode::{
@@ -1024,8 +1025,17 @@ fn member_references(
 }
 
 /// Step 5: TYPES — per record its name, then per field its name and its type
-/// reference, in row order.
+/// reference, in row order. A reserved row still `Vacant` at the fence is the
+/// coherence invariant: a reservation is a producer promise to fill, distinct from
+/// a valid filled-empty definition.
 fn types_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
+    if draft
+        .types_fill()
+        .iter()
+        .any(|state| *state == FillState::Unfilled)
+    {
+        return Err(ImageBuildError::InvalidReference("vacant record type"));
+    }
     for record in draft.types() {
         string_ref(draft, record.name, "record name")?;
         for field in &record.fields {
@@ -1157,8 +1167,16 @@ fn test_entry_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 }
 
 /// Step 10: ENUMS — per definition its name, then per variant its name and its
-/// payload type references, in row order.
+/// payload type references, in row order. A reserved row still `Vacant` at the
+/// fence is the coherence invariant, exactly as for records.
 fn enums_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
+    if draft
+        .enums_fill()
+        .iter()
+        .any(|state| *state == FillState::Unfilled)
+    {
+        return Err(ImageBuildError::InvalidReference("vacant enum type"));
+    }
     for enum_def in draft.enums() {
         string_ref(draft, enum_def.name, "enum name")?;
         for variant in &enum_def.variants {

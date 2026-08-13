@@ -44,12 +44,7 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
         .expect("a within-domain mint");
     txn.intern_date(i32::from(seed))
         .expect("a within-domain mint");
-    let record = txn
-        .add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        })
-        .expect("a within-domain mint");
+    let record = txn.reserve_record_type(name).expect("a within-domain mint");
     txn.set_record_fields(
         record,
         vec![FieldDef {
@@ -59,12 +54,7 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
         }],
     )
     .expect("a reserved row fills once");
-    let enum_id = txn
-        .add_enum_type(EnumTypeDef {
-            name,
-            variants: Vec::new(),
-        })
-        .expect("a within-domain mint");
+    let enum_id = txn.reserve_enum_type(name).expect("a within-domain mint");
     txn.set_enum_variants(
         enum_id,
         vec![VariantDef {

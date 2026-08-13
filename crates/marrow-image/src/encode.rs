@@ -766,10 +766,7 @@ mod counted_equals_emitted {
         draft.intern_duration(-7).expect("a within-domain mint");
 
         let record = draft
-            .add_record_type(RecordTypeDef {
-                name: record_name,
-                fields: Vec::new(),
-            })
+            .reserve_record_type(record_name)
             .expect("a within-domain mint");
         let mut fills = draft
             .begin_transaction(draft.savepoint())
@@ -793,10 +790,7 @@ mod counted_equals_emitted {
             .expect("the reserved row fills once");
         fills.commit();
         let choice = draft
-            .add_enum_type(crate::draft::EnumTypeDef {
-                name: enum_name,
-                variants: Vec::new(),
-            })
+            .reserve_enum_type(enum_name)
             .expect("a within-domain mint");
         let mut fills = draft
             .begin_transaction(draft.savepoint())
