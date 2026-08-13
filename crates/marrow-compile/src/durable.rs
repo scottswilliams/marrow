@@ -43,6 +43,7 @@ use marrow_syntax::{
 };
 
 use crate::analysis::FileRef;
+use crate::compile::admitted;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
     DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, DeclarationSite,
@@ -54,17 +55,6 @@ use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
 };
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    #[expect(
-        clippy::expect_used,
-        reason = "admission law: a savepoint minted and consumed in one expression is fresh"
-    )]
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.

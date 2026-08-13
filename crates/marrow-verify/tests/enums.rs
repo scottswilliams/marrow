@@ -11,12 +11,9 @@ use marrow_image::{
 };
 use marrow_verify::verify;
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())

@@ -1,4 +1,8 @@
 use super::*;
+
+use marrow_image::EnumTypeDef;
+
+use crate::compile::admitted;
 use marrow_syntax::{Declaration, parse_source};
 
 /// A fresh armed transaction over its own leaked owner, for fixtures that never
@@ -6,13 +10,6 @@ use marrow_syntax::{Declaration, parse_source};
 fn fresh_draft() -> DraftTxn<'static> {
     let owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
     admitted(owner)
-}
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
 }
 
 /// The wide collection id at `index`, spelled compactly for the corpus.

@@ -37,17 +37,14 @@ use image_forgery::rehash;
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
+
 /// One within-domain draft mint, unwrapped: every fixture mint here is far inside
 /// the checked carrier domain.
 fn ok<T>(minted: Result<T, marrow_image::DraftStateError>) -> T {
     minted.expect("a within-domain mint")
-}
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
 }
 
 /// The tracer graph's fixed ledger ids, shared by the durable-schema builders and

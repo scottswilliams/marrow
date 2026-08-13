@@ -1,6 +1,5 @@
-//! The ready-body proof and matcher family, a child module of
-//! `instantiation_state_tests` split out to keep that file inside its inherited
-//! line budget; it shares the parent module's fixtures through `super::*`.
+//! The ready-body proof and matcher family, sharing the instantiation-state
+//! fixtures through `super::*`.
 
 use super::*;
 

@@ -1,13 +1,9 @@
-//! Differential pins over the draft mutation surface, frozen before the draft
-//! transaction and table-policy ledger restructure (IMGTABLE01).
-//!
-//! Each test pins the exact **current** behavior of one mutation entry point — the
-//! non-atomic hole, the raw-index panics, the silent identity overwrite, the
-//! admit-now-refuse-at-encode split of the flat families, and the failed-mutation
-//! state the atomic owners already guarantee. A sanctioned change family (F-1..F-5 of
-//! the lane design) may flip a pinned outcome; the flipping lane cites the pin it
-//! flips and updates it in the same commit. A pin that fails without such a citation
-//! is a regression.
+//! Differential pins over the draft mutation surface. Each test pins the exact
+//! behavior of one mutation entry point — refusal atomicity, the typed hostile
+//! refusals, the set-once identity law, the nonblocking policy admissions, and the
+//! failed-mutation state the atomic owners guarantee. A sanctioned change may flip
+//! a pinned outcome only by citing the pin it flips and updating it in the same
+//! commit; a pin that fails without such a citation is a regression.
 
 use marrow_image::bounds::{
     MAX_COLLECTIONS, MAX_CONSTS, MAX_ENUMS, MAX_EXPORTS, MAX_FUNCTIONS, MAX_STRING_BYTES,
@@ -24,12 +20,9 @@ use marrow_image::{
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];
@@ -108,11 +101,8 @@ fn unit_function(draft: &mut DraftTxn<'_>, name: &str, code: Vec<Instr>) -> Func
         .expect("every site operand is live")
 }
 
-// ---- F-1: the add_root_occurrence hole.
+// ---- Root-occurrence admission atomicity.
 
-/// **This pins the pre-restructure behavior; the sanctioned F-1 change may flip it,
-/// citing this pin.** `add_root_occurrence` is not atomic: `push_under` commits the
-/// occurrence row, then `publish` can still refuse, so the caller gets an error *and*
 /// **Flipped under the sanctioned F-1 change, citing the pre-restructure pin this
 /// test carried** (`a_failed_publish_leaves_a_live_occurrence_row`): publication is
 /// now a preflight inside the admission, so an occurrence whose managed-index
@@ -185,7 +175,7 @@ fn a_refused_occurrence_leaves_no_live_row_and_spends_no_budget() {
     );
 }
 
-// ---- F-2: the flat families admit past their policy cap; only encode refuses.
+// ---- The flat families admit past their policy cap; only the fence refuses.
 
 /// **This pins the pre-restructure behavior; the sanctioned F-2 change may flip it,
 /// citing this pin.** `intern_string` admits past `MAX_STRINGS` unconditionally; the
@@ -370,7 +360,7 @@ fn the_test_entry_table_admits_past_its_cap_and_only_encode_refuses() {
     );
 }
 
-// ---- F-3: the fill setters refuse a foreign or stale id with a typed error.
+// ---- The fill setters refuse a foreign or stale id with a typed error.
 
 /// **Flipped under the sanctioned F-3 change, citing the pre-restructure pin this
 /// test carried** (`set_record_fields_with_a_foreign_id_panics`): the fill is a
@@ -453,7 +443,7 @@ fn a_second_fill_of_one_row_is_refused_without_overwriting() {
     );
 }
 
-// ---- F-4: set_application_identity is set-once-or-same with a sticky latch.
+// ---- The application identity is set-once-or-same with a sticky latch.
 
 /// **Flipped under the sanctioned F-4 change, citing the pre-restructure pin this
 /// test carried** (`a_divergent_application_identity_silently_overwrites`): the
@@ -494,7 +484,7 @@ fn a_divergent_application_identity_latches_a_sticky_conflict() {
     );
 }
 
-// ---- F-5: the raw arena escape is deleted; the typed appenders remain nonblocking.
+// ---- The value-shape appenders are checked and the raw arena escape is deleted.
 
 /// **Flipped to the design of record's F-5 disposition (post-build ruling F2; design
 /// draft 2 §10 F-5), citing the two pins this test carried**

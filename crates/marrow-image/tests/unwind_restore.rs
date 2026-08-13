@@ -8,24 +8,21 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
 
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, EnumTypeDef,
-    ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, VariantDef,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, LedgerIdBytes, RootOccurrenceDef, Scalar,
+    SemanticTarget, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
+
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
 
 /// Mutate every owner the transaction covers: both interned pools and their indexes, a
 /// reserved-then-filled record and enum, a collection, the value-shape arena, a Product

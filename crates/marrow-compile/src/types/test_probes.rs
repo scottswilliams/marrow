@@ -1,6 +1,5 @@
 //! Test-only observation probes for the type registry — build counters and scaling
-//! tallies the scaling tests read — split from `types/mod.rs` to keep the owner
-//! inside its inherited line budget. A probe cannot alter registry state or make a
+//! tallies the scaling tests read. A probe cannot alter registry state or make a
 //! hostile state reachable.
 
 use super::*;

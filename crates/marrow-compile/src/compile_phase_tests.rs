@@ -1,9 +1,7 @@
-//! The compile driver's own unit tests, split from `compile.rs` to keep the driver
-//! inside its inherited line budget: policy-outcome classification, phase gating,
-//! and the registry fixtures the driver's seams are pinned with.
+//! The compile driver's own unit tests: policy-outcome classification, phase
+//! gating, and the registry fixtures the driver's seams are pinned with.
 
-use super::*;
-use marrow_image::DraftTxn;
+use crate::compile::admitted;
 
 use super::valid_export_path;
 use super::{
@@ -23,13 +21,6 @@ use crate::types::{
 use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 use std::collections::BTreeMap;
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
 
 /// The minting guard rejects every input class whose dotted join would break
 /// the ExportId payload's injectivity, even though the current capture path

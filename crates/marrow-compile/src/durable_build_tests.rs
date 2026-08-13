@@ -1,6 +1,5 @@
-//! The durable registry's build-seam tests, split from `durable.rs` to keep the
-//! owner inside its inherited line budget: the generic enum shape resolution seams
-//! and the flat declaration-command emission bound.
+//! The durable registry's build-seam tests: the generic enum shape resolution
+//! seams and the flat declaration-command emission bound.
 
 /// A fresh armed transaction over its own leaked owner, for fixtures that never
 /// touch the owner again.

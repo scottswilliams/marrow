@@ -1,15 +1,10 @@
 use super::*;
 
+use crate::compile::admitted;
+
 use crate::decl::DeclarationBudget;
 use crate::types::{CollectionKind, GenericInvariant, TypeInstKind};
 use marrow_syntax::{Declaration, parse_source};
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
 
 fn function(source: &str) -> FunctionDecl {
     let parsed = parse_source(source);
@@ -46,7 +41,7 @@ fn expected_ints(values: &[i64]) -> (Vec<u8>, marrow_image::ImageId) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     for value in values {
-        draft.intern_int(*value);
+        draft.intern_int(*value).expect("a within-domain mint");
     }
     draft_fingerprint(&draft)
 }

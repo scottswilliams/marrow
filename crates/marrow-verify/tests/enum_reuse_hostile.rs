@@ -18,13 +18,6 @@ use marrow_image::{
 };
 use marrow_verify::{VerifyPhase, verify};
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
-
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT: [u8; 16] = [0x0b; 16];
 const PRODUCT: [u8; 16] = [0x0d; 16];
@@ -310,6 +303,10 @@ use site_seam::site;
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 const KINDS: [DeclarationKind; 11] = [
     Application,

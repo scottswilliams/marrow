@@ -4,18 +4,14 @@
 //! so the executable trust path is exercised end to end without the compiler.
 
 use marrow_image::{
-    CollectionTypeDef, DraftTxn, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar,
-    SpanEntry,
+    CollectionTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
 };
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 /// The synthetic export id these draft-level tests bind and look up by.
 fn answer_id() -> ExportId {

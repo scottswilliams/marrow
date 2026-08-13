@@ -24,7 +24,7 @@ use std::hash::{Hash, Hasher};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CollTypeId, CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType,
+    CollTypeId, CollectionTypeDef, DraftTxn, EnumId, FieldDef, ImageDraft, ImageType,
     RecordTypeDef, Scalar, TypeId, VariantDef,
 };
 use marrow_project::FileIdentity;

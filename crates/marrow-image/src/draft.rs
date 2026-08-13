@@ -204,8 +204,11 @@ pub struct StrId(u32);
 pub struct ConstId(pub(crate) u32);
 
 impl ConstId {
-    /// The constant-pool id at `index` — the widening the independent verifier
-    /// performs on a `u16` it read from received bytes.
+    /// The constant-pool id at `index`, widened from a `u16` ordinal. Its only
+    /// cross-crate consumers are the frozen legacy accepted-bytes pins
+    /// (`marrow-verify/tests/legacy_ok_pins.rs`), which spell known-answer operands
+    /// against a draft whose pool they built; production ids come from the draft's
+    /// own checked interning mints.
     pub const fn from_index(index: u16) -> Self {
         Self(index as u32)
     }
@@ -894,6 +897,17 @@ impl<'d> DraftTxn<'d> {
         self.armed = false;
     }
 
+    /// A savepoint of the transaction's in-progress state — the deliberate shadow of
+    /// the read surface's [`ImageDraft::savepoint`], so a mid-transaction mint is an
+    /// explicit choice rather than a `Deref` accident. It captures the current
+    /// (already rotated) epoch and the guard's live snapshot: after this guard
+    /// commits it admits exactly like a fresh post-commit savepoint, and after a
+    /// rollback it is the incoherent-token refusal, because the state it observed
+    /// was restored away.
+    pub fn savepoint(&self) -> DraftSavepoint {
+        self.draft.savepoint()
+    }
+
     pub fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
         self.draft.intern_string(text)
     }
@@ -1493,12 +1507,12 @@ impl ImageDraft {
     /// occurrence with no declaration is not a root.
     ///
     /// The one opaque [`SitePlanStateError`] the construction entry points carry covers
-    /// three causes here, none of them projected: the named Product is not declared here, the
-    /// occurrence table is already at its root bound (the same bound the encoder reports
-    /// as [`ImageBuildError::TooManyRoots`]), or the completed row's published selectors
-    /// exceed what a canonical path can address. Each is a fault in the graph the caller
-    /// just built, and no caller branches on which. An occurrence past the plan's admitted
-    /// root count is refused the same way, before the row is pushed.
+    /// the coherence causes here, none of them projected: the named Product is not
+    /// declared here, the completed row's published selectors exceed what a canonical
+    /// path can address, or the occurrence is past the plan's admitted root count —
+    /// each refused before the row is pushed. Crossing the public Roots policy is not
+    /// refused anywhere on this surface: the N+1 occurrence commits with its ledger
+    /// observation and the fence reports [`ImageBuildError::TooManyRoots`].
     pub(crate) fn add_root_occurrence(
         &mut self,
         plan: &AdmittedGraphInputPlan,
@@ -1978,10 +1992,7 @@ impl ImageDraft {
     /// re-mint at the same ordinals with fresh stamps while a preexisting receipt stays
     /// live. An over-policy ref with intact provenance is valid here: it is live
     /// provenance the Sites policy candidate reports, never a coherence fault.
-    pub(crate) fn validate_site_ref(
-        &self,
-        site: &PlannedSiteRef,
-    ) -> Result<(), SitePlanStateError> {
+    fn validate_site_ref(&self, site: &PlannedSiteRef) -> Result<(), SitePlanStateError> {
         self.sites
             .validate(self.durable.identity(), site)
             .map_err(SitePlanStateError::new)?;

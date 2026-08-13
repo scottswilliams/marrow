@@ -16,12 +16,9 @@ use marrow_image::{
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 /// A committed one-function draft that encodes, for rollback byte-identity checks.
 fn exporting_owner() -> ImageDraft {

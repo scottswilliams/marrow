@@ -21,12 +21,9 @@ use marrow_image::{
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];

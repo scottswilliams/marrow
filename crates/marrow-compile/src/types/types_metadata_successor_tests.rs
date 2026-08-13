@@ -1,18 +1,13 @@
 use super::*;
 
+use crate::compile::admitted;
+
 use crate::decl::DeclarationBudget;
 use crate::durable::DurableRegistry;
 use marrow_image::{
     CollectionTypeDef, DraftTxn, EnumTypeDef, FieldDef, ImageType, RecordTypeDef, Scalar,
 };
 use marrow_project::IdentityLedger;
-
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
 
 fn name(text: &str) -> TypeExpr {
     TypeExpr::Name {

@@ -11,10 +11,10 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, DurableIndexComponent,
-    DurableIndexShape, EnumId, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
-    SpanEntry, TypeId, VariantDef, image_id,
+    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, EnumId,
+    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId,
+    VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -26,12 +26,9 @@ use site_seam::site;
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 fn ledger(bytes: [u8; 16]) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(bytes)

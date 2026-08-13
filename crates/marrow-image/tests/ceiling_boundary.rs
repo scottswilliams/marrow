@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use marrow_image::bounds::{MAX_FUNCTIONS, MAX_IMAGE_BYTES, MAX_STRING_BYTES, MAX_TEST_ENTRIES};
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FunctionDef, ImageBuildError,
+    DeclarationMemberDef, DeclarationMemberShape, ExportId, FunctionDef, ImageBuildError,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
     Scalar, SpanEntry,
 };
@@ -25,12 +25,9 @@ use marrow_image::{
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
-    owner
-        .begin_transaction(owner.savepoint())
-        .expect("a fresh savepoint admits")
-}
+#[path = "common/admitted.rs"]
+mod admitted_helper;
+use admitted_helper::admitted;
 
 /// A minimal clean storeless draft: one exported `main`, one constant.
 fn storeless_base() -> ImageDraft {

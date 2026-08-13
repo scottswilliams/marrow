@@ -17,7 +17,7 @@ use crate::bounds;
 use crate::draft::ImageDraft;
 
 /// The number of ledger slots: the eight owned table-policy families, fixed.
-pub(crate) const TABLE_POLICY_KIND_COUNT: usize = 8;
+const TABLE_POLICY_KIND_COUNT: usize = 8;
 
 /// The closed owned policy-kind set, in canonical validation order. The declaration
 /// order IS the legacy walk's candidate order; [`TablePolicyKind::rank`] is the slot

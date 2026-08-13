@@ -1733,11 +1733,11 @@ fn no_value_shape_is_minted_inside_a_template_proof() {
         "the compiler's durable lowering mints through the transaction appenders",
     );
 
-    // The F-5 absence half: the draft's raw `&mut` arena escape is gone from the
-    // public surface — on `ImageDraft` the accessor survives only crate-private,
-    // behind the typed transaction appenders. The one public arena escape left is
-    // the contract graph's own, whose sole cross-crate caller is the verifier
-    // minting into the twin arena its decoded graph owns.
+    // The draft's raw `&mut` arena escape is gone from the public surface — on
+    // `ImageDraft` the accessor survives only crate-private, behind the typed
+    // transaction appenders. The one public arena escape left is the contract
+    // graph's own, whose sole cross-crate caller is the verifier minting into the
+    // twin arena its decoded graph owns.
     let draft_owner_code = sources
         .iter()
         .find(|(path, _)| path.ends_with("src/draft.rs"))

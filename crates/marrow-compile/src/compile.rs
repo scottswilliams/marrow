@@ -36,8 +36,9 @@ use crate::lower::{
 use crate::types::BuildError;
 use crate::types::{GenericInvariant, TypeRegistry};
 
-/// The armed transaction a fresh savepoint admits over `owner`.
-fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+/// The armed transaction a fresh savepoint admits over `owner` — the one admission
+/// spelling for this crate's production batches and test fixtures alike.
+pub(crate) fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
     #[expect(
         clippy::expect_used,
         reason = "admission law: a savepoint minted and consumed in one expression is fresh"
