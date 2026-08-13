@@ -98,7 +98,9 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
         .intern_string("counters")
         .expect("a within-domain mint");
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),

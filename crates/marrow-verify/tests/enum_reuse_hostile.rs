@@ -498,7 +498,9 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
         let name = draft
             .intern_string(if position == 0 { "a" } else { "b" })
             .expect("a within-domain mint");
-        let int_value = draft.value_scalar(Scalar::Int);
+        let int_value = draft
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints");
         let enum_value = spec_enum_shape(&mut draft, root);
         // Flat commands, in pre-order: the two direct fields, the group and its one
         // member, then the branch and its one member.

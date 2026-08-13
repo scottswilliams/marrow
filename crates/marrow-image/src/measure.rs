@@ -1303,9 +1303,11 @@ mod decisive_saturation {
         draft.set_application_identity(crate::durable_id::LedgerIdBytes::from_bytes([0x01; 16]));
         let value = {
             let values = draft.value_shapes_mut();
-            let mut level = values.scalar(Scalar::Int);
+            let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
             for _ in 0..31 {
-                level = values.struct_shape(vec![level; 64]);
+                level = values
+                    .struct_shape(vec![level; 64])
+                    .expect("the test arena mints");
             }
             level
         };

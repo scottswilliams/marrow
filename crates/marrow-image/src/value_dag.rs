@@ -58,6 +58,7 @@
 
 use std::collections::HashMap;
 
+use crate::draft::DraftStateError;
 use crate::durable_id::{DurableGraphTooLarge, IDREF_MEMBER, IDREF_SUM, LedgerIdBytes};
 use crate::ty::Scalar;
 
@@ -184,23 +185,31 @@ impl CanonicalValueShapeDag {
 
     /// The node for a scalar value (a nominal's caller erases it to its base scalar
     /// first).
-    pub fn scalar(&mut self, scalar: Scalar) -> ValueShapeNodeId {
+    pub fn scalar(&mut self, scalar: Scalar) -> Result<ValueShapeNodeId, DraftStateError> {
         self.intern(ValueShapeNode::Scalar(scalar))
     }
 
     /// The node for a dense struct value over already-minted leaves, in positional
     /// order.
-    pub fn struct_shape(&mut self, leaves: Vec<ValueShapeNodeId>) -> ValueShapeNodeId {
+    ///
+    /// A leaf this arena never minted — an id carried over from another arena — is
+    /// [`DraftStateError::ForeignDraft`], never an out-of-range index.
+    pub fn struct_shape(
+        &mut self,
+        leaves: Vec<ValueShapeNodeId>,
+    ) -> Result<ValueShapeNodeId, DraftStateError> {
         self.intern(ValueShapeNode::Struct(leaves))
     }
 
     /// The node for a closed enum value: its sum identity and, per variant in
     /// declaration order, its member identity and already-minted payload leaves.
+    ///
+    /// Checked exactly like [`Self::struct_shape`] over every payload leaf.
     pub fn enum_shape(
         &mut self,
         sum: LedgerIdBytes,
         members: Vec<(LedgerIdBytes, Vec<ValueShapeNodeId>)>,
-    ) -> ValueShapeNodeId {
+    ) -> Result<ValueShapeNodeId, DraftStateError> {
         let members = members
             .into_iter()
             .map(|(id, payload)| ValueShapeEnumMember { id, payload })
@@ -238,7 +247,10 @@ impl CanonicalValueShapeDag {
     /// node always follows the nodes it references. A whole-arena bound recheck walks
     /// this once and touches each distinct shape one time.
     pub fn nodes(&self) -> impl Iterator<Item = ValueShapeNodeId> {
-        let count = u32::try_from(self.nodes.len()).expect("every minted node has a u32 ordinal");
+        // `intern` refuses a mint that would carry the count past `u32::MAX`, so every
+        // reachable length converts; clamping rather than asserting keeps the reader
+        // free of a panic that the mint bound already makes unreachable.
+        let count = u32::try_from(self.nodes.len()).unwrap_or(u32::MAX);
         (0..count).map(ValueShapeNodeId)
     }
 
@@ -261,42 +273,57 @@ impl CanonicalValueShapeDag {
 
     /// Mint `node`, or return the id of the structurally identical node already held.
     ///
-    /// Every reference `node` carries was minted earlier, so its depth is already
-    /// final: one `max` over the direct references is the exact longest path, and the
-    /// arena stays acyclic by construction.
-    fn intern(&mut self, node: ValueShapeNode) -> ValueShapeNodeId {
+    /// Every reference `node` carries must already be minted *here*: its depth is then
+    /// final, so one `max` over the direct references is the exact longest path and the
+    /// arena stays acyclic by construction. The arena is a `#[doc(hidden)] pub` builder
+    /// surface rather than a Rust privacy boundary, so both premises are checked rather
+    /// than assumed — an id from another arena and an arena at its carrier ceiling are
+    /// the closed builder-domain refusals, and neither mutates a single owner.
+    fn intern(&mut self, node: ValueShapeNode) -> Result<ValueShapeNodeId, DraftStateError> {
         if let Some(existing) = self.interned.get(&node) {
-            return *existing;
+            return Ok(*existing);
         }
-        let depth = 1 + self.max_reference_depth(&node);
+        let depth = 1 + self.max_reference_depth(&node)?;
+        // Refuse at `u32::MAX` rather than past it: the id minted here is the pre-push
+        // length, so admitting that length would leave a post-push count no `u32` holds
+        // and `nodes()` unable to name the last node.
+        if self.nodes.len() >= u32::MAX as usize {
+            return Err(DraftStateError::CarrierDomain);
+        }
         let id = ValueShapeNodeId(
-            u32::try_from(self.nodes.len()).expect("an arena holds fewer nodes than u32 counts"),
+            u32::try_from(self.nodes.len()).map_err(|_| DraftStateError::CarrierDomain)?,
         );
         self.interned.insert(node.clone(), id);
         self.nodes.push(node);
         self.depth.push(depth);
-        id
+        Ok(id)
     }
 
     /// The greatest depth among `node`'s direct references, or zero when it has none.
-    fn max_reference_depth(&self, node: &ValueShapeNode) -> u32 {
+    fn max_reference_depth(&self, node: &ValueShapeNode) -> Result<u32, DraftStateError> {
         match node {
-            ValueShapeNode::Scalar(_) => 0,
+            ValueShapeNode::Scalar(_) => Ok(0),
             ValueShapeNode::Struct(leaves) => self.max_depth(leaves),
-            ValueShapeNode::Enum { members, .. } => members
-                .iter()
-                .map(|member| self.max_depth(&member.payload))
-                .max()
-                .unwrap_or(0),
+            ValueShapeNode::Enum { members, .. } => {
+                let mut deepest = 0;
+                for member in members {
+                    deepest = deepest.max(self.max_depth(&member.payload)?);
+                }
+                Ok(deepest)
+            }
         }
     }
 
-    fn max_depth(&self, references: &[ValueShapeNodeId]) -> u32 {
-        references
-            .iter()
-            .map(|reference| self.depth[reference.index()])
-            .max()
-            .unwrap_or(0)
+    fn max_depth(&self, references: &[ValueShapeNodeId]) -> Result<u32, DraftStateError> {
+        let mut deepest = 0;
+        for reference in references {
+            let depth = *self
+                .depth
+                .get(reference.index())
+                .ok_or(DraftStateError::ForeignDraft)?;
+            deepest = deepest.max(depth);
+        }
+        Ok(deepest)
     }
 }
 
@@ -494,15 +521,54 @@ mod tests {
         };
     }
 
+    /// An id minted by one arena names no node in another, and the arena is a
+    /// `#[doc(hidden)] pub` builder surface an arbitrary external caller reaches. Both
+    /// composite minters therefore refuse it as [`DraftStateError::ForeignDraft`] and
+    /// leave the target arena byte-for-byte unchanged — the id is never used as an
+    /// index into the depth vector, which is what previously aborted the process.
+    #[test]
+    fn a_foreign_leaf_is_the_typed_refusal_and_mutates_no_node() {
+        let mut minting = CanonicalValueShapeDag::new();
+        let foreign = minting.scalar(Scalar::Int).expect("the test arena mints");
+
+        let mut empty = CanonicalValueShapeDag::new();
+        assert_eq!(
+            empty.struct_shape(vec![foreign]),
+            Err(DraftStateError::ForeignDraft),
+        );
+        assert_eq!(
+            empty.enum_shape(ledger_id(1), vec![(ledger_id(2), vec![foreign])]),
+            Err(DraftStateError::ForeignDraft),
+        );
+        assert_eq!(empty, CanonicalValueShapeDag::new(), "no node was minted");
+        assert_eq!(empty.len(), 0);
+
+        // The same id is not foreign to an arena that has minted that many nodes: the
+        // refusal is a range fact about *this* arena, so a populated target accepts it
+        // and the two arms above cannot pass by refusing everything.
+        let mut populated = CanonicalValueShapeDag::new();
+        populated
+            .scalar(Scalar::Text)
+            .expect("the test arena mints");
+        let composite = populated
+            .struct_shape(vec![foreign])
+            .expect("an in-range leaf is accepted");
+        assert_eq!(populated.depth(composite), 2);
+    }
+
     /// A shape minted twice is one node: the arena is the canonical form, so equality
     /// of shapes is equality of ids.
     #[test]
     fn structurally_identical_shapes_share_one_node() {
         let mut dag = CanonicalValueShapeDag::new();
-        let int = dag.scalar(Scalar::Int);
-        let first = dag.struct_shape(vec![int, int]);
-        let again = dag.scalar(Scalar::Int);
-        let second = dag.struct_shape(vec![again, int]);
+        let int = dag.scalar(Scalar::Int).expect("the test arena mints");
+        let first = dag
+            .struct_shape(vec![int, int])
+            .expect("the test arena mints");
+        let again = dag.scalar(Scalar::Int).expect("the test arena mints");
+        let second = dag
+            .struct_shape(vec![again, int])
+            .expect("the test arena mints");
         assert_eq!(first, second);
         assert_eq!(dag.len(), 2, "one scalar node and one struct node");
     }
@@ -511,12 +577,16 @@ mod tests {
     #[test]
     fn depth_is_the_longest_path_to_a_scalar() {
         let mut dag = CanonicalValueShapeDag::new();
-        let int = dag.scalar(Scalar::Int);
+        let int = dag.scalar(Scalar::Int).expect("the test arena mints");
         assert_eq!(dag.depth(int), 1);
-        let pair = dag.struct_shape(vec![int, int]);
+        let pair = dag
+            .struct_shape(vec![int, int])
+            .expect("the test arena mints");
         assert_eq!(dag.depth(pair), 2);
         // A struct holding both the scalar and the pair measures the longer branch.
-        let mixed = dag.struct_shape(vec![int, pair]);
+        let mixed = dag
+            .struct_shape(vec![int, pair])
+            .expect("the test arena mints");
         assert_eq!(dag.depth(mixed), 3);
     }
 
@@ -525,11 +595,11 @@ mod tests {
     #[test]
     fn a_shared_node_carries_one_depth_whatever_reaches_it() {
         let mut dag = CanonicalValueShapeDag::new();
-        let int = dag.scalar(Scalar::Int);
-        let shared = dag.struct_shape(vec![int]);
+        let int = dag.scalar(Scalar::Int).expect("the test arena mints");
+        let shared = dag.struct_shape(vec![int]).expect("the test arena mints");
         let mut deep = shared;
         for _ in 0..10 {
-            deep = dag.struct_shape(vec![deep]);
+            deep = dag.struct_shape(vec![deep]).expect("the test arena mints");
         }
         assert_eq!(
             dag.depth(shared),
@@ -545,21 +615,33 @@ mod tests {
     #[test]
     fn depth_does_not_depend_on_minting_order() {
         let mut deep_first = CanonicalValueShapeDag::new();
-        let int = deep_first.scalar(Scalar::Int);
-        let shared = deep_first.struct_shape(vec![int]);
+        let int = deep_first
+            .scalar(Scalar::Int)
+            .expect("the test arena mints");
+        let shared = deep_first
+            .struct_shape(vec![int])
+            .expect("the test arena mints");
         let mut chain = shared;
         for _ in 0..5 {
-            chain = deep_first.struct_shape(vec![chain]);
+            chain = deep_first
+                .struct_shape(vec![chain])
+                .expect("the test arena mints");
         }
         let deep_first_pair = (deep_first.depth(shared), deep_first.depth(chain));
 
         let mut shallow_first = CanonicalValueShapeDag::new();
-        let int = shallow_first.scalar(Scalar::Int);
-        let shared = shallow_first.struct_shape(vec![int]);
+        let int = shallow_first
+            .scalar(Scalar::Int)
+            .expect("the test arena mints");
+        let shared = shallow_first
+            .struct_shape(vec![int])
+            .expect("the test arena mints");
         let _ = shallow_first.depth(shared);
         let mut chain = shared;
         for _ in 0..5 {
-            chain = shallow_first.struct_shape(vec![chain]);
+            chain = shallow_first
+                .struct_shape(vec![chain])
+                .expect("the test arena mints");
         }
         assert_eq!(
             deep_first_pair,
@@ -572,9 +654,11 @@ mod tests {
     #[test]
     fn a_shared_shape_is_stored_once_however_often_it_is_referenced() {
         let mut dag = CanonicalValueShapeDag::new();
-        let mut level = dag.scalar(Scalar::Int);
+        let mut level = dag.scalar(Scalar::Int).expect("the test arena mints");
         for _ in 0..14 {
-            level = dag.struct_shape(vec![level; 4]);
+            level = dag
+                .struct_shape(vec![level; 4])
+                .expect("the test arena mints");
         }
         assert_eq!(dag.len(), 15, "one scalar plus fourteen struct levels");
         assert_eq!(dag.depth(level), 15);
@@ -605,9 +689,11 @@ mod tests {
     #[test]
     fn expansion_stops_at_a_full_sink() {
         let mut dag = CanonicalValueShapeDag::new();
-        let mut level = dag.scalar(Scalar::Int);
+        let mut level = dag.scalar(Scalar::Int).expect("the test arena mints");
         for _ in 0..14 {
-            level = dag.struct_shape(vec![level; 4]);
+            level = dag
+                .struct_shape(vec![level; 4])
+                .expect("the test arena mints");
         }
         let mut sink = Ceiling {
             written: 0,
@@ -631,8 +717,10 @@ mod tests {
     #[test]
     fn an_arity_the_wire_cannot_spell_refuses_the_expansion() {
         let mut dag = CanonicalValueShapeDag::new();
-        let int = dag.scalar(Scalar::Int);
-        let wide = dag.struct_shape(vec![int; u16::MAX as usize + 1]);
+        let int = dag.scalar(Scalar::Int).expect("the test arena mints");
+        let wide = dag
+            .struct_shape(vec![int; u16::MAX as usize + 1])
+            .expect("the test arena mints");
 
         let mut bytes = Vec::new();
         assert_eq!(
@@ -651,8 +739,10 @@ mod tests {
     #[test]
     fn the_two_wire_forms_differ_only_in_identity_spelling() {
         let mut dag = CanonicalValueShapeDag::new();
-        let int = dag.scalar(Scalar::Int);
-        let shape = dag.enum_shape(ledger_id(1), vec![(ledger_id(2), vec![int])]);
+        let int = dag.scalar(Scalar::Int).expect("the test arena mints");
+        let shape = dag
+            .enum_shape(ledger_id(1), vec![(ledger_id(2), vec![int])])
+            .expect("the test arena mints");
 
         let mut payload = Vec::new();
         expand(
@@ -704,14 +794,16 @@ mod tests {
         }
 
         let struct_chain = |dag: &mut CanonicalValueShapeDag| {
-            let mut level = dag.scalar(Scalar::Int);
+            let mut level = dag.scalar(Scalar::Int).expect("the test arena mints");
             for _ in 0..31 {
-                level = dag.struct_shape(vec![level; 64]);
+                level = dag
+                    .struct_shape(vec![level; 64])
+                    .expect("the test arena mints");
             }
             level
         };
         let enum_chain = |dag: &mut CanonicalValueShapeDag| {
-            let mut level = dag.scalar(Scalar::Int);
+            let mut level = dag.scalar(Scalar::Int).expect("the test arena mints");
             for depth in 0..31u16 {
                 let members = (0..256u16)
                     .map(|member| {
@@ -723,7 +815,9 @@ mod tests {
                     .collect();
                 let mut sum = [0xffu8; 16];
                 sum[0..2].copy_from_slice(&depth.to_be_bytes());
-                level = dag.enum_shape(LedgerIdBytes::from_bytes(sum), members);
+                level = dag
+                    .enum_shape(LedgerIdBytes::from_bytes(sum), members)
+                    .expect("the test arena mints");
             }
             level
         };

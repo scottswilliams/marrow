@@ -1714,7 +1714,7 @@ mod tests {
             shape: DeclarationMemberShape::Field {
                 id: id(byte),
                 required: true,
-                value: values.scalar(Scalar::Int),
+                value: values.scalar(Scalar::Int).expect("the test arena mints"),
             },
         }
     }

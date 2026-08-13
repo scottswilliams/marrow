@@ -269,8 +269,12 @@ fn a_durable_image() -> Vec<u8> {
         .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_scalar(Scalar::Int);
-    let text_value = draft.value_scalar(Scalar::Text);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -413,8 +417,12 @@ fn an_indexed_durable_image() -> Vec<u8> {
         .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_scalar(Scalar::Int);
-    let text_value = draft.value_scalar(Scalar::Text);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -535,8 +543,12 @@ fn a_strict_durable_image() -> Vec<u8> {
         .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_scalar(Scalar::Int);
-    let text_value = draft.value_scalar(Scalar::Text);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -725,8 +737,12 @@ fn a_group_branch_durable_image() -> Vec<u8> {
         .expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_scalar(Scalar::Int);
-    let text_value = draft.value_scalar(Scalar::Text);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -966,8 +982,12 @@ fn a_widened_durable_image() -> Vec<u8> {
     let root = draft.intern_string("ws").expect("a within-domain mint");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_scalar(Scalar::Int);
-    let text_value = draft.value_scalar(Scalar::Text);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     // An `Option[int]`-shaped enum and a dense `struct { int, text }`.
     let enum_value = draft
         .value_enum(
@@ -1110,7 +1130,9 @@ fn a_multi_site_durable_image() -> Vec<u8> {
         ledger([0x1f; 16]),
     ];
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_scalar(Scalar::Int);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),

@@ -290,7 +290,9 @@ fn the_compact_expansion_regression_is_refused_decisively() {
     let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
     let value = {
-        let mut level = draft.value_scalar(Scalar::Int);
+        let mut level = draft
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints");
         for _ in 0..31 {
             level = draft
                 .value_struct(vec![level; 64])

@@ -427,7 +427,9 @@ fn durable_parts(
 ) -> (ImageDraft, AdmittedRoot) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     let type_name = draft.intern_string("R").expect("a within-domain mint");
     // The verifier ties each field/group member to one record slot (a keyed branch is
     // a distinct durable node, not a slot), so the entry record declares exactly one

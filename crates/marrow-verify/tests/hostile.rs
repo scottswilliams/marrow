@@ -115,13 +115,27 @@ impl ScalarShapes {
 
 fn scalar_shapes(draft: &mut DraftTxn<'_>) -> ScalarShapes {
     ScalarShapes {
-        int: draft.value_scalar(Scalar::Int),
-        text: draft.value_scalar(Scalar::Text),
-        bool_: draft.value_scalar(Scalar::Bool),
-        bytes: draft.value_scalar(Scalar::Bytes),
-        date: draft.value_scalar(Scalar::Date),
-        instant: draft.value_scalar(Scalar::Instant),
-        duration: draft.value_scalar(Scalar::Duration),
+        int: draft
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints"),
+        text: draft
+            .value_scalar(Scalar::Text)
+            .expect("the test arena mints"),
+        bool_: draft
+            .value_scalar(Scalar::Bool)
+            .expect("the test arena mints"),
+        bytes: draft
+            .value_scalar(Scalar::Bytes)
+            .expect("the test arena mints"),
+        date: draft
+            .value_scalar(Scalar::Date)
+            .expect("the test arena mints"),
+        instant: draft
+            .value_scalar(Scalar::Instant)
+            .expect("the test arena mints"),
+        duration: draft
+            .value_scalar(Scalar::Duration)
+            .expect("the test arena mints"),
     }
 }
 

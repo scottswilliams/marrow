@@ -121,7 +121,9 @@ fn encode_root(
 /// A Product whose single field member carries a dense struct value of `leaves` scalar
 /// leaves.
 fn members_with_struct_field(draft: &mut DraftTxn<'_>, leaves: usize) -> Vec<DeclarationMemberDef> {
-    let int = draft.value_scalar(Scalar::Int);
+    let int = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     let value = draft
         .value_struct(vec![int; leaves])
         .expect("a within-bounds shape appends");
@@ -168,7 +170,9 @@ fn a_dense_struct_at_the_leaf_limit_encodes() {
 fn a_dense_struct_one_leaf_over_the_limit_is_refused_at_the_surface() {
     let mut owner = ImageDraft::new();
     let mut draft = admitted(&mut owner);
-    let int = draft.value_scalar(Scalar::Int);
+    let int = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     assert_eq!(
         draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
@@ -188,7 +192,9 @@ fn an_over_wide_shape_is_refused_whether_or_not_a_declaration_references_it() {
         encode_root(
             |draft| {
                 let members = members_with_struct_field(draft, MAX_STRUCT_LEAVES);
-                let int = draft.value_scalar(Scalar::Int);
+                let int = draft
+                    .value_scalar(Scalar::Int)
+                    .expect("the test arena mints");
                 assert_eq!(
                     draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
                     Err(DraftStateError::CarrierDomain),
@@ -299,7 +305,9 @@ fn a_command_vector_wider_than_its_budget_appends_no_row() {
             fields: Vec::new(),
         })
         .expect("a within-domain mint");
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     let two = vec![
         DeclarationMemberDef {
             parent: None,
@@ -352,7 +360,9 @@ fn a_second_distinct_product_past_its_plan_budget_is_refused_and_appends_no_row(
             fields: Vec::new(),
         })
         .expect("a within-domain mint");
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     let one_field = |id| {
         vec![DeclarationMemberDef {
             parent: None,
@@ -437,7 +447,9 @@ fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
             fields: Vec::new(),
         })
         .expect("a within-domain mint");
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     let members = vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {

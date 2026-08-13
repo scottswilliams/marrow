@@ -33,7 +33,9 @@ const INDEX_ID: [u8; 16] = [0x3b; 16];
 
 /// One required int field member, minting its value shape into `draft`'s arena.
 fn one_field_members(draft: &mut DraftTxn<'_>) -> Vec<DeclarationMemberDef> {
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
@@ -498,7 +500,9 @@ fn a_divergent_application_identity_latches_a_sticky_conflict() {
 fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let int = draft.value_scalar(Scalar::Int);
+    let int = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     assert_eq!(
         draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),
@@ -514,8 +518,12 @@ fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
     let foreign = {
         let mut other_owner = ImageDraft::new();
         let mut other = admitted(&mut other_owner);
-        other.value_scalar(Scalar::Int);
-        other.value_scalar(Scalar::Text)
+        other
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints");
+        other
+            .value_scalar(Scalar::Text)
+            .expect("the test arena mints")
     };
     assert_eq!(
         draft.value_struct(vec![foreign]),

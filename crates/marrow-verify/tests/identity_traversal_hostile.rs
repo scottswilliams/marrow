@@ -104,7 +104,9 @@ fn two_root_branch_draft(
         })
         .expect("a within-domain mint");
     let a_root = draft.intern_string("books").expect("a within-domain mint");
-    let text_value = draft.value_scalar(Scalar::Text);
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     // Commands 0/1/2 are the Product's direct members; command 3 nests under the branch.
     draft
         .declare_product(
@@ -182,7 +184,9 @@ fn two_root_branch_draft(
     let b_root = draft
         .intern_string("tallies")
         .expect("a within-domain mint");
-    let int_value = draft.value_scalar(Scalar::Int);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),

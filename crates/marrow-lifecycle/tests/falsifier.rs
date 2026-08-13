@@ -123,7 +123,9 @@ fn maximum_draft() -> ImageDraft {
     let mut draft = draft_owner
         .begin_transaction(draft_owner.savepoint())
         .expect("a fresh savepoint admits");
-    let int = draft.value_scalar(Scalar::Int);
+    let int = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
 
     let entry_name = draft.intern_string("R").expect("a within-domain mint");
     let entry_fields: Vec<FieldDef> = (0..MEMBERS)
@@ -301,7 +303,9 @@ fn journey() {
             fields: Vec::new(),
         })
         .expect("a within-domain mint");
-    let value = refused.value_scalar(Scalar::Int);
+    let value = refused
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     let two: Vec<DeclarationMemberDef> = (0..2)
         .map(|ordinal| DeclarationMemberDef {
             parent: None,

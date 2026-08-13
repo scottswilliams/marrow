@@ -1702,6 +1702,21 @@ fn validate_index_projection(
 /// reclaims nothing and must carry the identical member ids in order. `depth` bounds
 /// nesting so a hostile image cannot drive unbounded recursion before the value shape is
 /// rechecked (§ law 9).
+/// The arena's closed builder-domain refusal, as a table rejection. The verifier is the
+/// image's only decoder and every image reaching it is untrusted, so an arena that
+/// refuses a mint — a leaf outside it, or an arena at its carrier ceiling — is a
+/// rejected image rather than an aborted verification.
+fn mint(
+    minted: Result<ValueShapeNodeId, marrow_image::DraftStateError>,
+) -> Result<ValueShapeNodeId, VerifyRejection> {
+    minted.map_err(|_| {
+        reject(
+            VerifyPhase::Table,
+            "durable field value shape exceeds the value arena's domain",
+        )
+    })
+}
+
 fn decode_value_shape(
     reader: &mut Reader<'_>,
     depth: usize,
@@ -1726,7 +1741,7 @@ fn decode_value_shape(
                 VerifyPhase::Table,
                 "durable value scalar must be a bare scalar",
             ))?;
-            Ok(values.scalar(scalar))
+            mint(values.scalar(scalar))
         }
         0x01 => {
             let count = reader.u16().ok_or(reject(
@@ -1740,7 +1755,7 @@ fn decode_value_shape(
             for _ in 0..count {
                 leaves.push(decode_value_shape(reader, depth + 1, scope, values)?);
             }
-            Ok(values.struct_shape(leaves))
+            mint(values.struct_shape(leaves))
         }
         0x02 => {
             let sum = read_id(reader, "short durable enum sum identity")?;
@@ -1803,7 +1818,7 @@ fn decode_value_shape(
                     .enums
                     .insert(sum, members.iter().map(|(id, _)| *id).collect());
             }
-            Ok(values.enum_shape(sum, members))
+            mint(values.enum_shape(sum, members))
         }
         _ => Err(reject(VerifyPhase::Table, "unknown durable value tag")),
     }

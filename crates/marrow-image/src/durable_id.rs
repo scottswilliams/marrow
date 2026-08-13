@@ -1181,8 +1181,14 @@ mod tests {
     fn counters_graph() -> ImageDraft {
         one_root(
             |draft| {
-                let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
+                let int = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
                 vec![
                     field_cmd(None, 0x0e, true, int),
                     field_cmd(None, 0x0f, false, text),
@@ -1200,9 +1206,18 @@ mod tests {
     fn library_graph() -> ImageDraft {
         one_root(
             |draft| {
-                let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
-                let instant = draft.value_shapes_mut().scalar(Scalar::Instant);
+                let int = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
+                let instant = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Instant)
+                    .expect("the test arena mints");
                 let branch = branch_cmd(draft, None, 0x30, vec![key(Scalar::Text, 0x31)]);
                 vec![
                     field_cmd(None, 0x0e, true, text),
@@ -1405,8 +1420,14 @@ mod tests {
 
         let two_fields = |first_id: u8, first_required: bool, second: bool| {
             move |draft: &mut ImageDraft| {
-                let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
+                let int = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
                 let mut members = vec![field_cmd(None, first_id, first_required, int)];
                 if second {
                     members.push(field_cmd(None, 0x0f, false, text));
@@ -1447,8 +1468,14 @@ mod tests {
         // A field made required changes the id.
         let required = one_root(
             |draft| {
-                let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
+                let int = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
                 vec![
                     field_cmd(None, 0x0e, true, int),
                     field_cmd(None, 0x0f, true, text),
@@ -1492,9 +1519,18 @@ mod tests {
         ) -> ImageDraft {
             one_root(
                 move |draft| {
-                    let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                    let text = draft.value_shapes_mut().scalar(Scalar::Text);
-                    let instant = draft.value_shapes_mut().scalar(Scalar::Instant);
+                    let int = draft
+                        .value_shapes_mut()
+                        .scalar(Scalar::Int)
+                        .expect("the test arena mints");
+                    let text = draft
+                        .value_shapes_mut()
+                        .scalar(Scalar::Text)
+                        .expect("the test arena mints");
+                    let instant = draft
+                        .value_shapes_mut()
+                        .scalar(Scalar::Instant)
+                        .expect("the test arena mints");
                     let (group_at, branch_at) = if swap_group_and_branch {
                         (2, 1)
                     } else {
@@ -1550,9 +1586,18 @@ mod tests {
         // flag are unchanged.
         let flattened = one_root(
             |draft| {
-                let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
-                let instant = draft.value_shapes_mut().scalar(Scalar::Instant);
+                let int = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
+                let instant = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Instant)
+                    .expect("the test arena mints");
                 let branch = branch_cmd(draft, None, 0x30, vec![key(Scalar::Text, 0x31)]);
                 vec![
                     field_cmd(None, 0x0e, true, text),
@@ -1595,13 +1640,21 @@ mod tests {
 
     fn mint_shapes(draft: &mut ImageDraft) -> Shapes {
         let values = draft.value_shapes_mut();
-        let int = values.scalar(Scalar::Int);
-        let text = values.scalar(Scalar::Text);
-        let text_int = values.struct_shape(vec![text, int]);
-        let int_text = values.struct_shape(vec![int, text]);
+        let int = values.scalar(Scalar::Int).expect("the test arena mints");
+        let text = values.scalar(Scalar::Text).expect("the test arena mints");
+        let text_int = values
+            .struct_shape(vec![text, int])
+            .expect("the test arena mints");
+        let int_text = values
+            .struct_shape(vec![int, text])
+            .expect("the test arena mints");
         let option_members = || vec![(id(0x51), Vec::new()), (id(0x52), vec![int])];
-        let option_int = values.enum_shape(id(0x50), option_members());
-        let option_int_resummed = values.enum_shape(id(0x60), option_members());
+        let option_int = values
+            .enum_shape(id(0x50), option_members())
+            .expect("the test arena mints");
+        let option_int_resummed = values
+            .enum_shape(id(0x60), option_members())
+            .expect("the test arena mints");
         let user = |first: LedgerIdBytes, second: LedgerIdBytes, payload: ValueShapeNodeId| {
             vec![
                 (first, Vec::new()),
@@ -1609,10 +1662,18 @@ mod tests {
                 (id(0x56), vec![payload]),
             ]
         };
-        let user_enum = values.enum_shape(id(0x53), user(id(0x54), id(0x55), text));
-        let user_enum_re_membered = values.enum_shape(id(0x53), user(id(0x61), id(0x55), text));
-        let user_enum_reordered = values.enum_shape(id(0x53), user(id(0x55), id(0x54), text));
-        let user_enum_retyped = values.enum_shape(id(0x53), user(id(0x54), id(0x55), int));
+        let user_enum = values
+            .enum_shape(id(0x53), user(id(0x54), id(0x55), text))
+            .expect("the test arena mints");
+        let user_enum_re_membered = values
+            .enum_shape(id(0x53), user(id(0x61), id(0x55), text))
+            .expect("the test arena mints");
+        let user_enum_reordered = values
+            .enum_shape(id(0x53), user(id(0x55), id(0x54), text))
+            .expect("the test arena mints");
+        let user_enum_retyped = values
+            .enum_shape(id(0x53), user(id(0x54), id(0x55), int))
+            .expect("the test arena mints");
         Shapes {
             int,
             text_int,
@@ -1711,7 +1772,10 @@ mod tests {
     fn singleton_and_composite_roots_encode_and_reconstruct() {
         let singleton = one_root(
             |draft| {
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
                 vec![field_cmd(None, 0x0e, true, text)]
             },
             Vec::new(),
@@ -1746,8 +1810,14 @@ mod tests {
     fn indexed_graph_with(indexes: Vec<DurableIndexShape>) -> ImageDraft {
         one_root(
             |draft| {
-                let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
+                let int = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
                 vec![
                     field_cmd(None, 0x0e, true, int),
                     field_cmd(None, 0x0f, false, text),
@@ -1861,9 +1931,11 @@ mod tests {
         let forged = one_root(
             |draft| {
                 let values = draft.value_shapes_mut();
-                let mut level = values.scalar(Scalar::Int);
+                let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
                 for _ in 0..16 {
-                    level = values.struct_shape(vec![level; 4]);
+                    level = values
+                        .struct_shape(vec![level; 4])
+                        .expect("the test arena mints");
                 }
                 assert_eq!(values.len(), 17, "the stated graph is seventeen nodes");
                 vec![field_cmd(None, 0x0e, true, level)]
@@ -1894,8 +1966,10 @@ mod tests {
         let forged = one_root(
             |draft| {
                 let values = draft.value_shapes_mut();
-                let int = values.scalar(Scalar::Int);
-                let wide = values.struct_shape(vec![int; u16::MAX as usize + 1]);
+                let int = values.scalar(Scalar::Int).expect("the test arena mints");
+                let wide = values
+                    .struct_shape(vec![int; u16::MAX as usize + 1])
+                    .expect("the test arena mints");
                 vec![field_cmd(None, 0x0e, true, wide)]
             },
             Vec::new(),
@@ -1915,9 +1989,11 @@ mod tests {
         let fitting = one_root(
             |draft| {
                 let values = draft.value_shapes_mut();
-                let mut level = values.scalar(Scalar::Int);
+                let mut level = values.scalar(Scalar::Int).expect("the test arena mints");
                 for _ in 0..7 {
-                    level = values.struct_shape(vec![level; 4]);
+                    level = values
+                        .struct_shape(vec![level; 4])
+                        .expect("the test arena mints");
                 }
                 vec![field_cmd(None, 0x0e, true, level)]
             },
@@ -2019,9 +2095,13 @@ mod tests {
             one_root(
                 move |draft| {
                     let values = draft.value_shapes_mut();
-                    let int = values.scalar(Scalar::Int);
-                    let wide = values.struct_shape(vec![int; WIDE_LEAVES]);
-                    let tuned = values.struct_shape(vec![int; tuning_leaves]);
+                    let int = values.scalar(Scalar::Int).expect("the test arena mints");
+                    let wide = values
+                        .struct_shape(vec![int; WIDE_LEAVES])
+                        .expect("the test arena mints");
+                    let tuned = values
+                        .struct_shape(vec![int; tuning_leaves])
+                        .expect("the test arena mints");
                     let mut members: Vec<_> = (0..WIDE_FIELDS)
                         .map(|_| field_cmd(None, 0x0e, true, wide))
                         .collect();
@@ -2086,7 +2166,10 @@ mod tests {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(id(0x0a));
         let record = entry_record(&mut draft);
-        let int = draft.value_shapes_mut().scalar(Scalar::Int);
+        let int = draft
+            .value_shapes_mut()
+            .scalar(Scalar::Int)
+            .expect("the test arena mints");
         let name = draft.intern_string("root").expect("a within-domain mint");
         draft
             .declare_product(
@@ -2263,9 +2346,18 @@ mod tests {
         // fresh id; every other node's path is untouched.
         let regrouped = one_root(
             |draft| {
-                let int = draft.value_shapes_mut().scalar(Scalar::Int);
-                let text = draft.value_shapes_mut().scalar(Scalar::Text);
-                let instant = draft.value_shapes_mut().scalar(Scalar::Instant);
+                let int = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                let text = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Text)
+                    .expect("the test arena mints");
+                let instant = draft
+                    .value_shapes_mut()
+                    .scalar(Scalar::Instant)
+                    .expect("the test arena mints");
                 let branch = branch_cmd(draft, None, 0x30, vec![key(Scalar::Text, 0x31)]);
                 vec![
                     field_cmd(None, 0x0e, true, text),

@@ -74,7 +74,9 @@ fn roots_corpus(roots: usize) -> ImageDraft {
         })
         .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -254,7 +256,9 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
         })
         .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),

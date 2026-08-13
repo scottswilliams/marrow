@@ -264,7 +264,9 @@ mod tests {
             })
             .expect("a within-domain mint");
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-        let value = draft.value_scalar(Scalar::Int);
+        let value = draft
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints");
         draft
             .declare_product(
                 &admitted_plan(),

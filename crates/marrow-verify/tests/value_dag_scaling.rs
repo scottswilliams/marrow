@@ -76,8 +76,12 @@ fn base_level(draft: &mut DraftTxn<'_>) -> Level {
             ],
         })
         .expect("a within-domain mint");
-    let int = draft.value_scalar(Scalar::Int);
-    let text = draft.value_scalar(Scalar::Text);
+    let int = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
+    let text = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     Level {
         shape: draft
             .value_struct(vec![int, text])
@@ -281,16 +285,22 @@ fn value_shape_work_scales_with_the_declared_graph() {
 #[test]
 fn a_shared_value_shape_is_one_node_however_many_fields_reference_it() {
     let mut values = CanonicalValueShapeDag::new();
-    let int = values.scalar(Scalar::Int);
-    let text = values.scalar(Scalar::Text);
-    let base = values.struct_shape(vec![int, text]);
+    let int = values.scalar(Scalar::Int).expect("the test arena mints");
+    let text = values.scalar(Scalar::Text).expect("the test arena mints");
+    let base = values
+        .struct_shape(vec![int, text])
+        .expect("the test arena mints");
     let mut level = base;
     for _ in 0..24 {
-        level = values.struct_shape(vec![level]);
+        level = values
+            .struct_shape(vec![level])
+            .expect("the test arena mints");
     }
     let before = values.len();
     for _ in 0..1024 {
-        let repeat = values.struct_shape(vec![int, text]);
+        let repeat = values
+            .struct_shape(vec![int, text])
+            .expect("the test arena mints");
         assert_eq!(repeat, base);
     }
     assert_eq!(

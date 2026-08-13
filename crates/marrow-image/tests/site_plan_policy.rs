@@ -74,7 +74,9 @@ fn declare_wide_product(draft: &mut DraftTxn<'_>, fields: usize) {
         })
         .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -245,7 +247,9 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
         .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let branch_name = draft.intern_string("b").expect("a within-domain mint");
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -519,7 +523,9 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
         })
         .expect("a within-domain mint");
     right.set_application_identity(LedgerIdBytes::from_bytes([0x0f; 16]));
-    let value = right.value_scalar(Scalar::Text);
+    let value = right
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     right
         .declare_product(
             &admitted_plan(),
@@ -635,7 +641,9 @@ fn redeclare_divergent(draft: &mut DraftTxn<'_>) {
             fields: Vec::new(),
         })
         .expect("a within-domain mint");
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -998,7 +1006,9 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         })
         .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     let mut commands = Vec::with_capacity(2 * GROUPS);
     for group in 0..GROUPS {
         let parent = u32::try_from(commands.len()).expect("inside the member bound");

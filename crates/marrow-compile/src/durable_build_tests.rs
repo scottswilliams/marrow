@@ -83,7 +83,8 @@ mod generic_enum_shape_tests {
                     option,
                 ))
             })
-            .expect("the Ready Option metadata session opens");
+            .expect("the Ready Option metadata session opens")
+            .expect("the Ready Option value shape is built");
         let ValueShapeView::Enum { members, .. } = values.value_shapes().view(shape) else {
             panic!("a Ready Option remains enum-shaped")
         };
@@ -159,7 +160,8 @@ mod generic_enum_shape_tests {
                     unavailable,
                 ))
             })
-            .expect("the unavailable enum metadata session opens");
+            .expect("the unavailable enum metadata session opens")
+            .expect("the unavailable enum value shape is built");
         assert_eq!(
             values.value_shapes().view(shape),
             ValueShapeView::Scalar(ScalarType::Int.image())
@@ -460,7 +462,9 @@ mod declaration_command_bound_tests {
         );
 
         let flat_fields = |draft: &mut DraftTxn<'_>, count: usize| {
-            let value = draft.value_scalar(Scalar::Int);
+            let value = draft
+                .value_scalar(Scalar::Int)
+                .expect("the test arena mints");
             declaration_commands(
                 (0..count)
                     .map(|n| {

@@ -86,7 +86,9 @@ enum Value {
 
 impl Value {
     fn shape(self, draft: &mut DraftTxn<'_>) -> ValueShapeNodeId {
-        let int = draft.value_scalar(Scalar::Int);
+        let int = draft
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints");
         match self {
             Value::Scalar => int,
             Value::OverCeiling => {
@@ -111,9 +113,15 @@ impl Value {
                 // Index 2 in a three-node arena; the fixture draft's arena holds one.
                 let mut other_owner = ImageDraft::new();
                 let mut other = admitted(&mut other_owner);
-                other.value_scalar(Scalar::Int);
-                other.value_scalar(Scalar::Bool);
-                other.value_scalar(Scalar::Text)
+                other
+                    .value_scalar(Scalar::Int)
+                    .expect("the test arena mints");
+                other
+                    .value_scalar(Scalar::Bool)
+                    .expect("the test arena mints");
+                other
+                    .value_scalar(Scalar::Text)
+                    .expect("the test arena mints")
             }
         }
     }
@@ -955,7 +963,9 @@ fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
         // A second Product as wide as the site table itself: demanding every field leaf
         // fills the table, and the root's whole-payload demand is the crossing.
         Overflow::Sites => {
-            let value = draft.value_scalar(Scalar::Int);
+            let value = draft
+                .value_scalar(Scalar::Int)
+                .expect("the test arena mints");
             let entry_name = draft.intern_string("S").expect("a within-domain mint");
             let entry = draft
                 .add_record_type(RecordTypeDef {
@@ -1150,7 +1160,9 @@ fn code_bytes_outranks_the_body_ceiling() {
 fn an_over_wide_struct_append_is_refused_at_the_surface() {
     let mut owner = ImageDraft::new();
     let mut draft = admitted(&mut owner);
-    let int = draft.value_scalar(Scalar::Int);
+    let int = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     assert_eq!(
         draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
         Err(DraftStateError::CarrierDomain),

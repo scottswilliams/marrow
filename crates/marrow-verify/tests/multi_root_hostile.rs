@@ -87,7 +87,9 @@ fn build_two_roots(
         })
         .expect("a within-domain mint");
     let a_root = draft.intern_string("assets").expect("a within-domain mint");
-    let int_value = draft.value_scalar(Scalar::Int);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -125,7 +127,9 @@ fn build_two_roots(
         })
         .expect("a within-domain mint");
     let b_root = draft.intern_string(b_name).expect("a within-domain mint");
-    let int_value = draft.value_scalar(Scalar::Int);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -303,7 +307,9 @@ fn build_shared_product(draft: &mut DraftTxn<'_>) -> TypeId {
             fields: vec![],
         })
         .expect("a within-domain mint");
-    let int_value = draft.value_scalar(Scalar::Int);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -432,7 +438,9 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
     let mut draft = admitted(&mut draft_owner);
     let record = build_shared_product(&mut draft);
     let root_name = draft.intern_string("extra").expect("a within-domain mint");
-    let int_value = draft.value_scalar(Scalar::Int);
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     // A second declaration of the same Product identity carrying a different member id.
     draft
         .declare_product(

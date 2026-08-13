@@ -3410,3 +3410,145 @@ fn value_cycle_invariant_precedes_and_preserves_source_diagnostics() {
 
 #[path = "owner_txn_tests.rs"]
 mod owner_txn_tests;
+
+/// Whole-build custody: one store's ordinary refusal settles, a later store returns a
+/// semantic invariant, and none of the first store's payload reaches the caller.
+///
+/// The build publishes per store, so an earlier store's rows were already in the
+/// caller's collector by the time a later store aborted — leaving a compilation with no
+/// registry but with one store's diagnostics published. The abort is a whole-build
+/// event, so the whole build's custody is what it drops.
+///
+/// Both halves are asserted against artifacts: the first store's row is shown to exist
+/// on the path that succeeds, so the empty-collector assertion cannot pass by the row
+/// never having been produced.
+#[test]
+fn a_store_invariant_publishes_no_earlier_store_payload_and_restores_the_draft() {
+    const SOURCE: &str = r#"struct Bad {
+    c: List<int>
+}
+
+struct Outer<T> {
+    value: T
+}
+
+resource Alpha {
+    required f: Bad
+}
+
+resource Beta {
+    required value: Outer<Option<int>>
+}
+
+store ^alpha[id: int]: Alpha
+store ^beta[id: int]: Beta
+"#;
+
+    /// Build the two-store corpus, optionally planting the body-kind corruption that
+    /// makes the *second* store's Product return an invariant.
+    fn run(corrupt_second_store: bool) -> (Result<(), GenericInvariant>, Vec<String>, Vec<u8>) {
+        let parsed = parse_source(SOURCE);
+        assert!(!parsed.has_errors());
+        let file = crate::test_file_identity("src/main.mw");
+        let at = FileRef::admitted(0);
+        let mut structs = Vec::new();
+        let mut resources = Vec::new();
+        let mut stores = Vec::new();
+        for declaration in &parsed.file.declarations {
+            match declaration {
+                Declaration::Struct(d) => structs.push((at, file.clone(), d)),
+                Declaration::Resource(d) => resources.push((at, file.clone(), d)),
+                Declaration::Store(d) => stores.push((at, file.clone(), d)),
+                other => {
+                    panic!("the corpus declares only structs, resources, and stores: {other:?}")
+                }
+            }
+        }
+        assert_eq!(structs.len(), 2, "Bad and Outer");
+        assert_eq!(stores.len(), 2, "^alpha then ^beta, in that order");
+
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let mut diagnostics = DiagnosticCollector::new();
+        let registry = TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &structs,
+            &[],
+            &resources,
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the test registry stays within the ledger budget");
+        assert!(diagnostics.is_empty());
+
+        if corrupt_second_store {
+            let option_index = {
+                let generics = registry.generics.borrow();
+                generics
+                    .type_insts
+                    .iter()
+                    .position(|inst| {
+                        registry.type_templates[inst.template].reserved == Some(Reserved::Option)
+                    })
+                    .expect("Beta's field mints Option")
+            };
+            registry.generics.borrow_mut().type_insts[option_index].state =
+                TypeInstState::Ready(InstBody::Struct(Vec::new()));
+        }
+
+        let before = draft.encode().expect("seeded draft encodes").bytes;
+        draft.commit();
+
+        let outcome = crate::durable::DurableRegistry::build(
+            &mut draft_owner,
+            &registry,
+            &resources,
+            &stores,
+            None,
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        );
+        let outcome = match outcome {
+            Ok(_) => Ok(()),
+            Err(crate::types::BuildError::Invariant(found)) => Err(found),
+            Err(other) => panic!("unexpected build error: {other:?}"),
+        };
+        let rows = diagnostics
+            .finish()
+            .expect_complete()
+            .iter()
+            .map(|row| row.message().to_string())
+            .collect();
+        let after = draft_owner.encode().expect("draft still encodes").bytes;
+        assert_eq!(after, before, "no store's rows survive either build");
+        (outcome, rows, before)
+    }
+
+    // Body A alone: the first store's ordinary refusal really does produce a row, and
+    // the build that completes publishes it. This is the artifact the abort must drop.
+    let (clean, clean_rows, _) = run(false);
+    assert!(clean.is_ok(), "the uncorrupted two-store build completes");
+    let alpha_row = clean_rows
+        .iter()
+        .find(|row| row.contains("a collection stored directly"))
+        .expect("^alpha's ordinary refusal publishes its row when the build completes")
+        .clone();
+
+    // Body A then body B: the same first-store refusal happens, then the second store
+    // returns its invariant. The first store's row is gone.
+    let (aborted, aborted_rows, _) = run(true);
+    assert!(
+        matches!(aborted, Err(GenericInvariant::TypeBodyKindMismatch { .. })),
+        "the second store returns the planted semantic invariant, got {aborted:?}",
+    );
+    assert!(
+        !aborted_rows.contains(&alpha_row),
+        "the aborted build published the earlier store's row: {aborted_rows:?}",
+    );
+    assert!(
+        aborted_rows.is_empty(),
+        "a whole-build abort publishes no store's payload, got {aborted_rows:?}",
+    );
+}

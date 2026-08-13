@@ -106,8 +106,12 @@ fn groups_image() -> VerifiedImage {
     let root = draft.intern_string("books").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let text_value = draft.value_scalar(Scalar::Text);
-    let int_value = draft.value_scalar(Scalar::Int);
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
+    let int_value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),

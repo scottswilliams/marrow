@@ -890,6 +890,29 @@ struct DraftJournal {
     fills: Vec<FillInverse>,
 }
 
+/// The capability that authorizes exactly one predecessor diagnostic/fact custody
+/// settlement.
+///
+/// It is constructible only by consuming an armed [`DraftTxn`] — [`DraftTxn::commit`],
+/// which retains the mutations, or [`DraftTxn::rollback`], which has already run the
+/// total inverse. "The local restore or commit precedes settlement" is therefore a
+/// property of the type rather than of the order two statements happen to appear in.
+/// An unwind, an error return, or any other early exit drops the guard through its
+/// armed `Drop`, which restores every owner and yields no capability, so none of them
+/// can settle anything.
+///
+/// It is affine — neither `Clone` nor `Copy` — so one consumed guard authorizes one
+/// settlement, and it carries no payload: it authorizes a settlement, it does not
+/// describe, own, or transport one. Diagnostics, gaps, and hover rows stay entirely
+/// inside the predecessor substrate's custody.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct SettlementAuthority {
+    /// Private and empty on purpose: the value's whole content is that it exists, and
+    /// only a consumed guard can establish that.
+    _consumed: (),
+}
+
 /// The sole cross-crate mutation surface over one [`ImageDraft`]: an armed guard
 /// admitted by [`ImageDraft::begin_transaction`] that mutates the borrowed draft
 /// immediately and in place — it never batches, defers, schedules, or reorders a
@@ -916,9 +939,23 @@ impl std::ops::Deref for DraftTxn<'_> {
 }
 
 impl<'d> DraftTxn<'d> {
-    /// Disarm the guard, retaining every mutation and accepted policy observation.
-    pub fn commit(mut self) {
+    /// Disarm the guard, retaining every mutation and accepted policy observation, and
+    /// yield the capability that authorizes the matching predecessor settlement.
+    pub fn commit(mut self) -> SettlementAuthority {
         self.armed = false;
+        SettlementAuthority { _consumed: () }
+    }
+
+    /// Run the total admitted inverse now, then yield the capability that authorizes the
+    /// matching ordinary-refusal settlement.
+    ///
+    /// This is the explicit spelling of the ordinary-refusal path. Dropping the guard
+    /// instead restores exactly the same owners but produces no capability, which is what
+    /// leaves an unwind and an early `?` return unable to settle anything.
+    pub fn rollback(mut self) -> SettlementAuthority {
+        self.rollback_armed();
+        self.armed = false;
+        SettlementAuthority { _consumed: () }
     }
 
     /// A savepoint of the transaction's in-progress state — the deliberate shadow of
@@ -1104,18 +1141,18 @@ impl<'d> DraftTxn<'d> {
 
     /// Mint one scalar durable value shape into the draft's one arena — the typed
     /// appender that replaces the deleted raw `&mut` arena escape.
-    pub fn value_scalar(&mut self, scalar: Scalar) -> ValueShapeNodeId {
+    pub fn value_scalar(&mut self, scalar: Scalar) -> Result<ValueShapeNodeId, DraftStateError> {
         self.draft.value_shapes_mut().scalar(scalar)
     }
 
     /// Mint one dense composite durable value shape into the draft's one arena.
     ///
-    /// Checked at the surface: a leaf minted by another arena is the typed foreign
-    /// refusal (never an out-of-range panic), and an arity past
-    /// [`crate::bounds::MAX_STRUCT_LEAVES`] is the typed carrier-domain refusal —
-    /// a coherence/logical-domain decision, not a policy kind. Neither refusal
-    /// mutates the arena, and the fence's whole-arena walk keeps the same bounds as
-    /// defense in depth.
+    /// Checked at the surface: an arity past [`crate::bounds::MAX_STRUCT_LEAVES`] is the
+    /// typed carrier-domain refusal — a coherence/logical-domain decision, not a policy
+    /// kind. Leaf provenance is the arena's own decision, so a leaf minted by another
+    /// arena is its [`DraftStateError::ForeignDraft`] rather than a second copy of the
+    /// predicate here. Neither refusal mutates the arena, and the fence's whole-arena
+    /// walk keeps the same bounds as defense in depth.
     pub fn value_struct(
         &mut self,
         leaves: Vec<ValueShapeNodeId>,
@@ -1123,8 +1160,7 @@ impl<'d> DraftTxn<'d> {
         if leaves.len() > bounds::MAX_STRUCT_LEAVES {
             return Err(DraftStateError::CarrierDomain);
         }
-        self.validate_value_leaves(&leaves)?;
-        Ok(self.draft.value_shapes_mut().struct_shape(leaves))
+        self.draft.value_shapes_mut().struct_shape(leaves)
     }
 
     /// Mint one enum durable value shape into the draft's one arena (checked at the
@@ -1142,19 +1178,8 @@ impl<'d> DraftTxn<'d> {
             if payload.len() > bounds::MAX_PAYLOAD_FIELDS {
                 return Err(DraftStateError::CarrierDomain);
             }
-            self.validate_value_leaves(payload)?;
         }
-        Ok(self.draft.value_shapes_mut().enum_shape(identity, members))
-    }
-
-    /// Every referenced leaf must be a node this draft's arena has minted: a foreign
-    /// or fabricated reference is the typed refusal before any mutation.
-    fn validate_value_leaves(&self, leaves: &[ValueShapeNodeId]) -> Result<(), DraftStateError> {
-        let minted = self.draft.value_shapes().len();
-        if leaves.iter().any(|leaf| leaf.index() >= minted) {
-            return Err(DraftStateError::ForeignDraft);
-        }
-        Ok(())
+        self.draft.value_shapes_mut().enum_shape(identity, members)
     }
 
     /// The total admitted inverse, in reverse dependency order. Called only by the
@@ -2259,7 +2284,10 @@ mod site_binding_tests {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
         let name = draft.intern_string("r").expect("a within-domain mint");
-        let value = draft.value_shapes_mut().scalar(Scalar::Int);
+        let value = draft
+            .value_shapes_mut()
+            .scalar(Scalar::Int)
+            .expect("the test arena mints");
         draft
             .declare_product(
                 &plan(),
@@ -2364,7 +2392,9 @@ mod site_binding_tests {
                 .begin_transaction(draft.savepoint())
                 .expect("a fresh savepoint admits");
             let name = proof.intern_string("r").expect("a within-domain mint");
-            let value = proof.value_scalar(Scalar::Int);
+            let value = proof
+                .value_scalar(Scalar::Int)
+                .expect("the test arena mints");
             proof
                 .declare_product(
                     &plan(),
@@ -2411,7 +2441,10 @@ mod site_binding_tests {
         // The same ordinals are re-minted deterministically; the handle must still not
         // authenticate the replacement.
         let name = draft.intern_string("r").expect("a within-domain mint");
-        let value = draft.value_shapes_mut().scalar(Scalar::Int);
+        let value = draft
+            .value_shapes_mut()
+            .scalar(Scalar::Int)
+            .expect("the test arena mints");
         draft
             .declare_product(
                 &plan(),
@@ -2458,7 +2491,10 @@ mod site_binding_tests {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
         let name = draft.intern_string("r").expect("a within-domain mint");
-        let value = draft.value_shapes_mut().scalar(Scalar::Int);
+        let value = draft
+            .value_shapes_mut()
+            .scalar(Scalar::Int)
+            .expect("the test arena mints");
         draft
             .declare_product(
                 &plan(),

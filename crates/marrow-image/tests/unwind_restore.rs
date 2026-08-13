@@ -66,7 +66,7 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
     })
     .expect("a within-domain mint");
     txn.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = txn.value_scalar(Scalar::Int);
+    let value = txn.value_scalar(Scalar::Int).expect("the test arena mints");
     let mut product = PRODUCT_ID;
     product[1] = seed;
     let mut field = [0x50u8; 16];

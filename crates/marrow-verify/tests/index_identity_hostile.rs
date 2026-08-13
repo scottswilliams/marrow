@@ -99,7 +99,9 @@ fn build_graph(draft: &mut DraftTxn<'_>) -> Graph {
         .expect("a within-domain mint");
     let root = draft.intern_string("r").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let text = draft.value_scalar(Scalar::Text);
+    let text = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),

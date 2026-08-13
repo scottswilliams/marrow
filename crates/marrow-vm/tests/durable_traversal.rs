@@ -99,7 +99,9 @@ fn traversal_image() -> VerifiedImage {
     let notes = draft.intern_string("notes").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let text_value = draft.value_scalar(Scalar::Text);
+    let text_value = draft
+        .value_scalar(Scalar::Text)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),
@@ -502,7 +504,9 @@ fn wide_key_image() -> (VerifiedImage, u16) {
     let root = draft.intern_string("big").expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let value = draft.value_scalar(Scalar::Int);
+    let value = draft
+        .value_scalar(Scalar::Int)
+        .expect("the test arena mints");
     draft
         .declare_product(
             &admitted_plan(),

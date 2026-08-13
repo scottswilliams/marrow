@@ -913,12 +913,21 @@ mod counted_equals_emitted {
                 fields: Vec::new(),
             })
             .expect("a within-domain mint");
-        let leaf = draft.value_shapes_mut().scalar(Scalar::Int);
-        let pair = draft.value_shapes_mut().struct_shape(vec![leaf, leaf]);
-        let sum = draft.value_shapes_mut().enum_shape(
-            id(0x60),
-            vec![(id(0x61), vec![leaf]), (id(0x62), Vec::new())],
-        );
+        let leaf = draft
+            .value_shapes_mut()
+            .scalar(Scalar::Int)
+            .expect("the test arena mints");
+        let pair = draft
+            .value_shapes_mut()
+            .struct_shape(vec![leaf, leaf])
+            .expect("the test arena mints");
+        let sum = draft
+            .value_shapes_mut()
+            .enum_shape(
+                id(0x60),
+                vec![(id(0x61), vec![leaf]), (id(0x62), Vec::new())],
+            )
+            .expect("the test arena mints");
 
         let plan = AdmittedGraphInputPlan::admit(1, 2, 8).expect("a small census is admitted");
         let product = id(0x10);

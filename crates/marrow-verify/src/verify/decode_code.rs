@@ -949,8 +949,12 @@ mod index_site_partition {
             .intern_string("counters")
             .expect("a within-domain mint");
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-        let int_value = draft.value_scalar(Scalar::Int);
-        let text_value = draft.value_scalar(Scalar::Text);
+        let int_value = draft
+            .value_scalar(Scalar::Int)
+            .expect("the test arena mints");
+        let text_value = draft
+            .value_scalar(Scalar::Text)
+            .expect("the test arena mints");
         draft
             .declare_product(
                 &admitted_plan(),

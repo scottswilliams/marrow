@@ -153,7 +153,7 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
             elem: ImageType::scalar(Scalar::Int),
         })
         .expect("a within-domain mint");
-        let int = txn.value_scalar(Scalar::Int);
+        let int = txn.value_scalar(Scalar::Int).expect("the test arena mints");
         txn.value_struct(vec![int, int])
             .expect("a within-bounds shape appends");
     }
@@ -328,7 +328,7 @@ fn the_roots_crossing_is_admitted_and_the_fence_refuses_it() {
         })
         .expect("a within-domain mint");
     txn.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    let value = txn.value_scalar(Scalar::Int);
+    let value = txn.value_scalar(Scalar::Int).expect("the test arena mints");
     txn.declare_product(
         &admitted_plan(),
         product,

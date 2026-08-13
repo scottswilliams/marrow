@@ -1432,6 +1432,16 @@ fn let_bindings(body: &str) -> Vec<(&str, usize)> {
 fn collector_names<'a>(body: &'a str, closures: &[&'a str]) -> Vec<&'a str> {
     let mut names = vec!["diagnostics"];
     names.extend(closures.iter().copied());
+    // A collector constructed inside the block is a collector too. Its rows reach a
+    // reader as soon as the block hands them on, so a declaring block that writes a row
+    // into a locally built terminal and then drops the key fabricates the same absence
+    // as one writing to the caller's. Seeding only on the parameter name would let the
+    // defect return simply by binding a fresh collector first.
+    for (name, value_at) in let_bindings(body) {
+        if body[value_at..].starts_with("DiagnosticCollector::new(") && !names.contains(&name) {
+            names.push(name);
+        }
+    }
     for (name, value_at) in let_bindings(body) {
         let value = &body[value_at..];
         for bound in names.clone() {

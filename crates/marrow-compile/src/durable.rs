@@ -34,7 +34,7 @@ use marrow_image::{
     DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn,
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
-    SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
+    SemanticTarget, SettlementAuthority, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -50,7 +50,7 @@ use crate::decl::{
     RefusalReport, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
-use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
+use crate::diag::{BoundedDiagnostics, DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
@@ -712,6 +712,12 @@ impl DurableRegistry {
         let plan = census.plan();
         records.with_metadata_session(|metadata| {
             let mut registry = Self::empty(budget.clone());
+            // Whole-build custody: every store's settled rows land here, and this
+            // collector reaches the caller's only after the last store has been built.
+            // A store that returns an invariant leaves through `?` with this collector
+            // still owned by the build, so an earlier store's rows are dropped with it
+            // rather than published beside a build that produced no registry.
+            let mut settled = DiagnosticCollector::new();
             let mut type_metadata = DurableTypeMetadata { records, metadata };
             let mut reported_identity_gaps = BTreeSet::new();
             let mut identity_build = IdentityBuildState {
@@ -730,7 +736,7 @@ impl DurableRegistry {
                 // refused declaration still occupies its name, so the repeat conflicts
                 // whichever of the two the compiler could admit.
                 if registry.declared.declared(store.root.root.as_str()) {
-                    diagnostics.push(SourceDiagnostic::at(
+                    settled.push(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         file,
                         store.root.span,
@@ -752,9 +758,9 @@ impl DurableRegistry {
                 // only after the local restore (the guard drop) or the commit has
                 // completed — restore before settlement. An invariant abort returns
                 // through `?` before the settlement line, so it settles nothing.
-                let mut staged = DiagnosticCollector::new();
+                let mut staged = StagedStoreDiagnostics::new();
                 let mut txn = admitted(draft);
-                let occurrence = match build_one(
+                let (occurrence, authority) = match build_one(
                     AdmittedDraft {
                         draft: &mut txn,
                         plan: &plan,
@@ -767,23 +773,28 @@ impl DurableRegistry {
                         multiplicity: census.multiplicity(&store.resource),
                     },
                     &mut identity_build,
-                    &mut staged,
+                    staged.sink(),
                 )? {
                     StoreBuild::Admitted(built) => {
-                        txn.commit();
+                        let authority = txn.commit();
                         registry.naming.extend(built.naming);
                         let executable = built.executable.map(|root| {
                             registry.roots.push(root);
                             registry.roots.len() - 1
                         });
-                        DeclarationOccurrence::Accepted(DeclaredRoot { executable })
+                        (
+                            DeclarationOccurrence::Accepted(DeclaredRoot { executable }),
+                            authority,
+                        )
                     }
                     StoreBuild::Refused(refusal) => {
-                        drop(txn);
-                        DeclarationOccurrence::Refused(refusal)
+                        // The ordinary refusal path, spelled: the total inverse runs and
+                        // hands back the capability that authorizes this store's rows.
+                        let authority = txn.rollback();
+                        (DeclarationOccurrence::Refused(refusal), authority)
                     }
                 };
-                diagnostics.absorb(staged.finish());
+                settled.absorb(staged.settle(authority));
                 // The resource projection is appended in the same statement as the
                 // ledger entry, so a store cannot be declared without being reachable
                 // by the resource it binds.
@@ -831,8 +842,43 @@ impl DurableRegistry {
                     .declared
                     .declare(store.root.root.clone(), occurrence)?;
             }
+            // Every store settled; only now does the whole build's custody reach the
+            // caller.
+            diagnostics.absorb(settled.finish());
             Ok(registry)
         })
+    }
+}
+
+/// One store's refusal rows, held outside every collector the caller can read until
+/// that store's local restore or commit has completed.
+///
+/// The rows are only released by [`Self::settle`], which consumes a
+/// [`SettlementAuthority`] — a capability that exists only after the store's
+/// transaction was committed or rolled back. Restore-before-settlement is therefore a
+/// type fact here: a path that leaves while the guard is still armed (an invariant
+/// through `?`, or an unwind) drops the staged rows with the guard, because it never
+/// obtained the capability that would have released them.
+struct StagedStoreDiagnostics {
+    rows: DiagnosticCollector,
+}
+
+impl StagedStoreDiagnostics {
+    fn new() -> Self {
+        Self {
+            rows: DiagnosticCollector::new(),
+        }
+    }
+
+    /// Where this store's build reports. The build writes here rather than into any
+    /// collector the caller owns.
+    fn sink(&mut self) -> &mut DiagnosticCollector {
+        &mut self.rows
+    }
+
+    /// Release the staged rows against the capability the consumed guard produced.
+    fn settle(self, _authority: SettlementAuthority) -> BoundedDiagnostics {
+        self.rows.finish()
     }
 }
 
@@ -1243,15 +1289,23 @@ fn build_one(
     // known complete (below). A graph with an unresolved anchor carries placeholder ids,
     // including a placeholder Product identity, so admitting it would let one refused
     // store's declaration answer for every other refused store's resource.
-    let source = match draft.product_members(product) {
-        Some(members) => ProductDeclarationSource::Held(members),
-        None => ProductDeclarationSource::Built(
-            resolver.build_product_graph(draft, records, metadata, store, resource, record),
-        ),
+    let built = match draft.product_members(product) {
+        Some(members) => Some(ProductDeclarationSource::Held(members)),
+        None => resolver
+            .build_product_graph(draft, records, metadata, store, resource, record)
+            .map(ProductDeclarationSource::Built),
     };
     if let Some(invariant) = resolver.invariant {
         return Err(invariant);
     }
+    // An abandoned build records its builder-domain refusal before returning, so the
+    // check above is the exit that carries it. The arm below keeps that reasoning a
+    // typed fact rather than an assumption the reader has to re-derive.
+    let Some(source) = built else {
+        return Err(GenericInvariant::BuilderDomain(
+            marrow_image::DraftStateError::CarrierDomain,
+        ));
+    };
 
     // Resolve the root's managed indexes before appending the group/branch members
     // (an index projects only the root's identity keys and top-level fields, so it
@@ -1635,10 +1689,10 @@ impl<'a> IdentityResolver<'a> {
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         ty: GArg,
-    ) -> ValueShapeNodeId {
+    ) -> Option<ValueShapeNodeId> {
         match ty {
-            GArg::Scalar(scalar) => values.value_scalar(scalar.image()),
-            GArg::Nominal(_) => values.value_scalar(ScalarType::Int.image()),
+            GArg::Scalar(scalar) => self.checked_mint(values.value_scalar(scalar.image())),
+            GArg::Nominal(_) => self.checked_mint(values.value_scalar(ScalarType::Int.image())),
             GArg::Struct(type_id) => {
                 // A struct already on the path closes a value cycle: leave it to the
                 // later value-cycle pass (`check.recursion`) and drop the graph. The
@@ -1646,10 +1700,10 @@ impl<'a> IdentityResolver<'a> {
                 // back-edge's answer is a property of the path, not of the type.
                 if self.value_path.contains(&ValueNode::Struct(type_id)) {
                     self.refuse(DurableRefusal::ValueCycle);
-                    return values.value_scalar(ScalarType::Int.image());
+                    return self.checked_mint(values.value_scalar(ScalarType::Int.image()));
                 }
                 if let Some(built) = self.value_memo.get(&ty) {
-                    return *built;
+                    return Some(*built);
                 }
                 match records.struct_by_type(type_id) {
                     Some(info) => {
@@ -1662,7 +1716,7 @@ impl<'a> IdentityResolver<'a> {
                                     bounds::MAX_STRUCT_LEAVES
                                 ),
                             );
-                            return values.value_scalar(ScalarType::Int.image());
+                            return self.checked_mint(values.value_scalar(ScalarType::Int.image()));
                         }
                         self.value_path.push(ValueNode::Struct(type_id));
                         let leaves = info
@@ -1671,10 +1725,10 @@ impl<'a> IdentityResolver<'a> {
                             .map(|field| {
                                 self.build_value_shape(values, records, metadata, field.ty)
                             })
-                            .collect();
+                            .collect::<Option<Vec<_>>>();
                         self.value_path.pop();
-                        let node = self.append_value_struct(values, leaves);
-                        self.remember(ty, node)
+                        let node = self.append_value_struct(values, leaves?)?;
+                        Some(self.remember(ty, node))
                     }
                     None => {
                         self.reject_value("this struct value");
@@ -1685,33 +1739,33 @@ impl<'a> IdentityResolver<'a> {
             GArg::Enum(enum_id) => {
                 if self.value_path.contains(&ValueNode::Enum(enum_id)) {
                     self.refuse(DurableRefusal::ValueCycle);
-                    return values.value_scalar(ScalarType::Int.image());
+                    return self.checked_mint(values.value_scalar(ScalarType::Int.image()));
                 }
                 if let Some(built) = self.value_memo.get(&ty) {
-                    return *built;
+                    return Some(*built);
                 }
                 self.value_path.push(ValueNode::Enum(enum_id));
                 let shape = self.build_enum_value_shape(values, records, metadata, enum_id);
                 self.value_path.pop();
-                self.remember(ty, shape)
+                Some(self.remember(ty, shape?))
             }
             GArg::Collection(_) => {
                 self.reject_value(
                     "a collection stored directly in a durable field (a large collection \
                      belongs under a keyed branch)",
                 );
-                values.value_scalar(ScalarType::Int.image())
+                self.checked_mint(values.value_scalar(ScalarType::Int.image()))
             }
             GArg::Group(_) => {
                 // A group is a materialized-value namespace, never a durable top-level
                 // field value (a durable group is its own member-tree node, resolved by
                 // `build_extras`). It cannot reach here through `record.fields`.
                 self.reject_value("a group stored directly as a durable field value");
-                values.value_scalar(ScalarType::Int.image())
+                self.checked_mint(values.value_scalar(ScalarType::Int.image()))
             }
             GArg::Param(_) => {
                 self.reject_value("this value type");
-                values.value_scalar(ScalarType::Int.image())
+                self.checked_mint(values.value_scalar(ScalarType::Int.image()))
             }
         }
     }
@@ -1740,12 +1794,12 @@ impl<'a> IdentityResolver<'a> {
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         ty: GArg,
-    ) -> ValueShapeNodeId {
-        let node = self.build_value_shape(draft, records, metadata, ty);
+    ) -> Option<ValueShapeNodeId> {
+        let node = self.build_value_shape(draft, records, metadata, ty)?;
         if draft.value_shapes().depth(node) > bounds::MAX_DURABLE_VALUE_DEPTH {
             self.reject_resource_limit(self.span, over_deep_value_message());
         }
-        node
+        Some(node)
     }
 
     /// Record `node` as the shape of `ty`, so a type reached again from another field —
@@ -1782,12 +1836,12 @@ impl<'a> IdentityResolver<'a> {
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         enum_id: marrow_image::EnumId,
-    ) -> ValueShapeNodeId {
+    ) -> Option<ValueShapeNodeId> {
         let Some((variants, spelling)) = self.accept_ready_shape(
             metadata.durable_enum_shape_and_anchor(enum_id),
             "this enum value",
         ) else {
-            return values.value_scalar(ScalarType::Int.image());
+            return self.checked_mint(values.value_scalar(ScalarType::Int.image()));
         };
         let sum = self.resolve(IdentityKind::Sum, &spelling);
         let members = variants
@@ -1797,17 +1851,11 @@ impl<'a> IdentityResolver<'a> {
                 let payload = payload
                     .iter()
                     .map(|arg| self.build_value_shape(values, records, metadata, *arg))
-                    .collect();
-                (id, payload)
+                    .collect::<Option<Vec<_>>>();
+                payload.map(|payload| (id, payload))
             })
-            .collect();
-        match values.value_enum(sum, members) {
-            Ok(node) => node,
-            Err(refusal) => {
-                self.remember_invariant(GenericInvariant::BuilderDomain(refusal));
-                values.value_scalar(ScalarType::Int.image())
-            }
-        }
+            .collect::<Option<Vec<_>>>()?;
+        self.checked_mint(values.value_enum(sum, members))
     }
 
     /// Append one checked struct value shape. The width pre-guard above and in-draft
@@ -1817,14 +1865,8 @@ impl<'a> IdentityResolver<'a> {
         &mut self,
         values: &mut DraftTxn<'_>,
         leaves: Vec<ValueShapeNodeId>,
-    ) -> ValueShapeNodeId {
-        match values.value_struct(leaves) {
-            Ok(node) => node,
-            Err(refusal) => {
-                self.remember_invariant(GenericInvariant::BuilderDomain(refusal));
-                values.value_scalar(ScalarType::Int.image())
-            }
-        }
+    ) -> Option<ValueShapeNodeId> {
+        self.checked_mint(values.value_struct(leaves))
     }
 
     /// Consume one checked draft mint: a carrier-domain refusal is unreachable under
@@ -1932,7 +1974,7 @@ impl<'a> IdentityResolver<'a> {
         store: &StoreDecl,
         resource: &ResourceDecl,
         record: &RecordInfo,
-    ) -> Vec<DeclarationMemberDef> {
+    ) -> Option<Vec<DeclarationMemberDef>> {
         let mut nodes: Vec<DeclarationDraftNode> = Vec::new();
         for field in &record.fields {
             let shape = DeclarationMemberShape::Field {
@@ -1941,7 +1983,7 @@ impl<'a> IdentityResolver<'a> {
                     &format!("{}.{}", store.resource, field.name),
                 ),
                 required: field.required,
-                value: self.build_field_value(draft, records, metadata, field.ty),
+                value: self.build_field_value(draft, records, metadata, field.ty)?,
             };
             nodes.push(DeclarationDraftNode::declared(
                 None,
@@ -1966,7 +2008,7 @@ impl<'a> IdentityResolver<'a> {
             records,
             &resource.members,
         );
-        declaration_commands(nodes)
+        Some(declaration_commands(nodes))
     }
 
     /// Walk a resource's declared members in source order, appending one
@@ -2168,7 +2210,7 @@ impl<'a> IdentityResolver<'a> {
         let member = DeclarationMemberShape::Field {
             id,
             required: field.required,
-            value: draft.value_scalar(scalar.image()),
+            value: self.checked_mint(draft.value_scalar(scalar.image()))?,
         };
         // The record field mirrors the durable member: same order, same scalar, same
         // required flag. The branch entry's whole-payload read/create/replace flows
