@@ -1132,3 +1132,49 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
         );
     }
 }
+
+/// A durable batch that fails after zero, one, and many staged sites restores all of
+/// them — the staging count is not part of the law.
+///
+/// Every checked refusal inside a store's build lands before its eager sites are
+/// staged, so the refusal arm always stages zero; the counts that matter are therefore
+/// reached the other way, by abandoning an armed batch after each staging count. One
+/// staged site exercises the single-entry suffix, many exercise the loop, and zero
+/// proves an abandoned batch that staged nothing is not a special case of it.
+#[test]
+fn a_durable_batch_abandoned_after_zero_one_or_many_staged_sites_restores_all() {
+    for staged in [0usize, 1, 512] {
+        let (mut owner, _root, members) = wide_owner(64);
+        let clean = owner.encode().expect("the committed draft encodes").bytes;
+
+        {
+            let mut draft = admitted(&mut owner);
+            // A second occurrence over the declared graph: each of its leaves is a
+            // fresh demand key, so `staged` distinct sites really are staged.
+            let occurrence = admit_root(&mut draft, 0x33);
+            let mut requested = 0usize;
+            'staging: while requested < staged {
+                for member in &members {
+                    if requested == staged {
+                        break 'staging;
+                    }
+                    let _ = site(
+                        &mut draft,
+                        occurrence.occurrence(),
+                        member.path(),
+                        SemanticTarget::FieldLeaf,
+                    );
+                    requested += 1;
+                }
+            }
+            assert_eq!(requested, staged, "the batch staged exactly its count");
+            // The armed guard drops here: the batch fails without committing.
+        }
+
+        assert_eq!(
+            owner.encode().expect("the restored draft encodes").bytes,
+            clean,
+            "a batch abandoned after {staged} staged sites restored every owner byte for byte",
+        );
+    }
+}
