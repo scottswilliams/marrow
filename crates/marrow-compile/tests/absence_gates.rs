@@ -2047,3 +2047,63 @@ pub enum Expression {
         "a tree with no block-bearing field is clean",
     );
 }
+
+/// Every surviving narrow `as u16` spelling in production `marrow-compile` source is
+/// pinned to an exact per-file census — the enforcement artifact the type-parameter
+/// wrap escaped through. A new narrowing cast fails this gate and must be
+/// adjudicated: either the value is bounded by an exact located diagnostic (and the
+/// census grows deliberately, with that proof), or it takes the wide-carrier
+/// treatment. The surviving entries are function-family ordinals frozen for the
+/// function-slot refounding plus counts bounded by their construct's own diagnostic.
+#[test]
+fn every_narrowing_cast_is_pinned_to_its_census() {
+    let allowed: BTreeMap<&str, usize> = BTreeMap::from([
+        ("analysis.rs", 2),
+        ("compile.rs", 2),
+        ("durable.rs", 2),
+        ("lower/durable.rs", 2),
+        ("lower/registry.rs", 1),
+        ("lower/stmts.rs", 2),
+        ("types/metadata.rs", 1),
+        ("types/mod.rs", 4),
+    ]);
+    let mut found: BTreeMap<String, usize> = BTreeMap::new();
+    for path in src_files() {
+        if is_test_only_file(&path) {
+            continue;
+        }
+        let code = production_code(&fs::read_to_string(&path).expect("read source file"));
+        let count = code.matches("as u16").count();
+        if count > 0 {
+            let rel = path
+                .display()
+                .to_string()
+                .split_once("src/")
+                .expect("a src path")
+                .1
+                .to_string();
+            found.insert(rel, count);
+        }
+    }
+    let expected: BTreeMap<String, usize> = allowed
+        .into_iter()
+        .map(|(file, count)| (file.to_string(), count))
+        .collect();
+    assert_eq!(
+        found, expected,
+        "the production `as u16` census moved; adjudicate the new or vanished cast",
+    );
+}
+
+/// The narrowing-cast census scanner sees code and not prose or test items.
+#[test]
+fn the_narrowing_cast_census_sees_code_and_not_prose() {
+    let planted = production_code(
+        "/// prose about as u16 stays prose\nfn probe(n: usize) -> u16 {\n    n as u16\n}\n#[cfg(test)]\nmod tests {\n    fn hidden(n: usize) -> u16 {\n        n as u16\n    }\n}\n",
+    );
+    assert_eq!(
+        planted.matches("as u16").count(),
+        1,
+        "the census counts the production cast once and ignores prose and test items",
+    );
+}

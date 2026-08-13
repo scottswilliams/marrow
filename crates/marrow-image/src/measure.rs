@@ -351,6 +351,7 @@ impl<'d> PolicyClean<'d> {
         let tail = (counter.total() - tail_start) as u32;
         LegacyV0WirePlan::new(draft, bodies, framed, header, tail, durable)
     }
+    // count-path audit sentinel: end of PolicyClean::measure
 }
 
 /// Count one section body over the base rows with constant tokens, minting the
@@ -398,6 +399,7 @@ fn count_section_body(
     }
     Ok(())
 }
+// count-path audit sentinel: end of count_section_body
 
 /// The FUNCTIONS section body, counted without laying out offsets: the row-count
 /// prefix, then per function its fixed header widths — the two remap tokens, the
@@ -420,6 +422,7 @@ pub(crate) fn count_functions(draft: &ImageDraft, sink: &mut CappedImageCount) {
         sink.pad(laid_out_code_len(&function.code) as usize);
     }
 }
+// count-path audit sentinel: end of count_functions
 
 /// The SPANS section body, counted without offsets: per function its `u16` count
 /// prefix plus [`SPAN_ROW_BYTES`] per row — the widths `encode_spans` spells.
@@ -431,6 +434,7 @@ pub(crate) fn count_spans(draft: &ImageDraft, sink: &mut CappedImageCount) {
         sink.pad(2 + SPAN_ROW_BYTES * function.spans.len());
     }
 }
+// count-path audit sentinel: end of count_spans
 
 /// The plan-bound site projection: the only path from a [`crate::PlannedSiteRef`] to its
 /// wire ordinal. It is minted exclusively by a measured [`LegacyV0WirePlan`], so a
@@ -531,12 +535,17 @@ impl<'d> LegacyV0WirePlan<'d> {
 
         // The DURABLE body the plan measured, written this time, closed by the 32-byte
         // durable-contract identity: the one mint, for a graph the plan already fits.
+        // A preimage refusal here is a producer invariant, never a policy verdict: the
+        // measured fitting body bounds the preimage by the exact derivation
+        // `durable_id` const-asserts, so no post-plan path may surface `ImageTooLarge`.
         let mut body = Vec::with_capacity(bodies[DURABLE_SLOT] as usize);
         draft.write_durable_body(&mut body, &strings)?;
         let identity = draft
             .contract_view()
             .contract_id()
-            .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
+            .map_err(|DurableGraphTooLarge| {
+                ImageBuildError::EncodeDrift(EncodeDriftSection::of(0x03))
+            })?;
         body.extend_from_slice(identity.bytes());
         emit(&mut out, DURABLE_SLOT, body)?;
 

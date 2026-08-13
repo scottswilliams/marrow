@@ -15,14 +15,16 @@ use std::path::{Path, PathBuf};
 /// roots; the named functions are their complete reachable callees that mutate
 /// state. (`Vec::truncate`, `Vec::pop`, `HashMap::remove`, and `BTreeMap::remove`
 /// are the standard-library leaves the law admits.)
-const DROP_REACHABLE: [(&str, &str); 7] = [
+const DROP_REACHABLE: [(&str, &str); 9] = [
     ("marrow-image/src/draft.rs", "fn rollback_armed"),
     ("marrow-image/src/draft.rs", "fn drop"),
     ("marrow-image/src/site_plan.rs", "fn pop_suffix_to"),
     ("marrow-image/src/product.rs", "fn pop_suffix_to"),
     ("marrow-image/src/product.rs", "fn rewind_total"),
+    ("marrow-image/src/product.rs", "fn truncate"),
     ("marrow-image/src/value_dag.rs", "fn truncate"),
     ("marrow-compile/src/types/mod.rs", "fn exit_template_proof"),
+    ("marrow-compile/src/types/mod.rs", "fn rewind_to"),
 ];
 
 /// The compiler composite guard's own `Drop`, audited with its sentinel like the
@@ -33,8 +35,10 @@ const COMPOSITE_DROP: (&str, &str) = (
 );
 
 /// The forbidden tokens: any of these inside an audited body breaks the total,
-/// allocation-free, non-panicking inverse law.
-const FORBIDDEN: [&str; 14] = [
+/// allocation-free, non-panicking inverse law — the panic family, range `drain`,
+/// the allocation family, and the fallible-call family (`?` propagation has no
+/// caller to propagate to inside a `Drop` inverse).
+const FORBIDDEN: [&str; 25] = [
     "panic!",
     "assert!",
     "assert_eq!",
@@ -49,7 +53,32 @@ const FORBIDDEN: [&str; 14] = [
     ".push(",
     ".insert(",
     "Vec::with_capacity",
+    ".to_string(",
+    ".to_owned(",
+    ".to_vec(",
+    ".clone(",
+    "format!",
+    "vec!",
+    "Box::new",
+    "String::from",
+    ".collect(",
+    ".reserve(",
+    ")?",
 ];
+
+/// Whether `body` contains a slice/array index expression — `[` directly after an
+/// identifier character, `)`, or `]` — the panicking access the inverse law forbids.
+/// Attribute markers (`#[`) and bare array types/literals do not match.
+fn contains_index_expression(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    body.match_indices('[').any(|(at, _)| {
+        at > 0
+            && matches!(
+                bytes[at - 1],
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b')' | b']'
+            )
+    })
+}
 
 fn workspace_file(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
@@ -154,6 +183,89 @@ fn audited_body(code: &str, name: &str, file: &str) -> String {
     code[start..end].to_string()
 }
 
+/// The counting-run bodies: the capped measurement walk and its arithmetic section
+/// counters, each closed by a `// count-path audit sentinel` line. The shared
+/// section writers they drive are streaming codecs over caller-held sinks; the one
+/// sanctioned pre-verdict allocation (the adjudicated DURABLE expansion worklist)
+/// lives in the traversal owner outside these bodies.
+const COUNT_PATH: [(&str, &str); 4] = [
+    ("marrow-image/src/measure.rs", "fn measure"),
+    ("marrow-image/src/measure.rs", "fn count_section_body"),
+    ("marrow-image/src/measure.rs", "fn count_functions"),
+    ("marrow-image/src/measure.rs", "fn count_spans"),
+];
+
+/// The allocation-class tokens the counting run must not spell: the N+1 decisive
+/// refusal and the fitting count alike run with zero heap events of their own.
+const COUNT_FORBIDDEN: [&str; 11] = [
+    "Vec::with_capacity",
+    "Vec::new",
+    "vec!",
+    "format!",
+    "String::from",
+    ".to_string(",
+    ".to_owned(",
+    ".to_vec(",
+    "Box::new",
+    ".collect(",
+    "with_capacity(",
+];
+
+/// The body of `name` in `code`, terminated by the count-path sentinel.
+fn counted_body(code: &str, name: &str, file: &str) -> String {
+    let start = code
+        .find(name)
+        .unwrap_or_else(|| panic!("{file}: counted function `{name}` not found"));
+    let sentinel = code[start..]
+        .find("// count-path audit sentinel: end of")
+        .unwrap_or_else(|| panic!("{file}: `{name}` is not count-sentinel-terminated"));
+    code[start..start + sentinel].to_string()
+}
+
+/// Every counting-run body is free of the allocation-class tokens: the structural
+/// zero-heap posture of the measurement step, enforced as an absence scan (the
+/// observed-zero-allocation run itself remains a recorded open item — a counting
+/// global allocator needs `unsafe`, which the workspace forbids).
+#[test]
+fn the_counting_run_spells_no_allocation() {
+    for (file, name) in COUNT_PATH {
+        let code = fs::read_to_string(workspace_file(file))
+            .unwrap_or_else(|_| panic!("read {file} for the count-path audit"));
+        let code = without_literals(&code);
+        let body = counted_body(&code, name, file);
+        for token in COUNT_FORBIDDEN {
+            assert!(
+                !body.contains(token),
+                "{file}: `{name}` contains allocation-class `{token}` on the counting path",
+            );
+        }
+    }
+}
+
+/// The count-path scanner sees a planted allocation token and refuses a body with no
+/// sentinel.
+#[test]
+fn the_count_path_scanner_detects_a_planted_allocation() {
+    for token in COUNT_FORBIDDEN {
+        let planted = format!(
+            "fn probe() {{ let _ = {token}; }}\n// count-path audit sentinel: end of probe\n"
+        );
+        let body = counted_body(&without_literals(&planted), "fn probe", "planted");
+        assert!(
+            body.contains(token),
+            "the count-path scanner failed to see planted `{token}`",
+        );
+    }
+    let unterminated = "fn probe() { }\n";
+    let outcome = std::panic::catch_unwind(|| {
+        counted_body(&without_literals(unterminated), "fn probe", "planted")
+    });
+    assert!(
+        outcome.is_err(),
+        "an unterminated counted body must fail the sentinel check loudly",
+    );
+}
+
 /// Every audited drop-reachable body is free of the forbidden operations.
 #[test]
 fn the_armed_inverse_paths_are_total_and_allocation_free() {
@@ -175,6 +287,10 @@ fn the_armed_inverse_paths_are_total_and_allocation_free() {
                     "{file}: `{name}` contains forbidden `{token}` on the Drop path",
                 );
             }
+            assert!(
+                !contains_index_expression(&body),
+                "{file}: `{name}` contains a panicking index expression on the Drop path",
+            );
             audited += 1;
             from += at + body.len();
         }
@@ -208,6 +324,24 @@ fn the_drop_path_scanner_detects_a_planted_violation() {
             "the scanner saw `{token}` inside a blanked literal",
         );
     }
+    let indexed = "fn probe() { let _ = rows[0]; }\n// drop-path audit sentinel: end of probe\n";
+    assert!(
+        contains_index_expression(&audited_body(
+            &without_literals(indexed),
+            "fn probe",
+            "planted"
+        )),
+        "the scanner failed to see a planted index expression",
+    );
+    let attribute = "fn probe() { #[allow(unused)] let x: [u8; 2] = [0, 1]; }\n// drop-path audit sentinel: end of probe\n";
+    assert!(
+        !contains_index_expression(&audited_body(
+            &without_literals(attribute),
+            "fn probe",
+            "planted"
+        )),
+        "an attribute or array literal is not an index expression",
+    );
     let unterminated = "fn probe() { }\nfn other() {}\n";
     let outcome = std::panic::catch_unwind(|| {
         audited_body(&without_literals(unterminated), "fn probe", "planted")

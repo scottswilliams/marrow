@@ -1549,6 +1549,7 @@ impl RowDirectory {
         self.built_type_insts = type_insts;
         self.built_collections = collections;
     }
+    // drop-path audit sentinel: end of RowDirectory::rewind_to
 
     /// Reset the per-walk visitation marks to cover every current row and collection.
     /// The directory content persists; only the traversal state is cleared for the next

@@ -501,6 +501,49 @@ fn the_site_wire_projection_has_exactly_its_two_spelled_homes() {
     );
 }
 
+/// The measured wire plan is closed: it has exactly one constructor with exactly one
+/// caller (the counting run), and no post-plan path can surface `ImageTooLarge`.
+///
+/// The plan is the witness that the whole image fits, so a second constructor would
+/// be a forgeable witness and an `ImageTooLarge` result behind a minted plan would
+/// be a policy verdict issued after the policy decision closed — the emission side
+/// may only report the invariant-class encode drift.
+#[test]
+fn the_wire_plan_is_closed_and_no_post_plan_path_is_image_too_large() {
+    let measure = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("measure.rs"),
+    )
+    .expect("read the measure core");
+    let code = without_literals(&measure);
+    let constructors: Vec<usize> = symbol_positions(&code, "new")
+        .filter(|at| code[..*at].ends_with("LegacyV0WirePlan::"))
+        .collect();
+    assert_eq!(
+        constructors.len(),
+        1,
+        "the plan has exactly one constructor call (the counting run's)",
+    );
+    let (_, tail) = code
+        .split_once("fn emit_image")
+        .expect("the emission entry point is present, so this gate has a live subject");
+    // The emission body runs to the decisive-sentinel const that follows the plan's
+    // impl block; the counting sink defined after it is pre-plan machinery.
+    let (emission, _) = tail
+        .split_once("DECISIVE_TOTAL")
+        .expect("the decisive sentinel bounds the emission body");
+    let post_plan_too_large: Vec<usize> = symbol_positions(emission, "ImageTooLarge").collect();
+    assert!(
+        post_plan_too_large.is_empty(),
+        "no post-plan emission path surfaces ImageTooLarge",
+    );
+    assert!(
+        contains_symbol(&code, "ImageTooLarge"),
+        "the pre-plan ceiling verdict is present, so this gate has a live subject",
+    );
+}
+
 /// The site demand plan retains no semantic path.
 ///
 /// A retained `SemanticPath` per site row is a second copy of the durable graph: it is an
