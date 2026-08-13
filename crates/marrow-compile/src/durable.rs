@@ -1675,11 +1675,12 @@ impl<'a> IdentityResolver<'a> {
                             })
                             .collect();
                         self.value_path.pop();
-                        self.remember(ty, values.value_struct(leaves))
+                        let node = self.append_value_struct(values, leaves);
+                        self.remember(ty, node)
                     }
                     None => {
                         self.reject_value("this struct value");
-                        values.value_struct(Vec::new())
+                        self.append_value_struct(values, Vec::new())
                     }
                 }
             }
@@ -1802,7 +1803,30 @@ impl<'a> IdentityResolver<'a> {
                 (id, payload)
             })
             .collect();
-        values.value_enum(sum, members)
+        match values.value_enum(sum, members) {
+            Ok(node) => node,
+            Err(refusal) => {
+                self.remember_invariant(GenericInvariant::ValueShapeDomain(refusal));
+                values.value_scalar(ScalarType::Int.image())
+            }
+        }
+    }
+
+    /// Append one checked struct value shape. The width pre-guard above and in-draft
+    /// leaf minting make the surface refusal unreachable; an occurrence aborts at the
+    /// compiler invariant boundary.
+    fn append_value_struct(
+        &mut self,
+        values: &mut DraftTxn<'_>,
+        leaves: Vec<ValueShapeNodeId>,
+    ) -> ValueShapeNodeId {
+        match values.value_struct(leaves) {
+            Ok(node) => node,
+            Err(refusal) => {
+                self.remember_invariant(GenericInvariant::ValueShapeDomain(refusal));
+                values.value_scalar(ScalarType::Int.image())
+            }
+        }
     }
 
     fn accept_ready_shape<T>(

@@ -77,7 +77,7 @@ fn base_level(draft: &mut DraftTxn<'_>) -> Level {
     let int = draft.value_scalar(Scalar::Int);
     let text = draft.value_scalar(Scalar::Text);
     Level {
-        shape: draft.value_struct(vec![int, text]),
+        shape: draft.value_struct(vec![int, text]).expect("a within-bounds shape appends"),
         ty: record_type(record),
     }
 }
@@ -96,7 +96,7 @@ fn enclosing_level(draft: &mut DraftTxn<'_>, ordinal: usize, inner: Level) -> Le
         }],
     });
     Level {
-        shape: draft.value_struct(vec![inner.shape]),
+        shape: draft.value_struct(vec![inner.shape]).expect("a within-bounds shape appends"),
         ty: record_type(record),
     }
 }

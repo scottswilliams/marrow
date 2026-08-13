@@ -155,7 +155,7 @@ fn a_rolled_back_transaction_restores_the_exact_bytes() {
             elem: ImageType::scalar(Scalar::Int),
         });
         let int = txn.value_scalar(Scalar::Int);
-        txn.value_struct(vec![int, int]);
+        txn.value_struct(vec![int, int]).expect("a within-bounds shape appends");
     }
     let after = owner.encode().expect("the restored draft encodes").bytes;
     assert_eq!(before, after, "the armed inverse is byte-exact");

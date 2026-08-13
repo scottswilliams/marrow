@@ -90,6 +90,7 @@ fn access_shape(draft: &mut DraftTxn<'_>, (sum, members): AccessShape) -> ValueS
         id(sum),
         members.iter().map(|m| (id(*m), Vec::new())).collect(),
     )
+    .expect("a within-bounds shape appends")
 }
 
 /// A one-root image ("grants", int key) whose `Access` record carries two enum fields.

@@ -47,7 +47,8 @@ use marrow_image::bounds::{
     MAX_STRING_BYTES, MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES, MAX_VARIANTS,
 };
 use marrow_image::{
-    CollTypeId, CollectionTypeDef, ConstId, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
+    CollTypeId, CollectionTypeDef, ConstId, DeclarationMemberDef, DeclarationMemberShape,
+    DraftStateError, DraftTxn,
     DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId,
     FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
     RecordTypeDef, RootId, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId, TypeId,
@@ -79,9 +80,6 @@ enum Value {
     /// Ten nesting levels of four leaves each: 11 value-graph nodes, and an expansion
     /// of `4^10` leaves — about 2 MiB of wire, four times what any image may be.
     OverCeiling,
-    /// A dense struct one leaf past `MAX_STRUCT_LEAVES`: refused by `check_bounds`,
-    /// which runs before every other result here.
-    OverWideStruct,
     /// A single-leaf struct nest one level past `MAX_DURABLE_VALUE_DEPTH`: a two-byte
     /// expansion whose depth the declaration-graph walk refuses.
     OverDeep,
@@ -98,15 +96,18 @@ impl Value {
             Value::OverCeiling => {
                 let mut level = int;
                 for _ in 0..10 {
-                    level = draft.value_struct(vec![level; 4]);
+                    level = draft
+                        .value_struct(vec![level; 4])
+                        .expect("a within-bounds shape appends");
                 }
                 level
             }
-            Value::OverWideStruct => draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
             Value::OverDeep => {
                 let mut level = int;
                 for _ in 0..MAX_DURABLE_VALUE_DEPTH {
-                    level = draft.value_struct(vec![level]);
+                    level = draft
+                        .value_struct(vec![level])
+                        .expect("a within-bounds shape appends");
                 }
                 level
             }
@@ -541,11 +542,16 @@ impl Fixture {
             });
         }
         if self.wide_enum_value_node {
-            // The arena is validated as a whole, so the node needs no referencing field.
+            // The over-wide value node is the typed surface refusal (post-build
+            // ruling F2; design draft 2 §10 F-5): nothing enters the arena, whether
+            // or not any field would have referenced it.
             let members = (0..=MAX_VARIANTS)
                 .map(|index| (seeded_id(0x61, index), Vec::new()))
                 .collect();
-            draft.value_enum(seeded_id(0x60, 0), members);
+            assert_eq!(
+                draft.value_enum(seeded_id(0x60, 0), members),
+                Err(DraftStateError::CarrierDomain),
+            );
         }
         let mut members = vec![DeclarationMemberDef {
             parent: None,
@@ -1100,16 +1106,33 @@ fn code_bytes_outranks_the_body_ceiling() {
     );
 }
 
-/// A fixed declaration-graph bound outranks CodeBytes and the body ceiling alike: it is
-/// `check_bounds`, which the preflight replays first and in its own order.
-#[test]
-fn a_declaration_bound_outranks_code_bytes_and_the_body_ceiling() {
+/// The over-wide struct append is the typed carrier-domain refusal at the surface,
+/// mutating nothing: the checked-appender disposition of the design of record
+/// (post-build ruling F2; design draft 2 §10 F-5). The over-wide arena state the
+/// flipped pins below used to stage is unrepresentable through the one mutation
+/// surface, so each pin now proves the surface refusal and the residual verdict.
+fn an_over_wide_struct_append_is_refused_at_the_surface() {
+    let mut owner = ImageDraft::new();
+    let mut draft = admitted(&mut owner);
+    let int = draft.value_scalar(Scalar::Int);
     assert_eq!(
-        Fixture::clean()
-            .value(Value::OverWideStruct)
-            .code(Code::OverCodeBytes)
-            .encode(),
-        Err(ImageBuildError::TooManyStructLeaves),
+        draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+        Err(DraftStateError::CarrierDomain),
+    );
+    assert_eq!(draft.value_shapes().len(), 1, "the refusal mutated nothing");
+}
+
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`a_declaration_bound_outranks_code_bytes_and_the_body_ceiling`): the struct
+/// width is decided at the append surface — earlier than the fence pass the prior
+/// pin froze — and the residual draft draws the code-bytes verdict.
+#[test]
+fn a_refused_over_wide_append_leaves_code_bytes_to_draw_its_verdict() {
+    an_over_wide_struct_append_is_refused_at_the_surface();
+    assert_eq!(
+        Fixture::clean().code(Code::OverCodeBytes).encode(),
+        Err(ImageBuildError::CodeTooLong),
     );
 }
 
@@ -1153,31 +1176,31 @@ fn the_graph_anchor_outranks_code_bytes_and_the_body_ceiling() {
 // ---- The mixed-corruption matrix (see the module header). Each test pins the
 // pre-restructure verdict of one resource-policy cap crossed with one invariant defect.
 
-/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
-/// citing the pre-restructure pin this test carried: coherence decides every
-/// invariant before any policy candidate, so the struct-leaf invariant now outranks the string cap.
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`over_strings_with_an_over_wide_struct_draws_the_struct_leaf_invariant`): the
+/// struct width is decided at the append surface, and the residual draft draws the
+/// Strings policy verdict.
 #[test]
-fn over_strings_with_an_over_wide_struct_draws_the_struct_leaf_invariant() {
+fn over_strings_with_a_refused_over_wide_append_draws_the_strings_policy() {
+    an_over_wide_struct_append_is_refused_at_the_surface();
     assert_eq!(
-        Fixture::clean()
-            .policy(Overflow::Strings)
-            .value(Value::OverWideStruct)
-            .encode(),
-        Err(ImageBuildError::TooManyStructLeaves),
+        Fixture::clean().policy(Overflow::Strings).encode(),
+        Err(ImageBuildError::TooManyStrings),
     );
 }
 
-/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
-/// citing the pre-restructure pin this test carried: coherence decides every
-/// invariant before any policy candidate, so the struct-leaf invariant now outranks the string-length cap.
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`an_over_long_string_with_an_over_wide_struct_draws_the_struct_leaf_invariant`):
+/// the struct width is decided at the append surface, and the residual draft draws
+/// the string-length policy verdict.
 #[test]
-fn an_over_long_string_with_an_over_wide_struct_draws_the_struct_leaf_invariant() {
+fn an_over_long_string_with_a_refused_over_wide_append_draws_the_length_policy() {
+    an_over_wide_struct_append_is_refused_at_the_surface();
     assert_eq!(
-        Fixture::clean()
-            .policy(Overflow::StringBytes)
-            .value(Value::OverWideStruct)
-            .encode(),
-        Err(ImageBuildError::TooManyStructLeaves),
+        Fixture::clean().policy(Overflow::StringBytes).encode(),
+        Err(ImageBuildError::StringTooLong),
     );
 }
 
@@ -1195,17 +1218,17 @@ fn over_consts_with_an_over_wide_key_draws_the_key_column_invariant() {
     );
 }
 
-/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
-/// citing the pre-restructure pin this test carried: coherence decides every
-/// invariant before any policy candidate, so the struct-leaf invariant now outranks the type cap.
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`over_types_with_an_over_wide_struct_draws_the_struct_leaf_invariant`): the
+/// struct width is decided at the append surface, and the residual draft draws the
+/// Types policy verdict.
 #[test]
-fn over_types_with_an_over_wide_struct_draws_the_struct_leaf_invariant() {
+fn over_types_with_a_refused_over_wide_append_draws_the_types_policy() {
+    an_over_wide_struct_append_is_refused_at_the_surface();
     assert_eq!(
-        Fixture::clean()
-            .policy(Overflow::Types)
-            .value(Value::OverWideStruct)
-            .encode(),
-        Err(ImageBuildError::TooManyStructLeaves),
+        Fixture::clean().policy(Overflow::Types).encode(),
+        Err(ImageBuildError::TooManyTypes),
     );
 }
 
@@ -1300,17 +1323,17 @@ fn over_functions_with_over_locals_draws_the_local_invariant() {
     );
 }
 
-/// Pins a pre-restructure verdict the restructure must keep: the struct-leaf invariant
-/// already outranks the function cap today, so the sanctioned correction changes nothing
-/// here.
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`over_functions_with_an_over_wide_struct_currently_draws_the_struct_leaf_invariant`):
+/// the struct width is decided at the append surface, and the residual draft draws
+/// the Functions policy verdict.
 #[test]
-fn over_functions_with_an_over_wide_struct_currently_draws_the_struct_leaf_invariant() {
+fn over_functions_with_a_refused_over_wide_append_draws_the_functions_policy() {
+    an_over_wide_struct_append_is_refused_at_the_surface();
     assert_eq!(
-        Fixture::clean()
-            .policy(Overflow::Functions)
-            .value(Value::OverWideStruct)
-            .encode(),
-        Err(ImageBuildError::TooManyStructLeaves),
+        Fixture::clean().policy(Overflow::Functions).encode(),
+        Err(ImageBuildError::TooManyFunctions),
     );
 }
 
@@ -1408,16 +1431,18 @@ fn an_over_wide_record_with_an_over_wide_key_currently_draws_the_field_width_inv
     );
 }
 
-/// Invariant-relative order is frozen; no restructure may flip this: the value-shape
-/// arena's struct width is decided before the function frame.
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`an_over_wide_struct_with_over_locals_currently_draws_the_struct_leaf_invariant`):
+/// the frozen relative order — struct width decided before the function frame —
+/// holds even more strongly at the append surface, and the residual draft draws the
+/// frame verdict.
 #[test]
-fn an_over_wide_struct_with_over_locals_currently_draws_the_struct_leaf_invariant() {
+fn a_refused_over_wide_append_with_over_locals_draws_the_frame_invariant() {
+    an_over_wide_struct_append_is_refused_at_the_surface();
     assert_eq!(
-        Fixture::clean()
-            .value(Value::OverWideStruct)
-            .frame(Frame::OverLocals)
-            .encode(),
-        Err(ImageBuildError::TooManyStructLeaves),
+        Fixture::clean().frame(Frame::OverLocals).encode(),
+        Err(ImageBuildError::TooManyLocals),
     );
 }
 
@@ -1576,11 +1601,14 @@ fn a_bad_jump_alone_currently_draws_the_jump_target_reference() {
 // order must not silently reorder, so each pair is pinned with both sites armed and
 // each site alone.
 
-/// Decision-site order is frozen: `TooManyVariants` is decided at the enum DEFINITION
-/// (the fixed table bounds) before the value-DAG arena walk, and both sites draw the
-/// same variant, so the combined draft must keep this exact result.
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`an_enum_definition_and_a_value_dag_node_both_over_variants_currently_draw_too_many_variants`):
+/// the value-DAG site is now decided at the append surface (the fixture asserts the
+/// typed refusal), so the definition site keeps drawing `TooManyVariants` alone and
+/// a refused value node leaves the rest of the draft clean.
 #[test]
-fn an_enum_definition_and_a_value_dag_node_both_over_variants_currently_draw_too_many_variants() {
+fn an_over_variant_enum_definition_draws_too_many_variants_and_a_refused_node_leaves_it() {
     assert_eq!(
         Fixture::clean()
             .with_wide_enum_definition()
@@ -1595,8 +1623,8 @@ fn an_enum_definition_and_a_value_dag_node_both_over_variants_currently_draw_too
     );
     assert_eq!(
         Fixture::clean().with_wide_enum_value_node().encode(),
-        Err(ImageBuildError::TooManyVariants),
-        "the value-DAG site draws the variant alone",
+        Ok(()),
+        "the refused value node entered nothing, so the residual draft encodes",
     );
 }
 

@@ -139,6 +139,7 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         GenericInvariant::TypeArgumentOrderViolation { .. } => "type argument order violation",
         GenericInvariant::TypeArgumentTargetMissing(_) => "type argument target missing",
         GenericInvariant::TypeArgumentParameter(_) => "concrete type argument is a parameter",
+        GenericInvariant::ValueShapeDomain(_) => "value shape outside the builder domain",
         GenericInvariant::CollectionIndexMismatch { kind, .. } => match kind {
             CollectionKind::List => "List owner mismatch",
             CollectionKind::Map => "Map owner mismatch",

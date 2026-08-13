@@ -1949,7 +1949,9 @@ fn widened_field_indexed_draft() -> ImageDraft {
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     // A dense struct value of two text leaves, minted into this draft's own arena.
-    let owner_value = draft.value_struct(vec![shapes.text; 2]);
+    let owner_value = draft
+        .value_struct(vec![shapes.text; 2])
+        .expect("a within-bounds shape appends");
     draft
         .declare_product(
             &admitted_plan(),
@@ -4683,7 +4685,8 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
             .iter()
             .map(|member| (LedgerIdBytes::from_bytes(*member), Vec::new()))
             .collect(),
-    );
+    )
+    .expect("a within-bounds shape appends");
     let src = draft.intern_string("src/main.mw");
     let access = draft.intern_string("Access");
     let reader = draft.intern_string("reader");

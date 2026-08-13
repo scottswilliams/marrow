@@ -11,6 +11,7 @@ use marrow_image::bounds::{
     MAX_ADMITTED_ROOT_OCCURRENCES, MAX_DURABLE_DEPTH, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
 };
 use marrow_image::{
+    DraftStateError,
     AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableContractGraph, DurableGraphInputRefusal, DurableIndexComponent, DurableIndexShape,
     ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
@@ -121,7 +122,9 @@ fn encode_root(
 /// leaves.
 fn members_with_struct_field(draft: &mut DraftTxn<'_>, leaves: usize) -> Vec<DeclarationMemberDef> {
     let int = draft.value_scalar(Scalar::Int);
-    let value = draft.value_struct(vec![int; leaves]);
+    let value = draft
+        .value_struct(vec![int; leaves])
+        .expect("a within-bounds shape appends");
     vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
@@ -155,41 +158,48 @@ fn a_dense_struct_at_the_leaf_limit_encodes() {
     );
 }
 
+/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the pin this test carried**
+/// (`a_dense_struct_one_leaf_over_the_limit_is_refused`, fence
+/// `TooManyStructLeaves`): one leaf past the dense-composite limit is the typed
+/// carrier-domain refusal at the append surface, mutating nothing, and the fence's
+/// whole-arena walk keeps the same bound as defense in depth.
 #[test]
-fn a_dense_struct_one_leaf_over_the_limit_is_refused() {
+fn a_dense_struct_one_leaf_over_the_limit_is_refused_at_the_surface() {
+    let mut owner = ImageDraft::new();
+    let mut draft = admitted(&mut owner);
+    let int = draft.value_scalar(Scalar::Int);
     assert_eq!(
-        encode_root(
-            |draft| members_with_struct_field(draft, MAX_STRUCT_LEAVES + 1),
-            Vec::new(),
-        ),
-        Err(ImageBuildError::TooManyStructLeaves),
-        "one leaf past the dense-composite limit is refused as TooManyStructLeaves",
+        draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+        Err(DraftStateError::CarrierDomain),
+        "one leaf past the dense-composite limit is the surface refusal",
     );
+    assert_eq!(draft.value_shapes().len(), 1, "the refusal mutated nothing");
 }
 
-/// The value bounds are rechecked over the whole arena, not over the shapes a
-/// declaration happens to reference.
-///
-/// The arena is the draft's own retained state. A node past a value bound is a producer
-/// defect wherever it came from, and deciding it by reachability would make the same draft
-/// encode or refuse depending on a traversal — while paying for a reachability walk to
-/// learn something no correct producer can produce. This pins the declared precondition:
-/// a draft whose declarations are all within bounds still refuses when its arena holds an
-/// over-wide shape nothing references.
+/// The width decision does not depend on whether any declaration would reference the
+/// shape: the refusal is the append's own, so a draft can never come to hold an
+/// over-wide node — referenced or not — through the one mutation surface. (The
+/// fence's whole-arena walk keeps the same bounds as defense in depth for producers
+/// below the surface.)
 #[test]
-fn an_over_wide_shape_no_declaration_references_still_refuses() {
+fn an_over_wide_shape_is_refused_whether_or_not_a_declaration_references_it() {
     assert_eq!(
         encode_root(
             |draft| {
                 let members = members_with_struct_field(draft, MAX_STRUCT_LEAVES);
                 let int = draft.value_scalar(Scalar::Int);
-                let _unreferenced = draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]);
+                assert_eq!(
+                    draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+                    Err(DraftStateError::CarrierDomain),
+                    "the unreferenced over-wide shape is refused at the surface",
+                );
                 members
             },
             Vec::new(),
         ),
-        Err(ImageBuildError::TooManyStructLeaves),
-        "an unreferenced over-wide shape in the draft's arena refuses the encode",
+        Ok(()),
+        "the refused shape entered nothing, so the within-bounds draft encodes",
     );
 }
 

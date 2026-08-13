@@ -766,6 +766,10 @@ pub enum DraftStateError {
     /// The token is internally incoherent: its snapshot disagrees with the state it
     /// claims to describe, or the id it names no longer admits the operation.
     IncoherentToken,
+    /// The argument exceeds the proved carrier/layout domain of the builder surface.
+    /// The production compiler's envelope proof makes this unreachable, so it maps
+    /// the refusal to a compiler invariant — never a policy or source refusal.
+    CarrierDomain,
 }
 
 impl std::fmt::Display for DraftStateError {
@@ -774,6 +778,9 @@ impl std::fmt::Display for DraftStateError {
             DraftStateError::ForeignDraft => "the token was minted by another draft",
             DraftStateError::StaleEpoch => "the savepoint's epoch was already consumed",
             DraftStateError::IncoherentToken => "the token is internally incoherent",
+            DraftStateError::CarrierDomain => {
+                "the argument exceeds the proved carrier domain of the builder surface"
+            }
         })
     }
 }
@@ -1050,19 +1057,53 @@ impl<'d> DraftTxn<'d> {
         self.draft.value_shapes_mut().scalar(scalar)
     }
 
-    /// Mint one dense composite durable value shape into the draft's one arena. The
-    /// leaf-arity bound stays the fence's coherence decision, at its pinned position.
-    pub fn value_struct(&mut self, leaves: Vec<ValueShapeNodeId>) -> ValueShapeNodeId {
-        self.draft.value_shapes_mut().struct_shape(leaves)
+    /// Mint one dense composite durable value shape into the draft's one arena.
+    ///
+    /// Checked at the surface: a leaf minted by another arena is the typed foreign
+    /// refusal (never an out-of-range panic), and an arity past
+    /// [`crate::bounds::MAX_STRUCT_LEAVES`] is the typed carrier-domain refusal —
+    /// a coherence/logical-domain decision, not a policy kind. Neither refusal
+    /// mutates the arena, and the fence's whole-arena walk keeps the same bounds as
+    /// defense in depth.
+    pub fn value_struct(
+        &mut self,
+        leaves: Vec<ValueShapeNodeId>,
+    ) -> Result<ValueShapeNodeId, DraftStateError> {
+        if leaves.len() > bounds::MAX_STRUCT_LEAVES {
+            return Err(DraftStateError::CarrierDomain);
+        }
+        self.validate_value_leaves(&leaves)?;
+        Ok(self.draft.value_shapes_mut().struct_shape(leaves))
     }
 
-    /// Mint one enum durable value shape into the draft's one arena.
+    /// Mint one enum durable value shape into the draft's one arena (checked at the
+    /// surface exactly like [`Self::value_struct`], over the variant and payload
+    /// bounds).
     pub fn value_enum(
         &mut self,
         identity: LedgerIdBytes,
         members: Vec<(LedgerIdBytes, Vec<ValueShapeNodeId>)>,
-    ) -> ValueShapeNodeId {
-        self.draft.value_shapes_mut().enum_shape(identity, members)
+    ) -> Result<ValueShapeNodeId, DraftStateError> {
+        if members.len() > bounds::MAX_VARIANTS {
+            return Err(DraftStateError::CarrierDomain);
+        }
+        for (_, payload) in &members {
+            if payload.len() > bounds::MAX_PAYLOAD_FIELDS {
+                return Err(DraftStateError::CarrierDomain);
+            }
+            self.validate_value_leaves(payload)?;
+        }
+        Ok(self.draft.value_shapes_mut().enum_shape(identity, members))
+    }
+
+    /// Every referenced leaf must be a node this draft's arena has minted: a foreign
+    /// or fabricated reference is the typed refusal before any mutation.
+    fn validate_value_leaves(&self, leaves: &[ValueShapeNodeId]) -> Result<(), DraftStateError> {
+        let minted = self.draft.value_shapes().len();
+        if leaves.iter().any(|leaf| leaf.index() >= minted) {
+            return Err(DraftStateError::ForeignDraft);
+        }
+        Ok(())
     }
 
     /// The total admitted inverse, in reverse dependency order. Called only by the

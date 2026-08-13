@@ -477,27 +477,51 @@ fn a_divergent_application_identity_latches_a_sticky_conflict() {
 
 // ---- F-5: the raw arena escape is deleted; the typed appenders remain nonblocking.
 
-/// **Flipped under the sanctioned F-5 change, citing the pre-restructure pin this
-/// test carried** (`an_over_wide_raw_arena_append_succeeds_and_only_encode_refuses`):
-/// the raw `&mut` arena escape (`value_shapes_mut`) is deleted, and the typed
-/// appenders on the transaction surface are the sole mint path. The append itself
-/// stays nonblocking — an over-wide shape is admitted, observable as arena growth —
-/// and the fence's whole-arena walk keeps its pinned refusal position.
+/// **Flipped to the design of record's F-5 disposition (post-build ruling F2; design
+/// draft 2 §10 F-5), citing the two pins this test carried**
+/// (`an_over_wide_raw_arena_append_succeeds_and_only_encode_refuses`, then
+/// `an_over_wide_typed_arena_append_is_admitted_and_only_encode_refuses`): the typed
+/// appenders are checked — an over-wide struct is the typed carrier-domain refusal
+/// at the surface and a leaf minted by another arena is the typed foreign refusal,
+/// never an out-of-range panic. Neither refusal mutates the arena; the fence's
+/// whole-arena walk keeps the same bounds as defense in depth.
 #[test]
-fn an_over_wide_typed_arena_append_is_admitted_and_only_encode_refuses() {
+fn an_over_wide_or_foreign_typed_arena_append_is_refused_and_mutates_nothing() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let int = draft.value_scalar(Scalar::Int);
-    draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]);
+    assert_eq!(
+        draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
+        Err(DraftStateError::CarrierDomain),
+        "the over-wide append is the typed carrier-domain refusal",
+    );
     assert_eq!(
         draft.value_shapes().len(),
-        2,
-        "the typed append admitted the scalar and the over-wide struct",
+        1,
+        "the refused append entered nothing",
+    );
+
+    // A leaf minted by another draft's arena, out of range for this one.
+    let foreign = {
+        let mut other_owner = ImageDraft::new();
+        let mut other = admitted(&mut other_owner);
+        other.value_scalar(Scalar::Int);
+        other.value_scalar(Scalar::Text)
+    };
+    assert_eq!(
+        draft.value_struct(vec![foreign]),
+        Err(DraftStateError::ForeignDraft),
+        "the foreign leaf is the typed refusal, never a panic",
     );
     assert_eq!(
-        draft.encode().map(|_| ()),
-        Err(ImageBuildError::TooManyStructLeaves),
+        draft.value_enum(
+            LedgerIdBytes::from_bytes([0x50; 16]),
+            vec![(LedgerIdBytes::from_bytes([0x51; 16]), vec![foreign])],
+        ),
+        Err(DraftStateError::ForeignDraft),
+        "the foreign payload leaf is the typed refusal, never a panic",
     );
+    assert_eq!(draft.value_shapes().len(), 1, "still nothing entered");
 }
 
 // ---- Failed-mutation state: the atomic owners leave the draft untouched.

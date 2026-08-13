@@ -482,6 +482,11 @@ pub(crate) enum GenericInvariant {
     },
     TypeArgumentTargetMissing(GArg),
     TypeArgumentParameter(TypeParamIndex),
+    /// A checked value-shape append refused at the image builder surface. The
+    /// compiler's own width pre-guards and in-draft leaf minting make the refusal
+    /// unreachable, so an occurrence is a compiler coherence failure, never a
+    /// source refusal.
+    ValueShapeDomain(marrow_image::DraftStateError),
     CollectionIndexMismatch {
         kind: CollectionKind,
         cache_index: usize,

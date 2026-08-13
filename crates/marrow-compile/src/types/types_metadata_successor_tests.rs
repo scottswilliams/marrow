@@ -1383,6 +1383,10 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             let _ = param;
             13
         }
+        GenericInvariant::ValueShapeDomain(refusal) => {
+            let _ = refusal;
+            22
+        }
         GenericInvariant::CollectionIndexMismatch {
             kind,
             cache_index,

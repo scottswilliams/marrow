@@ -273,7 +273,7 @@ fn the_compact_expansion_regression_is_refused_decisively() {
     let value = {
         let mut level = draft.value_scalar(Scalar::Int);
         for _ in 0..31 {
-            level = draft.value_struct(vec![level; 64]);
+            level = draft.value_struct(vec![level; 64]).expect("a within-bounds shape appends");
         }
         level
     };

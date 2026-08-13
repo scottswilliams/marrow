@@ -301,7 +301,7 @@ impl CanonicalValueShapeDag {
 }
 
 impl ValueShapeNodeId {
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 }
