@@ -1,5 +1,7 @@
 use super::*;
 
+use marrow_image::ImageDraft;
+
 use crate::compile::admitted;
 
 use crate::decl::DeclarationBudget;
@@ -1228,7 +1230,7 @@ fn template_proof_parameter_stays_local_to_the_guard() {
 
     // Dropping the guard erases the parameter row and its throwaway image; the settled owner
     // and the draft are exactly what they were before the pass.
-    registry.exit_template_proof(proof);
+    registry.restore_generic_owners(proof);
     drop(guard);
     assert_eq!(owner_snapshot(&registry), registry_before);
     assert_eq!(draft_fingerprint(&draft_owner), draft_before);

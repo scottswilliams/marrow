@@ -24,8 +24,8 @@ use std::hash::{Hash, Hasher};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CollTypeId, CollectionTypeDef, DraftTxn, EnumId, FieldDef, ImageDraft, ImageType,
-    RecordTypeDef, Scalar, TypeId, VariantDef,
+    CollTypeId, CollectionTypeDef, DraftTxn, EnumId, FieldDef, ImageType, RecordTypeDef, Scalar,
+    TypeId, VariantDef,
 };
 use marrow_project::FileIdentity;
 use marrow_syntax::{
@@ -45,6 +45,7 @@ use crate::scalar::ScalarType;
 
 mod build;
 mod metadata;
+mod owner_txn;
 mod render;
 
 use build::{
@@ -53,6 +54,8 @@ use build::{
     validate_alias_targets,
 };
 use metadata::{collection_generic_target, place_generic_row};
+use owner_txn::ProofIsolation;
+pub(crate) use owner_txn::{GenericOwnerTxn, RegistryInverse};
 #[cfg(test)]
 use render::garg_anchor_spelling;
 use render::{
@@ -947,102 +950,6 @@ enum ArgumentDomain {
     Concrete,
     TemplateProof,
 }
-
-/// State captured before an isolated generic-template proof pass runs directly on the
-/// registry, consumed by [`TypeRegistry::exit_template_proof`] to erase every effect the
-/// pass leaves. It records the append-only lengths of the instantiation owners (whose
-/// suffixes the proof appends and truncation drops), the swapped argument domain and
-/// ordered-diagnostic buffer, and the draft record/enum id ceilings the reused metadata
-/// directory rolls back to. The settled prefix is immutable across a fill batch, so these
-/// lengths and swapped owners are a complete description of what the pass can change.
-#[must_use = "a template-proof savepoint must be restored through exit_template_proof"]
-pub(crate) struct RegistryProofSavepoint {
-    type_insts: usize,
-    collections: usize,
-    fn_insts: usize,
-    fn_queue: usize,
-    prior_argument_domain: ArgumentDomain,
-    /// The live pre-proof diagnostic owner, swapped whole out of the registry
-    /// at proof entry and re-seated whole at exit.
-    prior_payloads: DiagnosticCollector,
-    entry_records: usize,
-    entry_enums: usize,
-}
-
-/// The generic-owner composite guard: a live isolated template proof over the real
-/// registry (held by exclusive `&mut`) and draft (held through an armed
-/// [`DraftTxn`]). Both owners are restored on **every** exit — normal return, early
-/// lowering invariant, or unwind — registry inverse first, through
-/// compile-time-exclusive `RefCell::get_mut` (no runtime borrow flag, so a drop-time
-/// restore cannot panic), then the still-armed draft guard, exactly once. A template
-/// proof never commits its draft guard.
-pub(crate) struct TemplateProofScope<'r, 'd> {
-    registry: &'r mut TypeRegistry,
-    inverse: Option<RegistryProofSavepoint>,
-    /// The armed draft transaction. Dropping it is the whole draft restoration; the
-    /// scope's own `Drop` body restores the registry inverse before taking it.
-    draft: Option<DraftTxn<'d>>,
-}
-
-impl<'r, 'd> TemplateProofScope<'r, 'd> {
-    /// Admit a proof pass on a settled registry, taking the registry savepoint and
-    /// an armed draft transaction; an inadmissible registry state refuses with both
-    /// owners untouched.
-    pub(crate) fn enter(
-        registry: &'r mut TypeRegistry,
-        draft: &'d mut ImageDraft,
-    ) -> Result<Self, GenericInvariant> {
-        let inverse =
-            registry.enter_template_proof(draft.record_type_count(), draft.enum_type_count())?;
-        #[expect(
-            clippy::expect_used,
-            reason = "admission law: a savepoint minted and consumed in one expression is fresh"
-        )]
-        let txn = draft
-            .begin_transaction(draft.savepoint())
-            .expect("a fresh savepoint admits the proof batch");
-        Ok(Self {
-            registry,
-            inverse: Some(inverse),
-            draft: Some(txn),
-        })
-    }
-
-    /// The proof body's split borrows: the registry and the armed draft transaction,
-    /// reborrowed from disjoint guard fields. Both are exclusive, so any metadata
-    /// session or interior borrow derived inside the proof body dies before the guard
-    /// can drop — a scope dropped under a live session is a compile error, never a
-    /// drop-time borrow panic.
-    pub(crate) fn parts(&mut self) -> (&mut TypeRegistry, &mut DraftTxn<'d>) {
-        #[expect(
-            clippy::expect_used,
-            reason = "scope law: the guard is taken exactly once, by Drop"
-        )]
-        (
-            self.registry,
-            self.draft
-                .as_mut()
-                .expect("the scope holds its armed guard until it drops"),
-        )
-    }
-
-    /// The settled registry, for reads that must precede the guard's drop.
-    pub(crate) fn registry(&self) -> &TypeRegistry {
-        &*self.registry
-    }
-}
-
-impl Drop for TemplateProofScope<'_, '_> {
-    /// Restore the compiler registry's inverse first, then take and drop the
-    /// still-armed draft guard exactly once — the drop-order law.
-    fn drop(&mut self) {
-        if let Some(inverse) = self.inverse.take() {
-            self.registry.exit_template_proof(inverse);
-        }
-        drop(self.draft.take());
-    }
-}
-// drop-path audit sentinel: end of TemplateProofScope::drop
 
 /// One owner-ordered finished transfer from the generic owner: the optional
 /// terminal limit row first, followed by the finished collection-payload
@@ -3823,7 +3730,7 @@ impl TypeRegistry {
     /// Admit an isolated generic-template proof pass to run directly on this registry, and
     /// capture the state needed to erase its effects. The pass mints type instantiations and
     /// collections and reports diagnostics against the abstract type parameters; on exit
-    /// [`Self::exit_template_proof`] truncates the appended rows and re-seats the swapped
+    /// [`Self::restore_generic_owners`] truncates the appended rows and re-seats the swapped
     /// owners, so nothing the proof appended survives and only the diagnostics the caller
     /// takes cross back.
     ///
@@ -3841,7 +3748,7 @@ impl TypeRegistry {
         &self,
         entry_records: usize,
         entry_enums: usize,
-    ) -> Result<RegistryProofSavepoint, GenericInvariant> {
+    ) -> Result<RegistryInverse, GenericInvariant> {
         let mut generics = self
             .generics
             .try_borrow_mut()
@@ -3879,23 +3786,76 @@ impl TypeRegistry {
             .len();
         #[cfg(test)]
         bump_scaling(|counts| counts.proof_clones += 1);
-        let savepoint = RegistryProofSavepoint {
+        let savepoint = RegistryInverse {
             type_insts: generics.type_insts.len(),
             collections,
             fn_insts: generics.fn_insts.len(),
             fn_queue: generics.fn_queue.len(),
+            build_invariant: generics.build_invariant,
             prior_argument_domain: generics.argument_domain,
-            // Whole-owner swap: the proof pass gets a fresh live collector and
-            // the prior owner is saved intact for exit to re-seat.
-            prior_payloads: std::mem::replace(
-                &mut generics.collection_payloads,
-                DiagnosticCollector::new(),
-            ),
             entry_records,
             entry_enums,
+            isolation: Some(ProofIsolation {
+                // Whole-owner swap: the proof pass gets a fresh live collector and
+                // the prior owner is saved intact for exit to re-seat.
+                prior_payloads: std::mem::replace(
+                    &mut generics.collection_payloads,
+                    DiagnosticCollector::new(),
+                ),
+            }),
         };
         generics.argument_domain = ArgumentDomain::TemplateProof;
         Ok(savepoint)
+    }
+
+    /// Admit an ordinary generic-owner batch and capture its inverse.
+    ///
+    /// Admission proves the registry is between fills — no open fill batch, no active
+    /// row cache, no fill stack, no unsettled failure list. That is what makes the
+    /// captured lengths a complete description of the batch: every row the batch can
+    /// append or fill lies at or above them, and no settled prefix row can gain a
+    /// dependency edge while the batch runs. Unlike a template proof this takes no
+    /// isolating swap — an ordinary batch shares the live instantiation-limit owner and
+    /// ordered diagnostic buffer, whose custody is the diagnostic substrate's.
+    ///
+    /// `entry_records`/`entry_enums` are the draft's record/enum id ceilings at
+    /// admission, which the reused metadata directory rolls back to.
+    pub(crate) fn admit_generic_owners(
+        &self,
+        entry_records: usize,
+        entry_enums: usize,
+    ) -> Result<RegistryInverse, GenericInvariant> {
+        let generics = self
+            .generics
+            .try_borrow()
+            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?;
+        if generics.fill_batch_start.is_some()
+            || !generics.fill_rows.is_empty()
+            || !generics.fill_stack.is_empty()
+            || !generics.fill_failures.is_empty()
+        {
+            return Err(GenericInvariant::ProofClone(
+                ProofCloneError::UnstableFillState,
+            ));
+        }
+        // Read before any mutation, so contention on the collection owner refuses with
+        // the registry untouched.
+        let collections = self
+            .collections
+            .try_borrow()
+            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?
+            .len();
+        Ok(RegistryInverse {
+            type_insts: generics.type_insts.len(),
+            collections,
+            fn_insts: generics.fn_insts.len(),
+            fn_queue: generics.fn_queue.len(),
+            build_invariant: generics.build_invariant,
+            prior_argument_domain: generics.argument_domain,
+            entry_records,
+            entry_enums,
+            isolation: None,
+        })
     }
 
     /// Restore the registry to the exact state captured by `savepoint`, erasing every effect
@@ -3905,17 +3865,18 @@ impl TypeRegistry {
     /// batch, but possibly dirty after a proof that failed mid-fill — is reset; and the
     /// argument domain, ordered-diagnostic buffer, and instantiation-limit owner are
     /// re-seated. The reused metadata directory is rolled back to the pre-proof image.
-    pub(crate) fn exit_template_proof(&mut self, savepoint: RegistryProofSavepoint) {
-        let RegistryProofSavepoint {
+    pub(crate) fn restore_generic_owners(&mut self, inverse: RegistryInverse) {
+        let RegistryInverse {
             type_insts,
             collections,
             fn_insts,
             fn_queue,
+            build_invariant,
             prior_argument_domain,
-            prior_payloads,
             entry_records,
             entry_enums,
-        } = savepoint;
+            isolation,
+        } = inverse;
         {
             let generics = self.generics.get_mut();
             while generics.type_insts.len() > type_insts {
@@ -3933,10 +3894,15 @@ impl TypeRegistry {
             generics.fill_rows.clear();
             generics.fill_stack.clear();
             generics.fill_failures.clear();
-            generics.limit = LimitState::Open;
-            generics.build_invariant = None;
+            generics.build_invariant = build_invariant;
             generics.argument_domain = prior_argument_domain;
-            generics.collection_payloads = prior_payloads;
+            if let Some(ProofIsolation { prior_payloads }) = isolation {
+                // Only an isolated proof re-seats these: its swapped-in owners are
+                // throwaway, so the limit returns to the open state admission proved
+                // and the live payload owner is put back whole.
+                generics.limit = LimitState::Open;
+                generics.collection_payloads = prior_payloads;
+            }
         }
         {
             let colls = self.collections.get_mut();
@@ -3951,7 +3917,7 @@ impl TypeRegistry {
             directory.rewind_to(entry_records, entry_enums, type_insts, collections);
         }
     }
-    // drop-path audit sentinel: end of TypeRegistry::exit_template_proof
+    // drop-path audit sentinel: end of TypeRegistry::restore_generic_owners
 }
 
 /// Reject a cycle in the value-containment graph at check time: a struct, record,

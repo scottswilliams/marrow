@@ -23,15 +23,18 @@ const DROP_REACHABLE: [(&str, &str); 9] = [
     ("marrow-image/src/product.rs", "fn rewind_total"),
     ("marrow-image/src/product.rs", "fn truncate"),
     ("marrow-image/src/value_dag.rs", "fn truncate"),
-    ("marrow-compile/src/types/mod.rs", "fn exit_template_proof"),
+    (
+        "marrow-compile/src/types/mod.rs",
+        "fn restore_generic_owners",
+    ),
     ("marrow-compile/src/types/mod.rs", "fn rewind_to"),
 ];
 
 /// The compiler composite guard's own `Drop`, audited with its sentinel like the
 /// draft guard's.
 const COMPOSITE_DROP: (&str, &str) = (
-    "marrow-compile/src/types/mod.rs",
-    "impl Drop for TemplateProofScope",
+    "marrow-compile/src/types/owner_txn.rs",
+    "impl Drop for GenericOwnerTxn",
 );
 
 /// The forbidden tokens: any of these inside an audited body breaks the total,

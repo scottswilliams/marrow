@@ -34,7 +34,7 @@ use crate::lower::{
     is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::BuildError;
-use crate::types::{GenericInvariant, TypeRegistry};
+use crate::types::{GenericInvariant, GenericOwnerTxn, TypeRegistry};
 
 /// The armed transaction a fresh savepoint admits over `owner` — the one admission
 /// spelling for this crate's production batches and test fixtures alike.
@@ -1483,21 +1483,29 @@ fn run_semantic(
     // function reuses its declaration's cause, and every unrelated body lowers and
     // reports its own errors instead of being silenced by one bad annotation.
     let signatures = {
-        let mut txn = admitted(&mut draft);
-        let signatures = match FunctionRegistry::build(
-            &mut records,
-            &mut txn,
-            &durable,
-            &functions,
-            modules,
-            imports,
-            &mut diagnostics,
-            budget.clone(),
-        ) {
-            Ok(signatures) => CompleteFunctionRegistry(signatures),
-            Err(error) => return error.into(),
+        let mut batch = match GenericOwnerTxn::begin(&mut records, &mut draft) {
+            Ok(batch) => batch,
+            Err(invariant) => {
+                return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
+            }
         };
-        txn.commit();
+        let signatures = {
+            let (records, txn) = batch.parts();
+            match FunctionRegistry::build(
+                records,
+                txn,
+                &durable,
+                &functions,
+                modules,
+                imports,
+                &mut diagnostics,
+                budget.clone(),
+            ) {
+                Ok(signatures) => CompleteFunctionRegistry(signatures),
+                Err(error) => return error.into(),
+            }
+        };
+        batch.commit();
         signatures
     };
     let function_registry = signatures.complete();
@@ -1849,32 +1857,36 @@ fn registry_phases(
     if function_bodies.is_some() && test_bodies.is_some() {
         while let Some((template_index, args, reserved)) = records.next_fn_pending() {
             let template = &resolution.generics.templates()[template_index];
-            // One admitted transaction per drained instance body.
-            let mut txn = admitted(draft);
-            let result = match FnLowerer::lower_instance(
-                &mut txn,
-                records,
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
-                diagnostics,
-                FactSink::Discarding,
-                template,
-                &args,
-            ) {
-                Ok(BodyOutcome::Lowered(result)) => result,
-                Ok(BodyOutcome::Refused) => {
+            // One admitted generic-owner batch per drained instance body.
+            let mut batch = GenericOwnerTxn::begin(records, draft)
+                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+            let lowered_body = {
+                let (records, txn) = batch.parts();
+                match FnLowerer::lower_instance(
+                    txn,
+                    records,
+                    resolution.durable,
+                    resolution.signatures,
+                    resolution.generics,
+                    resolution.constants,
+                    diagnostics,
+                    FactSink::Discarding,
+                    template,
+                    &args,
+                ) {
+                    Ok(BodyOutcome::Lowered(result)) => Some(result),
                     // An ordinary refusal keeps the batch, aligned with the registry.
-                    txn.commit();
-                    drain_lowered_every_instance = false;
-                    break;
-                }
-                Err(invariant) => {
-                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+                    Ok(BodyOutcome::Refused) => None,
+                    Err(invariant) => {
+                        return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+                    }
                 }
             };
-            txn.commit();
+            batch.commit();
+            let Some(result) = lowered_body else {
+                drain_lowered_every_instance = false;
+                break;
+            };
             // The registry reserved this index before the body was lowered; the draft
             // assigned the one the body actually took. A divergence means the image would
             // carry an instance under an index some call site does not name, so it is a
@@ -1966,41 +1978,47 @@ fn lower_declared_functions(
                     return Err(PhaseStop::Invariant(InvariantCause::Generic(drift.into())));
                 }
             }
-            // One admitted transaction per lowered body batch: the body's interns,
-            // site requests, function append, and export row land as one unit; the
-            // guard mutates immediately and in place, so mint order is call order.
-            let mut txn = admitted(draft);
-            let result = match FnLowerer::lower(
-                &mut txn,
-                records,
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
-                diagnostics,
-                facts.sink(module.at),
-                &module.file,
-                &module.name,
-                function,
-            ) {
-                Ok(BodyOutcome::Lowered(result)) => result,
-                Ok(BodyOutcome::Refused) => {
+            // One admitted generic-owner batch per lowered body: the body's interns,
+            // site requests, function append, export row, and every registry row its
+            // mints appended land as one unit; the guard mutates immediately and in
+            // place, so mint order is call order.
+            let mut batch = GenericOwnerTxn::begin(records, draft)
+                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+            let lowered_body = {
+                let (records, txn) = batch.parts();
+                match FnLowerer::lower(
+                    txn,
+                    records,
+                    resolution.durable,
+                    resolution.signatures,
+                    resolution.generics,
+                    resolution.constants,
+                    diagnostics,
+                    facts.sink(module.at),
+                    &module.file,
+                    &module.name,
+                    function,
+                ) {
+                    Ok(BodyOutcome::Lowered(result)) => Some(result),
                     // An ordinary refusal keeps the batch: the retained interns and
                     // registry rows stay aligned, exactly as before the surface moved.
-                    txn.commit();
-                    if records.has_instantiation_limit() {
-                        return Ok(LoweredFunctions {
-                            lowered,
-                            exports,
-                            exit: DeclarationExit::StoppedOnInstantiationLimit,
-                        });
+                    Ok(BodyOutcome::Refused) => None,
+                    Err(invariant) => {
+                        return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
                     }
-                    exit = DeclarationExit::Refused;
-                    continue;
                 }
-                Err(invariant) => {
-                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+            };
+            let Some(result) = lowered_body else {
+                batch.commit();
+                if records.has_instantiation_limit() {
+                    return Ok(LoweredFunctions {
+                        lowered,
+                        exports,
+                        exit: DeclarationExit::StoppedOnInstantiationLimit,
+                    });
                 }
+                exit = DeclarationExit::Refused;
+                continue;
             };
             lowered.push(LoweredFn {
                 index: result.func.index(),
@@ -2017,7 +2035,7 @@ fn lower_declared_functions(
                 code: result.code,
                 code_spans: result.code_spans,
             });
-            if function.public {
+            let export = if function.public {
                 // The injectivity owner's own guard: every dotted module segment and the
                 // item must be ASCII identifiers before an ExportId is minted over them
                 // (see marrow-image::export_id). Unreachable through the current capture
@@ -2025,12 +2043,13 @@ fn lower_declared_functions(
                 // injectivity never silently rests on an upstream layer alone.
                 if valid_export_path(&module.name, &function.name) {
                     let id = ExportId::of_local(&module.name, &function.name);
+                    let (_, txn) = batch.parts();
                     txn.add_export(id, result.func);
-                    exports.push(ExportEntry {
+                    Some(ExportEntry {
                         module: module.name.clone(),
                         item: function.name.clone(),
                         id,
-                    });
+                    })
                 } else {
                     diagnostics.push(SourceDiagnostic::at(
                         Code::CheckModulePath.as_str(),
@@ -2042,11 +2061,14 @@ fn lower_declared_functions(
                             function.name, module.name
                         ),
                     ));
-                    txn.commit();
+                    batch.commit();
                     continue;
                 }
-            }
-            txn.commit();
+            } else {
+                None
+            };
+            batch.commit();
+            exports.extend(export);
             if records.has_instantiation_limit() {
                 return Ok(LoweredFunctions {
                     lowered,
@@ -2110,41 +2132,46 @@ fn lower_declared_tests(
                 exit = DeclarationExit::Refused;
                 continue;
             }
-            // One admitted transaction per lowered test-body batch, its test-entry
+            // One admitted generic-owner batch per lowered test body, its test-entry
             // append included.
-            let mut txn = admitted(draft);
-            let result = match FnLowerer::lower_test(
-                &mut txn,
-                records,
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
-                diagnostics,
-                facts.sink(module.at),
-                &module.file,
-                &module.name,
-                &test.name,
-                &test.body,
-            ) {
-                Ok(BodyOutcome::Lowered(result)) => result,
-                Ok(BodyOutcome::Refused) => {
+            let mut batch = GenericOwnerTxn::begin(records, draft)
+                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+            let lowered_body = {
+                let (records, txn) = batch.parts();
+                match FnLowerer::lower_test(
+                    txn,
+                    records,
+                    resolution.durable,
+                    resolution.signatures,
+                    resolution.generics,
+                    resolution.constants,
+                    diagnostics,
+                    facts.sink(module.at),
+                    &module.file,
+                    &module.name,
+                    &test.name,
+                    &test.body,
+                ) {
+                    Ok(BodyOutcome::Lowered(result)) => Some(result),
                     // An ordinary refusal keeps the batch: the retained interns and
                     // registry rows stay aligned, exactly as before the surface moved.
-                    txn.commit();
-                    if records.has_instantiation_limit() {
-                        return Ok(LoweredTests {
-                            lowered,
-                            entries,
-                            exit: DeclarationExit::StoppedOnInstantiationLimit,
-                        });
+                    Ok(BodyOutcome::Refused) => None,
+                    Err(invariant) => {
+                        return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
                     }
-                    exit = DeclarationExit::Refused;
-                    continue;
                 }
-                Err(invariant) => {
-                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+            };
+            let Some(result) = lowered_body else {
+                batch.commit();
+                if records.has_instantiation_limit() {
+                    return Ok(LoweredTests {
+                        lowered,
+                        entries,
+                        exit: DeclarationExit::StoppedOnInstantiationLimit,
+                    });
                 }
+                exit = DeclarationExit::Refused;
+                continue;
             };
             lowered.push(LoweredFn {
                 index: result.func.index(),
@@ -2161,13 +2188,16 @@ fn lower_declared_tests(
                 code: result.code,
                 code_spans: result.code_spans,
             });
-            let name_id = txn.intern_string(&test.name).map_err(|refusal| {
-                PhaseStop::Invariant(InvariantCause::Generic(GenericInvariant::BuilderDomain(
-                    refusal,
-                )))
-            })?;
-            txn.add_test_entry(name_id, result.func);
-            txn.commit();
+            {
+                let (_, txn) = batch.parts();
+                let name_id = txn.intern_string(&test.name).map_err(|refusal| {
+                    PhaseStop::Invariant(InvariantCause::Generic(GenericInvariant::BuilderDomain(
+                        refusal,
+                    )))
+                })?;
+                txn.add_test_entry(name_id, result.func);
+            }
+            batch.commit();
             entries.push(TestEntry {
                 name: test.name.clone(),
                 module: module.name.clone(),

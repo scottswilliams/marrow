@@ -67,9 +67,9 @@ use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
     CollSpec, EnumVariantSelection, GArg, GenericDiagnostics, GenericInvariant as LowerInvariant,
-    MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection, RESULT_ERR, RESULT_OK,
-    ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType, StructFieldProjection,
-    SupportSet, TemplateProofScope, TypeConstraint, TypeInstId, TypeMetadataSession,
+    GenericOwnerTxn, MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection,
+    RESULT_ERR, RESULT_OK, ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType,
+    StructFieldProjection, SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession,
     TypeParamIndex, TypeRegistry,
 };
 
@@ -645,7 +645,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // guard, exactly once. Its diagnostics live in a local collector that a failure
         // drops, while its editor facts are admitted where they are derived (see
         // `FactSink`).
-        let mut scope = TemplateProofScope::enter(records, draft)?;
+        let mut scope = GenericOwnerTxn::enter_proof(records, draft)?;
         // The proof's local collector: success seals it into the outcome's
         // terminal for the outer stage owner to absorb; an invariant failure
         // drops it with the scope.
