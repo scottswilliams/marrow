@@ -2070,3 +2070,32 @@ pub fn driver(): int {
         "the located failure points at the `<` in the bad template body: {diagnostics:#?}"
     );
 }
+
+/// A type parameter's declaration position is a distinct abstract identity at any
+/// admitted width: with 65,537 parameters in one admitted source file, the parameter
+/// at position 65,536 is not the parameter at position 0, so returning the first
+/// where the last is expected is the same `check.type` mismatch the two-parameter
+/// control below proves — never a silent alias of ordinal 0.
+#[test]
+fn a_type_parameter_past_the_u16_domain_does_not_alias_ordinal_zero() {
+    // The control: the shape at width two is a mismatch.
+    let diagnostics = compile_err(
+        "module main\n\nfn wrap<A, B>(a: A, b: B): B {\n    return a\n}\n",
+    );
+    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+
+    // The same shape at width 65,537: the last parameter's position exceeds `u16`.
+    let mut source = String::from("module main\n\nfn wrap<");
+    for index in 0..=65_536u32 {
+        if index > 0 {
+            source.push_str(", ");
+        }
+        write!(source, "T{index}").expect("write generated parameter");
+    }
+    source.push_str(">(a: T0, b: T65536): T65536 {\n    return a\n}\n");
+    let diagnostics = compile_err(&source);
+    assert!(
+        has_code(&diagnostics, "check.type"),
+        "the position-65,536 parameter must not alias ordinal 0: {diagnostics:#?}",
+    );
+}

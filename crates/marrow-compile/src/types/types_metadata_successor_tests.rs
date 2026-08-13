@@ -899,7 +899,7 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
         target_case(struct_draft, GArg::Struct(record)),
         target_case(group_draft, GArg::Group(record)),
         target_case(enum_draft, GArg::Enum(enum_id)),
-        target_case(fresh_txn(), GArg::Param(0)),
+        target_case(fresh_txn(), GArg::Param(TypeParamIndex::from_position(0))),
     ];
 
     assert_eq!(observations, vec![true; 5]);
@@ -1132,7 +1132,7 @@ fn template_proof_parameter_stays_local_to_the_guard() {
     let mut guard = admitted(&mut draft_owner);
     let proof_draft = &mut guard;
     let id = registry
-        .mint_type_instance(proof_draft, 0, &[GArg::Param(0)], site())
+        .mint_type_instance(proof_draft, 0, &[GArg::Param(TypeParamIndex::from_position(0))], site())
         .expect("proof-only parameter is legal");
     let (args, body) = {
         let generics = registry.generics.borrow();
@@ -1163,10 +1163,10 @@ fn template_proof_parameter_stays_local_to_the_guard() {
         }],
     });
 
-    assert_eq!(args, vec![GArg::Param(0)]);
+    assert_eq!(args, vec![GArg::Param(TypeParamIndex::from_position(0))]);
     assert_eq!(
         body,
-        BodySnapshot::Struct(vec![("t".to_string(), GArg::Param(0))])
+        BodySnapshot::Struct(vec![("t".to_string(), GArg::Param(TypeParamIndex::from_position(0)))])
     );
     assert_eq!(id, TypeInstId::Record(expected_box));
     assert_eq!(draft_fingerprint(proof_draft), draft_fingerprint(&expected));
@@ -1564,10 +1564,10 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     let invariant = take_resolve_invariant(registry.mint_type_instance(
         &mut draft,
         0,
-        &[GArg::Param(7)],
+        &[GArg::Param(TypeParamIndex::from_position(7))],
         site(),
     ));
-    assert_eq!(invariant, GenericInvariant::TypeArgumentParameter(7));
+    assert_eq!(invariant, GenericInvariant::TypeArgumentParameter(TypeParamIndex::from_position(7)));
     assert_eq!(owner_snapshot(&registry), owner_before);
     assert_eq!(draft_fingerprint(&draft), draft_before);
 

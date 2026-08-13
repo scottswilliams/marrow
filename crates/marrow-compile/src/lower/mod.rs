@@ -69,7 +69,8 @@ use crate::types::{
     CollSpec, EnumVariantSelection, GArg, GenericDiagnostics, GenericInvariant as LowerInvariant,
     MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection, RESULT_ERR, RESULT_OK,
     ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType, StructFieldProjection,
-    SupportSet, TemplateProofScope, TypeConstraint, TypeInstId, TypeMetadataSession, TypeRegistry,
+    SupportSet, TemplateProofScope, TypeConstraint, TypeInstId, TypeMetadataSession,
+    TypeParamIndex, TypeRegistry,
 };
 
 /// Whether control continues past a statement or block, leaves it (via `return`,
@@ -504,7 +505,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// to the canonical spelling unchanged.
     fn hover_type_display(&self, ty: LTy) -> String {
         if let LTy::Param { index, optional } = ty
-            && let Some(slot) = self.type_env.get(index as usize)
+            && let Some(slot) = self.type_env.get(index.position())
         {
             return if optional {
                 format!("{}?", slot.name)

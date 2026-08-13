@@ -47,7 +47,7 @@ pub(super) enum LTy {
     /// parameter's declaration position; its constraint is read from the lowerer's
     /// type environment. A monomorphized instantiation never carries a `Param`.
     Param {
-        index: u16,
+        index: TypeParamIndex,
         optional: bool,
     },
     /// An entry identity `Id(^root)`, image-`Identity`- and runtime-`Value::Id`-shaped.
@@ -140,7 +140,7 @@ impl LTy {
     }
 
     /// The abstract type-parameter index, if this is a bare one.
-    pub(super) fn bare_param(self) -> Option<u16> {
+    pub(super) fn bare_param(self) -> Option<TypeParamIndex> {
         match self {
             LTy::Param {
                 index,

@@ -32,16 +32,16 @@ impl TypeEnv<'_> {
     pub(super) const EMPTY: TypeEnv<'static> = TypeEnv { params: &[] };
 
     /// The declaration index and binding of the type parameter named `name`.
-    fn lookup(&self, name: &str) -> Option<(u16, ParamBinding)> {
+    fn lookup(&self, name: &str) -> Option<(TypeParamIndex, ParamBinding)> {
         self.params
             .iter()
             .position(|slot| slot.name == name)
-            .map(|index| (index as u16, self.params[index].binding))
+            .map(|index| (TypeParamIndex::from_position(index), self.params[index].binding))
     }
 
     /// The constraint on the type parameter at `index`, in the abstract pass.
-    pub(super) fn constraint_at(&self, index: u16) -> Option<TypeConstraint> {
-        match self.params.get(index as usize).map(|slot| slot.binding) {
+    pub(super) fn constraint_at(&self, index: TypeParamIndex) -> Option<TypeConstraint> {
+        match self.params.get(index.position()).map(|slot| slot.binding) {
             Some(ParamBinding::Abstract(constraint)) => constraint,
             _ => None,
         }

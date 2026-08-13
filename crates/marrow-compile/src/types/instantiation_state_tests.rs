@@ -2364,7 +2364,7 @@ fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
         registry.with_metadata_session(|metadata| {
             let first = metadata.validate_type_arguments(&[GArg::Collection(list)]);
             let collection_replay = metadata.collection_spec(list);
-            let unrelated_replay = metadata.validate_type_arguments(&[GArg::Param(7)]);
+            let unrelated_replay = metadata.validate_type_arguments(&[GArg::Param(TypeParamIndex::from_position(7))]);
             Ok::<_, GenericInvariant>((first, collection_replay, unrelated_replay))
         })
     });
@@ -3110,7 +3110,7 @@ fn durable_anchor_reports_every_missing_target_without_fallback_tokens() {
             GArg::Collection(coll(0)),
             GenericInvariant::TypeArgumentTargetMissing(GArg::Collection(coll(0))),
         ),
-        (GArg::Param(7), GenericInvariant::TypeArgumentParameter(7)),
+        (GArg::Param(TypeParamIndex::from_position(7)), GenericInvariant::TypeArgumentParameter(TypeParamIndex::from_position(7))),
     ] {
         assert_eq!(garg_anchor_spelling(&registry, arg), Err(expected));
         assert_eq!(stable_snapshot(&registry), owner_before);

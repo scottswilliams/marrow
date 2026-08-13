@@ -913,7 +913,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// The constraint on the abstract type parameter at `index`, in the template
     /// pass. `None` outside that pass or for an unconstrained parameter.
-    fn type_param_constraint(&self, index: u16) -> Option<TypeConstraint> {
+    fn type_param_constraint(&self, index: TypeParamIndex) -> Option<TypeConstraint> {
         let env = TypeEnv {
             params: &self.type_env,
         };

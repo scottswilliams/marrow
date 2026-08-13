@@ -93,7 +93,40 @@ pub(crate) enum GArg {
     /// instantiation carries no `Param`: every parameter is substituted by its
     /// concrete argument first. `image()` returns a sentinel that only ever reaches
     /// the throwaway draft the template pass discards.
-    Param(u16),
+    Param(TypeParamIndex),
+}
+
+/// The declaration position of one generic type parameter: a wide checked ordinal
+/// over a private `u32`, never a wire value — a `Param` exists only during the
+/// once-checked template pass, and no monomorphized instantiation carries one.
+///
+/// The domain is proven by the admitted source envelope: a declared parameter costs
+/// at least two source bytes, and the capture ceiling admits at most 64 MiB of
+/// source (`CaptureLimits::DEFAULT`), so a declaration position is bounded well
+/// under 2^25 and the `u32` carrier cannot be exceeded by any admissible input.
+/// Narrowing this carrier back to `u16` is what silently aliased parameter 65,536
+/// onto parameter 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TypeParamIndex(u32);
+
+impl TypeParamIndex {
+    /// Mint from a declaration position (see the type's domain proof).
+    pub(crate) fn from_position(position: usize) -> Self {
+        Self(u32::try_from(position).expect("a type-parameter position fits the proved u32 domain"))
+    }
+
+    /// The declaration position, for environment lookups.
+    pub(crate) fn position(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Renders the declaration position, so diagnostic and hover spellings read exactly
+/// as the narrow carrier's did.
+impl std::fmt::Display for TypeParamIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 impl GArg {
@@ -448,7 +481,7 @@ pub(crate) enum GenericInvariant {
         target: TypeInstId,
     },
     TypeArgumentTargetMissing(GArg),
-    TypeArgumentParameter(u16),
+    TypeArgumentParameter(TypeParamIndex),
     CollectionIndexMismatch {
         kind: CollectionKind,
         cache_index: usize,
