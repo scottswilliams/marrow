@@ -228,7 +228,10 @@ fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
     // Mint Id(^assets, k) then use it as the key-path of a DurExists on ^tallies.
     let code = vec![
         Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 0, cols: 1 },
+        Instr::MakeIdentity {
+            root: marrow_image::RootId::from_index(0),
+            cols: 1,
+        },
         Instr::IdentityKeyPath(1),
         Instr::DurExists(b_site),
         Instr::Return,

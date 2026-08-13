@@ -26,7 +26,7 @@ pub(super) enum PlaceKey<'e> {
     /// minted over a different root is a type mismatch here.
     Identity {
         expr: &'e Expression,
-        root: u16,
+        root: RootId,
         cols: u16,
     },
 }
@@ -1131,7 +1131,7 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn capture_identity_key_slots(
         &mut self,
         expr: &Expression,
-        root: u16,
+        root: RootId,
         cols: u16,
         span: SourceSpan,
     ) -> Option<Vec<u16>> {
@@ -1163,7 +1163,7 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn capture_identity_key_columns(
         &mut self,
         expr: &Expression,
-        root: u16,
+        root: RootId,
         cols: u16,
         span: SourceSpan,
     ) -> Option<Vec<(u16, ScalarType)>> {
@@ -1556,7 +1556,7 @@ impl<'a> FnLowerer<'a> {
     /// a binding of identity type (`^root[id]`), or an `Id(^root, …)` constructor call
     /// (`^root[Id(^root, k)]`). `None` for any other operand — an ordinary scalar key.
     /// Non-emitting: it only inspects the binding environment and the call spelling.
-    fn identity_operand_root(&self, expr: &Expression) -> Option<u16> {
+    fn identity_operand_root(&self, expr: &Expression) -> Option<RootId> {
         match expr {
             Expression::Name { segments, .. } => match &segments[..] {
                 [name] => self
@@ -1566,7 +1566,7 @@ impl<'a> FnLowerer<'a> {
             },
             Expression::Call { callee, .. } => match &**callee {
                 Expression::Name { segments, .. } if matches!(&segments[..], [n] if n.text() == "Id") => {
-                    Some(0)
+                    Some(RootId::from_index(0))
                 }
                 _ => None,
             },
@@ -2118,7 +2118,7 @@ impl<'a> FnLowerer<'a> {
                 };
                 self.push(len, span);
                 let zero = self.draft.intern_int(0);
-                self.push(Instr::ConstLoad(zero.index()), span);
+                self.push(Instr::ConstLoad(zero), span);
                 self.push(Instr::EqInt, span);
                 Some(LTy::bare_scalar(ScalarType::Bool))
             }
@@ -2446,7 +2446,7 @@ impl<'a> FnLowerer<'a> {
 
     /// Lower an expression that must be a bare collection, returning its COLLTYPES
     /// index. A non-collection value is a typed diagnostic.
-    fn collection_arg(&mut self, expr: &Expression) -> Option<u16> {
+    fn collection_arg(&mut self, expr: &Expression) -> Option<CollTypeId> {
         let ty = self.lower_expr(expr)?;
         match ty {
             LTy::Collection {
@@ -2539,7 +2539,7 @@ impl<'a> FnLowerer<'a> {
             )]
             _ => unreachable!("caller passes only a temporal scalar"),
         };
-        self.push(Instr::ConstLoad(const_id.index()), span);
+        self.push(Instr::ConstLoad(const_id), span);
         Some(LTy::bare_scalar(scalar))
     }
 
@@ -2738,7 +2738,7 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let const_id = self.draft.intern_text(&decoded);
-        self.push(Instr::Unreachable(const_id.index()), span);
+        self.push(Instr::Unreachable(const_id), span);
         Some(CallResult::Diverges)
     }
 
@@ -2783,7 +2783,7 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let const_id = self.draft.intern_text(&decoded);
-        self.push(Instr::Todo(const_id.index()), span);
+        self.push(Instr::Todo(const_id), span);
         Some(CallResult::Diverges)
     }
 

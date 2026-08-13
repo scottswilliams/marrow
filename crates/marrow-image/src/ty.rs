@@ -8,6 +8,8 @@
 //! (record field, param, return, `VacantLoad` operand); position restrictions are
 //! enforced by the encoder that writes each and rechecked by the verifier.
 
+use crate::draft::{CollTypeId, EnumId, RootId, TypeId};
+use crate::measure::wire_ordinal;
 use crate::value_dag::ImageByteSink;
 
 /// A bare image scalar. The runtime representation vocabulary (`RuntimeScalar`,
@@ -65,13 +67,13 @@ pub enum ImageType {
         optional: bool,
     },
     Record {
-        idx: u16,
+        idx: TypeId,
         optional: bool,
     },
     /// A closed enum value, by ENUMS-table index. Mirrors `Record`: a one-byte
     /// tag plus a big-endian `u16` index.
     Enum {
-        idx: u16,
+        idx: EnumId,
         optional: bool,
     },
     /// A finite collection value (a `List<T>` or ordered `Map<K, V>`), by
@@ -80,7 +82,7 @@ pub enum ImageType {
     /// the COLLTYPES entry, so a nested collection reaches its inner type through
     /// that table rather than inlining it here (keeping `ImageType` `Copy`).
     Collection {
-        idx: u16,
+        idx: CollTypeId,
         optional: bool,
     },
     /// An entry identity `Id(^root)`, by ROOTS-table index. Mirrors `Record`/`Enum`: a
@@ -88,7 +90,7 @@ pub enum ImageType {
     /// store root plus a key tuple; the key column types live in the root's own
     /// declaration, so they are not inlined here (keeping `ImageType` `Copy`).
     Identity {
-        root: u16,
+        root: RootId,
         optional: bool,
     },
 }
@@ -141,19 +143,19 @@ impl ImageType {
             }
             ImageType::Record { idx, optional } => {
                 out.push(TAG_RECORD | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_bytes(&idx.to_be_bytes());
+                out.extend_bytes(&wire_ordinal(idx.index()).to_be_bytes());
             }
             ImageType::Enum { idx, optional } => {
                 out.push(TAG_ENUM | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_bytes(&idx.to_be_bytes());
+                out.extend_bytes(&wire_ordinal(idx.index()).to_be_bytes());
             }
             ImageType::Collection { idx, optional } => {
                 out.push(TAG_COLLECTION | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_bytes(&idx.to_be_bytes());
+                out.extend_bytes(&wire_ordinal(idx.index()).to_be_bytes());
             }
             ImageType::Identity { root, optional } => {
                 out.push(TAG_IDENTITY | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_bytes(&root.to_be_bytes());
+                out.extend_bytes(&wire_ordinal(root.index()).to_be_bytes());
             }
         }
     }

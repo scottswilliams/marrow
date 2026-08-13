@@ -43,7 +43,7 @@ fn storeless_base() -> ImageDraft {
                 line: 1,
                 column: 1,
             }],
-            code: vec![Instr::ConstLoad(zero.index()), Instr::Return],
+            code: vec![Instr::ConstLoad(zero), Instr::Return],
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
@@ -119,7 +119,7 @@ fn the_full_function_partition_is_refused_by_measurement() {
     let g_name = draft.intern_string("instance");
     let m_name = draft.intern_string("mono");
     let zero = draft.intern_int(0);
-    let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero.index()), 64)
+    let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 64)
         .chain([Instr::Return])
         .collect();
     let tests = MAX_TEST_ENTRIES;
@@ -189,7 +189,7 @@ fn the_span_heavy_draft_is_refused_by_measurement() {
                     };
                     22_000
                 ],
-                code: vec![Instr::ConstLoad(zero.index()), Instr::Return],
+                code: vec![Instr::ConstLoad(zero), Instr::Return],
             })
             .expect("every site operand is live");
     }
@@ -221,7 +221,7 @@ fn span_count_draft(count: usize) -> ImageDraft {
                 };
                 count
             ],
-            code: vec![Instr::ConstLoad(zero.index()), Instr::Return],
+            code: vec![Instr::ConstLoad(zero), Instr::Return],
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
@@ -309,7 +309,7 @@ fn the_compact_expansion_regression_is_refused_decisively() {
             ret: ImageType::scalar(Scalar::Int),
             local_count: 0,
             spans: Vec::new(),
-            code: vec![Instr::ConstLoad(zero.index()), Instr::Return],
+            code: vec![Instr::ConstLoad(zero), Instr::Return],
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
@@ -329,7 +329,7 @@ fn linear_draft(scale: usize) -> ImageDraft {
     let mut draft = ImageDraft::new();
     let src = draft.intern_string("src/main.mw");
     let zero = draft.intern_int(0);
-    let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero.index()), 32)
+    let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 32)
         .chain([Instr::Return])
         .collect();
     for index in 0..64 * scale {

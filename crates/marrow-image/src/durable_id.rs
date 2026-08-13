@@ -1076,7 +1076,7 @@ mod tests {
 
     /// One flat field command.
     fn field_cmd(
-        parent: Option<u16>,
+        parent: Option<u32>,
         byte: u8,
         required: bool,
         value: ValueShapeNodeId,
@@ -1091,7 +1091,7 @@ mod tests {
         }
     }
 
-    fn group_cmd(parent: Option<u16>, byte: u8) -> DeclarationMemberDef {
+    fn group_cmd(parent: Option<u32>, byte: u8) -> DeclarationMemberDef {
         DeclarationMemberDef {
             parent,
             shape: DeclarationMemberShape::Group { id: id(byte) },
@@ -1100,7 +1100,7 @@ mod tests {
 
     fn branch_cmd(
         draft: &mut ImageDraft,
-        parent: Option<u16>,
+        parent: Option<u32>,
         byte: u8,
         keys: Vec<KeyColumn>,
     ) -> DeclarationMemberDef {

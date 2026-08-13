@@ -1,6 +1,11 @@
 use super::*;
 use marrow_syntax::{Declaration, parse_source};
 
+/// The wide collection id at `index`, spelled compactly for the corpus.
+fn coll(index: u16) -> CollTypeId {
+    CollTypeId::from_index(index)
+}
+
 fn name(text: &str) -> TypeExpr {
     TypeExpr::Name {
         text: text.to_string(),
@@ -169,7 +174,7 @@ struct StableSnapshot {
     // regardless of iteration order.
     type_index: HashMap<(usize, Vec<GArg>), usize>,
     fn_index: HashMap<(usize, Vec<GArg>), usize>,
-    collection_index: HashMap<CollSpec, u16>,
+    collection_index: HashMap<CollSpec, CollTypeId>,
     argument_domain: ArgumentDomain,
 }
 
@@ -1533,21 +1538,14 @@ fn generic_predecessor_order_survives_collection_expansion() {
     assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
     assert_eq!(registry.inst_spelling(root), None);
     assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
-    assert_eq!(
-        garg_anchor_spelling(&registry, GArg::Struct(inner_id)),
-        Err(expected)
-    );
-    assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
-    assert_eq!(
-        garg_anchor_spelling(&registry, GArg::Collection(nested)),
-        Err(expected)
-    );
-    assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
-    assert_eq!(
-        garg_anchor_spelling(&registry, GArg::Struct(root_id)),
-        Err(expected)
-    );
-    assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
+    for arg in [
+        GArg::Struct(inner_id),
+        GArg::Collection(nested),
+        GArg::Struct(root_id),
+    ] {
+        assert_eq!(garg_anchor_spelling(&registry, arg), Err(expected));
+        assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
+    }
     assert_eq!(
         registry.validate_durable_value_metadata([GArg::Struct(root_id)]),
         Err(expected)
@@ -1564,7 +1562,7 @@ fn generic_predecessor_order_survives_collection_expansion() {
 
 #[test]
 fn collection_predecessor_validation_preserves_missing_target_precedence() {
-    for (corrupt, missing) in [(0, 0), (1, 1), (2, 2)] {
+    for (corrupt, missing) in [(0, coll(0)), (1, coll(1)), (2, coll(2))] {
         let registry = registry(vec![template("A", vec![("value", name("T"))])]);
         let mut draft = ImageDraft::new();
         let a = registry
@@ -1573,17 +1571,17 @@ fn collection_predecessor_validation_preserves_missing_target_precedence() {
         let first = registry
             .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
             .expect("first collection mints aligned");
-        assert_eq!(first, 0);
+        assert_eq!(first, coll(0));
         if corrupt == 1 {
             let second = registry
                 .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Bool))
                 .expect("forward collection target exists");
-            assert_eq!(second, 1);
+            assert_eq!(second, coll(1));
         }
         registry.collections.borrow_mut()[0] = CollSpec::List {
             elem: GArg::Collection(missing),
         };
-        registry.generics.borrow_mut().type_insts[0].args = vec![GArg::Collection(0)];
+        registry.generics.borrow_mut().type_insts[0].args = vec![GArg::Collection(coll(0))];
         let owner_before = metadata_owner_snapshot(&registry);
         let draft_before = draft_snapshot(&draft);
         assert_eq!(
@@ -1603,7 +1601,7 @@ fn collection_predecessor_validation_preserves_missing_target_precedence() {
         ));
         assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
         assert_eq!(
-            garg_anchor_spelling(&registry, GArg::Collection(0)),
+            garg_anchor_spelling(&registry, GArg::Collection(coll(0))),
             Err(GenericInvariant::TypeArgumentTargetMissing(
                 GArg::Collection(missing),
             )),
@@ -1617,12 +1615,12 @@ fn collection_predecessor_validation_preserves_missing_target_precedence() {
             elem: GArg::Scalar(ScalarType::Int),
         },
         CollSpec::List {
-            elem: GArg::Collection(0),
+            elem: GArg::Collection(coll(0)),
         },
     ];
     let before = stable_snapshot(&registry);
     assert_eq!(
-        registry.validate_type_arguments(&[GArg::Collection(1)]),
+        registry.validate_type_arguments(&[GArg::Collection(coll(1))]),
         Ok(())
     );
     assert_eq!(stable_snapshot(&registry), before);
@@ -1687,7 +1685,7 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
             key: GArg::Struct(missing.orphan),
             value: GArg::Struct(forward),
         });
-    missing.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(0)];
+    missing.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(coll(0))];
     let expected = GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(missing.orphan));
     let owner_before = metadata_owner_snapshot(&missing.registry);
     let draft_before = draft_snapshot(&missing.draft);
@@ -1723,7 +1721,7 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
             key: GArg::Struct(forward),
             value: GArg::Struct(later),
         });
-    ordered.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(0)];
+    ordered.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(coll(0))];
     let expected = GenericInvariant::TypeArgumentOrderViolation {
         owner: ordered.owner,
         target: ordered.forward,
@@ -1756,11 +1754,11 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
             elem: GArg::Struct(nested.orphan),
         },
         CollSpec::Map {
-            key: GArg::Collection(0),
+            key: GArg::Collection(coll(0)),
             value: GArg::Struct(forward),
         },
     ];
-    nested.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(1)];
+    nested.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(coll(1))];
     let expected = GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(nested.orphan));
     assert_eq!(
         nested
@@ -1784,7 +1782,7 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
         .push(CollSpec::List {
             elem: GArg::Struct(forward),
         });
-    revisit.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(0)];
+    revisit.registry.generics.borrow_mut().type_insts[1].args = vec![GArg::Collection(coll(0))];
     let owner_arg = match revisit.owner {
         TypeInstId::Record(id) => GArg::Struct(id),
         TypeInstId::Enum(id) => GArg::Enum(id),
@@ -1792,7 +1790,7 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
     let view = revisit.registry.metadata_view();
     let mut metadata = MetadataScratch::try_new(&view).expect("directory builds");
     assert_eq!(
-        view.validate_args_with(&[GArg::Collection(0), owner_arg], None, &mut metadata,),
+        view.validate_args_with(&[GArg::Collection(coll(0)), owner_arg], None, &mut metadata,),
         Err(GenericInvariant::TypeArgumentOrderViolation {
             owner: revisit.owner,
             target: revisit.forward,
@@ -2200,12 +2198,12 @@ fn deep_collection_spelling_and_anchor_use_iterative_activity_owners() {
             let elem = if index == 0 {
                 GArg::Scalar(ScalarType::Int)
             } else {
-                GArg::Collection((index - 1) as u16)
+                GArg::Collection(coll((index - 1) as u16))
             };
             collections.push(CollSpec::List { elem });
         }
     }
-    let root = (depth - 1) as u16;
+    let root = coll((depth - 1) as u16);
     let owner_before = stable_snapshot(&registry);
     let expected_display = format!("{}int{}", "List<".repeat(depth), ">".repeat(depth));
     let expected_anchor = format!("{}int{}", "List[".repeat(depth), "]".repeat(depth));
@@ -2222,14 +2220,14 @@ fn deep_collection_spelling_and_anchor_use_iterative_activity_owners() {
 
     let cyclic = make_registry(Vec::new());
     cyclic.collections.borrow_mut().push(CollSpec::List {
-        elem: GArg::Collection(0),
+        elem: GArg::Collection(coll(0)),
     });
     let cyclic_before = stable_snapshot(&cyclic);
-    assert_eq!(cyclic.collection_spelling(0), "collection");
+    assert_eq!(cyclic.collection_spelling(coll(0)), "collection");
     assert_eq!(
-        garg_anchor_spelling(&cyclic, GArg::Collection(0)),
+        garg_anchor_spelling(&cyclic, GArg::Collection(coll(0))),
         Err(GenericInvariant::TypeArgumentTargetMissing(
-            GArg::Collection(0)
+            GArg::Collection(coll(0))
         ))
     );
     assert_eq!(stable_snapshot(&cyclic), cyclic_before);
@@ -2335,7 +2333,7 @@ fn metadata_session_replays_its_first_failure_without_reusing_scratch() {
         name: orphan_name,
         fields: Vec::new(),
     });
-    registry.collections.borrow_mut()[list as usize] = CollSpec::List {
+    registry.collections.borrow_mut()[list.index() as usize] = CollSpec::List {
         elem: GArg::Struct(orphan),
     };
     let expected = GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(orphan));
@@ -2564,7 +2562,7 @@ fn map_key_resolution_validates_metadata_before_semantic_refusal() {
                     variants: Vec::new(),
                 }))
             }
-            "collection" => GArg::Collection(0),
+            "collection" => GArg::Collection(coll(0)),
             _ => unreachable!("the hostile family table is closed"),
         };
         let expected = GenericInvariant::TypeArgumentTargetMissing(arg);
@@ -2625,7 +2623,7 @@ fn map_key_resolution_validates_metadata_before_semantic_refusal() {
     let valid = apply("Map", vec![name("int"), name("string")]);
     let (resolved, builds) =
         count_metadata_directory_builds(|| registry.resolve_garg(&mut draft, &valid, site(4)));
-    assert_eq!(resolved, Ok(GArg::Collection(0)));
+    assert_eq!(resolved, Ok(GArg::Collection(coll(0))));
     assert_eq!(builds, 1, "an admitted Map retains one metadata proof");
 }
 
@@ -2657,7 +2655,7 @@ fn missing_nominal_map_key_stops_before_resolving_a_fresh_value() {
     assert_eq!(draft_snapshot(&draft), draft_before);
 
     let (direct, builds) = count_metadata_directory_builds(|| {
-        registry.instantiate_map(&mut draft, missing, GArg::Collection(0))
+        registry.instantiate_map(&mut draft, missing, GArg::Collection(coll(0)))
     });
     assert_eq!(
         direct,
@@ -2684,7 +2682,7 @@ fn missing_nominal_map_key_stops_before_resolving_a_fresh_value() {
             &[("K".to_string(), GArg::Nominal(NominalId(0)))],
             site(6),
         ),
-        Ok(GArg::Collection(1)),
+        Ok(GArg::Collection(coll(1))),
         "a declared nominal remains an admissible Map key"
     );
 }
@@ -2824,7 +2822,7 @@ fn collection_drift_blocks_a_cache_hit_without_exposing_the_prior_index() {
     let list = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
         .expect("aligned owners mint the first List");
-    assert_eq!(list, 0);
+    assert_eq!(list, coll(0));
     draft.add_collection_type(CollectionTypeDef::Map {
         key: ImageType::scalar(Scalar::Text),
         value: ImageType::scalar(Scalar::Bool),
@@ -2860,7 +2858,7 @@ fn published_collection_metadata_is_revalidated_without_a_watermark() {
         name: orphan_name,
         fields: Vec::new(),
     });
-    registry.collections.borrow_mut()[list as usize] = CollSpec::List {
+    registry.collections.borrow_mut()[list.index() as usize] = CollSpec::List {
         elem: GArg::Struct(orphan),
     };
     let expected = GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(orphan));
@@ -2894,7 +2892,7 @@ fn aligned_collection_wrappers_publish_consecutive_indices() {
         )
         .expect("aligned Map owners mint");
 
-    assert_eq!((list, map), (0, 1));
+    assert_eq!((list, map), (coll(0), coll(1)));
     assert_eq!(
         stable_snapshot(&registry).collections,
         vec![
@@ -3258,7 +3256,7 @@ fn ready_body_matcher_visits_deep_borrowed_template_once_per_node() {
         collections.reserve(depth);
         for index in 0..depth {
             collections.push(CollSpec::List { elem: actual });
-            actual = GArg::Collection(index as u16);
+            actual = GArg::Collection(coll(index as u16));
             expected = apply("List", vec![expected]);
         }
     }
@@ -3482,8 +3480,8 @@ fn durable_anchor_reports_every_missing_target_without_fallback_tokens() {
             GenericInvariant::TypeArgumentTargetMissing(GArg::Enum(enum_id)),
         ),
         (
-            GArg::Collection(0),
-            GenericInvariant::TypeArgumentTargetMissing(GArg::Collection(0)),
+            GArg::Collection(coll(0)),
+            GenericInvariant::TypeArgumentTargetMissing(GArg::Collection(coll(0))),
         ),
         (GArg::Param(7), GenericInvariant::TypeArgumentParameter(7)),
     ] {

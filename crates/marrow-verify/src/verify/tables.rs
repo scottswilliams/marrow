@@ -6,8 +6,8 @@ use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::SealedCollectionType;
 use marrow_image::{
-    ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
-    TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
+    CollTypeId, EnumId, ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION,
+    TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TypeId,
 };
 use std::rc::Rc;
 
@@ -466,7 +466,7 @@ fn decode_collection_inner_ref(
                 ));
             }
             Ok(ImageType::Record {
-                idx,
+                idx: TypeId::from_index(idx),
                 optional: false,
             })
         }
@@ -481,7 +481,7 @@ fn decode_collection_inner_ref(
                 ));
             }
             Ok(ImageType::Enum {
-                idx,
+                idx: EnumId::from_index(idx),
                 optional: false,
             })
         }
@@ -496,7 +496,7 @@ fn decode_collection_inner_ref(
                 ));
             }
             Ok(ImageType::Collection {
-                idx,
+                idx: CollTypeId::from_index(idx),
                 optional: false,
             })
         }
@@ -538,7 +538,7 @@ fn decode_bare_payload_type(
                 ));
             }
             Ok(ImageType::Record {
-                idx,
+                idx: TypeId::from_index(idx),
                 optional: false,
             })
         }
@@ -553,7 +553,7 @@ fn decode_bare_payload_type(
                 ));
             }
             Ok(ImageType::Enum {
-                idx,
+                idx: EnumId::from_index(idx),
                 optional: false,
             })
         }
@@ -585,7 +585,7 @@ fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, V
                 .u16()
                 .ok_or(reject(VerifyPhase::Table, "short field enum index"))?;
             Ok(ImageType::Enum {
-                idx,
+                idx: EnumId::from_index(idx),
                 optional: false,
             })
         }
@@ -594,7 +594,7 @@ fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, V
                 .u16()
                 .ok_or(reject(VerifyPhase::Table, "short field record index"))?;
             Ok(ImageType::Record {
-                idx,
+                idx: TypeId::from_index(idx),
                 optional: false,
             })
         }
@@ -603,7 +603,7 @@ fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, V
                 .u16()
                 .ok_or(reject(VerifyPhase::Table, "short field collection index"))?;
             Ok(ImageType::Collection {
-                idx,
+                idx: CollTypeId::from_index(idx),
                 optional: false,
             })
         }
@@ -627,19 +627,19 @@ pub(super) fn validate_record_field_refs(
     for record in types {
         for field in &record.fields {
             match field.ty {
-                ImageType::Enum { idx, .. } if idx as usize >= enum_count => {
+                ImageType::Enum { idx, .. } if idx.index() as usize >= enum_count => {
                     return Err(reject(
                         VerifyPhase::Table,
                         "record field enum index out of range",
                     ));
                 }
-                ImageType::Record { idx, .. } if idx as usize >= types.len() => {
+                ImageType::Record { idx, .. } if idx.index() as usize >= types.len() => {
                     return Err(reject(
                         VerifyPhase::Table,
                         "record field record index out of range",
                     ));
                 }
-                ImageType::Collection { idx, .. } if idx as usize >= collection_count => {
+                ImageType::Collection { idx, .. } if idx.index() as usize >= collection_count => {
                     return Err(reject(
                         VerifyPhase::Table,
                         "record field collection index out of range",
@@ -669,7 +669,7 @@ pub(super) fn reject_value_type_cycles(
         Black,
     }
     let record_count = types.len();
-    let enum_node = |idx: u16| record_count + idx as usize;
+    let enum_node = |idx: EnumId| record_count + idx.index() as usize;
     let mut edges: Vec<Vec<usize>> = Vec::with_capacity(record_count + enums.len());
     for record in types {
         edges.push(
@@ -678,7 +678,7 @@ pub(super) fn reject_value_type_cycles(
                 .iter()
                 .filter_map(|field| match field.ty {
                     ImageType::Enum { idx, .. } => Some(enum_node(idx)),
-                    ImageType::Record { idx, .. } => Some(idx as usize),
+                    ImageType::Record { idx, .. } => Some(idx.index() as usize),
                     _ => None,
                 })
                 .collect(),
@@ -692,7 +692,7 @@ pub(super) fn reject_value_type_cycles(
                 .flat_map(|variant| variant.payload.iter())
                 .filter_map(|ty| match ty {
                     ImageType::Enum { idx, .. } => Some(enum_node(*idx)),
-                    ImageType::Record { idx, .. } => Some(*idx as usize),
+                    ImageType::Record { idx, .. } => Some(idx.index() as usize),
                     _ => None,
                 })
                 .collect(),

@@ -41,7 +41,7 @@ fn a_direct_call_runs() {
     let caller_name = draft.intern_string("caller");
     let arg = draft.intern_int(21);
     let caller_code = vec![
-        Instr::ConstLoad(arg.index()),
+        Instr::ConstLoad(arg),
         Instr::Call(double.index()),
         Instr::Return,
     ];
@@ -78,7 +78,7 @@ fn the_vm_run_entry_takes_a_typed_function_index() {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("answer");
     let forty_two = draft.intern_int(42);
-    let code = vec![Instr::ConstLoad(forty_two.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(forty_two), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name,

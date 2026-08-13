@@ -18,7 +18,7 @@
 //! unconstructibility is proved the same way — solely so the seal is pinned by
 //! compile-fail probes from outside the crate; no operation on them is public.
 
-use crate::draft::StrId;
+use crate::draft::{ConstId, StrId};
 use crate::value_dag::{ImageByteSink, push_u16};
 
 /// An opaque remapped string-pool reference: two wire bytes a writer can append and
@@ -140,11 +140,10 @@ impl<'a> StringRemap<'a> {
     }
 }
 
-/// The constant remap: the one owner of reads from the constant sort map. Instruction
-/// operands carry raw drafted indices, so the lookup takes the raw index rather than a
-/// typed id. It has no counting instantiation: the measure core counts the FUNCTIONS
-/// section arithmetically from the shared per-item widths, so only emission resolves
-/// constant references.
+/// The constant remap: the one owner of reads from the constant sort map, looked up
+/// by the typed wide [`ConstId`] an instruction operand carries. It has no counting
+/// instantiation: the measure core counts the FUNCTIONS section arithmetically from
+/// the shared per-item widths, so only emission resolves constant references.
 pub(crate) struct ConstRemap<'a>(&'a [u16]);
 
 impl<'a> ConstRemap<'a> {
@@ -152,10 +151,10 @@ impl<'a> ConstRemap<'a> {
         Self(map)
     }
 
-    /// The token for one drafted constant reference. An index outside the pool panics
+    /// The token for one drafted constant reference. An id outside the pool panics
     /// exactly as the raw map indexing it replaces did.
-    pub(crate) fn token(&self, raw: u16) -> ConstToken {
-        ConstToken(self.0[raw as usize])
+    pub(crate) fn token(&self, id: ConstId) -> ConstToken {
+        ConstToken(self.0[id.index() as usize])
     }
 }
 

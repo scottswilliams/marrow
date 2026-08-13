@@ -59,7 +59,11 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// sparse field-leaf site.
 fn two_root_branch_draft(
     draft: &mut ImageDraft,
-) -> (LegacyDraftSiteOperand, u16, LegacyDraftSiteOperand) {
+) -> (
+    LegacyDraftSiteOperand,
+    marrow_image::CollTypeId,
+    LegacyDraftSiteOperand,
+) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
     let book = draft.intern_string("Book");
@@ -209,11 +213,9 @@ fn two_root_branch_draft(
         members[2].path(),
         SemanticTarget::WholePayload,
     );
-    let list_ty = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Text),
-        })
-        .index();
+    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Text),
+    });
     let subtitle_site = site(
         draft,
         a.occurrence(),
@@ -250,7 +252,10 @@ fn an_identity_ancestor_over_the_traversed_root_verifies() {
     let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 0, cols: 1 },
+        Instr::MakeIdentity {
+            root: marrow_image::RootId::from_index(0),
+            cols: 1,
+        },
         Instr::IdentityKeyPath(1),
         Instr::DurIterateBounded {
             site: branch_site,
@@ -280,7 +285,10 @@ fn a_cross_root_identity_traversal_ancestor_is_rejected() {
     let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 1, cols: 1 },
+        Instr::MakeIdentity {
+            root: marrow_image::RootId::from_index(1),
+            cols: 1,
+        },
         Instr::IdentityKeyPath(1),
         Instr::DurIterateBounded {
             site: branch_site,
@@ -315,7 +323,10 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
     let (branch_site, _list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 1, cols: 1 },
+        Instr::MakeIdentity {
+            root: marrow_image::RootId::from_index(1),
+            cols: 1,
+        },
         Instr::IdentityKeyPath(1),
         Instr::DurFamilyExists(branch_site),
         Instr::Pop,
@@ -357,10 +368,13 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
     // ^books field site. Both roots key on int, so only the identity's root distinguishes them.
     let code = vec![
         Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 1, cols: 1 },
+        Instr::MakeIdentity {
+            root: marrow_image::RootId::from_index(1),
+            cols: 1,
+        },
         Instr::IdentityKeyPath(1),
         Instr::LocalSet(1),
-        Instr::ConstLoad(value.index()),
+        Instr::ConstLoad(value),
         Instr::SomeWrap,
         Instr::DurSetSparsePresent {
             site: subtitle_site,

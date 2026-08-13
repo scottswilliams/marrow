@@ -70,8 +70,8 @@ fn a_well_formed_list_program_verifies_and_seals() {
     let name = draft.intern_string("main");
     let five = draft.intern_int(5);
     let code = vec![
-        Instr::ListNew(0),
-        Instr::ConstLoad(five.index()),
+        Instr::ListNew(marrow_image::CollTypeId::from_index(0)),
+        Instr::ConstLoad(five),
         Instr::ListAppend,
         Instr::ListLen,
         Instr::Return,
@@ -100,7 +100,11 @@ fn a_well_formed_map_program_verifies() {
     draft.add_collection_type(MAP_STR_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
-    let code = vec![Instr::MapNew(0), Instr::MapLen, Instr::Return];
+    let code = vec![
+        Instr::MapNew(marrow_image::CollTypeId::from_index(0)),
+        Instr::MapLen,
+        Instr::Return,
+    ];
     let spans = spans(&code);
     let main = draft
         .add_function(FunctionDef {
@@ -129,7 +133,11 @@ fn a_list_new_index_out_of_range_is_refused_by_the_producer() {
     draft.add_collection_type(LIST_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
-    let code = vec![Instr::ListNew(9), Instr::ListLen, Instr::Return];
+    let code = vec![
+        Instr::ListNew(marrow_image::CollTypeId::from_index(9)),
+        Instr::ListLen,
+        Instr::Return,
+    ];
     let spans = spans(&code);
     let main = draft
         .add_function(FunctionDef {
@@ -154,7 +162,11 @@ fn a_map_op_on_a_list_type_rejects() {
     // `MapNew(0)` names a list collection type, not a map.
     let bytes = image_with(
         &[LIST_INT],
-        vec![Instr::MapNew(0), Instr::MapLen, Instr::Return],
+        vec![
+            Instr::MapNew(marrow_image::CollTypeId::from_index(0)),
+            Instr::MapLen,
+            Instr::Return,
+        ],
         ImageType::scalar(Scalar::Int),
     );
     let rejection = verify(&bytes).expect_err("a map op on a list type rejects");
@@ -170,8 +182,8 @@ fn a_list_append_element_type_mismatch_rejects() {
     let name = draft.intern_string("main");
     let flag = draft.intern_bool(true);
     let code = vec![
-        Instr::ListNew(0),
-        Instr::ConstLoad(flag.index()),
+        Instr::ListNew(marrow_image::CollTypeId::from_index(0)),
+        Instr::ConstLoad(flag),
         Instr::ListAppend,
         Instr::ListLen,
         Instr::Return,
@@ -199,7 +211,7 @@ fn a_map_key_that_is_not_a_scalar_rejects() {
     // A map whose key type is a collection reference is not an admitted key type.
     let bad_map = CollectionTypeDef::Map {
         key: ImageType::Collection {
-            idx: 0,
+            idx: marrow_image::CollTypeId::from_index(0),
             optional: false,
         },
         value: ImageType::scalar(Scalar::Int),
@@ -228,10 +240,10 @@ fn a_well_formed_text_split_join_program_verifies() {
     let hay = draft.intern_text("a,b,c");
     let sep = draft.intern_text(",");
     let code = vec![
-        Instr::ConstLoad(hay.index()),
-        Instr::ConstLoad(sep.index()),
-        Instr::TextSplit(0),
-        Instr::ConstLoad(sep.index()),
+        Instr::ConstLoad(hay),
+        Instr::ConstLoad(sep),
+        Instr::TextSplit(marrow_image::CollTypeId::from_index(0)),
+        Instr::ConstLoad(sep),
         Instr::TextJoin,
         Instr::Return,
     ];
@@ -263,9 +275,9 @@ fn a_text_split_naming_a_non_string_list_rejects() {
     let hay = draft.intern_text("a,b");
     let sep = draft.intern_text(",");
     let code = vec![
-        Instr::ConstLoad(hay.index()),
-        Instr::ConstLoad(sep.index()),
-        Instr::TextSplit(0),
+        Instr::ConstLoad(hay),
+        Instr::ConstLoad(sep),
+        Instr::TextSplit(marrow_image::CollTypeId::from_index(0)),
         Instr::Return,
     ];
     let spans = spans(&code);
@@ -275,7 +287,7 @@ fn a_text_split_naming_a_non_string_list_rejects() {
             source: src,
             params: Vec::new(),
             ret: ImageType::Collection {
-                idx: 0,
+                idx: marrow_image::CollTypeId::from_index(0),
                 optional: false,
             },
             local_count: 0,
@@ -298,8 +310,8 @@ fn a_text_join_on_a_non_string_list_rejects() {
     let name = draft.intern_string("main");
     let sep = draft.intern_text(",");
     let code = vec![
-        Instr::ListNew(0),
-        Instr::ConstLoad(sep.index()),
+        Instr::ListNew(marrow_image::CollTypeId::from_index(0)),
+        Instr::ConstLoad(sep),
         Instr::TextJoin,
         Instr::Return,
     ];

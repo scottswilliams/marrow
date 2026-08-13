@@ -9,10 +9,10 @@
 //! decoder of whatever the producer emits.
 
 use marrow_image::{
-    AdmittedRoot, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EncodedImage,
-    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
-    SpanEntry, TypeId, VariantDef,
+    AdmittedRoot, CollTypeId, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape,
+    EncodedImage, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootId,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, VariantDef,
 };
 use marrow_image::{DurableIndexComponent, DurableIndexShape};
 use marrow_verify::verify;
@@ -23,7 +23,7 @@ use admitted_plan::admitted_plan;
 
 /// A type reference naming a TYPES row no fixture declares.
 const FORGED_TYPE: ImageType = ImageType::Record {
-    idx: u16::MAX,
+    idx: TypeId::from_index(u16::MAX),
     optional: false,
 };
 
@@ -86,7 +86,10 @@ fn add_plain_function(
 }
 
 fn short_code() -> Vec<Instr> {
-    vec![Instr::ConstLoad(0), Instr::Return]
+    vec![
+        Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+        Instr::Return,
+    ]
 }
 
 fn clean_image() -> EncodedImage {
@@ -113,7 +116,10 @@ fn forged_func_id() -> FuncId {
             line: 1,
             column: 1,
         }],
-        code: vec![Instr::ConstLoad(0), Instr::Return],
+        code: vec![
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+            Instr::Return,
+        ],
     };
     other
         .add_function(def.clone())
@@ -194,9 +200,15 @@ fn an_out_of_range_param_type_draws_the_type_table_refusal() {
 #[test]
 fn an_out_of_range_record_new_ordinal_draws_the_type_table_refusal() {
     assert_eq!(
-        main_draft(Vec::new(), vec![Instr::RecordNew(u16::MAX), Instr::Return])
-            .encode()
-            .map(|_| ()),
+        main_draft(
+            Vec::new(),
+            vec![
+                Instr::RecordNew(marrow_image::TypeId::from_index(u16::MAX)),
+                Instr::Return
+            ]
+        )
+        .encode()
+        .map(|_| ()),
         Err(ImageBuildError::InvalidReference("type table")),
     );
 }
@@ -207,9 +219,15 @@ fn an_out_of_range_record_new_ordinal_draws_the_type_table_refusal() {
 #[test]
 fn an_out_of_range_list_new_ordinal_draws_the_collection_type_refusal() {
     assert_eq!(
-        main_draft(Vec::new(), vec![Instr::ListNew(u16::MAX), Instr::Return])
-            .encode()
-            .map(|_| ()),
+        main_draft(
+            Vec::new(),
+            vec![
+                Instr::ListNew(marrow_image::CollTypeId::from_index(u16::MAX)),
+                Instr::Return
+            ]
+        )
+        .encode()
+        .map(|_| ()),
         Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
@@ -224,7 +242,7 @@ fn an_out_of_range_enum_construct_ordinal_draws_the_enum_type_refusal() {
             Vec::new(),
             vec![
                 Instr::EnumConstruct {
-                    enum_idx: u16::MAX,
+                    enum_idx: EnumId::from_index(u16::MAX),
                     variant: 0,
                 },
                 Instr::Return,
@@ -248,11 +266,11 @@ fn an_out_of_range_vacant_load_type_draws_the_type_table_refusal() {
     let body = |idx: u16| {
         vec![
             Instr::VacantLoad(ImageType::Record {
-                idx,
+                idx: TypeId::from_index(idx),
                 optional: true,
             }),
             Instr::Pop,
-            Instr::ConstLoad(0),
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
             Instr::Return,
         ]
     };
@@ -279,7 +297,7 @@ fn an_out_of_range_make_identity_root_draws_the_root_table_refusal() {
             Vec::new(),
             vec![
                 Instr::MakeIdentity {
-                    root: u16::MAX,
+                    root: RootId::from_index(u16::MAX),
                     cols: 0,
                 },
                 Instr::Return,
@@ -546,9 +564,12 @@ fn a_make_identity_cols_arity_mismatch_draws_the_root_table_refusal() {
             TableRef::Valid,
             None,
             vec![
-                Instr::ConstLoad(0),
-                Instr::ConstLoad(0),
-                Instr::MakeIdentity { root: 0, cols: 2 },
+                Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+                Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+                Instr::MakeIdentity {
+                    root: RootId::from_index(0),
+                    cols: 2
+                },
                 Instr::Return,
             ],
         )
@@ -581,7 +602,7 @@ fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
             site,
             limit: 2,
             from: false,
-            list_ty: u16::MAX,
+            list_ty: CollTypeId::from_index(u16::MAX),
         },
         Instr::Pop,
         Instr::Pop,
@@ -603,7 +624,7 @@ fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
 /// list-of-the-identity-key law remains the verifier's.
 #[test]
 fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
-    let scan_draft = |list_ty: u16| {
+    let scan_draft = |list_ty: CollTypeId| {
         let (mut draft, root) = durable_parts(TableRef::Valid, None, true);
         // COLLTYPES row 0: the `List[int]` a corrected scan freezes its keys into.
         draft.add_collection_type(CollectionTypeDef::List {
@@ -618,7 +639,7 @@ fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
         // check, and a corrected scan pushes the frozen list then the truncation flag —
         // both popped before the unit return.
         let code = vec![
-            Instr::ConstLoad(0),
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
             Instr::DurIndexScan {
                 site,
                 limit: 2,
@@ -631,11 +652,15 @@ fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
         ];
         finish_main(draft, code, ImageType::Unit)
     };
-    let corrected = scan_draft(0).encode().expect("the corrected twin encodes");
+    let corrected = scan_draft(CollTypeId::from_index(0))
+        .encode()
+        .expect("the corrected twin encodes");
     let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
     assert_eq!(
-        scan_draft(u16::MAX).encode().map(|_| ()),
+        scan_draft(CollTypeId::from_index(u16::MAX))
+            .encode()
+            .map(|_| ()),
         Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
@@ -677,7 +702,7 @@ fn with_decoy_enum(mut draft: ImageDraft) -> ImageDraft {
 fn a_record_type_decoy_draws_the_types_domain_refusal() {
     let draft = with_decoy_enum(main_draft(
         vec![ImageType::Record {
-            idx: 0,
+            idx: TypeId::from_index(0),
             optional: false,
         }],
         short_code(),
@@ -696,7 +721,7 @@ fn a_record_type_decoy_draws_the_types_domain_refusal() {
 fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
     let draft = with_decoy_record(main_draft(
         vec![ImageType::Enum {
-            idx: 0,
+            idx: EnumId::from_index(0),
             optional: false,
         }],
         short_code(),
@@ -715,7 +740,7 @@ fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
 fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
     let draft = with_decoy_record(main_draft(
         vec![ImageType::Collection {
-            idx: 0,
+            idx: CollTypeId::from_index(0),
             optional: false,
         }],
         short_code(),
@@ -734,7 +759,7 @@ fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
 fn an_identity_type_decoy_draws_the_roots_domain_refusal() {
     let draft = with_decoy_record(main_draft(
         vec![ImageType::Identity {
-            root: 0,
+            root: RootId::from_index(0),
             optional: false,
         }],
         short_code(),
@@ -756,11 +781,11 @@ fn an_out_of_range_enum_construct_variant_draws_the_enum_type_refusal() {
     let body = |variant: u16| {
         vec![
             Instr::EnumConstruct {
-                enum_idx: 0,
+                enum_idx: EnumId::from_index(0),
                 variant,
             },
             Instr::Pop,
-            Instr::ConstLoad(0),
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
             Instr::Return,
         ]
     };
@@ -800,9 +825,9 @@ fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
     };
     let body = |idx: u16| {
         vec![
-            Instr::MapNew(idx),
+            Instr::MapNew(CollTypeId::from_index(idx)),
             Instr::Pop,
-            Instr::ConstLoad(0),
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
             Instr::Return,
         ]
     };
@@ -910,7 +935,10 @@ fn a_duplicate_export_id_draws_the_export_table_refusal() {
         &mut draft,
         "g",
         ImageType::scalar(Scalar::Int),
-        vec![Instr::ConstLoad(0), Instr::Return],
+        vec![
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+            Instr::Return,
+        ],
     );
     draft.add_export(ExportId::of_local("", "main"), second);
     assert_eq!(
@@ -973,11 +1001,7 @@ fn a_test_entry_with_params_draws_the_test_table_refusal() {
 fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
     let assert_body = |draft: &mut ImageDraft| {
         let truth = draft.intern_bool(true);
-        vec![
-            Instr::ConstLoad(truth.index()),
-            Instr::Assert,
-            Instr::Return,
-        ]
+        vec![Instr::ConstLoad(truth), Instr::Assert, Instr::Return]
     };
     let mut corrected = main_draft(Vec::new(), short_code());
     let code = assert_body(&mut corrected);
@@ -1024,7 +1048,7 @@ fn a_test_driver_mix_draws_the_test_table_refusal() {
             ImageType::Unit,
             vec![
                 Instr::TxnBegin,
-                Instr::ConstLoad(0),
+                Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
                 Instr::DurExists(owner_site),
                 Instr::Pop,
                 Instr::TxnCommit,
@@ -1035,7 +1059,11 @@ fn a_test_driver_mix_draws_the_test_table_refusal() {
         draft.add_export(ExportId::of_local("", "put"), owner);
         let site = draft.request_site(&handle).expect("a live demand");
         // The direct durable op (an existence probe over the root key)...
-        let mut code = vec![Instr::ConstLoad(0), Instr::DurExists(site), Instr::Pop];
+        let mut code = vec![
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+            Instr::DurExists(site),
+            Instr::Pop,
+        ];
         // ...beside the drive of the transaction owner.
         if drives_owner {
             code.push(Instr::Call(0));
@@ -1066,7 +1094,11 @@ fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
     let build = |tested: bool| {
         let mut draft = main_draft(
             Vec::new(),
-            vec![Instr::Call(1), Instr::ConstLoad(0), Instr::Return],
+            vec![
+                Instr::Call(1),
+                Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+                Instr::Return,
+            ],
         );
         let callee = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
         assert_eq!(callee.index(), 1, "the call names the companion");
@@ -1097,7 +1129,10 @@ fn a_bad_test_signature_draws_the_test_table_refusal() {
         &mut draft,
         "t",
         ImageType::scalar(Scalar::Int),
-        vec![Instr::ConstLoad(0), Instr::Return],
+        vec![
+            Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+            Instr::Return,
+        ],
     );
     let name = draft.intern_string("tn");
     draft.add_test_entry(name, test_fn);

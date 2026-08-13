@@ -120,9 +120,9 @@ enum BestEffortDisplayRoot {
         generic_parent: Option<usize>,
     },
     Collection {
-        index: u16,
+        index: CollTypeId,
         generic_parent: Option<usize>,
-        collection_parent: Option<u16>,
+        collection_parent: Option<CollTypeId>,
     },
 }
 
@@ -131,7 +131,7 @@ enum BestEffortDisplayFrame {
     Arg {
         arg: GArg,
         generic_parent: Option<usize>,
-        collection_parent: Option<u16>,
+        collection_parent: Option<CollTypeId>,
     },
     Inst {
         id: TypeInstId,
@@ -140,7 +140,7 @@ enum BestEffortDisplayFrame {
     },
     Text(&'static str),
     LeaveRow(usize),
-    LeaveCollection(u16),
+    LeaveCollection(CollTypeId),
 }
 
 fn best_effort_display_inst_row(
@@ -348,7 +348,7 @@ fn render_best_effort_display(
                         entered.push(DisplayNode::Collection(index));
                         let spec = view
                             .collections
-                            .get(index as usize)
+                            .get(index.index() as usize)
                             .copied()
                             .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
                         frames.push(BestEffortDisplayFrame::LeaveCollection(index));
@@ -410,9 +410,9 @@ pub(super) fn inst_spelling_for_display(
 pub(super) fn collection_spelling_for_display(
     registry: &TypeRegistry,
     view: &TypeMetadataView<'_>,
-    index: u16,
+    index: CollTypeId,
     generic_parent: Option<usize>,
-    collection_parent: Option<u16>,
+    collection_parent: Option<CollTypeId>,
     display: &mut DisplayScratch,
 ) -> Result<String, GenericInvariant> {
     render_best_effort_display(
@@ -451,7 +451,7 @@ enum ValidatedDisplayFrame {
         id: TypeInstId,
         arg: GArg,
     },
-    Collection(u16),
+    Collection(CollTypeId),
     Text(&'static str),
     Leave(DisplayNode),
 }
@@ -585,7 +585,7 @@ pub(super) fn render_validated_display_arg(
                     entered.push(node);
                     let spec = view
                         .collections
-                        .get(index as usize)
+                        .get(index.index() as usize)
                         .copied()
                         .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
                     frames.push(ValidatedDisplayFrame::Leave(node));
@@ -639,7 +639,7 @@ enum ValidatedAnchorFrame {
         id: TypeInstId,
         arg: GArg,
     },
-    Collection(u16),
+    Collection(CollTypeId),
     Text(&'static str),
     Leave(DisplayNode),
 }
@@ -781,7 +781,7 @@ pub(super) fn render_validated_anchor_arg(
                     entered.push(node);
                     let spec = view
                         .collections
-                        .get(index as usize)
+                        .get(index.index() as usize)
                         .copied()
                         .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?;
                     frames.push(ValidatedAnchorFrame::Leave(node));

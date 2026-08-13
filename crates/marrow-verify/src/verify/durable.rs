@@ -891,13 +891,20 @@ pub(super) fn seal_branches(
 /// Seal one run of member rows into its branch list, descending through each branch's own
 /// members. Nesting is bounded by the decoded member depth the table phase already
 /// enforced.
+/// The sealed wire-domain `u16` of a shared typed table reference. Every value that
+/// reaches here was decoded from a `u16` wire read and re-validated in range, so the
+/// narrowing is total; it is spelled checked so the wire domain is stated.
+fn sealed_ordinal(index: u32) -> u16 {
+    u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
+}
+
 fn seal_branch_run(members: DurableMemberViews<'_>, strings: &[Rc<str>]) -> Vec<SealedBranch> {
     members
         .filter_map(|member| match member.kind() {
             DurableMemberViewKind::Branch(branch) => Some(SealedBranch {
-                name: strings[usize::from(branch.name().index())].clone(),
+                name: strings[branch.name().index() as usize].clone(),
                 keys: branch.keys().iter().map(|key| key.scalar).collect(),
-                record: branch.record().index(),
+                record: sealed_ordinal(branch.record().index()),
                 branches: seal_branch_run(member.members(), strings),
             }),
             _ => None,
@@ -932,7 +939,7 @@ pub(super) fn seal_groups(root: &DecodedRoot, types: &[SealedRecordType]) -> Vec
             };
             SealedGroup {
                 name: slot.name.clone(),
-                record,
+                record: sealed_ordinal(record.index()),
             }
         })
         .collect()
@@ -1225,13 +1232,13 @@ fn tie_group_slot(
             "a root group slot must be a bare group record",
         ));
     }
-    if idx as usize >= types.len() {
+    if idx.index() as usize >= types.len() {
         return Err(reject(
             VerifyPhase::Table,
             "root group slot record index out of range",
         ));
     }
-    let group_fields = &types[idx as usize].fields;
+    let group_fields = &types[idx.index() as usize].fields;
     let mut direct_fields = group_members.filter_map(|member| match member.kind() {
         DurableMemberViewKind::Field(field) => Some((field.value(), field.required())),
         _ => None,
@@ -1285,16 +1292,16 @@ fn validate_branch_records(
             DurableMemberViewKind::Field(_) => {}
             DurableMemberViewKind::Group(_) => stack.push(member.members()),
             DurableMemberViewKind::Branch(branch) => {
-                if usize::from(branch.name().index()) >= string_count {
+                if branch.name().index() as usize >= string_count {
                     return Err(reject(VerifyPhase::Table, "branch name index out of range"));
                 }
-                if usize::from(branch.record().index()) >= types.len() {
+                if branch.record().index() as usize >= types.len() {
                     return Err(reject(
                         VerifyPhase::Table,
                         "branch record type index out of range",
                     ));
                 }
-                let record_fields = &types[usize::from(branch.record().index())].fields;
+                let record_fields = &types[branch.record().index() as usize].fields;
                 let mut direct_fields = member.members().filter_map(|inner| match inner.kind() {
                     DurableMemberViewKind::Field(field) => Some((field.value(), field.required())),
                     _ => None,
@@ -1359,7 +1366,7 @@ fn decode_members(
         run.remaining -= 1;
         let parent = run.parent;
         budget.spend()?;
-        let index = u16::try_from(commands.len())
+        let index = u32::try_from(commands.len())
             .map_err(|_| reject(VerifyPhase::Table, "too many durable members"))?;
         let tag = reader
             .u8()
@@ -1435,7 +1442,7 @@ fn decode_members(
 struct PendingRun {
     /// The command index of the `group` or `branch` whose members this run states, or
     /// `None` for the declaration's own top-level run.
-    parent: Option<u16>,
+    parent: Option<u32>,
     remaining: usize,
 }
 
@@ -1476,7 +1483,7 @@ impl MemberBudget {
 fn descend(
     stack: &mut Vec<PendingRun>,
     reader: &mut Reader<'_>,
-    parent: u16,
+    parent: u32,
 ) -> Result<(), VerifyRejection> {
     if stack.len() + 1 > marrow_image::bounds::MAX_DURABLE_DEPTH {
         return Err(reject(VerifyPhase::Table, "durable member tree too deep"));
@@ -1832,7 +1839,7 @@ fn value_shape_matches(
                 optional: false,
             },
         ) => {
-            let Some(record) = types.get(idx as usize) else {
+            let Some(record) = types.get(idx.index() as usize) else {
                 return false;
             };
             // A durable struct value is dense: every leaf is a required bare field,
@@ -1849,7 +1856,7 @@ fn value_shape_matches(
                 optional: false,
             },
         ) => {
-            let Some(enum_def) = enums.get(idx as usize) else {
+            let Some(enum_def) = enums.get(idx.index() as usize) else {
                 return false;
             };
             enum_def.variants.len() == members.len()

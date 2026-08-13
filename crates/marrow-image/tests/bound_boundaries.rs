@@ -86,7 +86,7 @@ fn encode_root(
     let src = draft.intern_string("src/main.mw");
     let main_name = draft.intern_string("main");
     let zero = draft.intern_int(0);
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len())
         .map(|index| SpanEntry {
             instr_index: index as u32,
@@ -496,9 +496,9 @@ fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
 fn nested_groups(depth: usize) -> Vec<DeclarationMemberDef> {
     (0..depth)
         .map(|level| DeclarationMemberDef {
-            parent: level
-                .checked_sub(1)
-                .map(|parent| u16::try_from(parent).expect("the fixture nests within u16")),
+            parent: level.checked_sub(1).map(|parent| {
+                u32::try_from(parent).expect("the fixture nests within the wide ordinal domain")
+            }),
             shape: DeclarationMemberShape::Group {
                 id: component_id(level),
             },

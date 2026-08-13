@@ -744,7 +744,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(
             Instr::EnumConstruct {
-                enum_idx: ret_id.index(),
+                enum_idx: ret_id,
                 variant: RESULT_ERR,
             },
             span,
@@ -1271,7 +1271,7 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::LocalGet(scrut_slot), arm.span);
                 self.push(Instr::EnumTag, arm.span);
                 let konst = self.draft.intern_int(variant_index as i64);
-                self.push(Instr::ConstLoad(konst.index()), arm.span);
+                self.push(Instr::ConstLoad(konst), arm.span);
                 self.push(Instr::EqInt, arm.span);
                 Some(self.push_jif(arm.span))
             };
@@ -1540,7 +1540,7 @@ impl<'a> FnLowerer<'a> {
         let skip = self.push_jump(span);
         let advance = self.here();
         self.push(Instr::LocalGet(counter_slot), span);
-        self.push(Instr::ConstLoad(step_const.index()), span);
+        self.push(Instr::ConstLoad(step_const), span);
         let advance_at = self.here();
         self.push(Instr::IntAddChecked(0), span);
         self.push(Instr::LocalSet(counter_slot), span);
@@ -2469,14 +2469,14 @@ impl<'a> FnLowerer<'a> {
             return PositionalWalkOutcome::Rejected;
         };
         let neg_one = self.draft.intern_int(-1);
-        self.push(Instr::ConstLoad(neg_one.index()), span);
+        self.push(Instr::ConstLoad(neg_one), span);
         self.push(Instr::LocalSet(index_slot), span);
         let one = self.draft.intern_int(1);
 
         let top = self.here();
         // index += 1
         self.push(Instr::LocalGet(index_slot), span);
-        self.push(Instr::ConstLoad(one.index()), span);
+        self.push(Instr::ConstLoad(one), span);
         self.push(Instr::IntAdd, span);
         self.push(Instr::LocalSet(index_slot), span);
         // index < length
@@ -2709,7 +2709,7 @@ impl<'a> FnLowerer<'a> {
             let lb = lb.expect("division has a right operand");
             self.push(Instr::LocalGet(lb), span);
             let zero = self.draft.intern_int(0);
-            self.push(Instr::ConstLoad(zero.index()), span);
+            self.push(Instr::ConstLoad(zero), span);
             self.push(Instr::EqInt, span);
             let to_nonzero = self.push_jif(span);
             let zero_flow = self.lower_block(zero_block);

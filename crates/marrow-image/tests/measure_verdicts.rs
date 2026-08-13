@@ -47,10 +47,11 @@ use marrow_image::bounds::{
     MAX_STRING_BYTES, MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES, MAX_VARIANTS,
 };
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent,
-    DurableIndexShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticTarget, SpanEntry, StrId, TypeId, ValueShapeNodeId, VariantDef,
+    CollTypeId, CollectionTypeDef, ConstId, DeclarationMemberDef, DeclarationMemberShape,
+    DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId,
+    FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    RecordTypeDef, RootId, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId, TypeId,
+    ValueShapeNodeId, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -131,14 +132,14 @@ const FORGED_BRANCH_NAME: u16 = 61000;
 /// A type reference naming a TYPES row no fixture declares: the raw table ordinal is
 /// written to the wire unchecked today.
 const FORGED_TYPE: ImageType = ImageType::Record {
-    idx: u16::MAX,
+    idx: TypeId::from_index(u16::MAX),
     optional: false,
 };
 
 /// The optional spelling of [`FORGED_TYPE`], for `VacantLoad`: the operand must be
 /// optional for verification to reach the record-ordinal check at all.
 const FORGED_OPT_TYPE: ImageType = ImageType::Record {
-    idx: u16::MAX,
+    idx: TypeId::from_index(u16::MAX),
     optional: true,
 };
 
@@ -664,7 +665,7 @@ impl Fixture {
             draft.intern_string("main")
         };
         let zero = draft.intern_int(0);
-        let mut code = body(self.code, zero.index());
+        let mut code = body(self.code, zero);
         code.extend(self.extra_instrs.iter().cloned());
         if self.dangling_traversal {
             let handle = draft
@@ -679,7 +680,7 @@ impl Fixture {
                 site,
                 limit: 2,
                 from: false,
-                list_ty: u16::MAX,
+                list_ty: CollTypeId::from_index(u16::MAX),
             });
         }
         if self.dangling_index_scan {
@@ -692,7 +693,7 @@ impl Fixture {
                 site,
                 limit: 2,
                 from: false,
-                list_ty: u16::MAX,
+                list_ty: CollTypeId::from_index(u16::MAX),
             });
         }
         let params = if self.forged_param_type {
@@ -741,7 +742,7 @@ impl Fixture {
                     ret: ImageType::scalar(Scalar::Int),
                     local_count: 0,
                     spans: Vec::new(),
-                    code: body(extra, zero.index()),
+                    code: body(extra, zero),
                 })
                 .expect("every site operand is live");
         }
@@ -786,7 +787,7 @@ impl Fixture {
 }
 
 /// One function body per [`Code`] shape, over the fixture's zero constant.
-fn body(code: Code, zero: u16) -> Vec<Instr> {
+fn body(code: Code, zero: ConstId) -> Vec<Instr> {
     match code {
         Code::Short => vec![Instr::ConstLoad(zero), Instr::Return],
         // `ConstLoad` is three bytes, so this is comfortably past the limit while
@@ -796,14 +797,18 @@ fn body(code: Code, zero: u16) -> Vec<Instr> {
             code.push(Instr::Return);
             code
         }
-        Code::BadConst => vec![Instr::ConstLoad(OUT_OF_RANGE), Instr::Return],
+        Code::BadConst => vec![
+            Instr::ConstLoad(ConstId::from_index(OUT_OF_RANGE)),
+            Instr::Return,
+        ],
         Code::BadJump => vec![
             Instr::ConstLoad(zero),
             Instr::Jump(u32::from(OUT_OF_RANGE)),
             Instr::Return,
         ],
         Code::OverCodeBytesBadConst => {
-            let mut code = vec![Instr::ConstLoad(OUT_OF_RANGE); MAX_CODE_BYTES / 2];
+            let mut code =
+                vec![Instr::ConstLoad(ConstId::from_index(OUT_OF_RANGE)); MAX_CODE_BYTES / 2];
             code.push(Instr::Return);
             code
         }
@@ -1002,7 +1007,7 @@ fn apply_policy(policy: Overflow, draft: &mut ImageDraft) {
                         ret: ImageType::scalar(Scalar::Int),
                         local_count: 0,
                         spans: Vec::new(),
-                        code: vec![Instr::ConstLoad(zero.index()), Instr::Return],
+                        code: vec![Instr::ConstLoad(zero), Instr::Return],
                     })
                     .expect("every site operand is live");
                 draft.add_export(ExportId::of_local("", &format!("extra{index}")), func);
@@ -1930,7 +1935,7 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_draws_the_type_table_referenc
     assert_eq!(
         Fixture::clean()
             .value(Value::OverCeiling)
-            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .with_extra_instrs(vec![Instr::RecordNew(TypeId::from_index(u16::MAX))])
             .encode(),
         Err(ImageBuildError::InvalidReference("type table")),
     );
@@ -2035,7 +2040,7 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_draws_the_type_table_referenc
 fn a_bad_record_new_ordinal_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
-            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .with_extra_instrs(vec![Instr::RecordNew(TypeId::from_index(u16::MAX))])
             .policy(Overflow::Strings)
             .encode(),
         Err(ImageBuildError::InvalidReference("type table")),
@@ -2049,7 +2054,7 @@ fn a_bad_record_new_ordinal_with_over_strings_draws_the_type_table_reference() {
 fn a_bad_list_new_ordinal_with_over_strings_draws_the_collection_type_reference() {
     assert_eq!(
         Fixture::clean()
-            .with_extra_instrs(vec![Instr::ListNew(u16::MAX)])
+            .with_extra_instrs(vec![Instr::ListNew(CollTypeId::from_index(u16::MAX))])
             .policy(Overflow::Strings)
             .encode(),
         Err(ImageBuildError::InvalidReference("collection type")),
@@ -2064,7 +2069,7 @@ fn a_bad_enum_construct_ordinal_with_over_strings_draws_the_enum_type_reference(
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::EnumConstruct {
-                enum_idx: u16::MAX,
+                enum_idx: EnumId::from_index(u16::MAX),
                 variant: 0,
             }])
             .policy(Overflow::Strings)
@@ -2095,7 +2100,7 @@ fn a_bad_make_identity_root_with_over_strings_draws_the_root_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::MakeIdentity {
-                root: u16::MAX,
+                root: RootId::from_index(u16::MAX),
                 cols: 0,
             }])
             .policy(Overflow::Strings)
@@ -2372,7 +2377,7 @@ fn a_bad_test_entry_target_with_over_test_entries_draws_the_test_target_referenc
 fn a_bad_type_ordinal_with_over_test_entries_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
-            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .with_extra_instrs(vec![Instr::RecordNew(TypeId::from_index(u16::MAX))])
             .policy(Overflow::TestEntries)
             .encode(),
         Err(ImageBuildError::InvalidReference("type table")),
@@ -2401,7 +2406,7 @@ fn a_bad_type_ordinal_with_over_code_bytes_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
-            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .with_extra_instrs(vec![Instr::RecordNew(TypeId::from_index(u16::MAX))])
             .encode(),
         Err(ImageBuildError::InvalidReference("type table")),
     );

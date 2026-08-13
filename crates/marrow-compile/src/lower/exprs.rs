@@ -133,7 +133,7 @@ impl<'a> FnLowerer<'a> {
                     // bound unambiguous.
                     if let Some(value) = builtin_const_int(name) {
                         let const_id = self.draft.intern_int(value);
-                        self.push(Instr::ConstLoad(const_id.index()), *span);
+                        self.push(Instr::ConstLoad(const_id), *span);
                         return Some(LTy::bare_scalar(ScalarType::Int));
                     }
                     if let Some(local) = self.lookup(name) {
@@ -297,7 +297,7 @@ impl<'a> FnLowerer<'a> {
             ConstScalar::Bool(value) => (ScalarType::Bool, self.draft.intern_bool(*value)),
             ConstScalar::Text(text) => (ScalarType::Text, self.draft.intern_text(text)),
         };
-        self.push(Instr::ConstLoad(const_id.index()), span);
+        self.push(Instr::ConstLoad(const_id), span);
         LTy::bare_scalar(scalar)
     }
 
@@ -370,7 +370,7 @@ impl<'a> FnLowerer<'a> {
                 return None;
             }
         };
-        self.push(Instr::ConstLoad(const_id.index()), span);
+        self.push(Instr::ConstLoad(const_id), span);
         Some(LTy::bare_scalar(scalar))
     }
 
@@ -409,7 +409,7 @@ impl<'a> FnLowerer<'a> {
         }
         if !pushed {
             let empty = self.draft.intern_text("");
-            self.push(Instr::ConstLoad(empty.index()), span);
+            self.push(Instr::ConstLoad(empty), span);
         }
         Some(LTy::bare_scalar(ScalarType::Text))
     }
@@ -424,7 +424,7 @@ impl<'a> FnLowerer<'a> {
                     return false;
                 };
                 let const_id = self.draft.intern_text(&decoded);
-                self.push(Instr::ConstLoad(const_id.index()), *span);
+                self.push(Instr::ConstLoad(const_id), *span);
                 true
             }
             InterpolationPart::Expr(expr) => {
@@ -1011,14 +1011,14 @@ impl<'a> FnLowerer<'a> {
                 let false_at = self.here();
                 self.patch(jif, false_at);
                 let konst = self.draft.intern_bool(false);
-                self.push(Instr::ConstLoad(konst.index()), left.span());
+                self.push(Instr::ConstLoad(konst), left.span());
                 let end = self.here();
                 self.patch(to_end, end);
             }
             BinaryOp::Or => {
                 let jif = self.push_jif(left.span());
                 let konst = self.draft.intern_bool(true);
-                self.push(Instr::ConstLoad(konst.index()), left.span());
+                self.push(Instr::ConstLoad(konst), left.span());
                 let to_end = self.push_jump(left.span());
                 let rhs_at = self.here();
                 self.patch(jif, rhs_at);
@@ -1114,7 +1114,7 @@ impl<'a> FnLowerer<'a> {
         let false_at = self.here();
         self.patch(jif, false_at);
         let konst = self.draft.intern_bool(false);
-        self.push(Instr::ConstLoad(konst.index()), span);
+        self.push(Instr::ConstLoad(konst), span);
         let end = self.here();
         self.patch(to_end, end);
 
@@ -1759,7 +1759,7 @@ impl<'a> FnLowerer<'a> {
                 // discarded stream value-shaped.
                 if let RetType::Value(_) = ret {
                     let zero = self.draft.intern_int(0);
-                    self.push(Instr::ConstLoad(zero.index()), span);
+                    self.push(Instr::ConstLoad(zero), span);
                 }
                 Some(match ret {
                     RetType::Unit => CallResult::Unit,
@@ -1871,14 +1871,14 @@ impl<'a> FnLowerer<'a> {
         // lo <= n && n <= hi, with each failed test jumping to the vacant edge.
         let lo_const = self.draft.intern_int(lo);
         self.push(Instr::LocalGet(slot), span);
-        self.push(Instr::ConstLoad(lo_const.index()), span);
+        self.push(Instr::ConstLoad(lo_const), span);
         let below = {
             self.push(Instr::IntGe, span);
             self.push_jif(span)
         };
         let hi_const = self.draft.intern_int(hi);
         self.push(Instr::LocalGet(slot), span);
-        self.push(Instr::ConstLoad(hi_const.index()), span);
+        self.push(Instr::ConstLoad(hi_const), span);
         let above = {
             self.push(Instr::IntLe, span);
             self.push_jif(span)
@@ -2045,9 +2045,9 @@ impl<'a> FnLowerer<'a> {
                     span,
                 );
             }
-            self.push(Instr::RecordNew(group_type.index()), span);
+            self.push(Instr::RecordNew(group_type), span);
         }
-        self.push(Instr::RecordNew(record_type_id.index()), span);
+        self.push(Instr::RecordNew(record_type_id), span);
         Some(LTy::Record {
             ty: record_type_id,
             optional: false,
@@ -2152,7 +2152,7 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        self.push(Instr::RecordNew(record.index()), span);
+        self.push(Instr::RecordNew(record), span);
         Some(LTy::Record {
             ty: record,
             optional: false,
@@ -2250,7 +2250,7 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        self.push(Instr::RecordNew(group_type_id.index()), span);
+        self.push(Instr::RecordNew(group_type_id), span);
         Some(LTy::Record {
             ty: group_type_id,
             optional: false,
@@ -2339,7 +2339,7 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        self.push(Instr::RecordNew(type_id.index()), span);
+        self.push(Instr::RecordNew(type_id), span);
         Some(LTy::Struct {
             ty: type_id,
             optional: false,
@@ -2424,7 +2424,7 @@ impl<'a> FnLowerer<'a> {
                 return None;
             }
         };
-        self.push(Instr::RecordNew(type_id.index()), span);
+        self.push(Instr::RecordNew(type_id), span);
         Some(LTy::Struct {
             ty: type_id,
             optional: false,
@@ -2530,7 +2530,7 @@ impl<'a> FnLowerer<'a> {
         };
         self.push(
             Instr::EnumConstruct {
-                enum_idx: witness.enum_id.index(),
+                enum_idx: witness.enum_id,
                 variant: witness.variant,
             },
             span,
@@ -2767,7 +2767,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(
             Instr::EnumConstruct {
-                enum_idx: enum_id.index(),
+                enum_idx: enum_id,
                 variant: variant_index,
             },
             span,
@@ -2856,7 +2856,7 @@ impl<'a> FnLowerer<'a> {
             (CtorKind::None, Some(ReservedEnumArgs::Option(_))) => {
                 self.push(
                     Instr::EnumConstruct {
-                        enum_idx: enum_id.index(),
+                        enum_idx: enum_id,
                         variant: OPTION_NONE,
                     },
                     span,
@@ -2868,7 +2868,7 @@ impl<'a> FnLowerer<'a> {
                 self.lower_as(arg, garg_to_lty(inner))?;
                 self.push(
                     Instr::EnumConstruct {
-                        enum_idx: enum_id.index(),
+                        enum_idx: enum_id,
                         variant: OPTION_SOME,
                     },
                     span,
@@ -2880,7 +2880,7 @@ impl<'a> FnLowerer<'a> {
                 self.lower_as(arg, garg_to_lty(ok))?;
                 self.push(
                     Instr::EnumConstruct {
-                        enum_idx: enum_id.index(),
+                        enum_idx: enum_id,
                         variant: RESULT_OK,
                     },
                     span,
@@ -2892,7 +2892,7 @@ impl<'a> FnLowerer<'a> {
                 self.lower_as(arg, garg_to_lty(err))?;
                 self.push(
                     Instr::EnumConstruct {
-                        enum_idx: enum_id.index(),
+                        enum_idx: enum_id,
                         variant: RESULT_ERR,
                     },
                     span,
@@ -2953,7 +2953,7 @@ impl<'a> FnLowerer<'a> {
         let id = self.opt_enum(inner, arg.value.span())?;
         self.push(
             Instr::EnumConstruct {
-                enum_idx: id.index(),
+                enum_idx: id,
                 variant: OPTION_SOME,
             },
             span,
@@ -3062,7 +3062,7 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::LocalGet(slot), span);
         self.push(Instr::EnumTag, span);
         let err_tag = self.draft.intern_int(i64::from(RESULT_ERR));
-        self.push(Instr::ConstLoad(err_tag.index()), span);
+        self.push(Instr::ConstLoad(err_tag), span);
         self.push(Instr::EqInt, span);
         // False (not err, i.e. ok) jumps to the ok extraction; true (err) falls
         // through to rebuild the error in the return Result and return it.
@@ -3077,7 +3077,7 @@ impl<'a> FnLowerer<'a> {
         );
         self.push(
             Instr::EnumConstruct {
-                enum_idx: ret_id.index(),
+                enum_idx: ret_id,
                 variant: RESULT_ERR,
             },
             span,

@@ -39,7 +39,7 @@ pub use digest::{
 pub use draft::{
     AdmittedGraphInputPlan, AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, EnumId,
     EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn,
-    RecordTypeDef, RootOccurrenceDef, SpanEntry, StrId, TemplateProofDraftGuard, TypeId,
+    RecordTypeDef, RootId, RootOccurrenceDef, SpanEntry, StrId, TemplateProofDraftGuard, TypeId,
     VariantDef,
 };
 pub use durable_id::{

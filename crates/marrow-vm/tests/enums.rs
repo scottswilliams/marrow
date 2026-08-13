@@ -13,36 +13,34 @@ use marrow_vm::{Value, run};
 
 /// An enum `Shape { dot, circle(int), rect(int, int) }` interned into `draft`,
 /// returning its enum index.
-fn shape_enum(draft: &mut ImageDraft) -> u16 {
+fn shape_enum(draft: &mut ImageDraft) -> marrow_image::EnumId {
     let name = draft.intern_string("Shape");
     let dot = draft.intern_string("dot");
     let circle = draft.intern_string("circle");
     let rect = draft.intern_string("rect");
-    draft
-        .add_enum_type(EnumTypeDef {
-            name,
-            variants: vec![
-                VariantDef {
-                    name: dot,
-                    category: false,
-                    payload: vec![],
-                },
-                VariantDef {
-                    name: circle,
-                    category: false,
-                    payload: vec![ImageType::scalar(Scalar::Int)],
-                },
-                VariantDef {
-                    name: rect,
-                    category: false,
-                    payload: vec![
-                        ImageType::scalar(Scalar::Int),
-                        ImageType::scalar(Scalar::Int),
-                    ],
-                },
-            ],
-        })
-        .index()
+    draft.add_enum_type(EnumTypeDef {
+        name,
+        variants: vec![
+            VariantDef {
+                name: dot,
+                category: false,
+                payload: vec![],
+            },
+            VariantDef {
+                name: circle,
+                category: false,
+                payload: vec![ImageType::scalar(Scalar::Int)],
+            },
+            VariantDef {
+                name: rect,
+                category: false,
+                payload: vec![
+                    ImageType::scalar(Scalar::Int),
+                    ImageType::scalar(Scalar::Int),
+                ],
+            },
+        ],
+    })
 }
 
 fn build_and_run(
@@ -89,7 +87,7 @@ fn construct_then_read_the_variant_tag() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(two.index()),
+                Instr::ConstLoad(two),
                 Instr::EnumConstruct {
                     enum_idx: shape,
                     variant: 1,
@@ -112,8 +110,8 @@ fn read_a_payload_leaf() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(three.index()),
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(three),
+                Instr::ConstLoad(five),
                 Instr::EnumConstruct {
                     enum_idx: shape,
                     variant: 2,
@@ -138,12 +136,12 @@ fn equality_compares_variant_and_payload() {
         (
             ImageType::scalar(Scalar::Bool),
             vec![
-                Instr::ConstLoad(two.index()),
+                Instr::ConstLoad(two),
                 Instr::EnumConstruct {
                     enum_idx: shape,
                     variant: 1,
                 },
-                Instr::ConstLoad(two.index()),
+                Instr::ConstLoad(two),
                 Instr::EnumConstruct {
                     enum_idx: shape,
                     variant: 1,
@@ -163,12 +161,12 @@ fn equality_compares_variant_and_payload() {
         (
             ImageType::scalar(Scalar::Bool),
             vec![
-                Instr::ConstLoad(two.index()),
+                Instr::ConstLoad(two),
                 Instr::EnumConstruct {
                     enum_idx: shape,
                     variant: 1,
                 },
-                Instr::ConstLoad(three.index()),
+                Instr::ConstLoad(three),
                 Instr::EnumConstruct {
                     enum_idx: shape,
                     variant: 1,

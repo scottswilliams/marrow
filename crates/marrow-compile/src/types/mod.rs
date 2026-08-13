@@ -24,8 +24,8 @@ use std::hash::{Hash, Hasher};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CollectionTypeDef, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType, RecordTypeDef, Scalar,
-    TemplateProofDraftGuard, TypeId, VariantDef,
+    CollTypeId, CollectionTypeDef, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType,
+    RecordTypeDef, Scalar, TemplateProofDraftGuard, TypeId, VariantDef,
 };
 use marrow_project::FileIdentity;
 use marrow_syntax::{
@@ -63,7 +63,7 @@ use render::{
 /// The identity of a nominal type in [`TypeRegistry`] order, carried by the
 /// lowered type so classification never re-reads the source spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct NominalId(pub(crate) u16);
+pub(crate) struct NominalId(pub(crate) u32);
 
 /// A concrete bare (non-optional) value type used as a `Option`/`Result` type
 /// argument. Monomorphization keys an instantiation on the exact argument types,
@@ -87,7 +87,7 @@ pub(crate) enum GArg {
     /// index. The element/key/value source types live in the registry's collection
     /// table (`CollSpec`), so a nested collection or a nominal element keeps its
     /// source identity even though the image erases a nominal element to `int`.
-    Collection(u16),
+    Collection(CollTypeId),
     /// An abstract generic type parameter by its declaration index, present only
     /// during the once-checked template pass of a generic function. A monomorphized
     /// instantiation carries no `Param`: every parameter is substituted by its
@@ -105,11 +105,11 @@ impl GArg {
             GArg::Scalar(scalar) => ImageType::scalar(scalar.image()),
             GArg::Nominal(_) => ImageType::scalar(Scalar::Int),
             GArg::Struct(ty) | GArg::Group(ty) => ImageType::Record {
-                idx: ty.index(),
+                idx: ty,
                 optional: false,
             },
             GArg::Enum(id) => ImageType::Enum {
-                idx: id.index(),
+                idx: id,
                 optional: false,
             },
             GArg::Collection(idx) => ImageType::Collection {
@@ -755,8 +755,8 @@ impl ReadyInstanceRequirement for EnumVariantSelection<'_> {
 /// disjoint without searching the stable cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TypeInstKey {
-    Record(u16),
-    Enum(u16),
+    Record(u32),
+    Enum(u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1327,7 +1327,7 @@ pub(crate) struct TypeRegistry {
     /// It only accelerates the mint-dedup reuse probe from a linear spec scan to a keyed
     /// lookup; a row that does not carry the looked-up spec is index/authority drift,
     /// reported as the shared `MintIndexDrift` coherence failure rather than trusted.
-    collection_index: RefCell<HashMap<CollSpec, u16>>,
+    collection_index: RefCell<HashMap<CollSpec, CollTypeId>>,
     /// A metadata directory reused across every probe of one monomorphization pass — the
     /// mint/dedup probes and the presentation projections (field access, spelling, durable
     /// walks) alike. Type instantiations and collections are appended in strict image
@@ -1545,7 +1545,7 @@ struct TypeMetadataView<'a> {
 enum MetadataTask {
     Argument {
         arg: GArg,
-        collection_parent: Option<u16>,
+        collection_parent: Option<CollTypeId>,
         generic_parent: Option<usize>,
     },
     ReadyBody {
@@ -1609,7 +1609,7 @@ struct DisplayScratch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DisplayNode {
     Row(usize),
-    Collection(u16),
+    Collection(CollTypeId),
 }
 
 impl DisplayScratch {
@@ -1636,15 +1636,15 @@ impl DisplayScratch {
         *active = 0;
     }
 
-    fn enter_collection(&mut self, index: u16) -> bool {
-        let Some(active) = self.active_collections.get_mut(index as usize) else {
+    fn enter_collection(&mut self, index: CollTypeId) -> bool {
+        let Some(active) = self.active_collections.get_mut(index.index() as usize) else {
             return false;
         };
         std::mem::replace(active, 1) == 0
     }
 
-    fn leave_collection(&mut self, index: u16) {
-        let active = &mut self.active_collections[index as usize];
+    fn leave_collection(&mut self, index: CollTypeId) {
+        let active = &mut self.active_collections[index.index() as usize];
         // Idempotent on the same terms as `leave_row`.
         debug_assert_eq!(*active, 1);
         *active = 0;
@@ -3087,7 +3087,7 @@ impl TypeRegistry {
         site: MintSite<'_>,
         enum_name: &str,
         variant_name: &str,
-        coll: u16,
+        coll: CollTypeId,
     ) {
         let kind = match self.collection_spec(coll) {
             CollSpec::List { .. } => "List",
@@ -3445,7 +3445,7 @@ impl TypeRegistry {
         &self,
         draft: &mut ImageDraft,
         elem: GArg,
-    ) -> Result<u16, ResolveError> {
+    ) -> Result<CollTypeId, ResolveError> {
         self.instantiate_collection(draft, CollSpec::List { elem })
     }
 
@@ -3480,7 +3480,7 @@ impl TypeRegistry {
         draft: &mut ImageDraft,
         key: GArg,
         value: GArg,
-    ) -> Result<u16, ResolveError> {
+    ) -> Result<CollTypeId, ResolveError> {
         self.check_map_key_admissibility(key)?;
         self.instantiate_collection(draft, CollSpec::Map { key, value })
     }
@@ -3489,7 +3489,7 @@ impl TypeRegistry {
         &self,
         draft: &mut ImageDraft,
         spec: CollSpec,
-    ) -> Result<u16, ResolveError> {
+    ) -> Result<CollTypeId, ResolveError> {
         match spec {
             CollSpec::List { elem } => self.validate_type_arguments(&[elem])?,
             CollSpec::Map { key, value } => self.validate_type_arguments(&[key, value])?,
@@ -3513,7 +3513,7 @@ impl TypeRegistry {
         #[cfg(test)]
         bump_scaling(|counts| counts.coll_inst_probe_steps += 1);
         if let Some(&index) = self.collection_index.borrow().get(&spec) {
-            if collections.get(index as usize) != Some(&spec) {
+            if collections.get(index.index() as usize) != Some(&spec) {
                 return Err(
                     GenericInvariant::CacheState(GenericCacheInvariant::MintIndexDrift).into(),
                 );
@@ -3531,18 +3531,18 @@ impl TypeRegistry {
         let mut collections = self.collections.borrow_mut();
         debug_assert_eq!(collections.len(), cache_index);
         collections.push(spec);
-        self.collection_index.borrow_mut().insert(spec, id.index());
-        Ok(id.index())
+        self.collection_index.borrow_mut().insert(spec, id);
+        Ok(id)
     }
 
     /// The source element/key/value spec of a minted collection instantiation.
-    pub(crate) fn collection_spec(&self, idx: u16) -> CollSpec {
-        self.collections.borrow()[idx as usize]
+    pub(crate) fn collection_spec(&self, idx: CollTypeId) -> CollSpec {
+        self.collections.borrow()[idx.index() as usize]
     }
 
     /// The source spelling of a collection instantiation (`List<T>` / `Map<K, V>`),
     /// used in diagnostics and cycle labels. The canonical angle-form display owner.
-    pub(crate) fn collection_spelling(&self, idx: u16) -> String {
+    pub(crate) fn collection_spelling(&self, idx: CollTypeId) -> String {
         let view = self.metadata_view();
         let mut display = DisplayScratch::for_view(&view);
         collection_spelling_for_display(self, &view, idx, None, None, &mut display)
@@ -3734,7 +3734,7 @@ impl TypeRegistry {
         self.nominals
             .iter()
             .position(|info| info.name == name)
-            .map(|index| (NominalId(index as u16), &self.nominals[index]))
+            .map(|index| (NominalId(index as u32), &self.nominals[index]))
     }
 
     pub(crate) fn nominal(&self, id: NominalId) -> &NominalInfo {

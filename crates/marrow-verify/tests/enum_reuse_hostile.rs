@@ -46,33 +46,31 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 
 /// Add the enum type `Access { reader, writer, admin }` (all empty-payload) and return
 /// its table index.
-fn access_enum(draft: &mut ImageDraft) -> u16 {
+fn access_enum(draft: &mut ImageDraft) -> marrow_image::EnumId {
     let name = draft.intern_string("Access");
     let reader = draft.intern_string("reader");
     let writer = draft.intern_string("writer");
     let admin = draft.intern_string("admin");
-    draft
-        .add_enum_type(EnumTypeDef {
-            name,
-            variants: vec![
-                VariantDef {
-                    name: reader,
-                    category: false,
-                    payload: vec![],
-                },
-                VariantDef {
-                    name: writer,
-                    category: false,
-                    payload: vec![],
-                },
-                VariantDef {
-                    name: admin,
-                    category: false,
-                    payload: vec![],
-                },
-            ],
-        })
-        .index()
+    draft.add_enum_type(EnumTypeDef {
+        name,
+        variants: vec![
+            VariantDef {
+                name: reader,
+                category: false,
+                payload: vec![],
+            },
+            VariantDef {
+                name: writer,
+                category: false,
+                payload: vec![],
+            },
+            VariantDef {
+                name: admin,
+                category: false,
+                payload: vec![],
+            },
+        ],
+    })
 }
 
 /// The identity of one `Access` enum shape: its sum id and its three member ids. A
@@ -467,7 +465,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
             FieldDef {
                 name: marks,
                 ty: ImageType::Record {
-                    idx: group_record.index(),
+                    idx: group_record,
                     optional: false,
                 },
                 required: true,

@@ -206,17 +206,17 @@ impl<T, E> HiddenOutcome for Result<T, E> {
 }
 
 trait CollectionIndexOutcome {
-    fn into_index(self) -> Option<u16>;
+    fn into_index(self) -> Option<CollTypeId>;
 }
 
-impl CollectionIndexOutcome for u16 {
-    fn into_index(self) -> Option<u16> {
+impl CollectionIndexOutcome for CollTypeId {
+    fn into_index(self) -> Option<CollTypeId> {
         Some(self)
     }
 }
 
-impl<E> CollectionIndexOutcome for Result<u16, E> {
-    fn into_index(self) -> Option<u16> {
+impl<E> CollectionIndexOutcome for Result<CollTypeId, E> {
+    fn into_index(self) -> Option<CollTypeId> {
         self.ok()
     }
 }
@@ -819,7 +819,7 @@ fn target_case(draft: ImageDraft, target: GArg) -> bool {
     )
 }
 
-fn seed_collection(registry: &TypeRegistry, draft: &mut ImageDraft, spec: CollSpec) -> u16 {
+fn seed_collection(registry: &TypeRegistry, draft: &mut ImageDraft, spec: CollSpec) -> CollTypeId {
     let def = match spec {
         CollSpec::List { elem } => CollectionTypeDef::List { elem: elem.image() },
         CollSpec::Map { key, value } => CollectionTypeDef::Map {
@@ -830,7 +830,7 @@ fn seed_collection(registry: &TypeRegistry, draft: &mut ImageDraft, spec: CollSp
     let id = draft.add_collection_type(def);
     assert_eq!(id.index() as usize, registry.collections.borrow().len());
     registry.collections.borrow_mut().push(spec);
-    id.index()
+    id
 }
 
 /// A draft holding one empty record type, and that type's id. Each call builds its own:
@@ -875,7 +875,12 @@ fn missing_collection_target_is_rejected_before_table_indexing() {
     let mut draft = ImageDraft::new();
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
-    let result = registry.mint_type_instance(&mut draft, 0, &[GArg::Collection(0)], site());
+    let result = registry.mint_type_instance(
+        &mut draft,
+        0,
+        &[GArg::Collection(CollTypeId::from_index(0))],
+        site(),
+    );
 
     assert!(result.is_err());
     assert_eq!(owner_snapshot(&registry), owner_before);
@@ -1216,14 +1221,14 @@ fn valid_collection_target_remains_accepted() {
         fields: vec![FieldDef {
             name: field_name,
             ty: ImageType::Collection {
-                idx: expected_collection.index(),
+                idx: expected_collection,
                 optional: false,
             },
             required: true,
         }],
     });
 
-    assert_eq!(collection, expected_collection.index());
+    assert_eq!(collection, expected_collection);
     assert_eq!(id, TypeInstId::Record(expected_box));
     assert_eq!(draft_fingerprint(&draft), draft_fingerprint(&expected));
 }
@@ -1475,7 +1480,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
         ImageDraft::new(),
-        GArg::Collection(0),
+        GArg::Collection(CollTypeId::from_index(0)),
     );
 
     let (group_registry, group_draft, _, group_id) = resource_target_fixture();

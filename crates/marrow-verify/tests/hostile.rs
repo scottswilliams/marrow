@@ -17,7 +17,7 @@ use marrow_image::{
     DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId,
     FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
     LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticStepKind,
-    SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
+    SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -58,7 +58,7 @@ fn product_members(draft: &ImageDraft) -> Vec<DeclarationMember> {
 /// direct member of the Product).
 fn field_member(
     shapes: ScalarShapes,
-    parent: Option<u16>,
+    parent: Option<u32>,
     id: [u8; 16],
     required: bool,
     scalar: Scalar,
@@ -133,7 +133,7 @@ fn good_image() -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let helper_name = draft.intern_string("helper");
     let seven = draft.intern_int(7);
-    let helper_code = vec![Instr::ConstLoad(seven.index()), Instr::Return];
+    let helper_code = vec![Instr::ConstLoad(seven), Instr::Return];
     let helper = draft
         .add_function(FunctionDef {
             name: helper_name,
@@ -317,7 +317,7 @@ fn two_export_image() -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let one = draft.intern_int(1);
     let a_name = draft.intern_string("a");
-    let a_code = vec![Instr::ConstLoad(one.index()), Instr::Return];
+    let a_code = vec![Instr::ConstLoad(one), Instr::Return];
     let a = draft
         .add_function(FunctionDef {
             name: a_name,
@@ -330,7 +330,7 @@ fn two_export_image() -> Vec<u8> {
         })
         .expect("every site operand is live");
     let b_name = draft.intern_string("b");
-    let b_code = vec![Instr::ConstLoad(one.index()), Instr::Return];
+    let b_code = vec![Instr::ConstLoad(one), Instr::Return];
     let b = draft
         .add_function(FunctionDef {
             name: b_name,
@@ -441,9 +441,9 @@ fn function_phase_unreachable_instruction() {
     let name = draft.intern_string("main");
     let one = draft.intern_int(1);
     let code = vec![
-        Instr::ConstLoad(one.index()),
+        Instr::ConstLoad(one),
         Instr::Return,
-        Instr::ConstLoad(one.index()),
+        Instr::ConstLoad(one),
         Instr::Return,
     ];
     let func = draft
@@ -482,7 +482,7 @@ fn function_phase_call_argument_type_mismatch() {
     let main_name = draft.intern_string("main");
     let flag = draft.intern_bool(true);
     let main_code = vec![
-        Instr::ConstLoad(flag.index()),
+        Instr::ConstLoad(flag),
         Instr::Call(helper.index()),
         Instr::Return,
     ];
@@ -720,11 +720,9 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
 fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
     let mut draft = ImageDraft::new();
     let sites = durable_schema(&mut draft);
-    let list_ty = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Text),
-        })
-        .index();
+    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Text),
+    });
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("iter");
     let (params, mut code): (Vec<ImageType>, Vec<Instr>) = if from {
@@ -783,11 +781,9 @@ fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
     // `Bool` are pushed, and the image seals.
     let (mut draft, root, _branch_record) = flat_branch_draft();
     let site = flat_branch_entry_site(&mut draft, &root);
-    let list_ty = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Text),
-        })
-        .index();
+    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Text),
+    });
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("notes");
     let code = vec![
@@ -840,11 +836,9 @@ fn a_bounded_traversal_with_a_mismatched_list_type_rejects() {
     // frozen-list type the verifier refuses before the runtime materializes it.
     let mut draft = ImageDraft::new();
     let sites = durable_schema(&mut draft);
-    let wrong_list = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        })
-        .index();
+    let wrong_list = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Int),
+    });
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("iter");
     let code = vec![
@@ -886,11 +880,9 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
     // verifier refuses.
     let (mut draft, root, _branch_record) = flat_branch_draft();
     let site = flat_branch_entry_site(&mut draft, &root);
-    let list_ty = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Text),
-        })
-        .index();
+    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Text),
+    });
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("notes");
     let code = vec![
@@ -930,11 +922,9 @@ fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
     // the opcode at a field site is refused before any frozen-key allocation.
     let mut draft = ImageDraft::new();
     let sites = durable_schema(&mut draft);
-    let list_ty = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Text),
-        })
-        .index();
+    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Text),
+    });
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("iter");
     let code = vec![
@@ -1085,11 +1075,9 @@ fn a_bounded_traversal_after_commit_rejects() {
     // a consumed transaction.
     let mut draft = ImageDraft::new();
     let sites = durable_schema(&mut draft);
-    let list_ty = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Text),
-        })
-        .index();
+    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Text),
+    });
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
@@ -1152,7 +1140,7 @@ fn a_traversal_list_type_naming_a_map_rejects() {
                 site: sites.entry,
                 limit: 2,
                 from: false,
-                list_ty,
+                list_ty: marrow_image::CollTypeId::from_index(list_ty),
             },
             Instr::Pop,
             Instr::Pop,
@@ -1472,7 +1460,7 @@ fn group_branch_draft_with_branch_record(
             FieldDef {
                 name: details,
                 ty: ImageType::Record {
-                    idx: details_record.index(),
+                    idx: details_record,
                     optional: false,
                 },
                 required: true,
@@ -1563,7 +1551,7 @@ fn group_branch_draft_with_branch_record(
     } else {
         let name = draft.intern_string("label");
         let zero = draft.intern_int(0);
-        let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+        let code = vec![Instr::ConstLoad(zero), Instr::Return];
         let func = draft
             .add_function(FunctionDef {
                 name,
@@ -1919,7 +1907,7 @@ fn widened_field_indexed_draft() -> ImageDraft {
             FieldDef {
                 name: owner,
                 ty: ImageType::Record {
-                    idx: name_record.index(),
+                    idx: name_record,
                     optional: false,
                 },
                 required: true,
@@ -2109,7 +2097,7 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
     let group_slot = FieldDef {
         name: details,
         ty: ImageType::Record {
-            idx: details_record.index(),
+            idx: details_record,
             optional: false,
         },
         required: true,
@@ -2326,7 +2314,7 @@ fn a_whole_group_site_over_a_root_group_seals_executable_and_its_opcode_verifies
         Instr::LocalGet(0),
         Instr::DurReadGroup(site),
         Instr::Pop,
-        Instr::ConstLoad(zero.index()),
+        Instr::ConstLoad(zero),
         Instr::Return,
     ];
     let func = draft
@@ -2376,7 +2364,7 @@ fn a_group_opcode_over_a_non_group_site_rejects() {
         Instr::LocalGet(0),
         Instr::DurReadGroup(site),
         Instr::Pop,
-        Instr::ConstLoad(zero.index()),
+        Instr::ConstLoad(zero),
         Instr::Return,
     ];
     let func = draft
@@ -2476,7 +2464,7 @@ fn a_branch_record_disagreeing_with_its_member_fields_rejects() {
 /// shape. No group, so the root is flat-executable and its branch whole-payload
 /// site seals executable. Returns the draft, its admitted root occurrence, and the
 /// branch's materialized record type index (the whole branch-entry read's result type).
-fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
+fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, TypeId) {
     let mut draft = ImageDraft::new();
     let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
@@ -2540,7 +2528,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
             },
         )
         .expect("the Product is declared");
-    (draft, admitted, notes_record.index())
+    (draft, admitted, notes_record)
 }
 
 /// The whole-payload site of the flat-branch graph's `notes` branch entry: the branch
@@ -3148,7 +3136,7 @@ fn a_guarded_strict_sparse_set_verifies() {
             Instr::LocalGet(0),
             Instr::DurExists(sites.entry),
             Instr::JumpIfFalse(7),
-            Instr::ConstLoad(text.index()),
+            Instr::ConstLoad(text),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
                 site: sites.label,
@@ -3172,7 +3160,7 @@ fn a_strict_sparse_set_without_a_presence_fact_rejects() {
         draft,
         vec![
             Instr::TxnBegin,
-            Instr::ConstLoad(text.index()),
+            Instr::ConstLoad(text),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
                 site: sites.label,
@@ -3200,7 +3188,7 @@ fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
             Instr::LocalGet(0),
             Instr::DurExists(sites.entry),
             Instr::JumpIfFalse(7),
-            Instr::ConstLoad(text.index()),
+            Instr::ConstLoad(text),
             Instr::SomeWrap,
             // Slot 0 is proven present by the guard; naming slot 1 is unproven.
             Instr::DurSetSparsePresent {
@@ -3246,7 +3234,7 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
             Instr::LocalGet(0),
             Instr::DurEraseEntry(sites.entry),
             Instr::Jump(4),
-            Instr::ConstLoad(text.index()),
+            Instr::ConstLoad(text),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
                 site: sites.label,
@@ -3287,7 +3275,7 @@ fn a_strict_sparse_set_after_a_key_rebind_rejects() {
             Instr::JumpIfFalse(9),
             Instr::LocalGet(1),
             Instr::LocalSet(0),
-            Instr::ConstLoad(text.index()),
+            Instr::ConstLoad(text),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
                 site: sites.label,
@@ -3309,7 +3297,7 @@ fn branch_presence_schema() -> (
     ImageDraft,
     LegacyDraftSiteOperand,
     LegacyDraftSiteOperand,
-    u16,
+    TypeId,
 ) {
     let mut draft = ImageDraft::new();
     let counter = draft.intern_string("Counter");
@@ -3377,7 +3365,7 @@ fn branch_presence_schema() -> (
         &branch_path,
         SemanticTarget::WholePayload,
     );
-    (draft, label_site, branch_entry, notes_record.index())
+    (draft, label_site, branch_entry, notes_record)
 }
 
 /// Declare the tracer `Counter` Product extended with a string-keyed `notes` branch of
@@ -3456,14 +3444,14 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
     // presence lattice keys on).
     let code = vec![
         Instr::TxnBegin,
-        Instr::ConstLoad(text.index()),
+        Instr::ConstLoad(text),
         Instr::RecordNew(notes_record),
         Instr::LocalSet(2),
         Instr::LocalGet(0), // root key
         Instr::LocalGet(1), // branch key
         Instr::LocalGet(2), // branch record
         Instr::DurCreateEntry(branch_entry),
-        Instr::ConstLoad(text.index()),
+        Instr::ConstLoad(text),
         Instr::SomeWrap,
         // Claims slot 1's *root* entry is present, relying on the branch create above.
         Instr::DurSetSparsePresent {
@@ -3581,7 +3569,7 @@ fn a_strict_sparse_set_over_a_branch_field_with_a_single_root_key_rejects() {
         Instr::LocalGet(0),
         Instr::DurExists(root_entry),
         Instr::JumpIfFalse(7),
-        Instr::ConstLoad(text.index()),
+        Instr::ConstLoad(text),
         Instr::SomeWrap,
         Instr::DurSetSparsePresent {
             site: branch_field,
@@ -3618,7 +3606,7 @@ fn a_two_slot_branch_strict_set_without_a_presence_fact_rejects() {
     let name = draft.intern_string("e");
     let code = vec![
         Instr::TxnBegin,
-        Instr::ConstLoad(text.index()),
+        Instr::ConstLoad(text),
         Instr::SomeWrap,
         // Slots 0,1 are the [root, branch] key params — arity- and type-correct for the
         // branch-field site — but no guard proves the branch entry present.
@@ -3659,8 +3647,8 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
     let helper_name = draft.intern_string("helper");
     let helper_code = vec![
         Instr::TxnBegin,
-        Instr::ConstLoad(key.index()),
-        Instr::ConstLoad(val.index()),
+        Instr::ConstLoad(key),
+        Instr::ConstLoad(val),
         Instr::DurSetRequired(sites.value),
         Instr::TxnCommit,
         Instr::Return,
@@ -3738,11 +3726,7 @@ fn test_entry_image() -> (ImageDraft, FuncId) {
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let truth = draft.intern_bool(true);
-    let code = vec![
-        Instr::ConstLoad(truth.index()),
-        Instr::Assert,
-        Instr::Return,
-    ];
+    let code = vec![Instr::ConstLoad(truth), Instr::Assert, Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: title,
@@ -3774,11 +3758,7 @@ fn assert_on_a_non_bool_operand_rejects_at_function() {
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let seven = draft.intern_int(7);
-    let code = vec![
-        Instr::ConstLoad(seven.index()),
-        Instr::Assert,
-        Instr::Return,
-    ];
+    let code = vec![Instr::ConstLoad(seven), Instr::Assert, Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: title,
@@ -3814,7 +3794,7 @@ fn test_entry_may_carry_durable_demand() {
     let title = draft.intern_string("holds");
     let key = draft.intern_text("x");
     let code = vec![
-        Instr::ConstLoad(key.index()),
+        Instr::ConstLoad(key),
         Instr::DurExists(sites.entry),
         Instr::Assert,
         Instr::Return,
@@ -3860,11 +3840,7 @@ fn two_test_image() -> Vec<u8> {
     let truth = draft.intern_bool(true);
     for title_text in ["alpha", "beta"] {
         let title = draft.intern_string(title_text);
-        let code = vec![
-            Instr::ConstLoad(truth.index()),
-            Instr::Assert,
-            Instr::Return,
-        ];
+        let code = vec![Instr::ConstLoad(truth), Instr::Assert, Instr::Return];
         let func = draft
             .add_function(FunctionDef {
                 name: title,
@@ -4016,7 +3992,7 @@ fn range_guard_over_a_bare_int_verifies() {
     let name = draft.intern_string("main");
     let seven = draft.intern_int(7);
     let code = vec![
-        Instr::ConstLoad(seven.index()),
+        Instr::ConstLoad(seven),
         Instr::RangeGuard { lo: 0, hi: 150 },
         Instr::Return,
     ];
@@ -4045,7 +4021,7 @@ fn range_guard_on_an_empty_stack_rejects_at_function() {
     let seven = draft.intern_int(7);
     let code = vec![
         Instr::RangeGuard { lo: 0, hi: 150 },
-        Instr::ConstLoad(seven.index()),
+        Instr::ConstLoad(seven),
         Instr::Return,
     ];
     let func = draft
@@ -4072,7 +4048,7 @@ fn range_guard_on_a_non_int_rejects_at_function() {
     let name = draft.intern_string("main");
     let flag = draft.intern_bool(true);
     let code = vec![
-        Instr::ConstLoad(flag.index()),
+        Instr::ConstLoad(flag),
         Instr::RangeGuard { lo: 0, hi: 150 },
         Instr::Return,
     ];
@@ -4101,7 +4077,7 @@ fn range_guard_with_an_empty_interval_rejects_at_function() {
     let name = draft.intern_string("main");
     let seven = draft.intern_int(7);
     let code = vec![
-        Instr::ConstLoad(seven.index()),
+        Instr::ConstLoad(seven),
         Instr::RangeGuard { lo: 5, hi: 4 },
         Instr::Return,
     ];
@@ -4132,7 +4108,7 @@ fn range_guard_with_a_truncated_operand_rejects_at_function() {
     let name = draft.intern_string("main");
     let seven = draft.intern_int(7);
     let code = vec![
-        Instr::ConstLoad(seven.index()),
+        Instr::ConstLoad(seven),
         Instr::RangeGuard { lo: 0, hi: 150 },
         Instr::Return,
     ];
@@ -4201,18 +4177,14 @@ fn record_param_and_return_refs_verify() {
     });
     let zero = draft.intern_int(0);
     let make_name = draft.intern_string("make");
-    let make_code = vec![
-        Instr::ConstLoad(zero.index()),
-        Instr::RecordNew(rec.index()),
-        Instr::Return,
-    ];
+    let make_code = vec![Instr::ConstLoad(zero), Instr::RecordNew(rec), Instr::Return];
     draft
         .add_function(FunctionDef {
             name: make_name,
             source: src,
             params: Vec::new(),
             ret: ImageType::Record {
-                idx: rec.index(),
+                idx: rec,
                 optional: false,
             },
             local_count: 0,
@@ -4227,7 +4199,7 @@ fn record_param_and_return_refs_verify() {
             name: take_name,
             source: src,
             params: vec![ImageType::Record {
-                idx: rec.index(),
+                idx: rec,
                 optional: false,
             }],
             ret: ImageType::scalar(Scalar::Int),
@@ -4285,7 +4257,7 @@ fn record_table_image(fields: impl FnOnce(&mut ImageDraft) -> Vec<FieldDef>) -> 
     });
     let zero = draft.intern_int(0);
     let fname = draft.intern_string("f");
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: fname,
@@ -4334,7 +4306,7 @@ fn value_type_cycle_through_a_record_field_rejects() {
         fields: vec![FieldDef {
             name: fname,
             ty: ImageType::Enum {
-                idx: 0,
+                idx: marrow_image::EnumId::from_index(0),
                 optional: false,
             },
             required: true,
@@ -4346,14 +4318,14 @@ fn value_type_cycle_through_a_record_field_rejects() {
             name: vname,
             category: false,
             payload: vec![ImageType::Record {
-                idx: 0,
+                idx: marrow_image::TypeId::from_index(0),
                 optional: false,
             }],
         }],
     });
     let zero = draft.intern_int(0);
     let f = draft.intern_string("f");
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: f,
@@ -4376,7 +4348,7 @@ fn value_graph_code(draft: &mut ImageDraft) -> String {
     let src = draft.intern_string("src/main.mw");
     let zero = draft.intern_int(0);
     let fname = draft.intern_string("f");
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: fname,
@@ -4403,7 +4375,7 @@ fn self_referential_record_field_rejects() {
         vec![FieldDef {
             name,
             ty: ImageType::Record {
-                idx: 0,
+                idx: marrow_image::TypeId::from_index(0),
                 optional: false,
             },
             required: true,
@@ -4426,7 +4398,7 @@ fn value_type_cycle_through_two_records_rejects() {
         fields: vec![FieldDef {
             name: fb,
             ty: ImageType::Record {
-                idx: 1,
+                idx: marrow_image::TypeId::from_index(1),
                 optional: false,
             },
             required: true,
@@ -4437,7 +4409,7 @@ fn value_type_cycle_through_two_records_rejects() {
         fields: vec![FieldDef {
             name: fa,
             ty: ImageType::Record {
-                idx: 0,
+                idx: marrow_image::TypeId::from_index(0),
                 optional: false,
             },
             required: true,
@@ -4459,7 +4431,7 @@ fn self_referential_enum_payload_rejects() {
             name: vname,
             category: false,
             payload: vec![ImageType::Enum {
-                idx: 0,
+                idx: marrow_image::EnumId::from_index(0),
                 optional: false,
             }],
         }],
@@ -4483,7 +4455,7 @@ fn value_type_cycle_through_mixed_records_and_enums_rejects() {
         fields: vec![FieldDef {
             name: f_e,
             ty: ImageType::Enum {
-                idx: 0,
+                idx: marrow_image::EnumId::from_index(0),
                 optional: false,
             },
             required: true,
@@ -4494,7 +4466,7 @@ fn value_type_cycle_through_mixed_records_and_enums_rejects() {
         fields: vec![FieldDef {
             name: f_back,
             ty: ImageType::Record {
-                idx: 0,
+                idx: marrow_image::TypeId::from_index(0),
                 optional: false,
             },
             required: true,
@@ -4506,7 +4478,7 @@ fn value_type_cycle_through_mixed_records_and_enums_rejects() {
             name: vname,
             category: false,
             payload: vec![ImageType::Record {
-                idx: 1,
+                idx: marrow_image::TypeId::from_index(1),
                 optional: false,
             }],
         }],
@@ -4539,7 +4511,7 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
             name: vname,
             category: false,
             payload: vec![ImageType::Collection {
-                idx: 0,
+                idx: marrow_image::CollTypeId::from_index(0),
                 optional: false,
             }],
         }],
@@ -4547,7 +4519,7 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
     let src = draft.intern_string("src/main.mw");
     let zero = draft.intern_int(0);
     let fname = draft.intern_string("f");
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: fname,
@@ -4586,7 +4558,7 @@ fn deep_acyclic_record_chain_verifies() {
             vec![FieldDef {
                 name: fname,
                 ty: ImageType::Record {
-                    idx: i + 1,
+                    idx: marrow_image::TypeId::from_index(i + 1),
                     optional: false,
                 },
                 required: true,
@@ -4661,7 +4633,7 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
             FieldDef {
                 name: kindn,
                 ty: ImageType::Enum {
-                    idx: 0,
+                    idx: marrow_image::EnumId::from_index(0),
                     optional: false,
                 },
                 required: true,
@@ -4705,7 +4677,7 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
         .expect("the Product is declared");
     let zero = draft.intern_int(0);
     let f = draft.intern_string("f");
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: f,
@@ -5158,11 +5130,9 @@ fn a_bounded_traversal_over_a_composite_keyed_root_layer_rejects() {
     // traversed layer's arity from the schema and rejects any layer that is not
     // single-column, so no composite-key traversal reaches the kernel.
     let (mut draft, entry) = composite_root_draft();
-    let list_ty = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        })
-        .index();
+    let list_ty = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Int),
+    });
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("iter");
     let code = vec![

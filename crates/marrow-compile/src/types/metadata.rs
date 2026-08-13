@@ -34,8 +34,8 @@ impl DurableMetadataScratch {
         Some(!std::mem::replace(seen, true))
     }
 
-    fn first_collection(&mut self, index: u16) -> Option<bool> {
-        let seen = self.expanded_collections.get_mut(index as usize)?;
+    fn first_collection(&mut self, index: CollTypeId) -> Option<bool> {
+        let seen = self.expanded_collections.get_mut(index.index() as usize)?;
         Some(!std::mem::replace(seen, true))
     }
 
@@ -137,9 +137,14 @@ pub(super) fn collection_generic_target(
     let mut consider_arg = |arg: GArg| {
         consider(direct(arg));
         if let GArg::Collection(child) = arg
-            && (child as usize) < index
+            && (child.index() as usize) < index
         {
-            consider(resolved_targets.get(child as usize).copied().flatten());
+            consider(
+                resolved_targets
+                    .get(child.index() as usize)
+                    .copied()
+                    .flatten(),
+            );
         }
     };
     match spec {
@@ -334,8 +339,8 @@ impl MetadataScratch {
         }
     }
 
-    fn first_collection_visit(&mut self, index: u16) -> bool {
-        let seen = &mut self.seen_collections[index as usize];
+    fn first_collection_visit(&mut self, index: CollTypeId) -> bool {
+        let seen = &mut self.seen_collections[index.index() as usize];
         if *seen {
             false
         } else {
@@ -449,7 +454,8 @@ impl TypeMetadataView<'_> {
                         if collection_parent.is_some_and(|parent| index >= parent) {
                             return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
                         }
-                        let Some(spec) = self.collections.get(index as usize).copied() else {
+                        let Some(spec) = self.collections.get(index.index() as usize).copied()
+                        else {
                             return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
                         };
                         if !scratch.first_collection_visit(index) {
@@ -505,7 +511,7 @@ impl TypeMetadataView<'_> {
 
     fn validate_revisited_collection_order(
         &self,
-        index: u16,
+        index: CollTypeId,
         generic_parent: Option<usize>,
         scratch: &MetadataScratch,
     ) -> Result<(), GenericInvariant> {
@@ -514,7 +520,7 @@ impl TypeMetadataView<'_> {
         };
         let Some(summary) = scratch
             .collection_generic_targets
-            .get(index as usize)
+            .get(index.index() as usize)
             .copied()
             .flatten()
         else {
@@ -552,7 +558,7 @@ impl TypeMetadataView<'_> {
                 GArg::Collection(child) => {
                     let Some(child_summary) = scratch
                         .collection_generic_targets
-                        .get(child as usize)
+                        .get(child.index() as usize)
                         .copied()
                         .flatten()
                     else {
@@ -561,13 +567,13 @@ impl TypeMetadataView<'_> {
                     if child_summary.row < parent {
                         continue;
                     }
-                    let Some(mark) = seen.get_mut(child as usize) else {
+                    let Some(mark) = seen.get_mut(child.index() as usize) else {
                         continue;
                     };
                     if std::mem::replace(mark, true) {
                         continue;
                     }
-                    match self.collections[child as usize] {
+                    match self.collections[child.index() as usize] {
                         CollSpec::List { elem } => pending.push(elem),
                         CollSpec::Map { key, value } => {
                             pending.push(value);
@@ -838,7 +844,7 @@ impl TypeMetadataView<'_> {
                         return Ok(false);
                     };
                     let Some(CollSpec::List { elem }) =
-                        self.collections.get(index as usize).copied()
+                        self.collections.get(index.index() as usize).copied()
                     else {
                         return Ok(false);
                     };
@@ -854,7 +860,7 @@ impl TypeMetadataView<'_> {
                         return Ok(false);
                     };
                     let Some(CollSpec::Map { key, value }) =
-                        self.collections.get(index as usize).copied()
+                        self.collections.get(index.index() as usize).copied()
                     else {
                         return Ok(false);
                     };
@@ -1198,7 +1204,10 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 
-    pub(crate) fn collection_spec(&mut self, index: u16) -> Result<CollSpec, GenericInvariant> {
+    pub(crate) fn collection_spec(
+        &mut self,
+        index: CollTypeId,
+    ) -> Result<CollSpec, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
             let arg = GArg::Collection(index);
@@ -1206,7 +1215,7 @@ impl TypeMetadataSession<'_> {
                 .validate_args_with(std::slice::from_ref(&arg), None, &mut self.metadata)?;
             self.view
                 .collections
-                .get(index as usize)
+                .get(index.index() as usize)
                 .copied()
                 .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))
         })();
@@ -1457,7 +1466,8 @@ impl TypeMetadataSession<'_> {
                         if !first {
                             continue;
                         }
-                        let Some(spec) = self.view.collections.get(index as usize).copied() else {
+                        let Some(spec) = self.view.collections.get(index.index() as usize).copied()
+                        else {
                             return Err(GenericInvariant::TypeArgumentTargetMissing(arg));
                         };
                         match spec {

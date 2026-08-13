@@ -18,16 +18,16 @@
 //! the received bytes; the draft's checks are a producer-side guard, not the trust
 //! boundary.
 //!
-//! Those unconditional owners mint a logical id by narrowing the table's current length
-//! to the `u16` the id newtype carries, so a table pushed past `u16::MAX` rows would
-//! wrap an id onto an earlier one. No such draft has an image: every one of those tables
-//! has a §E bound (`MAX_STRINGS`, `MAX_CONSTS`, `MAX_TYPES`, `MAX_ENUMS`,
-//! `MAX_COLLECTIONS`, `MAX_FUNCTIONS`) an order of magnitude below `u16::MAX`, and
-//! [`ImageDraft::encode`] refuses the draft against that bound with the table's typed
-//! `TooMany*` error before any id is spelled into bytes. The `const _` encoded-width
-//! block in [`crate::bounds`] fails the build if a later widening lifts one of those
-//! bounds past the id width, at which point these mints need typed refusals rather than
-//! this derivation.
+//! Those unconditional owners mint a logical id as the table's current length carried in
+//! the wide `u32` ordinal every owned pre-seal id newtype holds, so no mint is ever a
+//! narrowed table length and an over-policy table still mints the N+1 id (the
+//! nonblocking provisional-commit law). The id itself never carries a wire width: the
+//! only narrowing to the wire's `u16` spelling is the measure core's policy-clean
+//! checked path (`crate::measure::wire_ordinal`/`wire_len`), which runs strictly after
+//! the policy walk has refused any draft past its §E bound (`MAX_STRINGS`,
+//! `MAX_CONSTS`, `MAX_TYPES`, `MAX_ENUMS`, `MAX_COLLECTIONS`, `MAX_FUNCTIONS`) — every
+//! one at or below `u16::MAX` by the `const _` encoded-width block in
+//! [`crate::bounds`].
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -176,25 +176,50 @@ impl AdmittedGraphInputPlan {
     }
 }
 
+/// Mint the next logical ordinal for an owned pre-seal table of `len` rows.
+///
+/// The wide-ordinal issuance check: the carrier domain is the `u32` the id newtypes
+/// hold, not a public policy maximum — an over-policy table still mints the N+1 id
+/// (the nonblocking provisional-commit law) and the image is refused at the encode
+/// fence by the policy walk. A table whose length leaves the `u32` domain cannot
+/// exist in addressable memory before the process fails to allocate, so the checked
+/// conversion is total over every constructible draft; it is spelled checked rather
+/// than cast so the issuance domain is stated where the id is minted.
+pub(crate) fn wide_ordinal(len: usize) -> u32 {
+    u32::try_from(len).expect("an owned table's row count is within the wide u32 ordinal domain")
+}
+
 /// A logical string-pool id, stable across the sort the encoder performs.
+///
+/// Like every owned pre-seal logical id it is a typed newtype over a private wide
+/// `u32` ordinal: the id itself never carries a wire width, and the only narrowing
+/// to the wire's `u16` spelling is the measure core's policy-clean checked path
+/// (`crate::measure`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StrId(u16);
+pub struct StrId(u32);
 
 /// A logical constant-pool id, stable across the sort the encoder performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConstId(pub(crate) u16);
+pub struct ConstId(pub(crate) u32);
 
 impl ConstId {
-    /// The raw logical index, as carried in a `ConstLoad` operand until the encoder
-    /// rewrites it to the final sorted pool position.
-    pub fn index(self) -> u16 {
+    /// The constant-pool id at `index` — the widening the independent verifier
+    /// performs on a `u16` it read from received bytes.
+    pub const fn from_index(index: u16) -> Self {
+        Self(index as u32)
+    }
+
+    /// The wide logical ordinal, as carried in a `ConstLoad` operand until the encoder
+    /// rewrites it to the final sorted pool position. A logical ordinal, never a wire
+    /// value: emission narrows only through the measure core's policy-clean path.
+    pub const fn index(self) -> u32 {
         self.0
     }
 }
 
 /// A record-type index (also the final container index; types keep insertion order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TypeId(pub(crate) u16);
+pub struct TypeId(pub(crate) u32);
 
 impl TypeId {
     /// The record-type index at `index`.
@@ -202,38 +227,70 @@ impl TypeId {
     /// A record-type index is a container-table position, not a capability, for the same
     /// reason [`StrId::from_index`] is: the independent verifier reads one from received
     /// bytes and every owner that resolves one range-checks it.
-    pub fn from_index(index: u16) -> Self {
-        Self(index)
+    pub const fn from_index(index: u16) -> Self {
+        Self(index as u32)
     }
 
-    /// The raw record-type index, as carried in a `RecordNew`/`FieldGet` operand and
-    /// in an `ImageType::Record`.
-    pub fn index(self) -> u16 {
+    /// The wide logical record-type ordinal, as carried in a `RecordNew` operand and
+    /// in an `ImageType::Record`. A logical ordinal, never a wire value.
+    pub const fn index(self) -> u32 {
         self.0
     }
 }
 
 /// An enum-type index (also the final container index; enums keep insertion order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnumId(pub(crate) u16);
+pub struct EnumId(pub(crate) u32);
 
 impl EnumId {
-    /// The raw enum-type index, as carried in `EnumConstruct`/`EnumTag`/
-    /// `EnumPayloadGet`/`EqEnum` operands and in an `ImageType::Enum`.
-    pub fn index(self) -> u16 {
+    /// The enum-type index at `index` — the widening of a received `u16` wire read.
+    pub const fn from_index(index: u16) -> Self {
+        Self(index as u32)
+    }
+
+    /// The wide logical enum-type ordinal, as carried in `EnumConstruct` operands and
+    /// in an `ImageType::Enum`. A logical ordinal, never a wire value.
+    pub const fn index(self) -> u32 {
         self.0
     }
 }
 
 /// A collection-type index (also the final container index; collection types keep
 /// insertion order).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CollTypeId(pub(crate) u16);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CollTypeId(pub(crate) u32);
 
 impl CollTypeId {
-    /// The raw collection-type index, as carried in `ListNew`/`MapNew` operands and
-    /// in an `ImageType::Collection`.
-    pub fn index(self) -> u16 {
+    /// The collection-type index at `index` — the widening of a received `u16` wire
+    /// read.
+    pub const fn from_index(index: u16) -> Self {
+        Self(index as u32)
+    }
+
+    /// The wide logical collection-type ordinal, as carried in `ListNew`/`MapNew`
+    /// operands and in an `ImageType::Collection`. A logical ordinal, never a wire
+    /// value.
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+/// A durable root reference: the wide logical ordinal of one row in the flat
+/// root-occurrence table — the reference an `ImageType::Identity` and a
+/// `MakeIdentity` instruction embed, and the fact [`AdmittedRoot::root_id`]
+/// publishes. The wire's `u16` RootId discriminant is the policy-clean narrowing of
+/// this ordinal, performed only on the measure core's fitting arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RootId(pub(crate) u32);
+
+impl RootId {
+    /// The root reference at `index` — the widening of a received `u16` wire read.
+    pub const fn from_index(index: u16) -> Self {
+        Self(index as u32)
+    }
+
+    /// The wide logical occurrence ordinal. A logical ordinal, never a wire value.
+    pub const fn index(self) -> u32 {
         self.0
     }
 }
@@ -365,7 +422,7 @@ pub struct RootOccurrenceDef {
 #[derive(Debug, Clone)]
 pub struct AdmittedRoot {
     occurrence: RootOccurrenceSelector,
-    root_id: u16,
+    root_id: RootId,
     placement: CanonicalDeclarationPathSelector,
     indexes: Vec<CanonicalDeclarationPathSelector>,
 }
@@ -376,11 +433,12 @@ impl AdmittedRoot {
         &self.occurrence
     }
 
-    /// The DURABLE-table index of this occurrence — the discriminant an entry identity
-    /// `Id(^root)` carries on the wire. It is a wire fact the compiler emits into
-    /// identity instructions, not a way to name the occurrence row: naming it is what the
+    /// The typed durable root reference of this occurrence — the wide logical ordinal
+    /// whose policy-clean `u16` narrowing is the discriminant an entry identity
+    /// `Id(^root)` carries on the wire. It is a fact the compiler embeds into identity
+    /// instructions, not a way to name the occurrence row: naming it is what the
     /// selector is for.
-    pub fn root_id(&self) -> u16 {
+    pub fn root_id(&self) -> RootId {
         self.root_id
     }
 
@@ -764,9 +822,9 @@ impl ImageDraft {
     /// text returns the same id.
     pub fn intern_string(&mut self, text: &str) -> StrId {
         if let Some(index) = self.strings.iter().position(|existing| existing == text) {
-            return StrId(index as u16);
+            return StrId(wide_ordinal(index));
         }
-        let id = StrId(self.strings.len() as u16);
+        let id = StrId(wide_ordinal(self.strings.len()));
         self.strings.push(text.to_string());
         id
     }
@@ -806,21 +864,21 @@ impl ImageDraft {
             .iter()
             .position(|existing| const_eq(*existing, value))
         {
-            return ConstId(index as u16);
+            return ConstId(wide_ordinal(index));
         }
-        let id = ConstId(self.consts.len() as u16);
+        let id = ConstId(wide_ordinal(self.consts.len()));
         self.consts.push(value);
         id
     }
 
     pub fn add_record_type(&mut self, def: RecordTypeDef) -> TypeId {
-        let id = TypeId(self.types.len() as u16);
+        let id = TypeId(wide_ordinal(self.types.len()));
         self.types.push(def);
         id
     }
 
     pub fn add_enum_type(&mut self, def: EnumTypeDef) -> EnumId {
-        let id = EnumId(self.enums.len() as u16);
+        let id = EnumId(wide_ordinal(self.enums.len()));
         self.enums.push(def);
         id
     }
@@ -841,7 +899,7 @@ impl ImageDraft {
     /// and `List[int]` stay distinct even though a nominal element erases to the same
     /// image `int`), minting one row here per distinct source instantiation.
     pub fn add_collection_type(&mut self, def: CollectionTypeDef) -> CollTypeId {
-        let id = CollTypeId(self.colls.len() as u16);
+        let id = CollTypeId(wide_ordinal(self.colls.len()));
         self.colls.push(def);
         id
     }
@@ -1375,16 +1433,17 @@ impl StrId {
     /// A logical string id is a pool position, not a capability: the independent verifier
     /// reads one from received bytes and must be able to state it, and every owner that
     /// resolves one checks it against the pool it indexes.
-    pub fn from_index(index: u16) -> Self {
-        Self(index)
+    pub const fn from_index(index: u16) -> Self {
+        Self(index as u32)
     }
 
-    /// The raw logical index.
-    pub fn index(self) -> u16 {
+    /// The wide logical ordinal. A logical ordinal, never a wire value: emission
+    /// narrows only through the measure core's policy-clean path.
+    pub const fn index(self) -> u32 {
         self.0
     }
 
-    pub(crate) fn raw(self) -> u16 {
+    pub(crate) fn raw(self) -> u32 {
         self.0
     }
 }

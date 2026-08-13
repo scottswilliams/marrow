@@ -232,7 +232,7 @@ pub(crate) struct DurableRoot {
     /// This root's DURABLE-table index (its declaration-ordered RootId) — the discriminant
     /// an entry identity `Id(^root)` carries, so two identities over different roots are
     /// distinct values and an identity addressed to the wrong root is a type error.
-    pub(crate) root_id: u16,
+    pub(crate) root_id: marrow_image::RootId,
     /// The resource (product) name backing this store — the head of a branch's
     /// qualified constructor path `Resource.branch(…)`.
     pub(crate) resource: String,
@@ -609,8 +609,8 @@ impl DurableRegistry {
     ///
     /// A root's index in the executable list *is* its RootId, so this is a keyed lookup
     /// rather than a scan. `None` for an id no executable root carries.
-    pub(crate) fn root_by_id(&self, root_id: u16) -> Option<&DurableRoot> {
-        self.roots.get(usize::from(root_id))
+    pub(crate) fn root_by_id(&self, root_id: marrow_image::RootId) -> Option<&DurableRoot> {
+        self.roots.get(root_id.index() as usize)
     }
 
     /// Every declared store-root name — admitted, parked, or refused — so a reference
@@ -2425,7 +2425,7 @@ fn emit_declaration_commands(
     nodes: &mut [DeclarationDraftNode],
     children: &[Vec<usize>],
     bucket: usize,
-    parent: Option<u16>,
+    parent: Option<u32>,
 ) {
     for at in &children[bucket] {
         // The emission stops at exactly what a plan can admit for one declaration, which
@@ -2441,9 +2441,9 @@ fn emit_declaration_commands(
         };
         #[expect(
             clippy::expect_used,
-            reason = "bounded projection: the emission stops at MAX_ADMITTED_DECLARATION_COMMANDS, which is far below u16::MAX"
+            reason = "bounded projection: the emission stops at MAX_ADMITTED_DECLARATION_COMMANDS, which is far below the wide ordinal domain"
         )]
-        let command = u16::try_from(commands.len()).expect("the command count is bounded");
+        let command = u32::try_from(commands.len()).expect("the command count is bounded");
         commands.push(DeclarationMemberDef { parent, shape });
         emit_declaration_commands(commands, nodes, children, at + 1, Some(command));
     }
@@ -3253,7 +3253,7 @@ mod declaration_command_bound_tests {
         let src = draft.intern_string("src/main.mw");
         let main_name = draft.intern_string("main");
         let zero = draft.intern_int(0);
-        let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+        let code = vec![Instr::ConstLoad(zero), Instr::Return];
         let spans = (0..code.len())
             .map(|index| SpanEntry {
                 instr_index: index as u32,

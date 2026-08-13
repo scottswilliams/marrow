@@ -21,9 +21,11 @@
 //!
 //! # Why the row-count conversions cannot truncate
 //!
-//! Each table is length-prefixed, so the encoder narrows a `usize` row count to the
-//! `u16` or `u8` the wire spells it in. Every such conversion below rests on the same
-//! two-part derivation, stated once here rather than at each site:
+//! Each table is length-prefixed, so the encoder narrows a `usize` row count (and each
+//! owned wide logical ordinal) to the `u16` or `u8` the wire spells it in. Every owned
+//! narrowing below goes through the measure core's checked policy-clean path
+//! ([`crate::measure::wire_ordinal`]/[`crate::measure::wire_len`]), which rests on the
+//! same two-part derivation, stated once here rather than at each site:
 //!
 //! 1. The measure core's coherence and policy walks (`crate::measure`) run before any
 //!    section is counted or built and refuse a draft whose row count exceeds the §E
@@ -42,7 +44,7 @@ use crate::digest::ImageId;
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
 use crate::durable_id::{DurableGraphTooLarge, DurableIndexComponent, DurableIndexShape};
 use crate::instr::Instr;
-use crate::measure::LegacyV0MeasureCore;
+use crate::measure::{LegacyV0MeasureCore, wire_len, wire_ordinal};
 use crate::product::{DeclarationMemberShape, DeclarationNode, ProductDeclarationGraph};
 use crate::remap::{ConstRemap, SectionSink, StringRemap};
 use crate::ty::ImageType;
@@ -123,13 +125,13 @@ impl ImageDraft {
         sink: &mut SectionSink<'_, S>,
         order: impl Iterator<Item = usize>,
     ) {
-        push_u16(sink, self.strings().len() as u16);
+        push_u16(sink, wire_len(self.strings().len()));
         for row in order {
             if sink.is_full() {
                 return;
             }
             let text = &self.strings()[row];
-            push_u16(sink, text.len() as u16);
+            push_u16(sink, wire_len(text.len()));
             sink.extend_bytes(text.as_bytes());
         }
     }
@@ -143,7 +145,7 @@ impl ImageDraft {
         strings: &StringRemap<'_>,
         order: impl Iterator<Item = usize>,
     ) {
-        push_u16(sink, self.consts().len() as u16);
+        push_u16(sink, wire_len(self.consts().len()));
         for row in order {
             if sink.is_full() {
                 return;
@@ -182,13 +184,13 @@ impl ImageDraft {
         sink: &mut SectionSink<'_, S>,
         strings: &StringRemap<'_>,
     ) {
-        push_u16(sink, self.types().len() as u16);
+        push_u16(sink, wire_len(self.types().len()));
         for record in self.types() {
             if sink.is_full() {
                 return;
             }
             strings.token(record.name).emit(sink);
-            push_u16(sink, record.fields.len() as u16);
+            push_u16(sink, wire_len(record.fields.len()));
             for field in &record.fields {
                 strings.token(field.name).emit(sink);
                 field.ty.encode(sink);
@@ -207,13 +209,13 @@ impl ImageDraft {
         sink: &mut SectionSink<'_, S>,
         strings: &StringRemap<'_>,
     ) {
-        push_u16(sink, self.enums().len() as u16);
+        push_u16(sink, wire_len(self.enums().len()));
         for enum_def in self.enums() {
             if sink.is_full() {
                 return;
             }
             strings.token(enum_def.name).emit(sink);
-            push_u16(sink, enum_def.variants.len() as u16);
+            push_u16(sink, wire_len(enum_def.variants.len()));
             for variant in &enum_def.variants {
                 strings.token(variant.name).emit(sink);
                 sink.push(u8::from(variant.category));
@@ -230,7 +232,7 @@ impl ImageDraft {
     /// element reference (List) or key then value references (Map). Element/key/value
     /// references may themselves be `Collection` tags into an earlier COLLTYPES row.
     pub(crate) fn encode_collections<S: ImageByteSink>(&self, sink: &mut SectionSink<'_, S>) {
-        push_u16(sink, self.collections().len() as u16);
+        push_u16(sink, wire_len(self.collections().len()));
         for coll in self.collections() {
             if sink.is_full() {
                 return;
@@ -259,7 +261,7 @@ impl ImageDraft {
         sink: &mut impl ImageByteSink,
         strings: &StringRemap<'_>,
     ) -> Result<(), ImageBuildError> {
-        push_u16(sink, self.root_occurrences().len() as u16);
+        push_u16(sink, wire_len(self.root_occurrences().len()));
         // The application's ledger id anchors a non-empty durable graph; a
         // storeless image carries none.
         if !self.root_occurrences().is_empty() {
@@ -276,7 +278,7 @@ impl ImageDraft {
             // The key tuple: a count, then each column's scalar type and ledger id.
             // Zero columns is a singleton root; more than one is a composite key.
             encode_key_tuple(sink, occurrence.keys());
-            push_u16(sink, declaration.root_entry_record().0);
+            push_u16(sink, wire_ordinal(declaration.root_entry_record().index()));
             // The root's remaining ledger identity block: placement and product,
             // then the resource's durable member tree (top-level fields interleaved
             // with static `group` namespaces and keyed `branch` placements).
@@ -294,7 +296,7 @@ impl ImageDraft {
         // The retained row count, not the demand: the plan refuses to mint past its
         // capacity, so rows never exceed the demand the policy walk measured against
         // `MAX_SITES`, and the count fits the `u16` the table is prefixed with.
-        push_u16(sink, self.site_row_count() as u16);
+        push_u16(sink, wire_len(self.site_row_count()));
         self.write_site_rows(sink)
     }
 
@@ -452,9 +454,9 @@ fn encode_code<S: ImageByteSink>(
             }
             Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(sink, *l),
             Instr::Call(f) => push_u16(sink, *f),
-            Instr::RecordNew(t) => push_u16(sink, *t),
+            Instr::RecordNew(t) => push_u16(sink, wire_ordinal(t.index())),
             Instr::ListNew(c) | Instr::MapNew(c) | Instr::TextSplit(c) | Instr::TextLines(c) => {
-                push_u16(sink, *c)
+                push_u16(sink, wire_ordinal(c.index()))
             }
             Instr::FieldGet(f) | Instr::FieldSet(f) | Instr::FieldUnset(f) => push_u16(sink, *f),
             Instr::DurExists(s)
@@ -491,7 +493,7 @@ fn encode_code<S: ImageByteSink>(
                 sink.extend_bytes(&hi.to_be_bytes());
             }
             Instr::EnumConstruct { enum_idx, variant } => {
-                push_u16(sink, *enum_idx);
+                push_u16(sink, wire_ordinal(enum_idx.index()));
                 push_u16(sink, *variant);
             }
             Instr::EnumPayloadGet { variant, field } => {
@@ -519,10 +521,10 @@ fn encode_code<S: ImageByteSink>(
                 push_u16(sink, site.encodable()?);
                 push_u32(sink, *limit);
                 sink.push(u8::from(*from));
-                push_u16(sink, *list_ty);
+                push_u16(sink, wire_ordinal(list_ty.index()));
             }
             Instr::MakeIdentity { root, cols } => {
-                push_u16(sink, *root);
+                push_u16(sink, wire_ordinal(root.index()));
                 push_u16(sink, *cols);
             }
             Instr::IdentityKeyPath(cols) => push_u16(sink, *cols),
@@ -535,7 +537,7 @@ fn encode_code<S: ImageByteSink>(
                 push_u16(sink, site.encodable()?);
                 push_u32(sink, *limit);
                 sink.push(u8::from(*from));
-                push_u16(sink, *list_ty);
+                push_u16(sink, wire_ordinal(list_ty.index()));
             }
             Instr::DurIndexLookup(site) | Instr::DurIndexExists(site) => {
                 push_u16(sink, site.encodable()?)
@@ -554,7 +556,7 @@ fn encode_code<S: ImageByteSink>(
 pub(crate) fn remap_of(permutation: &[usize]) -> Vec<u16> {
     let mut map = vec![0u16; permutation.len()];
     for (final_index, &base) in permutation.iter().enumerate() {
-        map[base] = final_index as u16;
+        map[base] = wire_len(final_index);
     }
     map
 }
@@ -597,7 +599,7 @@ pub(crate) fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
 /// [scalar_tag ‖ id(16)]*`. Shared by roots and branches; column order is
 /// load-bearing.
 fn encode_key_tuple(body: &mut impl ImageByteSink, keys: &[KeyColumn]) {
-    push_u16(body, keys.len() as u16);
+    push_u16(body, wire_len(keys.len()));
     for key in keys {
         ImageType::scalar(key.scalar).encode(body);
         body.extend_bytes(key.id.bytes());
@@ -622,7 +624,7 @@ fn encode_declaration_members(
     strings: &StringRemap<'_>,
     values: &CanonicalValueShapeDag,
 ) -> Result<(), ImageBuildError> {
-    push_u16(body, members.len() as u16);
+    push_u16(body, wire_len(members.len()));
     for member in members {
         if body.is_full() {
             return Ok(());
@@ -658,7 +660,7 @@ fn encode_declaration_members(
                 body.push(0x02);
                 body.extend_bytes(placement.bytes());
                 strings.token(*name).emit_durable(body);
-                push_u16(body, record.0);
+                push_u16(body, wire_ordinal(record.index()));
                 encode_key_tuple(body, keys);
                 encode_declaration_members(body, graph, graph.members_of(member), strings, values)?;
             }
@@ -673,11 +675,11 @@ fn encode_declaration_members(
 /// `0x04` key — the frozen IDREF kind bytes) and the leaf's raw 16-byte ledger id.
 /// An index carries no value shape: it is derived from the leaves it projects.
 fn encode_durable_indexes(body: &mut impl ImageByteSink, indexes: &[DurableIndexShape]) {
-    push_u16(body, indexes.len() as u16);
+    push_u16(body, wire_len(indexes.len()));
     for index in indexes {
         body.extend_bytes(index.id.bytes());
         body.push(u8::from(index.unique));
-        push_u16(body, index.components.len() as u16);
+        push_u16(body, wire_len(index.components.len()));
         for component in &index.components {
             let (kind, id) = match component {
                 DurableIndexComponent::Field(id) => (0x02u8, id),
@@ -815,16 +817,16 @@ mod counted_equals_emitted {
                     ret: ImageType::Unit,
                     local_count: 2,
                     code: vec![
-                        Instr::ConstLoad(text.index()),
+                        Instr::ConstLoad(text),
                         Instr::LocalSet(1),
                         Instr::LocalGet(0),
                         Instr::JumpIfFalse(6),
-                        Instr::RecordNew(record.index()),
+                        Instr::RecordNew(record),
                         Instr::EnumConstruct {
-                            enum_idx: choice.index(),
+                            enum_idx: choice,
                             variant: 0,
                         },
-                        Instr::ListNew(list.index()),
+                        Instr::ListNew(list),
                         Instr::VacantLoad(ImageType::scalar(Scalar::Text)),
                         Instr::Jump(9),
                         Instr::Return,
@@ -1219,7 +1221,7 @@ mod counted_equals_emitted {
         let source = draft.intern_string("src/main.mw");
         let name = draft.intern_string("f");
         let zero = draft.intern_int(0);
-        let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero.index()), 64)
+        let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 64)
             .chain([Instr::Return])
             .collect();
         for _ in 0..crate::bounds::MAX_FUNCTIONS {

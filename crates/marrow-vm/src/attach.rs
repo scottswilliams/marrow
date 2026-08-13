@@ -529,6 +529,13 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
         Close,
     }
 
+    /// The sealed wire-domain `u16` of a verified typed table reference: every value
+    /// here was decoded from a `u16` wire read, so the narrowing is total; it is
+    /// spelled checked so the wire domain is stated.
+    fn sealed_ordinal(index: u32) -> u16 {
+        u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
+    }
+
     let mut builder = ValueShapeBuilder::new();
     let mut pending = vec![ShapeStep::Ty(ty)];
     while let Some(step) = pending.pop() {
@@ -537,11 +544,11 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
                 builder.scalar(scalar_kind(scalar));
             }
             ShapeStep::Ty(ImageType::Record { idx, .. }) => {
-                builder.open_product(idx);
+                builder.open_product(sealed_ordinal(idx.index()));
                 pending.push(ShapeStep::Close);
                 pending.extend(
                     image
-                        .record_type(idx)
+                        .record_type(sealed_ordinal(idx.index()))
                         .fields()
                         .iter()
                         .rev()
@@ -549,12 +556,12 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
                 );
             }
             ShapeStep::Ty(ImageType::Enum { idx, .. }) => {
-                let sealed = image.enums().get(idx as usize)?;
-                builder.open_sum(idx);
+                let sealed = image.enums().get(idx.index() as usize)?;
+                builder.open_sum(sealed_ordinal(idx.index()));
                 pending.push(ShapeStep::Close);
                 pending.extend((0..sealed.variants().len()).rev().map(|variant| {
                     ShapeStep::Variant {
-                        enum_idx: idx,
+                        enum_idx: sealed_ordinal(idx.index()),
                         variant,
                     }
                 }));

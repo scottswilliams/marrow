@@ -811,7 +811,7 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     let mut commands = Vec::with_capacity(2 * GROUPS);
     for group in 0..GROUPS {
-        let parent = u16::try_from(commands.len()).expect("inside the member bound");
+        let parent = u32::try_from(commands.len()).expect("inside the member bound");
         commands.push(DeclarationMemberDef {
             parent: None,
             shape: DeclarationMemberShape::Group {

@@ -122,24 +122,25 @@ impl RowStamp {
 ///
 /// It is an index into that one graph's rows and carries no meaning anywhere else: it is
 /// not a ledger id, a container-table index, or a site. A graph holds at most
-/// [`MAX_DURABLE_MEMBERS`] rows, so the ordinal is a `u16`.
+/// [`MAX_DURABLE_MEMBERS`] rows; the carrier is the wide `u32` ordinal every owned
+/// pre-seal logical id holds, so no row reference is ever a narrowed table length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct DeclarationNodeOrdinal(u16);
+pub(crate) struct DeclarationNodeOrdinal(u32);
 
 impl DeclarationNodeOrdinal {
     fn index(self) -> usize {
-        usize::from(self.0)
+        self.0 as usize
     }
 }
 
 /// The ordinal of one row in the flat root-occurrence table. It is also the RootId an
 /// entry identity `Id(^root)` carries on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct RootOccurrenceOrdinal(u16);
+pub(crate) struct RootOccurrenceOrdinal(u32);
 
 impl RootOccurrenceOrdinal {
     fn index(self) -> usize {
-        usize::from(self.0)
+        self.0 as usize
     }
 }
 
@@ -149,14 +150,14 @@ impl RootOccurrenceOrdinal {
 /// walk of the graph is a slice of the row table rather than a pointer chase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct DeclarationSpan {
-    start: u16,
-    len: u16,
+    start: u32,
+    len: u32,
 }
 
 impl DeclarationSpan {
     fn range(self) -> std::ops::Range<usize> {
-        let start = usize::from(self.start);
-        start..start + usize::from(self.len)
+        let start = self.start as usize;
+        start..start + self.len as usize
     }
 }
 
@@ -200,7 +201,7 @@ pub enum DeclarationMemberShape {
 /// vector, so a caller cannot hand the draft a recursive tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclarationMemberDef {
-    pub parent: Option<u16>,
+    pub parent: Option<u32>,
     pub shape: DeclarationMemberShape,
 }
 
@@ -282,12 +283,13 @@ impl ProductDeclarationGraph {
         // level is representable. A command vector wider than the member bound is not
         // malformed — it is a declaration the encoder refuses, so it is admitted here as a
         // bounded prefix that records the overflow.
-        let mut children: Vec<Vec<u16>> = vec![Vec::new(); commands.len().min(MAX_DURABLE_MEMBERS)];
-        let mut roots: Vec<u16> = Vec::new();
+        let mut children: Vec<Vec<u32>> = vec![Vec::new(); commands.len().min(MAX_DURABLE_MEMBERS)];
+        let mut roots: Vec<u32> = Vec::new();
         let mut levels: Vec<usize> = Vec::with_capacity(children.len());
         let over_member_bound = commands.len() > MAX_DURABLE_MEMBERS;
         for (index, command) in commands.iter().enumerate().take(MAX_DURABLE_MEMBERS) {
-            let index = u16::try_from(index).expect("the member bound is below u16::MAX");
+            let index =
+                u32::try_from(index).expect("the member bound is within the wide ordinal domain");
             let Some(parent) = command.parent else {
                 roots.push(index);
                 levels.push(1);
@@ -297,17 +299,17 @@ impl ProductDeclarationGraph {
                 return Err(DeclarationCommandError::ParentNotEarlier);
             }
             if matches!(
-                commands[usize::from(parent)].shape,
+                commands[parent as usize].shape,
                 DeclarationMemberShape::Field { .. }
             ) {
                 return Err(DeclarationCommandError::ParentDeclaresNoMembers);
             }
-            let level = levels[usize::from(parent)] + 1;
+            let level = levels[parent as usize] + 1;
             if level > crate::bounds::MAX_DURABLE_DEPTH {
                 return Err(DeclarationCommandError::TooDeep);
             }
             levels.push(level);
-            children[usize::from(parent)].push(index);
+            children[parent as usize].push(index);
         }
 
         // Place the rows breadth-first: each pending node's whole child run is placed at
@@ -322,7 +324,7 @@ impl ProductDeclarationGraph {
             members: DeclarationSpan::default(),
             over_member_bound,
         };
-        let mut pending: std::collections::VecDeque<(Option<DeclarationNodeOrdinal>, Vec<u16>)> =
+        let mut pending: std::collections::VecDeque<(Option<DeclarationNodeOrdinal>, Vec<u32>)> =
             std::collections::VecDeque::new();
         pending.push_back((None, roots));
         let mut placed: Vec<Option<DeclarationNodeOrdinal>> = vec![None; shapes.len()];
@@ -336,9 +338,9 @@ impl ProductDeclarationGraph {
                 graph.rows[parent.index()].members = span;
             }
             for command in level {
-                let taken = std::mem::take(&mut children[usize::from(command)]);
+                let taken = std::mem::take(&mut children[command as usize]);
                 if !taken.is_empty() {
-                    let ordinal = placed[usize::from(command)]
+                    let ordinal = placed[command as usize]
                         .expect("the command was placed in the level just written");
                     pending.push_back((Some(ordinal), taken));
                 }
@@ -352,17 +354,17 @@ impl ProductDeclarationGraph {
     fn place_level(
         &mut self,
         parent: Option<DeclarationNodeOrdinal>,
-        level: &[u16],
+        level: &[u32],
         shapes: &mut [Option<DeclarationMemberShape>],
         placed: &mut [Option<DeclarationNodeOrdinal>],
     ) -> DeclarationSpan {
-        let start = u16::try_from(self.rows.len()).expect("the command count is bounded");
-        let mut len = 0u16;
+        let start = u32::try_from(self.rows.len()).expect("the command count is bounded");
+        let mut len = 0u32;
         for command in level {
             let ordinal = DeclarationNodeOrdinal(
-                u16::try_from(self.rows.len()).expect("the command count is bounded"),
+                u32::try_from(self.rows.len()).expect("the command count is bounded"),
             );
-            let shape = shapes[usize::from(*command)]
+            let shape = shapes[*command as usize]
                 .take()
                 .expect("each command is placed exactly once");
             self.rows.push(DeclarationNode {
@@ -370,7 +372,7 @@ impl ProductDeclarationGraph {
                 members: DeclarationSpan::default(),
                 shape,
             });
-            placed[usize::from(*command)] = Some(ordinal);
+            placed[*command as usize] = Some(ordinal);
             len += 1;
         }
         DeclarationSpan { start, len }
@@ -412,7 +414,7 @@ impl ProductDeclarationGraph {
 
     fn ordinals(span: DeclarationSpan) -> impl Iterator<Item = DeclarationNodeOrdinal> + use<> {
         span.range()
-            .map(|row| DeclarationNodeOrdinal(u16::try_from(row).expect("rows are bounded")))
+            .map(|row| DeclarationNodeOrdinal(u32::try_from(row).expect("rows are bounded")))
     }
 
     /// The row at `ordinal`, or `None` if the graph has no such row.
@@ -476,7 +478,7 @@ impl ProductDeclarationGraph {
     /// before any row existed, and no depth vector.
     pub(crate) fn rows_with_depths(&self) -> impl Iterator<Item = (&DeclarationNode, usize)> + '_ {
         self.rows().iter().enumerate().map(|(index, node)| {
-            let ordinal = DeclarationNodeOrdinal(u16::try_from(index).expect("rows are bounded"));
+            let ordinal = DeclarationNodeOrdinal(u32::try_from(index).expect("rows are bounded"));
             (node, self.chain_depth(ordinal))
         })
     }
@@ -825,7 +827,7 @@ impl RootOccurrenceTable {
             return Err(DurableGraphInputRefusal::OverPlan);
         }
         let ordinal = RootOccurrenceOrdinal(
-            u16::try_from(self.rows.len())
+            u32::try_from(self.rows.len())
                 .map_err(|_| DurableGraphInputRefusal::UnaddressableOccurrence)?,
         );
         self.rows.push(RootOccurrence {
@@ -886,8 +888,8 @@ impl RootOccurrenceSelector {
     /// It is crate-private and published only through [`crate::AdmittedRoot`], so a wire
     /// fact the compiler must emit does not become a way for a consumer to read the
     /// selector's ordinal back out.
-    pub(crate) fn wire_root_id(&self) -> u16 {
-        self.ordinal.0
+    pub(crate) fn wire_root_id(&self) -> crate::draft::RootId {
+        crate::draft::RootId(self.ordinal.0)
     }
 }
 
@@ -1696,7 +1698,7 @@ mod tests {
 
     fn field(
         values: &mut CanonicalValueShapeDag,
-        parent: Option<u16>,
+        parent: Option<u32>,
         byte: u8,
     ) -> DeclarationMemberDef {
         DeclarationMemberDef {
@@ -1828,7 +1830,7 @@ mod tests {
         let deepest = graph.rows().len() - 1;
         let mut chain = Vec::new();
         graph.walk_ancestry(
-            super::DeclarationNodeOrdinal(u16::try_from(deepest).expect("bounded")),
+            super::DeclarationNodeOrdinal(u32::try_from(deepest).expect("bounded")),
             |node| chain.push(node),
         );
 
@@ -1857,7 +1859,7 @@ mod tests {
 
         assert_eq!(
             graph.chain_depth(super::DeclarationNodeOrdinal(
-                u16::try_from(graph.rows().len()).expect("bounded"),
+                u32::try_from(graph.rows().len()).expect("bounded"),
             )),
             0,
         );

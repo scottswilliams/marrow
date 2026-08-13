@@ -39,7 +39,7 @@ pub(super) enum LTy {
     /// entry; the source element/key/value types live in the registry's collection
     /// table.
     Collection {
-        idx: u16,
+        idx: CollTypeId,
         optional: bool,
     },
     /// An abstract generic type parameter, present only while the once-checked
@@ -54,7 +54,7 @@ pub(super) enum LTy {
     /// `root` is the store root's ROOTS-table index (0 — a program has one root). A
     /// distinct value type: a by-value runtime/lookup value, not a durable field or key.
     Identity {
-        root: u16,
+        root: RootId,
         optional: bool,
     },
 }
@@ -231,7 +231,7 @@ impl LTy {
     }
 
     /// The bare entry-identity root, if this is one.
-    pub(super) fn bare_identity(self) -> Option<u16> {
+    pub(super) fn bare_identity(self) -> Option<RootId> {
         match self {
             LTy::Identity {
                 root,
@@ -289,14 +289,10 @@ impl LTy {
                 optional: false, ..
             } => ImageType::scalar(Scalar::Int),
             LTy::Nominal { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
-            LTy::Record { ty, optional } | LTy::Struct { ty, optional } => ImageType::Record {
-                idx: ty.index(),
-                optional,
-            },
-            LTy::Enum { ty, optional } => ImageType::Enum {
-                idx: ty.index(),
-                optional,
-            },
+            LTy::Record { ty, optional } | LTy::Struct { ty, optional } => {
+                ImageType::Record { idx: ty, optional }
+            }
+            LTy::Enum { ty, optional } => ImageType::Enum { idx: ty, optional },
             LTy::Collection { idx, optional } => ImageType::Collection { idx, optional },
             // Only reached in the discarded template-check draft; the sentinel keeps
             // that throwaway image well-formed and is never encoded.

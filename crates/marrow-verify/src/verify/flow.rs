@@ -11,7 +11,7 @@ use crate::sealed::{
     SealedInstr, SealedRoot, SealedSite, SealedSiteTarget,
 };
 use crate::vtype::VType;
-use marrow_image::{ImageType, OperationClass, Scalar};
+use marrow_image::{CollTypeId, EnumId, ImageType, OperationClass, RootId, Scalar, TypeId};
 
 /// The control transfer an instruction performs, in tape indices. Successor
 /// indices are derived from this by `check_flow`.
@@ -423,16 +423,28 @@ fn call(ctx: &Ctx, frame: &mut Frame, target: u16) -> Result<Control, VerifyReje
             frame.stack.push(VType::Scalar { scalar, optional });
         }
         RetShape::Record { idx, optional } => {
-            frame.stack.push(VType::Record { idx, optional });
+            frame.stack.push(VType::Record {
+                idx: TypeId::from_index(idx),
+                optional,
+            });
         }
         RetShape::Enum { idx, optional } => {
-            frame.stack.push(VType::Enum { idx, optional });
+            frame.stack.push(VType::Enum {
+                idx: EnumId::from_index(idx),
+                optional,
+            });
         }
         RetShape::Collection { idx, optional } => {
-            frame.stack.push(VType::Collection { idx, optional });
+            frame.stack.push(VType::Collection {
+                idx: CollTypeId::from_index(idx),
+                optional,
+            });
         }
         RetShape::Identity { root, optional } => {
-            frame.stack.push(VType::Identity { root, optional });
+            frame.stack.push(VType::Identity {
+                root: RootId::from_index(root),
+                optional,
+            });
         }
     }
     Ok(Control::Fallthrough)
@@ -548,6 +560,7 @@ fn text_trim(frame: &mut Frame) -> Result<Control, VerifyRejection> {
 
 /// `split(text, sep): List[string]`: separator then text on the stack.
 fn text_split(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
+    let idx = CollTypeId::from_index(idx);
     expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
     expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
     list_of_string(ctx, idx)?;
@@ -557,6 +570,7 @@ fn text_split(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyR
 
 /// `lines(text): List[string]`.
 fn text_lines(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
+    let idx = CollTypeId::from_index(idx);
     expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
     list_of_string(ctx, idx)?;
     frame.stack.push(VType::bare_collection(idx));
@@ -573,7 +587,8 @@ fn text_join(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
 }
 
 fn record_new(ctx: &Ctx, frame: &mut Frame, ty: u16) -> Result<Control, VerifyRejection> {
-    let record = ctx.types.get(ty as usize).ok_or(reject(
+    let ty = TypeId::from_index(ty);
+    let record = ctx.types.get(ty.index() as usize).ok_or(reject(
         VerifyPhase::Function,
         "record type index out of range",
     ))?;
@@ -609,7 +624,7 @@ fn field_get(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, Verify
             "field read requires a bare record",
         ));
     };
-    let record_type = ctx.types.get(idx as usize).ok_or(reject(
+    let record_type = ctx.types.get(idx.index() as usize).ok_or(reject(
         VerifyPhase::Function,
         "record type index out of range",
     ))?;
@@ -641,7 +656,7 @@ fn field_set(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, Verify
             "field set requires a bare record",
         ));
     };
-    let record_type = ctx.types.get(idx as usize).ok_or(reject(
+    let record_type = ctx.types.get(idx.index() as usize).ok_or(reject(
         VerifyPhase::Function,
         "record type index out of range",
     ))?;
@@ -673,7 +688,7 @@ fn field_unset(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, Veri
             "field unset requires a bare record",
         ));
     };
-    let record_type = ctx.types.get(idx as usize).ok_or(reject(
+    let record_type = ctx.types.get(idx.index() as usize).ok_or(reject(
         VerifyPhase::Function,
         "record type index out of range",
     ))?;
@@ -706,19 +721,21 @@ fn some_wrap(frame: &mut Frame) -> Result<Control, VerifyRejection> {
 fn vacant_load(ctx: &Ctx, frame: &mut Frame, ty: &ImageType) -> Result<Control, VerifyRejection> {
     // A record/enum/collection operand names a value type; bounds-check it.
     match ty {
-        ImageType::Record { idx, .. } if ctx.types.get(*idx as usize).is_none() => {
+        ImageType::Record { idx, .. } if ctx.types.get(idx.index() as usize).is_none() => {
             return Err(reject(
                 VerifyPhase::Function,
                 "vacant-load record index out of range",
             ));
         }
-        ImageType::Enum { idx, .. } if ctx.enums.get(*idx as usize).is_none() => {
+        ImageType::Enum { idx, .. } if ctx.enums.get(idx.index() as usize).is_none() => {
             return Err(reject(
                 VerifyPhase::Function,
                 "vacant-load enum index out of range",
             ));
         }
-        ImageType::Collection { idx, .. } if ctx.collections.get(*idx as usize).is_none() => {
+        ImageType::Collection { idx, .. }
+            if ctx.collections.get(idx.index() as usize).is_none() =>
+        {
             return Err(reject(
                 VerifyPhase::Function,
                 "vacant-load collection index out of range",
@@ -771,7 +788,9 @@ fn enum_construct(
             ));
         }
     }
-    frame.stack.push(VType::bare_enum(enum_idx));
+    frame
+        .stack
+        .push(VType::bare_enum(EnumId::from_index(enum_idx)));
     Ok(Control::Fallthrough)
 }
 
@@ -810,7 +829,7 @@ fn enum_payload_get(
             "enum-payload-get requires a bare enum",
         ));
     };
-    let enum_def = ctx.enums.get(idx as usize).ok_or(reject(
+    let enum_def = ctx.enums.get(idx.index() as usize).ok_or(reject(
         VerifyPhase::Function,
         "enum type index out of range",
     ))?;
@@ -916,7 +935,7 @@ fn make_identity(
         }
     }
     frame.stack.push(VType::Identity {
-        root,
+        root: RootId::from_index(root),
         optional: false,
     });
     Ok(Control::Fallthrough)
@@ -933,7 +952,7 @@ fn identity_key_path(ctx: &Ctx, frame: &mut Frame, cols: u16) -> Result<Control,
             "identity key-path requires a bare entry identity",
         ));
     };
-    let sealed_root = ctx.roots.get(root as usize).ok_or(reject(
+    let sealed_root = ctx.roots.get(root.index() as usize).ok_or(reject(
         VerifyPhase::Function,
         "identity key-path root index out of range",
     ))?;
@@ -958,7 +977,8 @@ fn identity_key_path(ctx: &Ctx, frame: &mut Frame, cols: u16) -> Result<Control,
 }
 
 fn list_new(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
-    match ctx.collections.get(idx as usize) {
+    let idx = CollTypeId::from_index(idx);
+    match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::List { .. }) => {}
         _ => {
             return Err(reject(
@@ -972,7 +992,8 @@ fn list_new(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRej
 }
 
 fn map_new(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
-    match ctx.collections.get(idx as usize) {
+    let idx = CollTypeId::from_index(idx);
+    match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::Map { .. }) => {}
         _ => {
             return Err(reject(
@@ -1100,7 +1121,7 @@ fn map_value_at(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection
 
 /// The COLLTYPES index and element type of a bare list `VType`, or a phase-3
 /// rejection when the operand is not a bare list collection.
-fn list_elem(ctx: &Ctx, value: VType) -> Result<(u16, ImageType), VerifyRejection> {
+fn list_elem(ctx: &Ctx, value: VType) -> Result<(CollTypeId, ImageType), VerifyRejection> {
     let VType::Collection {
         idx,
         optional: false,
@@ -1108,7 +1129,7 @@ fn list_elem(ctx: &Ctx, value: VType) -> Result<(u16, ImageType), VerifyRejectio
     else {
         return Err(reject(VerifyPhase::Function, "operand is not a bare list"));
     };
-    match ctx.collections.get(idx as usize) {
+    match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::List { elem }) => Ok((idx, *elem)),
         _ => Err(reject(
             VerifyPhase::Function,
@@ -1120,8 +1141,8 @@ fn list_elem(ctx: &Ctx, value: VType) -> Result<(u16, ImageType), VerifyRejectio
 /// Prove COLLTYPES index `idx` names a `List[string]`, the only collection the
 /// text-floor `split`/`lines`/`join` opcodes produce or consume. A hand-built image
 /// naming any other collection there is rejected.
-fn list_of_string(ctx: &Ctx, idx: u16) -> Result<(), VerifyRejection> {
-    match ctx.collections.get(idx as usize) {
+fn list_of_string(ctx: &Ctx, idx: CollTypeId) -> Result<(), VerifyRejection> {
+    match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::List { elem }) if *elem == ImageType::scalar(Scalar::Text) => {
             Ok(())
         }
@@ -1134,7 +1155,7 @@ fn list_of_string(ctx: &Ctx, idx: u16) -> Result<(), VerifyRejection> {
 
 /// The COLLTYPES index and `(key, value)` image types of a bare map `VType`, or a
 /// phase-3 rejection when the operand is not a bare map collection.
-fn map_kv(ctx: &Ctx, value: VType) -> Result<(u16, ImageType, ImageType), VerifyRejection> {
+fn map_kv(ctx: &Ctx, value: VType) -> Result<(CollTypeId, ImageType, ImageType), VerifyRejection> {
     let VType::Collection {
         idx,
         optional: false,
@@ -1142,7 +1163,7 @@ fn map_kv(ctx: &Ctx, value: VType) -> Result<(u16, ImageType, ImageType), Verify
     else {
         return Err(reject(VerifyPhase::Function, "operand is not a bare map"));
     };
-    match ctx.collections.get(idx as usize) {
+    match ctx.collections.get(idx.index() as usize) {
         Some(SealedCollectionType::Map { key, value }) => Ok((idx, *key, *value)),
         _ => Err(reject(
             VerifyPhase::Function,
@@ -1436,10 +1457,10 @@ fn apply_durable(
             for scalar in branch_key_columns(root, path)? {
                 columns.push(VType::bare_scalar(scalar));
             }
-            (branch.record, branch.keys().len())
+            (TypeId::from_index(branch.record), branch.keys().len())
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
-            (root.record, root.keys.len())
+            (TypeId::from_index(root.record), root.keys.len())
         }
         SealedSiteTarget::GroupEntry(group) => {
             // A group is addressed by the root's own key-path (it is a value unit of the
@@ -1449,7 +1470,7 @@ fn apply_durable(
                 VerifyPhase::Function,
                 "durable group index out of range",
             ))?;
-            (group.record, root.keys.len())
+            (TypeId::from_index(group.record), root.keys.len())
         }
         SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
             unreachable!("index read targets are handled before the entry key-path logic")
@@ -1690,7 +1711,7 @@ fn apply_durable(
                     ));
                 }
             }
-            stack.push(VType::bare_collection(*list_ty));
+            stack.push(VType::bare_collection(CollTypeId::from_index(*list_ty)));
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         _ => unreachable!("durable_site returned a site for this opcode"),
@@ -1828,7 +1849,7 @@ fn apply_index_read(
                     ));
                 }
             }
-            stack.push(VType::bare_collection(*list_ty));
+            stack.push(VType::bare_collection(CollTypeId::from_index(*list_ty)));
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurIndexLookup(_) => {
@@ -1844,7 +1865,7 @@ fn apply_index_read(
                 expect(pop(stack)?, VType::bare_scalar(*scalar))?;
             }
             stack.push(VType::Identity {
-                root: site_root,
+                root: RootId::from_index(site_root),
                 optional: true,
             });
         }
@@ -1903,7 +1924,7 @@ fn pop_key_column(
 ) -> Result<(), VerifyRejection> {
     match pop(stack)? {
         VType::IdentityColumn { root, scalar } => {
-            if root != site_root {
+            if root != RootId::from_index(site_root) {
                 return Err(reject(
                     VerifyPhase::Function,
                     "an entry identity keys a durable operation on a different store root",
@@ -1923,7 +1944,7 @@ fn pop_key_column(
 fn slot_keys_column(have: VType, want: VType, site_root: u16) -> bool {
     match have {
         VType::IdentityColumn { root, scalar } => {
-            root == site_root && VType::bare_scalar(scalar) == want
+            root == RootId::from_index(site_root) && VType::bare_scalar(scalar) == want
         }
         other => other == want,
     }

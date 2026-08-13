@@ -6,8 +6,8 @@
 //! every defect the producer still emits stays the verifier's own rejection.
 
 use marrow_image::{
-    CollectionTypeDef, EnumTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType,
-    Instr, Scalar, SpanEntry, VariantDef,
+    CollectionTypeDef, EnumId, EnumTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft,
+    ImageType, Instr, Scalar, SpanEntry, VariantDef,
 };
 use marrow_verify::verify;
 
@@ -22,36 +22,34 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 }
 
 /// Add a `Shape { dot, circle(int), rect(int, int) }` enum to `draft`.
-fn shape(draft: &mut ImageDraft) -> u16 {
+fn shape(draft: &mut ImageDraft) -> EnumId {
     let name = draft.intern_string("Shape");
     let dot = draft.intern_string("dot");
     let circle = draft.intern_string("circle");
     let rect = draft.intern_string("rect");
-    draft
-        .add_enum_type(EnumTypeDef {
-            name,
-            variants: vec![
-                VariantDef {
-                    name: dot,
-                    category: false,
-                    payload: vec![],
-                },
-                VariantDef {
-                    name: circle,
-                    category: false,
-                    payload: vec![ImageType::scalar(Scalar::Int)],
-                },
-                VariantDef {
-                    name: rect,
-                    category: false,
-                    payload: vec![
-                        ImageType::scalar(Scalar::Int),
-                        ImageType::scalar(Scalar::Int),
-                    ],
-                },
-            ],
-        })
-        .index()
+    draft.add_enum_type(EnumTypeDef {
+        name,
+        variants: vec![
+            VariantDef {
+                name: dot,
+                category: false,
+                payload: vec![],
+            },
+            VariantDef {
+                name: circle,
+                category: false,
+                payload: vec![ImageType::scalar(Scalar::Int)],
+            },
+            VariantDef {
+                name: rect,
+                category: false,
+                payload: vec![
+                    ImageType::scalar(Scalar::Int),
+                    ImageType::scalar(Scalar::Int),
+                ],
+            },
+        ],
+    })
 }
 
 /// Encode `draft` (adding `f` as a storeless export over `code` returning `ret`)
@@ -117,7 +115,7 @@ fn a_well_formed_enum_image_verifies() {
     let two = draft.intern_int(2);
     // f(): int = Shape::circle(2) then read its payload leaf.
     let code = vec![
-        Instr::ConstLoad(two.index()),
+        Instr::ConstLoad(two),
         Instr::EnumConstruct {
             enum_idx,
             variant: 1,
@@ -146,7 +144,7 @@ fn an_enum_param_index_out_of_range_is_refused_by_the_producer() {
         encode_fn(
             draft,
             vec![ImageType::Enum {
-                idx: 7,
+                idx: EnumId::from_index(7),
                 optional: false,
             }],
             ImageType::Unit,
@@ -167,7 +165,7 @@ fn an_enum_return_index_out_of_range_is_refused_by_the_producer() {
             draft,
             vec![],
             ImageType::Enum {
-                idx: 0,
+                idx: marrow_image::EnumId::from_index(0),
                 optional: false,
             },
             code,
@@ -222,7 +220,7 @@ fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
             draft,
             vec![],
             ImageType::Enum {
-                idx: 0,
+                idx: marrow_image::EnumId::from_index(0),
                 optional: false,
             },
             code,
@@ -238,7 +236,7 @@ fn an_out_of_range_payload_field_rejects_at_function() {
     let two = draft.intern_int(2);
     // circle has one payload field (index 0); reading field 5 is out of range.
     let code = vec![
-        Instr::ConstLoad(two.index()),
+        Instr::ConstLoad(two),
         Instr::EnumConstruct {
             enum_idx,
             variant: 1,
@@ -263,11 +261,9 @@ fn a_collection_enum_payload_leaf_rejects_at_table() {
     // compiler's check-time refusal of the same shape is defense in depth, not the
     // trust boundary.
     let mut draft = ImageDraft::new();
-    let list_int = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        })
-        .index();
+    let list_int = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Int),
+    });
     let name = draft.intern_string("Holder");
     let wrap = draft.intern_string("wrap");
     draft.add_enum_type(EnumTypeDef {

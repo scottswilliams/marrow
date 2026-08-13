@@ -13,11 +13,11 @@ use marrow_vm::{Value, run};
 
 /// A record `Note { required value: int, label: string }` interned into `draft`,
 /// returning its type index.
-fn note_type(draft: &mut ImageDraft) -> u16 {
+fn note_type(draft: &mut ImageDraft) -> marrow_image::TypeId {
     let name = draft.intern_string("Note");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
-    let type_id = draft.add_record_type(RecordTypeDef {
+    draft.add_record_type(RecordTypeDef {
         name,
         fields: vec![
             FieldDef {
@@ -31,8 +31,7 @@ fn note_type(draft: &mut ImageDraft) -> u16 {
                 required: false,
             },
         ],
-    });
-    type_id.index()
+    })
 }
 
 fn build_and_run(
@@ -79,7 +78,7 @@ fn construct_then_read_required_field() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
                 Instr::RecordNew(ty),
                 Instr::FieldGet(0),
@@ -99,7 +98,7 @@ fn reading_a_vacant_sparse_field_yields_an_empty_optional() {
         (
             ImageType::opt_scalar(Scalar::Text),
             vec![
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
                 Instr::RecordNew(ty),
                 Instr::FieldGet(1),
@@ -120,8 +119,8 @@ fn branch_present_unwraps_a_present_sparse_field() {
         let fallback = draft.intern_text("x");
         // Construct with a present label (SomeWrap coerces the bare text).
         let mut code = vec![
-            Instr::ConstLoad(five.index()),
-            Instr::ConstLoad(hi.index()),
+            Instr::ConstLoad(five),
+            Instr::ConstLoad(hi),
             Instr::SomeWrap,
             Instr::RecordNew(ty),
             Instr::FieldGet(1), // label: text?
@@ -134,7 +133,7 @@ fn branch_present_unwraps_a_present_sparse_field() {
         let jump_index = code.len() - 1;
         // absent arm:
         let absent_index = code.len();
-        code.push(Instr::ConstLoad(fallback.index()));
+        code.push(Instr::ConstLoad(fallback));
         let end_index = code.len();
         code.push(Instr::Return);
         // patch draft-form instruction-index targets.
@@ -159,7 +158,7 @@ fn optional_into_a_bare_consumer_rejects() {
             ImageType::scalar(Scalar::Int),
             vec![
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)),
-                Instr::ConstLoad(one.index()),
+                Instr::ConstLoad(one),
                 Instr::IntAdd,
                 Instr::Return,
             ],
@@ -180,10 +179,10 @@ fn field_set_stores_a_value_present() {
         (
             ImageType::opt_scalar(Scalar::Text),
             vec![
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
                 Instr::RecordNew(ty),
-                Instr::ConstLoad(hi.index()),
+                Instr::ConstLoad(hi),
                 Instr::FieldSet(1),
                 Instr::FieldGet(1),
                 Instr::Return,
@@ -208,8 +207,8 @@ fn field_unset_clears_a_present_sparse_field() {
         (
             ImageType::opt_scalar(Scalar::Text),
             vec![
-                Instr::ConstLoad(five.index()),
-                Instr::ConstLoad(hi.index()),
+                Instr::ConstLoad(five),
+                Instr::ConstLoad(hi),
                 Instr::SomeWrap,
                 Instr::RecordNew(ty),
                 Instr::FieldUnset(1),
@@ -231,7 +230,7 @@ fn field_unset_on_a_required_field_rejects() {
         (
             ImageType::Unit,
             vec![
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
                 Instr::RecordNew(ty),
                 Instr::FieldUnset(0),
@@ -252,10 +251,10 @@ fn field_set_with_a_wrong_typed_operand_rejects() {
         (
             ImageType::Unit,
             vec![
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
                 Instr::RecordNew(ty),
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::FieldSet(1),
                 Instr::Pop,
                 Instr::Return,
@@ -274,10 +273,10 @@ fn field_set_with_an_out_of_range_field_index_rejects() {
         (
             ImageType::Unit,
             vec![
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
                 Instr::RecordNew(ty),
-                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(five),
                 Instr::FieldSet(9),
                 Instr::Pop,
                 Instr::Return,

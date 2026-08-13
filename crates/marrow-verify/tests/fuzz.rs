@@ -11,10 +11,10 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
+    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, EnumId,
     EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, VariantDef,
-    image_id,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId,
+    VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -75,7 +75,7 @@ fn a_good_image() -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let answer = draft.intern_int(42);
-    let code = vec![Instr::ConstLoad(answer.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(answer), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -125,7 +125,7 @@ fn a_nested_value_image() -> Vec<u8> {
             FieldDef {
                 name: f_inner,
                 ty: ImageType::Record {
-                    idx: 0,
+                    idx: TypeId::from_index(0),
                     optional: false,
                 },
                 required: true,
@@ -133,7 +133,7 @@ fn a_nested_value_image() -> Vec<u8> {
             FieldDef {
                 name: f_tag,
                 ty: ImageType::Enum {
-                    idx: 0,
+                    idx: EnumId::from_index(0),
                     optional: false,
                 },
                 required: true,
@@ -150,7 +150,7 @@ fn a_nested_value_image() -> Vec<u8> {
     });
     let answer = draft.intern_int(42);
     let name = draft.intern_string("main");
-    let code = vec![Instr::ConstLoad(answer.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(answer), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name,
@@ -565,7 +565,7 @@ fn a_strict_durable_image() -> Vec<u8> {
         Instr::LocalGet(0),
         Instr::DurExists(entry_site),
         Instr::JumpIfFalse(7),
-        Instr::ConstLoad(text.index()),
+        Instr::ConstLoad(text),
         Instr::SomeWrap,
         Instr::DurSetSparsePresent {
             site: label_site,
@@ -650,7 +650,7 @@ fn a_group_branch_durable_image() -> Vec<u8> {
             FieldDef {
                 name: details,
                 ty: ImageType::Record {
-                    idx: details_record.index(),
+                    idx: details_record,
                     optional: false,
                 },
                 required: true,
@@ -784,7 +784,7 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");
     let zero = draft.intern_int(0);
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len() as u32)
         .map(|instr_index| SpanEntry {
             instr_index,
@@ -885,7 +885,7 @@ fn a_widened_durable_image() -> Vec<u8> {
             FieldDef {
                 name: kindn,
                 ty: ImageType::Enum {
-                    idx: 0,
+                    idx: EnumId::from_index(0),
                     optional: false,
                 },
                 required: true,
@@ -893,7 +893,7 @@ fn a_widened_durable_image() -> Vec<u8> {
             FieldDef {
                 name: ownern,
                 ty: ImageType::Record {
-                    idx: pair_ty.index(),
+                    idx: pair_ty,
                     optional: false,
                 },
                 required: false,
@@ -967,7 +967,7 @@ fn a_widened_durable_image() -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");
     let zero = draft.intern_int(0);
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len() as u32)
         .map(|instr_index| SpanEntry {
             instr_index,
@@ -1092,7 +1092,7 @@ fn a_multi_site_durable_image() -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");
     let zero = draft.intern_int(0);
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name,

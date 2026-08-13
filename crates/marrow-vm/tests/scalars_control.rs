@@ -162,9 +162,9 @@ fn locals_and_arithmetic_compute_a_value() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(six.index()),
+                Instr::ConstLoad(six),
                 Instr::LocalSet(0),
-                Instr::ConstLoad(seven.index()),
+                Instr::ConstLoad(seven),
                 Instr::LocalSet(1),
                 Instr::LocalGet(0),
                 Instr::LocalGet(1),
@@ -184,8 +184,8 @@ fn int_min_rem_negative_one_faults_overflow() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(min.index()),
-                Instr::ConstLoad(neg_one.index()),
+                Instr::ConstLoad(min),
+                Instr::ConstLoad(neg_one),
                 Instr::IntRem,
                 Instr::Return,
             ],
@@ -200,7 +200,7 @@ fn neg_int_min_faults_overflow() {
         let min = draft.intern_int(i64::MIN);
         (
             ImageType::scalar(Scalar::Int),
-            vec![Instr::ConstLoad(min.index()), Instr::IntNeg, Instr::Return],
+            vec![Instr::ConstLoad(min), Instr::IntNeg, Instr::Return],
         )
     });
     assert_eq!(result, Err("run.overflow".to_string()));
@@ -214,8 +214,8 @@ fn rem_by_zero_faults_divide_by_zero() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(five.index()),
-                Instr::ConstLoad(zero.index()),
+                Instr::ConstLoad(five),
+                Instr::ConstLoad(zero),
                 Instr::IntRem,
                 Instr::Return,
             ],
@@ -235,8 +235,8 @@ fn int_div_truncates_toward_zero() {
             (
                 ImageType::scalar(Scalar::Int),
                 vec![
-                    Instr::ConstLoad(av.index()),
-                    Instr::ConstLoad(bv.index()),
+                    Instr::ConstLoad(av),
+                    Instr::ConstLoad(bv),
                     Instr::IntDiv,
                     Instr::Return,
                 ],
@@ -254,8 +254,8 @@ fn div_by_zero_faults_divide_by_zero() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(five.index()),
-                Instr::ConstLoad(zero.index()),
+                Instr::ConstLoad(five),
+                Instr::ConstLoad(zero),
                 Instr::IntDiv,
                 Instr::Return,
             ],
@@ -274,8 +274,8 @@ fn int_min_div_negative_one_faults_overflow() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(min.index()),
-                Instr::ConstLoad(neg_one.index()),
+                Instr::ConstLoad(min),
+                Instr::ConstLoad(neg_one),
                 Instr::IntDiv,
                 Instr::Return,
             ],
@@ -292,7 +292,7 @@ fn unreachable_faults() {
         let text = draft.intern_text("cannot happen");
         (
             ImageType::scalar(Scalar::Int),
-            vec![Instr::Unreachable(text.index())],
+            vec![Instr::Unreachable(text)],
         )
     });
     assert_eq!(result, Err("run.unreachable".to_string()));
@@ -306,7 +306,7 @@ fn unreachable_with_non_text_operand_rejects() {
         let int_const = draft.intern_int(7);
         (
             ImageType::scalar(Scalar::Int),
-            vec![Instr::Unreachable(int_const.index())],
+            vec![Instr::Unreachable(int_const)],
         )
     });
     assert_eq!(result, Err("image.function".to_string()));
@@ -329,8 +329,8 @@ fn text_ordering_is_lexicographic() {
             (
                 ImageType::scalar(Scalar::Bool),
                 vec![
-                    Instr::ConstLoad(av.index()),
-                    Instr::ConstLoad(bv.index()),
+                    Instr::ConstLoad(av),
+                    Instr::ConstLoad(bv),
                     instr.clone(),
                     Instr::Return,
                 ],
@@ -347,11 +347,7 @@ fn scalar_conversions_render_and_encode() {
         let n = draft.intern_int(-42);
         (
             ImageType::scalar(Scalar::Text),
-            vec![
-                Instr::ConstLoad(n.index()),
-                Instr::ConvString,
-                Instr::Return,
-            ],
+            vec![Instr::ConstLoad(n), Instr::ConvString, Instr::Return],
         )
     });
     assert_eq!(to_string_int, Ok(Some(Value::Text("-42".into()))));
@@ -360,11 +356,7 @@ fn scalar_conversions_render_and_encode() {
         let b = draft.intern_bool(true);
         (
             ImageType::scalar(Scalar::Text),
-            vec![
-                Instr::ConstLoad(b.index()),
-                Instr::ConvString,
-                Instr::Return,
-            ],
+            vec![Instr::ConstLoad(b), Instr::ConvString, Instr::Return],
         )
     });
     assert_eq!(to_string_bool, Ok(Some(Value::Text("true".into()))));
@@ -373,11 +365,7 @@ fn scalar_conversions_render_and_encode() {
         let s = draft.intern_text("hi");
         (
             ImageType::scalar(Scalar::Bytes),
-            vec![
-                Instr::ConstLoad(s.index()),
-                Instr::ConvBytesText,
-                Instr::Return,
-            ],
+            vec![Instr::ConstLoad(s), Instr::ConvBytesText, Instr::Return],
         )
     });
     assert_eq!(
@@ -395,9 +383,9 @@ fn bytes_equality_and_ordering() {
         (
             ImageType::scalar(Scalar::Bool),
             vec![
-                Instr::ConstLoad(ab.index()),
+                Instr::ConstLoad(ab),
                 Instr::ConvBytesText,
-                Instr::ConstLoad(ab.index()),
+                Instr::ConstLoad(ab),
                 Instr::ConvBytesText,
                 Instr::EqBytes,
                 Instr::Return,
@@ -413,9 +401,9 @@ fn bytes_equality_and_ordering() {
         (
             ImageType::scalar(Scalar::Bool),
             vec![
-                Instr::ConstLoad(ab.index()),
+                Instr::ConstLoad(ab),
                 Instr::ConvBytesText,
-                Instr::ConstLoad(b.index()),
+                Instr::ConstLoad(b),
                 Instr::ConvBytesText,
                 Instr::BytesLt,
                 Instr::Return,
@@ -437,11 +425,11 @@ fn checked_add_overflow_transfers_to_handler() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(max.index()),
-                Instr::ConstLoad(one.index()),
+                Instr::ConstLoad(max),
+                Instr::ConstLoad(one),
                 Instr::IntAddChecked(4), // overflow -> jump to instr 4
                 Instr::Return,           // success path
-                Instr::ConstLoad(sentinel.index()),
+                Instr::ConstLoad(sentinel),
                 Instr::Return, // handler
             ],
         )
@@ -459,11 +447,11 @@ fn checked_add_success_falls_through() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(two.index()),
-                Instr::ConstLoad(three.index()),
+                Instr::ConstLoad(two),
+                Instr::ConstLoad(three),
                 Instr::IntAddChecked(4),
                 Instr::Return,
-                Instr::ConstLoad(sentinel.index()),
+                Instr::ConstLoad(sentinel),
                 Instr::Return,
             ],
         )
@@ -481,11 +469,11 @@ fn checked_div_min_neg_one_transfers_to_handler() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(min.index()),
-                Instr::ConstLoad(neg_one.index()),
+                Instr::ConstLoad(min),
+                Instr::ConstLoad(neg_one),
                 Instr::IntDivChecked(4),
                 Instr::Return,
-                Instr::ConstLoad(sentinel.index()),
+                Instr::ConstLoad(sentinel),
                 Instr::Return,
             ],
         )
@@ -503,11 +491,11 @@ fn checked_op_with_non_int_operand_rejects() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(flag.index()),
-                Instr::ConstLoad(one.index()),
+                Instr::ConstLoad(flag),
+                Instr::ConstLoad(one),
                 Instr::IntAddChecked(4),
                 Instr::Return,
-                Instr::ConstLoad(one.index()),
+                Instr::ConstLoad(one),
                 Instr::Return,
             ],
         )
@@ -522,7 +510,7 @@ fn text_concat_over_the_limit_faults() {
     let seed = "x".repeat(4 * 1024);
     let result = build_and_run(move |draft| {
         let a = draft.intern_text(&seed);
-        let mut code = vec![Instr::ConstLoad(a.index()), Instr::LocalSet(0)];
+        let mut code = vec![Instr::ConstLoad(a), Instr::LocalSet(0)];
         for _ in 0..5 {
             code.push(Instr::LocalGet(0));
             code.push(Instr::LocalGet(0));
@@ -544,9 +532,9 @@ fn unreachable_instruction_rejects() {
         (
             ImageType::scalar(Scalar::Int),
             vec![
-                Instr::ConstLoad(one.index()),
+                Instr::ConstLoad(one),
                 Instr::Return,
-                Instr::ConstLoad(one.index()),
+                Instr::ConstLoad(one),
                 Instr::Return,
             ],
         )
@@ -559,10 +547,7 @@ fn falling_off_the_end_rejects() {
     // No Return: control falls off the end.
     let rejection = seal(|draft| {
         let one = draft.intern_int(1);
-        (
-            ImageType::scalar(Scalar::Int),
-            vec![Instr::ConstLoad(one.index())],
-        )
+        (ImageType::scalar(Scalar::Int), vec![Instr::ConstLoad(one)])
     });
     assert_eq!(rejection.err(), Some("image.function".to_string()));
 }
@@ -574,7 +559,7 @@ fn return_type_mismatch_rejects() {
         let flag = draft.intern_bool(true);
         (
             ImageType::scalar(Scalar::Int),
-            vec![Instr::ConstLoad(flag.index()), Instr::Return],
+            vec![Instr::ConstLoad(flag), Instr::Return],
         )
     });
     assert_eq!(rejection.err(), Some("image.function".to_string()));

@@ -43,9 +43,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CanonicalDeclarationPathSelector, EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr,
-    LegacyDraftSiteOperand, OccurrenceSiteHandle, RootOccurrenceSelector, Scalar, SemanticTarget,
-    SpanEntry, TypeId,
+    CanonicalDeclarationPathSelector, CollTypeId, EnumId, FuncId, FunctionDef, ImageDraft,
+    ImageType, Instr, LegacyDraftSiteOperand, OccurrenceSiteHandle, RootId, RootOccurrenceSelector,
+    Scalar, SemanticTarget, SpanEntry, TypeId,
 };
 use marrow_project::FileIdentity;
 
@@ -1493,7 +1493,7 @@ mod generic_cache_boundary_tests {
             let arg = match family {
                 "struct" => GArg::Struct(orphan_struct),
                 "enum" => GArg::Enum(orphan_enum),
-                "collection" => GArg::Collection(0),
+                "collection" => GArg::Collection(CollTypeId::from_index(0)),
                 _ => unreachable!("the hostile family table is closed"),
             };
             let expected = GenericInvariant::TypeArgumentTargetMissing(arg);
@@ -1591,7 +1591,7 @@ mod generic_cache_boundary_tests {
             records
                 .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
                 .expect("the first post-refusal collection mints"),
-            0,
+            CollTypeId::from_index(0),
             "the refused Map did not mint its List value"
         );
     }

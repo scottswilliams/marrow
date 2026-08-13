@@ -1702,7 +1702,7 @@ fn fill_record(
                 group_slot_defs.push(FieldDef {
                     name: draft.intern_string(&group.name),
                     ty: ImageType::Record {
-                        idx: group_type_id.index(),
+                        idx: group_type_id,
                         optional: false,
                     },
                     required: true,

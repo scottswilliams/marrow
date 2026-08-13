@@ -6,8 +6,8 @@
 //! This guards the interpolation-canon soundness rule directly on the trust boundary.
 
 use marrow_image::{
-    CollectionTypeDef, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
-    RecordTypeDef, Scalar, SpanEntry, VariantDef,
+    CollectionTypeDef, EnumId, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
+    Instr, RecordTypeDef, Scalar, SpanEntry, VariantDef,
 };
 use marrow_verify::verify;
 
@@ -54,34 +54,32 @@ fn verify_conv(setup: impl FnOnce(&mut ImageDraft) -> Vec<Instr>) -> Result<(), 
 }
 
 /// Add a bare two-member `Color` enum, returning its ENUMS index.
-fn color_enum(draft: &mut ImageDraft) -> u16 {
+fn color_enum(draft: &mut ImageDraft) -> EnumId {
     let name = draft.intern_string("Color");
     let red = draft.intern_string("red");
     let green = draft.intern_string("green");
-    draft
-        .add_enum_type(EnumTypeDef {
-            name,
-            variants: vec![
-                VariantDef {
-                    name: red,
-                    category: false,
-                    payload: vec![],
-                },
-                VariantDef {
-                    name: green,
-                    category: false,
-                    payload: vec![],
-                },
-            ],
-        })
-        .index()
+    draft.add_enum_type(EnumTypeDef {
+        name,
+        variants: vec![
+            VariantDef {
+                name: red,
+                category: false,
+                payload: vec![],
+            },
+            VariantDef {
+                name: green,
+                category: false,
+                payload: vec![],
+            },
+        ],
+    })
 }
 
 #[test]
 fn conv_string_accepts_a_bare_scalar() {
     let result = verify_conv(|draft| {
         let n = draft.intern_int(7);
-        vec![Instr::ConstLoad(n.index())]
+        vec![Instr::ConstLoad(n)]
     });
     assert!(result.is_ok(), "a bare scalar renders: {result:?}");
 }
@@ -101,11 +99,9 @@ fn conv_string_accepts_a_bare_enum() {
 #[test]
 fn conv_string_rejects_a_bare_list() {
     let result = verify_conv(|draft| {
-        let idx = draft
-            .add_collection_type(CollectionTypeDef::List {
-                elem: ImageType::scalar(Scalar::Int),
-            })
-            .index();
+        let idx = draft.add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        });
         vec![Instr::ListNew(idx)]
     });
     assert!(
@@ -128,7 +124,10 @@ fn conv_string_rejects_a_bare_record() {
             }],
         });
         let n = draft.intern_int(1);
-        vec![Instr::ConstLoad(n.index()), Instr::RecordNew(0)]
+        vec![
+            Instr::ConstLoad(n),
+            Instr::RecordNew(marrow_image::TypeId::from_index(0)),
+        ]
     });
     assert!(
         result.is_err(),
@@ -139,12 +138,10 @@ fn conv_string_rejects_a_bare_record() {
 #[test]
 fn conv_string_rejects_a_bare_map() {
     let result = verify_conv(|draft| {
-        let idx = draft
-            .add_collection_type(CollectionTypeDef::Map {
-                key: ImageType::scalar(Scalar::Text),
-                value: ImageType::scalar(Scalar::Int),
-            })
-            .index();
+        let idx = draft.add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Text),
+            value: ImageType::scalar(Scalar::Int),
+        });
         vec![Instr::MapNew(idx)]
     });
     assert!(
@@ -158,7 +155,7 @@ fn conv_string_rejects_an_optional_scalar() {
     // `int` wrapped to `int?` is an optional operand — not renderable through ConvString.
     let result = verify_conv(|draft| {
         let n = draft.intern_int(7);
-        vec![Instr::ConstLoad(n.index()), Instr::SomeWrap]
+        vec![Instr::ConstLoad(n), Instr::SomeWrap]
     });
     assert!(
         result.is_err(),

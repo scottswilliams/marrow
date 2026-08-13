@@ -104,7 +104,7 @@ fn enclosing_level(draft: &mut ImageDraft, ordinal: usize, inner: Level) -> Leve
 
 fn record_type(record: TypeId) -> ImageType {
     ImageType::Record {
-        idx: record.index(),
+        idx: record,
         optional: false,
     }
 }
@@ -170,7 +170,7 @@ fn add_main(draft: &mut ImageDraft) {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let zero = draft.intern_int(0);
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len())
         .map(|index| SpanEntry {
             instr_index: index as u32,

@@ -209,10 +209,22 @@ fn ret_to_image(ret: RetShape) -> ImageType {
     match ret {
         RetShape::Unit => ImageType::Unit,
         RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
-        RetShape::Record { idx, optional } => ImageType::Record { idx, optional },
-        RetShape::Enum { idx, optional } => ImageType::Enum { idx, optional },
-        RetShape::Collection { idx, optional } => ImageType::Collection { idx, optional },
-        RetShape::Identity { root, optional } => ImageType::Identity { root, optional },
+        RetShape::Record { idx, optional } => ImageType::Record {
+            idx: marrow_image::TypeId::from_index(idx),
+            optional,
+        },
+        RetShape::Enum { idx, optional } => ImageType::Enum {
+            idx: marrow_image::EnumId::from_index(idx),
+            optional,
+        },
+        RetShape::Collection { idx, optional } => ImageType::Collection {
+            idx: marrow_image::CollTypeId::from_index(idx),
+            optional,
+        },
+        RetShape::Identity { root, optional } => ImageType::Identity {
+            root: marrow_image::RootId::from_index(root),
+            optional,
+        },
     }
 }
 

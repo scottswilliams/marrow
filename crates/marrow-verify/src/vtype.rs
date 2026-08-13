@@ -1,6 +1,6 @@
 //! The abstract value type the phase-3 stack interpreter tracks.
 
-use marrow_image::{ImageType, Scalar};
+use marrow_image::{CollTypeId, EnumId, ImageType, RootId, Scalar, TypeId};
 
 use crate::sealed::RetShape;
 
@@ -13,22 +13,22 @@ pub(crate) enum VType {
         optional: bool,
     },
     Record {
-        idx: u16,
+        idx: TypeId,
         optional: bool,
     },
     Enum {
-        idx: u16,
+        idx: EnumId,
         optional: bool,
     },
     Collection {
-        idx: u16,
+        idx: CollTypeId,
         optional: bool,
     },
     /// An entry identity `Id(^root)`, by ROOTS-table index. Tracked distinctly so an
     /// identity of one root never satisfies a consumer expecting another root or a
     /// key scalar.
     Identity {
-        root: u16,
+        root: RootId,
         optional: bool,
     },
     /// One key column spread from an entry identity of `root` (`IdentityKeyPath`), tagged
@@ -39,7 +39,7 @@ pub(crate) enum VType {
     /// of the compiler. It carries the column's scalar so the site's key-column type
     /// check is unchanged; it is never optional and never a value the language can name.
     IdentityColumn {
-        root: u16,
+        root: RootId,
         scalar: Scalar,
     },
 }
@@ -52,21 +52,21 @@ impl VType {
         }
     }
 
-    pub(crate) fn bare_record(idx: u16) -> Self {
+    pub(crate) fn bare_record(idx: TypeId) -> Self {
         VType::Record {
             idx,
             optional: false,
         }
     }
 
-    pub(crate) fn bare_enum(idx: u16) -> Self {
+    pub(crate) fn bare_enum(idx: EnumId) -> Self {
         VType::Enum {
             idx,
             optional: false,
         }
     }
 
-    pub(crate) fn bare_collection(idx: u16) -> Self {
+    pub(crate) fn bare_collection(idx: CollTypeId) -> Self {
         VType::Collection {
             idx,
             optional: false,
@@ -172,28 +172,28 @@ impl VType {
                     idx: want,
                     optional: want_opt,
                 },
-            ) => idx == want && optional == want_opt,
+            ) => idx == TypeId::from_index(want) && optional == want_opt,
             (
                 VType::Enum { idx, optional },
                 RetShape::Enum {
                     idx: want,
                     optional: want_opt,
                 },
-            ) => idx == want && optional == want_opt,
+            ) => idx == EnumId::from_index(want) && optional == want_opt,
             (
                 VType::Collection { idx, optional },
                 RetShape::Collection {
                     idx: want,
                     optional: want_opt,
                 },
-            ) => idx == want && optional == want_opt,
+            ) => idx == CollTypeId::from_index(want) && optional == want_opt,
             (
                 VType::Identity { root, optional },
                 RetShape::Identity {
                     root: want,
                     optional: want_opt,
                 },
-            ) => root == want && optional == want_opt,
+            ) => root == RootId::from_index(want) && optional == want_opt,
             _ => false,
         }
     }

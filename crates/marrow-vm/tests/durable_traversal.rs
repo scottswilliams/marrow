@@ -157,11 +157,9 @@ fn traversal_image() -> VerifiedImage {
         members[1].path(),
         SemanticTarget::WholePayload,
     );
-    let list_int = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        })
-        .index();
+    let list_int = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Int),
+    });
 
     let src = draft.intern_string("src/main.mw");
 
@@ -173,18 +171,18 @@ fn traversal_image() -> VerifiedImage {
         let mut code = vec![Instr::TxnBegin];
         for id in [1i64, 2, 3] {
             let key = draft.intern_int(id);
-            code.push(Instr::ConstLoad(key.index())); // root key
-            code.push(Instr::ConstLoad(title_const.index())); // title (a string const)
-            code.push(Instr::RecordNew(book_record.index()));
+            code.push(Instr::ConstLoad(key)); // root key
+            code.push(Instr::ConstLoad(title_const)); // title (a string const)
+            code.push(Instr::RecordNew(book_record));
             code.push(Instr::DurCreateEntry(root_entry.clone()));
         }
         let book_one = draft.intern_int(1);
         for pos in [10i64, 20] {
             let branch_key = draft.intern_int(pos);
-            code.push(Instr::ConstLoad(book_one.index())); // root key
-            code.push(Instr::ConstLoad(branch_key.index())); // branch key
-            code.push(Instr::ConstLoad(title_const.index())); // text
-            code.push(Instr::RecordNew(note_record.index()));
+            code.push(Instr::ConstLoad(book_one)); // root key
+            code.push(Instr::ConstLoad(branch_key)); // branch key
+            code.push(Instr::ConstLoad(title_const)); // text
+            code.push(Instr::RecordNew(note_record));
             code.push(Instr::DurCreateEntry(branch_entry.clone()));
         }
         code.push(Instr::TxnCommit);
@@ -525,11 +523,9 @@ fn wide_key_image() -> (VerifiedImage, u16) {
         big.placement_path(),
         SemanticTarget::WholePayload,
     );
-    let list_str = draft
-        .add_collection_type(CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Text),
-        })
-        .index();
+    let list_str = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Text),
+    });
     let src = draft.intern_string("src/main.mw");
 
     // A one-entry mutating seed: its presence gives the program write demand so the
@@ -540,9 +536,9 @@ fn wide_key_image() -> (VerifiedImage, u16) {
         let value = draft.intern_int(0);
         let code = vec![
             Instr::TxnBegin,
-            Instr::ConstLoad(key.index()),
-            Instr::ConstLoad(value.index()),
-            Instr::RecordNew(record.index()),
+            Instr::ConstLoad(key),
+            Instr::ConstLoad(value),
+            Instr::RecordNew(record),
             Instr::DurCreateEntry(root_entry.clone()),
             Instr::TxnCommit,
             Instr::Return,

@@ -46,7 +46,7 @@ fn draft_with_record(field_count: usize) -> ImageDraft {
     });
     let name = draft.intern_string("main");
     let zero = draft.intern_int(0);
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = spans(&code);
     let main = draft
         .add_function(FunctionDef {

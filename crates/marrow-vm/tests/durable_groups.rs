@@ -84,7 +84,7 @@ fn groups_image() -> VerifiedImage {
             FieldDef {
                 name: details,
                 ty: ImageType::Record {
-                    idx: details_record.index(),
+                    idx: details_record,
                     optional: false,
                 },
                 required: true,
@@ -159,8 +159,8 @@ fn groups_image() -> VerifiedImage {
     );
 
     let src = draft.intern_string("src/main.mw");
-    let book_ty_idx = book_record.index();
-    let details_ty_idx = details_record.index();
+    let book_ty_idx = book_record;
+    let details_ty_idx = details_record;
 
     // seed(): create book 1 with title "hi" and details{pages:384}.
     {
@@ -170,12 +170,12 @@ fn groups_image() -> VerifiedImage {
         let pages_const = draft.intern_int(384);
         let code = vec![
             Instr::TxnBegin,
-            Instr::ConstLoad(key.index()),         // root key
-            Instr::ConstLoad(title_const.index()), // Book.title
-            Instr::ConstLoad(pages_const.index()), // details.pages value
-            Instr::SomeWrap,                       // -> Some(384) for the sparse leaf
-            Instr::RecordNew(details_record.index()),
-            Instr::RecordNew(book_record.index()),
+            Instr::ConstLoad(key),         // root key
+            Instr::ConstLoad(title_const), // Book.title
+            Instr::ConstLoad(pages_const), // details.pages value
+            Instr::SomeWrap,               // -> Some(384) for the sparse leaf
+            Instr::RecordNew(details_record),
+            Instr::RecordNew(book_record),
             Instr::DurCreateEntry(root_entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
@@ -218,10 +218,10 @@ fn groups_image() -> VerifiedImage {
         let pages_const = draft.intern_int(500);
         let code = vec![
             Instr::TxnBegin,
-            Instr::ConstLoad(key.index()),
-            Instr::ConstLoad(pages_const.index()),
+            Instr::ConstLoad(key),
+            Instr::ConstLoad(pages_const),
             Instr::SomeWrap,
-            Instr::RecordNew(details_record.index()),
+            Instr::RecordNew(details_record),
             Instr::DurReplaceGroup(group_entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
@@ -246,7 +246,7 @@ fn groups_image() -> VerifiedImage {
         let key = draft.intern_int(1);
         let code = vec![
             Instr::TxnBegin,
-            Instr::ConstLoad(key.index()),
+            Instr::ConstLoad(key),
             Instr::DurEraseGroup(group_entry),
             Instr::TxnCommit,
             Instr::Return,
@@ -270,10 +270,16 @@ fn groups_image() -> VerifiedImage {
 
 /// Add a read-only export that pushes the root key `1`, runs `op`, and returns the
 /// optional record it leaves on the stack.
-fn add_read(draft: &mut ImageDraft, src: marrow_image::StrId, name: &str, op: Instr, record: u16) {
+fn add_read(
+    draft: &mut ImageDraft,
+    src: marrow_image::StrId,
+    name: &str,
+    op: Instr,
+    record: marrow_image::TypeId,
+) {
     let name_id = draft.intern_string(name);
     let key = draft.intern_int(1);
-    let code = vec![Instr::ConstLoad(key.index()), op, Instr::Return];
+    let code = vec![Instr::ConstLoad(key), op, Instr::Return];
     let ret = ImageType::Record {
         idx: record,
         optional: true,

@@ -325,7 +325,8 @@ const _: () = {
 //
 // Every count these bounds guard is spelled in the image bytes (and in the identity
 // preimages that mirror them) as a fixed-width big-endian integer, and the encoder
-// converts the `usize` row count to that width with `as` after `check_bounds` has
+// narrows the `usize` row count (and each owned wide logical ordinal) to that width
+// through the measure core's checked policy-clean path after the policy walk has
 // already refused a draft above the bound. Such a conversion is lossless exactly when
 // the bound itself fits the width it is spelled in, so the derivation is asserted once
 // here rather than re-argued at each conversion. Widening a bound past its encoded
@@ -655,7 +656,7 @@ mod tests {
     #[test]
     fn the_durable_graph_charges_hold_their_measured_widths() {
         assert_eq!(DURABLE_COMMAND_BYTES, 56, "one flat member command");
-        assert_eq!(DURABLE_MEMBER_ROW_BYTES, 56, "one materialized member row");
+        assert_eq!(DURABLE_MEMBER_ROW_BYTES, 64, "one materialized member row");
         assert_eq!(DURABLE_PRODUCT_ROW_BYTES, 72, "one Product declaration row");
         assert_eq!(
             DURABLE_OCCURRENCE_ROW_BYTES, 232,

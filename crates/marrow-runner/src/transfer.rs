@@ -28,18 +28,18 @@ pub(crate) fn decode_arg(image: &VerifiedImage, ty: &ImageType, json: &Json) -> 
         ImageType::Scalar { scalar, optional } => {
             wrap_optional(*optional, json, |j| decode_scalar(*scalar, j))
         }
-        ImageType::Record { idx, optional } => {
-            wrap_optional(*optional, json, |j| decode_record(image, *idx, j))
-        }
-        ImageType::Enum { idx, optional } => {
-            wrap_optional(*optional, json, |j| decode_enum(image, *idx, j))
-        }
-        ImageType::Collection { idx, optional } => {
-            wrap_optional(*optional, json, |j| decode_collection(image, *idx, j))
-        }
-        ImageType::Identity { root, optional } => {
-            wrap_optional(*optional, json, |j| decode_identity(image, *root, j))
-        }
+        ImageType::Record { idx, optional } => wrap_optional(*optional, json, |j| {
+            decode_record(image, sealed_ordinal(idx.index()), j)
+        }),
+        ImageType::Enum { idx, optional } => wrap_optional(*optional, json, |j| {
+            decode_enum(image, sealed_ordinal(idx.index()), j)
+        }),
+        ImageType::Collection { idx, optional } => wrap_optional(*optional, json, |j| {
+            decode_collection(image, sealed_ordinal(idx.index()), j)
+        }),
+        ImageType::Identity { root, optional } => wrap_optional(*optional, json, |j| {
+            decode_identity(image, sealed_ordinal(root.index()), j)
+        }),
     }
 }
 
@@ -75,6 +75,13 @@ fn decode_scalar(scalar: Scalar, json: &Json) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+/// The sealed wire-domain `u16` of a verified typed table reference: every value here
+/// was decoded from a `u16` wire read, so the narrowing is total; it is spelled checked
+/// so the wire domain is stated.
+fn sealed_ordinal(index: u32) -> u16 {
+    u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
 }
 
 fn decode_record(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {

@@ -7,6 +7,7 @@
 //! its target, and the encoder resolves indices to byte offsets once the code
 //! layout is known — so the compiler never computes byte offsets by hand.
 
+use crate::draft::{CollTypeId, ConstId, EnumId, RootId, TypeId};
 use crate::site_plan::LegacyDraftSiteOperand;
 use crate::ty::ImageType;
 
@@ -170,7 +171,7 @@ pub const OP_DUR_INDEX_EXISTS: u8 = 0xB8;
 /// own instruction list; the encoder rewrites them to container byte offsets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instr {
-    ConstLoad(u16),
+    ConstLoad(ConstId),
     LocalGet(u16),
     LocalSet(u16),
     Pop,
@@ -181,10 +182,10 @@ pub enum Instr {
     BranchPresent(u32),
     /// Fault with `run.unreachable`, carrying the static text at const index `_0`.
     /// The sole application-invariant fault; it never falls through.
-    Unreachable(u16),
+    Unreachable(ConstId),
     /// Fault with `run.todo`, carrying the static text at const index `_0`. A deferred
     /// path the author has not implemented; like `Unreachable` it never falls through.
-    Todo(u16),
+    Todo(ConstId),
     /// Pop a bool; on false fault with `run.assert` at this instruction's span, else
     /// fall through. Legal only in a test-entry function (the verifier enforces it).
     Assert,
@@ -229,8 +230,8 @@ pub enum Instr {
     /// honoring the `run.collection_limit` bounds; `join` concatenates a
     /// `List[string]` with a separator into a string, honoring the `run.text_limit`
     /// ceiling.
-    TextSplit(u16),
-    TextLines(u16),
+    TextSplit(CollTypeId),
+    TextLines(CollTypeId),
     TextJoin,
     /// Temporal equality and order over two bare temporals of the same type,
     /// producing a bool. The order agrees with the kernel key-codec byte order.
@@ -280,7 +281,7 @@ pub enum Instr {
         lo: i64,
         hi: i64,
     },
-    RecordNew(u16),
+    RecordNew(TypeId),
     FieldGet(u16),
     /// Pop a value and a bare record, store the value into the record's field
     /// `_0` slot (present), and push the updated record. Local product mutation:
@@ -297,7 +298,7 @@ pub enum Instr {
     /// Construct enum `enum_idx`'s variant `variant` from its dense scalar payload
     /// popped in reverse (p0 pushed first). Operands: `u16 enum_idx ‖ u16 variant`.
     EnumConstruct {
-        enum_idx: u16,
+        enum_idx: EnumId,
         variant: u16,
     },
     /// Pop an enum value and push its variant index as a bare int. The one match
@@ -324,7 +325,7 @@ pub enum Instr {
     /// declaration order). The `Id(^root, keys…)` constructor. Operands:
     /// `u16 root ‖ u16 cols`.
     MakeIdentity {
-        root: u16,
+        root: RootId,
         cols: u16,
     },
     /// `Id → [k0, …, k(cols-1)]`: spread an entry identity into its `cols` key scalars,
@@ -394,7 +395,7 @@ pub enum Instr {
         site: LegacyDraftSiteOperand,
         limit: u32,
         from: bool,
-        list_ty: u16,
+        list_ty: CollTypeId,
     },
     TxnBegin,
     TxnCommit,
@@ -414,7 +415,7 @@ pub enum Instr {
         site: LegacyDraftSiteOperand,
         limit: u32,
         from: bool,
-        list_ty: u16,
+        list_ty: CollTypeId,
     },
     /// The exact complete-key lookup of a unique managed index. Pop the index's whole
     /// projection (one key per component, in projection order) and push the matching source
@@ -427,7 +428,7 @@ pub enum Instr {
     /// unique-index lookup site the lookup uses. Stack effect `[projection-keys] → bool`.
     DurIndexExists(LegacyDraftSiteOperand),
     /// Push an empty `List` of the COLLTYPES index `_0`.
-    ListNew(u16),
+    ListNew(CollTypeId),
     /// `[list, value] → [list']`: append the bare value after the last element,
     /// faulting `run.collection_limit` when the length or aggregate-byte bound is
     /// exceeded. Collections are values, so this yields a new list.
@@ -444,7 +445,7 @@ pub enum Instr {
     /// read never faults.
     ListIndex,
     /// Push an empty `Map` of the COLLTYPES index `_0`.
-    MapNew(u16),
+    MapNew(CollTypeId),
     /// `[map, key, value] → [map']`: insert or replace the value at `key`, keeping
     /// keys in `CollectionKeyOrder`. Faults `run.collection_limit` on bound excess.
     MapInsert,

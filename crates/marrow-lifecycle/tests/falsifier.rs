@@ -92,7 +92,7 @@ fn add_main(draft: &mut ImageDraft) {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let zero = draft.intern_int(0);
-    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let code = vec![Instr::ConstLoad(zero), Instr::Return];
     let spans = (0..code.len())
         .map(|index| SpanEntry {
             instr_index: index as u32,

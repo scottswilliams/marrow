@@ -1269,7 +1269,7 @@ const MAX_LIVE_DURABLE_VALUE_ARENA_BYTES: u64 =
 #[test]
 fn the_compiler_side_maximum_live_graph_holds_its_accounted_figures() {
     assert_eq!(
-        MAX_LIVE_DURABLE_GRAPH_BYTES, 42_850_312,
+        MAX_LIVE_DURABLE_GRAPH_BYTES, 43_243_432,
         "the accounted compiler-side durable contract graph moved; re-derive the exported \
          term and update the implementation map with this pin"
     );

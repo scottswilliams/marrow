@@ -145,12 +145,12 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     let value = draft.intern_int(7);
     let mut code = vec![
         Instr::TxnBegin,
-        Instr::ConstLoad(key.index()),
-        Instr::ConstLoad(value.index()),
+        Instr::ConstLoad(key),
+        Instr::ConstLoad(value),
     ];
     match write {
         VmWrite::Create => {
-            code.push(Instr::RecordNew(record.index()));
+            code.push(Instr::RecordNew(record));
             code.push(Instr::DurCreateEntry(entry_site));
         }
         VmWrite::SetRequired => code.push(Instr::DurSetRequired(field_site)),

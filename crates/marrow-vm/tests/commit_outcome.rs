@@ -105,8 +105,8 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
         let helper_name = draft.intern_string("faultingHelper");
         let source = draft.intern_string("src/main.mw");
         let helper_code = vec![
-            Instr::ConstLoad(one.index()),
-            Instr::ConstLoad(zero.index()),
+            Instr::ConstLoad(one),
+            Instr::ConstLoad(zero),
             Instr::IntDiv,
             Instr::Pop,
             Instr::Return,
@@ -130,16 +130,16 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     let mut code = if mutating {
         vec![
             Instr::TxnBegin,
-            Instr::ConstLoad(key.index()),
-            Instr::ConstLoad(value.index()),
-            Instr::RecordNew(record.index()),
+            Instr::ConstLoad(key),
+            Instr::ConstLoad(value),
+            Instr::RecordNew(record),
             Instr::DurCreateEntry(site),
             Instr::TxnCommit,
         ]
     } else {
         vec![
             Instr::TxnBegin,
-            Instr::ConstLoad(key.index()),
+            Instr::ConstLoad(key),
             Instr::DurReadEntry(site),
             Instr::Pop,
             Instr::TxnCommit,
@@ -148,8 +148,8 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     match post_commit_fault {
         PostCommitFault::None => {}
         PostCommitFault::Direct => code.extend([
-            Instr::ConstLoad(one.index()),
-            Instr::ConstLoad(zero.index()),
+            Instr::ConstLoad(one),
+            Instr::ConstLoad(zero),
             Instr::IntDiv,
             Instr::Pop,
         ]),

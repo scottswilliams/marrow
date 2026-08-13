@@ -7,8 +7,9 @@ use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{RetShape, SealedConst};
 use marrow_image::{
-    ExportId, ImageType, OPTIONAL_FLAG, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE,
-    TAG_DURATION, TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT,
+    CollTypeId, EnumId, ExportId, ImageType, OPTIONAL_FLAG, RootId, TAG_BOOL, TAG_BYTES,
+    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT,
+    TAG_RECORD, TAG_TEXT, TAG_UNIT, TypeId,
 };
 use std::rc::Rc;
 
@@ -218,7 +219,7 @@ fn decode_param_ref(
                 ));
             }
             Ok(ImageType::Record {
-                idx,
+                idx: TypeId::from_index(idx),
                 optional: false,
             })
         }
@@ -233,7 +234,7 @@ fn decode_param_ref(
                 ));
             }
             Ok(ImageType::Enum {
-                idx,
+                idx: EnumId::from_index(idx),
                 optional: false,
             })
         }
@@ -249,7 +250,7 @@ fn decode_param_ref(
                 ));
             }
             Ok(ImageType::Collection {
-                idx,
+                idx: CollTypeId::from_index(idx),
                 optional: false,
             })
         }
@@ -265,7 +266,7 @@ fn decode_param_ref(
                 ));
             }
             Ok(ImageType::Identity {
-                root,
+                root: RootId::from_index(root),
                 optional: false,
             })
         }

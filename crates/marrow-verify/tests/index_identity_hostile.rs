@@ -63,7 +63,7 @@ struct Graph {
     entry_site: LegacyDraftSiteOperand,
     scan_site: LegacyDraftSiteOperand,
     lookup_site: LegacyDraftSiteOperand,
-    list_int: u16,
+    list_int: marrow_image::CollTypeId,
 }
 
 fn build_graph(draft: &mut ImageDraft) -> Graph {
@@ -156,11 +156,9 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
         &lookup_path,
         SemanticTarget::IndexLookup,
     );
-    let list_int = draft
-        .add_collection_type(marrow_image::CollectionTypeDef::List {
-            elem: ImageType::scalar(Scalar::Int),
-        })
-        .index();
+    let list_int = draft.add_collection_type(marrow_image::CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Int),
+    });
     Graph {
         entry_site,
         scan_site,
@@ -211,11 +209,11 @@ fn int() -> ImageType {
 }
 fn opt_id() -> ImageType {
     ImageType::Identity {
-        root: 0,
+        root: marrow_image::RootId::from_index(0),
         optional: true,
     }
 }
-fn list_ret(idx: u16) -> ImageType {
+fn list_ret(idx: marrow_image::CollTypeId) -> ImageType {
     ImageType::Collection {
         idx,
         optional: false,
@@ -293,9 +291,8 @@ fn a_lookup_over_a_nonunique_index_is_refused() {
 fn a_scan_list_of_the_wrong_element_type_is_refused() {
     let mut draft = ImageDraft::new();
     let g = build_graph(&mut draft);
-    let list_text = draft
-        .add_collection_type(marrow_image::CollectionTypeDef::List { elem: text() })
-        .index();
+    let list_text =
+        draft.add_collection_type(marrow_image::CollectionTypeDef::List { elem: text() });
     // The scanned identity key is `int`, so a `List[string]` frozen type is refused.
     let code = vec![
         Instr::LocalGet(0),
@@ -324,7 +321,10 @@ fn an_identity_key_path_with_the_wrong_column_count_is_refused() {
     let code = |_: &Graph| {
         vec![
             Instr::LocalGet(0),
-            Instr::MakeIdentity { root: 0, cols: 1 },
+            Instr::MakeIdentity {
+                root: marrow_image::RootId::from_index(0),
+                cols: 1,
+            },
             Instr::IdentityKeyPath(2),
             Instr::Return,
         ]
@@ -341,7 +341,10 @@ fn a_valid_identity_round_trip_verifies() {
     let code = |g: &Graph| {
         vec![
             Instr::LocalGet(0),
-            Instr::MakeIdentity { root: 0, cols: 1 },
+            Instr::MakeIdentity {
+                root: marrow_image::RootId::from_index(0),
+                cols: 1,
+            },
             Instr::IdentityKeyPath(1),
             Instr::DurExists(g.entry_site.clone()),
             Instr::Return,

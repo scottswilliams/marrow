@@ -80,7 +80,9 @@
 
 use crate::bounds;
 use crate::digest::image_id;
-use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, StrId};
+use crate::draft::{
+    CollTypeId, CollectionTypeDef, ConstId, ConstValue, ImageBuildError, ImageDraft, StrId, TypeId,
+};
 use crate::durable_id::{DurableContractId, DurableGraphTooLarge};
 use crate::encode::{
     EncodedImage, SECTION_COUNT, SPAN_ROW_BYTES, laid_out_code_len, push_frame, push_section,
@@ -98,6 +100,25 @@ use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeView};
 const SECTION_IDS: [u8; 10] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
 /// The plan slot of the DURABLE section (wire id 0x03).
 const DURABLE_SLOT: usize = 2;
+
+/// The policy-clean `u16` narrowing of one owned wide logical ordinal — the one
+/// sanctioned narrowing direction for an owned pre-seal id.
+///
+/// Every caller runs on the measure core's fitting arm: during capped measurement or
+/// planned emission, both strictly after [`CoherentDraft::policy`] proved every owned
+/// table within its §E maximum, and `crate::bounds` const-asserts each of those
+/// maxima at or below `u16::MAX`, so the conversion is total there. It is spelled
+/// checked so a value outside the proved envelope is a producer invariant, never a
+/// wrapped wire value.
+pub(crate) fn wire_ordinal(ordinal: u32) -> u16 {
+    u16::try_from(ordinal).expect("a policy-clean owned ordinal fits the u16 wire domain")
+}
+
+/// The policy-clean `u16` narrowing of one owned row or byte count, on the same
+/// fitting-arm implication as [`wire_ordinal`].
+pub(crate) fn wire_len(count: usize) -> u16 {
+    u16::try_from(count).expect("a policy-clean owned count fits the u16 wire domain")
+}
 
 /// Which emitted region disagreed with the measured plan: one of the ten sections, by
 /// its wire id, or the image envelope. Opaque — it renders the region's name and can
@@ -752,8 +773,8 @@ fn string_ref(draft: &ImageDraft, id: StrId, site: &'static str) -> Result<(), I
     }
 }
 
-fn const_ref(draft: &ImageDraft, raw: u16) -> Result<(), ImageBuildError> {
-    if (raw as usize) < draft.consts().len() {
+fn const_ref(draft: &ImageDraft, id: ConstId) -> Result<(), ImageBuildError> {
+    if (id.index() as usize) < draft.consts().len() {
         Ok(())
     } else {
         Err(ImageBuildError::InvalidReference("constant"))
@@ -768,16 +789,16 @@ fn func_ref(draft: &ImageDraft, raw: u16, site: &'static str) -> Result<(), Imag
     }
 }
 
-fn type_row_ref(draft: &ImageDraft, raw: u16) -> Result<(), ImageBuildError> {
-    if (raw as usize) < draft.types().len() {
+fn type_row_ref(draft: &ImageDraft, id: TypeId) -> Result<(), ImageBuildError> {
+    if (id.index() as usize) < draft.types().len() {
         Ok(())
     } else {
         Err(ImageBuildError::InvalidReference("type table"))
     }
 }
 
-fn collection_row_ref(draft: &ImageDraft, raw: u16) -> Result<(), ImageBuildError> {
-    if (raw as usize) < draft.collections().len() {
+fn collection_row_ref(draft: &ImageDraft, id: CollTypeId) -> Result<(), ImageBuildError> {
+    if (id.index() as usize) < draft.collections().len() {
         Ok(())
     } else {
         Err(ImageBuildError::InvalidReference("collection type"))
@@ -792,7 +813,7 @@ fn image_type_ref(draft: &ImageDraft, ty: ImageType) -> Result<(), ImageBuildErr
         ImageType::Unit | ImageType::Scalar { .. } => Ok(()),
         ImageType::Record { idx, .. } => type_row_ref(draft, idx),
         ImageType::Enum { idx, .. } => {
-            if (idx as usize) < draft.enums().len() {
+            if (idx.index() as usize) < draft.enums().len() {
                 Ok(())
             } else {
                 Err(ImageBuildError::InvalidReference("enum type"))
@@ -800,7 +821,7 @@ fn image_type_ref(draft: &ImageDraft, ty: ImageType) -> Result<(), ImageBuildErr
         }
         ImageType::Collection { idx, .. } => collection_row_ref(draft, idx),
         ImageType::Identity { root, .. } => {
-            if (root as usize) < draft.root_occurrences().len() {
+            if (root.index() as usize) < draft.root_occurrences().len() {
                 Ok(())
             } else {
                 Err(ImageBuildError::InvalidReference("root table"))
@@ -852,7 +873,7 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
             // The variant is subordinate: it is checked against the resolved enum,
             // not a table of its own.
             Instr::EnumConstruct { enum_idx, variant } => {
-                let Some(enum_def) = draft.enums().get(*enum_idx as usize) else {
+                let Some(enum_def) = draft.enums().get(enum_idx.index() as usize) else {
                     return Err(ImageBuildError::InvalidReference("enum type"));
                 };
                 if (*variant as usize) >= enum_def.variants.len() {
@@ -866,7 +887,7 @@ fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildE
             // `cols` is not an ordinal but is statically decidable: it must equal the
             // referenced root's key arity, and it is reachable only past a valid root.
             Instr::MakeIdentity { root, cols } => {
-                let Some(occurrence) = draft.root_occurrences().get(*root as usize) else {
+                let Some(occurrence) = draft.root_occurrences().get(root.index() as usize) else {
                     return Err(ImageBuildError::InvalidReference("root table"));
                 };
                 if (*cols as usize) != occurrence.keys().len() {
@@ -895,7 +916,7 @@ fn durable_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for occurrence in draft.root_occurrences() {
         string_ref(draft, occurrence.name(), "root name")?;
         let declaration = draft.declaration_of(occurrence);
-        type_row_ref(draft, declaration.root_entry_record().0)?;
+        type_row_ref(draft, declaration.root_entry_record())?;
         let graph = declaration.graph();
         member_references(draft, graph, graph.members())?;
     }
@@ -917,7 +938,7 @@ fn member_references(
             }
             DeclarationMemberShape::Branch { name, record, .. } => {
                 string_ref(draft, *name, "branch name")?;
-                type_row_ref(draft, record.0)?;
+                type_row_ref(draft, *record)?;
                 member_references(draft, graph, graph.members_of(member))?;
             }
         }
@@ -1142,7 +1163,7 @@ mod decisive_saturation {
         let src = draft.intern_string("s");
         let name = draft.intern_string("f");
         let zero = draft.intern_int(0);
-        let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero.index()), 400)
+        let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 400)
             .chain([Instr::Return])
             .collect();
         for _ in 0..512 {

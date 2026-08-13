@@ -422,7 +422,7 @@ fn resolve(
         ImageType::Record { idx, optional } => {
             let record = tables
                 .records
-                .get(idx as usize)
+                .get(idx.index() as usize)
                 .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
             let mut fields = Vec::with_capacity(record.fields.len());
             for field in &record.fields {
@@ -437,7 +437,7 @@ fn resolve(
         ImageType::Enum { idx, optional } => {
             let enum_shape = tables
                 .enums
-                .get(idx as usize)
+                .get(idx.index() as usize)
                 .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
             let mut variants = Vec::with_capacity(enum_shape.variants.len());
             for variant in &enum_shape.variants {
@@ -456,7 +456,7 @@ fn resolve(
         ImageType::Collection { idx, optional } => {
             let collection = tables
                 .collections
-                .get(idx as usize)
+                .get(idx.index() as usize)
                 .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
             let carrier = match collection {
                 CollectionShape::List { elem } => {
@@ -472,7 +472,7 @@ fn resolve(
         ImageType::Identity { root, optional } => {
             let root_shape = tables
                 .roots
-                .get(root as usize)
+                .get(root.index() as usize)
                 .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
             Ok(wrap(
                 optional,
@@ -542,6 +542,7 @@ mod tests {
     };
     use crate::bounds::MAX_INTERFACE_TRANSFER_NODES;
     use crate::demand::{DemandAtom, ExportDemand, OperationClass};
+    use crate::draft::{CollTypeId, EnumId, RootId, TypeId};
     use crate::durable_id::LedgerIdBytes;
     use crate::export_id::ExportId;
     use crate::semantic::SemanticPath;
@@ -595,7 +596,7 @@ mod tests {
             id: ExportId::of_local("main", "lookup"),
             params: vec![ImageType::scalar(Scalar::Int)],
             ret: ImageType::Record {
-                idx: 0,
+                idx: TypeId(0),
                 optional: true,
             },
             demand_id: demand_a(),
@@ -756,7 +757,7 @@ mod tests {
             id: ExportId::of_local("main", "lookup"),
             params: vec![ImageType::scalar(Scalar::Int)],
             ret: ImageType::Record {
-                idx: 0,
+                idx: TypeId(0),
                 optional: true,
             },
             demand_id: demand_a(),
@@ -802,7 +803,7 @@ mod tests {
             id: ExportId::of_local("main", "lookup"),
             params: vec![ImageType::scalar(Scalar::Int)],
             ret: ImageType::Record {
-                idx: 0,
+                idx: TypeId(0),
                 optional: true,
             },
             demand_id: demand_a(),
@@ -889,7 +890,7 @@ mod tests {
                 id: listy,
                 params: vec![],
                 ret: ImageType::Collection {
-                    idx: 0,
+                    idx: CollTypeId(0),
                     optional: false,
                 },
                 demand_id: empty_demand(),
@@ -915,7 +916,7 @@ mod tests {
             fields: vec![FieldShape {
                 name: "items".to_string(),
                 ty: ImageType::Collection {
-                    idx: 0,
+                    idx: CollTypeId(0),
                     optional: false,
                 },
                 required: true,
@@ -925,7 +926,7 @@ mod tests {
             [ExportSignature {
                 id: ExportId::of_local("main", "holds"),
                 params: vec![ImageType::Record {
-                    idx: 0,
+                    idx: TypeId(0),
                     optional: false,
                 }],
                 ret: ImageType::Unit,
@@ -950,7 +951,7 @@ mod tests {
                     id: ExportId::of_local("main", "findByTag"),
                     params: vec![ImageType::scalar(Scalar::Text)],
                     ret: ImageType::Identity {
-                        root: 0,
+                        root: RootId(0),
                         optional: true,
                     },
                     demand_id: empty_demand(),
@@ -985,7 +986,7 @@ mod tests {
         for level in 0..depth {
             let field_ty = if level + 1 < depth {
                 ImageType::Record {
-                    idx: (level + 1) as u16,
+                    idx: TypeId((level + 1) as u32),
                     optional: false,
                 }
             } else {
@@ -1006,7 +1007,7 @@ mod tests {
             [ExportSignature {
                 id,
                 params: vec![ImageType::Record {
-                    idx: 0,
+                    idx: TypeId(0),
                     optional: false,
                 }],
                 ret: ImageType::Unit,
@@ -1048,7 +1049,7 @@ mod tests {
                     id,
                     params: vec![],
                     ret: ImageType::Enum {
-                        idx: 0,
+                        idx: EnumId(0),
                         optional: false,
                     },
                     demand_id: empty_demand(),
@@ -1152,17 +1153,17 @@ mod tests {
                 optional,
             },
             1 => ImageType::Record {
-                idx: (after_record + 1 + rng.below(record_room)) as u16,
+                idx: TypeId((after_record + 1 + rng.below(record_room)) as u32),
                 optional,
             },
             2 => ImageType::Enum {
-                idx: (after_enum + 1 + rng.below(enum_room)) as u16,
+                idx: EnumId((after_enum + 1 + rng.below(enum_room)) as u32),
                 optional,
             },
             // A reference into the fixed two-entry `fuzz_collections` table (0 = a
             // List<int>, 1 = a Map<string, int>), both acyclic scalar-leaf carriers.
             _ => ImageType::Collection {
-                idx: (rng.next() % 2) as u16,
+                idx: CollTypeId((rng.next() % 2) as u32),
                 optional,
             },
         }
@@ -1306,12 +1307,12 @@ mod tests {
                     ImageType::Scalar { scalar, optional }
                 } else if pick < record_count {
                     ImageType::Record {
-                        idx: pick as u16,
+                        idx: TypeId(pick as u32),
                         optional,
                     }
                 } else {
                     ImageType::Enum {
-                        idx: (pick - record_count) as u16,
+                        idx: EnumId((pick - record_count) as u32),
                         optional,
                     }
                 }
