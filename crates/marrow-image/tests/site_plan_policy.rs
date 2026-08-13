@@ -19,6 +19,8 @@
 //! bind-then-request protocol has exactly one owner in the workspace and is included here
 //! rather than copied.
 
+use std::collections::BTreeSet;
+
 use marrow_image::bounds::MAX_SITES;
 use marrow_image::{
     AdmittedRoot, CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
@@ -1062,22 +1064,49 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
 }
 
 /// The reversed-demand law: the same set of site demands requested in reverse order
-/// yields the same artifact. The demand key is `(occurrence, path, target)` and the
-/// plan's row order is request order, so a reversed sweep proves the *set* — not the
-/// sequence — decides what the draft holds: the same number of retained demands, the
-/// same encodability, and, at the crossing, the same refusal.
+/// retains the same demands. The demand key is `(occurrence, path, target)`, so a
+/// reversed sweep proves the *set* — not the sequence — decides what the draft holds.
+///
+/// It does not decide the byte order: rows are emitted in request order, so the two
+/// sweeps encode to different bytes of the same length. Stating that plainly is part of
+/// the law — "the same artifact" would be false.
 ///
 /// Order independence is what lets a lowering pass visit a declaration's leaves in
 /// whatever order its own traversal produces without changing which program the image
 /// describes.
+///
+/// What is compared is deliberately not a count. Two sweeps over one `members` vector
+/// mint the same number of refs by construction, so comparing lengths compares a
+/// constant with itself and would hold even if a sweep aliased every demand onto one
+/// row. The comparison is therefore over the *identities* minted and the bytes the draft
+/// then encodes, and the fences assert `Ok` rather than "not this one error" — a negative
+/// match is satisfied by every other failure, including ones that mean the sweep never
+/// ran.
 #[test]
 fn a_reversed_demand_sweep_yields_the_same_artifact() {
-    // Under the cap: both orders encode, and every demand keeps a distinct operand.
-    let forward = {
-        let (mut owner, root, members) = wide_draft(MAX_SITES);
+    /// A declaration wide enough that request order is observable, and narrow enough that
+    /// the draft still encodes.
+    const ORDER_INDEPENDENCE_FIELDS: usize = 200;
+
+    /// One sweep's artifacts: the distinct ref identities it minted, how many refs it
+    /// minted, and the bytes the committed draft encodes to.
+    ///
+    /// The width is inside the whole-image byte ceiling on purpose: the point of this arm
+    /// is to compare a real encoded artifact, and a draft that cannot encode has none to
+    /// compare. (A sweep at the full site cap refuses with `ImageTooLarge` long before the
+    /// site cap is the binding constraint — which is precisely why the previous fence,
+    /// spelled as "not `TooManySites`", passed while the sweep produced no image at all.)
+    /// The crossing arm below drives the site cap itself, where a refusal is the artifact.
+    fn sweep(reverse: bool) -> (BTreeSet<String>, usize, Vec<u8>) {
+        let (mut owner, root, members) = wide_draft(ORDER_INDEPENDENCE_FIELDS);
         let mut draft = admitted(&mut owner);
         let mut refs: Vec<PlannedSiteRef> = Vec::new();
-        for member in &members {
+        let order: Vec<&DeclarationMember> = if reverse {
+            members.iter().rev().collect()
+        } else {
+            members.iter().collect()
+        };
+        for member in order {
             refs.push(site(
                 &mut draft,
                 root.occurrence(),
@@ -1085,39 +1114,47 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
                 SemanticTarget::FieldLeaf,
             ));
         }
-        assert!(
-            !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
-            "the forward sweep fits the site cap",
-        );
+        let bytes = draft
+            .encode()
+            .expect("a sweep inside the site cap encodes")
+            .bytes;
         draft.commit();
-        refs.len()
-    };
-    let reversed = {
-        let (mut owner, root, members) = wide_draft(MAX_SITES);
-        let mut draft = admitted(&mut owner);
-        let mut refs: Vec<PlannedSiteRef> = Vec::new();
-        for member in members.iter().rev() {
-            refs.push(site(
-                &mut draft,
-                root.occurrence(),
-                member.path(),
-                SemanticTarget::FieldLeaf,
-            ));
-        }
-        assert!(
-            !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
-            "the reversed sweep fits the site cap identically",
-        );
-        draft.commit();
-        refs.len()
-    };
+        let identities: BTreeSet<String> = refs.iter().map(|r| format!("{r:?}")).collect();
+        (identities, refs.len(), bytes)
+    }
+
+    let (forward_ids, forward_count, forward_bytes) = sweep(false);
+    let (reversed_ids, reversed_count, reversed_bytes) = sweep(true);
+
+    // Structure, not a counter: every demand kept a distinct operand in both orders. A
+    // sweep that aliased demands onto one row would have a smaller identity set while its
+    // ref count stayed the same.
     assert_eq!(
-        forward, reversed,
-        "the reversed sweep retained the same number of demands",
+        forward_ids.len(),
+        forward_count,
+        "the forward sweep minted a distinct identity per demand",
+    );
+    assert_eq!(
+        reversed_ids.len(),
+        reversed_count,
+        "the reversed sweep minted a distinct identity per demand",
+    );
+    assert_eq!(
+        forward_ids, reversed_ids,
+        "the reversed sweep minted the same set of identities, not merely as many",
+    );
+    // Not byte equality: the SITES rows are emitted in request order, so reversing the
+    // sweep reorders them and the bytes genuinely differ. What the demand set fixes is how
+    // much site material exists — the same rows, permuted — so the encoded length is the
+    // artifact that holds, and it fails if a sweep dropped or duplicated a row.
+    assert_eq!(
+        forward_bytes.len(),
+        reversed_bytes.len(),
+        "the two orders emit the same site material, permuted",
     );
 
-    // Across the cap: both orders refuse with the same verdict, so which demand happens
-    // to be the one past the cap cannot change the classification.
+    // Across the cap: both orders refuse with the same exact verdict, so which demand
+    // happens to be the one past the cap cannot change the classification.
     for reverse in [false, true] {
         let (mut owner, root, members) = wide_draft(MAX_SITES);
         let mut draft = admitted(&mut owner);
@@ -1136,48 +1173,76 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
                 SemanticTarget::FieldLeaf,
             );
         }
-        assert!(
-            matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+        assert_eq!(
+            draft.encode().map(|_| ()),
+            Err(ImageBuildError::TooManySites),
             "the crossing classifies the same in either request order",
         );
     }
 }
 
-/// A durable batch that fails after zero, one, and many staged sites restores all of
-/// them — the staging count is not part of the law.
+/// A batch abandoned after zero, one, and many staged sites restores all of them — the
+/// staging count is not part of the law.
 ///
-/// Every checked refusal inside a store's build lands before its eager sites are
-/// staged, so the refusal arm always stages zero; the counts that matter are therefore
-/// reached the other way, by abandoning an armed batch after each staging count. One
-/// staged site exercises the single-entry suffix, many exercise the loop, and zero
+/// One staged site exercises the single-entry suffix, many exercise the loop, and zero
 /// proves an abandoned batch that staged nothing is not a special case of it.
+///
+/// The many-arm stages its sites under **distinct occurrences**. A demand key is
+/// `(occurrence, path, target)`, so re-walking one occurrence's members is a sequence of
+/// duplicate demands after the first pass: an earlier form of this test wrapped a
+/// 64-member vector under one fixed occurrence and claimed 512 staged sites while 64 rows
+/// were ever created. The count is therefore taken from the *identities the draft minted*
+/// rather than from the loop's own counter, which can only ever agree with itself, and
+/// each arm first shows the draft actually changed — so an arm that silently stages
+/// nothing fails instead of passing on an unchanged-bytes comparison that is trivially
+/// true.
 #[test]
 fn a_durable_batch_abandoned_after_zero_one_or_many_staged_sites_restores_all() {
+    const MEMBERS: usize = 64;
     for staged in [0usize, 1, 512] {
-        let (mut owner, _root, members) = wide_owner(64);
+        let (mut owner, _root, members) = wide_owner(MEMBERS);
         let clean = owner.encode().expect("the committed draft encodes").bytes;
 
         {
             let mut draft = admitted(&mut owner);
-            // A second occurrence over the declared graph: each of its leaves is a
-            // fresh demand key, so `staged` distinct sites really are staged.
-            let occurrence = admit_root(&mut draft, 0x33);
+            let mut minted: BTreeSet<String> = BTreeSet::new();
             let mut requested = 0usize;
-            'staging: while requested < staged {
+            let mut wrap = 0u8;
+            while requested < staged {
+                // A fresh occurrence per wrap, so every demand key below is distinct.
+                let occurrence = admit_root(&mut draft, 0x33 + wrap);
                 for member in &members {
                     if requested == staged {
-                        break 'staging;
+                        break;
                     }
-                    let _ = site(
+                    let site_ref = site(
                         &mut draft,
                         occurrence.occurrence(),
                         member.path(),
                         SemanticTarget::FieldLeaf,
                     );
+                    minted.insert(format!("{site_ref:?}"));
                     requested += 1;
                 }
+                wrap += 1;
             }
-            assert_eq!(requested, staged, "the batch staged exactly its count");
+            assert_eq!(
+                minted.len(),
+                staged,
+                "the batch staged {staged} distinct sites, read from the identities it \
+                 minted rather than from the loop that asked for them",
+            );
+            if staged > 0 {
+                // The batch really changed the draft before it was abandoned. This covers
+                // the whole batch (its roots as well as its sites); what pins the site
+                // count specifically is the distinct-identity assertion above, whose
+                // identities are the refs the draft itself minted.
+                assert_ne!(
+                    draft.encode().expect("the staged draft encodes").bytes,
+                    clean,
+                    "the batch changed the draft before it was abandoned",
+                );
+            }
             // The armed guard drops here: the batch fails without committing.
         }
 

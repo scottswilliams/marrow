@@ -2788,3 +2788,90 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "let function_demands: Vec<ExportDemand> = (0..functions.len() as u16)",
     ),
 ];
+
+/// The durable store build stages eager sites **before** work that can still fail.
+///
+/// The lane's record previously read "every checked refusal inside `build_one` lands
+/// before its eager sites are staged", and a staging test was written on that basis. It is
+/// false: the first `request_eager_site` is followed by further `?`-propagating calls, so a
+/// production abandonment with a nonzero staged-site count is representable. This gate
+/// pins the ordering as an artifact rather than leaving the claim to prose — if the body is
+/// ever reordered so that nothing fallible follows staging, this fails and the record can
+/// be corrected in the other direction.
+#[test]
+fn fallible_work_follows_the_first_eager_site_staging_in_the_store_build() {
+    let code = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/durable.rs"))
+            .expect("read the durable builder"),
+    );
+    let body = function_bodies(&code)
+        .into_iter()
+        .find(|(name, _)| name == "build_one")
+        .map(|(_, body)| body)
+        .expect("the store build is present, so this gate has a live subject");
+
+    let first_staging = body
+        .find("request_eager_site(")
+        .expect("the store build stages eager sites");
+    let after = &body[first_staging..];
+
+    // Every `?` after the first staging call is a path that leaves with sites already
+    // staged. `request_eager_site` itself propagates, so the count is at least its own.
+    let propagations = after.matches('?').count();
+    assert!(
+        propagations >= 3,
+        "only {propagations} fallible propagations follow the first eager-site staging; \
+         the 'all failures precede staging' reading would need zero",
+    );
+    for callee in ["emit_root_member_sites(", "member_flat_at_root("] {
+        assert!(
+            after.contains(callee),
+            "`{callee}` runs after the first eager-site staging and can propagate an \
+             invariant, so a nonzero staged-site abandonment is reachable",
+        );
+    }
+}
+
+/// Every `fn name` definition in `code`, paired with its brace-matched body.
+fn function_bodies(code: &str) -> Vec<(String, String)> {
+    let bytes = code.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let Some(hit) = code[at..].find("fn ") {
+        let start = at + hit;
+        at = start + 3;
+        if start > 0 && is_ident_byte(bytes[start - 1]) {
+            continue;
+        }
+        let rest = &code[start + 3..];
+        let name_len = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        if name_len == 0 {
+            continue;
+        }
+        let name = rest[..name_len].to_string();
+        let Some(open) = code[start..].find('{').map(|n| start + n) else {
+            continue;
+        };
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, byte) in bytes[open..].iter().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(end) = end {
+            out.push((name, code[open..=end].to_string()));
+        }
+    }
+    out
+}

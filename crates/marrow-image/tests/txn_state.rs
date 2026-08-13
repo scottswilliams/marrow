@@ -504,9 +504,15 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
         /// Rows of this kind the exporting fixture already holds.
         seeded: usize,
         maximum: usize,
-        mint: fn(&mut DraftTxn<'_>, usize),
+        /// Mint row `index`, returning the opaque identity it minted.
+        mint: fn(&mut DraftTxn<'_>, usize) -> String,
         /// Re-request row `index` through the kind's keyed lookup, where it has one.
-        lookup: Option<fn(&mut DraftTxn<'_>, usize)>,
+        /// Types, enums, and collections are append-only at this surface — they carry no
+        /// keyed index — so their availability is the identity check below rather than a
+        /// lookup this surface does not offer.
+        lookup: Option<fn(&mut DraftTxn<'_>, usize) -> String>,
+        /// The identity carrier's spelling, for the row-at-the-maximum assertion.
+        carrier: &'static str,
         verdict: ImageBuildError,
     }
     let kinds = [
@@ -515,13 +521,20 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
             seeded: 2,
             maximum: MAX_STRINGS,
             mint: |txn, index| {
-                txn.intern_string(&format!("s{index:05}"))
-                    .expect("a within-domain mint");
+                format!(
+                    "{:?}",
+                    txn.intern_string(&format!("s{index:05}"))
+                        .expect("a within-domain mint")
+                )
             },
             lookup: Some(|txn, index| {
-                txn.intern_string(&format!("s{index:05}"))
-                    .expect("a within-domain mint");
+                format!(
+                    "{:?}",
+                    txn.intern_string(&format!("s{index:05}"))
+                        .expect("a within-domain mint")
+                )
             }),
+            carrier: "StrId",
             verdict: ImageBuildError::TooManyStrings,
         },
         Kind {
@@ -529,13 +542,20 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
             seeded: 1,
             maximum: MAX_CONSTS,
             mint: |txn, index| {
-                txn.intern_int(index as i64 + 1)
-                    .expect("a within-domain mint");
+                format!(
+                    "{:?}",
+                    txn.intern_int(index as i64 + 1)
+                        .expect("a within-domain mint")
+                )
             },
             lookup: Some(|txn, index| {
-                txn.intern_int(index as i64 + 1)
-                    .expect("a within-domain mint");
+                format!(
+                    "{:?}",
+                    txn.intern_int(index as i64 + 1)
+                        .expect("a within-domain mint")
+                )
             }),
+            carrier: "ConstId",
             verdict: ImageBuildError::TooManyConsts,
         },
         Kind {
@@ -543,13 +563,17 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
             maximum: MAX_TYPES,
             mint: |txn, _| {
                 let name = txn.intern_string("T").expect("a within-domain mint");
-                txn.add_record_type(RecordTypeDef {
-                    name,
-                    fields: Vec::new(),
-                })
-                .expect("a within-domain mint");
+                format!(
+                    "{:?}",
+                    txn.add_record_type(RecordTypeDef {
+                        name,
+                        fields: Vec::new(),
+                    })
+                    .expect("a within-domain mint")
+                )
             },
             lookup: None,
+            carrier: "TypeId",
             verdict: ImageBuildError::TooManyTypes,
         },
         Kind {
@@ -557,25 +581,33 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
             maximum: MAX_ENUMS,
             mint: |txn, _| {
                 let name = txn.intern_string("E").expect("a within-domain mint");
-                txn.add_enum_type(EnumTypeDef {
-                    name,
-                    variants: Vec::new(),
-                })
-                .expect("a within-domain mint");
+                format!(
+                    "{:?}",
+                    txn.add_enum_type(EnumTypeDef {
+                        name,
+                        variants: Vec::new(),
+                    })
+                    .expect("a within-domain mint")
+                )
             },
             lookup: None,
+            carrier: "EnumId",
             verdict: ImageBuildError::TooManyEnums,
         },
         Kind {
             seeded: 0,
             maximum: MAX_COLLECTIONS,
             mint: |txn, _| {
-                txn.add_collection_type(CollectionTypeDef::List {
-                    elem: ImageType::scalar(Scalar::Int),
-                })
-                .expect("a within-domain mint");
+                format!(
+                    "{:?}",
+                    txn.add_collection_type(CollectionTypeDef::List {
+                        elem: ImageType::scalar(Scalar::Int),
+                    })
+                    .expect("a within-domain mint")
+                )
             },
             lookup: None,
+            carrier: "CollTypeId",
             verdict: ImageBuildError::TooManyCollections,
         },
     ];
@@ -583,16 +615,39 @@ fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
     for kind in kinds {
         let mut owner = exporting_owner();
         let mut txn = admitted(&mut owner);
+        let last = kind.maximum - kind.seeded - 1;
+        let mut identity_at_maximum = String::new();
         for index in 0..kind.maximum - kind.seeded {
-            (kind.mint)(&mut txn, index);
+            let minted = (kind.mint)(&mut txn, index);
+            if index == last {
+                identity_at_maximum = minted;
+            }
         }
         assert_eq!(
             txn.encode().map(|_| ()),
             Ok(()),
             "exactly the maximum is accepted at the fence",
         );
+        // The row really landed *at* the maximum: its ordinal is the last one the kind
+        // admits. This holds for all five kinds, including the three that carry no keyed
+        // index, so availability at the boundary is asserted for every kind rather than
+        // for the two that happen to be interned.
+        assert_eq!(
+            identity_at_maximum,
+            format!("{}({})", kind.carrier, kind.maximum - 1),
+            "the row at the maximum carries the last ordinal the kind admits",
+        );
         if let Some(lookup) = kind.lookup {
-            (lookup)(&mut txn, 0);
+            // The row **at the maximum**, not row 0: re-requesting the first row proves
+            // nothing about the boundary, which is where a table is most likely to have
+            // stopped serving. The returned identity is compared, not discarded — a lookup
+            // that minted a fresh row instead of serving the existing one would return a
+            // different id while still leaving the draft encodable.
+            assert_eq!(
+                (lookup)(&mut txn, last),
+                identity_at_maximum,
+                "the keyed lookup serves the row at the maximum, by identity",
+            );
             assert_eq!(
                 txn.encode().map(|_| ()),
                 Ok(()),
@@ -653,13 +708,21 @@ fn a_duplicate_constant_hit_returns_the_same_id_and_mutates_nothing() {
     );
 }
 
-/// The complete post-unwind savepoint law, whose three clauses hold together and not
-/// merely one at a time: an admitted transaction unwinds, every owner is restored
-/// exactly, the sibling and the reused admitted savepoint are both still stale because
-/// the epoch stays rotated, and a freshly minted savepoint captures that rotated epoch
-/// and admits normally.
+/// The post-unwind savepoint law's runtime clauses, holding together and not merely one
+/// at a time: an admitted transaction unwinds, every owner is restored exactly, the
+/// *sibling* savepoint is still stale because the epoch stays rotated, and a freshly
+/// minted savepoint captures that rotated epoch and admits normally.
+///
+/// The law's fourth clause — that the consumed admitted savepoint cannot be re-presented
+/// — is deliberately **not** here, because it cannot be: `begin_transaction` takes the
+/// token by value and `DraftSavepoint` is neither `Clone` nor `Copy`, so re-presenting one
+/// is a move error, not a staleness refusal. Asserting it at run time would require
+/// writing code that does not compile. It is pinned where it actually lives, as the
+/// `compile_fail,E0382` block on [`marrow_image::DraftSavepoint`], and the test's name now
+/// claims only the clause it observes. A static impossibility is a stronger guarantee than
+/// a runtime check, and naming it honestly is what keeps the difference visible.
 #[test]
-fn after_an_unwind_the_owners_restore_while_both_savepoints_stay_stale() {
+fn after_an_unwind_the_owners_restore_while_the_sibling_savepoint_stays_stale() {
     let mut owner = exporting_owner();
     let clean = owner.encode().expect("the base draft encodes").bytes;
 
@@ -683,11 +746,9 @@ fn after_an_unwind_the_owners_restore_while_both_savepoints_stay_stale() {
         "the armed guard restored every owner during the unwind",
     );
 
-    assert!(
-        matches!(
-            owner.begin_transaction(sibling),
-            Err(DraftStateError::StaleEpoch)
-        ),
+    assert_eq!(
+        owner.begin_transaction(sibling).map(|_| ()),
+        Err(DraftStateError::StaleEpoch),
         "the sibling savepoint stays stale: admission consumed the epoch it captured",
     );
     assert!(

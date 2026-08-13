@@ -846,6 +846,17 @@ struct DraftSnapshot {
 /// let sp = draft.savepoint();
 /// let _copy = sp.clone();
 /// ```
+/// ```compile_fail,E0382
+/// // A consumed admitted savepoint cannot be re-presented. Admission takes the token by
+/// // value and the type is neither `Clone` nor `Copy`, so a second admission with the
+/// // same token does not reach a staleness check at all — it does not compile. That is
+/// // strictly stronger than refusing it at run time, and it is why no runtime test can
+/// // exercise "the reused admitted savepoint": the reuse is unrepresentable.
+/// let mut draft = marrow_image::ImageDraft::new();
+/// let sp = draft.savepoint();
+/// drop(draft.begin_transaction(sp));
+/// drop(draft.begin_transaction(sp));
+/// ```
 ///
 /// Savepoints and element references occupy separate domains, and the boundary is a
 /// type fact rather than a convention. A savepoint authorizes mutation over a whole
