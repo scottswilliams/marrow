@@ -15,7 +15,7 @@
 
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_kernel::codec::key::KeyScalar;
@@ -220,7 +220,7 @@ fn traversal_image() -> VerifiedImage {
     // param.
     let add_keys_export = |draft: &mut DraftTxn<'_>,
                            name: &str,
-                           site: &LegacyDraftSiteOperand,
+                           site: &PlannedSiteRef,
                            limit: u32,
                            from: bool,
                            ancestor: bool| {
@@ -265,7 +265,7 @@ fn traversal_image() -> VerifiedImage {
     // A read-only export returning the on-more `Bool` of the traversal over `site`.
     let add_more_export = |draft: &mut DraftTxn<'_>,
                            name: &str,
-                           site: &LegacyDraftSiteOperand,
+                           site: &PlannedSiteRef,
                            limit: u32,
                            ancestor: bool| {
         let name_id = draft.intern_string(name);

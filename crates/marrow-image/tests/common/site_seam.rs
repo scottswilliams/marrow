@@ -7,13 +7,12 @@
 //! the same order — the binder is the only producer path to a site, so a site a test names
 //! is always one the draft answered for.
 //!
-//! [`LegacyDraftSiteOperand`] is a declared replacement target: it is the existing draft
-//! instruction IR's operand, replaced wholesale when the planned site reference lands under
-//! an admitted transaction. One copy is one place to migrate; nine copies would be nine
-//! places, each free to drift into a different protocol before the migration reached it.
+//! [`PlannedSiteRef`] is the draft instruction IR's one site carrier, minted only under
+//! an admitted transaction. One copy of this protocol is one place to keep honest; nine
+//! copies would be nine places, each free to drift before a change reached it.
 
 use marrow_image::{
-    CanonicalDeclarationPathSelector, DraftTxn, LegacyDraftSiteOperand, RootOccurrenceSelector,
+    CanonicalDeclarationPathSelector, DraftTxn, PlannedSiteRef, RootOccurrenceSelector,
     SemanticTarget,
 };
 
@@ -27,7 +26,7 @@ pub fn site(
     root: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     target: SemanticTarget,
-) -> LegacyDraftSiteOperand {
+) -> PlannedSiteRef {
     let handle = draft
         .bind_occurrence_site(root, path, target)
         .expect("the path is a canonical path of this occurrence");

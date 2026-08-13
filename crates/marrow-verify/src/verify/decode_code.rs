@@ -718,7 +718,7 @@ mod index_site_partition {
     use marrow_image::{
         CanonicalDeclarationPathSelector, CollectionTypeDef, DeclarationMemberDef,
         DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
-        Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
+        Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef,
         RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry,
     };
 
@@ -749,7 +749,7 @@ mod index_site_partition {
         Unrelated,
     }
 
-    fn role(instr: &SealedInstr, site: &LegacyDraftSiteOperand, list_ty: CollTypeId) -> Role {
+    fn role(instr: &SealedInstr, site: &PlannedSiteRef, list_ty: CollTypeId) -> Role {
         match instr {
             SealedInstr::DurIndexScan { .. } => Role::ManagedIndexRead(Instr::DurIndexScan {
                 site: site.clone(),
@@ -901,7 +901,7 @@ mod index_site_partition {
         root: &RootOccurrenceSelector,
         path: &CanonicalDeclarationPathSelector,
         target: SemanticTarget,
-    ) -> LegacyDraftSiteOperand {
+    ) -> PlannedSiteRef {
         let handle = draft
             .bind_occurrence_site(root, path, target)
             .expect("the path is a canonical path of this occurrence");
@@ -920,7 +920,7 @@ mod index_site_partition {
             .expect("a fresh savepoint admits")
     }
 
-    fn field_leaf_schema() -> (ImageDraft, LegacyDraftSiteOperand, CollTypeId) {
+    fn field_leaf_schema() -> (ImageDraft, PlannedSiteRef, CollTypeId) {
         let mut draft_owner = ImageDraft::new();
         let mut draft = admitted(&mut draft_owner);
         let counter = draft.intern_string("Counter");

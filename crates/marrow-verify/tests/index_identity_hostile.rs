@@ -12,8 +12,8 @@
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, DurableIndexComponent,
     DurableIndexShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticTarget, SpanEntry, ValueShapeNodeId,
+    LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
+    SpanEntry, ValueShapeNodeId,
 };
 use marrow_verify::verify;
 
@@ -67,9 +67,9 @@ fn text_field(value: ValueShapeNodeId, id: [u8; 16]) -> DeclarationMemberDef {
 /// Site indices captured while building the shared `^r[k:int]: Rec` graph with a
 /// nonunique `byShelf[shelf, k]` and a unique `byIsbn[isbn]`.
 struct Graph {
-    entry_site: LegacyDraftSiteOperand,
-    scan_site: LegacyDraftSiteOperand,
-    lookup_site: LegacyDraftSiteOperand,
+    entry_site: PlannedSiteRef,
+    scan_site: PlannedSiteRef,
+    lookup_site: PlannedSiteRef,
     list_int: marrow_image::CollTypeId,
 }
 

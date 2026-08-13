@@ -44,7 +44,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use marrow_codes::Code;
 use marrow_image::{
     CanonicalDeclarationPathSelector, CollTypeId, DraftTxn, EnumId, FuncId, FunctionDef,
-    ImageDraft, ImageType, Instr, LegacyDraftSiteOperand, OccurrenceSiteHandle, RootId,
+    ImageDraft, ImageType, Instr, OccurrenceSiteHandle, PlannedSiteRef, RootId,
     RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry, TypeId,
 };
 use marrow_project::FileIdentity;
@@ -1173,7 +1173,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Mint-or-return the operand the instruction being emitted names. The eager pass
     /// already requested every bounded per-node site, so a re-request of one of those
     /// returns the id it minted; a field leaf is minted here on its first reference.
-    fn site_operand(&mut self, handle: &OccurrenceSiteHandle) -> Option<LegacyDraftSiteOperand> {
+    fn site_operand(&mut self, handle: &OccurrenceSiteHandle) -> Option<PlannedSiteRef> {
         match self.draft.request_site(handle) {
             Ok(operand) => Some(operand),
             Err(refused) => {
@@ -1190,7 +1190,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         occurrence: &RootOccurrenceSelector,
         path: &CanonicalDeclarationPathSelector,
         target: SemanticTarget,
-    ) -> Option<LegacyDraftSiteOperand> {
+    ) -> Option<PlannedSiteRef> {
         let handle = self.bind_site(occurrence, path, target)?;
         self.site_operand(&handle)
     }

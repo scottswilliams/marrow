@@ -12,7 +12,7 @@
 
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_verify::{VerifyPhase, verify};
@@ -66,11 +66,7 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// sparse field-leaf site.
 fn two_root_branch_draft(
     draft: &mut DraftTxn<'_>,
-) -> (
-    LegacyDraftSiteOperand,
-    marrow_image::CollTypeId,
-    LegacyDraftSiteOperand,
-) {
+) -> (PlannedSiteRef, marrow_image::CollTypeId, PlannedSiteRef) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
     let book = draft.intern_string("Book");

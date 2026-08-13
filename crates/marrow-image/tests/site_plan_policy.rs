@@ -22,9 +22,9 @@
 use marrow_image::bounds::MAX_SITES;
 use marrow_image::{
     AdmittedRoot, CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, DraftTxn, DurableIndexComponent, DurableIndexShape, ImageBuildError,
-    ImageDraft, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticTarget,
+    DeclarationMemberShape, DraftTxn, DurableIndexComponent, DurableIndexShape, FunctionDef,
+    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
 };
 
 #[path = "common/site_seam.rs"]
@@ -378,7 +378,7 @@ fn each_admitted_target_is_its_own_row() {
     let mut draft = admitted(&mut draft_owner);
     let places = every_place(&root, &members);
 
-    let operands: Vec<LegacyDraftSiteOperand> = places
+    let operands: Vec<PlannedSiteRef> = places
         .iter()
         .map(|(path, target)| site(&mut draft, root.occurrence(), path, *target))
         .collect();
@@ -715,6 +715,95 @@ fn a_discarded_proof_leaves_the_draft_byte_identical() {
     assert_eq!(before, after, "the proof appended nothing that survived it");
 }
 
+/// With a preexisting valid over-Sites receipt, a transaction that appends and publishes
+/// a new root, binds that root's over-policy site ref, and rolls back leaves an escaped
+/// clone of the ref unable to authenticate — even after a byte-identical root re-appends
+/// at the same ordinal — because the occurrence row the clone's demand was bound against
+/// carries a fresh stamp. The receipt the clone stands on is still live; its root row
+/// identity is what was invalidated.
+///
+/// The control: a ref bound over a preexisting unchanged occurrence and the same receipt
+/// remains valid across a function-only rollback — it is not transaction-epoch-bound.
+#[test]
+fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse() {
+    let (mut owner, root, members) = wide_owner(MAX_SITES);
+    // Cross the cap and mint the control ref over a committed excess root: the receipt
+    // and both occurrence rows predate every rollback below.
+    let mut draft = admitted(&mut owner);
+    demand_every_leaf(&mut draft, &root, &members);
+    let excess = admit_root(&mut draft, 0x22);
+    let control = site(
+        &mut draft,
+        excess.occurrence(),
+        members[0].path(),
+        SemanticTarget::FieldLeaf,
+    );
+    assert_eq!(format!("{control:?}"), "over-policy");
+    draft.commit();
+
+    // The escaped clone: its root row and demand are appended inside a rolled-back
+    // transaction; the receipt it stands on predates that transaction and survives.
+    let escaped = {
+        let mut txn = admitted(&mut owner);
+        let fresh = admit_root(&mut txn, 0x23);
+        site(
+            &mut txn,
+            fresh.occurrence(),
+            members[1].path(),
+            SemanticTarget::FieldLeaf,
+        )
+    };
+    assert_eq!(format!("{escaped:?}"), "over-policy");
+
+    // A function-only rollback between the mint and the spend: no site, root, or path
+    // row moves, so it must invalidate neither ref.
+    {
+        let mut txn = admitted(&mut owner);
+        let name = txn.intern_string("discarded");
+        let source = txn.intern_string("src/main.mw");
+        txn.add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            code: vec![Instr::Return],
+            spans: Vec::new(),
+        })
+        .expect("a siteless body appends");
+    }
+
+    let mut txn = admitted(&mut owner);
+    // Deterministic ordinal reuse: the byte-identical root re-appends at the ordinal the
+    // rolled-back root held, with a fresh stamp.
+    let _reused = admit_root(&mut txn, 0x23);
+    let name = txn.intern_string("f");
+    let source = txn.intern_string("src/main.mw");
+    assert!(
+        txn.add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            code: vec![Instr::DurExists(escaped.clone()), Instr::Return],
+            spans: Vec::new(),
+        })
+        .is_err(),
+        "the escaped clone's occurrence row was invalidated by the rollback",
+    );
+    txn.add_function(FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        code: vec![Instr::DurExists(control), Instr::Return],
+        spans: Vec::new(),
+    })
+    .expect("the control ref's occurrence and receipt are unchanged and still live");
+}
+
 // --- The site-plan policy corpora ---
 
 /// Corpus 2: 1,024 keyed roots each touching 64 fields of one shared Product — 66,560
@@ -740,10 +829,10 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
     let members = draft.product_members(product()).expect("declared");
 
     let mut first_root: Option<AdmittedRoot> = None;
-    let mut first_operand: Option<LegacyDraftSiteOperand> = None;
+    let mut first_operand: Option<PlannedSiteRef> = None;
     let mut fitting = 0usize;
     let mut over_policy = 0usize;
-    let mut answer = |operand: &LegacyDraftSiteOperand| {
+    let mut answer = |operand: &PlannedSiteRef| {
         if format!("{operand:?}") == "over-policy" {
             over_policy += 1;
         } else {

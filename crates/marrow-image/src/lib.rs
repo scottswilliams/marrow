@@ -92,7 +92,7 @@ pub use semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticPathRefusal, SemanticStep,
     SemanticStepKind, SemanticTarget,
 };
-pub use site_plan::{LegacyDraftSiteOperand, OccurrenceSiteHandle, SitePlanStateError};
+pub use site_plan::{OccurrenceSiteHandle, PlannedSiteRef, SitePlanStateError};
 pub use store_digest::{
     STORE_DATA_KIND, STORE_ENVELOPE_KIND, STORE_HEAD_KIND, STORE_INTERFACE_KIND, StoreDataDigest,
     StoreEnvelopeDigest, StoreHeadDigest, interface_fingerprint,

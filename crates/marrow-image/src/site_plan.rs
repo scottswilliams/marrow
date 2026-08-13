@@ -141,15 +141,20 @@ impl std::error::Error for SitePlanStateError {}
 /// Its equality and `Debug` are over the **logical ordinal only**. This is the public
 /// instruction IR's operand, so what two instructions mean is the number that reaches the
 /// wire; the provenance it carries privately is checked where a site is inserted into a
-/// function, never smuggled into instruction semantics.
+/// function, never smuggled into instruction semantics. Over-policy `Debug` is redacted
+/// and logical equality grants no authority.
 ///
-/// **Temporary.** It is the existing draft instruction IR's operand, not a parallel
-/// lowering IR, and it is replaced wholesale when the planned site reference lands under
-/// an admitted transaction.
+/// Its stable provenance — the minting draft/plan identity, the complete demand key, the
+/// exact root/path row identities, and the site-row or receipt identity — survives
+/// `DraftTxn::commit` and every later transaction-epoch rotation; it never borrows or
+/// carries the transaction epoch, so a ref for a preexisting unchanged occurrence and
+/// receipt remains valid across a function-only rollback, while a ref whose rows a
+/// rollback invalidated cannot authenticate after deterministic ordinal reuse.
+#[doc(hidden)]
 #[derive(Clone)]
-pub struct LegacyDraftSiteOperand {
-    kind: LegacyDraftSiteOperandKind,
-    provenance: SiteOperandProvenance,
+pub struct PlannedSiteRef {
+    kind: PlannedSiteRefKind,
+    provenance: SiteRefProvenance,
 }
 
 /// What a site operand stands for: the id the plan minted, or the plan's refusal.
@@ -160,7 +165,7 @@ pub struct LegacyDraftSiteOperand {
 /// carried. Keeping the refusal in the operand's own type is what makes it impossible to
 /// compare or encode as if it were a site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LegacyDraftSiteOperandKind {
+enum PlannedSiteRefKind {
     Fitting(SiteId),
     OverPolicy,
 }
@@ -174,46 +179,39 @@ enum LegacyDraftSiteOperandKind {
 /// operand transplanted from another draft, or one whose row was discarded and its
 /// ordinal deterministically reused, cannot enter a function body.
 #[derive(Clone, Copy)]
-struct SiteOperandProvenance {
+struct SiteRefProvenance {
     draft: DraftIdentity,
     demand: BoundDemand,
     row: RowStamp,
 }
 
-impl LegacyDraftSiteOperand {
-    /// The wire ordinal this operand encodes to.
-    ///
-    /// An over-policy operand has none. The encoder's Sites bound reads the plan's
-    /// saturated logical demand and refuses such an image before any body byte is
-    /// written, so this arm is unreachable through [`crate::ImageDraft::encode`]; it is
-    /// spelled as a refusal rather than a stand-in number so that no non-site value can
-    /// ever be written into a site operand's two bytes.
-    pub(crate) fn encodable(&self) -> Result<u16, ImageBuildError> {
-        match self.kind {
-            LegacyDraftSiteOperandKind::Fitting(id) => Ok(id.index()),
-            LegacyDraftSiteOperandKind::OverPolicy => Err(ImageBuildError::TooManySites),
-        }
+impl PlannedSiteRef {
+    /// The bound demand this ref was minted against, for the live graph's row-identity
+    /// recheck: the occurrence and path row stamps inside it are the root/path half of
+    /// the ref's provenance.
+    pub(crate) fn demand(&self) -> BoundDemand {
+        self.provenance.demand
     }
 }
 
 /// Equality is over the logical site ordinal, not over which plan minted it.
-impl PartialEq for LegacyDraftSiteOperand {
+impl PartialEq for PlannedSiteRef {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind
     }
 }
 
-impl Eq for LegacyDraftSiteOperand {}
+impl Eq for PlannedSiteRef {}
 
 /// A fitting operand renders as the logical site number it carries, so an instruction's
 /// `Debug` reads exactly as it did when the operand was a bare `u16`. An over-policy
 /// operand renders one fixed marker: there is no number to show, and inventing one would
 /// be the very aliasing the type exists to prevent.
-impl std::fmt::Debug for LegacyDraftSiteOperand {
+impl std::fmt::Debug for PlannedSiteRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind {
-            LegacyDraftSiteOperandKind::Fitting(id) => write!(f, "{}", id.index()),
-            LegacyDraftSiteOperandKind::OverPolicy => f.write_str("over-policy"),
+            PlannedSiteRefKind::Fitting(id) => write!(f, "{}", id.index()),
+            PlannedSiteRefKind::OverPolicy => f.write_str("over-policy"),
         }
     }
 }
@@ -272,13 +270,13 @@ impl SiteDemandPlan {
         draft: DraftIdentity,
         demand: BoundDemand,
         stamp: RowStamp,
-    ) -> LegacyDraftSiteOperand {
+    ) -> PlannedSiteRef {
         let key = demand.key();
         if let Some(existing) = self.retained.get(&key) {
             let row = self.rows[usize::from(existing.index())].stamp;
-            return LegacyDraftSiteOperand {
-                kind: LegacyDraftSiteOperandKind::Fitting(*existing),
-                provenance: SiteOperandProvenance { draft, demand, row },
+            return PlannedSiteRef {
+                kind: PlannedSiteRefKind::Fitting(*existing),
+                provenance: SiteRefProvenance { draft, demand, row },
             };
         }
         // Vacant capacity is checked before any numeric id is minted, so the fitting range
@@ -292,9 +290,9 @@ impl SiteDemandPlan {
         };
         self.rows.push(SiteRow { key, stamp });
         self.retained.insert(key, ordinal);
-        LegacyDraftSiteOperand {
-            kind: LegacyDraftSiteOperandKind::Fitting(ordinal),
-            provenance: SiteOperandProvenance {
+        PlannedSiteRef {
+            kind: PlannedSiteRefKind::Fitting(ordinal),
+            provenance: SiteRefProvenance {
                 draft,
                 demand,
                 row: stamp,
@@ -310,11 +308,11 @@ impl SiteDemandPlan {
         draft: DraftIdentity,
         demand: BoundDemand,
         stamp: RowStamp,
-    ) -> LegacyDraftSiteOperand {
+    ) -> PlannedSiteRef {
         let receipt = *self.receipt.get_or_insert(SitePolicyReceipt { stamp });
-        LegacyDraftSiteOperand {
-            kind: LegacyDraftSiteOperandKind::OverPolicy,
-            provenance: SiteOperandProvenance {
+        PlannedSiteRef {
+            kind: PlannedSiteRefKind::OverPolicy,
+            provenance: SiteRefProvenance {
                 draft,
                 demand,
                 row: receipt.stamp,
@@ -331,13 +329,13 @@ impl SiteDemandPlan {
     pub(crate) fn validate(
         &self,
         draft: DraftIdentity,
-        operand: &LegacyDraftSiteOperand,
+        operand: &PlannedSiteRef,
     ) -> Result<(), SitePlanState> {
         if operand.provenance.draft != draft {
             return Err(SitePlanState::WrongPlan);
         }
         match operand.kind {
-            LegacyDraftSiteOperandKind::Fitting(id) => {
+            PlannedSiteRefKind::Fitting(id) => {
                 let row = self
                     .rows
                     .get(usize::from(id.index()))
@@ -350,10 +348,33 @@ impl SiteDemandPlan {
                 }
                 Ok(())
             }
-            LegacyDraftSiteOperandKind::OverPolicy => match self.receipt {
+            PlannedSiteRefKind::OverPolicy => match self.receipt {
                 Some(receipt) if receipt.stamp == operand.provenance.row => Ok(()),
                 _ => Err(SitePlanState::StaleBinding),
             },
+        }
+    }
+
+    /// The exact wire ordinal of a validated fitting ref — the policy-clean final
+    /// projection, reached only through the measured wire plan's site projection.
+    ///
+    /// The ref's plan provenance is revalidated against the live rows first; a stale or
+    /// foreign ref is the typed refusal, never a number. An over-policy ref has no
+    /// numeric id at all: a live one implies a receipt, which fails the Sites policy
+    /// candidate before measurement, so that arm is unreachable behind the plan witness
+    /// and is spelled as a refusal so no non-site value can ever be written into a site
+    /// operand's two bytes.
+    pub(crate) fn wire_ordinal(
+        &self,
+        draft: DraftIdentity,
+        site: &PlannedSiteRef,
+    ) -> Result<u16, ImageBuildError> {
+        if self.validate(draft, site).is_err() {
+            return Err(ImageBuildError::InvalidReference("operation site"));
+        }
+        match site.kind {
+            PlannedSiteRefKind::Fitting(id) => Ok(id.index()),
+            PlannedSiteRefKind::OverPolicy => Err(ImageBuildError::TooManySites),
         }
     }
 

@@ -1031,10 +1031,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// The whole-payload operand of the entry `node` addresses. The durable build already
     /// requested every keyed placement's site, so this returns the id minted there.
-    pub(super) fn entry_site_operand(
-        &mut self,
-        node: DurNode<'a>,
-    ) -> Option<LegacyDraftSiteOperand> {
+    pub(super) fn entry_site_operand(&mut self, node: DurNode<'a>) -> Option<PlannedSiteRef> {
         let handle = self.bind_entry_site(node)?;
         self.site_operand(&handle)
     }
@@ -1074,7 +1071,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         &mut self,
         root: &'a crate::durable::DurableRoot,
         index: &'a crate::durable::DurableIndex,
-    ) -> Option<LegacyDraftSiteOperand> {
+    ) -> Option<PlannedSiteRef> {
         let target = if index.unique {
             SemanticTarget::IndexLookup
         } else {

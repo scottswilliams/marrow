@@ -275,9 +275,9 @@ impl<'d> CoherentDraft<'d> {
 
     /// Shadow-compare the walk's verdict against the audited ledger: a table-owned
     /// refusal must name exactly the ledger's canonical minimum, and any other
-    /// verdict (clean, a function-family kind, or the still-inert Sites kind) admits
-    /// no active-slot crossing — a lower-ranked crossing would have been the walk's
-    /// own earlier candidate. A function result grants the audit no authority.
+    /// verdict (clean or a function-family kind) admits no active-slot crossing — a
+    /// lower-ranked crossing would have been the walk's own earlier candidate. A
+    /// function result grants the audit no authority.
     fn shadow_compare(
         draft: &ImageDraft,
         verdict: &Result<(), ImageBuildError>,
@@ -290,6 +290,7 @@ impl<'d> CoherentDraft<'d> {
             Err(ImageBuildError::TooManyEnums) => Some(TablePolicyKind::Enums),
             Err(ImageBuildError::TooManyCollections) => Some(TablePolicyKind::Collections),
             Err(ImageBuildError::TooManyRoots) => Some(TablePolicyKind::Roots),
+            Err(ImageBuildError::TooManySites) => Some(TablePolicyKind::Sites),
             _ => None,
         };
         let minimum = draft.policy_ledger().cached_minimum();
@@ -430,7 +431,26 @@ pub(crate) fn count_spans(draft: &ImageDraft, sink: &mut CappedImageCount) {
     }
 }
 
+/// The plan-bound site projection: the only path from a [`crate::PlannedSiteRef`] to its
+/// wire ordinal. It is minted exclusively by a measured [`LegacyV0WirePlan`], so a
+/// numeric site id exists only downstream of fitting policy-clean capped measurement;
+/// each projection revalidates the ref's provenance against the live plan and graph
+/// before yielding the ordinal.
+pub(crate) struct SiteWireProjection<'d>(&'d ImageDraft);
+
+impl SiteWireProjection<'_> {
+    /// The exact wire ordinal of one validated fitting site ref.
+    pub(crate) fn ordinal(&self, site: &crate::PlannedSiteRef) -> Result<u16, ImageBuildError> {
+        self.0.site_wire_ordinal(site)
+    }
+}
+
 impl<'d> LegacyV0WirePlan<'d> {
+    /// The plan-bound site projection over this plan's own draft.
+    pub(crate) fn site_projection(&self) -> SiteWireProjection<'d> {
+        SiteWireProjection(self.draft)
+    }
+
     /// Complete the plan. Every span was counted through the one saturating sink, so
     /// the ceiling verdict is already decided when this is reached; demanding the
     /// witness is what makes a plan unforgeable — only the counting run over the
@@ -460,6 +480,7 @@ impl<'d> LegacyV0WirePlan<'d> {
     /// the tail cursor (the digest input range) and the assembled envelope compared
     /// to the planned spans.
     pub(crate) fn emit_image(self) -> Result<EncodedImage, ImageBuildError> {
+        let sites = self.site_projection();
         let Self {
             draft,
             bodies,
@@ -528,7 +549,7 @@ impl<'d> LegacyV0WirePlan<'d> {
 
         let mut body = Vec::with_capacity(bodies[4] as usize);
         let per_fn =
-            draft.encode_functions(&mut SectionSink::over(&mut body), &strings, &consts)?;
+            draft.encode_functions(&mut SectionSink::over(&mut body), &strings, &consts, &sites)?;
         emit(&mut out, 4, body)?;
 
         let export_order = draft.export_permutation();
@@ -802,12 +823,13 @@ fn anchor_and_sites(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     // zero-allocation. (The DURABLE writer's own projection keeps its transient
     // per-row path — its site codec spells a step count before the steps.)
     draft.validate_site_projection()?;
-    // Operand/receipt provenance — the plan's `validate`, never `encodable`: an
-    // over-policy operand is live provenance the Sites policy candidate reports.
+    // Ref/receipt provenance — the plan's validate plus the graph's row-identity
+    // recheck, never a numeric projection: an over-policy ref is live provenance the
+    // Sites policy candidate reports.
     for function in draft.functions() {
         for instr in &function.code {
             if let Some(site) = instr.site_operand()
-                && !draft.site_operand_is_live(site)
+                && !draft.site_ref_is_live(site)
             {
                 return Err(ImageBuildError::InvalidReference("operation site"));
             }
@@ -903,8 +925,8 @@ fn function_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 /// The tape-order operand checks. Locals, stack-relative field slots, enum payload
 /// reads, identity key-path arities, range-guard immediates, and key-slot elements
 /// are frame- or runtime-relative, not table ordinals; site operands are opaque
-/// provenance-validated typed state checked in step 2 and consumed via `encodable`
-/// before any write — all excluded here.
+/// provenance-validated typed state checked in step 2 and projected only through the
+/// measured plan's site projection before any write — all excluded here.
 fn tape_references(draft: &ImageDraft, code: &[Instr]) -> Result<(), ImageBuildError> {
     let instruction_count = code.len();
     let jump_ref = |target: u32| {

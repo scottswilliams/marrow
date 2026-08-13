@@ -9,9 +9,8 @@
 
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef,
-    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
-    TypeId, ValueShapeNodeId,
+    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -75,7 +74,7 @@ fn build_two_roots(
     draft: &mut DraftTxn<'_>,
     b_name: &str,
     b_key_scalar: Scalar,
-) -> (LegacyDraftSiteOperand, LegacyDraftSiteOperand) {
+) -> (PlannedSiteRef, PlannedSiteRef) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
     let a_field_name = draft.intern_string("name");

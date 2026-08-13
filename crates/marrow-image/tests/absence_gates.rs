@@ -231,7 +231,7 @@ fn the_encoder_reads_declaration_rows_and_no_member_tree() {
 /// A site operand used to be a plain number, so any producer could write one by hand, a
 /// refused site had to travel through the same numeric channel as a real one, and two
 /// unrelated numbers could be compared as if they addressed the same place. Every `Dur*`
-/// site operand is now the opaque [`marrow_image::LegacyDraftSiteOperand`], whose sole
+/// site operand is now the opaque [`marrow_image::PlannedSiteRef`], whose sole
 /// mint is the bounded site demand plan. A `Dur*` variant reverting to `u16` is that
 /// forgeable channel returning.
 #[test]
@@ -247,7 +247,7 @@ fn no_draft_instruction_carries_a_bare_u16_site() {
         bare_u16_site_declarations(&code),
     );
     assert!(
-        code.contains("DurReadField(LegacyDraftSiteOperand)"),
+        code.contains("DurReadField(PlannedSiteRef)"),
         "the opaque site operand is present, so this gate has a live subject",
     );
 }
@@ -307,7 +307,7 @@ fn the_bare_u16_site_scan_detects_a_planted_declaration() {
         "        site: u16,\n",
         "        limit: u32,\n",
         "    },\n",
-        "    DurReadEntry(LegacyDraftSiteOperand),\n",
+        "    DurReadEntry(PlannedSiteRef),\n",
     );
 
     assert_eq!(
@@ -329,7 +329,7 @@ fn the_site_operand_does_not_derive_copy() {
             .expect("read the site plan");
     let code = without_literals(&plan);
     let declaration = code
-        .split("pub struct LegacyDraftSiteOperand")
+        .split("pub struct PlannedSiteRef")
         .next()
         .expect("the operand is declared")
         .rsplit("#[derive(")
@@ -435,6 +435,70 @@ fn no_raw_durable_graph_builder_survives() {
             "`{needle}` is a deleted raw durable-graph construction symbol: {found:?}",
         );
     }
+}
+
+/// The legacy site operand and its numeric escape are gone from the whole workspace, in
+/// production sources and in the test tier alike.
+///
+/// `LegacyDraftSiteOperand` was the pre-transaction site carrier and `encodable` its
+/// direct ref-to-number channel, callable anywhere in the crate. The transferred
+/// [`marrow_image::PlannedSiteRef`] is the one carrier, and its wire ordinal exists only
+/// through the measured plan's site projection on the policy-clean fitting arm. Either
+/// name reappearing is that pre-measurement numeric channel returning.
+#[test]
+fn the_legacy_site_operand_and_its_numeric_escape_are_absent() {
+    let sources = [workspace_sources("src"), workspace_sources("tests")].concat();
+    assert!(
+        sources.iter().any(|(path, code)| {
+            path.ends_with("marrow-image/src/site_plan.rs")
+                && contains_symbol(code, "PlannedSiteRef")
+        }),
+        "the transferred carrier is present, so this gate has a live subject",
+    );
+    for needle in ["LegacyDraftSiteOperand", "encodable"] {
+        let found: Vec<String> = sources
+            .iter()
+            .filter(|(_, code)| contains_symbol(code, needle))
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        assert!(
+            found.is_empty(),
+            "`{needle}` is a retired site-carrier symbol: {found:?}",
+        );
+    }
+}
+
+/// The checked site wire projection has exactly its two spelled homes: the draft-side
+/// definition and the measured plan's projection wrapper.
+///
+/// `site_wire_ordinal` is the one ref-to-number conversion left after `encodable` was
+/// deleted, and it is meant to be reachable only through the plan-bound
+/// `SiteWireProjection` the measured wire plan mints. A third caller is a numeric site
+/// id escaping the policy-clean fitting arm.
+#[test]
+fn the_site_wire_projection_has_exactly_its_two_spelled_homes() {
+    let mut homes = Vec::new();
+    for (path, code) in workspace_sources("src") {
+        if contains_symbol(&code, "site_wire_ordinal") {
+            homes.push(path.display().to_string());
+        }
+    }
+    let expected: Vec<bool> = homes
+        .iter()
+        .map(|path| {
+            path.ends_with("marrow-image/src/draft.rs")
+                || path.ends_with("marrow-image/src/measure.rs")
+        })
+        .collect();
+    assert_eq!(
+        homes.len(),
+        2,
+        "the projection is defined once and consumed once: {homes:?}",
+    );
+    assert!(
+        expected.iter().all(|home| *home),
+        "the projection's homes are the draft definition and the plan projection: {homes:?}",
+    );
 }
 
 /// The site demand plan retains no semantic path.
@@ -759,7 +823,7 @@ fn every_site_bearing_instruction_is_answered_by_the_site_accessor() {
                 .next()
                 .expect("a variant line has a name");
         }
-        if line.contains("LegacyDraftSiteOperand") && !current.is_empty() {
+        if line.contains("PlannedSiteRef") && !current.is_empty() {
             declared.push(current);
         }
     }
@@ -851,7 +915,7 @@ fn no_carrier_holds_both_a_handle_and_an_operand() {
     for path in src_files() {
         let code = without_literals(&fs::read_to_string(&path).expect("read source file"));
         for (name, span) in type_declaration_spans(&code) {
-            if span.contains("OccurrenceSiteHandle") && span.contains("LegacyDraftSiteOperand") {
+            if span.contains("OccurrenceSiteHandle") && span.contains("PlannedSiteRef") {
                 offenders.push(format!("{}::{name}", path.display()));
             }
         }
@@ -900,13 +964,13 @@ fn no_retained_handle_table_exists() {
 fn the_carrier_scans_detect_a_planted_declaration() {
     let planted = without_literals(
         r##"
-        /// OccurrenceSiteHandle and LegacyDraftSiteOperand named in prose only.
+        /// OccurrenceSiteHandle and PlannedSiteRef named in prose only.
         pub struct Innocent {
             handle: OccurrenceSiteHandle,
         }
         pub(crate) struct Guilty {
             handle: OccurrenceSiteHandle,
-            minted: LegacyDraftSiteOperand,
+            minted: PlannedSiteRef,
         }
         struct Hoarder {
             per_member: BTreeMap<DeclarationNodeOrdinal, OccurrenceSiteHandle>,
@@ -920,7 +984,7 @@ fn the_carrier_scans_detect_a_planted_declaration() {
     let both: Vec<&str> = spans
         .iter()
         .filter(|(_, span)| {
-            span.contains("OccurrenceSiteHandle") && span.contains("LegacyDraftSiteOperand")
+            span.contains("OccurrenceSiteHandle") && span.contains("PlannedSiteRef")
         })
         .map(|(name, _)| name.as_str())
         .collect();

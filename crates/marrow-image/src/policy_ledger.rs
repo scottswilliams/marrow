@@ -11,9 +11,7 @@
 //! The slot array index is the canonical kind rank — the legacy walk's candidate
 //! order: Strings, StringBytes, Consts, Types, Enums, Collections, Roots, Sites.
 //! "Earliest" is earliest in that order, never earliest in time: a later-in-time
-//! Strings crossing outranks an earlier-in-time Consts crossing. The Sites slot is
-//! present in the fixed array but **inert** until the atomic Sites carrier transfer
-//! activates it; the audit asserts it vacant by construction.
+//! Strings crossing outranks an earlier-in-time Consts crossing.
 
 use crate::bounds;
 use crate::draft::ImageDraft;
@@ -33,7 +31,6 @@ pub(crate) enum TablePolicyKind {
     Enums,
     Collections,
     Roots,
-    /// Present in the fixed array, inert until the atomic Sites carrier transfer.
     Sites,
 }
 
@@ -179,8 +176,7 @@ impl TablePolicyAudit {
                 TablePolicyKind::Roots,
                 count_crossing(draft.root_occurrences().len(), bounds::MAX_ROOTS),
             ),
-            // Inert until the atomic Sites carrier transfer: vacant by construction.
-            (TablePolicyKind::Sites, None),
+            (TablePolicyKind::Sites, site_crossing(draft)),
         ] {
             if ledger.slot(kind) != expected {
                 return Err("a ledger slot disagrees with the recomputed final draft state");
@@ -202,6 +198,16 @@ fn count_crossing(len: usize, max: usize) -> Option<CurrentValidationOccurrence>
     (len > max).then(|| CurrentValidationOccurrence::at_row(max as u32))
 }
 
+/// The canonical Sites occurrence: the virtual zero-based N+1 ordinal `MAX_SITES` —
+/// never a physical site-row index or wire id — present exactly when the site plan
+/// holds its earliest policy receipt. The receipt's `RowStamp` identity itself is the
+/// separate exact cross-check every over-policy ref's provenance is validated against.
+fn site_crossing(draft: &ImageDraft) -> Option<CurrentValidationOccurrence> {
+    draft
+        .site_receipt()
+        .map(|_| CurrentValidationOccurrence::at_row(bounds::MAX_SITES as u32))
+}
+
 /// The canonical StringBytes occurrence: the pool ordinal of the first
 /// over-`MAX_STRING_BYTES` string in pool order.
 fn first_over_long(draft: &ImageDraft) -> Option<CurrentValidationOccurrence> {
@@ -215,6 +221,152 @@ fn first_over_long(draft: &ImageDraft) -> Option<CurrentValidationOccurrence> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draft::{DraftTxn, RecordTypeDef, RootOccurrenceDef};
+    use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
+    use crate::ty::Scalar;
+    use crate::{AdmittedGraphInputPlan, ImageDraft, LedgerIdBytes, SemanticTarget};
+
+    /// The image's own admitted-intake ceilings, as one plan.
+    fn admitted_plan() -> AdmittedGraphInputPlan {
+        AdmittedGraphInputPlan::admit(
+            bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+            bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+            bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+        )
+        .expect("the image's own ceilings are admitted counts")
+    }
+
+    /// A distinct 16-byte ledger id seeded by `n`, so every field member below is its own
+    /// declaration node and every demand over it a distinct `(occurrence, node, target)`.
+    fn field_id(n: usize) -> LedgerIdBytes {
+        let mut bytes = [0x50u8; 16];
+        bytes[0] = (n & 0xff) as u8;
+        bytes[1] = ((n >> 8) & 0xff) as u8;
+        LedgerIdBytes::from_bytes(bytes)
+    }
+
+    /// Declare one Product wide enough that demanding every field leaf under two roots
+    /// crosses `MAX_SITES`, and append one root over it.
+    fn declare_wide(draft: &mut DraftTxn<'_>) {
+        let name = draft.intern_string("R");
+        let record = draft.add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        });
+        draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+        let value = draft.value_scalar(Scalar::Int);
+        draft
+            .declare_product(
+                &admitted_plan(),
+                LedgerIdBytes::from_bytes([0x0d; 16]),
+                record,
+                (0..bounds::MAX_SITES)
+                    .map(|n| DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: field_id(n),
+                            required: true,
+                            value,
+                        },
+                    })
+                    .collect(),
+            )
+            .expect("a well-formed declaration");
+    }
+
+    /// Demand every field leaf of the declared Product under one fresh root, seeded by
+    /// `seed`.
+    fn demand_every_leaf_under_a_fresh_root(draft: &mut DraftTxn<'_>, seed: u8, leaves: usize) {
+        let name = draft.intern_string(&format!("r{seed}"));
+        let root = draft
+            .add_root_occurrence(
+                &admitted_plan(),
+                LedgerIdBytes::from_bytes([0x0d; 16]),
+                RootOccurrenceDef {
+                    name,
+                    keys: Vec::new(),
+                    placement: LedgerIdBytes::from_bytes([seed; 16]),
+                    indexes: Vec::new().into(),
+                },
+            )
+            .expect("the Product is declared");
+        let members = draft
+            .product_members(LedgerIdBytes::from_bytes([0x0d; 16]))
+            .expect("declared");
+        for member in members.iter().take(leaves) {
+            let handle = draft
+                .bind_occurrence_site(root.occurrence(), member.path(), SemanticTarget::FieldLeaf)
+                .expect("a canonical path of this occurrence");
+            let _ = draft.request_site(&handle).expect("the binding is live");
+        }
+    }
+
+    /// The one mint path's crossing populates the Sites slot with the virtual zero-based
+    /// N+1 ordinal `MAX_SITES` — never a physical site-row index or wire id — commit
+    /// retains it with the cached minimum, no excess physical row is committed, and a
+    /// rolled-back crossing restores the vacant slot byte for byte.
+    #[test]
+    fn a_sites_crossing_populates_and_rolls_back_its_ledger_slot() {
+        let mut owner = ImageDraft::new();
+        let mut draft = owner
+            .begin_transaction(owner.savepoint())
+            .expect("a fresh savepoint admits");
+        declare_wide(&mut draft);
+        demand_every_leaf_under_a_fresh_root(&mut draft, 0x21, bounds::MAX_SITES);
+        draft.commit();
+        assert_eq!(
+            owner.policy_ledger().slot(TablePolicyKind::Sites),
+            None,
+            "a demand of exactly MAX_SITES is not a crossing",
+        );
+
+        // A rolled-back crossing restores the vacant slot with the receipt.
+        {
+            let mut txn = owner
+                .begin_transaction(owner.savepoint())
+                .expect("a fresh savepoint admits");
+            demand_every_leaf_under_a_fresh_root(&mut txn, 0x22, 1);
+            assert_eq!(
+                txn.policy_ledger().slot(TablePolicyKind::Sites),
+                Some(CurrentValidationOccurrence::at_row(
+                    bounds::MAX_SITES as u32
+                )),
+                "the crossing is observed at the virtual N+1 ordinal",
+            );
+        }
+        assert_eq!(
+            owner.policy_ledger().slot(TablePolicyKind::Sites),
+            None,
+            "the rolled-back crossing restored the vacant slot",
+        );
+
+        // A committed crossing retains the slot, the cached minimum, and no excess row.
+        let mut txn = owner
+            .begin_transaction(owner.savepoint())
+            .expect("a fresh savepoint admits");
+        demand_every_leaf_under_a_fresh_root(&mut txn, 0x23, 1);
+        txn.commit();
+        assert_eq!(
+            owner.policy_ledger().slot(TablePolicyKind::Sites),
+            Some(CurrentValidationOccurrence::at_row(
+                bounds::MAX_SITES as u32
+            )),
+        );
+        assert_eq!(
+            owner.policy_ledger().cached_minimum(),
+            Some(LedgerSlotIndex::of(TablePolicyKind::Sites)),
+            "Sites is the only crossed kind, so it is the canonical minimum",
+        );
+        assert_eq!(
+            owner.site_row_count(),
+            bounds::MAX_SITES,
+            "the crossing committed no excess physical site row",
+        );
+        assert!(
+            TablePolicyAudit::cross_validate(&owner).is_ok(),
+            "the audit recomputes the Sites slot from final draft state",
+        );
+    }
 
     /// The frozen representation constants: eight slots, and the exact inline
     /// size/alignment of the `Copy` ledger the armed inverse copies at admission.

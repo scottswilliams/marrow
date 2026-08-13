@@ -16,8 +16,8 @@ use marrow_image::{
     AdmittedRoot, CollectionTypeDef, DeclarationMember, DeclarationMemberDef,
     DeclarationMemberShape, DraftTxn, DurableIndexComponent, DurableIndexShape, EnumTypeDef,
     ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticStepKind, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId, VariantDef,
+    LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticStepKind,
+    SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -555,11 +555,11 @@ fn closure_phase_mutual_recursion() {
 /// operand its own draft returned; there is no way to write a site number by hand.
 struct Sites {
     /// The root entry's whole-payload site.
-    entry: LegacyDraftSiteOperand,
+    entry: PlannedSiteRef,
     /// The required `value:int` field leaf.
-    value: LegacyDraftSiteOperand,
+    value: PlannedSiteRef,
     /// The sparse `label:string` field leaf.
-    label: LegacyDraftSiteOperand,
+    label: PlannedSiteRef,
 }
 
 /// Build the tracer-like durable schema into `draft`: a `Counter { value:int
@@ -666,10 +666,7 @@ fn put_export(code: impl FnOnce(&Sites) -> Vec<Instr>) -> ImageDraft {
 
 /// Encode a read-only export `read(k:string): T?` that reads the field at the site
 /// `pick` selects from the sites `durable_schema` registers, returning `ret`.
-fn read_field_export(
-    pick: impl FnOnce(&Sites) -> LegacyDraftSiteOperand,
-    ret: ImageType,
-) -> ImageDraft {
+fn read_field_export(pick: impl FnOnce(&Sites) -> PlannedSiteRef, ret: ImageType) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let site = pick(&durable_schema(&mut draft));
@@ -2287,7 +2284,7 @@ fn a_root_member_tree_with_fewer_members_than_record_slots_rejects() {
 /// branch]`, so these name its four addressable nodes: the root's own `title` field, the
 /// whole `details` group node, that group's `pages` field leaf, and the `notes` branch's
 /// `text` field leaf. Each binds the one target its node kind admits.
-fn book_title_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_title_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> PlannedSiteRef {
     let members = product_members(draft);
     site(
         draft,
@@ -2297,7 +2294,7 @@ fn book_title_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraft
     )
 }
 
-fn book_group_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_group_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> PlannedSiteRef {
     let members = product_members(draft);
     site(
         draft,
@@ -2307,7 +2304,7 @@ fn book_group_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraft
     )
 }
 
-fn book_group_field_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_group_field_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> PlannedSiteRef {
     let group = product_members(draft)[1].path().clone();
     let pages = draft
         .members_of(&group)
@@ -2317,7 +2314,7 @@ fn book_group_field_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> Legac
     site(draft, root.occurrence(), &pages, SemanticTarget::FieldLeaf)
 }
 
-fn book_branch_field_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_branch_field_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> PlannedSiteRef {
     let branch = product_members(draft)[2].path().clone();
     let text = draft
         .members_of(&branch)
@@ -2583,7 +2580,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, TypeId) {
 
 /// The whole-payload site of the flat-branch graph's `notes` branch entry: the branch
 /// is the root Product's second declared member, and a branch admits `WholePayload`.
-fn flat_branch_entry_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn flat_branch_entry_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> PlannedSiteRef {
     let members = product_members(draft);
     site(
         draft,
@@ -3005,7 +3002,7 @@ fn flow_mutation_after_commit_rejects() {
 /// reconstructs the mutation closure across the call graph rather than trusting a
 /// per-function summary.
 fn mutating_helper_and_caller(
-    caller_body: impl FnOnce(LegacyDraftSiteOperand, u16) -> Vec<Instr>,
+    caller_body: impl FnOnce(PlannedSiteRef, u16) -> Vec<Instr>,
 ) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
@@ -3355,12 +3352,7 @@ fn a_strict_sparse_set_after_a_key_rebind_rejects() {
 /// root-field set naming the branch key slot type-checks — isolating the presence
 /// lattice as the sole gate. Returns (draft, label field-leaf site operand, branch entry
 /// site operand, branch record index).
-fn branch_presence_schema() -> (
-    ImageDraft,
-    LegacyDraftSiteOperand,
-    LegacyDraftSiteOperand,
-    TypeId,
-) {
+fn branch_presence_schema() -> (ImageDraft, PlannedSiteRef, PlannedSiteRef, TypeId) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
@@ -3550,7 +3542,7 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
 /// sparse so it clears the required-field gate — isolating the site-target check as the
 /// sole remaining gate. Returns (draft, root whole-payload site operand, branch-field site
 /// operand).
-fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSiteOperand) {
+fn branch_field_schema() -> (ImageDraft, PlannedSiteRef, PlannedSiteRef) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
@@ -4960,7 +4952,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
 
 /// The whole-payload site of the nested `tags` branch entry: the `notes` branch is the
 /// Product's second declared member and `tags` is that branch's second member.
-fn nested_tag_entry_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn nested_tag_entry_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> PlannedSiteRef {
     let notes = product_members(draft)[1].path().clone();
     let tags = draft
         .members_of(&notes)
@@ -4989,7 +4981,7 @@ fn encoded_tag_entry_site(chain: &[[u8; 16]]) -> Vec<u8> {
 /// Add a read-only export that runs `DurExists` over the whole-payload `site` at the given
 /// key arity (root-first `int, string, int` for the tag entry), and encode. The opcode is
 /// the observation that separates an executable deep site from a parked one.
-fn exists_over_tag_entry(mut draft: DraftTxn<'_>, site: LegacyDraftSiteOperand) -> Vec<u8> {
+fn exists_over_tag_entry(mut draft: DraftTxn<'_>, site: PlannedSiteRef) -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("has");
     let code = vec![
@@ -5089,7 +5081,7 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
 /// A flat-executable root `^cells(row: int, col: text)` — a two-column composite key of
 /// distinct column types, so a transposed key-path is type-detectable — with one required
 /// int field `v`. Returns the draft and the whole-entry site operand.
-fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
+fn composite_root_draft() -> (ImageDraft, PlannedSiteRef) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
@@ -5155,7 +5147,7 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
 /// reads; a correct call pushes `[Int, Text]` (row then col, root-first).
 fn composite_exists_export(
     mut owner: ImageDraft,
-    entry: LegacyDraftSiteOperand,
+    entry: PlannedSiteRef,
     params: Vec<ImageType>,
 ) -> Vec<u8> {
     let mut draft = admitted(&mut owner);

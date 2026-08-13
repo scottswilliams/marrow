@@ -47,8 +47,8 @@ use crate::product::{
 };
 use crate::semantic::SemanticTarget;
 use crate::site_plan::{
-    LegacyDraftSiteOperand, OccurrenceSiteHandle, SiteDemandPlan, SitePlanState,
-    SitePlanStateError, SitePolicyReceipt,
+    OccurrenceSiteHandle, PlannedSiteRef, SiteDemandPlan, SitePlanState, SitePlanStateError,
+    SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
 use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeNodeId};
@@ -311,7 +311,7 @@ impl FuncId {
 /// A durable operation-site index (also the final container index).
 ///
 /// It is crate-private: outside this crate a site is named by the opaque
-/// [`LegacyDraftSiteOperand`] the plan mints, never by a number a caller can write.
+/// [`PlannedSiteRef`] the plan mints, never by a number a caller can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SiteId(u16);
 
@@ -1028,7 +1028,7 @@ impl<'d> DraftTxn<'d> {
     pub fn request_site(
         &mut self,
         handle: &OccurrenceSiteHandle,
-    ) -> Result<LegacyDraftSiteOperand, SitePlanStateError> {
+    ) -> Result<PlannedSiteRef, SitePlanStateError> {
         self.draft.request_site(handle)
     }
 
@@ -1500,7 +1500,7 @@ impl ImageDraft {
     /// The plan retains **only** the demand key: three owned typed ordinals. The path the
     /// site encodes to is projected from that key at encode.
     ///
-    /// The returned [`LegacyDraftSiteOperand`] is the only way an instruction can name a
+    /// The returned [`PlannedSiteRef`] is the only way an instruction can name a
     /// site: it is opaque, has no constructor of its own, and carries either the id the
     /// plan minted or the plan's refusal. A refusal is not a failure — the crossing is
     /// nonblocking, and the encoder refuses the image through the Sites bound — but there
@@ -1513,7 +1513,7 @@ impl ImageDraft {
     pub(crate) fn request_site(
         &mut self,
         handle: &OccurrenceSiteHandle,
-    ) -> Result<LegacyDraftSiteOperand, SitePlanStateError> {
+    ) -> Result<PlannedSiteRef, SitePlanStateError> {
         if handle.draft() != self.durable.identity() {
             return Err(SitePlanStateError::new(SitePlanState::WrongPlan));
         }
@@ -1522,7 +1522,17 @@ impl ImageDraft {
         let demand = handle.demand();
         let stamp = self.durable.next_stamp();
         let live = self.graph().revalidate(&demand)?;
-        Ok(self.sites.request(self.durable.identity(), live, stamp))
+        let site = self.sites.request(self.durable.identity(), live, stamp);
+        // The one mint path is the one Sites observation point: a crossing is present
+        // exactly when the plan holds its earliest receipt, recorded at the virtual
+        // zero-based N+1 ordinal `MAX_SITES` — never a physical row index or wire id.
+        if self.sites.receipt().is_some() {
+            self.ledger.observe(
+                TablePolicyKind::Sites,
+                CurrentValidationOccurrence::at_row(bounds::MAX_SITES as u32),
+            );
+        }
+        Ok(site)
     }
 
     /// Append a function body, validating every operation site its code names first.
@@ -1536,9 +1546,7 @@ impl ImageDraft {
     pub(crate) fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, SitePlanStateError> {
         for instr in &def.code {
             if let Some(site) = instr.site_operand() {
-                self.sites
-                    .validate(self.durable.identity(), site)
-                    .map_err(SitePlanStateError::new)?;
+                self.validate_site_ref(site)?;
             }
         }
         let id = FuncId(self.functions.len() as u16);
@@ -1828,12 +1836,44 @@ impl ImageDraft {
         self.sites.demanded()
     }
 
-    /// Whether `site` was minted by this draft's plan and the exact row or receipt it
-    /// stands on is still live: the coherence walk's provenance recheck, deliberately
-    /// the plan's `validate` rather than `encodable` — an over-policy operand is live
+    /// The one validator for spending a site ref: the plan's provenance check — the
+    /// minting draft and the exact site row or receipt the ref stands on — plus the live
+    /// graph's recheck of the occurrence and path row identities inside the ref's bound
+    /// demand. The graph half is what makes a rolled-back ref detectable when its rows
+    /// re-mint at the same ordinals with fresh stamps while a preexisting receipt stays
+    /// live. An over-policy ref with intact provenance is valid here: it is live
     /// provenance the Sites policy candidate reports, never a coherence fault.
-    pub(crate) fn site_operand_is_live(&self, site: &LegacyDraftSiteOperand) -> bool {
-        self.sites.validate(self.durable.identity(), site).is_ok()
+    pub(crate) fn validate_site_ref(
+        &self,
+        site: &PlannedSiteRef,
+    ) -> Result<(), SitePlanStateError> {
+        self.sites
+            .validate(self.durable.identity(), site)
+            .map_err(SitePlanStateError::new)?;
+        self.graph().revalidate(&site.demand())?;
+        Ok(())
+    }
+
+    /// Whether `site` was minted by this draft's plan and every row it stands on is
+    /// still live: the coherence walk's spelling of [`Self::validate_site_ref`].
+    pub(crate) fn site_ref_is_live(&self, site: &PlannedSiteRef) -> bool {
+        self.validate_site_ref(site).is_ok()
+    }
+
+    /// The earliest site-policy crossing the plan has recorded, if any — the fence
+    /// audit's recomputation source for the Sites ledger slot.
+    pub(crate) fn site_receipt(&self) -> Option<SitePolicyReceipt> {
+        self.sites.receipt()
+    }
+
+    /// The exact wire ordinal of one validated fitting site ref — the policy-clean final
+    /// projection. Reached only through the measured wire plan's site projection, so no
+    /// numeric site id exists before fitting policy-clean capped measurement.
+    pub(crate) fn site_wire_ordinal(&self, site: &PlannedSiteRef) -> Result<u16, ImageBuildError> {
+        if self.graph().revalidate(&site.demand()).is_err() {
+            return Err(ImageBuildError::InvalidReference("operation site"));
+        }
+        self.sites.wire_ordinal(self.durable.identity(), site)
     }
     pub(crate) fn functions(&self) -> &[FunctionDef] {
         &self.functions

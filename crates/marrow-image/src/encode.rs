@@ -305,6 +305,7 @@ impl ImageDraft {
         sink: &mut SectionSink<'_, S>,
         strings: &StringRemap<'_>,
         consts: &ConstRemap<'_>,
+        sites: &crate::measure::SiteWireProjection<'_>,
     ) -> Result<Vec<CodeLayout>, ImageBuildError> {
         push_u16(sink, self.functions().len() as u16);
         let mut per_fn = Vec::with_capacity(self.functions().len());
@@ -322,7 +323,7 @@ impl ImageDraft {
             function.ret.encode(sink);
             push_u16(sink, function.local_count);
             push_u32(sink, layout.total_len);
-            encode_code(sink, &function.code, &layout, consts)?;
+            encode_code(sink, &function.code, &layout, consts, sites)?;
             per_fn.push(layout);
         }
         Ok(per_fn)
@@ -445,6 +446,7 @@ fn encode_code<S: ImageByteSink>(
     code: &[Instr],
     layout: &CodeLayout,
     consts: &ConstRemap<'_>,
+    sites: &crate::measure::SiteWireProjection<'_>,
 ) -> Result<(), ImageBuildError> {
     for instr in code {
         sink.push(instr.opcode());
@@ -471,7 +473,7 @@ fn encode_code<S: ImageByteSink>(
             | Instr::DurEraseEntry(s)
             | Instr::DurReadGroup(s)
             | Instr::DurReplaceGroup(s)
-            | Instr::DurEraseGroup(s) => push_u16(sink, s.encodable()?),
+            | Instr::DurEraseGroup(s) => push_u16(sink, sites.ordinal(s)?),
             Instr::Jump(target)
             | Instr::JumpIfFalse(target)
             | Instr::BranchPresent(target)
@@ -501,7 +503,7 @@ fn encode_code<S: ImageByteSink>(
                 push_u16(sink, *field);
             }
             Instr::DurSetSparsePresent { site, key_slots } => {
-                push_u16(sink, site.encodable()?);
+                push_u16(sink, sites.ordinal(site)?);
                 // The slot count fits its `u16` prefix: each slot is two more bytes of
                 // this instruction's operand, and `encode_functions` has already
                 // refused a function whose laid-out code exceeds
@@ -518,7 +520,7 @@ fn encode_code<S: ImageByteSink>(
                 from,
                 list_ty,
             } => {
-                push_u16(sink, site.encodable()?);
+                push_u16(sink, sites.ordinal(site)?);
                 push_u32(sink, *limit);
                 sink.push(u8::from(*from));
                 push_u16(sink, wire_ordinal(list_ty.index()));
@@ -534,13 +536,13 @@ fn encode_code<S: ImageByteSink>(
                 from,
                 list_ty,
             } => {
-                push_u16(sink, site.encodable()?);
+                push_u16(sink, sites.ordinal(site)?);
                 push_u32(sink, *limit);
                 sink.push(u8::from(*from));
                 push_u16(sink, wire_ordinal(list_ty.index()));
             }
             Instr::DurIndexLookup(site) | Instr::DurIndexExists(site) => {
-                push_u16(sink, site.encodable()?)
+                push_u16(sink, sites.ordinal(site)?)
             }
             _ => {}
         }
@@ -1010,6 +1012,17 @@ mod counted_equals_emitted {
         [storeless(), durable()]
     }
 
+    /// The measured wire plan over one fitting fixture — the only mint of the site
+    /// projection the function writer takes, exactly as `encode` reaches it.
+    fn measured_plan(draft: &ImageDraft) -> crate::measure::LegacyV0WirePlan<'_> {
+        crate::measure::LegacyV0MeasureCore::coherence(draft)
+            .expect("the fixture is coherent")
+            .policy()
+            .expect("the fixture is policy clean")
+            .measure()
+            .expect("the fixture fits")
+    }
+
     /// The canonical permutations and their inverse maps, exactly as `encode` builds
     /// them.
     fn canonical(draft: &ImageDraft) -> (Vec<usize>, Vec<u16>, Vec<usize>, Vec<u16>) {
@@ -1120,12 +1133,14 @@ mod counted_equals_emitted {
     fn counted_functions_equal_emitted_functions() {
         for draft in fixtures() {
             let (_, str_map, _, const_map) = canonical(&draft);
+            let plan = measured_plan(&draft);
             let mut emitted = Vec::new();
             draft
                 .encode_functions(
                     &mut SectionSink::over(&mut emitted),
                     &StringRemap::new(&str_map),
                     &ConstRemap::new(&const_map),
+                    &plan.site_projection(),
                 )
                 .expect("the fixture's code encodes");
             let mut counted = crate::measure::CappedImageCount::default();
@@ -1156,11 +1171,13 @@ mod counted_equals_emitted {
     fn counted_spans_equal_emitted_spans() {
         for draft in fixtures() {
             let (_, str_map, _, const_map) = canonical(&draft);
+            let plan = measured_plan(&draft);
             let per_fn: Vec<CodeLayout> = draft
                 .encode_functions(
                     &mut SectionSink::over(&mut CountingSink::default()),
                     &StringRemap::new(&str_map),
                     &ConstRemap::new(&const_map),
+                    &plan.site_projection(),
                 )
                 .expect("the fixture's code lays out");
             let mut emitted = Vec::new();
@@ -1250,12 +1267,14 @@ mod counted_equals_emitted {
                 .expect("no site operand needs validating");
         }
         let (_, str_map, _, const_map) = canonical(&draft);
+        let plan = measured_plan(&draft);
         let mut counted = CountingSink::default();
         let per_fn = draft
             .encode_functions(
                 &mut SectionSink::over(&mut counted),
                 &StringRemap::new(&str_map),
                 &ConstRemap::new(&const_map),
+                &plan.site_projection(),
             )
             .expect("the partition's code lays out");
         let offsets: usize = per_fn
