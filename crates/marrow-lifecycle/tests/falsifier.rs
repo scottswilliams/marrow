@@ -28,8 +28,8 @@
 //! arena, `ManuallyDrop`, `mem::forget`, or `unsafe`.
 
 use marrow_image::{
-    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId,
+    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SpanEntry,
 };
 use marrow_verify::verify;
@@ -88,7 +88,7 @@ fn key_id(ordinal: usize) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(bytes)
 }
 
-fn add_main(draft: &mut ImageDraft) {
+fn add_main(draft: &mut DraftTxn<'_>) {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let zero = draft.intern_int(0);
@@ -117,8 +117,11 @@ fn add_main(draft: &mut ImageDraft) {
 /// Build the maximum corpus: one Product of [`MEMBERS`] stored fields, its materialized
 /// entry record, and [`OCCURRENCES`] roots projecting it.
 fn maximum_draft() -> ImageDraft {
-    let mut draft = ImageDraft::new();
-    let int = draft.value_shapes_mut().scalar(Scalar::Int);
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
+    let int = draft.value_scalar(Scalar::Int);
 
     let entry_name = draft.intern_string("R");
     let entry_fields: Vec<FieldDef> = (0..MEMBERS)
@@ -182,7 +185,8 @@ fn maximum_draft() -> ImageDraft {
     }
 
     add_main(&mut draft);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 /// The whole journey, in order. Every leg runs on the worker stack; the function returns
@@ -278,13 +282,16 @@ fn journey() {
     // 10. Early return: an intake wider than its plan is refused before a row is appended,
     //    and the rejected input is dropped on the way out.
     let narrow = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
-    let mut refused = ImageDraft::new();
+    let mut refused_owner = ImageDraft::new();
+    let mut refused = refused_owner
+        .begin_transaction(refused_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let name = refused.intern_string("R");
     let record = refused.add_record_type(RecordTypeDef {
         name,
         fields: Vec::new(),
     });
-    let value = refused.value_shapes_mut().scalar(Scalar::Int);
+    let value = refused.value_scalar(Scalar::Int);
     let two: Vec<DeclarationMemberDef> = (0..2)
         .map(|ordinal| DeclarationMemberDef {
             parent: None,

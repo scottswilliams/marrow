@@ -29,6 +29,7 @@
 //! one at or below `u16::MAX` by the `const _` encoded-width block in
 //! [`crate::bounds`].
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -38,6 +39,7 @@ use crate::durable_id::{
 };
 use crate::export_id::ExportId;
 use crate::instr::Instr;
+use crate::policy_ledger::{CurrentValidationOccurrence, TablePolicyKind, TablePolicyLedger};
 use crate::product::{
     CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
     DurableContractGraph, DurableGraphCheckpoint, OccurrenceGraph, ProductClaimConflict,
@@ -49,7 +51,7 @@ use crate::site_plan::{
     SitePlanStateError, SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
-use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink};
+use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeNodeId};
 
 /// The strong identity of one draft and its site demand plan.
 ///
@@ -195,7 +197,7 @@ pub(crate) fn wide_ordinal(len: usize) -> u32 {
 /// `u32` ordinal: the id itself never carries a wire width, and the only narrowing
 /// to the wire's `u16` spelling is the measure core's policy-clean checked path
 /// (`crate::measure`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StrId(u32);
 
 /// A logical constant-pool id, stable across the sort the encoder performs.
@@ -517,7 +519,7 @@ impl TestEntryDef {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ConstValue {
     Int(i64),
     Bool(bool),
@@ -568,6 +570,16 @@ pub enum ImageBuildError {
     /// Two occurrences of one durable Product identity claim the same member/value graph
     /// with a different entry record.
     ProductEntryRecordConflict,
+    /// A divergent application ledger identity was set after one was recorded: two
+    /// applications wearing one draft. The first identity is retained and the
+    /// divergence is latched as a sticky coherence fact the fence reports.
+    ApplicationIdentityConflict,
+    /// The table-policy ledger disagrees with the final draft state the independent
+    /// audit recomputed, or the legacy policy walk's verdict disagrees with the
+    /// ledger's canonical minimum. Unreachable from any input by construction — the
+    /// one mutation surface records every crossing — so an occurrence is a producer
+    /// defect, named by the check that caught it.
+    LedgerDrift(&'static str),
     InvalidReference(&'static str),
     /// An emitted section's byte length disagrees with the length the measure core
     /// counted for it through the same writer. Unreachable from any input by
@@ -593,9 +605,11 @@ impl std::error::Error for ImageBuildError {}
 
 /// The mutable image builder.
 ///
-/// The once-checked generic template pass appends its throwaway image directly to this
-/// draft through a [`TemplateProofDraftGuard`], which discards everything the pass appended
-/// when it drops.
+/// Every owned mutation flows through the one admitted, journaled, failure-atomic
+/// transaction surface: [`Self::savepoint`] mints a pre-admission token and
+/// [`Self::begin_transaction`] consumes it into the armed [`DraftTxn`]. The
+/// once-checked generic template pass holds such an armed guard and discards
+/// everything it appended by dropping it.
 ///
 /// A draft is deliberately not `Clone`. Every selector, handle, and site operand it mints
 /// carries its identity, so a copied draft would carry a copied identity and a copied stamp
@@ -646,16 +660,17 @@ impl std::error::Error for ImageBuildError {}
 /// let _ = marrow_image::AdmittedGraphInputPlan { products: 4096, roots: 4096, commands: 1 << 20 };
 /// ```
 ///
-/// A template proof's rollback is a guard over one draft, not a mark a caller holds, so
-/// there is no value to carry from one draft to another. The guard borrows its draft
+/// A transaction is a guard over one draft, not a mark a caller holds, so there is
+/// no value to carry from one draft to another. The armed guard borrows its draft
 /// exclusively for its whole lifetime.
 ///
 /// ```compile_fail,E0505
 /// // A guard cannot be separated from the draft it rolls back.
 /// let mut first = marrow_image::ImageDraft::new();
-/// let guard = first.template_proof();
+/// let sp = first.savepoint();
+/// let txn = first.begin_transaction(sp);
 /// let moved = first;
-/// drop(guard);
+/// drop(txn);
 /// ```
 #[derive(Debug)]
 pub struct ImageDraft {
@@ -669,9 +684,17 @@ pub struct ImageDraft {
     /// than by two that could drift.
     durable: DurableContractGraph,
     strings: Vec<String>,
+    /// Lookup-only interning projection; the vector remains the canonical order.
+    string_index: HashMap<String, StrId>,
     consts: Vec<ConstValue>,
+    /// Lookup-only interning projection; the vector remains the canonical order.
+    const_index: HashMap<ConstValue, ConstId>,
     types: Vec<RecordTypeDef>,
+    /// One-time-fill state per record row, in lockstep with `types`.
+    types_fill: Vec<FillState>,
     enums: Vec<EnumTypeDef>,
+    /// One-time-fill state per enum row, in lockstep with `enums`.
+    enums_fill: Vec<FillState>,
     colls: Vec<CollectionTypeDef>,
     /// The first divergent repeat of an already-declared Product, if one was appended.
     /// Two occurrences of one Product identity that claim different graphs are two
@@ -679,29 +702,91 @@ pub struct ImageDraft {
     /// [`Self::check_bounds`] refuses to encode rather than silently canonicalizing one
     /// of them away.
     product_conflict: Option<ProductClaimConflict>,
+    /// The sticky application-identity divergence latch (the set-once-or-same law).
+    application_conflict: Option<ApplicationIdentityConflict>,
     /// The one owner of the operation-site table, its demand map, and its capacity
     /// policy. Every site an image carries is requested through it.
     sites: SiteDemandPlan,
     functions: Vec<FunctionDef>,
     exports: Vec<ExportDef>,
     test_entries: Vec<TestEntryDef>,
+    /// The savepoint-comparison allocation identity (see [`DraftIdentityCell`]).
+    identity_cell: Rc<DraftIdentityCell>,
+    /// The current one-shot transaction epoch (see [`TransactionEpoch`]).
+    epoch: Rc<TransactionEpoch>,
+    /// The eight-slot policy-crossing observer the one mutation surface maintains.
+    ledger: TablePolicyLedger,
 }
 
-/// The append-only lengths of every [`ImageDraft`] owner at one instant, plus the
-/// application-identity slot and the site plan's policy state.
-///
-/// It is the private interior of a [`TemplateProofDraftGuard`]: it is never returned,
-/// stored, or named outside this module, so there is no mark a caller could hold, copy, or
-/// apply to a draft other than the one the guard exclusively borrows.
-///
-/// A proof pass only appends new entries and fills freshly-reserved records/enums (never a
-/// pre-existing index), so truncating each owner back to its recorded length restores the
-/// draft to the exact bytes it held before the pass.
-///
-/// The durable owners are marked by the durable graph's own checkpoint rather than
-/// restated here: it is their owner, and it states which of its fields a rewind
-/// deliberately does not restore.
-struct DraftCheckpoint {
+/// The one-time-fill state of a reserved record or enum row: a row is minted
+/// unfilled and admits exactly one later fill. Distinct from the definition's own
+/// field count — a row minted complete simply never spends its fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FillState {
+    Unfilled,
+    Filled,
+}
+
+/// The sticky application-identity divergence latch: the retained first identity and
+/// the first divergent replacement. A coherence fact beside the Product claim
+/// conflict, reported once at the fence by the owner that refuses artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApplicationIdentityConflict {
+    first: LedgerIdBytes,
+    divergent: LedgerIdBytes,
+}
+
+/// The allocation-identity anchor of one draft: savepoint validation compares this
+/// allocation by `Rc::ptr_eq`, and a savepoint's strong retention is what makes the
+/// pointer comparison sound — the compared allocation cannot have been freed and
+/// reused, so there is no address, counter, generation, or hash ABA. The numeric
+/// [`DraftIdentity`] survives only where selectors and operands embed it as
+/// predecessor provenance, never as a savepoint-comparison key.
+#[derive(Debug)]
+struct DraftIdentityCell;
+
+/// The one-shot transaction epoch. Admission installs a fresh allocation before any
+/// table mutation, staling every sibling savepoint of the consumed epoch. It is
+/// monotone authentication state, not part of the logical inverse: commit and armed
+/// rollback both retain the rotated epoch, so a sibling stays stale even when every
+/// logical draft byte again equals the pre-transaction state.
+#[derive(Debug)]
+struct TransactionEpoch;
+
+/// A hostile-state refusal of the transaction surface: the closed set the mutation
+/// entry points return before any owner changes. Never a policy maximum — crossing a
+/// public image policy is not a returned error anywhere on this surface.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftStateError {
+    /// The token (savepoint, id, or reference) was minted by another draft.
+    ForeignDraft,
+    /// The savepoint's one-shot epoch was already consumed by a sibling admission.
+    StaleEpoch,
+    /// The token is internally incoherent: its snapshot disagrees with the state it
+    /// claims to describe, or the id it names no longer admits the operation.
+    IncoherentToken,
+}
+
+impl std::fmt::Display for DraftStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DraftStateError::ForeignDraft => "the token was minted by another draft",
+            DraftStateError::StaleEpoch => "the savepoint's epoch was already consumed",
+            DraftStateError::IncoherentToken => "the token is internally incoherent",
+        })
+    }
+}
+
+impl std::error::Error for DraftStateError {}
+
+/// The private structural image a savepoint carries and a transaction's journal
+/// restores to: every owner's append-only length, the durable graph's checkpoint,
+/// and the conflict/receipt slots. Deliberately **not** a ledger copy — the one-shot
+/// epoch proves the ledger is still the state the savepoint observed; the armed
+/// inverse takes its own fixed ledger copy at admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DraftSnapshot {
     strings: usize,
     consts: usize,
     types: usize,
@@ -712,80 +797,351 @@ struct DraftCheckpoint {
     functions: usize,
     exports: usize,
     test_entries: usize,
-    /// The sticky Product-claim conflict at the checkpoint. It gates encoding while the
-    /// declaration table that admits it is truncated with the pass, so a conflict first
-    /// recorded *inside* the proof is cleared with the divergent row that caused it; one
-    /// recorded *before* the proof is kept, because both disagreeing declarations survive.
     product_conflict: Option<ProductClaimConflict>,
-    /// The site plan's policy state at the checkpoint. A crossing that happened *before* the
-    /// proof keeps its exact receipt identity; one first recorded *inside* the proof is
-    /// cleared with the rest of the pass, so a throwaway proof cannot leave the real draft
-    /// refusing sites it has capacity for.
+    application_conflict: Option<ApplicationIdentityConflict>,
     receipt: Option<SitePolicyReceipt>,
 }
 
-/// The exclusive borrow through which the once-checked generic template pass appends its
-/// throwaway image to the real draft.
+/// A pre-admission, affine draft savepoint: it strongly retains the draft's
+/// allocation-identity anchor and current one-shot epoch and carries the exact
+/// private restore snapshot. Sibling-mintable; consumed whole by
+/// [`ImageDraft::begin_transaction`], which validates it by allocation identity
+/// before any mutation. Deliberately neither `Clone` nor `Copy`: a savepoint is an
+/// affine admission token, and copying one is how a consumed epoch gets re-presented.
 ///
-/// The pass is proved against the in-progress draft — so a concrete callee's signature stays
-/// consistent with every type already minted — and everything it appends is discarded when
-/// the guard drops, on a normal return, on an early invariant, or on an unwind.
-///
-/// The guard **is** the capability. Its checkpoint is private and unnameable, so there is no
-/// mark to clone, store, return, or hand to a second draft: the guard borrows one draft
-/// exclusively for its whole lifetime, and the draft is unusable through any other path
-/// until it drops. The type it replaces was a free-standing `Clone` value carrying no draft
-/// identity, so a mark taken on one draft could be applied to another, where it silently
-/// truncated unrelated tables.
-///
-/// What the guard bounds is *when* the draft is reachable and *what survives*, not which
-/// operations the pass performs: [`Self::proof_draft`] reborrows the whole draft, because
-/// the pass is the ordinary function lowerer and its append surface is the draft's. The
-/// reborrow is bounded by the guard, so nothing it appends escapes the rollback, but a
-/// narrower operation set would mean a second lowering path, which this row does not build.
-///
-/// **Temporary.** It is not a general draft transaction — canonical Product, root, or path
-/// publication is not a template-proof operation, and there is no commit. It is deleted when
-/// the production draft transaction lands.
+/// ```compile_fail,E0599
+/// // A savepoint is affine: it cannot be cloned.
+/// let draft = marrow_image::ImageDraft::new();
+/// let sp = draft.savepoint();
+/// let _copy = sp.clone();
+/// ```
 #[doc(hidden)]
-pub struct TemplateProofDraftGuard<'draft> {
-    draft: &'draft mut ImageDraft,
-    checkpoint: DraftCheckpoint,
+pub struct DraftSavepoint {
+    identity: Rc<DraftIdentityCell>,
+    epoch: Rc<TransactionEpoch>,
+    snapshot: DraftSnapshot,
 }
 
-impl TemplateProofDraftGuard<'_> {
-    /// The in-progress draft the proof body appends to.
-    ///
-    /// The borrow is reborrowed from the guard's own exclusive borrow, so it cannot outlive
-    /// the guard and no appended row can escape the rollback.
-    pub fn proof_draft(&mut self) -> &mut ImageDraft {
+impl std::fmt::Debug for DraftSavepoint {
+    /// One fixed marker: the snapshot and tokens are the authority the value carries.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("draft savepoint")
+    }
+}
+
+/// One journaled one-time fill of a pre-transaction row, holding the displaced
+/// definition so the armed inverse restores it by moving it back — no allocation on
+/// the `Drop` path. A fill of a row appended inside the transaction needs no entry:
+/// its row truncates with the suffix.
+#[derive(Debug)]
+enum FillInverse {
+    Record {
+        row: usize,
+        fields: Vec<FieldDef>,
+    },
+    Enum {
+        row: usize,
+        variants: Vec<VariantDef>,
+    },
+}
+
+/// The pre-reserved inverse journal the armed guard holds from admission: the
+/// admission-time structural image, the fixed ledger copy, and the one-time-fill
+/// inverses. Every element's storage is reserved in the preflight of the mutation
+/// that needs it, so the armed `Drop` inverse is a closed total operation —
+/// allocation-free, assertion-free, indexing-free, and non-panicking.
+#[derive(Debug)]
+struct DraftJournal {
+    at: DraftSnapshot,
+    ledger: TablePolicyLedger,
+    fills: Vec<FillInverse>,
+}
+
+/// The sole cross-crate mutation surface over one [`ImageDraft`]: an armed guard
+/// admitted by [`ImageDraft::begin_transaction`] that mutates the borrowed draft
+/// immediately and in place — it never batches, defers, schedules, or reorders a
+/// call, which is what preserves mint-order-is-the-wire — while journaling the
+/// inverses an armed rollback needs. [`DraftTxn::commit`] disarms and retains every
+/// accepted observation; the armed `Drop` performs the total admitted inverse.
+///
+/// Reads pass through [`std::ops::Deref`] to the draft's read surface; the guard
+/// exposes no `&mut ImageDraft`, so no mutation can bypass the journal.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct DraftTxn<'d> {
+    draft: &'d mut ImageDraft,
+    journal: DraftJournal,
+    armed: bool,
+}
+
+impl std::ops::Deref for DraftTxn<'_> {
+    type Target = ImageDraft;
+
+    fn deref(&self) -> &ImageDraft {
         self.draft
     }
 }
 
-impl Drop for TemplateProofDraftGuard<'_> {
-    /// Discard everything the proof appended, in reverse dependency order: the code that can
-    /// retain site operands first, then the site rows those operands name, then the durable
-    /// graph whose rows the sites name, with the claim conflict its declarations can record,
-    /// and finally the remaining owners.
-    ///
-    /// It allocates nothing, indexes nothing, and cannot panic, so it is safe to run during
-    /// an unwind that a failed proof started.
-    fn drop(&mut self) {
-        let at = &self.checkpoint;
-        self.draft.test_entries.truncate(at.test_entries);
-        self.draft.exports.truncate(at.exports);
-        self.draft.functions.truncate(at.functions);
-        self.draft.sites.rewind(at.sites, at.receipt);
-        self.draft.durable.rewind(&at.durable);
-        self.draft.product_conflict = at.product_conflict;
-        self.draft.colls.truncate(at.colls);
-        self.draft.enums.truncate(at.enums);
-        self.draft.types.truncate(at.types);
-        self.draft.consts.truncate(at.consts);
-        self.draft.strings.truncate(at.strings);
+impl<'d> DraftTxn<'d> {
+    /// Disarm the guard, retaining every mutation and accepted policy observation.
+    pub fn commit(mut self) {
+        self.armed = false;
+    }
+
+    pub fn intern_string(&mut self, text: &str) -> StrId {
+        self.draft.intern_string(text)
+    }
+
+    pub fn intern_int(&mut self, value: i64) -> ConstId {
+        self.draft.intern_int(value)
+    }
+
+    pub fn intern_bool(&mut self, value: bool) -> ConstId {
+        self.draft.intern_bool(value)
+    }
+
+    pub fn intern_text(&mut self, text: &str) -> ConstId {
+        self.draft.intern_text(text)
+    }
+
+    pub fn intern_date(&mut self, days: i32) -> ConstId {
+        self.draft.intern_date(days)
+    }
+
+    pub fn intern_instant(&mut self, nanos: i128) -> ConstId {
+        self.draft.intern_instant(nanos)
+    }
+
+    pub fn intern_duration(&mut self, nanos: i128) -> ConstId {
+        self.draft.intern_duration(nanos)
+    }
+
+    pub fn add_record_type(&mut self, def: RecordTypeDef) -> TypeId {
+        self.draft.add_record_type(def)
+    }
+
+    pub fn add_enum_type(&mut self, def: EnumTypeDef) -> EnumId {
+        self.draft.add_enum_type(def)
+    }
+
+    pub fn add_collection_type(&mut self, def: CollectionTypeDef) -> CollTypeId {
+        self.draft.add_collection_type(def)
+    }
+
+    /// Fill the fields of an already-reserved record type, exactly once: a checked
+    /// lookup — a foreign or stale id is the typed refusal, never a panic — and a
+    /// one-time fill — a second fill is the typed refusal, never an overwrite. A fill
+    /// of a pre-transaction row journals its displaced definition first.
+    pub fn set_record_fields(
+        &mut self,
+        ty: TypeId,
+        fields: Vec<FieldDef>,
+    ) -> Result<(), DraftStateError> {
+        let row = ty.index() as usize;
+        let Some(state) = self.draft.types_fill.get(row).copied() else {
+            return Err(DraftStateError::ForeignDraft);
+        };
+        if state == FillState::Filled {
+            return Err(DraftStateError::IncoherentToken);
+        }
+        if row < self.journal.at.types {
+            self.journal.fills.reserve(1);
+            let Some(slot) = self.draft.types.get_mut(row) else {
+                return Err(DraftStateError::ForeignDraft);
+            };
+            let prior = std::mem::replace(&mut slot.fields, fields);
+            self.journal
+                .fills
+                .push(FillInverse::Record { row, fields: prior });
+        } else {
+            let Some(slot) = self.draft.types.get_mut(row) else {
+                return Err(DraftStateError::ForeignDraft);
+            };
+            slot.fields = fields;
+        }
+        if let Some(state) = self.draft.types_fill.get_mut(row) {
+            *state = FillState::Filled;
+        }
+        Ok(())
+    }
+
+    /// Fill the variants of an already-reserved enum type, exactly once (see
+    /// [`Self::set_record_fields`]).
+    pub fn set_enum_variants(
+        &mut self,
+        id: EnumId,
+        variants: Vec<VariantDef>,
+    ) -> Result<(), DraftStateError> {
+        let row = id.index() as usize;
+        let Some(state) = self.draft.enums_fill.get(row).copied() else {
+            return Err(DraftStateError::ForeignDraft);
+        };
+        if state == FillState::Filled {
+            return Err(DraftStateError::IncoherentToken);
+        }
+        if row < self.journal.at.enums {
+            self.journal.fills.reserve(1);
+            let Some(slot) = self.draft.enums.get_mut(row) else {
+                return Err(DraftStateError::ForeignDraft);
+            };
+            let prior = std::mem::replace(&mut slot.variants, variants);
+            self.journal.fills.push(FillInverse::Enum {
+                row,
+                variants: prior,
+            });
+        } else {
+            let Some(slot) = self.draft.enums.get_mut(row) else {
+                return Err(DraftStateError::ForeignDraft);
+            };
+            slot.variants = variants;
+        }
+        if let Some(state) = self.draft.enums_fill.get_mut(row) {
+            *state = FillState::Filled;
+        }
+        Ok(())
+    }
+
+    pub fn declare_product(
+        &mut self,
+        plan: &AdmittedGraphInputPlan,
+        product: LedgerIdBytes,
+        entry_record: TypeId,
+        members: Vec<DeclarationMemberDef>,
+    ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
+        self.draft
+            .declare_product(plan, product, entry_record, members)
+    }
+
+    pub fn add_root_occurrence(
+        &mut self,
+        plan: &AdmittedGraphInputPlan,
+        product: LedgerIdBytes,
+        def: RootOccurrenceDef,
+    ) -> Result<AdmittedRoot, SitePlanStateError> {
+        self.draft.add_root_occurrence(plan, product, def)
+    }
+
+    pub fn set_application_identity(&mut self, id: LedgerIdBytes) {
+        self.draft.set_application_identity(id);
+    }
+
+    pub fn request_site(
+        &mut self,
+        handle: &OccurrenceSiteHandle,
+    ) -> Result<LegacyDraftSiteOperand, SitePlanStateError> {
+        self.draft.request_site(handle)
+    }
+
+    pub fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, SitePlanStateError> {
+        self.draft.add_function(def)
+    }
+
+    pub fn add_export(&mut self, id: ExportId, func: FuncId) {
+        self.draft.add_export(id, func);
+    }
+
+    pub fn add_test_entry(&mut self, name: StrId, func: FuncId) {
+        self.draft.add_test_entry(name, func);
+    }
+
+    /// Mint one scalar durable value shape into the draft's one arena — the typed
+    /// appender that replaces the deleted raw `&mut` arena escape.
+    pub fn value_scalar(&mut self, scalar: Scalar) -> ValueShapeNodeId {
+        self.draft.value_shapes_mut().scalar(scalar)
+    }
+
+    /// Mint one dense composite durable value shape into the draft's one arena. The
+    /// leaf-arity bound stays the fence's coherence decision, at its pinned position.
+    pub fn value_struct(&mut self, leaves: Vec<ValueShapeNodeId>) -> ValueShapeNodeId {
+        self.draft.value_shapes_mut().struct_shape(leaves)
+    }
+
+    /// Mint one enum durable value shape into the draft's one arena.
+    pub fn value_enum(
+        &mut self,
+        identity: LedgerIdBytes,
+        members: Vec<(LedgerIdBytes, Vec<ValueShapeNodeId>)>,
+    ) -> ValueShapeNodeId {
+        self.draft.value_shapes_mut().enum_shape(identity, members)
+    }
+
+    /// The total admitted inverse, in reverse dependency order. Called only by the
+    /// armed `Drop`: allocation-free, assertion-free, indexing-free, `drain`-free,
+    /// and non-panicking on ordinary exit and during an existing unwind.
+    fn rollback_armed(&mut self) {
+        let at = &self.journal.at;
+        let draft = &mut *self.draft;
+        // 1. Dependent code suffixes first (preservation coverage until the
+        //    function-slot refounding).
+        draft.test_entries.truncate(at.test_entries);
+        draft.exports.truncate(at.exports);
+        draft.functions.truncate(at.functions);
+        // 2. The site plan: suffix pop with retained-map key removal, receipt restore.
+        draft.sites.pop_suffix_to(at.sites, at.receipt);
+        // 3. The durable graph: occurrence/product/value-arena suffix restore plus the
+        //    application slot; the row-stamp counter is deliberately not restored.
+        draft.durable.rewind_total(&at.durable);
+        // 4. The sticky conflict latches: exact prior values.
+        draft.product_conflict = at.product_conflict;
+        draft.application_conflict = at.application_conflict;
+        // 5. One-time fills of pre-transaction rows revert to their displaced
+        //    definitions, moved back without allocating.
+        while let Some(fill) = self.journal.fills.pop() {
+            match fill {
+                FillInverse::Record { row, fields } => {
+                    if let Some(slot) = draft.types.get_mut(row) {
+                        slot.fields = fields;
+                    }
+                    if let Some(state) = draft.types_fill.get_mut(row) {
+                        *state = FillState::Unfilled;
+                    }
+                }
+                FillInverse::Enum { row, variants } => {
+                    if let Some(slot) = draft.enums.get_mut(row) {
+                        slot.variants = variants;
+                    }
+                    if let Some(state) = draft.enums_fill.get_mut(row) {
+                        *state = FillState::Unfilled;
+                    }
+                }
+            }
+        }
+        // 6/7. Table suffixes, with each interned owner's index key removed while the
+        //      popped row is still live.
+        draft.colls.truncate(at.colls);
+        draft.enums.truncate(at.enums);
+        draft.enums_fill.truncate(at.enums);
+        draft.types.truncate(at.types);
+        draft.types_fill.truncate(at.types);
+        while draft.consts.len() > at.consts {
+            if let Some(value) = draft.consts.last() {
+                draft.const_index.remove(value);
+            }
+            draft.consts.pop();
+        }
+        while draft.strings.len() > at.strings {
+            if let Some(text) = draft.strings.last() {
+                draft.string_index.remove(text);
+            }
+            draft.strings.pop();
+        }
+        // 8. The admission-time fixed ledger copy, byte for byte.
+        draft.ledger = self.journal.ledger;
+        // The consumed epoch is deliberately not restored: it is monotone
+        // authentication state outside the logical inverse.
     }
 }
+// drop-path audit sentinel: end of DraftTxn::rollback_armed
+
+impl Drop for DraftTxn<'_> {
+    /// The armed inverse. A committed guard was disarmed and restores nothing.
+    fn drop(&mut self) {
+        if self.armed {
+            self.rollback_armed();
+        }
+    }
+}
+// drop-path audit sentinel: end of DraftTxn::drop
 
 impl Default for ImageDraft {
     /// A fresh draft with a fresh identity. There is deliberately no derived `Default`:
@@ -801,15 +1157,23 @@ impl ImageDraft {
         Self {
             durable: DurableContractGraph::new(),
             strings: Vec::new(),
+            string_index: HashMap::new(),
             consts: Vec::new(),
+            const_index: HashMap::new(),
             types: Vec::new(),
+            types_fill: Vec::new(),
             enums: Vec::new(),
+            enums_fill: Vec::new(),
             colls: Vec::new(),
             product_conflict: None,
+            application_conflict: None,
             sites: SiteDemandPlan::default(),
             functions: Vec::new(),
             exports: Vec::new(),
             test_entries: Vec::new(),
+            identity_cell: Rc::new(DraftIdentityCell),
+            epoch: Rc::new(TransactionEpoch),
+            ledger: TablePolicyLedger::vacant(),
         }
     }
 
@@ -819,67 +1183,100 @@ impl ImageDraft {
     }
 
     /// Intern a string, returning its logical id. Repeated interning of the same
-    /// text returns the same id.
-    pub fn intern_string(&mut self, text: &str) -> StrId {
-        if let Some(index) = self.strings.iter().position(|existing| existing == text) {
-            return StrId(wide_ordinal(index));
+    /// text returns the same id — the duplicate hit mutates nothing, including at a
+    /// full table, so dedup runs before any policy observation.
+    pub(crate) fn intern_string(&mut self, text: &str) -> StrId {
+        if let Some(&id) = self.string_index.get(text) {
+            return id;
         }
         let id = StrId(wide_ordinal(self.strings.len()));
+        if text.len() > bounds::MAX_STRING_BYTES {
+            self.ledger.observe(
+                TablePolicyKind::StringBytes,
+                CurrentValidationOccurrence::at_row(id.0),
+            );
+        }
         self.strings.push(text.to_string());
+        self.string_index.insert(text.to_string(), id);
+        if self.strings.len() > bounds::MAX_STRINGS {
+            self.ledger.observe(
+                TablePolicyKind::Strings,
+                CurrentValidationOccurrence::at_row(bounds::MAX_STRINGS as u32),
+            );
+        }
         id
     }
 
-    pub fn intern_int(&mut self, value: i64) -> ConstId {
+    pub(crate) fn intern_int(&mut self, value: i64) -> ConstId {
         self.intern_const(ConstValue::Int(value))
     }
 
-    pub fn intern_bool(&mut self, value: bool) -> ConstId {
+    pub(crate) fn intern_bool(&mut self, value: bool) -> ConstId {
         self.intern_const(ConstValue::Bool(value))
     }
 
-    /// Intern a text constant, interning its backing string as needed.
-    pub fn intern_text(&mut self, text: &str) -> ConstId {
+    /// Intern a text constant, interning its backing string as needed: the whole
+    /// compound — string row, constant row, both index entries, and every newly
+    /// crossed policy kind — lands as one unit.
+    pub(crate) fn intern_text(&mut self, text: &str) -> ConstId {
         let str_id = self.intern_string(text);
         self.intern_const(ConstValue::Text(str_id))
     }
 
     /// Intern a `date` constant (days since the Unix epoch).
-    pub fn intern_date(&mut self, days: i32) -> ConstId {
+    pub(crate) fn intern_date(&mut self, days: i32) -> ConstId {
         self.intern_const(ConstValue::Date(days))
     }
 
     /// Intern an `instant` constant (signed nanoseconds since the epoch).
-    pub fn intern_instant(&mut self, nanos: i128) -> ConstId {
+    pub(crate) fn intern_instant(&mut self, nanos: i128) -> ConstId {
         self.intern_const(ConstValue::Instant(nanos))
     }
 
     /// Intern a `duration` constant (signed nanoseconds).
-    pub fn intern_duration(&mut self, nanos: i128) -> ConstId {
+    pub(crate) fn intern_duration(&mut self, nanos: i128) -> ConstId {
         self.intern_const(ConstValue::Duration(nanos))
     }
 
     fn intern_const(&mut self, value: ConstValue) -> ConstId {
-        if let Some(index) = self
-            .consts
-            .iter()
-            .position(|existing| const_eq(*existing, value))
-        {
-            return ConstId(wide_ordinal(index));
+        if let Some(&id) = self.const_index.get(&value) {
+            return id;
         }
         let id = ConstId(wide_ordinal(self.consts.len()));
         self.consts.push(value);
+        self.const_index.insert(value, id);
+        if self.consts.len() > bounds::MAX_CONSTS {
+            self.ledger.observe(
+                TablePolicyKind::Consts,
+                CurrentValidationOccurrence::at_row(bounds::MAX_CONSTS as u32),
+            );
+        }
         id
     }
 
-    pub fn add_record_type(&mut self, def: RecordTypeDef) -> TypeId {
+    pub(crate) fn add_record_type(&mut self, def: RecordTypeDef) -> TypeId {
         let id = TypeId(wide_ordinal(self.types.len()));
         self.types.push(def);
+        self.types_fill.push(FillState::Unfilled);
+        if self.types.len() > bounds::MAX_TYPES {
+            self.ledger.observe(
+                TablePolicyKind::Types,
+                CurrentValidationOccurrence::at_row(bounds::MAX_TYPES as u32),
+            );
+        }
         id
     }
 
-    pub fn add_enum_type(&mut self, def: EnumTypeDef) -> EnumId {
+    pub(crate) fn add_enum_type(&mut self, def: EnumTypeDef) -> EnumId {
         let id = EnumId(wide_ordinal(self.enums.len()));
         self.enums.push(def);
+        self.enums_fill.push(FillState::Unfilled);
+        if self.enums.len() > bounds::MAX_ENUMS {
+            self.ledger.observe(
+                TablePolicyKind::Enums,
+                CurrentValidationOccurrence::at_row(bounds::MAX_ENUMS as u32),
+            );
+        }
         id
     }
 
@@ -898,25 +1295,16 @@ impl ImageDraft {
     /// identity and dedups by the *source* element/key/value types (so `List[Age]`
     /// and `List[int]` stay distinct even though a nominal element erases to the same
     /// image `int`), minting one row here per distinct source instantiation.
-    pub fn add_collection_type(&mut self, def: CollectionTypeDef) -> CollTypeId {
+    pub(crate) fn add_collection_type(&mut self, def: CollectionTypeDef) -> CollTypeId {
         let id = CollTypeId(wide_ordinal(self.colls.len()));
         self.colls.push(def);
+        if self.colls.len() > bounds::MAX_COLLECTIONS {
+            self.ledger.observe(
+                TablePolicyKind::Collections,
+                CurrentValidationOccurrence::at_row(bounds::MAX_COLLECTIONS as u32),
+            );
+        }
         id
-    }
-
-    /// Replace the fields of an already-reserved record type. Value types are built
-    /// in two passes — every record and enum reserves its type index first so a
-    /// field or payload may reference any other value type (including a mutually
-    /// referential `struct`), then each definition's fields are filled in. Only the
-    /// reserving pass may set fields; the index is fixed at reservation.
-    pub fn set_record_fields(&mut self, ty: TypeId, fields: Vec<FieldDef>) {
-        self.types[ty.0 as usize].fields = fields;
-    }
-
-    /// Replace the variants of an already-reserved enum type (see
-    /// [`Self::set_record_fields`] for the two-pass rationale).
-    pub fn set_enum_variants(&mut self, id: EnumId, variants: Vec<VariantDef>) {
-        self.enums[id.0 as usize].variants = variants;
     }
 
     /// Admit one durable **Product declaration**: its canonical member/value graph and
@@ -952,7 +1340,7 @@ impl ImageDraft {
     /// validator of the vector's structure, and the encoder remains the one owner of the
     /// member bound — a vector the plan admits one command past that bound still reaches
     /// [`ImageBuildError::TooManyDurableMembers`] rather than being masked here.
-    pub fn declare_product(
+    pub(crate) fn declare_product(
         &mut self,
         plan: &AdmittedGraphInputPlan,
         product: LedgerIdBytes,
@@ -984,21 +1372,36 @@ impl ImageDraft {
     /// exceed what a canonical path can address. Each is a fault in the graph the caller
     /// just built, and no caller branches on which. An occurrence past the plan's admitted
     /// root count is refused the same way, before the row is pushed.
-    pub fn add_root_occurrence(
+    pub(crate) fn add_root_occurrence(
         &mut self,
         plan: &AdmittedGraphInputPlan,
         product: LedgerIdBytes,
         def: RootOccurrenceDef,
     ) -> Result<AdmittedRoot, SitePlanStateError> {
+        // Publication preflight: an occurrence whose managed-index ordinals cannot
+        // all be spelled in the canonical addressable path domain is refused as one
+        // typed error before any row is pushed and before any budget is spent —
+        // admission is failure-atomic, and no refusal path leaves a live row.
+        if def.indexes.len() > usize::from(u16::MAX) + 1 {
+            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
+        }
         let occurrence = self
             .durable
             .admit_root_occurrence(plan, product, def)
             .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
         let root_id = occurrence.wire_root_id();
+        // Preflighted above, so the just-pushed row always publishes; the refusal arm
+        // stays as typed defense in depth, never a panic and never an orphan row.
         let (placement, indexes) = self
             .graph()
             .publish(&occurrence)
             .ok_or_else(|| SitePlanStateError::new(SitePlanState::StaleBinding))?;
+        if self.root_occurrences().len() > bounds::MAX_ROOTS {
+            self.ledger.observe(
+                TablePolicyKind::Roots,
+                CurrentValidationOccurrence::at_row(bounds::MAX_ROOTS as u32),
+            );
+        }
         Ok(AdmittedRoot {
             occurrence,
             root_id,
@@ -1063,11 +1466,23 @@ impl ImageDraft {
         Ok(OccurrenceSiteHandle::new(self.durable.identity(), demand))
     }
 
-    /// Record the application's ledger id. Required exactly when the draft has a
-    /// durable root — the durable graph's identity is anchored to it; a storeless
-    /// image carries none.
-    pub fn set_application_identity(&mut self, id: LedgerIdBytes) {
-        self.durable.set_application_identity(id);
+    /// Record the application's ledger id, set-once-or-same: the first set stores it,
+    /// an equal reset is an idempotent no-op, and a divergent replacement latches the
+    /// sticky [`ApplicationIdentityConflict`] the fence reports — the first identity
+    /// is retained and never silently overwritten. Required exactly when the draft
+    /// has a durable root; a storeless image carries none.
+    pub(crate) fn set_application_identity(&mut self, id: LedgerIdBytes) {
+        match self.durable.application() {
+            None => self.durable.set_application_identity(id),
+            Some(first) if first == id => {}
+            Some(first) => {
+                self.application_conflict
+                    .get_or_insert(ApplicationIdentityConflict {
+                        first,
+                        divergent: id,
+                    });
+            }
+        }
     }
 
     /// Mint-or-return the operation site answering the bound demand `handle` names,
@@ -1095,7 +1510,7 @@ impl ImageDraft {
     /// a construction plan admits graph input, not site capacity — and the handle a
     /// request spends could only have been bound against rows an admitted construction
     /// published.
-    pub fn request_site(
+    pub(crate) fn request_site(
         &mut self,
         handle: &OccurrenceSiteHandle,
     ) -> Result<LegacyDraftSiteOperand, SitePlanStateError> {
@@ -1118,7 +1533,7 @@ impl ImageDraft {
     /// discarded, is refused and **no** row is appended. The success carrier is unchanged
     /// — a function is still named by its [`FuncId`] — so the check widens neither
     /// function identity nor the site-binding state error's authority.
-    pub fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, SitePlanStateError> {
+    pub(crate) fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, SitePlanStateError> {
         for instr in &def.code {
             if let Some(site) = instr.site_operand() {
                 self.sites
@@ -1134,14 +1549,14 @@ impl ImageDraft {
     /// Bind the export identity `id` to function `func`. The compiler mints `id`
     /// with [`ExportId::of_local`] from the export's declaration path; at v0 each
     /// public function is one export, so `func` is unique across the table.
-    pub fn add_export(&mut self, id: ExportId, func: FuncId) {
+    pub(crate) fn add_export(&mut self, id: ExportId, func: FuncId) {
         self.exports.push(ExportDef { id, func });
     }
 
     /// Bind the report name `name` to the storeless test function `func`. Test names
     /// are unique across the project (the compiler rejects a duplicate), so the
     /// encoder sorts entries by their final name-string index.
-    pub fn add_test_entry(&mut self, name: StrId, func: FuncId) {
+    pub(crate) fn add_test_entry(&mut self, name: StrId, func: FuncId) {
         self.test_entries.push(TestEntryDef { name, func });
     }
 
@@ -1155,60 +1570,10 @@ impl ImageDraft {
         self.enums.len()
     }
 
-    /// Borrow this draft for one isolated generic-template proof pass.
-    ///
-    /// The returned guard holds the draft exclusively and discards everything the pass
-    /// appends when it drops. The checkpoint it records is its own private interior: there is
-    /// no mark value, so a pass cannot roll one draft back onto another.
-    #[doc(hidden)]
-    pub fn template_proof(&mut self) -> TemplateProofDraftGuard<'_> {
-        let checkpoint = self.checkpoint();
-        TemplateProofDraftGuard {
-            draft: self,
-            checkpoint,
-        }
-    }
-
-    /// The mark a [`TemplateProofDraftGuard`] rolls back to.
-    ///
-    /// The draft is destructured exhaustively rather than read field by field: a new owner
-    /// stops this compiling until it is either recorded here or bound to `_` beside the two
-    /// owners whose exclusion [`DraftCheckpoint`] states, so no field can be left out of the
-    /// rollback by omission.
-    fn checkpoint(&self) -> DraftCheckpoint {
-        let Self {
-            durable,
-            strings,
-            consts,
-            types,
-            enums,
-            colls,
-            product_conflict,
-            sites,
-            functions,
-            exports,
-            test_entries,
-        } = self;
-        DraftCheckpoint {
-            strings: strings.len(),
-            consts: consts.len(),
-            types: types.len(),
-            enums: enums.len(),
-            colls: colls.len(),
-            durable: durable.checkpoint(),
-            sites: sites.rows().len(),
-            functions: functions.len(),
-            exports: exports.len(),
-            test_entries: test_entries.len(),
-            product_conflict: *product_conflict,
-            receipt: sites.receipt(),
-        }
-    }
-
     /// The draft's one durable value-shape arena, for the compiler to mint a field's
     /// value shape into. A declaration row can only carry a reference minted here, so
     /// there is no second place a value shape can come from.
-    pub fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
+    pub(crate) fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
         self.durable.value_shapes_mut()
     }
 
@@ -1228,6 +1593,106 @@ impl ImageDraft {
     /// exactly the rows the DURABLE section is written from.
     pub fn contract_view(&self) -> DurableContractView<'_> {
         self.durable.contract_view()
+    }
+
+    /// Mint one pre-admission savepoint of this draft's current state. Savepoints are
+    /// sibling-mintable; each is an affine admission token
+    /// [`Self::begin_transaction`] consumes.
+    #[doc(hidden)]
+    pub fn savepoint(&self) -> DraftSavepoint {
+        DraftSavepoint {
+            identity: Rc::clone(&self.identity_cell),
+            epoch: Rc::clone(&self.epoch),
+            snapshot: self.snapshot(),
+        }
+    }
+
+    /// Consume and validate `savepoint`, rotate the one-shot epoch, and return the
+    /// armed [`DraftTxn`] — the sole cross-crate mutation surface.
+    ///
+    /// A foreign, stale, or internally incoherent token is the closed
+    /// [`DraftStateError`] before any mutation, without rotating the epoch or
+    /// changing any owner. On success the fresh epoch is installed before any table
+    /// mutation, staling every sibling savepoint of the consumed epoch; the fixed
+    /// ledger copy and the pre-reserved inverse journal arm the guard.
+    #[doc(hidden)]
+    pub fn begin_transaction(
+        &mut self,
+        savepoint: DraftSavepoint,
+    ) -> Result<DraftTxn<'_>, DraftStateError> {
+        if !Rc::ptr_eq(&self.identity_cell, &savepoint.identity) {
+            return Err(DraftStateError::ForeignDraft);
+        }
+        if !Rc::ptr_eq(&self.epoch, &savepoint.epoch) {
+            return Err(DraftStateError::StaleEpoch);
+        }
+        if self.snapshot() != savepoint.snapshot {
+            return Err(DraftStateError::IncoherentToken);
+        }
+        self.epoch = Rc::new(TransactionEpoch);
+        let ledger = self.ledger;
+        Ok(DraftTxn {
+            journal: DraftJournal {
+                at: savepoint.snapshot,
+                ledger,
+                fills: Vec::new(),
+            },
+            draft: self,
+            armed: true,
+        })
+    }
+
+    /// The private structural image the savepoint carries and the journal restores
+    /// to. The draft is destructured exhaustively, so a new owner stops this
+    /// compiling until it is recorded here or deliberately excluded beside the
+    /// owners whose exclusion [`DraftSnapshot`] states.
+    fn snapshot(&self) -> DraftSnapshot {
+        let Self {
+            durable,
+            strings,
+            string_index: _,
+            consts,
+            const_index: _,
+            types,
+            types_fill: _,
+            enums,
+            enums_fill: _,
+            colls,
+            product_conflict,
+            application_conflict,
+            sites,
+            functions,
+            exports,
+            test_entries,
+            identity_cell: _,
+            epoch: _,
+            ledger: _,
+        } = self;
+        DraftSnapshot {
+            strings: strings.len(),
+            consts: consts.len(),
+            types: types.len(),
+            enums: enums.len(),
+            colls: colls.len(),
+            durable: durable.checkpoint(),
+            sites: sites.rows().len(),
+            functions: functions.len(),
+            exports: exports.len(),
+            test_entries: test_entries.len(),
+            product_conflict: *product_conflict,
+            application_conflict: *application_conflict,
+            receipt: sites.receipt(),
+        }
+    }
+
+    /// The eight-slot policy ledger, for the fence's independent audit.
+    pub(crate) fn policy_ledger(&self) -> &TablePolicyLedger {
+        &self.ledger
+    }
+
+    /// The sticky application-identity divergence, if one was latched.
+    pub(crate) fn application_conflict(&self) -> Option<ApplicationIdentityConflict> {
+        self.application_conflict
     }
 
     // --- accessors used by the encoder ---
@@ -1412,18 +1877,6 @@ impl ImageDraft {
         let mut order: Vec<usize> = (0..keys.len()).collect();
         order.sort_by_key(|&row| keys[row]);
         order
-    }
-}
-
-fn const_eq(a: ConstValue, b: ConstValue) -> bool {
-    match (a, b) {
-        (ConstValue::Int(x), ConstValue::Int(y)) => x == y,
-        (ConstValue::Bool(x), ConstValue::Bool(y)) => x == y,
-        (ConstValue::Text(x), ConstValue::Text(y)) => x.0 == y.0,
-        (ConstValue::Date(x), ConstValue::Date(y)) => x == y,
-        (ConstValue::Instant(x), ConstValue::Instant(y)) => x == y,
-        (ConstValue::Duration(x), ConstValue::Duration(y)) => x == y,
-        _ => false,
     }
 }
 
@@ -1625,12 +2078,13 @@ mod site_binding_tests {
     fn a_handle_over_a_discarded_row_is_stale_even_when_its_ordinal_is_reused() {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
-        // Build the rows inside a proof guard, so dropping it discards exactly them.
+        // Build the rows inside an armed transaction, so dropping it discards them.
         let handle = {
-            let mut guard = draft.template_proof();
-            let proof = guard.proof_draft();
+            let mut proof = draft
+                .begin_transaction(draft.savepoint())
+                .expect("a fresh savepoint admits");
             let name = proof.intern_string("r");
-            let value = proof.value_shapes_mut().scalar(Scalar::Int);
+            let value = proof.value_scalar(Scalar::Int);
             proof
                 .declare_product(
                     &plan(),

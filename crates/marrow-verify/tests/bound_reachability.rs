@@ -17,8 +17,8 @@
 
 use marrow_image::bounds::{MAX_IMAGE_BYTES, MAX_ROOTS, MAX_SITES, MAX_STRINGS, MAX_TYPES};
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, FieldDef, ImageBuildError, ImageDraft, ImageType,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, FieldDef, ImageBuildError, ImageDraft,
+    ImageType, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
 };
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
@@ -28,6 +28,13 @@ use site_seam::site;
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];
@@ -55,7 +62,8 @@ fn member_id(n: usize) -> LedgerIdBytes {
 /// The clean-Roots corpus at `roots` occurrences: one Product declaring `required v: int`,
 /// and `roots` keyless roots over it, each with its eager whole-payload site.
 fn roots_corpus(roots: usize) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let resource = draft.intern_string("R");
     let field = draft.intern_string("v");
     let record = draft.add_record_type(RecordTypeDef {
@@ -67,7 +75,7 @@ fn roots_corpus(roots: usize) -> ImageDraft {
         }],
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -104,7 +112,8 @@ fn roots_corpus(roots: usize) -> ImageDraft {
             SemanticTarget::WholePayload,
         );
     }
-    draft
+    draft.commit();
+    draft_owner
 }
 
 /// The exact framed size of the corpus at `roots` occurrences, encoded through the
@@ -220,7 +229,8 @@ const WIDE_FIELDS: usize = 64;
 /// `roots` keyless roots over it, each demanding its whole-payload site and every field
 /// leaf. Its site count is `roots * (WIDE_FIELDS + 1)`.
 fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let resource = draft.intern_string("R");
     let field_names: Vec<_> = (0..WIDE_FIELDS)
         .map(|n| draft.intern_string(&format!("f{n}")))
@@ -237,7 +247,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
             .collect(),
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),

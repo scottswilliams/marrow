@@ -56,7 +56,7 @@ impl TypeEnv<'_> {
 /// a parameter's type.
 pub(super) fn param_type(
     records: &TypeRegistry,
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     ty: &TypeExpr,
     env: TypeEnv,
@@ -108,7 +108,7 @@ pub(super) fn param_type(
 /// form, so an alias cannot smuggle a doubled optional.
 pub(super) fn resolve_type(
     records: &TypeRegistry,
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     annotation: &TypeExpr,
     env: TypeEnv,
@@ -126,7 +126,7 @@ pub(super) fn resolve_type(
 
 fn resolve_expanded(
     records: &TypeRegistry,
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     annotation: &TypeExpr,
     env: TypeEnv,
@@ -222,7 +222,7 @@ fn resolve_expanded(
 /// stands in for the concrete one during revalidation.
 fn resolve_generic(
     records: &TypeRegistry,
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
     head: &str,
     args: &[TypeExpr],
@@ -682,7 +682,7 @@ pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
 }
 
-impl<'a> FnLowerer<'a> {
+impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- type resolution ---
 
     pub(super) fn resolve(&mut self, annotation: &TypeExpr) -> Result<LTy, ResolveError> {

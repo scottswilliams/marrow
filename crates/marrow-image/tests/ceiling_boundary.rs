@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use marrow_image::bounds::{MAX_FUNCTIONS, MAX_IMAGE_BYTES, MAX_STRING_BYTES, MAX_TEST_ENTRIES};
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, ExportId, FunctionDef, ImageBuildError,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FunctionDef, ImageBuildError,
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
     Scalar, SpanEntry,
 };
@@ -25,9 +25,17 @@ use marrow_image::{
 mod admitted_plan;
 use admitted_plan::admitted_plan;
 
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
+
 /// A minimal clean storeless draft: one exported `main`, one constant.
 fn storeless_base() -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let zero = draft.intern_int(0);
@@ -47,7 +55,8 @@ fn storeless_base() -> ImageDraft {
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 /// The base draft plus filler strings whose STRINGS rows land the assembled image at
@@ -55,8 +64,8 @@ fn storeless_base() -> ImageDraft {
 /// bytes wherever the sort places it, so the arithmetic is exact rather than a
 /// search.
 fn string_corpus(target: usize) -> ImageDraft {
-    let mut draft = storeless_base();
-    let base = draft.encode().expect("the base draft encodes").bytes.len();
+    let mut owner = storeless_base();
+    let base = owner.encode().expect("the base draft encodes").bytes.len();
     assert!(target > base, "the target sits above the base image");
     let mut delta = target - base;
     const FULL: usize = 4_000;
@@ -71,11 +80,13 @@ fn string_corpus(target: usize) -> ImageDraft {
         full_rows -= 1;
         delta += 2 + FULL;
     }
+    let mut draft = admitted(&mut owner);
     for index in 0..full_rows {
         draft.intern_string(&format!("{index:04}{}", "x".repeat(FULL - 4)));
     }
     draft.intern_string(&format!("rem-{}", "y".repeat(delta - 2 - 4)));
-    draft
+    draft.commit();
+    owner
 }
 
 /// The STRINGS selector's fitting exact-N corpus: the assembled image lands on the
@@ -112,7 +123,8 @@ fn the_string_selector_is_refused_one_byte_past_the_ceiling() {
 #[test]
 fn the_full_function_partition_is_refused_by_measurement() {
     let started = Instant::now();
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let generic_src = draft.intern_string("src/generic.mw");
     let mono_src = draft.intern_string("src/main.mw");
     let test_src = draft.intern_string("src/tests.mw");
@@ -169,7 +181,8 @@ fn the_full_function_partition_is_refused_by_measurement() {
 /// decisive measurement refusal.
 #[test]
 fn the_span_heavy_draft_is_refused_by_measurement() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let zero = draft.intern_int(0);
     for index in 0..2 {
@@ -202,7 +215,8 @@ fn the_span_heavy_draft_is_refused_by_measurement() {
 /// A coherent draft whose one function carries `count` spans over a valid
 /// instruction.
 fn span_count_draft(count: usize) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let zero = draft.intern_int(0);
@@ -225,7 +239,8 @@ fn span_count_draft(count: usize) -> ImageDraft {
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 /// `u16::MAX` and `u16::MAX + 1` span counts both cross the ceiling and both select
@@ -252,13 +267,13 @@ fn u16_boundary_span_counts_select_the_ceiling_before_any_wire_proof() {
 #[test]
 fn the_compact_expansion_regression_is_refused_decisively() {
     let started = Instant::now();
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
     let value = {
-        let values = draft.value_shapes_mut();
-        let mut level = values.scalar(Scalar::Int);
+        let mut level = draft.value_scalar(Scalar::Int);
         for _ in 0..31 {
-            level = values.struct_shape(vec![level; 64]);
+            level = draft.value_struct(vec![level; 64]);
         }
         level
     };
@@ -326,7 +341,8 @@ fn the_compact_expansion_regression_is_refused_decisively() {
 /// A coherent fitting draft at `scale`: functions, record types, and pool strings
 /// all scale together, and the whole image stays inside the ceiling at 4x.
 fn linear_draft(scale: usize) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let zero = draft.intern_int(0);
     let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero), 32)
@@ -365,7 +381,8 @@ fn linear_draft(scale: usize) -> ImageDraft {
         main.get_or_insert(func);
     }
     draft.add_export(ExportId::of_local("", "main"), main.expect("one function"));
-    draft
+    draft.commit();
+    draft_owner
 }
 
 /// The 1x/2x/4x linearity tripwire: coherence work is linear in retained rows plus

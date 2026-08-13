@@ -1,9 +1,18 @@
 //! Slice K.4 evidence: direct calls, the acyclic-call-graph rejection, and the
 //! dynamic call-depth guard.
 
-use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
+use marrow_image::{
+    DraftTxn, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
+};
 use marrow_verify::{FunctionIndex, verify};
 use marrow_vm::{Value, run};
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
@@ -18,7 +27,8 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 #[test]
 fn a_direct_call_runs() {
     // double(n) = n + n ; caller() = double(21) == 42
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let double_name = draft.intern_string("double");
     let double_code = vec![
@@ -74,7 +84,8 @@ fn a_direct_call_runs() {
 /// which is the boundary this test documents.
 #[test]
 fn the_vm_run_entry_takes_a_typed_function_index() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("answer");
     let forty_two = draft.intern_int(42);
@@ -112,7 +123,8 @@ fn the_vm_run_entry_takes_a_typed_function_index() {
 
 #[test]
 fn a_self_recursive_call_rejects_as_a_cycle() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("loops");
     let code = vec![Instr::Call(0), Instr::Return];

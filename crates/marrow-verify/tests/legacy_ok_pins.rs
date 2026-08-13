@@ -10,8 +10,8 @@
 
 use marrow_image::{
     AdmittedRoot, CollTypeId, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape,
-    EncodedImage, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootId,
+    DraftTxn, EncodedImage, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
+    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootId,
     RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, VariantDef,
 };
 use marrow_image::{DurableIndexComponent, DurableIndexShape};
@@ -20,6 +20,13 @@ use marrow_verify::verify;
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 /// A type reference naming a TYPES row no fixture declares.
 const FORGED_TYPE: ImageType = ImageType::Record {
@@ -35,7 +42,8 @@ fn main_draft(params: Vec<ImageType>, code: Vec<Instr>) -> ImageDraft {
 /// [`main_draft`] plus `main`'s own `FuncId`, for the relation pins that need to name
 /// the exported function a second time.
 fn main_draft_with_id(params: Vec<ImageType>, code: Vec<Instr>) -> (ImageDraft, FuncId) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     draft.intern_int(0);
@@ -55,13 +63,14 @@ fn main_draft_with_id(params: Vec<ImageType>, code: Vec<Instr>) -> (ImageDraft, 
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
-    (draft, main)
+    draft.commit();
+    (draft_owner, main)
 }
 
 /// An unexported companion function with the given return type and body, for the
 /// test-entry relation pins.
 fn add_plain_function(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     name: &str,
     ret: ImageType,
     code: Vec<Instr>,
@@ -101,7 +110,8 @@ fn clean_image() -> EncodedImage {
 /// A function index no row of a one-function draft answers, minted by a draft that
 /// holds two: a `FuncId` is a table position, not a capability bound to its draft.
 fn forged_func_id() -> FuncId {
-    let mut other = ImageDraft::new();
+    let mut other_owner = ImageDraft::new();
+    let mut other = admitted(&mut other_owner);
     let src = other.intern_string("s");
     let name = other.intern_string("f");
     other.intern_int(0);
@@ -152,7 +162,8 @@ fn an_out_of_range_call_target_draws_the_call_target_refusal() {
 /// `InvalidReference("export target")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_export_target_draws_the_export_target_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     draft.add_export(ExportId::of_local("", "ghost"), forged_func_id());
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -165,7 +176,8 @@ fn an_out_of_range_export_target_draws_the_export_target_refusal() {
 /// `InvalidReference("test target")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_test_entry_target_draws_the_test_target_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     let entry_name = draft.intern_string("t");
     draft.add_test_entry(entry_name, forged_func_id());
     assert_eq!(
@@ -314,7 +326,8 @@ fn an_out_of_range_make_identity_root_draws_the_root_table_refusal() {
 /// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_field_type_draws_the_type_table_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R");
     let field_name = draft.intern_string("f");
     draft.add_record_type(RecordTypeDef {
@@ -336,7 +349,8 @@ fn an_out_of_range_field_type_draws_the_type_table_refusal() {
 /// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("P");
     let variant_name = draft.intern_string("pv");
     draft.add_enum_type(EnumTypeDef {
@@ -358,7 +372,8 @@ fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
 /// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
 fn an_out_of_range_collection_elem_type_draws_the_type_table_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(CollectionTypeDef::List { elem: FORGED_TYPE });
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -391,8 +406,8 @@ impl TableRef {
 /// the durable clean shape the pins below vary one reference from. `branch` adds an
 /// otherwise-valid keyed branch member with the given entry record.
 fn durable_draft(entry: TableRef, branch: Option<TableRef>, code: Vec<Instr>) -> ImageDraft {
-    let (draft, _root) = durable_parts(entry, branch, false);
-    finish_main(draft, code, ImageType::scalar(Scalar::Int))
+    let (owner, _root) = durable_parts(entry, branch, false);
+    finish_main(owner, code, ImageType::scalar(Scalar::Int))
 }
 
 /// The durable graph of [`durable_draft`], before `main` is added, returning the
@@ -403,8 +418,9 @@ fn durable_parts(
     branch: Option<TableRef>,
     indexed: bool,
 ) -> (ImageDraft, AdmittedRoot) {
-    let mut draft = ImageDraft::new();
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let value = draft.value_scalar(Scalar::Int);
     let type_name = draft.intern_string("R");
     // The verifier ties each field/group member to one record slot (a keyed branch is
     // a distinct durable node, not a slot), so the entry record declares exactly one
@@ -485,11 +501,13 @@ fn durable_parts(
             },
         )
         .expect("the Product is declared");
-    (draft, root)
+    draft.commit();
+    (draft_owner, root)
 }
 
 /// Add and export `main` over an already-built durable graph.
-fn finish_main(mut draft: ImageDraft, code: Vec<Instr>, ret: ImageType) -> ImageDraft {
+fn finish_main(mut owner: ImageDraft, code: Vec<Instr>, ret: ImageType) -> ImageDraft {
+    let mut draft = admitted(&mut owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     draft.intern_int(0);
@@ -509,7 +527,8 @@ fn finish_main(mut draft: ImageDraft, code: Vec<Instr>, ret: ImageType) -> Image
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
-    draft
+    draft.commit();
+    owner
 }
 
 /// The durable clean twin (with and without a valid branch) verifies, so each
@@ -588,7 +607,8 @@ fn a_make_identity_cols_arity_mismatch_draws_the_root_table_refusal() {
 /// `InvalidReference("collection type")` before any byte is measured or emitted.
 #[test]
 fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
-    let (mut draft, root) = durable_parts(TableRef::Valid, None, false);
+    let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, false);
+    let mut draft = admitted(&mut draft_owner);
     let handle = draft
         .bind_occurrence_site(
             root.occurrence(),
@@ -609,9 +629,16 @@ fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
         Instr::Return,
     ];
     assert_eq!(
-        finish_main(draft, code, ImageType::Unit)
-            .encode()
-            .map(|_| ()),
+        finish_main(
+            {
+                draft.commit();
+                draft_owner
+            },
+            code,
+            ImageType::Unit
+        )
+        .encode()
+        .map(|_| ()),
         Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
@@ -625,7 +652,8 @@ fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
 #[test]
 fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
     let scan_draft = |list_ty: CollTypeId| {
-        let (mut draft, root) = durable_parts(TableRef::Valid, None, true);
+        let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, true);
+        let mut draft = admitted(&mut draft_owner);
         // COLLTYPES row 0: the `List[int]` a corrected scan freezes its keys into.
         draft.add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
@@ -650,7 +678,14 @@ fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
             Instr::Pop,
             Instr::Return,
         ];
-        finish_main(draft, code, ImageType::Unit)
+        finish_main(
+            {
+                draft.commit();
+                draft_owner
+            },
+            code,
+            ImageType::Unit,
+        )
     };
     let corrected = scan_draft(CollTypeId::from_index(0))
         .encode()
@@ -670,17 +705,20 @@ fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
 // target-domain refusal — a check consulting the wrong table would accept these.
 
 /// A fieldless record populating TYPES row 0, as decoy for the non-record domains.
-fn with_decoy_record(mut draft: ImageDraft) -> ImageDraft {
+fn with_decoy_record(mut owner: ImageDraft) -> ImageDraft {
+    let mut draft = admitted(&mut owner);
     let name = draft.intern_string("Decoy");
     draft.add_record_type(RecordTypeDef {
         name,
         fields: Vec::new(),
     });
-    draft
+    draft.commit();
+    owner
 }
 
 /// A payloadless enum populating ENUMS row 0, as decoy for the record domain.
-fn with_decoy_enum(mut draft: ImageDraft) -> ImageDraft {
+fn with_decoy_enum(mut owner: ImageDraft) -> ImageDraft {
+    let mut draft = admitted(&mut owner);
     let name = draft.intern_string("DecoyEnum");
     let variant = draft.intern_string("dv");
     draft.add_enum_type(EnumTypeDef {
@@ -691,7 +729,8 @@ fn with_decoy_enum(mut draft: ImageDraft) -> ImageDraft {
             payload: Vec::new(),
         }],
     });
-    draft
+    draft.commit();
+    owner
 }
 
 /// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
@@ -816,12 +855,14 @@ fn an_out_of_range_enum_construct_variant_draws_the_enum_type_refusal() {
 #[test]
 fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
     let with_map_row = |code: Vec<Instr>| {
-        let mut draft = main_draft(Vec::new(), code);
+        let mut draft_owner = main_draft(Vec::new(), code);
+        let mut draft = admitted(&mut draft_owner);
         draft.add_collection_type(CollectionTypeDef::Map {
             key: ImageType::scalar(Scalar::Int),
             value: ImageType::scalar(Scalar::Int),
         });
-        draft
+        draft.commit();
+        draft_owner
     };
     let body = |idx: u16| {
         vec![
@@ -856,7 +897,8 @@ fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
 /// `InvalidReference("export table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_export_target_draws_the_export_table_refusal() {
-    let (mut draft, main) = main_draft_with_id(Vec::new(), short_code());
+    let (mut draft_owner, main) = main_draft_with_id(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     draft.add_export(ExportId::of_local("", "again"), main);
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -869,7 +911,8 @@ fn a_duplicate_export_target_draws_the_export_table_refusal() {
 /// `InvalidReference("test table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_test_target_draws_the_test_table_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
     let first = draft.intern_string("ta");
     let second = draft.intern_string("tb");
@@ -886,7 +929,8 @@ fn a_duplicate_test_target_draws_the_test_table_refusal() {
 /// `InvalidReference("test table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_test_name_draws_the_test_table_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     let first = add_plain_function(&mut draft, "t1", ImageType::Unit, vec![Instr::Return]);
     let second = add_plain_function(&mut draft, "t2", ImageType::Unit, vec![Instr::Return]);
     let name = draft.intern_string("t");
@@ -906,14 +950,16 @@ fn a_duplicate_test_name_draws_the_test_table_refusal() {
 #[test]
 fn an_export_test_overlap_draws_the_test_table_refusal() {
     let build = |exported: bool| {
-        let mut draft = main_draft(Vec::new(), short_code());
+        let mut draft_owner = main_draft(Vec::new(), short_code());
+        let mut draft = admitted(&mut draft_owner);
         let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
         if exported {
             draft.add_export(ExportId::of_local("", "t"), test_fn);
         }
         let name = draft.intern_string("tn");
         draft.add_test_entry(name, test_fn);
-        draft
+        draft.commit();
+        draft_owner
     };
     let corrected = build(false).encode().expect("the corrected twin encodes");
     let outcome = verify(&corrected.bytes);
@@ -929,7 +975,8 @@ fn an_export_test_overlap_draws_the_test_table_refusal() {
 /// `InvalidReference("export table")` before any byte is measured or emitted.
 #[test]
 fn a_duplicate_export_id_draws_the_export_table_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     // A second structurally valid function, exported under `main`'s exact id.
     let second = add_plain_function(
         &mut draft,
@@ -956,7 +1003,8 @@ fn a_duplicate_export_id_draws_the_export_table_refusal() {
 #[test]
 fn a_test_entry_with_params_draws_the_test_table_refusal() {
     let build = |params: Vec<ImageType>| {
-        let mut draft = main_draft(Vec::new(), short_code());
+        let mut draft_owner = main_draft(Vec::new(), short_code());
+        let mut draft = admitted(&mut draft_owner);
         let src = draft.intern_string("src/tests.mw");
         let fname = draft.intern_string("t");
         let local_count = params.len() as u16;
@@ -977,7 +1025,8 @@ fn a_test_entry_with_params_draws_the_test_table_refusal() {
             .expect("every site operand is live");
         let name = draft.intern_string("tn");
         draft.add_test_entry(name, test_fn);
-        draft
+        draft.commit();
+        draft_owner
     };
     let corrected = build(Vec::new())
         .encode()
@@ -999,11 +1048,12 @@ fn a_test_entry_with_params_draws_the_test_table_refusal() {
 /// still encodes and verifies, so the refusal is the membership relation's alone.
 #[test]
 fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
-    let assert_body = |draft: &mut ImageDraft| {
+    let assert_body = |draft: &mut DraftTxn<'_>| {
         let truth = draft.intern_bool(true);
         vec![Instr::ConstLoad(truth), Instr::Assert, Instr::Return]
     };
-    let mut corrected = main_draft(Vec::new(), short_code());
+    let mut corrected_owner = main_draft(Vec::new(), short_code());
+    let mut corrected = admitted(&mut corrected_owner);
     let code = assert_body(&mut corrected);
     let test_fn = add_plain_function(&mut corrected, "t", ImageType::Unit, code);
     let name = corrected.intern_string("tn");
@@ -1012,7 +1062,8 @@ fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
     let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
 
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     let code = assert_body(&mut draft);
     let asserting = add_plain_function(&mut draft, "t", ImageType::Unit, code);
     draft.add_export(ExportId::of_local("", "t"), asserting);
@@ -1030,7 +1081,8 @@ fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
 #[test]
 fn a_test_driver_mix_draws_the_test_table_refusal() {
     let build = |drives_owner: bool| {
-        let (mut draft, root) = durable_parts(TableRef::Valid, None, false);
+        let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, false);
+        let mut draft = admitted(&mut draft_owner);
         let handle = draft
             .bind_occurrence_site(
                 root.occurrence(),
@@ -1072,7 +1124,14 @@ fn a_test_driver_mix_draws_the_test_table_refusal() {
         let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, code);
         let name = draft.intern_string("tn");
         draft.add_test_entry(name, test_fn);
-        finish_main(draft, short_code(), ImageType::scalar(Scalar::Int))
+        finish_main(
+            {
+                draft.commit();
+                draft_owner
+            },
+            short_code(),
+            ImageType::scalar(Scalar::Int),
+        )
     };
     let corrected = build(false).encode().expect("the corrected twin encodes");
     let outcome = verify(&corrected.bytes);
@@ -1092,7 +1151,7 @@ fn a_test_driver_mix_draws_the_test_table_refusal() {
 fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
     // `main` is ordinal 0, so the companion the call names is ordinal 1.
     let build = |tested: bool| {
-        let mut draft = main_draft(
+        let mut draft_owner = main_draft(
             Vec::new(),
             vec![
                 Instr::Call(1),
@@ -1100,13 +1159,15 @@ fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
                 Instr::Return,
             ],
         );
+        let mut draft = admitted(&mut draft_owner);
         let callee = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
         assert_eq!(callee.index(), 1, "the call names the companion");
         if tested {
             let name = draft.intern_string("tn");
             draft.add_test_entry(name, callee);
         }
-        draft
+        draft.commit();
+        draft_owner
     };
     let corrected = build(false).encode().expect("the corrected twin encodes");
     let outcome = verify(&corrected.bytes);
@@ -1123,7 +1184,8 @@ fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
 /// The return-shape site: the SECOND decision site of the test signature law.
 #[test]
 fn a_bad_test_signature_draws_the_test_table_refusal() {
-    let mut draft = main_draft(Vec::new(), short_code());
+    let mut draft_owner = main_draft(Vec::new(), short_code());
+    let mut draft = admitted(&mut draft_owner);
     // A structurally valid int function, wrong only as a TEST target.
     let test_fn = add_plain_function(
         &mut draft,

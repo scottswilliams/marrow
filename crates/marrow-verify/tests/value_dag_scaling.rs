@@ -23,8 +23,8 @@
 use std::time::{Duration, Instant};
 
 use marrow_image::{
-    CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId,
+    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootOccurrenceDef, Scalar, SpanEntry, TypeId, ValueShapeNodeId,
 };
 use marrow_verify::verify;
@@ -55,7 +55,7 @@ struct Level {
 
 /// The base struct level `{ v: int, w: string }`: one value-shape node over two
 /// scalars, and the materialized record the durable field's declared type must be.
-fn base_level(draft: &mut ImageDraft) -> Level {
+fn base_level(draft: &mut DraftTxn<'_>) -> Level {
     let v = draft.intern_string("v");
     let w = draft.intern_string("w");
     let name = draft.intern_string("S0");
@@ -74,18 +74,17 @@ fn base_level(draft: &mut ImageDraft) -> Level {
             },
         ],
     });
-    let values = draft.value_shapes_mut();
-    let int = values.scalar(Scalar::Int);
-    let text = values.scalar(Scalar::Text);
+    let int = draft.value_scalar(Scalar::Int);
+    let text = draft.value_scalar(Scalar::Text);
     Level {
-        shape: values.struct_shape(vec![int, text]),
+        shape: draft.value_struct(vec![int, text]),
         ty: record_type(record),
     }
 }
 
 /// One more enclosing level over `inner`: a single-leaf struct, so the chain's depth
 /// grows by one per level while its expansion grows by one node.
-fn enclosing_level(draft: &mut ImageDraft, ordinal: usize, inner: Level) -> Level {
+fn enclosing_level(draft: &mut DraftTxn<'_>, ordinal: usize, inner: Level) -> Level {
     let field = draft.intern_string("inner");
     let name = draft.intern_string(&format!("S{ordinal}"));
     let record = draft.add_record_type(RecordTypeDef {
@@ -97,7 +96,7 @@ fn enclosing_level(draft: &mut ImageDraft, ordinal: usize, inner: Level) -> Leve
         }],
     });
     Level {
-        shape: draft.value_shapes_mut().struct_shape(vec![inner.shape]),
+        shape: draft.value_struct(vec![inner.shape]),
         ty: record_type(record),
     }
 }
@@ -112,8 +111,11 @@ fn record_type(record: TypeId) -> ImageType {
 /// Encode one root over a Product whose direct members are `levels[i % levels.len()]`
 /// for each of `fields` ordinals, plus the materialized entry record those members tie
 /// to. The value graph is exactly `levels`; the declared edges are `fields`.
-fn encode_corpus(fields: usize, levels: &dyn Fn(&mut ImageDraft) -> Vec<Level>) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+fn encode_corpus(fields: usize, levels: &dyn Fn(&mut DraftTxn<'_>) -> Vec<Level>) -> Vec<u8> {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let levels = levels(&mut draft);
     let entry_name = draft.intern_string("R");
     let entry_fields: Vec<FieldDef> = (0..fields)
@@ -166,7 +168,7 @@ fn encode_corpus(fields: usize, levels: &dyn Fn(&mut ImageDraft) -> Vec<Level>) 
     draft.encode().expect("the corpus fits every bound").bytes
 }
 
-fn add_main(draft: &mut ImageDraft) {
+fn add_main(draft: &mut DraftTxn<'_>) {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let zero = draft.intern_int(0);

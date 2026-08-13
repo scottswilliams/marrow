@@ -75,7 +75,10 @@ enum VmWrite {
 }
 
 fn vm_commit_image(write: VmWrite) -> VerifiedImage {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let record_name = draft.intern_string("Counter");
     let field_name = draft.intern_string("value");
     let record = draft.add_record_type(RecordTypeDef {
@@ -89,7 +92,7 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let root_name = draft.intern_string("counters");
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),

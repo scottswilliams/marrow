@@ -22,9 +22,9 @@
 use marrow_image::bounds::MAX_SITES;
 use marrow_image::{
     AdmittedRoot, CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, ImageBuildError, ImageDraft,
-    KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticTarget,
+    DeclarationMemberShape, DraftTxn, DurableIndexComponent, DurableIndexShape, ImageBuildError,
+    ImageDraft, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SemanticTarget,
 };
 
 #[path = "common/site_seam.rs"]
@@ -34,6 +34,13 @@ use site_seam::site;
 #[path = "common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];
@@ -61,14 +68,14 @@ fn field_id(n: usize) -> LedgerIdBytes {
 /// Declare one Product of `fields` required int fields — the cheapest way to reach a
 /// wide distinct demand set, since a demand is named by a declaration node and every
 /// field is its own node.
-fn declare_wide_product(draft: &mut ImageDraft, fields: usize) {
+fn declare_wide_product(draft: &mut DraftTxn<'_>, fields: usize) {
     let type_name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name: type_name,
         fields: Vec::new(),
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -90,7 +97,7 @@ fn declare_wide_product(draft: &mut ImageDraft, fields: usize) {
 
 /// Append one singleton root occurrence over the declared Product, seeded by `n` so each
 /// root has its own spelling and placement.
-fn admit_root(draft: &mut ImageDraft, n: u8) -> AdmittedRoot {
+fn admit_root(draft: &mut DraftTxn<'_>, n: u8) -> AdmittedRoot {
     let name = draft.intern_string(&format!("r{n}"));
     draft
         .add_root_occurrence(
@@ -109,15 +116,29 @@ fn admit_root(draft: &mut ImageDraft, n: u8) -> AdmittedRoot {
 /// A draft holding one wide Product declaration, one root over it, and that Product's
 /// direct members in declaration order.
 fn wide_draft(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     declare_wide_product(&mut draft, fields);
     let root = admit_root(&mut draft, 0x21);
     let members = draft.product_members(product()).expect("declared");
-    (draft, root, members)
+    draft.commit();
+    (draft_owner, root, members)
+}
+
+/// The committed owner behind [`wide_draft`], for tests that interleave their own
+/// transactions with armed-rollback scopes.
+fn wide_owner(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
+    let mut owner = ImageDraft::new();
+    let mut draft = admitted(&mut owner);
+    declare_wide_product(&mut draft, fields);
+    let root = admit_root(&mut draft, 0x21);
+    let members = draft.product_members(product()).expect("declared");
+    draft.commit();
+    (owner, root, members)
 }
 
 /// Demand every field leaf of `members` under `root`.
-fn demand_every_leaf(draft: &mut ImageDraft, root: &AdmittedRoot, members: &[DeclarationMember]) {
+fn demand_every_leaf(draft: &mut DraftTxn<'_>, root: &AdmittedRoot, members: &[DeclarationMember]) {
     for member in members {
         let _ = site(
             draft,
@@ -137,7 +158,8 @@ fn demand_every_leaf(draft: &mut ImageDraft, root: &AdmittedRoot, members: &[Dec
 /// instead of carrying an aliased operand.
 #[test]
 fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
-    let (mut draft, root, members) = wide_draft(MAX_SITES);
+    let (mut draft_owner, root, members) = wide_draft(MAX_SITES);
+    let mut draft = admitted(&mut draft_owner);
     demand_every_leaf(&mut draft, &root, &members);
     assert!(
         !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
@@ -164,7 +186,8 @@ fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
 /// answer with the refusal.
 #[test]
 fn a_retained_demand_still_reuses_its_operand_after_the_cap_is_crossed() {
-    let (mut draft, root, members) = wide_draft(MAX_SITES);
+    let (mut draft_owner, root, members) = wide_draft(MAX_SITES);
+    let mut draft = admitted(&mut draft_owner);
     let first = site(
         &mut draft,
         root.occurrence(),
@@ -210,7 +233,8 @@ const COMPONENT_ID: [u8; 16] = [0x37; 16];
 /// (`WholePayload`), a nonunique index (`IndexScan`), and a unique index
 /// (`IndexLookup`).
 fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let type_name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name: type_name,
@@ -218,7 +242,7 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let branch_name = draft.intern_string("b");
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -284,7 +308,8 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
         )
         .expect("the Product is declared");
     let members = draft.product_members(product()).expect("declared");
-    (draft, root, members)
+    draft.commit();
+    (draft_owner, root, members)
 }
 
 /// The six distinct places that draft names, each paired with the one target its node
@@ -324,7 +349,8 @@ const PLACE_COUNT: usize = 6;
 #[test]
 fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
     for index in 0..PLACE_COUNT {
-        let (mut draft, root, members) = every_target_draft();
+        let (mut draft_owner, root, members) = every_target_draft();
+        let mut draft = admitted(&mut draft_owner);
         let places = every_place(&root, &members);
         let (path, target) = &places[index];
         let eager = site(&mut draft, root.occurrence(), path, *target);
@@ -348,7 +374,8 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
 /// own site row: no two of the six places one root names collapse onto a single operand.
 #[test]
 fn each_admitted_target_is_its_own_row() {
-    let (mut draft, root, members) = every_target_draft();
+    let (mut draft_owner, root, members) = every_target_draft();
+    let mut draft = admitted(&mut draft_owner);
     let places = every_place(&root, &members);
 
     let operands: Vec<LegacyDraftSiteOperand> = places
@@ -375,7 +402,8 @@ fn each_admitted_target_is_its_own_row() {
 /// the remaining way two distinct durable nodes could be aliased onto one site operand.
 #[test]
 fn one_declaration_path_under_two_occurrences_is_two_rows() {
-    let (mut draft, first_root, members) = wide_draft(2);
+    let (mut draft_owner, first_root, members) = wide_draft(2);
+    let mut draft = admitted(&mut draft_owner);
     let second_root = admit_root(&mut draft, 0x22);
 
     let first = site(
@@ -401,7 +429,8 @@ fn one_declaration_path_under_two_occurrences_is_two_rows() {
 /// `Debug` reads exactly as it did when the operand was a bare `u16`.
 #[test]
 fn a_fitting_operand_renders_its_logical_site_number() {
-    let (mut draft, root, members) = wide_draft(2);
+    let (mut draft_owner, root, members) = wide_draft(2);
+    let mut draft = admitted(&mut draft_owner);
 
     let zero = site(
         &mut draft,
@@ -426,7 +455,8 @@ fn a_fitting_operand_renders_its_logical_site_number() {
 /// the operand type exists to prevent.
 #[test]
 fn every_over_policy_operand_renders_one_fixed_redacted_marker() {
-    let (mut draft, root, members) = wide_draft(MAX_SITES);
+    let (mut draft_owner, root, members) = wide_draft(MAX_SITES);
+    let mut draft = admitted(&mut draft_owner);
     demand_every_leaf(&mut draft, &root, &members);
 
     let over = admit_root(&mut draft, 0x22);
@@ -465,7 +495,8 @@ fn every_over_policy_operand_renders_one_fixed_redacted_marker() {
 /// ordinal comparison.
 #[test]
 fn one_ordinal_from_two_independent_drafts_compares_equal() {
-    let (mut left, left_root, left_members) = wide_draft(1);
+    let (mut left_owner, left_root, left_members) = wide_draft(1);
+    let mut left = admitted(&mut left_owner);
     let left_site = site(
         &mut left,
         left_root.occurrence(),
@@ -475,14 +506,15 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
 
     // An independently built draft: its own tables, its own row stamps, and a placement
     // and member set that share nothing with the first.
-    let mut right = ImageDraft::new();
+    let mut right_owner = ImageDraft::new();
+    let mut right = admitted(&mut right_owner);
     let type_name = right.intern_string("S");
     let record = right.add_record_type(RecordTypeDef {
         name: type_name,
         fields: Vec::new(),
     });
     right.set_application_identity(LedgerIdBytes::from_bytes([0x0f; 16]));
-    let value = right.value_shapes_mut().scalar(Scalar::Text);
+    let value = right.value_scalar(Scalar::Text);
     right
         .declare_product(
             &admitted_plan(),
@@ -535,14 +567,13 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
 /// fits report `TooManySites` — a crossing the finished draft never had.
 #[test]
 fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
-    let (mut draft, root, members) = wide_draft(MAX_SITES);
+    let (mut owner, root, members) = wide_owner(MAX_SITES);
     {
-        let mut guard = draft.template_proof();
-        let proof = guard.proof_draft();
-        demand_every_leaf(proof, &root, &members);
-        let excess = admit_root(proof, 0x22);
+        let mut proof = admitted(&mut owner);
+        demand_every_leaf(&mut proof, &root, &members);
+        let excess = admit_root(&mut proof, 0x22);
         let over = site(
-            proof,
+            &mut proof,
             excess.occurrence(),
             members[0].path(),
             SemanticTarget::FieldLeaf,
@@ -555,7 +586,7 @@ fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
         assert!(matches!(proof.encode(), Err(ImageBuildError::TooManySites)));
     }
     assert!(
-        !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+        !matches!(owner.encode(), Err(ImageBuildError::TooManySites)),
         "the discarded proof's crossing is not the finished draft's",
     );
 }
@@ -564,7 +595,8 @@ fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
 /// happened, and the operand that stands on it stays the operand it was.
 #[test]
 fn a_crossing_before_a_proof_survives_the_proof() {
-    let (mut draft, root, members) = wide_draft(MAX_SITES);
+    let (mut owner, root, members) = wide_owner(MAX_SITES);
+    let mut draft = admitted(&mut owner);
     demand_every_leaf(&mut draft, &root, &members);
     let excess = admit_root(&mut draft, 0x22);
     let _ = site(
@@ -574,12 +606,13 @@ fn a_crossing_before_a_proof_survives_the_proof() {
         SemanticTarget::FieldLeaf,
     );
     assert!(matches!(draft.encode(), Err(ImageBuildError::TooManySites)));
+    draft.commit();
     {
-        let mut guard = draft.template_proof();
-        let _ = guard.proof_draft().intern_string("throwaway");
+        let mut proof = admitted(&mut owner);
+        let _ = proof.intern_string("throwaway");
     }
     assert!(
-        matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+        matches!(owner.encode(), Err(ImageBuildError::TooManySites)),
         "the crossing predates the proof and is not rolled back with it",
     );
 }
@@ -587,13 +620,13 @@ fn a_crossing_before_a_proof_survives_the_proof() {
 /// Declare the already-declared Product identity a second time with a divergent member
 /// graph — one field where the draft holds several. Two declarations wearing one identity,
 /// which the draft records as a sticky conflict and the encoder refuses.
-fn redeclare_divergent(draft: &mut ImageDraft) {
+fn redeclare_divergent(draft: &mut DraftTxn<'_>) {
     let type_name = draft.intern_string("D");
     let record = draft.add_record_type(RecordTypeDef {
         name: type_name,
         fields: Vec::new(),
     });
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -619,19 +652,20 @@ fn redeclare_divergent(draft: &mut ImageDraft) {
 /// disagreed, and falsify the guard's byte-identity contract.
 #[test]
 fn a_product_conflict_inside_a_discarded_proof_does_not_survive_it() {
-    let (mut draft, root, members) = wide_draft(4);
+    let (mut owner, root, members) = wide_owner(4);
+    let mut draft = admitted(&mut owner);
     demand_every_leaf(&mut draft, &root, &members);
     let before = draft.encode().expect("a fitting draft").bytes;
+    draft.commit();
     {
-        let mut guard = draft.template_proof();
-        let proof = guard.proof_draft();
-        redeclare_divergent(proof);
+        let mut proof = admitted(&mut owner);
+        redeclare_divergent(&mut proof);
         assert!(matches!(
             proof.encode(),
             Err(ImageBuildError::ProductGraphConflict)
         ));
     }
-    let after = draft
+    let after = owner
         .encode()
         .expect("the discarded proof's conflict is not the finished draft's")
         .bytes;
@@ -643,19 +677,21 @@ fn a_product_conflict_inside_a_discarded_proof_does_not_survive_it() {
 /// refused.
 #[test]
 fn a_product_conflict_before_a_proof_survives_the_proof() {
-    let (mut draft, root, members) = wide_draft(4);
+    let (mut owner, root, members) = wide_owner(4);
+    let mut draft = admitted(&mut owner);
     demand_every_leaf(&mut draft, &root, &members);
     redeclare_divergent(&mut draft);
     assert!(matches!(
         draft.encode(),
         Err(ImageBuildError::ProductGraphConflict)
     ));
+    draft.commit();
     {
-        let mut guard = draft.template_proof();
-        let _ = guard.proof_draft().intern_string("throwaway");
+        let mut proof = admitted(&mut owner);
+        let _ = proof.intern_string("throwaway");
     }
     assert!(
-        matches!(draft.encode(), Err(ImageBuildError::ProductGraphConflict)),
+        matches!(owner.encode(), Err(ImageBuildError::ProductGraphConflict)),
         "the conflict predates the proof and is not rolled back with it",
     );
 }
@@ -664,17 +700,18 @@ fn a_product_conflict_before_a_proof_survives_the_proof() {
 /// draft encodes to the exact bytes it would have without the pass.
 #[test]
 fn a_discarded_proof_leaves_the_draft_byte_identical() {
-    let (mut draft, root, members) = wide_draft(4);
+    let (mut owner, root, members) = wide_owner(4);
+    let mut draft = admitted(&mut owner);
     demand_every_leaf(&mut draft, &root, &members);
     let before = draft.encode().expect("a fitting draft").bytes;
+    draft.commit();
     {
-        let mut guard = draft.template_proof();
-        let proof = guard.proof_draft();
+        let mut proof = admitted(&mut owner);
         let _ = proof.intern_string("throwaway");
-        let extra = admit_root(proof, 0x33);
-        demand_every_leaf(proof, &extra, &members);
+        let extra = admit_root(&mut proof, 0x33);
+        demand_every_leaf(&mut proof, &extra, &members);
     }
-    let after = draft.encode().expect("a fitting draft").bytes;
+    let after = owner.encode().expect("a fitting draft").bytes;
     assert_eq!(before, after, "the proof appended nothing that survived it");
 }
 
@@ -697,7 +734,8 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
     assert_eq!(1 + 1 + ROOTS + ROOTS + FIELDS, 2_114);
     assert_eq!(ROOTS * FIELDS + ROOTS, 66_560, "the logical demand count");
 
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     declare_wide_product(&mut draft, FIELDS);
     let members = draft.product_members(product()).expect("declared");
 
@@ -801,14 +839,15 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
     // and one row per declared group namespace and group field.
     assert_eq!(1 + 1 + ROOTS + 2 * GROUPS, 4_202);
 
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let type_name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name: type_name,
         fields: Vec::new(),
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     let mut commands = Vec::with_capacity(2 * GROUPS);
     for group in 0..GROUPS {
         let parent = u32::try_from(commands.len()).expect("inside the member bound");

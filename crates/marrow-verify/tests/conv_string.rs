@@ -6,8 +6,8 @@
 //! This guards the interpolation-canon soundness rule directly on the trust boundary.
 
 use marrow_image::{
-    CollectionTypeDef, EnumId, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
-    Instr, RecordTypeDef, Scalar, SpanEntry, VariantDef,
+    CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft,
+    ImageType, Instr, RecordTypeDef, Scalar, SpanEntry, VariantDef,
 };
 use marrow_verify::verify;
 
@@ -29,8 +29,11 @@ const TEXT: ImageType = ImageType::Scalar {
 /// Build a one-export image whose `main` runs `setup` to push one operand, then applies
 /// `ConvString` and returns the resulting `string`. Returns the verifier's result (the
 /// rejection code on failure).
-fn verify_conv(setup: impl FnOnce(&mut ImageDraft) -> Vec<Instr>) -> Result<(), String> {
-    let mut draft = ImageDraft::new();
+fn verify_conv(setup: impl FnOnce(&mut DraftTxn<'_>) -> Vec<Instr>) -> Result<(), String> {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let mut code = setup(&mut draft);
@@ -54,7 +57,7 @@ fn verify_conv(setup: impl FnOnce(&mut ImageDraft) -> Vec<Instr>) -> Result<(), 
 }
 
 /// Add a bare two-member `Color` enum, returning its ENUMS index.
-fn color_enum(draft: &mut ImageDraft) -> EnumId {
+fn color_enum(draft: &mut DraftTxn<'_>) -> EnumId {
     let name = draft.intern_string("Color");
     let red = draft.intern_string("red");
     let green = draft.intern_string("green");

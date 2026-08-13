@@ -14,10 +14,10 @@
 
 use marrow_image::{
     AdmittedRoot, CollectionTypeDef, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId,
-    FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticStepKind,
-    SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId, VariantDef,
+    DeclarationMemberShape, DraftTxn, DurableIndexComponent, DurableIndexShape, EnumTypeDef,
+    ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar,
+    SemanticStepKind, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -36,6 +36,13 @@ use image_forgery::rehash;
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 /// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
 /// the byte-forgery helpers so a hostile mutation can target one precisely.
@@ -103,16 +110,15 @@ impl ScalarShapes {
     }
 }
 
-fn scalar_shapes(draft: &mut ImageDraft) -> ScalarShapes {
-    let values = draft.value_shapes_mut();
+fn scalar_shapes(draft: &mut DraftTxn<'_>) -> ScalarShapes {
     ScalarShapes {
-        int: values.scalar(Scalar::Int),
-        text: values.scalar(Scalar::Text),
-        bool_: values.scalar(Scalar::Bool),
-        bytes: values.scalar(Scalar::Bytes),
-        date: values.scalar(Scalar::Date),
-        instant: values.scalar(Scalar::Instant),
-        duration: values.scalar(Scalar::Duration),
+        int: draft.value_scalar(Scalar::Int),
+        text: draft.value_scalar(Scalar::Text),
+        bool_: draft.value_scalar(Scalar::Bool),
+        bytes: draft.value_scalar(Scalar::Bytes),
+        date: draft.value_scalar(Scalar::Date),
+        instant: draft.value_scalar(Scalar::Instant),
+        duration: draft.value_scalar(Scalar::Duration),
     }
 }
 
@@ -129,7 +135,8 @@ fn counters_members(shapes: ScalarShapes) -> Vec<DeclarationMemberDef> {
 /// A well-formed multi-function image: a caller exporting `main` that calls a helper,
 /// plus a couple of constants. Every hostile case derives from this.
 fn good_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let helper_name = draft.intern_string("helper");
     let seven = draft.intern_int(7);
@@ -313,7 +320,8 @@ fn rehashed_export_index_out_of_range_rejects_at_table() {
 /// The EXPORTS entries are two `32-byte id ‖ u16 func` records the encoder writes
 /// in ascending id order.
 fn two_export_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let one = draft.intern_int(1);
     let a_name = draft.intern_string("a");
@@ -436,7 +444,8 @@ fn rehashed_type_family_counts_over_bound_reject_at_table() {
 #[test]
 fn function_phase_unreachable_instruction() {
     // Built through the draft, so the digest is valid; the extra Return is dead.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let one = draft.intern_int(1);
@@ -464,7 +473,8 @@ fn function_phase_unreachable_instruction() {
 #[test]
 fn function_phase_call_argument_type_mismatch() {
     // helper(n: int); main() calls it with a bool argument.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let helper_name = draft.intern_string("helper");
     let helper_code = vec![Instr::LocalGet(0), Instr::Return];
@@ -504,7 +514,8 @@ fn function_phase_call_argument_type_mismatch() {
 #[test]
 fn closure_phase_mutual_recursion() {
     // ping -> pong -> ping: a two-node cycle.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let ping_name = draft.intern_string("ping");
     let pong_name = draft.intern_string("pong");
@@ -554,7 +565,7 @@ struct Sites {
 /// Build the tracer-like durable schema into `draft`: a `Counter { value:int
 /// required, label:string sparse }` at root `^counters(name:string)`, returning the
 /// entry, required-field, and sparse-field site operands.
-fn durable_schema(draft: &mut ImageDraft) -> Sites {
+fn durable_schema(draft: &mut DraftTxn<'_>) -> Sites {
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -628,7 +639,8 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
 /// Encode a single mutating export `put(k:string, v:int)` over the tracer schema whose
 /// body is what `code` builds from that schema's site operands.
 fn put_export(code: impl FnOnce(&Sites) -> Vec<Instr>) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let code = code(&sites);
     let src = draft.intern_string("src/main.mw");
@@ -648,7 +660,8 @@ fn put_export(code: impl FnOnce(&Sites) -> Vec<Instr>) -> ImageDraft {
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 /// Encode a read-only export `read(k:string): T?` that reads the field at the site
@@ -657,7 +670,8 @@ fn read_field_export(
     pick: impl FnOnce(&Sites) -> LegacyDraftSiteOperand,
     ret: ImageType,
 ) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let site = pick(&durable_schema(&mut draft));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("read");
@@ -674,7 +688,8 @@ fn read_field_export(
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "read"), func);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 #[test]
@@ -718,7 +733,8 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
 /// key param is pushed first as the inclusive lower bound so the head type-checks up to
 /// the opcode.
 fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let list_ty = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Text),
@@ -757,7 +773,8 @@ fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "iter"), func);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 #[test]
@@ -779,7 +796,8 @@ fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
     // A branch site traverses the branch family beneath a fixed root entry: the ancestor
     // root key (int) is popped, the frozen `List[string]` of branch keys and the on-more
     // `Bool` are pushed, and the image seals.
-    let (mut draft, root, _branch_record) = flat_branch_draft();
+    let (mut draft_owner, root, _branch_record) = flat_branch_draft();
+    let mut draft = admitted(&mut draft_owner);
     let site = flat_branch_entry_site(&mut draft, &root);
     let list_ty = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Text),
@@ -834,7 +852,8 @@ fn a_bounded_traversal_with_a_mismatched_list_type_rejects() {
     // The frozen-list COLLTYPES index must name exactly `List[K]` for the traversed key
     // `K` (here the root key is `string`). An image naming a `List[int]` is a forged
     // frozen-list type the verifier refuses before the runtime materializes it.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let wrong_list = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Int),
@@ -878,7 +897,8 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
     // A branch traversal pops the ancestor root key locating the parent entry. Pushing
     // no ancestor key leaves that pop against an empty stack — a key-arity forgery the
     // verifier refuses.
-    let (mut draft, root, _branch_record) = flat_branch_draft();
+    let (mut draft_owner, root, _branch_record) = flat_branch_draft();
+    let mut draft = admitted(&mut draft_owner);
     let site = flat_branch_entry_site(&mut draft, &root);
     let list_ty = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Text),
@@ -920,7 +940,8 @@ fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
     // Bounded traversal iterates the layer a site's placement belongs to. A field-leaf
     // site names a single scalar leaf, not a traversable entry family, so an image aiming
     // the opcode at a field site is refused before any frozen-key allocation.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let list_ty = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Text),
@@ -961,7 +982,8 @@ fn a_family_populated_probe_over_a_field_leaf_site_rejects() {
     // The family-populated probe names a whole-entry family; a field-leaf site names a
     // scalar leaf, not a family, so an image aiming the probe at a field site is refused
     // as `DurExists`/`DurIterateBounded` over a field site are.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("probe");
@@ -994,7 +1016,8 @@ fn a_managed_index_probe_over_a_field_leaf_site_rejects() {
     // site. A forged image aiming it at a field-leaf site is refused at the opcode — a
     // trust-boundary reject, not a fall-through to the closed-complement `unreachable` — the
     // same family guard the scan and lookup opcodes share.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("probe");
@@ -1031,7 +1054,8 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
     // by SITE kind, so a forged image aiming a whole-entry/field opcode (here `DurReadField`)
     // at a managed-index site is routed there even though it is not an index read. The trust
     // boundary refuses it rather than reaching the closed-complement of the three index reads.
-    let (mut draft, root) = indexed_draft(by_label_projection());
+    let (mut draft_owner, root) = indexed_draft(by_label_projection());
+    let mut draft = admitted(&mut draft_owner);
     // Index 1 is the unique `byValue`, so the exact-lookup target is the one it admits.
     let lookup_site = site(
         &mut draft,
@@ -1073,7 +1097,8 @@ fn a_bounded_traversal_after_commit_rejects() {
     // follow it. A bounded traversal is a durable read; the flow lattice refuses it after
     // commit exactly as it refuses a post-commit field read, so the runtime never reaches
     // a consumed transaction.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let list_ty = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Text),
@@ -1125,7 +1150,8 @@ fn a_traversal_list_type_naming_a_map_rejects() {
     // `list_ty` must name exactly `List[K]` for the traversed key; a `Map`-shaped
     // index is in range and remains the verifier's forged-frozen-list refusal.
     let build = |list_ty: u16| -> ImageDraft {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let sites = durable_schema(&mut draft);
         // One well-formed `Map` row at index 0: a valid collection, but the wrong kind for
         // a frozen key list. Index 1 dangles one past the single-row table.
@@ -1158,7 +1184,8 @@ fn a_traversal_list_type_naming_a_map_rejects() {
             })
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "iter"), func);
-        draft
+        draft.commit();
+        draft_owner
     };
     // A DANGLING index is refused by the producer since the coherence hoist (its pin
     // lives in `legacy_ok_pins.rs`); the wrong-KIND index (0, a Map row) is in range,
@@ -1328,7 +1355,8 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
     // the two-column key-path the verifier derives from the schema — cannot satisfy the
     // operand stack, so it is refused during per-function typing (the write-path
     // counterpart of the read-path truncation hostile).
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
@@ -1432,7 +1460,8 @@ fn group_branch_draft_with_branch_record(
     with_site: bool,
     branch_record_required: bool,
 ) -> (ImageDraft, AdmittedRoot) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -1565,7 +1594,8 @@ fn group_branch_draft_with_branch_record(
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "label"), func);
     }
-    (draft, admitted)
+    draft.commit();
+    (draft_owner, admitted)
 }
 
 /// The fixed index ids of the indexed tracer graph.
@@ -1609,7 +1639,8 @@ fn indexed_draft_full(
     by_label_components: Vec<DurableIndexComponent>,
     by_value_components: Vec<DurableIndexComponent>,
 ) -> (ImageDraft, AdmittedRoot) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -1666,7 +1697,8 @@ fn indexed_draft_full(
             },
         )
         .expect("the Product is declared");
-    (draft, admitted)
+    draft.commit();
+    (draft_owner, admitted)
 }
 
 /// The well-formed `byLabel` projection: the sparse `label` field then the identity
@@ -1786,7 +1818,8 @@ fn a_unique_index_with_an_empty_projection_rejects() {
 /// exercised without changing any other image fact.
 fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
     const FIELD_ID: [u8; 16] = [0x1d; 16];
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let record_name = draft.intern_string("IndexedScalar");
     let field_name = draft.intern_string("value");
@@ -1830,7 +1863,8 @@ fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
             },
         )
         .expect("the Product is declared");
-    draft
+    draft.commit();
+    draft_owner
 }
 
 #[test]
@@ -1873,7 +1907,8 @@ fn a_duration_field_is_not_a_managed_index_component() {
 /// same field keeps the root flat-executable yet stays out of every index.
 fn widened_field_indexed_draft() -> ImageDraft {
     const OWNER_FIELD_ID: [u8; 16] = [0x1e; 16];
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let name_ty = draft.intern_string("Name");
     let first = draft.intern_string("first");
@@ -1917,7 +1952,7 @@ fn widened_field_indexed_draft() -> ImageDraft {
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     // A dense struct value of two text leaves, minted into this draft's own arena.
-    let owner_value = draft.value_shapes_mut().struct_shape(vec![shapes.text; 2]);
+    let owner_value = draft.value_struct(vec![shapes.text; 2]);
     draft
         .declare_product(
             &admitted_plan(),
@@ -1958,7 +1993,8 @@ fn widened_field_indexed_draft() -> ImageDraft {
             },
         )
         .expect("the Product is declared");
-    draft
+    draft.commit();
+    draft_owner
 }
 
 #[test]
@@ -1984,7 +2020,8 @@ fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
     // checked against the index's unique flag. The binder admits only the lookup target
     // over a unique index, so the scan target is reached by rewriting the encoded site's
     // target byte over an otherwise valid image.
-    let (mut draft, root) = indexed_draft(by_label_projection());
+    let (mut draft_owner, root) = indexed_draft(by_label_projection());
+    let mut draft = admitted(&mut draft_owner);
     site(
         &mut draft,
         root.occurrence(),
@@ -2005,7 +2042,8 @@ fn a_site_that_exact_looks_up_a_nonunique_index_rejects() {
     // Symmetrically, the nonunique `byLabel` admits only a progressive-prefix scan; a
     // forged complete-key lookup site over it is refused. The scan site the binder mints
     // is retargeted in the encoded bytes, the mirror of the unique-index forgery above.
-    let (mut draft, root) = indexed_draft(by_label_projection());
+    let (mut draft_owner, root) = indexed_draft(by_label_projection());
+    let mut draft = admitted(&mut draft_owner);
     site(
         &mut draft,
         root.occurrence(),
@@ -2074,7 +2112,8 @@ fn a_field_site_over_a_root_level_group_bearing_root_verifies() {
 /// a group-first member tree therefore mis-indexes unless the verifier refuses it. The
 /// group holds one sparse `pages:int` leaf; the top-level field is a required `title:text`.
 fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -2147,7 +2186,8 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
             },
         )
         .expect("the Product is declared");
-    draft
+    draft.commit();
+    draft_owner
 }
 
 #[test]
@@ -2173,7 +2213,8 @@ fn a_root_member_tree_with_a_field_after_a_group_rejects() {
 /// members than slots (or more slots than members) is a count forgery the verifier
 /// refuses independent of the fields-first order check.
 fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let rec = draft.intern_string("Rec");
     let fields = (0..record_fields)
@@ -2212,7 +2253,8 @@ fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> Ima
             },
         )
         .expect("the Product is declared");
-    draft
+    draft.commit();
+    draft_owner
 }
 
 #[test]
@@ -2245,7 +2287,7 @@ fn a_root_member_tree_with_fewer_members_than_record_slots_rejects() {
 /// branch]`, so these name its four addressable nodes: the root's own `title` field, the
 /// whole `details` group node, that group's `pages` field leaf, and the `notes` branch's
 /// `text` field leaf. Each binds the one target its node kind admits.
-fn book_title_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_title_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let members = product_members(draft);
     site(
         draft,
@@ -2255,7 +2297,7 @@ fn book_title_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
     )
 }
 
-fn book_group_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_group_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let members = product_members(draft);
     site(
         draft,
@@ -2265,7 +2307,7 @@ fn book_group_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
     )
 }
 
-fn book_group_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_group_field_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let group = product_members(draft)[1].path().clone();
     let pages = draft
         .members_of(&group)
@@ -2275,7 +2317,7 @@ fn book_group_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyD
     site(draft, root.occurrence(), &pages, SemanticTarget::FieldLeaf)
 }
 
-fn book_branch_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn book_branch_field_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let branch = product_members(draft)[2].path().clone();
     let text = draft
         .members_of(&branch)
@@ -2305,7 +2347,8 @@ fn a_whole_group_site_over_a_root_group_seals_executable_and_its_opcode_verifies
     // over it types (`K -> Rec?`): the whole materialized group value is read as a unit
     // through the root's key-path. The read record is popped so the export return type
     // stays decoupled from the group record index.
-    let (mut draft, root) = group_branch_draft(false);
+    let (mut draft_owner, root) = group_branch_draft(false);
+    let mut draft = admitted(&mut draft_owner);
     let site = book_group_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
@@ -2339,7 +2382,8 @@ fn a_whole_group_target_over_a_field_node_rejects() {
     // claim is reached by rewriting that site's target byte over an otherwise valid
     // image: the path resolves to a field node, disagrees with the claimed target, and
     // is refused at the table phase.
-    let (mut draft, root) = group_branch_draft(false);
+    let (mut draft_owner, root) = group_branch_draft(false);
+    let mut draft = admitted(&mut draft_owner);
     book_group_field_site(&mut draft, &root);
     let mut bytes = draft.encode().unwrap().bytes;
     forge_site(
@@ -2355,7 +2399,8 @@ fn a_group_opcode_over_a_non_group_site_rejects() {
     // A DurReadGroup opcode requires a GroupEntry site. A forged image pointing it at a
     // field-leaf site (the root's own `title`) is refused during per-function typing
     // (`image.function`), independently of the compiler's boundary.
-    let (mut draft, root) = group_branch_draft(false);
+    let (mut draft_owner, root) = group_branch_draft(false);
+    let mut draft = admitted(&mut draft_owner);
     let site = book_title_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
@@ -2389,7 +2434,8 @@ fn a_group_scoped_field_site_seals_parked() {
     // as a field-leaf site; a group is read/written as a whole unit through a `GroupEntry`
     // site (group-leaf assignment lowers to a whole-group RMW). No opcode references it, so
     // the image verifies.
-    let (mut draft, root) = group_branch_draft(false);
+    let (mut draft_owner, root) = group_branch_draft(false);
+    let mut draft = admitted(&mut draft_owner);
     book_group_field_site(&mut draft, &root);
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
@@ -2403,7 +2449,8 @@ fn an_opcode_over_a_parked_group_field_site_rejects() {
     // during per-function typing (`image.function`), independently of the compiler's
     // boundary — a group leaf is reached only through a whole-group `GroupEntry` site, never
     // a direct field-leaf opcode.
-    let (mut draft, root) = group_branch_draft(false);
+    let (mut draft_owner, root) = group_branch_draft(false);
+    let mut draft = admitted(&mut draft_owner);
     let site = book_group_field_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("read");
@@ -2429,7 +2476,8 @@ fn a_deep_nested_branch_field_site_seals_executable() {
     // seals executable — a root-level unkeyed `group` (here `details`) does not park the
     // root's sibling scalar-field branches. No opcode references the site, so the image
     // verifies regardless.
-    let (mut draft, root) = group_branch_draft(false);
+    let (mut draft_owner, root) = group_branch_draft(false);
+    let mut draft = admitted(&mut draft_owner);
     book_branch_field_site(&mut draft, &root);
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
@@ -2465,7 +2513,8 @@ fn a_branch_record_disagreeing_with_its_member_fields_rejects() {
 /// site seals executable. Returns the draft, its admitted root occurrence, and the
 /// branch's materialized record type index (the whole branch-entry read's result type).
 fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, TypeId) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -2528,12 +2577,13 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, TypeId) {
             },
         )
         .expect("the Product is declared");
-    (draft, admitted, notes_record)
+    draft.commit();
+    (draft_owner, admitted, notes_record)
 }
 
 /// The whole-payload site of the flat-branch graph's `notes` branch entry: the branch
 /// is the root Product's second declared member, and a branch admits `WholePayload`.
-fn flat_branch_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn flat_branch_entry_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let members = product_members(draft);
     site(
         draft,
@@ -2548,7 +2598,8 @@ fn a_branch_whole_entry_read_over_a_flat_root_seals_and_type_checks() {
     // A single-level branch whole-payload site on a flat-executable root now seals
     // executable, and a read over it type-checks the two-element key-path
     // `[root_key, branch_key]` (int then string) and yields the branch's own record.
-    let (mut draft, root, branch_record) = flat_branch_draft();
+    let (mut draft_owner, root, branch_record) = flat_branch_draft();
+    let mut draft = admitted(&mut draft_owner);
     let site = flat_branch_entry_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
@@ -2584,7 +2635,8 @@ fn a_branch_entry_op_missing_its_root_key_rejects() {
     // A branch entry op addresses `[root_key, branch_key]`. Pushing only the branch key
     // leaves the second (root) key pop with an empty stack — a key-arity forgery the
     // verifier refuses during per-function typing.
-    let (mut draft, root, branch_record) = flat_branch_draft();
+    let (mut draft_owner, root, branch_record) = flat_branch_draft();
+    let mut draft = admitted(&mut draft_owner);
     let site = flat_branch_entry_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
@@ -2618,7 +2670,8 @@ fn a_branch_entry_op_missing_its_root_key_rejects() {
 fn a_branch_entry_op_with_the_wrong_branch_key_type_rejects() {
     // The branch key column is `string`; pushing an `int` where the branch key belongs
     // is a type mismatch the two-element key-path check refuses.
-    let (mut draft, root, branch_record) = flat_branch_draft();
+    let (mut draft_owner, root, branch_record) = flat_branch_draft();
+    let mut draft = admitted(&mut draft_owner);
     let site = flat_branch_entry_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
@@ -2671,7 +2724,8 @@ fn encoded_n_step_site(n: usize) -> Vec<u8> {
 /// resolves to nothing exists only as forged bytes. No opcode names the label site, so the
 /// forgery isolates the site table's depth gate.
 fn forged_deep_site_image(n: usize, claimed_steps: usize) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     durable_schema(&mut draft);
     let mut bytes = finish_two_key(
         draft,
@@ -2701,7 +2755,8 @@ fn a_site_path_at_the_maximum_depth_is_admitted_by_the_bound() {
 
 #[test]
 fn a_forged_zero_step_site_path_is_refused_before_any_path_body() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     durable_schema(&mut draft);
     let mut bytes = finish_two_key(
         draft,
@@ -2952,7 +3007,8 @@ fn flow_mutation_after_commit_rejects() {
 fn mutating_helper_and_caller(
     caller_body: impl FnOnce(LegacyDraftSiteOperand, u16) -> Vec<Instr>,
 ) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let two_keys = || {
@@ -3042,7 +3098,8 @@ fn flow_mutating_helper_inside_transaction_verifies() {
 /// is never re-entered through a call.
 #[test]
 fn flow_calling_a_valid_owner_export_rejects() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let two_keys = || {
@@ -3098,7 +3155,7 @@ fn flow_calling_a_valid_owner_export_rejects() {
 /// the tracer schema in `draft`, whose body is `code`, and encode it. Used by the
 /// presence-lattice hostiles, where the guard proves one slot and the strict set
 /// names a slot. The caller interns any consts in the same draft first.
-fn finish_two_key(mut draft: ImageDraft, code: Vec<Instr>) -> Vec<u8> {
+fn finish_two_key(mut draft: DraftTxn<'_>, code: Vec<Instr>) -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let func = draft
@@ -3124,7 +3181,8 @@ fn finish_two_key(mut draft: ImageDraft, code: Vec<Instr>) -> Vec<u8> {
 /// sparse set verifies. The positive control the presence-lattice hostiles perturb.
 #[test]
 fn a_guarded_strict_sparse_set_verifies() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     // JumpIfFalse targets the TxnCommit at instruction index 7 (the guard's absent
@@ -3153,7 +3211,8 @@ fn a_guarded_strict_sparse_set_verifies() {
 /// slot is refused at the flow phase, independently of the compiler.
 #[test]
 fn a_strict_sparse_set_without_a_presence_fact_rejects() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     let bytes = finish_two_key(
@@ -3178,7 +3237,8 @@ fn a_strict_sparse_set_without_a_presence_fact_rejects() {
 /// key-typed. This is the mutated-place-slot-index gate.
 #[test]
 fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     let bytes = finish_two_key(
@@ -3210,7 +3270,8 @@ fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
 /// without intersection at the header the stale pre-loop fact would wrongly dominate.
 #[test]
 fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     // Instruction-index layout (targets are draft-form indices):
@@ -3257,7 +3318,8 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
 /// strict set relying on the stale fact is refused at the flow phase.
 #[test]
 fn a_strict_sparse_set_after_a_key_rebind_rejects() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     // Instruction-index layout:
@@ -3299,7 +3361,8 @@ fn branch_presence_schema() -> (
     LegacyDraftSiteOperand,
     TypeId,
 ) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -3365,14 +3428,15 @@ fn branch_presence_schema() -> (
         &branch_path,
         SemanticTarget::WholePayload,
     );
-    (draft, label_site, branch_entry, notes_record)
+    draft.commit();
+    (draft_owner, label_site, branch_entry, notes_record)
 }
 
 /// Declare the tracer `Counter` Product extended with a string-keyed `notes` branch of
 /// one `text:string` field, and admit the `^counters(name:string)` root over it. The
 /// branch field's required flag is the caller's, so a fixture can make the branch sparse.
 fn declare_counters_with_notes_branch(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     root: marrow_image::StrId,
     record: marrow_image::TypeId,
     notes: marrow_image::StrId,
@@ -3435,7 +3499,8 @@ fn declare_counters_with_notes_branch(
 /// is the sole gate.
 #[test]
 fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
-    let (mut draft, label_site, branch_entry, notes_record) = branch_presence_schema();
+    let (mut draft_owner, label_site, branch_entry, notes_record) = branch_presence_schema();
+    let mut draft = admitted(&mut draft_owner);
     let text = draft.intern_text("t");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("e");
@@ -3486,7 +3551,8 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
 /// sole remaining gate. Returns (draft, root whole-payload site operand, branch-field site
 /// operand).
 fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSiteOperand) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -3544,7 +3610,8 @@ fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSite
         &body_path,
         SemanticTarget::FieldLeaf,
     );
-    (draft, root_entry, branch_field)
+    draft.commit();
+    (draft_owner, root_entry, branch_field)
 }
 
 /// A branch-field site's key-path is the two-element `[root_key, branch_key]`. The strict
@@ -3556,7 +3623,8 @@ fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSite
 /// two-slot branch strict set is admitted and exercised through the production path.)
 #[test]
 fn a_strict_sparse_set_over_a_branch_field_with_a_single_root_key_rejects() {
-    let (mut draft, root_entry, branch_field) = branch_field_schema();
+    let (mut draft_owner, root_entry, branch_field) = branch_field_schema();
+    let mut draft = admitted(&mut draft_owner);
     let text = draft.intern_text("x");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("e");
@@ -3600,7 +3668,8 @@ fn a_strict_sparse_set_over_a_branch_field_with_a_single_root_key_rejects() {
 /// generalized (branch) strict form from its arity/type gate.
 #[test]
 fn a_two_slot_branch_strict_set_without_a_presence_fact_rejects() {
-    let (mut draft, _root_entry, branch_field) = branch_field_schema();
+    let (mut draft_owner, _root_entry, branch_field) = branch_field_schema();
+    let mut draft = admitted(&mut draft_owner);
     let text = draft.intern_text("x");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("e");
@@ -3639,7 +3708,8 @@ fn a_two_slot_branch_strict_set_without_a_presence_fact_rejects() {
 fn flow_transaction_owner_may_not_be_called_rejects() {
     // A helper owns a transaction (contains TxnBegin); an export that calls it is a
     // flow violation — helpers cannot own the transaction.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let key = draft.intern_text("x");
@@ -3722,7 +3792,8 @@ fn create_on_a_field_site_rejects_at_function() {
 /// constant true, returning the draft and the test function's id. The
 /// TEST-ENTRY hostiles derive from this.
 fn test_entry_image() -> (ImageDraft, FuncId) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let truth = draft.intern_bool(true);
@@ -3739,7 +3810,8 @@ fn test_entry_image() -> (ImageDraft, FuncId) {
         })
         .expect("every site operand is live");
     draft.add_test_entry(title, func);
-    (draft, func)
+    draft.commit();
+    (draft_owner, func)
 }
 
 #[test]
@@ -3754,7 +3826,8 @@ fn assert_in_a_test_entry_verifies() {
 
 #[test]
 fn assert_on_a_non_bool_operand_rejects_at_function() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let seven = draft.intern_int(7);
@@ -3788,7 +3861,8 @@ fn test_entry_may_carry_durable_demand() {
     // A test entry whose body probes durable data verifies: its demand is
     // recorded in the parallel test-entry demand table so an ephemeral
     // attachment can bound its authority. It is still never an export.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
@@ -3835,7 +3909,8 @@ fn test_entry_section(bytes: &[u8]) -> (usize, usize) {
 
 /// A two-test image whose TEST-ENTRY section rows the byte-patch hostiles edit.
 fn two_test_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let truth = draft.intern_bool(true);
     for title_text in ["alpha", "beta"] {
@@ -3930,7 +4005,8 @@ fn rehashed_aliased_test_entry_function_rejects() {
     // function carries no `Assert`, so only the two-names-one-function check can
     // reject (an assert-bearing body would trip the assert-outside-a-test-entry
     // rule with the same code and mask a revert of the aliasing check).
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     for title_text in ["alpha", "beta"] {
         let title = draft.intern_string(title_text);
@@ -3964,7 +4040,8 @@ fn transaction_marker_in_a_test_entry_rejects_at_flow() {
     // A TxnBegin inside a test entry: a transaction marker may only sit in a
     // mutating export entry, so the flow phase rejects it before the TestEntry
     // phase ever runs.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
@@ -3987,7 +4064,8 @@ fn transaction_marker_in_a_test_entry_rejects_at_flow() {
 /// leaves the stack unchanged, so the guarded value still returns.
 #[test]
 fn range_guard_over_a_bare_int_verifies() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let seven = draft.intern_int(7);
@@ -4015,7 +4093,8 @@ fn range_guard_over_a_bare_int_verifies() {
 /// verification: the guard peeks its operand, so an operand must exist.
 #[test]
 fn range_guard_on_an_empty_stack_rejects_at_function() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let seven = draft.intern_int(7);
@@ -4043,7 +4122,8 @@ fn range_guard_on_an_empty_stack_rejects_at_function() {
 /// verification: the guarded value must be a bare int.
 #[test]
 fn range_guard_on_a_non_int_rejects_at_function() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let flag = draft.intern_bool(true);
@@ -4072,7 +4152,8 @@ fn range_guard_on_a_non_int_rejects_at_function() {
 /// is hostile.
 #[test]
 fn range_guard_with_an_empty_interval_rejects_at_function() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let seven = draft.intern_int(7);
@@ -4103,7 +4184,8 @@ fn range_guard_with_an_empty_interval_rejects_at_function() {
 /// operand-boundary invariant is violated.
 #[test]
 fn range_guard_with_a_truncated_operand_rejects_at_function() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let seven = draft.intern_int(7);
@@ -4164,7 +4246,8 @@ fn range_guard_with_a_truncated_operand_rejects_at_function() {
 /// baseline the record-ref hostiles derive from.
 #[test]
 fn record_param_and_return_refs_verify() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let field = draft.intern_string("x");
     let rec = draft.add_record_type(RecordTypeDef {
@@ -4222,7 +4305,8 @@ fn record_param_and_return_refs_verify() {
 /// table phase.
 #[test]
 fn optional_parameter_type_rejects() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let code = vec![Instr::Return];
@@ -4246,8 +4330,9 @@ fn optional_parameter_type_rejects() {
 /// Build a minimal image whose single record type's fields come from `fields`,
 /// plus a trivial `fn f(): int` export. The record table decodes before the
 /// function, so a malformed field type rejects at the table phase.
-fn record_table_image(fields: impl FnOnce(&mut ImageDraft) -> Vec<FieldDef>) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+fn record_table_image(fields: impl FnOnce(&mut DraftTxn<'_>) -> Vec<FieldDef>) -> Vec<u8> {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let rname = draft.intern_string("R");
     let field_defs = fields(&mut draft);
@@ -4295,7 +4380,8 @@ fn value_type_cycle_through_a_record_field_rejects() {
     // Record R (idx 0) has an enum field E (idx 0), whose one variant carries a
     // Record(0) payload: a value type that contains itself. The combined
     // record+enum acyclicity pass rejects it.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let rname = draft.intern_string("R");
     let ename = draft.intern_string("E");
@@ -4344,7 +4430,7 @@ fn value_type_cycle_through_a_record_field_rejects() {
 /// Add a trivial `fn f(): int` export to `draft`, encode, and return the rejection
 /// code (or `""` for a clean image). Shared by the value-graph hostiles below, which
 /// populate the record and enum tables before calling this.
-fn value_graph_code(draft: &mut ImageDraft) -> String {
+fn value_graph_code(draft: &mut DraftTxn<'_>) -> String {
     let src = draft.intern_string("src/main.mw");
     let zero = draft.intern_int(0);
     let fname = draft.intern_string("f");
@@ -4388,7 +4474,8 @@ fn self_referential_record_field_rejects() {
 fn value_type_cycle_through_two_records_rejects() {
     // Record 0 has a field of type Record(1) and Record 1 a field of type Record(0):
     // a struct-to-struct cycle the widened record-field edge now catches.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let a = draft.intern_string("A");
     let b = draft.intern_string("B");
     let fb = draft.intern_string("b");
@@ -4422,7 +4509,8 @@ fn value_type_cycle_through_two_records_rejects() {
 fn self_referential_enum_payload_rejects() {
     // Enum 0's one variant carries a payload of type Enum(0): a value that contains
     // itself with no record on the cycle.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let ename = draft.intern_string("E");
     let vname = draft.intern_string("wrap");
     draft.add_enum_type(EnumTypeDef {
@@ -4443,7 +4531,8 @@ fn self_referential_enum_payload_rejects() {
 fn value_type_cycle_through_mixed_records_and_enums_rejects() {
     // A three-hop cycle Record0 -> Enum0 -> Record1 -> Record0 mixing record fields
     // and an enum payload leaf.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let r0 = draft.intern_string("R0");
     let r1 = draft.intern_string("R1");
     let ename = draft.intern_string("E");
@@ -4497,7 +4586,8 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
     // site `check.unsupported` refusal of collection-typed generic-enum payloads: a
     // checker-clean program can never mint this leaf, and a hand-forged image carrying
     // it is refused at decode rather than at run time.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let ename = draft.intern_string("E");
     let vname = draft.intern_string("hold");
     // The collection row exists, so the ordinal is in range and the producer's
@@ -4549,7 +4639,8 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
 fn deep_acyclic_record_chain_verifies() {
     // A long but acyclic chain Record0 -> Record1 -> ... -> Record(N-1) verifies:
     // depth is not a restriction, only cycles are.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     const N: u16 = 24;
     for i in 0..N {
         let name = draft.intern_string(&format!("R{i}"));
@@ -4589,11 +4680,12 @@ fn access_members() -> Vec<[u8; 16]> {
 /// seal, so the root carries no operation sites and a pure function completes the
 /// storeless image; the widened field's executability is covered elsewhere.
 fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     // The `kind` field's value shape: a two-variant payloadless enum with a sum id and
     // one member id per variant, minted into this draft's own arena.
-    let kind_value = draft.value_shapes_mut().enum_shape(
+    let kind_value = draft.value_enum(
         LedgerIdBytes::from_bytes([0x50; 16]),
         members
             .iter()
@@ -4690,7 +4782,8 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 #[test]
@@ -4773,7 +4866,8 @@ fn out_of_domain_durable_value_tag_rejects() {
 /// (`tagId:int`, `weight:int required`) — the executable nested-branch shape. The verifier
 /// seals the whole recursive branch tree, so a valid deep site seals executable.
 fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -4860,12 +4954,13 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
             },
         )
         .expect("the Product is declared");
-    (draft, admitted)
+    draft.commit();
+    (draft_owner, admitted)
 }
 
 /// The whole-payload site of the nested `tags` branch entry: the `notes` branch is the
 /// Product's second declared member and `tags` is that branch's second member.
-fn nested_tag_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+fn nested_tag_entry_site(draft: &mut DraftTxn<'_>, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let notes = product_members(draft)[1].path().clone();
     let tags = draft
         .members_of(&notes)
@@ -4894,7 +4989,7 @@ fn encoded_tag_entry_site(chain: &[[u8; 16]]) -> Vec<u8> {
 /// Add a read-only export that runs `DurExists` over the whole-payload `site` at the given
 /// key arity (root-first `int, string, int` for the tag entry), and encode. The opcode is
 /// the observation that separates an executable deep site from a parked one.
-fn exists_over_tag_entry(mut draft: ImageDraft, site: LegacyDraftSiteOperand) -> Vec<u8> {
+fn exists_over_tag_entry(mut draft: DraftTxn<'_>, site: LegacyDraftSiteOperand) -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("has");
     let code = vec![
@@ -4928,7 +5023,8 @@ fn a_valid_deep_nested_branch_entry_site_seals_executable_and_its_opcode_verifie
     // The positive control: a whole-payload site over the concrete `notes -> tags` chain
     // resolves to the nested branch, seals executable, and an `exists` opcode over its
     // three-column key-path type-checks and verifies.
-    let (mut draft, root) = nested_branch_draft();
+    let (mut draft_owner, root) = nested_branch_draft();
+    let mut draft = admitted(&mut draft_owner);
     let site = nested_tag_entry_site(&mut draft, &root);
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "VERIFIED");
 }
@@ -4940,7 +5036,8 @@ fn a_valid_deep_nested_branch_entry_site_seals_executable_and_its_opcode_verifie
 /// routes a branch under a field, or names a hop no branch declares, exists only as
 /// forged bytes over the valid image.
 fn forged_nested_site_image(forged: Vec<u8>) -> Vec<u8> {
-    let (mut draft, root) = nested_branch_draft();
+    let (mut draft_owner, root) = nested_branch_draft();
+    let mut draft = admitted(&mut draft_owner);
     let site = nested_tag_entry_site(&mut draft, &root);
     let mut bytes = exists_over_tag_entry(draft, site);
     forge_site(
@@ -4993,7 +5090,8 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
 /// distinct column types, so a transposed key-path is type-detectable — with one required
 /// int field `v`. Returns the draft and the whole-entry site operand.
 fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let shapes = scalar_shapes(&mut draft);
     let cell = draft.intern_string("Cell");
     let v = draft.intern_string("v");
@@ -5048,17 +5146,19 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
-    (draft, entry)
+    draft.commit();
+    (draft_owner, entry)
 }
 
 /// Encode a read-only `has` export over the composite `entry` site whose body pushes the
 /// given key locals (by type) then runs `DurExists`. `params` types the locals the body
 /// reads; a correct call pushes `[Int, Text]` (row then col, root-first).
 fn composite_exists_export(
-    mut draft: ImageDraft,
+    mut owner: ImageDraft,
     entry: LegacyDraftSiteOperand,
     params: Vec<ImageType>,
 ) -> Vec<u8> {
+    let mut draft = admitted(&mut owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("has");
     let mut code: Vec<Instr> = (0..params.len() as u16).map(Instr::LocalGet).collect();
@@ -5129,7 +5229,8 @@ fn a_bounded_traversal_over_a_composite_keyed_root_layer_rejects() {
     // compiler's own park, is refused during per-function typing: the verifier computes the
     // traversed layer's arity from the schema and rejects any layer that is not
     // single-column, so no composite-key traversal reaches the kernel.
-    let (mut draft, entry) = composite_root_draft();
+    let (mut draft_owner, entry) = composite_root_draft();
+    let mut draft = admitted(&mut draft_owner);
     let list_ty = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Int),
     });

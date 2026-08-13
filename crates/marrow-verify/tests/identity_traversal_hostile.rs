@@ -11,7 +11,7 @@
 //! rather than copied.
 
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
@@ -24,6 +24,13 @@ use site_seam::site;
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("books"): an int key, a text field, and a `notes(text)` branch.
@@ -58,7 +65,7 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// freezes, and the sparse field's leaf site. Returns the branch site, the list type, and the
 /// sparse field-leaf site.
 fn two_root_branch_draft(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
 ) -> (
     LegacyDraftSiteOperand,
     marrow_image::CollTypeId,
@@ -96,7 +103,7 @@ fn two_root_branch_draft(
         }],
     });
     let a_root = draft.intern_string("books");
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let text_value = draft.value_scalar(Scalar::Text);
     // Commands 0/1/2 are the Product's direct members; command 3 nests under the branch.
     draft
         .declare_product(
@@ -170,7 +177,7 @@ fn two_root_branch_draft(
         }],
     });
     let b_root = draft.intern_string("tallies");
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -225,7 +232,7 @@ fn two_root_branch_draft(
     (branch_site, list_ty, subtitle_site)
 }
 
-fn build_export(draft: &mut ImageDraft, code: Vec<Instr>) {
+fn build_export(draft: &mut DraftTxn<'_>, code: Vec<Instr>) {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let func = draft
@@ -248,7 +255,8 @@ fn build_export(draft: &mut ImageDraft, code: Vec<Instr>) {
 /// verify-level acceptance the checker relies on.
 #[test]
 fn an_identity_ancestor_over_the_traversed_root_verifies() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
@@ -281,7 +289,8 @@ fn an_identity_ancestor_over_the_traversed_root_verifies() {
 /// it independently of the compiler.
 #[test]
 fn a_cross_root_identity_traversal_ancestor_is_rejected() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
@@ -319,7 +328,8 @@ fn a_cross_root_identity_traversal_ancestor_is_rejected() {
 /// re-proof, so the cross-root confusion is rejected there too.
 #[test]
 fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let (branch_site, _list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
@@ -361,7 +371,8 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
 /// well-typed but foreign-root identity slot never reaches a durable field write.
 #[test]
 fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let (_branch_site, _list_ty, subtitle_site) = two_root_branch_draft(&mut draft);
     let value = draft.intern_text("x");
     // Mint Id(^tallies, k) into slot 1, then name slot 1 as the strict set's key-path over a

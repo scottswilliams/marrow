@@ -15,9 +15,9 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
-    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticTarget, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
@@ -56,7 +56,10 @@ fn export_id(name: &str) -> ExportId {
 /// `details{pages:384}`), `readEntry`/`readGroup` reads, and the mutating `replaceGroup`
 /// and `eraseGroup`.
 fn groups_image() -> VerifiedImage {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
 
     // The `details` group's own leaf record (one sparse `pages`), then the `Book` record
     // whose trailing group slot references it.
@@ -95,8 +98,8 @@ fn groups_image() -> VerifiedImage {
     let root = draft.intern_string("books");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let text_value = draft.value_scalar(Scalar::Text);
+    let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -271,7 +274,7 @@ fn groups_image() -> VerifiedImage {
 /// Add a read-only export that pushes the root key `1`, runs `op`, and returns the
 /// optional record it leaves on the stack.
 fn add_read(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     src: marrow_image::StrId,
     name: &str,
     op: Instr,

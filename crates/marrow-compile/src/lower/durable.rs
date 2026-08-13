@@ -477,7 +477,7 @@ pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
     }
 }
 
-impl<'a> FnLowerer<'a> {
+impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- durable places (design §D) ---
 
     /// Detect the inline durable shape of a place expression: a whole-entry address

@@ -6,14 +6,15 @@
 //! `BranchPresent`, so an image that feeds `T?` into arithmetic rejects at verify.
 
 use marrow_image::{
-    ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, Scalar, SpanEntry,
+    DraftTxn, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, Scalar,
+    SpanEntry,
 };
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
 /// A record `Note { required value: int, label: string }` interned into `draft`,
 /// returning its type index.
-fn note_type(draft: &mut ImageDraft) -> marrow_image::TypeId {
+fn note_type(draft: &mut DraftTxn<'_>) -> marrow_image::TypeId {
     let name = draft.intern_string("Note");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -35,9 +36,12 @@ fn note_type(draft: &mut ImageDraft) -> marrow_image::TypeId {
 }
 
 fn build_and_run(
-    build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>),
+    build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>),
 ) -> Result<Option<Value>, String> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     let (ret, code) = build(&mut draft);

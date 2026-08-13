@@ -43,9 +43,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CanonicalDeclarationPathSelector, CollTypeId, EnumId, FuncId, FunctionDef, ImageDraft,
-    ImageType, Instr, LegacyDraftSiteOperand, OccurrenceSiteHandle, RootId, RootOccurrenceSelector,
-    Scalar, SemanticTarget, SpanEntry, TypeId,
+    CanonicalDeclarationPathSelector, CollTypeId, DraftTxn, EnumId, FuncId, FunctionDef,
+    ImageDraft, ImageType, Instr, LegacyDraftSiteOperand, OccurrenceSiteHandle, RootId,
+    RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry, TypeId,
 };
 use marrow_project::FileIdentity;
 
@@ -316,8 +316,8 @@ pub(super) fn annotation_refusal_row(
     })
 }
 
-pub(crate) struct FnLowerer<'a> {
-    draft: &'a mut ImageDraft,
+pub(crate) struct FnLowerer<'a, 'd> {
+    draft: &'a mut DraftTxn<'d>,
     records: &'a TypeRegistry,
     durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
@@ -419,13 +419,13 @@ pub(crate) use self::registry::{
 };
 pub(crate) use self::types::parse_int;
 
-impl<'a> FnLowerer<'a> {
+impl<'a, 'd> FnLowerer<'a, 'd> {
     /// A fresh lowerer over an empty body, for one function or test body. The
     /// shared field set has this single owner; `ret` and `body_kind` are the only
     /// per-body-kind inputs.
     #[allow(clippy::too_many_arguments)]
     fn new(
-        draft: &'a mut ImageDraft,
+        draft: &'a mut DraftTxn<'d>,
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
@@ -522,7 +522,7 @@ impl<'a> FnLowerer<'a> {
     /// diagnostics and returns [`BodyOutcome::Refused`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
-        draft: &'a mut ImageDraft,
+        draft: &'a mut DraftTxn<'d>,
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
@@ -558,7 +558,7 @@ impl<'a> FnLowerer<'a> {
     /// since instances are added to the image in the order they were minted.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_instance(
-        draft: &'a mut ImageDraft,
+        draft: &'a mut DraftTxn<'d>,
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
@@ -605,7 +605,7 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_template(
         draft: &mut ImageDraft,
-        records: &TypeRegistry,
+        records: &mut TypeRegistry,
         durable: &DurableRegistry,
         functions: &FunctionRegistry,
         generics: &GenericRegistry,
@@ -617,15 +617,14 @@ impl<'a> FnLowerer<'a> {
         let module = &template.module;
         // Prove the body directly on the in-progress registry and draft — so it sees every
         // already-minted type at its real index (a concrete callee's signature stays
-        // consistent) — inside a scope that erases the abstract-parameter instantiations and
-        // throwaway emitted code the pass appends. A fill batch never mutates a settled prefix
-        // row, so rewinding the appended suffix restores the exact pre-proof state. The scope
-        // guard restores both owners on every path — a normal return, an early lowering
-        // invariant, or an unwind — so no throwaway type or instruction survives a failed
-        // proof. It restores the draft and the registry, and nothing else: the proof's
-        // diagnostics live in a local collector that a failure drops, while its editor facts
-        // are admitted where they are derived and are not retracted by a later failure of
-        // this pass (see `FactSink`).
+        // consistent) — inside the generic-owner composite guard that erases the
+        // abstract-parameter instantiations and throwaway emitted code the pass appends.
+        // The guard takes the registry by exclusive `&mut` and the draft through an armed
+        // transaction, and restores both owners on every path — a normal return, an early
+        // lowering invariant, or an unwind — registry inverse first, then the armed draft
+        // guard, exactly once. Its diagnostics live in a local collector that a failure
+        // drops, while its editor facts are admitted where they are derived (see
+        // `FactSink`).
         let mut scope = TemplateProofScope::enter(records, draft)?;
         // The proof's local collector: success seals it into the outcome's
         // terminal for the outer stage owner to absorb; an invariant failure
@@ -646,26 +645,31 @@ impl<'a> FnLowerer<'a> {
         // spelling and no divergent-monomorphization O(N²) rendering occurs. They reach
         // the ledger through the sink as they are derived; only the throwaway image
         // function this pass emits is discarded with the scope.
-        FnLowerer::lower_with_env(
-            scope.draft(),
-            records,
-            durable,
-            functions,
-            generics,
-            consts,
-            &mut diagnostics,
-            facts,
-            file,
-            module,
-            template.decl,
-            type_env,
-            LowerMode::Template,
-        )?;
+        {
+            let (registry, txn) = scope.parts();
+            FnLowerer::lower_with_env(
+                txn,
+                registry,
+                durable,
+                functions,
+                generics,
+                consts,
+                &mut diagnostics,
+                facts,
+                file,
+                module,
+                template.decl,
+                type_env,
+                LowerMode::Template,
+            )?;
+        }
         // Take the proof's diagnostics before the scope drops: `take_generic_diagnostics`
         // drains the swapped-in buffer and limit owner that the guard then re-seats.
+        let generic = scope.registry().take_generic_diagnostics();
+        drop(scope);
         Ok(TemplateProofOutcome {
             diagnostics: diagnostics.finish(),
-            generic: records.take_generic_diagnostics(),
+            generic,
         })
     }
 
@@ -675,7 +679,7 @@ impl<'a> FnLowerer<'a> {
     /// function. The `type_env` and `mode` distinguish the three.
     #[allow(clippy::too_many_arguments)]
     fn lower_with_env(
-        draft: &'a mut ImageDraft,
+        draft: &'a mut DraftTxn<'d>,
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
@@ -841,7 +845,7 @@ impl<'a> FnLowerer<'a> {
     /// and the caller binds it into the image's TEST-ENTRY table.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_test(
-        draft: &'a mut ImageDraft,
+        draft: &'a mut DraftTxn<'d>,
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
@@ -1308,7 +1312,7 @@ mod generic_cache_boundary_tests {
         }
     }
 
-    fn generic_enum_registry(draft: &mut ImageDraft) -> TypeRegistry {
+    fn generic_enum_registry(draft: &mut DraftTxn<'_>) -> TypeRegistry {
         let mut diagnostics = DiagnosticCollector::new();
         TypeRegistry::build(
             draft,
@@ -1323,7 +1327,7 @@ mod generic_cache_boundary_tests {
         .expect("the test registry stays within the ledger budget")
     }
 
-    fn generic_struct_registry(draft: &mut ImageDraft) -> TypeRegistry {
+    fn generic_struct_registry(draft: &mut DraftTxn<'_>) -> TypeRegistry {
         let parsed = parse_source(
             r#"struct Box<T> {
     value: T
@@ -1361,7 +1365,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn recursive_generic_unification_builds_one_metadata_directory() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let list = records
             .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
@@ -1415,7 +1422,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn generic_unification_prevalidates_inferred_metadata_before_named_mismatch() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let (_, orphan) = orphan_enum_and_struct(&mut draft);
         let arg = GArg::Struct(orphan);
@@ -1487,7 +1497,10 @@ mod generic_cache_boundary_tests {
         };
 
         for family in ["struct", "enum", "collection"] {
-            let mut draft = ImageDraft::new();
+            let mut draft_owner = ImageDraft::new();
+            let mut draft = draft_owner
+                .begin_transaction(draft_owner.savepoint())
+                .expect("a fresh savepoint admits");
             let records = generic_enum_registry(&mut draft);
             let (orphan_enum, orphan_struct) = orphan_enum_and_struct(&mut draft);
             let arg = match family {
@@ -1553,7 +1566,10 @@ mod generic_cache_boundary_tests {
             ],
             span: span(),
         };
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let missing = GArg::Nominal(NominalId(0));
         let params = [TypeParamSlot {
@@ -1597,8 +1613,8 @@ mod generic_cache_boundary_tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn lowerer<'a>(
-        draft: &'a mut ImageDraft,
+    fn lowerer<'a, 'd>(
+        draft: &'a mut DraftTxn<'d>,
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
@@ -1606,7 +1622,7 @@ mod generic_cache_boundary_tests {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
         facts: FactSink<'a>,
-    ) -> FnLowerer<'a> {
+    ) -> FnLowerer<'a, 'd> {
         FnLowerer::new(
             draft,
             records,
@@ -1625,7 +1641,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn local_slot_limit_rejection_is_atomic_and_reported_once() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
@@ -1685,7 +1704,7 @@ mod generic_cache_boundary_tests {
         assert_eq!(diagnostics.probe_rows().len(), 1);
     }
 
-    fn orphan_enum_and_struct(draft: &mut ImageDraft) -> (EnumId, TypeId) {
+    fn orphan_enum_and_struct(draft: &mut DraftTxn<'_>) -> (EnumId, TypeId) {
         let enum_name = draft.intern_string("OrphanEnum");
         let enum_id = draft.add_enum_type(EnumTypeDef {
             name: enum_name,
@@ -1700,7 +1719,10 @@ mod generic_cache_boundary_tests {
     }
 
     fn assert_typed_invariant_rejects_consumer(invariant: GenericInvariant) {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
@@ -1763,7 +1785,10 @@ mod generic_cache_boundary_tests {
     /// typed internal failure, not an `enum_variants` expectation unwind.
     #[test]
     fn bare_enum_without_ready_variants_fails_without_unwinding() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let (enum_id, _) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
@@ -1821,7 +1846,10 @@ mod generic_cache_boundary_tests {
     /// classified by the template owner rather than unwinding at `expect`.
     #[test]
     fn enum_template_at_struct_constructor_fails_without_unwinding() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let (_, struct_id) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
@@ -1883,7 +1911,10 @@ mod generic_cache_boundary_tests {
     /// failure, not a cache-body panic.
     #[test]
     fn bare_struct_without_ready_body_fails_without_unwinding() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let (_, type_id) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
@@ -1939,7 +1970,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn generic_struct_minted_as_enum_is_an_exact_invariant() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_struct_registry(&mut draft);
         let template = records
             .type_template_by_name("Box")
@@ -2012,7 +2046,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn generic_enum_minted_as_record_is_an_exact_invariant() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")
@@ -2081,7 +2118,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn ready_enum_id_with_struct_body_rejects_lowering_exactly() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let enum_id = records
             .instantiate_reserved_option(
@@ -2148,7 +2188,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn template_confirmed_generic_enum_missing_ready_variant_is_invariant() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")
@@ -2221,7 +2264,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn interpolation_invariant_stops_before_later_literal_emission() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")
@@ -2308,7 +2354,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn reserved_constructor_and_try_stop_before_effects_after_typed_reader_failure() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let option = records
             .instantiate_reserved_option(
@@ -2379,7 +2428,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn checked_result_invariant_stops_before_handler_and_patch_work() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Option);
         draft.intern_int(1);
@@ -2470,7 +2522,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn nested_else_if_terminal_invariant_never_falls_through_or_patches() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Result);
         let before = draft.encode().expect("empty draft encodes");
@@ -2535,7 +2590,10 @@ mod generic_cache_boundary_tests {
 
     #[test]
     fn first_invariant_stops_real_block_before_later_owner_mutation() {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")

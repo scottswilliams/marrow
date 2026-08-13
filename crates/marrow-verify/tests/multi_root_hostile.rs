@@ -8,9 +8,10 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageBuildError,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef,
+    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    TypeId, ValueShapeNodeId,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -25,6 +26,13 @@ use image_forgery::{forge, rehash};
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("assets"): placement/product/key/field ledger ids.
@@ -64,7 +72,7 @@ fn one_int_field(value: ValueShapeNodeId, id: [u8; 16]) -> Vec<DeclarationMember
 /// key, one int field). The two roots' whole-payload sites are added as site 0 (A) and
 /// site 1 (B). Returns the site indices.
 fn build_two_roots(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     b_name: &str,
     b_key_scalar: Scalar,
 ) -> (LegacyDraftSiteOperand, LegacyDraftSiteOperand) {
@@ -81,7 +89,7 @@ fn build_two_roots(
         }],
     });
     let a_root = draft.intern_string("assets");
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -117,7 +125,7 @@ fn build_two_roots(
         }],
     });
     let b_root = draft.intern_string(b_name);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -157,7 +165,12 @@ fn build_two_roots(
     (a_site, b_site)
 }
 
-fn build_export(draft: &mut ImageDraft, code: Vec<Instr>, params: Vec<ImageType>, ret: ImageType) {
+fn build_export(
+    draft: &mut DraftTxn<'_>,
+    code: Vec<Instr>,
+    params: Vec<ImageType>,
+    ret: ImageType,
+) {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let local_count = params.len() as u16;
@@ -180,7 +193,8 @@ fn build_export(draft: &mut ImageDraft, code: Vec<Instr>, params: Vec<ImageType>
 /// independently of the compiler.
 #[test]
 fn two_roots_sharing_a_name_are_rejected() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     // Root B reuses root A's name "assets" (a distinct string index, same content).
     build_two_roots(&mut draft, "assets", Scalar::Int);
     build_export(
@@ -203,7 +217,8 @@ fn two_roots_sharing_a_name_are_rejected() {
 /// well-formed two-root image).
 #[test]
 fn two_distinct_roots_verify() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     build_two_roots(&mut draft, "tallies", Scalar::Int);
     build_export(
         &mut draft,
@@ -223,7 +238,8 @@ fn two_distinct_roots_verify() {
 /// verifier must reject the confusion on the identity's root rather than admit it.
 #[test]
 fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let (_a_site, b_site) = build_two_roots(&mut draft, "tallies", Scalar::Int);
     // Mint Id(^assets, k) then use it as the key-path of a DurExists on ^tallies.
     let code = vec![
@@ -262,7 +278,7 @@ fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
 /// the same entry record, with their own placements, key tuples, and names. Root B's
 /// occurrence row references the declaration root A's occurrence bound, exactly as the
 /// compiler builds them.
-fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
+fn build_shared_product(draft: &mut DraftTxn<'_>) -> TypeId {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let field_name = draft.intern_string("name");
     let rec_name = draft.intern_string("Asset");
@@ -281,7 +297,7 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
         name: other_name,
         fields: vec![],
     });
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),
@@ -322,7 +338,8 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
 
 /// A shared-Product image with one storeless export.
 fn shared_product_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     build_shared_product(&mut draft);
     build_export(
         &mut draft,
@@ -405,10 +422,11 @@ fn a_duplicate_root_occurrence_is_rejected() {
 /// the two claims away — a divergent graph can never reach an artifact at all.
 #[test]
 fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let record = build_shared_product(&mut draft);
     let root_name = draft.intern_string("extra");
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let int_value = draft.value_scalar(Scalar::Int);
     // A second declaration of the same Product identity carrying a different member id.
     draft
         .declare_product(

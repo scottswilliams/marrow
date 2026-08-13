@@ -375,20 +375,27 @@ impl SiteDemandPlan {
     }
 
     /// Discard every row appended after `rows` and restore `receipt` as the plan's policy
-    /// state, dropping exactly the removed rows' demand keys.
+    /// state, removing exactly the removed rows' demand keys.
     ///
-    /// The purge is reconstructed from the removed rows, so it is proportional to the
-    /// discarded suffix rather than to the whole table.
+    /// The total suffix inverse the armed rollback calls: a suffix pop loop whose
+    /// only bound is its own condition — each popped row's retained-map key is
+    /// removed while the row is still live, then the row drops. No range `drain`, no
+    /// slice indexing, no allocation, no panic, so it is safe during an unwind. The
+    /// cost is proportional to the discarded suffix rather than to the whole table.
     ///
     /// `receipt` is the exact receipt the plan held when the suffix began. A crossing that
     /// happened before it keeps its identity, so an operand minted over-policy before the
     /// suffix stays valid; a crossing first recorded inside the suffix is cleared with the
     /// demands that caused it, so a discarded pass cannot leave the plan refusing sites it
     /// has capacity for, and an over-policy operand minted inside it is stale.
-    pub(crate) fn rewind(&mut self, rows: usize, receipt: Option<SitePolicyReceipt>) {
-        for row in self.rows.drain(rows..) {
-            self.retained.remove(&row.key);
+    pub(crate) fn pop_suffix_to(&mut self, rows: usize, receipt: Option<SitePolicyReceipt>) {
+        while self.rows.len() > rows {
+            if let Some(row) = self.rows.last() {
+                self.retained.remove(&row.key);
+            }
+            self.rows.pop();
         }
         self.receipt = receipt;
     }
+    // drop-path audit sentinel: end of SiteDemandPlan::pop_suffix_to
 }

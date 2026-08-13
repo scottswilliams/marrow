@@ -14,7 +14,7 @@
 //! rather than copied.
 
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
@@ -32,6 +32,13 @@ use site_seam::site;
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 // The tracer graph's fixed ledger ids.
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -63,7 +70,8 @@ fn export_id(name: &str) -> ExportId {
 /// (positions 10,20), and the read-only iterate exports the tests drive. The root and
 /// branch keys are both `int`, so the frozen key list is `List[int]`.
 fn traversal_image() -> VerifiedImage {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
 
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -90,7 +98,7 @@ fn traversal_image() -> VerifiedImage {
     let notes = draft.intern_string("notes");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let text_value = draft.value_scalar(Scalar::Text);
     draft
         .declare_product(
             &admitted_plan(),
@@ -210,7 +218,7 @@ fn traversal_image() -> VerifiedImage {
     // with the given `limit`. `ancestor` names the local slot holding the parent key a
     // branch site pops (root site: none). `from` reads the from key from the first
     // param.
-    let add_keys_export = |draft: &mut ImageDraft,
+    let add_keys_export = |draft: &mut DraftTxn<'_>,
                            name: &str,
                            site: &LegacyDraftSiteOperand,
                            limit: u32,
@@ -255,7 +263,7 @@ fn traversal_image() -> VerifiedImage {
     add_keys_export(&mut draft, "branchKeys", &branch_entry, 5, false, true);
 
     // A read-only export returning the on-more `Bool` of the traversal over `site`.
-    let add_more_export = |draft: &mut ImageDraft,
+    let add_more_export = |draft: &mut DraftTxn<'_>,
                            name: &str,
                            site: &LegacyDraftSiteOperand,
                            limit: u32,
@@ -472,7 +480,8 @@ fn a_branch_traversal_scopes_to_its_parent_entry() {
 /// directly through the kernel session so the frozen list can cross the aggregate
 /// ceiling.
 fn wide_key_image() -> (VerifiedImage, u16) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let rec = draft.intern_string("Rec");
     let v = draft.intern_string("v");
     let record = draft.add_record_type(RecordTypeDef {
@@ -486,7 +495,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
     let root = draft.intern_string("big");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),

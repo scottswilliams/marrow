@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<'a> FnLowerer<'a> {
+impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- statements ---
 
     pub(super) fn lower_block(&mut self, block: &Block) -> Flow {

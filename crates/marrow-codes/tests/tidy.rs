@@ -1263,7 +1263,6 @@ const FILE_LINE_CAP: usize = 3_000;
 const OVER_CAP_ALLOWLIST: &[(&str, usize)] = &[
     ("crates/marrow-compile/src/analysis.rs", 3_444),
     ("crates/marrow-compile/src/compile.rs", 3_750),
-    ("crates/marrow-compile/src/durable.rs", 3_349),
     ("crates/marrow-compile/src/lower/durable.rs", 3_107),
     ("crates/marrow-compile/src/lower/exprs.rs", 3_371),
     (

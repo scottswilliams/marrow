@@ -3,8 +3,8 @@ use super::{
 };
 use crate::reject::VerifyPhase;
 use marrow_image::{
-    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef,
-    Scalar, SpanEntry, VariantDef,
+    DraftTxn, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
+    RecordTypeDef, Scalar, SpanEntry, VariantDef,
 };
 use std::ops::Range;
 
@@ -16,10 +16,17 @@ use std::ops::Range;
 mod image_forgery;
 use image_forgery::rehash;
 
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
+
 const RECORD_WIDTH: usize = 4_096;
 const ENUM_WIDTH: usize = 256;
 
-fn add_main(draft: &mut ImageDraft) {
+fn add_main(draft: &mut DraftTxn<'_>) {
     let name = draft.intern_string("main");
     let source = draft.intern_string("src/main.mw");
     let code = vec![Instr::Return];
@@ -42,7 +49,8 @@ fn add_main(draft: &mut ImageDraft) {
 }
 
 fn record_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let record_name = draft.intern_string("Wide");
     let mut fields = Vec::with_capacity(RECORD_WIDTH);
     for index in 0..RECORD_WIDTH {
@@ -61,7 +69,8 @@ fn record_image() -> Vec<u8> {
 }
 
 fn enum_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let enum_name = draft.intern_string("Choice");
     let mut variants = Vec::with_capacity(ENUM_WIDTH);
     for index in 0..ENUM_WIDTH {
@@ -80,7 +89,8 @@ fn enum_image() -> Vec<u8> {
 }
 
 fn repeated_names_across_rows_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let field_name = draft.intern_string("value");
     for record in ["First", "Second"] {
         let name = draft.intern_string(record);

@@ -4,10 +4,18 @@
 //! so the executable trust path is exercised end to end without the compiler.
 
 use marrow_image::{
-    CollectionTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
+    CollectionTypeDef, DraftTxn, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar,
+    SpanEntry,
 };
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 /// The synthetic export id these draft-level tests bind and look up by.
 fn answer_id() -> ExportId {
@@ -16,7 +24,8 @@ fn answer_id() -> ExportId {
 
 /// Build a one-function image `answer(): int = <value>` and return its bytes.
 fn return_const_image(value: i64) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("answer");
     let source = draft.intern_string("src/main.mw");
     let konst = draft.intern_int(value);
@@ -68,7 +77,8 @@ fn relocating_the_project_yields_identical_image_bytes() {
 /// `[0, 150]` and returns it, exercising the guard through draft → encode →
 /// verify → run with no compiler.
 fn range_guard_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("guarded");
     let source = draft.intern_string("src/main.mw");
     let func = draft
@@ -101,7 +111,8 @@ fn range_guard_image() -> Vec<u8> {
 /// corrupted image takes. The compiler never emits such an out-of-range positional
 /// read; the VM's totality guard is what these images probe.
 fn forged_list_positional_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("forged");
     let source = draft.intern_string("src/main.mw");
     let coll = draft.add_collection_type(CollectionTypeDef::List {
@@ -136,7 +147,8 @@ fn forged_list_positional_image() -> Vec<u8> {
 /// (`MapKeyAt` or `MapValueAt`). The key and value types are `int`, so the read
 /// yields an `int` and the image verifies.
 fn forged_map_positional_image(read: Instr) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("forged");
     let source = draft.intern_string("src/main.mw");
     let coll = draft.add_collection_type(CollectionTypeDef::Map {
@@ -194,7 +206,8 @@ fn a_forged_out_of_range_positional_read_faults_run_corruption() {
 /// its length. `MapRemove` on an absent key is idempotent, so the map stays empty and
 /// the run yields `0` — the removal neither faults nor reads past the map.
 fn forged_map_remove_absent_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("forged");
     let source = draft.intern_string("src/main.mw");
     let coll = draft.add_collection_type(CollectionTypeDef::Map {
@@ -231,7 +244,8 @@ fn forged_map_remove_absent_image() -> Vec<u8> {
 /// `int`. The verifier owns the key-type agreement, so this image is rejected at the
 /// function phase and never reaches the VM.
 fn forged_map_remove_wrong_key_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("forged");
     let source = draft.intern_string("src/main.mw");
     let coll = draft.add_collection_type(CollectionTypeDef::Map {
@@ -267,7 +281,8 @@ fn forged_map_remove_wrong_key_image() -> Vec<u8> {
 /// A forged image whose `MapRemove` collection operand is an `int`, not a map. The
 /// verifier owns the operand shape, so this image is rejected at the function phase.
 fn forged_map_remove_non_map_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("forged");
     let source = draft.intern_string("src/main.mw");
     let base = draft.intern_int(1);

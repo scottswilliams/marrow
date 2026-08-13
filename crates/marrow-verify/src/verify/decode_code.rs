@@ -717,8 +717,8 @@ mod index_site_partition {
 
     use marrow_image::{
         CanonicalDeclarationPathSelector, CollectionTypeDef, DeclarationMemberDef,
-        DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
-        KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
+        DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
+        Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
         RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry,
     };
 
@@ -897,7 +897,7 @@ mod index_site_partition {
     /// Bind one occurrence, one canonical declaration path, and one target, then request
     /// the site the binding names.
     fn site(
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         root: &RootOccurrenceSelector,
         path: &CanonicalDeclarationPathSelector,
         target: SemanticTarget,
@@ -913,8 +913,16 @@ mod index_site_partition {
     /// the integration hostile suite uses so a forged managed-index or bounded-traversal
     /// opcode over the field-leaf site reaches the same `apply_durable` guards. Returns
     /// the draft, the field-leaf (non-index) site operand, and the list-type index.
+    /// The armed transaction a fresh savepoint admits over `owner`.
+    fn admitted(owner: &mut marrow_image::ImageDraft) -> DraftTxn<'_> {
+        owner
+            .begin_transaction(owner.savepoint())
+            .expect("a fresh savepoint admits")
+    }
+
     fn field_leaf_schema() -> (ImageDraft, LegacyDraftSiteOperand, CollTypeId) {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let counter = draft.intern_string("Counter");
         let value = draft.intern_string("value");
         let label = draft.intern_string("label");
@@ -935,8 +943,8 @@ mod index_site_partition {
         });
         let root_name = draft.intern_string("counters");
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-        let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
-        let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+        let int_value = draft.value_scalar(Scalar::Int);
+        let text_value = draft.value_scalar(Scalar::Text);
         draft
             .declare_product(
                 &admitted_plan(),
@@ -995,10 +1003,11 @@ mod index_site_partition {
         let list_ty = draft.add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
         });
-        (draft, value_site, list_ty)
+        draft.commit();
+        (draft_owner, value_site, list_ty)
     }
 
-    fn install(draft: &mut ImageDraft, forged: Instr) -> Vec<u8> {
+    fn install(draft: &mut DraftTxn<'_>, forged: Instr) -> Vec<u8> {
         let src = draft.intern_string("src/main.mw");
         let name = draft.intern_string("probe");
         let code = vec![forged, Instr::Return];
@@ -1028,7 +1037,8 @@ mod index_site_partition {
     fn every_index_read_class_opcode_over_a_non_index_site_rejects_typed() {
         let mut exercised = 0usize;
         for sample in samples() {
-            let (mut draft, value_site, list_ty) = field_leaf_schema();
+            let (mut draft_owner, value_site, list_ty) = field_leaf_schema();
+            let mut draft = admitted(&mut draft_owner);
             let (forged, expected_detail) = match role(&sample, &value_site, list_ty) {
                 Role::ManagedIndexRead(forged) => {
                     (forged, "a managed-index opcode over a non-index site")

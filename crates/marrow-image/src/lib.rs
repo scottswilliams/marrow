@@ -19,6 +19,7 @@ mod export_id;
 mod instr;
 mod interface;
 mod measure;
+mod policy_ledger;
 mod product;
 mod remap;
 mod semantic;
@@ -37,9 +38,9 @@ pub use digest::{
     image_id,
 };
 pub use draft::{
-    AdmittedGraphInputPlan, AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, EnumId,
-    EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn,
-    RecordTypeDef, RootId, RootOccurrenceDef, SpanEntry, StrId, TemplateProofDraftGuard, TypeId,
+    AdmittedGraphInputPlan, AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, DraftSavepoint,
+    DraftStateError, DraftTxn, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError,
+    ImageDraft, KeyColumn, RecordTypeDef, RootId, RootOccurrenceDef, SpanEntry, StrId, TypeId,
     VariantDef,
 };
 pub use durable_id::{

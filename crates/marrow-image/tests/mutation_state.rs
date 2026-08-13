@@ -15,14 +15,21 @@ use marrow_image::bounds::{
 };
 use marrow_image::{
     AdmittedGraphInputPlan, AdmittedRoot, CollectionTypeDef, DeclarationMemberDef,
-    DeclarationMemberShape, DurableIndexShape, EnumTypeDef, ExportId, FuncId, FunctionDef,
-    ImageBuildError, ImageDraft, ImageType, Instr, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticTarget, TypeId,
+    DeclarationMemberShape, DraftStateError, DraftTxn, DurableIndexShape, EnumTypeDef, ExportId,
+    FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, LedgerIdBytes,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, TypeId,
 };
 
 #[path = "common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];
@@ -32,8 +39,8 @@ const FIELD_ID: [u8; 16] = [0x0e; 16];
 const INDEX_ID: [u8; 16] = [0x3b; 16];
 
 /// One required int field member, minting its value shape into `draft`'s arena.
-fn one_field_members(draft: &mut ImageDraft) -> Vec<DeclarationMemberDef> {
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+fn one_field_members(draft: &mut DraftTxn<'_>) -> Vec<DeclarationMemberDef> {
+    let value = draft.value_scalar(Scalar::Int);
     vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
@@ -45,7 +52,7 @@ fn one_field_members(draft: &mut ImageDraft) -> Vec<DeclarationMemberDef> {
 }
 
 /// Declare the one fixture Product (one record type, one field member) under `plan`.
-fn declare_fixture_product(draft: &mut ImageDraft, plan: &AdmittedGraphInputPlan) {
+fn declare_fixture_product(draft: &mut DraftTxn<'_>, plan: &AdmittedGraphInputPlan) {
     let name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name,
@@ -59,7 +66,7 @@ fn declare_fixture_product(draft: &mut ImageDraft, plan: &AdmittedGraphInputPlan
 
 /// Append one keyless root over the fixture Product, named and placed by `n`.
 fn admit_fixture_root(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     plan: &AdmittedGraphInputPlan,
     placement: [u8; 16],
 ) -> AdmittedRoot {
@@ -79,7 +86,7 @@ fn admit_fixture_root(
 }
 
 /// A zero-argument unit function of `code`, appended and expected to be admitted.
-fn unit_function(draft: &mut ImageDraft, name: &str, code: Vec<Instr>) -> FuncId {
+fn unit_function(draft: &mut DraftTxn<'_>, name: &str, code: Vec<Instr>) -> FuncId {
     let name = draft.intern_string(name);
     let source = draft.intern_string("src/main.mw");
     draft
@@ -100,29 +107,25 @@ fn unit_function(draft: &mut ImageDraft, name: &str, code: Vec<Instr>) -> FuncId
 /// **This pins the pre-restructure behavior; the sanctioned F-1 change may flip it,
 /// citing this pin.** `add_root_occurrence` is not atomic: `push_under` commits the
 /// occurrence row, then `publish` can still refuse, so the caller gets an error *and*
-/// the draft keeps a live row the encoder will see.
-///
-/// The reachable `publish` `None` arm is the index-ordinal narrowing at
-/// `product.rs` (`u16::try_from(index)` inside `OccurrenceGraph::publish`): it fails
-/// exactly when some index ordinal in `0..indexes.len()` exceeds `u16::MAX`, i.e. when
-/// `indexes.len() >= u16::MAX as usize + 2 = 65_537`. Nothing bounds the index list
-/// before that point — `push_under` checks only the plan's root budget and the row
-/// ordinal — so a caller-supplied 65 537-entry index list reaches it through the public
-/// API. The other `None` arm (`live()` missing the row) is unreachable here: the
-/// selector was just published for the freshly pushed row.
-///
-/// After F-1, `publish` becomes a preflight and the same input is an error with **no**
-/// live row; this pin's three liveness assertions are the ones that flip.
+/// **Flipped under the sanctioned F-1 change, citing the pre-restructure pin this
+/// test carried** (`a_failed_publish_leaves_a_live_occurrence_row`): publication is
+/// now a preflight inside the admission, so an occurrence whose managed-index
+/// ordinals cannot all be addressed is one typed refusal **before** any row is
+/// pushed — the error comes with no live row, the plan's budget is unspent, and the
+/// encoder sees nothing of it. The within-occurrence index ordinal widened with the
+/// flip; the preflight's typed refusal replaces the old `u16::try_from` narrowing
+/// arm that fired only after the row had landed.
 #[test]
-fn a_failed_publish_leaves_a_live_occurrence_row() {
+fn a_refused_occurrence_leaves_no_live_row_and_spends_no_budget() {
     let over_ordinal_indexes = usize::from(u16::MAX) + 2;
     let plan = AdmittedGraphInputPlan::admit(1, 1, 8).expect("a one-root budget");
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     declare_fixture_product(&mut draft, &plan);
     let name = draft.intern_string("r");
-    // The ids need not be distinct: the ordinal arithmetic, not identity, is what
-    // refuses, and the pinned encode refusal is the index-count bound.
+    // The ids need not be distinct: the ordinal domain, not identity, is what the
+    // preflight refuses.
     let indexes = vec![
         DurableIndexShape {
             id: LedgerIdBytes::from_bytes(INDEX_ID),
@@ -144,39 +147,35 @@ fn a_failed_publish_leaves_a_live_occurrence_row() {
                 },
             )
             .is_err(),
-        "an occurrence whose index ordinals cannot all be spelled is refused",
+        "an occurrence whose index ordinals cannot all be addressed is refused",
     );
 
-    // Liveness, three ways: the contract view already carries the row ...
+    // Atomicity, three ways: no live row ...
     assert_eq!(
         draft.contract_view().roots().len(),
-        1,
-        "the refused occurrence's row is live in the draft",
+        0,
+        "the refused occurrence left no live row",
     );
-    // ... the row spent the one admitted root, so a well-formed occurrence is now over
-    // budget ...
+    // ... the budget is unspent, so a well-formed occurrence still admits under the
+    // one-root plan ...
     let second_name = draft.intern_string("s");
+    draft
+        .add_root_occurrence(
+            &plan,
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: second_name,
+                keys: Vec::new(),
+                placement: LedgerIdBytes::from_bytes(SECOND_PLACEMENT_ID),
+                indexes: Vec::new().into(),
+            },
+        )
+        .expect("the refusal spent no budget");
+    // ... and the encoder sees nothing of the refused occurrence: the surviving
+    // well-formed graph encodes.
     assert!(
-        draft
-            .add_root_occurrence(
-                &plan,
-                LedgerIdBytes::from_bytes(PRODUCT_ID),
-                RootOccurrenceDef {
-                    name: second_name,
-                    keys: Vec::new(),
-                    placement: LedgerIdBytes::from_bytes(SECOND_PLACEMENT_ID),
-                    indexes: Vec::new().into(),
-                },
-            )
-            .is_err(),
-        "the orphan row spent the plan's one-root budget",
-    );
-    // ... and the encoder reports the orphan row's own index-count fault, which it
-    // could only do over a row it holds.
-    assert_eq!(
-        draft.encode().map(|_| ()),
-        Err(ImageBuildError::TooManyIndexes),
-        "the encoder sees the orphan row and refuses its index count",
+        draft.encode().is_ok(),
+        "the encoder sees no orphan row and no orphan index count",
     );
 }
 
@@ -187,7 +186,8 @@ fn a_failed_publish_leaves_a_live_occurrence_row() {
 /// policy walk at encode is the sole refusal owner.
 #[test]
 fn the_string_pool_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     for n in 0..=MAX_STRINGS {
         draft.intern_string(&format!("s{n}"));
     }
@@ -202,7 +202,8 @@ fn the_string_pool_admits_past_its_cap_and_only_encode_refuses() {
 /// at encode is the sole refusal owner.
 #[test]
 fn an_over_long_string_is_admitted_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.intern_string(&"x".repeat(MAX_STRING_BYTES + 1));
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -215,7 +216,8 @@ fn an_over_long_string_is_admitted_and_only_encode_refuses() {
 /// policy walk at encode is the sole refusal owner.
 #[test]
 fn the_const_pool_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     for n in 0..=MAX_CONSTS {
         draft.intern_int(n as i64);
     }
@@ -230,7 +232,8 @@ fn the_const_pool_admits_past_its_cap_and_only_encode_refuses() {
 /// policy walk at encode is the sole refusal owner.
 #[test]
 fn the_type_table_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R");
     for _ in 0..=MAX_TYPES {
         draft.add_record_type(RecordTypeDef {
@@ -249,7 +252,8 @@ fn the_type_table_admits_past_its_cap_and_only_encode_refuses() {
 /// policy walk at encode is the sole refusal owner.
 #[test]
 fn the_enum_table_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("E");
     for _ in 0..=MAX_ENUMS {
         draft.add_enum_type(EnumTypeDef {
@@ -268,7 +272,8 @@ fn the_enum_table_admits_past_its_cap_and_only_encode_refuses() {
 /// unconditionally; the policy walk at encode is the sole refusal owner.
 #[test]
 fn the_collection_table_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     for _ in 0..=MAX_COLLECTIONS {
         draft.add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
@@ -287,7 +292,8 @@ fn the_collection_table_admits_past_its_cap_and_only_encode_refuses() {
 /// past the cap), and the policy walk at encode is the sole cap refusal owner.
 #[test]
 fn the_function_table_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let mut last = None;
     for n in 0..=MAX_FUNCTIONS {
         last = Some(unit_function(
@@ -312,7 +318,8 @@ fn the_function_table_admits_past_its_cap_and_only_encode_refuses() {
 /// policy walk at encode is the sole refusal owner.
 #[test]
 fn the_export_table_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     // The coherence walk demands distinct targets and distinct export ids, so the
     // over-cap table is otherwise coherent and only the cap can refuse.
     for n in 0..=MAX_EXPORTS {
@@ -331,7 +338,8 @@ fn the_export_table_admits_past_its_cap_and_only_encode_refuses() {
 /// the policy walk at encode is the sole refusal owner.
 #[test]
 fn the_test_entry_table_admits_past_its_cap_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     // The coherence walk demands unique names and unique targets, so the over-cap
     // table is otherwise coherent and only the cap can refuse.
     for n in 0..=MAX_TEST_ENTRIES {
@@ -346,83 +354,145 @@ fn the_test_entry_table_admits_past_its_cap_and_only_encode_refuses() {
     );
 }
 
-// ---- F-3: the raw-index setters panic on a foreign or stale id.
+// ---- F-3: the fill setters refuse a foreign or stale id with a typed error.
 
-/// **This pins the pre-restructure behavior; the sanctioned F-3 change may flip it,
-/// citing this pin.** `set_record_fields` resolves its `TypeId` by raw `Vec` indexing
-/// (`self.types[ty.0 as usize]` in `draft.rs`), so an id this draft never minted is an
-/// index-out-of-bounds panic, not a typed refusal.
+/// **Flipped under the sanctioned F-3 change, citing the pre-restructure pin this
+/// test carried** (`set_record_fields_with_a_foreign_id_panics`): the fill is a
+/// checked lookup — an id this draft never minted is the closed typed refusal, never
+/// a panic — and the refusal mutates nothing.
 #[test]
-#[should_panic(expected = "index out of bounds: the len is 1 but the index is 5")]
-fn set_record_fields_with_a_foreign_id_panics() {
-    let mut draft = ImageDraft::new();
+fn set_record_fields_with_a_foreign_id_is_refused() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R");
     draft.add_record_type(RecordTypeDef {
         name,
         fields: Vec::new(),
     });
-    draft.set_record_fields(TypeId::from_index(5), Vec::new());
+    assert_eq!(
+        draft.set_record_fields(TypeId::from_index(5), Vec::new()),
+        Err(DraftStateError::ForeignDraft),
+    );
+    assert_eq!(draft.record_type_count(), 1, "the refusal mutated nothing");
 }
 
-/// **This pins the pre-restructure behavior; the sanctioned F-3 change may flip it,
-/// citing this pin.** `set_enum_variants` resolves its `EnumId` by raw `Vec` indexing
-/// (`self.enums[id.0 as usize]` in `draft.rs`), so an id minted by another draft is an
-/// index-out-of-bounds panic against this draft's table, not a typed refusal.
+/// **Flipped under the sanctioned F-3 change, citing the pre-restructure pin this
+/// test carried** (`set_enum_variants_with_a_foreign_id_panics`): an id minted by
+/// another draft is the closed typed refusal against this draft's table, never a
+/// panic, and the refusal mutates nothing.
 #[test]
-#[should_panic(expected = "index out of bounds: the len is 0 but the index is 0")]
-fn set_enum_variants_with_a_foreign_id_panics() {
-    let mut other = ImageDraft::new();
+fn set_enum_variants_with_a_foreign_id_is_refused() {
+    let mut other_owner = ImageDraft::new();
+    let mut other = admitted(&mut other_owner);
     let name = other.intern_string("E");
     let foreign = other.add_enum_type(EnumTypeDef {
         name,
         variants: Vec::new(),
     });
 
-    let mut draft = ImageDraft::new();
-    draft.set_enum_variants(foreign, Vec::new());
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    assert_eq!(
+        draft.set_enum_variants(foreign, Vec::new()),
+        Err(DraftStateError::ForeignDraft),
+    );
+    assert_eq!(draft.enum_type_count(), 0, "the refusal mutated nothing");
 }
 
-// ---- F-4: set_application_identity silently overwrites a divergent id.
-
-/// **This pins the pre-restructure behavior; the sanctioned F-4 change may flip it,
-/// citing this pin.** `set_application_identity` is an unguarded slot write: a second
-/// call with a *different* id silently wins, where the Product route latches a sticky
-/// conflict for the analogous divergent reclaim. After F-4 the divergent second call
-/// latches a conflict instead; the equal-reset half stays admitted.
+/// The one-time-fill half of the same law: a second fill of one row is the typed
+/// refusal, never an overwrite, and the first fill's definition survives.
 #[test]
-fn a_divergent_application_identity_silently_overwrites() {
+fn a_second_fill_of_one_row_is_refused_without_overwriting() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let name = draft.intern_string("R");
+    let field = draft.intern_string("f");
+    let record = draft.add_record_type(RecordTypeDef {
+        name,
+        fields: Vec::new(),
+    });
+    draft
+        .set_record_fields(
+            record,
+            vec![FieldDef {
+                name: field,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        )
+        .expect("the reserved row fills once");
+    assert_eq!(
+        draft.set_record_fields(record, Vec::new()),
+        Err(DraftStateError::IncoherentToken),
+        "a second fill is refused",
+    );
+    draft.commit();
+    let image = draft_owner.encode().expect("the filled draft encodes");
+    assert!(
+        !image.bytes.is_empty(),
+        "the first fill's definition survived"
+    );
+}
+
+// ---- F-4: set_application_identity is set-once-or-same with a sticky latch.
+
+/// **Flipped under the sanctioned F-4 change, citing the pre-restructure pin this
+/// test carried** (`a_divergent_application_identity_silently_overwrites`): the
+/// first set stores the identity, an equal reset is an idempotent no-op, and a
+/// divergent replacement latches the sticky conflict the fence reports — the first
+/// identity is retained, never silently overwritten.
+#[test]
+fn a_divergent_application_identity_latches_a_sticky_conflict() {
     let first = LedgerIdBytes::from_bytes([0x01; 16]);
     let second = LedgerIdBytes::from_bytes([0x02; 16]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
 
     draft.set_application_identity(first);
     assert_eq!(draft.contract_view().application(), Some(first));
 
+    // The equal reset stays admitted: an idempotent no-op, no conflict.
+    draft.set_application_identity(first);
+    assert_eq!(draft.contract_view().application(), Some(first));
+    assert!(
+        !matches!(
+            draft.encode().map(|_| ()),
+            Err(ImageBuildError::ApplicationIdentityConflict)
+        ),
+        "an equal reset latches nothing",
+    );
+
     draft.set_application_identity(second);
     assert_eq!(
         draft.contract_view().application(),
-        Some(second),
-        "the divergent second id wins without any recorded conflict",
+        Some(first),
+        "the first identity is retained",
+    );
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::ApplicationIdentityConflict),
+        "the divergence is a sticky coherence fact the fence reports",
     );
 }
 
-// ---- F-5: the raw value-shape arena escape admits what only encode refuses.
+// ---- F-5: the raw arena escape is deleted; the typed appenders remain nonblocking.
 
-/// **This pins the pre-restructure behavior; the sanctioned F-5 change may flip it,
-/// citing this pin.** `value_shapes_mut` hands out the raw `&mut` arena, so an
-/// over-wide struct shape is appended without refusal — observable as arena growth —
-/// and the encoder's whole-arena recheck is the sole refusal owner, even when no
-/// declaration references the shape.
+/// **Flipped under the sanctioned F-5 change, citing the pre-restructure pin this
+/// test carried** (`an_over_wide_raw_arena_append_succeeds_and_only_encode_refuses`):
+/// the raw `&mut` arena escape (`value_shapes_mut`) is deleted, and the typed
+/// appenders on the transaction surface are the sole mint path. The append itself
+/// stays nonblocking — an over-wide shape is admitted, observable as arena growth —
+/// and the fence's whole-arena walk keeps its pinned refusal position.
 #[test]
-fn an_over_wide_raw_arena_append_succeeds_and_only_encode_refuses() {
-    let mut draft = ImageDraft::new();
-    let values = draft.value_shapes_mut();
-    let int = values.scalar(Scalar::Int);
-    values.struct_shape(vec![int; MAX_STRUCT_LEAVES + 1]);
+fn an_over_wide_typed_arena_append_is_admitted_and_only_encode_refuses() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let int = draft.value_scalar(Scalar::Int);
+    draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]);
     assert_eq!(
         draft.value_shapes().len(),
         2,
-        "the raw append admitted the scalar and the over-wide struct",
+        "the typed append admitted the scalar and the over-wide struct",
     );
     assert_eq!(
         draft.encode().map(|_| ()),
@@ -442,8 +512,9 @@ fn an_over_wide_raw_arena_append_succeeds_and_only_encode_refuses() {
 /// invariance.
 #[test]
 fn a_failed_site_request_leaves_the_site_plan_unchanged() {
+    let mut draft_owner = ImageDraft::new();
     let (mut draft, root) = {
-        let mut draft = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         declare_fixture_product(&mut draft, &admitted_plan());
         let root = admit_fixture_root(&mut draft, &admitted_plan(), PLACEMENT_ID);
@@ -461,11 +532,11 @@ fn a_failed_site_request_leaves_the_site_plan_unchanged() {
         .expect("the binding is live");
     assert_eq!(format!("{placement_site:?}"), "0");
 
-    // A handle whose rows a discarded proof appended is stale once the proof drops.
+    // A handle whose rows a discarded transaction appended is stale once it drops.
+    draft.commit();
     let stale = {
-        let mut guard = draft.template_proof();
-        let proof = guard.proof_draft();
-        let extra = admit_fixture_root(proof, &admitted_plan(), SECOND_PLACEMENT_ID);
+        let mut proof = admitted(&mut draft_owner);
+        let extra = admit_fixture_root(&mut proof, &admitted_plan(), SECOND_PLACEMENT_ID);
         proof
             .bind_occurrence_site(
                 extra.occurrence(),
@@ -474,6 +545,7 @@ fn a_failed_site_request_leaves_the_site_plan_unchanged() {
             )
             .expect("the extra root admits a whole-payload site")
     };
+    let mut draft = admitted(&mut draft_owner);
     assert!(
         draft.request_site(&stale).is_err(),
         "a handle over a discarded row does not mint",
@@ -509,13 +581,16 @@ fn a_failed_site_request_leaves_the_site_plan_unchanged() {
 #[test]
 fn a_foreign_handle_is_refused_without_touching_the_plan() {
     let build = || {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         declare_fixture_product(&mut draft, &admitted_plan());
         let root = admit_fixture_root(&mut draft, &admitted_plan(), PLACEMENT_ID);
-        (draft, root)
+        draft.commit();
+        (draft_owner, root)
     };
-    let (mut mine, my_root) = build();
+    let (mut mine_owner, my_root) = build();
+    let mut mine = admitted(&mut mine_owner);
     let (theirs, their_root) = build();
     let foreign = theirs
         .bind_occurrence_site(
@@ -550,7 +625,8 @@ fn a_foreign_handle_is_refused_without_touching_the_plan() {
 /// refused whole and the next successful append still mints `FuncId` zero.
 #[test]
 fn a_failed_function_append_leaves_no_function_row() {
-    let mut other = ImageDraft::new();
+    let mut other_owner = ImageDraft::new();
+    let mut other = admitted(&mut other_owner);
     other.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     declare_fixture_product(&mut other, &admitted_plan());
     let other_root = admit_fixture_root(&mut other, &admitted_plan(), PLACEMENT_ID);
@@ -563,7 +639,8 @@ fn a_failed_function_append_leaves_no_function_row() {
         .expect("the root admits a whole-payload site");
     let foreign_site = other.request_site(&handle).expect("a live binding");
 
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     assert!(
@@ -594,15 +671,18 @@ fn a_failed_function_append_leaves_no_function_row() {
 /// held — proof that both tables were restored to their pre-proof lengths.
 #[test]
 fn a_discarded_proof_rolls_back_the_intern_text_compound() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let main = unit_function(&mut draft, "main", vec![Instr::Return]);
     draft.add_export(ExportId::of_local("m", "main"), main);
     let before = draft.encode().expect("a fitting draft").bytes;
 
+    draft.commit();
     let proof_const = {
-        let mut guard = draft.template_proof();
-        guard.proof_draft().intern_text("throwaway-text")
+        let mut proof = admitted(&mut draft_owner);
+        proof.intern_text("throwaway-text")
     };
+    let mut draft = admitted(&mut draft_owner);
     let after = draft.encode().expect("a fitting draft").bytes;
     assert_eq!(before, after, "the compound appended nothing that survived");
 
@@ -622,14 +702,15 @@ fn a_discarded_proof_rolls_back_the_intern_text_compound() {
 /// operands compare equal, equality being over the logical ordinal alone.
 #[test]
 fn a_rewound_and_reappended_row_refuses_the_operand_minted_before_the_rewind() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
+    draft.commit();
     let old_site = {
-        let mut guard = draft.template_proof();
-        let proof = guard.proof_draft();
-        declare_fixture_product(proof, &admitted_plan());
-        let root = admit_fixture_root(proof, &admitted_plan(), PLACEMENT_ID);
+        let mut proof = admitted(&mut draft_owner);
+        declare_fixture_product(&mut proof, &admitted_plan());
+        let root = admit_fixture_root(&mut proof, &admitted_plan(), PLACEMENT_ID);
         let handle = proof
             .bind_occurrence_site(
                 root.occurrence(),
@@ -639,6 +720,7 @@ fn a_rewound_and_reappended_row_refuses_the_operand_minted_before_the_rewind() {
             .expect("the root admits a whole-payload site");
         proof.request_site(&handle).expect("a live binding")
     };
+    let mut draft = admitted(&mut draft_owner);
 
     // The identical rows re-mint at the same ordinals, with fresh stamps.
     declare_fixture_product(&mut draft, &admitted_plan());

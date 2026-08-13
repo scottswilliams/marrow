@@ -6,7 +6,9 @@
 //! structural rejections (unreachable code, fall-off-end, return-type mismatch) live
 //! here beside the machine that owns them.
 
-use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
+use marrow_image::{
+    DraftTxn, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
+};
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 use std::path::{Path, PathBuf};
@@ -105,8 +107,11 @@ fn rendering_and_conversion_owner_comments_do_not_regress() {
 }
 
 /// Encode a one-function image `f(): ret` built by `build`, returning its bytes.
-fn encode(build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>)) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+fn encode(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> Vec<u8> {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     let (ret, code) = build(&mut draft);
@@ -133,7 +138,7 @@ fn encode(build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>)) -> Vec
 }
 
 /// Seal `f(): ret`, returning the phase code on a verifier rejection.
-fn seal(build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>)) -> Result<(), String> {
+fn seal(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> Result<(), String> {
     verify(&encode(build))
         .map(|_| ())
         .map_err(|rejection| rejection.code().to_string())
@@ -142,7 +147,7 @@ fn seal(build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>)) -> Resul
 /// Build, verify, and run `f(): ret`, returning either its value or the typed code
 /// of the verifier rejection / runtime fault.
 fn build_and_run(
-    build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>),
+    build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>),
 ) -> Result<Option<Value>, String> {
     let bytes = encode(build);
     let image = verify(&bytes).map_err(|rejection| rejection.code().to_string())?;

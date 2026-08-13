@@ -149,7 +149,7 @@ impl FunctionRegistry {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         records: &TypeRegistry,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         durable: &DurableRegistry,
         functions: &[DeclaredFn<'_>],
         modules: ModuleLedger,

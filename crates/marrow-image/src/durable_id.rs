@@ -1141,8 +1141,17 @@ mod tests {
         keys: Vec<KeyColumn>,
         indexes: Vec<DurableIndexShape>,
     ) -> ImageDraft {
+        one_root_of_application(id(0x0a), members, keys, indexes)
+    }
+
+    fn one_root_of_application(
+        application: LedgerIdBytes,
+        members: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
+        keys: Vec<KeyColumn>,
+        indexes: Vec<DurableIndexShape>,
+    ) -> ImageDraft {
         let mut draft = ImageDraft::new();
-        draft.set_application_identity(id(0x0a));
+        draft.set_application_identity(application);
         let record = entry_record(&mut draft);
         let commands = members(&mut draft);
         let name = draft.intern_string("root");
@@ -1452,9 +1461,14 @@ mod tests {
         let narrowed = one_root(two_fields(0x0e, true, false), single_text_key(), Vec::new());
         assert_ne!(base, cid(narrowed.contract_view()));
 
-        // A different application changes the id.
-        let mut other_app = counters_graph();
-        other_app.set_application_identity(id(0x2a));
+        // A different application changes the id. (The slot is set-once-or-same, so
+        // the divergent application is built fresh rather than overwritten.)
+        let other_app = one_root_of_application(
+            id(0x2a),
+            two_fields(0x0e, true, true),
+            single_text_key(),
+            Vec::new(),
+        );
         assert_ne!(base, cid(other_app.contract_view()));
     }
 

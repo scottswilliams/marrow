@@ -2,8 +2,17 @@ use super::*;
 
 use crate::decl::DeclarationBudget;
 use crate::durable::DurableRegistry;
-use marrow_image::{CollectionTypeDef, EnumTypeDef, FieldDef, ImageType, RecordTypeDef, Scalar};
+use marrow_image::{
+    CollectionTypeDef, DraftTxn, EnumTypeDef, FieldDef, ImageType, RecordTypeDef, Scalar,
+};
 use marrow_project::IdentityLedger;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 fn name(text: &str) -> TypeExpr {
     TypeExpr::Name {
@@ -130,6 +139,12 @@ struct OwnerSnapshot {
     fill_failures: Vec<(usize, ResolveRefusal)>,
     limit: u8,
     payload_count: usize,
+}
+
+/// A fresh draft transaction over a leaked owner, for value-position fixtures.
+fn fresh_txn() -> DraftTxn<'static> {
+    let owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    admitted(owner)
 }
 
 fn owner_snapshot(registry: &TypeRegistry) -> OwnerSnapshot {
@@ -275,7 +290,7 @@ impl<E> GraphOutcome for Result<ValueGraph, E> {
     }
 }
 
-fn mint_ready(registry: &TypeRegistry, draft: &mut ImageDraft, template: usize) -> TypeInstId {
+fn mint_ready(registry: &TypeRegistry, draft: &mut DraftTxn<'_>, template: usize) -> TypeInstId {
     registry
         .mint_type_instance(draft, template, &[GArg::Scalar(ScalarType::Int)], site())
         .expect("control instantiation is Ready")
@@ -284,7 +299,8 @@ fn mint_ready(registry: &TypeRegistry, draft: &mut ImageDraft, template: usize) 
 #[test]
 fn missing_template_index_is_rejected_before_minting_owner_state() {
     let registry = test_registry(Vec::new());
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
 
@@ -308,7 +324,8 @@ fn wrong_argument_counts_are_rejected_before_minting_owner_state() {
         ],
     ] {
         let registry = test_registry(vec![struct_template("Pair", &["T", "U"])]);
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let owner_before = owner_snapshot(&registry);
         let draft_before = draft_fingerprint(&draft);
         let result = registry.mint_type_instance(&mut draft, 0, &args, site());
@@ -327,7 +344,8 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
     let mut observations = Vec::new();
 
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let missing_template = mint_ready(&registry, &mut draft, 0);
     registry.generics.borrow_mut().type_insts[0].template = usize::MAX;
     let owner_before = owner_snapshot(&registry);
@@ -349,7 +367,8 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
         ],
     ] {
         let registry = test_registry(vec![struct_template("Box", &["T"])]);
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let id = mint_ready(&registry, &mut draft, 0);
         registry.generics.borrow_mut().type_insts[0].args = args;
         let owner_before = owner_snapshot(&registry);
@@ -369,7 +388,8 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
     }
 
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let id = mint_ready(&registry, &mut draft, 0);
     let orphan_name = draft.intern_string("OrphanStruct");
     let orphan = draft.add_record_type(RecordTypeDef {
@@ -398,7 +418,8 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
 #[test]
 fn missing_template_ready_metadata_is_hidden_from_anchor_spelling() {
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let id = mint_ready(&registry, &mut draft, 0);
     registry.generics.borrow_mut().type_insts[0].template = usize::MAX;
     let owner_before = owner_snapshot(&registry);
@@ -414,7 +435,8 @@ fn missing_template_ready_metadata_is_hidden_from_anchor_spelling() {
 #[test]
 fn missing_template_ready_metadata_is_rejected_by_value_graph() {
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let _ = mint_ready(&registry, &mut draft, 0);
     registry.generics.borrow_mut().type_insts[0].template = usize::MAX;
     let owner_before = owner_snapshot(&registry);
@@ -522,7 +544,8 @@ store ^second[id: int]: Second
             parsed.file.store("second").expect("second exists"),
         ),
     ];
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let mut diagnostics = DiagnosticCollector::new();
     let records = TypeRegistry::build(
         &mut draft,
@@ -545,9 +568,10 @@ store ^second[id: int]: Second
     );
     let ledger = IdentityLedger::parse(IDS.as_bytes()).expect("fixture ledger parses");
 
+    draft.commit();
     let (outcome, builds) = count_metadata_directory_builds(|| {
         DurableRegistry::build(
-            &mut draft,
+            &mut draft_owner,
             &records,
             &resources,
             &stores,
@@ -611,7 +635,8 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         crate::test_file_identity("src/main.mw"),
         store,
     )];
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(
         &mut draft,
@@ -651,8 +676,9 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
     let draft_before = draft_fingerprint(&draft);
     let ledger = IdentityLedger::parse(IDS.as_bytes()).expect("fixture ledger parses");
 
+    draft.commit();
     let outcome = DurableRegistry::build(
-        &mut draft,
+        &mut draft_owner,
         &registry,
         &resources,
         &stores,
@@ -668,12 +694,13 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         )) if target == GArg::Struct(orphan)
     ));
     assert_eq!(owner_snapshot(&registry), owner_before);
-    assert_eq!(draft_fingerprint(&draft), draft_before);
+    assert_eq!(draft_fingerprint(&draft_owner), draft_before);
     assert!(diagnostics.is_empty());
 }
 
-fn reserved_registry() -> (TypeRegistry, ImageDraft) {
-    let mut draft = ImageDraft::new();
+fn reserved_registry() -> (TypeRegistry, DraftTxn<'static>) {
+    let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let mut draft = admitted(draft_owner);
     let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(
         &mut draft,
@@ -802,7 +829,11 @@ fn reserved_result_valid_length_checks_both_argument_targets() {
     assert_eq!(observations, vec![true, true]);
 }
 
-fn target_case_with_registry(registry: TypeRegistry, mut draft: ImageDraft, target: GArg) -> bool {
+fn target_case_with_registry(
+    registry: TypeRegistry,
+    mut draft: DraftTxn<'static>,
+    target: GArg,
+) -> bool {
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
     let result = registry.mint_type_instance(&mut draft, 0, &[target], site());
@@ -811,7 +842,7 @@ fn target_case_with_registry(registry: TypeRegistry, mut draft: ImageDraft, targ
         && draft_fingerprint(&draft) == draft_before
 }
 
-fn target_case(draft: ImageDraft, target: GArg) -> bool {
+fn target_case(draft: DraftTxn<'static>, target: GArg) -> bool {
     target_case_with_registry(
         test_registry(vec![struct_template("Box", &["T"])]),
         draft,
@@ -819,7 +850,11 @@ fn target_case(draft: ImageDraft, target: GArg) -> bool {
     )
 }
 
-fn seed_collection(registry: &TypeRegistry, draft: &mut ImageDraft, spec: CollSpec) -> CollTypeId {
+fn seed_collection(
+    registry: &TypeRegistry,
+    draft: &mut DraftTxn<'_>,
+    spec: CollSpec,
+) -> CollTypeId {
     let def = match spec {
         CollSpec::List { elem } => CollectionTypeDef::List { elem: elem.image() },
         CollSpec::Map { key, value } => CollectionTypeDef::Map {
@@ -836,8 +871,9 @@ fn seed_collection(registry: &TypeRegistry, draft: &mut ImageDraft, spec: CollSp
 /// A draft holding one empty record type, and that type's id. Each call builds its own:
 /// a draft owns a strong identity, so two cases that need "the same" draft need two
 /// drafts built the same way, never one copied.
-fn orphan_record_draft() -> (ImageDraft, marrow_image::TypeId) {
-    let mut draft = ImageDraft::new();
+fn orphan_record_draft() -> (DraftTxn<'static>, marrow_image::TypeId) {
+    let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let mut draft = admitted(draft_owner);
     let name = draft.intern_string("OrphanRecord");
     let record = draft.add_record_type(RecordTypeDef {
         name,
@@ -851,7 +887,7 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
     let (struct_draft, record) = orphan_record_draft();
     let (group_draft, _) = orphan_record_draft();
 
-    let mut enum_draft = ImageDraft::new();
+    let mut enum_draft = fresh_txn();
     let enum_name = enum_draft.intern_string("OrphanEnum");
     let enum_id = enum_draft.add_enum_type(EnumTypeDef {
         name: enum_name,
@@ -859,11 +895,11 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
     });
 
     let observations = vec![
-        target_case(ImageDraft::new(), GArg::Nominal(NominalId(0))),
+        target_case(fresh_txn(), GArg::Nominal(NominalId(0))),
         target_case(struct_draft, GArg::Struct(record)),
         target_case(group_draft, GArg::Group(record)),
         target_case(enum_draft, GArg::Enum(enum_id)),
-        target_case(ImageDraft::new(), GArg::Param(0)),
+        target_case(fresh_txn(), GArg::Param(0)),
     ];
 
     assert_eq!(observations, vec![true; 5]);
@@ -872,7 +908,8 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
 #[test]
 fn missing_collection_target_is_rejected_before_table_indexing() {
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
     let result = registry.mint_type_instance(
@@ -887,8 +924,9 @@ fn missing_collection_target_is_rejected_before_table_indexing() {
     assert_eq!(draft_fingerprint(&draft), draft_before);
 }
 
-fn resource_target_fixture() -> (TypeRegistry, ImageDraft, TypeId, TypeId) {
-    let mut draft = ImageDraft::new();
+fn resource_target_fixture() -> (TypeRegistry, DraftTxn<'static>, TypeId, TypeId) {
+    let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let mut draft = admitted(draft_owner);
     let group_name = draft.intern_string("Details");
     let group_id = draft.add_record_type(RecordTypeDef {
         name: group_name,
@@ -919,7 +957,7 @@ fn wrong_family_record_targets_are_rejected_before_ready_publication() {
     let (root_struct_registry, root_struct_draft, root_struct_id, _) = resource_target_fixture();
     let (root_group_registry, root_group_draft, root_group_id, _) = resource_target_fixture();
 
-    let mut struct_draft = ImageDraft::new();
+    let mut struct_draft = fresh_txn();
     let struct_name = struct_draft.intern_string("Point");
     let struct_id = struct_draft.add_record_type(RecordTypeDef {
         name: struct_name,
@@ -937,7 +975,7 @@ fn wrong_family_record_targets_are_rejected_before_ready_publication() {
         struct_template("Box", &["T"]),
         struct_template("Inner", &["T"]),
     ]);
-    let mut generic_draft = ImageDraft::new();
+    let mut generic_draft = fresh_txn();
     let generic = mint_ready(&generic_registry, &mut generic_draft, 1);
     let TypeInstId::Record(generic_id) = generic else {
         panic!("Inner is a struct template")
@@ -975,7 +1013,7 @@ fn in_range_collections_recursively_validate_every_nested_target() {
     let mut observations = Vec::new();
 
     let list_registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut list_draft = ImageDraft::new();
+    let mut list_draft = fresh_txn();
     let orphan_name = list_draft.intern_string("OrphanStruct");
     let orphan = list_draft.add_record_type(RecordTypeDef {
         name: orphan_name,
@@ -995,7 +1033,7 @@ fn in_range_collections_recursively_validate_every_nested_target() {
     ));
 
     let map_registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut map_draft = ImageDraft::new();
+    let mut map_draft = fresh_txn();
     let map = seed_collection(
         &map_registry,
         &mut map_draft,
@@ -1011,7 +1049,7 @@ fn in_range_collections_recursively_validate_every_nested_target() {
     ));
 
     let nested_registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut nested_draft = ImageDraft::new();
+    let mut nested_draft = fresh_txn();
     let orphan_name = nested_draft.intern_string("OrphanEnum");
     let orphan = nested_draft.add_enum_type(EnumTypeDef {
         name: orphan_name,
@@ -1051,7 +1089,8 @@ fn nested_non_ready_generic_targets_are_rejected_without_outer_publication() {
             struct_template("Inner", &["T"])
         };
         let registry = test_registry(vec![inner_template, struct_template("Outer", &["T"])]);
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let inner = mint_ready(&registry, &mut draft, 0);
         let inner_arg = match inner {
             TypeInstId::Record(id) => GArg::Struct(id),
@@ -1077,18 +1116,21 @@ fn nested_non_ready_generic_targets_are_rejected_without_outer_publication() {
 
 #[test]
 fn template_proof_parameter_stays_local_to_the_guard() {
-    let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut registry = test_registry(vec![struct_template("Box", &["T"])]);
+    let mut draft_owner = ImageDraft::new();
+    let draft = admitted(&mut draft_owner);
     let registry_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
+    let (records_at, enums_at) = (draft.record_type_count(), draft.enum_type_count());
+    draft.commit();
 
     // The abstract parameter argument is legal only inside the proof pass, minted directly on
     // the real registry and draft.
     let proof = registry
-        .enter_template_proof(draft.record_type_count(), draft.enum_type_count())
+        .enter_template_proof(records_at, enums_at)
         .expect("stable registry admits the proof pass");
-    let mut guard = draft.template_proof();
-    let proof_draft = guard.proof_draft();
+    let mut guard = admitted(&mut draft_owner);
+    let proof_draft = &mut guard;
     let id = registry
         .mint_type_instance(proof_draft, 0, &[GArg::Param(0)], site())
         .expect("proof-only parameter is legal");
@@ -1108,7 +1150,8 @@ fn template_proof_parameter_stays_local_to_the_guard() {
         (proof_row.args.clone(), body)
     };
 
-    let mut expected = ImageDraft::new();
+    let mut expected_owner = ImageDraft::new();
+    let mut expected = admitted(&mut expected_owner);
     let box_name = expected.intern_string("Box");
     let field_name = expected.intern_string("t");
     let expected_box = expected.add_record_type(RecordTypeDef {
@@ -1133,13 +1176,14 @@ fn template_proof_parameter_stays_local_to_the_guard() {
     registry.exit_template_proof(proof);
     drop(guard);
     assert_eq!(owner_snapshot(&registry), registry_before);
-    assert_eq!(draft_fingerprint(&draft), draft_before);
+    assert_eq!(draft_fingerprint(&draft_owner), draft_before);
 }
 
 #[test]
 fn unknown_value_target_is_not_an_ordinary_zero_edge_node() {
     let registry = test_registry(vec![struct_template("Outer", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("Orphan");
     let orphan = draft.add_record_type(RecordTypeDef {
         name,
@@ -1157,7 +1201,8 @@ fn unknown_value_target_is_not_an_ordinary_zero_edge_node() {
 
 #[test]
 fn valid_group_adds_no_value_containment_edge() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let root_name = draft.intern_string("Resource");
     let root = draft.add_record_type(RecordTypeDef {
         name: root_name,
@@ -1201,7 +1246,8 @@ fn valid_group_adds_no_value_containment_edge() {
 #[test]
 fn valid_collection_target_remains_accepted() {
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let collection = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
         .into_index()
@@ -1210,7 +1256,8 @@ fn valid_collection_target_remains_accepted() {
         .mint_type_instance(&mut draft, 0, &[GArg::Collection(collection)], site())
         .expect("valid collection target is accepted");
 
-    let mut expected = ImageDraft::new();
+    let mut expected_owner = ImageDraft::new();
+    let mut expected = admitted(&mut expected_owner);
     let expected_collection = expected.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Int),
     });
@@ -1432,7 +1479,11 @@ fn reserved_result_application_reports_missing_and_wrong_kind_causes() {
     );
 }
 
-fn assert_exact_target_invariant(registry: TypeRegistry, mut draft: ImageDraft, target: GArg) {
+fn assert_exact_target_invariant(
+    registry: TypeRegistry,
+    mut draft: DraftTxn<'static>,
+    target: GArg,
+) {
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
     let invariant =
@@ -1450,7 +1501,7 @@ fn assert_exact_target_invariant(registry: TypeRegistry, mut draft: ImageDraft, 
 fn argument_targets_report_exact_private_causes_without_publication() {
     let (struct_draft, record) = orphan_record_draft();
     let (group_draft, _) = orphan_record_draft();
-    let mut enum_draft = ImageDraft::new();
+    let mut enum_draft = fresh_txn();
     let enum_name = enum_draft.intern_string("OrphanEnum");
     let enum_id = enum_draft.add_enum_type(EnumTypeDef {
         name: enum_name,
@@ -1459,7 +1510,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
 
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
-        ImageDraft::new(),
+        fresh_txn(),
         GArg::Nominal(NominalId(0)),
     );
     assert_exact_target_invariant(
@@ -1479,7 +1530,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     );
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
-        ImageDraft::new(),
+        fresh_txn(),
         GArg::Collection(CollTypeId::from_index(0)),
     );
 
@@ -1490,7 +1541,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     let (root_registry, root_draft, root_id, _) = resource_target_fixture();
     assert_exact_target_invariant(root_registry, root_draft, GArg::Group(root_id));
 
-    let mut struct_draft = ImageDraft::new();
+    let mut struct_draft = fresh_txn();
     let struct_name = struct_draft.intern_string("Point");
     let struct_id = struct_draft.add_record_type(RecordTypeDef {
         name: struct_name,
@@ -1506,7 +1557,8 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     assert_exact_target_invariant(struct_registry, struct_draft, GArg::Group(struct_id));
 
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
     let invariant = take_resolve_invariant(registry.mint_type_instance(
@@ -1520,7 +1572,8 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     assert_eq!(draft_fingerprint(&draft), draft_before);
 
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let orphan_name = draft.intern_string("NestedOrphan");
     let orphan = draft.add_record_type(RecordTypeDef {
         name: orphan_name,
@@ -1556,7 +1609,8 @@ fn nested_non_ready_targets_report_the_exact_missing_body() {
             struct_template("Outer", &["T"]),
             struct_template("Inner", &["T"]),
         ]);
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let inner = mint_ready(&registry, &mut draft, 1);
         let row = registry
             .generics
@@ -1779,14 +1833,16 @@ fn reserved_readers_report_exact_argument_counts() {
 #[test]
 fn typed_struct_instance_owner_returns_only_a_ready_record() {
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let record = registry
         .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site())
         .expect("valid struct instance is proven Ready");
     assert_eq!(record.index(), 0);
 
     let registry = test_registry(vec![enum_template("Maybe", "T")]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
     let invariant = take_resolve_invariant(registry.mint_struct_instance(
@@ -1807,7 +1863,8 @@ fn typed_struct_instance_owner_returns_only_a_ready_record() {
     assert_eq!(draft_fingerprint(&draft), draft_before);
 
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let record = registry
         .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site())
         .expect("control struct instance is Ready");
@@ -1841,7 +1898,8 @@ fn typed_struct_instance_owner_returns_only_a_ready_record() {
 #[test]
 fn typed_enum_variant_owner_returns_the_selected_ready_member() {
     let registry = test_registry(vec![enum_template("Maybe", "T")]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let witness = registry
         .mint_enum_variant_instance(
             &mut draft,
@@ -1858,7 +1916,8 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
     assert_eq!(witness.enum_id.index(), 0);
 
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
     let invariant = take_resolve_invariant(registry.mint_enum_variant_instance(
@@ -1884,7 +1943,8 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
 
     for renamed in [false, true] {
         let registry = test_registry(vec![enum_template("Maybe", "T")]);
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let witness = registry
             .mint_enum_variant_instance(
                 &mut draft,
@@ -1938,7 +1998,8 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
     }
 
     let registry = test_registry(vec![enum_template("Maybe", "T")]);
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let witness = registry
         .mint_enum_variant_instance(
             &mut draft,

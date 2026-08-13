@@ -11,15 +11,22 @@ use marrow_image::bounds::{
     MAX_ADMITTED_ROOT_OCCURRENCES, MAX_DURABLE_DEPTH, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
 };
 use marrow_image::{
-    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DurableContractGraph,
-    DurableGraphInputRefusal, DurableIndexComponent, DurableIndexShape, ExportId, FunctionDef,
-    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SpanEntry, TypeId,
+    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
+    DurableContractGraph, DurableGraphInputRefusal, DurableIndexComponent, DurableIndexShape,
+    ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry, TypeId,
 };
 
 #[path = "common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
@@ -48,10 +55,11 @@ fn component_id(n: usize) -> LedgerIdBytes {
 /// The declared member graph and the index shapes are the only things the callers vary,
 /// so the bound under test is the sole reason an encode fails.
 fn encode_root(
-    members: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
+    members: impl FnOnce(&mut DraftTxn<'_>) -> Vec<DeclarationMemberDef>,
     indexes: Vec<DurableIndexShape>,
 ) -> Result<(), ImageBuildError> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let members = members(&mut draft);
     let type_name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
@@ -111,10 +119,9 @@ fn encode_root(
 
 /// A Product whose single field member carries a dense struct value of `leaves` scalar
 /// leaves.
-fn members_with_struct_field(draft: &mut ImageDraft, leaves: usize) -> Vec<DeclarationMemberDef> {
-    let values = draft.value_shapes_mut();
-    let int = values.scalar(Scalar::Int);
-    let value = values.struct_shape(vec![int; leaves]);
+fn members_with_struct_field(draft: &mut DraftTxn<'_>, leaves: usize) -> Vec<DeclarationMemberDef> {
+    let int = draft.value_scalar(Scalar::Int);
+    let value = draft.value_struct(vec![int; leaves]);
     vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
@@ -175,9 +182,8 @@ fn an_over_wide_shape_no_declaration_references_still_refuses() {
         encode_root(
             |draft| {
                 let members = members_with_struct_field(draft, MAX_STRUCT_LEAVES);
-                let values = draft.value_shapes_mut();
-                let int = values.scalar(Scalar::Int);
-                let _unreferenced = values.struct_shape(vec![int; MAX_STRUCT_LEAVES + 1]);
+                let int = draft.value_scalar(Scalar::Int);
+                let _unreferenced = draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]);
                 members
             },
             Vec::new(),
@@ -274,13 +280,14 @@ fn a_construction_budget_beyond_the_admitted_intake_is_refused() {
 #[test]
 fn a_command_vector_wider_than_its_budget_appends_no_row() {
     let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name,
         fields: Vec::new(),
     });
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     let two = vec![
         DeclarationMemberDef {
             parent: None,
@@ -324,13 +331,14 @@ fn a_second_distinct_product_past_its_plan_budget_is_refused_and_appends_no_row(
     let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-Product budget");
     let second_product = component_id(0x51);
 
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name,
         fields: Vec::new(),
     });
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     let one_field = |id| {
         vec![DeclarationMemberDef {
             parent: None,
@@ -406,13 +414,14 @@ fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
     let product = LedgerIdBytes::from_bytes(PRODUCT_ID);
     let second_placement = component_id(0x53);
 
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name,
         fields: Vec::new(),
     });
-    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let value = draft.value_scalar(Scalar::Int);
     let members = vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
@@ -517,7 +526,8 @@ const OVER_DEEP_STEPS: usize = 8_000;
 /// node deeper than a semantic path can name.
 #[test]
 fn a_draft_refuses_an_over_deep_command_vector() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name,
@@ -570,8 +580,9 @@ fn a_durable_graph_refuses_an_over_deep_command_vector() {
 /// refused, on both routes and whether or not the deepest body declares a member.
 #[test]
 fn the_member_nesting_bound_admits_its_own_depth_and_refuses_one_more() {
-    for (depth, admitted) in [(MAX_DURABLE_DEPTH, true), (MAX_DURABLE_DEPTH + 1, false)] {
-        let mut draft = ImageDraft::new();
+    for (depth, within_bound) in [(MAX_DURABLE_DEPTH, true), (MAX_DURABLE_DEPTH + 1, false)] {
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let name = draft.intern_string("R");
         let record = draft.add_record_type(RecordTypeDef {
             name,
@@ -586,8 +597,8 @@ fn the_member_nesting_bound_admits_its_own_depth_and_refuses_one_more() {
                     nested_groups(depth),
                 )
                 .is_ok(),
-            admitted,
-            "a draft admits a body at depth {depth}: {admitted}",
+            within_bound,
+            "a draft admits a body at depth {depth}: {within_bound}",
         );
 
         let mut graph = DurableContractGraph::new();
@@ -600,8 +611,8 @@ fn the_member_nesting_bound_admits_its_own_depth_and_refuses_one_more() {
                     nested_groups(depth),
                 )
                 .is_ok(),
-            admitted,
-            "the durable graph admits a body at depth {depth}: {admitted}",
+            within_bound,
+            "the durable graph admits a body at depth {depth}: {within_bound}",
         );
     }
 }

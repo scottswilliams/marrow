@@ -24,8 +24,8 @@ use std::hash::{Hash, Hasher};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CollTypeId, CollectionTypeDef, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType,
-    RecordTypeDef, Scalar, TemplateProofDraftGuard, TypeId, VariantDef,
+    CollTypeId, CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType,
+    RecordTypeDef, Scalar, TypeId, VariantDef,
 };
 use marrow_project::FileIdentity;
 use marrow_syntax::{
@@ -902,55 +902,78 @@ pub(crate) struct RegistryProofSavepoint {
     entry_enums: usize,
 }
 
-/// A live isolated generic-template proof pass over the real registry and draft. Entering it
-/// admits the pass and records the savepoint; the guard restores both owners on **every**
-/// exit — the caller's normal return, an early lowering invariant, or an unwind — so a proof
-/// that fails or panics part-way leaks nothing. The proof body borrows the real draft through
-/// [`Self::draft`]; the registry is restored through its interior mutability. Only the
-/// diagnostics the caller takes before the guard drops cross back.
+/// The generic-owner composite guard: a live isolated template proof over the real
+/// registry (held by exclusive `&mut`) and draft (held through an armed
+/// [`DraftTxn`]). Both owners are restored on **every** exit — normal return, early
+/// lowering invariant, or unwind — registry inverse first, through
+/// compile-time-exclusive `RefCell::get_mut` (no runtime borrow flag, so a drop-time
+/// restore cannot panic), then the still-armed draft guard, exactly once. A template
+/// proof never commits its draft guard.
 pub(crate) struct TemplateProofScope<'r, 'd> {
-    registry: &'r TypeRegistry,
-    savepoint: Option<RegistryProofSavepoint>,
-    /// The draft's own rollback. It is a field rather than a value the scope applies,
-    /// because the guard *is* the borrow: the draft is unreachable except through it, and
-    /// dropping this field is the whole draft restoration. The scope's own `Drop` body runs
-    /// before any field drops, so the registry inverse is always restored first.
-    draft: TemplateProofDraftGuard<'d>,
+    registry: &'r mut TypeRegistry,
+    inverse: Option<RegistryProofSavepoint>,
+    /// The armed draft transaction. Dropping it is the whole draft restoration; the
+    /// scope's own `Drop` body restores the registry inverse before taking it.
+    draft: Option<DraftTxn<'d>>,
 }
 
 impl<'r, 'd> TemplateProofScope<'r, 'd> {
-    /// Admit a proof pass on a settled registry, taking the registry savepoint and the
-    /// draft's proof guard. Fails with the same admission errors as
-    /// [`TypeRegistry::enter_template_proof`] (an unstable fill owner, a non-open limit
-    /// owner, or owner contention), leaving both owners untouched.
+    /// Admit a proof pass on a settled registry, taking the registry savepoint and
+    /// an armed draft transaction; an inadmissible registry state refuses with both
+    /// owners untouched.
     pub(crate) fn enter(
-        registry: &'r TypeRegistry,
+        registry: &'r mut TypeRegistry,
         draft: &'d mut ImageDraft,
     ) -> Result<Self, GenericInvariant> {
-        let savepoint =
+        let inverse =
             registry.enter_template_proof(draft.record_type_count(), draft.enum_type_count())?;
+        #[expect(
+            clippy::expect_used,
+            reason = "admission law: a savepoint minted and consumed in one expression is fresh"
+        )]
+        let txn = draft
+            .begin_transaction(draft.savepoint())
+            .expect("a fresh savepoint admits the proof batch");
         Ok(Self {
             registry,
-            savepoint: Some(savepoint),
-            draft: draft.template_proof(),
+            inverse: Some(inverse),
+            draft: Some(txn),
         })
     }
 
-    /// The real in-progress draft the proof body appends its throwaway image to.
-    pub(crate) fn draft(&mut self) -> &mut ImageDraft {
-        self.draft.proof_draft()
+    /// The proof body's split borrows: the settled registry, reborrowed shared from
+    /// the guard's exclusive borrow (so any derived metadata session dies before the
+    /// guard can drop), and the armed draft transaction.
+    pub(crate) fn parts(&mut self) -> (&TypeRegistry, &mut DraftTxn<'d>) {
+        #[expect(
+            clippy::expect_used,
+            reason = "scope law: the guard is taken exactly once, by Drop"
+        )]
+        (
+            &*self.registry,
+            self.draft
+                .as_mut()
+                .expect("the scope holds its armed guard until it drops"),
+        )
+    }
+
+    /// The settled registry, for reads that must precede the guard's drop.
+    pub(crate) fn registry(&self) -> &TypeRegistry {
+        &*self.registry
     }
 }
 
 impl Drop for TemplateProofScope<'_, '_> {
-    /// Restore the compiler registry's inverse, then let the draft guard drop and discard
-    /// everything the proof appended.
+    /// Restore the compiler registry's inverse first, then take and drop the
+    /// still-armed draft guard exactly once — the drop-order law.
     fn drop(&mut self) {
-        if let Some(savepoint) = self.savepoint.take() {
-            self.registry.exit_template_proof(savepoint);
+        if let Some(inverse) = self.inverse.take() {
+            self.registry.exit_template_proof(inverse);
         }
+        drop(self.draft.take());
     }
 }
+// drop-path audit sentinel: end of TemplateProofScope::drop
 
 /// One owner-ordered finished transfer from the generic owner: the optional
 /// terminal limit row first, followed by the finished collection-payload
@@ -1659,188 +1682,10 @@ impl DisplayScratch {
 }
 
 #[cfg(test)]
-thread_local! {
-    static METADATA_DIRECTORY_BUILDS: Cell<usize> = const { Cell::new(0) };
-    static READY_BODY_MATCH_VISITS: Cell<usize> = const { Cell::new(0) };
-}
-
+#[path = "test_probes.rs"]
+mod test_probes;
 #[cfg(test)]
-struct MetadataBuildCounter {
-    previous: usize,
-}
-
-#[cfg(test)]
-impl Drop for MetadataBuildCounter {
-    fn drop(&mut self) {
-        METADATA_DIRECTORY_BUILDS.with(|count| count.set(self.previous));
-    }
-}
-
-/// Observe directory construction in one single-threaded production journey. This
-/// test-only counter cannot alter registry state or make a hostile state reachable.
-#[cfg(test)]
-pub(crate) fn count_metadata_directory_builds<T>(run: impl FnOnce() -> T) -> (T, usize) {
-    let previous = METADATA_DIRECTORY_BUILDS.with(|count| count.replace(0));
-    let guard = MetadataBuildCounter { previous };
-    let result = run();
-    let builds = METADATA_DIRECTORY_BUILDS.with(Cell::get);
-    drop(guard);
-    (result, builds)
-}
-
-#[cfg(test)]
-struct ReadyBodyMatchCounter {
-    previous: usize,
-}
-
-#[cfg(test)]
-impl Drop for ReadyBodyMatchCounter {
-    fn drop(&mut self) {
-        READY_BODY_MATCH_VISITS.with(|count| count.set(self.previous));
-    }
-}
-
-/// Count borrowed template-body matcher frames in one test journey. The counter
-/// observes work only; it cannot alter metadata or make a hostile row reachable.
-#[cfg(test)]
-fn count_ready_body_match_visits<T>(run: impl FnOnce() -> T) -> (T, usize) {
-    let previous = READY_BODY_MATCH_VISITS.with(|count| count.replace(0));
-    let guard = ReadyBodyMatchCounter { previous };
-    let result = run();
-    let visits = READY_BODY_MATCH_VISITS.with(Cell::get);
-    drop(guard);
-    (result, visits)
-}
-
-/// Deterministic operation counts for the generic-scaling KATs. Every field counts
-/// work performed by one production owner during a single-threaded test journey;
-/// the counter observes work only and cannot alter registry state or make a hostile
-/// row reachable. It is not a public hook and not a canonical fact.
-#[cfg(test)]
-#[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct ScalingCounts {
-    /// `MetadataScratch::try_new` invocations (directory builds).
-    pub(crate) directory_builds: usize,
-    /// Generic instantiation rows classified into directories, counting a full build's
-    /// whole population and an incremental extension's newly appended rows alike. When a
-    /// directory is rebuilt per probe this is `directory_builds * type_insts.len()`; when
-    /// the reused row directory is extended it is one visit per appended row, so it grows
-    /// linearly with the instantiation count rather than quadratically.
-    pub(crate) directory_row_visits: usize,
-    /// Elements examined by the `(template, args)` primary-key scan in
-    /// `existing_type_instance` (type-mint reuse).
-    pub(crate) type_inst_scan_steps: usize,
-    /// Elements examined by the `(template, args)` primary-key scan in
-    /// `reserve_fn_instance` (function-mint reuse).
-    pub(crate) fn_inst_scan_steps: usize,
-    /// Reuse probes performed by `instantiate_collection` (collection-mint dedup). With
-    /// the keyed index this is one keyed lookup per instantiation attempt, so the count is
-    /// the mint-attempt count and grows linearly with the collection population — the
-    /// former linear spec scan made per-attempt work O(collections), i.e. O(collections²).
-    pub(crate) coll_inst_probe_steps: usize,
-    /// Value-graph edges traversed across every `cycle_through` start.
-    pub(crate) cycle_walk_steps: usize,
-    /// `enter_template_proof` admissions (one isolated proof pass per generic template).
-    pub(crate) proof_clones: usize,
-    /// Type-inst rows the proof pass classifies into the shared metadata directory — the
-    /// rows its own body mints, extended onto the already-built population directory rather
-    /// than replayed over the whole settled population. Constant per template, decoupled from
-    /// the instantiation count.
-    pub(crate) proof_clone_rows: usize,
-    /// Characters rendered into editor hover displays across the whole compile
-    /// (`ty.spelling`/signature displays). A monomorphized instance body's facts are
-    /// discarded — an instance's use-site spans duplicate its template's — so its
-    /// spelling is never rendered; only monomorphic function and test bodies contribute.
-    /// On a divergent-monomorphization program the pre-repair per-instance render made
-    /// this Σ O(depth) = O(instances²); the repair holds it to the monomorphic baseline.
-    pub(crate) hover_spelling_chars: usize,
-}
-
-#[cfg(test)]
-thread_local! {
-    static SCALING_COUNTS: Cell<ScalingCounts> = const { Cell::new(ScalingCounts {
-        directory_builds: 0,
-        directory_row_visits: 0,
-        type_inst_scan_steps: 0,
-        fn_inst_scan_steps: 0,
-        coll_inst_probe_steps: 0,
-        cycle_walk_steps: 0,
-        proof_clones: 0,
-        proof_clone_rows: 0,
-        hover_spelling_chars: 0,
-    }) };
-}
-
-/// Observe editor hover-display rendering work: the character length of one rendered
-/// hover display. A no-op outside the scaling-count test window.
-#[cfg(test)]
-pub(crate) fn bump_hover_spelling_chars(chars: usize) {
-    bump_scaling(|counts| counts.hover_spelling_chars += chars);
-}
-
-#[cfg(test)]
-fn bump_scaling(update: impl FnOnce(&mut ScalingCounts)) {
-    SCALING_COUNTS.with(|cell| {
-        let mut counts = cell.get();
-        update(&mut counts);
-        cell.set(counts);
-    });
-}
-
-/// Run `run` with a fresh scaling-count window and restore the prior window after,
-/// returning its result paired with the deterministic operation counts observed.
-#[cfg(test)]
-pub(crate) fn capture_scaling_counts<T>(run: impl FnOnce() -> T) -> (T, ScalingCounts) {
-    let previous = SCALING_COUNTS.with(|cell| cell.replace(ScalingCounts::default()));
-    let result = run();
-    let counts = SCALING_COUNTS.with(Cell::get);
-    SCALING_COUNTS.with(|cell| cell.set(previous));
-    (result, counts)
-}
-
-/// Deterministic work counts for alias-cycle classification. These observe the
-/// real alias-table owner only in ordinary test builds and cannot affect graph
-/// state, diagnostics, or accepted programs.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct AliasCycleCounts {
-    target_visits: usize,
-    resolved_edges: usize,
-    node_entries: usize,
-    edge_inspections: usize,
-    cyclic_aliases: usize,
-}
-
-#[cfg(test)]
-thread_local! {
-    static ALIAS_CYCLE_COUNTS: Cell<AliasCycleCounts> = const {
-        Cell::new(AliasCycleCounts {
-            target_visits: 0,
-            resolved_edges: 0,
-            node_entries: 0,
-            edge_inspections: 0,
-            cyclic_aliases: 0,
-        })
-    };
-}
-
-#[cfg(test)]
-fn bump_alias_cycle(update: impl FnOnce(&mut AliasCycleCounts)) {
-    ALIAS_CYCLE_COUNTS.with(|cell| {
-        let mut counts = cell.get();
-        update(&mut counts);
-        cell.set(counts);
-    });
-}
-
-#[cfg(test)]
-fn capture_alias_cycle_counts<T>(run: impl FnOnce() -> T) -> (T, AliasCycleCounts) {
-    let previous = ALIAS_CYCLE_COUNTS.with(|cell| cell.replace(AliasCycleCounts::default()));
-    let result = run();
-    let counts = ALIAS_CYCLE_COUNTS.with(Cell::get);
-    ALIAS_CYCLE_COUNTS.with(|cell| cell.set(previous));
-    (result, counts)
-}
+pub(crate) use test_probes::*;
 
 impl TypeRegistry {
     pub(crate) fn with_metadata_session<'registry, T, E>(
@@ -2026,7 +1871,7 @@ impl TypeRegistry {
     /// The image enum index of the reserved `Option[inner]`, minting it on first use.
     pub(crate) fn instantiate_reserved_option(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         inner: GArg,
         site: MintSite<'_>,
     ) -> Result<EnumId, ResolveError> {
@@ -2184,7 +2029,7 @@ impl TypeRegistry {
     /// declared as a value type.
     pub(crate) fn resolve_garg(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         annotation: &TypeExpr,
         site: MintSite<'_>,
     ) -> Result<GArg, ResolveError> {
@@ -2197,7 +2042,7 @@ impl TypeRegistry {
     #[inline(always)]
     fn resolve_garg_env(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
         site: MintSite<'_>,
@@ -2207,7 +2052,7 @@ impl TypeRegistry {
 
     fn resolve_garg_expanded(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
         site: MintSite<'_>,
@@ -2254,7 +2099,7 @@ impl TypeRegistry {
 
     fn resolve_list_garg(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
         site: MintSite<'_>,
@@ -2268,7 +2113,7 @@ impl TypeRegistry {
 
     fn resolve_map_garg(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
         site: MintSite<'_>,
@@ -2284,7 +2129,7 @@ impl TypeRegistry {
 
     fn resolve_template_garg(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         head: &str,
         args: &[TypeExpr],
         subst: &[(String, GArg)],
@@ -2435,7 +2280,7 @@ impl TypeRegistry {
     #[inline(always)]
     pub(crate) fn mint_type_instance(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
         site: MintSite<'_>,
@@ -2446,7 +2291,7 @@ impl TypeRegistry {
     #[inline(never)]
     fn mint_type_instance_with_requirement<R: ReadyInstanceRequirement>(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
         site: MintSite<'_>,
@@ -2562,7 +2407,7 @@ impl TypeRegistry {
     /// returned row are both record-shaped and Ready.
     pub(crate) fn mint_struct_instance(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
         site: MintSite<'_>,
@@ -2599,7 +2444,7 @@ impl TypeRegistry {
     /// selected during source-template inference.
     pub(crate) fn mint_enum_variant_instance(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         args: &[GArg],
         selection: EnumVariantSelection<'_>,
@@ -2657,7 +2502,7 @@ impl TypeRegistry {
     /// outermost dependency settlement.
     fn fill_type_body(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         id: TypeInstId,
         args: &[GArg],
@@ -2681,7 +2526,7 @@ impl TypeRegistry {
 
     fn fill_struct_type_body(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         id: TypeInstId,
         args: &[GArg],
@@ -2719,13 +2564,19 @@ impl TypeRegistry {
             }
             .into());
         };
-        draft.set_record_fields(ty, defs);
+        #[expect(
+            clippy::expect_used,
+            reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
+        )]
+        draft
+            .set_record_fields(ty, defs)
+            .expect("a reserved row fills once");
         Ok(InstBody::Struct(resolved))
     }
 
     fn fill_enum_type_body(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         id: TypeInstId,
         args: &[GArg],
@@ -2784,7 +2635,13 @@ impl TypeRegistry {
             }
             .into());
         };
-        draft.set_enum_variants(enum_id, defs);
+        #[expect(
+            clippy::expect_used,
+            reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
+        )]
+        draft
+            .set_enum_variants(enum_id, defs)
+            .expect("a reserved row fills once");
         Ok(InstBody::Enum(resolved))
     }
 
@@ -3443,7 +3300,7 @@ impl TypeRegistry {
     /// `List[int]` in the image.
     pub(crate) fn instantiate_list(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         elem: GArg,
     ) -> Result<CollTypeId, ResolveError> {
         self.instantiate_collection(draft, CollSpec::List { elem })
@@ -3477,7 +3334,7 @@ impl TypeRegistry {
     /// reusing it thereafter, deduped by source key/value types.
     pub(crate) fn instantiate_map(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         key: GArg,
         value: GArg,
     ) -> Result<CollTypeId, ResolveError> {
@@ -3487,7 +3344,7 @@ impl TypeRegistry {
 
     fn instantiate_collection(
         &self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         spec: CollSpec,
     ) -> Result<CollTypeId, ResolveError> {
         match spec {
@@ -3788,7 +3645,7 @@ impl TypeRegistry {
     /// same record index whether or not dense structs are also declared.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         aliases: &[(FileRef, FileIdentity, &AliasDecl)],
         nominals: &[(FileRef, FileIdentity, &NominalDecl)],
         structs: &[(FileRef, FileIdentity, &StructDecl)],
@@ -3970,7 +3827,7 @@ impl TypeRegistry {
     /// batch, but possibly dirty after a proof that failed mid-fill — is reset; and the
     /// argument domain, ordered-diagnostic buffer, and instantiation-limit owner are
     /// re-seated. The reused metadata directory is rolled back to the pre-proof image.
-    pub(crate) fn exit_template_proof(&self, savepoint: RegistryProofSavepoint) {
+    pub(crate) fn exit_template_proof(&mut self, savepoint: RegistryProofSavepoint) {
         let RegistryProofSavepoint {
             type_insts,
             collections,
@@ -3982,12 +3839,16 @@ impl TypeRegistry {
             entry_enums,
         } = savepoint;
         {
-            let mut generics = self.generics.borrow_mut();
-            for inst in generics.type_insts.split_off(type_insts) {
-                generics.type_index.remove(&(inst.template, inst.args));
+            let generics = self.generics.get_mut();
+            while generics.type_insts.len() > type_insts {
+                if let Some(inst) = generics.type_insts.pop() {
+                    generics.type_index.remove(&(inst.template, inst.args));
+                }
             }
-            for inst in generics.fn_insts.split_off(fn_insts) {
-                generics.fn_index.remove(&(inst.template, inst.args));
+            while generics.fn_insts.len() > fn_insts {
+                if let Some(inst) = generics.fn_insts.pop() {
+                    generics.fn_index.remove(&(inst.template, inst.args));
+                }
             }
             generics.fn_queue.truncate(fn_queue);
             generics.fill_batch_start = None;
@@ -4000,16 +3861,19 @@ impl TypeRegistry {
             generics.collection_payloads = prior_payloads;
         }
         {
-            let mut colls = self.collections.borrow_mut();
-            let mut index = self.collection_index.borrow_mut();
-            for spec in colls.split_off(collections) {
-                index.remove(&spec);
+            let colls = self.collections.get_mut();
+            let index = self.collection_index.get_mut();
+            while colls.len() > collections {
+                if let Some(spec) = colls.pop() {
+                    index.remove(&spec);
+                }
             }
         }
-        if let Some(directory) = self.row_directory.borrow_mut().as_mut() {
+        if let Some(directory) = self.row_directory.get_mut().as_mut() {
             directory.rewind_to(entry_records, entry_enums, type_insts, collections);
         }
     }
+    // drop-path audit sentinel: end of TypeRegistry::exit_template_proof
 }
 
 /// Reject a cycle in the value-containment graph at check time: a struct, record,

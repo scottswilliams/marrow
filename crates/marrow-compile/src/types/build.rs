@@ -1020,7 +1020,7 @@ pub(super) struct ReservedStruct<'a> {
 /// scalar, alias, nominal, resource, or earlier struct is a `check.name_conflict`;
 /// a colliding or reserved-name struct is dropped and never reserved.
 pub(super) fn declare_structs<'a>(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     structs: &'a [(FileRef, FileIdentity, &StructDecl)],
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
@@ -1094,7 +1094,7 @@ pub(super) fn declare_structs<'a>(
 /// reference an earlier fill pass minted against the reservation addresses a
 /// refused declaration rather than dangling.
 pub(super) fn fill_structs(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     reserved: &[ReservedStruct<'_>],
     diagnostics: &mut DiagnosticCollector,
@@ -1108,7 +1108,12 @@ pub(super) fn fill_structs(
         };
         let occurrence = struct_fields(draft, registry, declared, item.decl, diagnostics)?
             .map_accepted(|(fields, field_defs)| {
-                draft.set_record_fields(item.type_id, field_defs);
+                #[expect(
+                    clippy::expect_used,
+                    reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
+                )]
+                draft.set_record_fields(item.type_id, field_defs)
+                    .expect("a reserved row fills once");
                 if let Some(info) = registry
                     .structs
                     .iter_mut()
@@ -1137,7 +1142,7 @@ pub(super) fn fill_structs(
 type ResolvedStructFields = (Vec<FieldInfo>, Vec<FieldDef>);
 
 fn struct_fields(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &TypeRegistry,
     declared: DeclarationSite<'_>,
     decl: &StructDecl,
@@ -1253,7 +1258,7 @@ pub(super) struct ReservedEnum<'a> {
 /// their image indices ahead of the `Option`/`Result` instantiations minted lazily
 /// during field resolution.
 pub(super) fn declare_enums<'a>(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     enums: &'a [(FileRef, FileIdentity, &EnumDecl)],
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
@@ -1342,7 +1347,7 @@ pub(super) fn declare_enums<'a>(
 /// broken enum. Its reserved row stays in place carrying
 /// [`DeclarationVerdict::Refused`], for the reason given at [`fill_structs`].
 pub(super) fn fill_enums(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     reserved: &[ReservedEnum<'_>],
     diagnostics: &mut DiagnosticCollector,
@@ -1356,7 +1361,12 @@ pub(super) fn fill_enums(
         };
         let occurrence = enum_variants(draft, registry, declared, item.decl, diagnostics)?
             .map_accepted(|(variants, variant_defs)| {
-                draft.set_enum_variants(item.enum_id, variant_defs);
+                #[expect(
+                    clippy::expect_used,
+                    reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
+                )]
+                draft.set_enum_variants(item.enum_id, variant_defs)
+                    .expect("a reserved row fills once");
                 if let Some(info) = registry
                     .enums
                     .iter_mut()
@@ -1389,7 +1399,7 @@ type EnumPayload = (Vec<EnumPayloadInfo>, Vec<ScalarType>);
 /// definitions, or `None` if any member is unsupported. On the flat line every
 /// member is a leaf: a `category` member or one with nested members is deferred.
 fn enum_variants(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &TypeRegistry,
     declared: DeclarationSite<'_>,
     decl: &EnumDecl,
@@ -1538,7 +1548,7 @@ fn enum_payload(
 /// first declaration of a name stands. The durable graph still admits one store
 /// this line, so a second resource is a value record type, never a second root.
 pub(super) fn declare_records<'a>(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     resources: &'a [(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
@@ -1601,7 +1611,7 @@ pub(super) fn declare_records<'a>(
 /// Pass two for the record types: fill each reserved record from its surviving
 /// declaration, in the reserved order.
 pub(super) fn fill_records(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     record_decls: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
@@ -1632,7 +1642,7 @@ pub(super) fn fill_records(
 /// in the ledger, so a later use of that member is steered to the cause rather than
 /// told the record has no such field.
 fn fill_record(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     index: usize,
     declared: DeclarationSite<'_>,
@@ -1738,7 +1748,13 @@ fn fill_record(
     // `Group` member, so this one record type serves both the durable graph and the
     // storeless value model.
     field_defs.extend(group_slot_defs);
-    draft.set_record_fields(type_id, field_defs);
+    #[expect(
+        clippy::expect_used,
+        reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"
+    )]
+    draft
+        .set_record_fields(type_id, field_defs)
+        .expect("a reserved row fills once");
     let info = &mut registry.records[index];
     info.fields = fields;
     info.groups = groups;
@@ -1769,7 +1785,7 @@ fn member_conflict(
 /// user `enum`). A collection is not a durable member value; an abstract parameter
 /// never reaches a concrete record.
 fn resource_member(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &TypeRegistry,
     at: DeclarationSite<'_>,
     field: &FieldDecl,
@@ -1825,7 +1841,7 @@ fn resource_member(
 /// group-scoped branches are deferred; refusing them keeps them from silently
 /// dropping, and keeps the leaf name answerable at its uses.
 fn build_group_leaves(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     record: &str,
     group: &GroupDecl,

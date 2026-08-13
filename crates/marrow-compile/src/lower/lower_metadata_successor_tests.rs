@@ -4,6 +4,13 @@ use crate::decl::DeclarationBudget;
 use crate::types::{CollectionKind, GenericInvariant, TypeInstKind};
 use marrow_syntax::{Declaration, parse_source};
 
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
+
 fn function(source: &str) -> FunctionDecl {
     let parsed = parse_source(source);
     assert!(
@@ -24,7 +31,8 @@ fn function(source: &str) -> FunctionDecl {
 
 fn cache_ahead_registry() -> TypeRegistry {
     let registry = TypeRegistry::empty(DeclarationBudget::default());
-    let mut donor = ImageDraft::new();
+    let mut donor_owner = ImageDraft::new();
+    let mut donor = admitted(&mut donor_owner);
     let _ = registry.instantiate_list(&mut donor, GArg::Scalar(ScalarType::Int));
     registry
 }
@@ -35,7 +43,8 @@ fn draft_fingerprint(draft: &ImageDraft) -> (Vec<u8>, marrow_image::ImageId) {
 }
 
 fn expected_ints(values: &[i64]) -> (Vec<u8>, marrow_image::ImageId) {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     for value in values {
         draft.intern_int(*value);
     }
@@ -43,8 +52,8 @@ fn expected_ints(values: &[i64]) -> (Vec<u8>, marrow_image::ImageId) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lowerer<'a>(
-    draft: &'a mut ImageDraft,
+fn lowerer<'a, 'd>(
+    draft: &'a mut DraftTxn<'d>,
     records: &'a TypeRegistry,
     durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
@@ -52,7 +61,7 @@ fn lowerer<'a>(
     consts: &'a ConstRegistry,
     diagnostics: &'a mut DiagnosticCollector,
     facts: FactSink<'a>,
-) -> FnLowerer<'a> {
+) -> FnLowerer<'a, 'd> {
     FnLowerer::new(
         draft,
         records,
@@ -87,7 +96,8 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -134,7 +144,8 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -191,7 +202,8 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -259,7 +271,8 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -293,7 +306,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     assert_eq!(draft_fingerprint(&draft), expected_ints(&[1]));
 }
 
-fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
+fn built_registry_with_generic_struct() -> (TypeRegistry, DraftTxn<'static>, usize) {
     let parsed = parse_source("struct Box<T> {\n    value: T\n}\n");
     assert!(!parsed.has_errors());
     let declaration = parsed
@@ -310,7 +323,10 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
         crate::test_file_identity("src/main.mw"),
         declaration,
     )];
-    let mut draft = ImageDraft::new();
+    let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(
         &mut draft,
@@ -330,8 +346,11 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
     (registry, draft, template)
 }
 
-fn built_reserved_registry() -> (TypeRegistry, ImageDraft) {
-    let mut draft = ImageDraft::new();
+fn built_reserved_registry() -> (TypeRegistry, DraftTxn<'static>) {
+    let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(
         &mut draft,

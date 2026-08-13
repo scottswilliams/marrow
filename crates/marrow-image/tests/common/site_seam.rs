@@ -13,7 +13,7 @@
 //! places, each free to drift into a different protocol before the migration reached it.
 
 use marrow_image::{
-    CanonicalDeclarationPathSelector, ImageDraft, LegacyDraftSiteOperand, RootOccurrenceSelector,
+    CanonicalDeclarationPathSelector, DraftTxn, LegacyDraftSiteOperand, RootOccurrenceSelector,
     SemanticTarget,
 };
 
@@ -23,7 +23,7 @@ use marrow_image::{
 /// Neither step takes a construction budget: both selectors were published by an admitted
 /// construction, and the site table is its own bounded owner.
 pub fn site(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     root: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     target: SemanticTarget,

@@ -31,10 +31,10 @@ use std::rc::Rc;
 use marrow_codes::Code;
 use marrow_image::{
     AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, CanonicalValueShapeDag,
-    DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent,
-    DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, RootOccurrenceSelector, Scalar, SemanticTarget, ValueShapeNodeId,
-    ValueShapeView, bounds,
+    DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
+    DurableIndexComponent, DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
+    SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -54,6 +54,17 @@ use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
 };
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    #[expect(
+        clippy::expect_used,
+        reason = "admission law: a savepoint minted and consumed in one expression is fresh"
+    )]
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
@@ -741,8 +752,16 @@ impl DurableRegistry {
                     ));
                     continue;
                 }
+                // One admitted transaction per store: an accepted store commits its
+                // interned spelling, root, sites, and application identity as one
+                // unit; an ordinary checked refusal drops the armed guard, so no
+                // orphan row (the old build_extras wart) survives the refusal.
+                let mut txn = admitted(draft);
                 let occurrence = match build_one(
-                    AdmittedDraft { draft, plan: &plan },
+                    AdmittedDraft {
+                        draft: &mut txn,
+                        plan: &plan,
+                    },
                     &mut type_metadata,
                     resources,
                     declared,
@@ -754,6 +773,7 @@ impl DurableRegistry {
                     diagnostics,
                 )? {
                     StoreBuild::Admitted(built) => {
+                        txn.commit();
                         registry.naming.extend(built.naming);
                         let executable = built.executable.map(|root| {
                             registry.roots.push(root);
@@ -761,7 +781,10 @@ impl DurableRegistry {
                         });
                         DeclarationOccurrence::Accepted(DeclaredRoot { executable })
                     }
-                    StoreBuild::Refused(refusal) => DeclarationOccurrence::Refused(refusal),
+                    StoreBuild::Refused(refusal) => {
+                        drop(txn);
+                        DeclarationOccurrence::Refused(refusal)
+                    }
                 };
                 // The resource projection is appended in the same statement as the
                 // ledger entry, so a store cannot be declared without being reachable
@@ -1081,8 +1104,8 @@ struct StoreOccurrence<'store> {
 /// the draft without the plan, so a signature that could carry one and not the other would
 /// state a shape the API does not have. Passing them separately is also not available:
 /// [`build_one`] is at its argument bound, and unwrapping this pair puts it over.
-struct AdmittedDraft<'draft, 'plan> {
-    draft: &'draft mut ImageDraft,
+struct AdmittedDraft<'draft, 'txn, 'plan> {
+    draft: &'draft mut DraftTxn<'txn>,
     plan: &'plan AdmittedGraphInputPlan,
 }
 
@@ -1096,7 +1119,7 @@ struct AdmittedDraft<'draft, 'plan> {
 /// gate below precedes every root/site/identity commit, so the draft is touched only once
 /// the store is known admissible.
 fn build_one(
-    admitted: AdmittedDraft<'_, '_>,
+    admitted: AdmittedDraft<'_, '_, '_>,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     declared: DeclarationSite<'_>,
@@ -1610,14 +1633,14 @@ impl<'a> IdentityResolver<'a> {
     /// is discarded with the graph.
     fn build_value_shape(
         &mut self,
-        values: &mut CanonicalValueShapeDag,
+        values: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         ty: GArg,
     ) -> ValueShapeNodeId {
         match ty {
-            GArg::Scalar(scalar) => values.scalar(scalar.image()),
-            GArg::Nominal(_) => values.scalar(ScalarType::Int.image()),
+            GArg::Scalar(scalar) => values.value_scalar(scalar.image()),
+            GArg::Nominal(_) => values.value_scalar(ScalarType::Int.image()),
             GArg::Struct(type_id) => {
                 // A struct already on the path closes a value cycle: leave it to the
                 // later value-cycle pass (`check.recursion`) and drop the graph. The
@@ -1625,7 +1648,7 @@ impl<'a> IdentityResolver<'a> {
                 // back-edge's answer is a property of the path, not of the type.
                 if self.value_path.contains(&ValueNode::Struct(type_id)) {
                     self.refuse(DurableRefusal::ValueCycle);
-                    return values.scalar(ScalarType::Int.image());
+                    return values.value_scalar(ScalarType::Int.image());
                 }
                 if let Some(built) = self.value_memo.get(&ty) {
                     return *built;
@@ -1641,7 +1664,7 @@ impl<'a> IdentityResolver<'a> {
                                     bounds::MAX_STRUCT_LEAVES
                                 ),
                             );
-                            return values.scalar(ScalarType::Int.image());
+                            return values.value_scalar(ScalarType::Int.image());
                         }
                         self.value_path.push(ValueNode::Struct(type_id));
                         let leaves = info
@@ -1652,18 +1675,18 @@ impl<'a> IdentityResolver<'a> {
                             })
                             .collect();
                         self.value_path.pop();
-                        self.remember(ty, values.struct_shape(leaves))
+                        self.remember(ty, values.value_struct(leaves))
                     }
                     None => {
                         self.reject_value("this struct value");
-                        values.struct_shape(Vec::new())
+                        values.value_struct(Vec::new())
                     }
                 }
             }
             GArg::Enum(enum_id) => {
                 if self.value_path.contains(&ValueNode::Enum(enum_id)) {
                     self.refuse(DurableRefusal::ValueCycle);
-                    return values.scalar(ScalarType::Int.image());
+                    return values.value_scalar(ScalarType::Int.image());
                 }
                 if let Some(built) = self.value_memo.get(&ty) {
                     return *built;
@@ -1678,18 +1701,18 @@ impl<'a> IdentityResolver<'a> {
                     "a collection stored directly in a durable field (a large collection \
                      belongs under a keyed branch)",
                 );
-                values.scalar(ScalarType::Int.image())
+                values.value_scalar(ScalarType::Int.image())
             }
             GArg::Group(_) => {
                 // A group is a materialized-value namespace, never a durable top-level
                 // field value (a durable group is its own member-tree node, resolved by
                 // `build_extras`). It cannot reach here through `record.fields`.
                 self.reject_value("a group stored directly as a durable field value");
-                values.scalar(ScalarType::Int.image())
+                values.value_scalar(ScalarType::Int.image())
             }
             GArg::Param(_) => {
                 self.reject_value("this value type");
-                values.scalar(ScalarType::Int.image())
+                values.value_scalar(ScalarType::Int.image())
             }
         }
     }
@@ -1714,12 +1737,12 @@ impl<'a> IdentityResolver<'a> {
     /// accounting reported, never a substitute for one of them.
     fn build_field_value(
         &mut self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         ty: GArg,
     ) -> ValueShapeNodeId {
-        let node = self.build_value_shape(draft.value_shapes_mut(), records, metadata, ty);
+        let node = self.build_value_shape(draft, records, metadata, ty);
         if draft.value_shapes().depth(node) > bounds::MAX_DURABLE_VALUE_DEPTH {
             self.reject_resource_limit(self.span, over_deep_value_message());
         }
@@ -1756,7 +1779,7 @@ impl<'a> IdentityResolver<'a> {
     /// the declaration.
     fn build_enum_value_shape(
         &mut self,
-        values: &mut CanonicalValueShapeDag,
+        values: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         enum_id: marrow_image::EnumId,
@@ -1765,7 +1788,7 @@ impl<'a> IdentityResolver<'a> {
             metadata.durable_enum_shape_and_anchor(enum_id),
             "this enum value",
         ) else {
-            return values.scalar(ScalarType::Int.image());
+            return values.value_scalar(ScalarType::Int.image());
         };
         let sum = self.resolve(IdentityKind::Sum, &spelling);
         let members = variants
@@ -1779,7 +1802,7 @@ impl<'a> IdentityResolver<'a> {
                 (id, payload)
             })
             .collect();
-        values.enum_shape(sum, members)
+        values.value_enum(sum, members)
     }
 
     fn accept_ready_shape<T>(
@@ -1868,7 +1891,7 @@ impl<'a> IdentityResolver<'a> {
     /// entry record type for the Product's nested branches.
     fn build_product_graph(
         &mut self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         store: &StoreDecl,
@@ -1926,7 +1949,7 @@ impl<'a> IdentityResolver<'a> {
         &mut self,
         nodes: &mut Vec<DeclarationDraftNode>,
         cursor: MemberCursor<'_>,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         members: &[ResourceMember],
     ) {
@@ -2040,7 +2063,7 @@ impl<'a> IdentityResolver<'a> {
         &mut self,
         nodes: &mut Vec<DeclarationDraftNode>,
         cursor: MemberCursor<'_>,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         group: &GroupDecl,
     ) -> Vec<FieldDef> {
@@ -2077,7 +2100,7 @@ impl<'a> IdentityResolver<'a> {
     /// and marks the graph incomplete.
     fn build_field(
         &mut self,
-        draft: &mut ImageDraft,
+        draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         field: &FieldDecl,
         container: &str,
@@ -2101,7 +2124,7 @@ impl<'a> IdentityResolver<'a> {
         let member = DeclarationMemberShape::Field {
             id,
             required: field.required,
-            value: draft.value_shapes_mut().scalar(scalar.image()),
+            value: draft.value_scalar(scalar.image()),
         };
         // The record field mirrors the durable member: same order, same scalar, same
         // required flag. The branch entry's whole-payload read/create/replace flows
@@ -2478,7 +2501,7 @@ struct RootMemberSites {
 /// the instruction that names the site re-binds and re-requests it, which returns the id
 /// minted here.
 fn request_eager_site(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     occurrence: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     target: SemanticTarget,
@@ -2504,7 +2527,7 @@ fn request_eager_site(
 /// descriptor holds selectors, never site ids — so the lowerer resolves the same place
 /// either way and the only difference is when its site is minted.
 fn emit_root_member_sites(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     occurrence: &RootOccurrenceSelector,
     members: &[DeclarationMember],
     multiplicity: ProductOccurrenceMultiplicity,
@@ -2552,7 +2575,7 @@ fn emit_root_member_sites(
 /// leaf the verifier seals as `BranchField(field)` — and the nested-branch order indexes
 /// the sealed branch tree, so the compiler's and verifier's independent resolutions agree.
 fn emit_branch_sites(
-    draft: &mut ImageDraft,
+    draft: &mut DraftTxn<'_>,
     occurrence: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     record: marrow_image::TypeId,
@@ -2863,487 +2886,5 @@ fn over_deep_value_message() -> String {
 }
 
 #[cfg(test)]
-mod generic_enum_shape_tests {
-    use super::*;
-    use crate::types::{MintSite, TypeInstId, TypeInstKind};
-    use marrow_syntax::{Declaration, parse_source};
-
-    /// The store declaration these resolvers refuse against. The resolver retains its
-    /// refusal under the declared placement name, so it needs the declaration's
-    /// coordinates even when the test drives only one value-shape walk.
-    fn test_declared() -> DeclarationSite<'static> {
-        DeclarationSite {
-            name: "probe",
-            file: crate::test_main_file_identity(),
-            at: FileRef::admitted(0),
-            span: SourceSpan::default(),
-        }
-    }
-
-    /// A committed reserved enum reaches the durable-shape owner
-    /// with its exact member and payload layout. Missing ledger rows may make the
-    /// enclosing graph incomplete, but do not turn a Ready enum into an unavailable
-    /// generic row.
-    #[test]
-    fn ready_option_reaches_the_durable_enum_shape_owner() {
-        let mut draft = ImageDraft::new();
-        let mut build_diagnostics = DiagnosticCollector::new();
-        let records = TypeRegistry::build(
-            &mut draft,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &mut build_diagnostics,
-            DeclarationBudget::default(),
-        )
-        .expect("the test registry stays within the ledger budget");
-        assert!(build_diagnostics.is_empty());
-        let option = records
-            .instantiate_reserved_option(
-                &mut draft,
-                GArg::Scalar(ScalarType::Int),
-                MintSite {
-                    file: crate::test_main_file_identity(),
-                    span: SourceSpan {
-                        line: 1,
-                        column: 1,
-                        ..SourceSpan::default()
-                    },
-                },
-            )
-            .expect("Ready Option mints");
-
-        let mut diagnostics = DiagnosticCollector::new();
-        let mut reported_identity_gaps = BTreeSet::new();
-        let mut resolver = IdentityResolver::new(
-            test_declared(),
-            SourceSpan::default(),
-            None,
-            &mut reported_identity_gaps,
-            &mut diagnostics,
-        );
-        let mut values = CanonicalValueShapeDag::new();
-        let shape = records
-            .with_metadata_session(|metadata| {
-                Ok::<_, GenericInvariant>(resolver.build_enum_value_shape(
-                    &mut values,
-                    &records,
-                    metadata,
-                    option,
-                ))
-            })
-            .expect("the Ready Option metadata session opens");
-        let ValueShapeView::Enum { members, .. } = values.view(shape) else {
-            panic!("a Ready Option remains enum-shaped")
-        };
-        assert_eq!(members.len(), 2);
-        assert!(members[0].payload().is_empty());
-        assert_eq!(members[1].payload().len(), 1);
-        assert_eq!(
-            values.view(members[1].payload()[0]),
-            ValueShapeView::Scalar(ScalarType::Int.image())
-        );
-        assert!(
-            resolver.refusal.is_some(),
-            "the test intentionally supplies no ledger"
-        );
-        drop(resolver);
-        assert_eq!(
-            diagnostics.probe_rows().len(),
-            3,
-            "sum plus two member identity gaps"
-        );
-        assert!(
-            diagnostics
-                .probe_rows()
-                .iter()
-                .all(|diagnostic| diagnostic.code() == Code::CheckDurableIdentity.as_str())
-        );
-    }
-
-    /// An image enum with no Ready semantic row is refused before
-    /// durable identity spelling or member resolution can observe it.
-    #[test]
-    fn unavailable_enum_stops_before_durable_identity_resolution() {
-        let mut draft = ImageDraft::new();
-        let mut build_diagnostics = DiagnosticCollector::new();
-        let records = TypeRegistry::build(
-            &mut draft,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &mut build_diagnostics,
-            DeclarationBudget::default(),
-        )
-        .expect("the test registry stays within the ledger budget");
-        assert!(build_diagnostics.is_empty());
-        let name = draft.intern_string("Unavailable");
-        let unavailable = draft.add_enum_type(marrow_image::EnumTypeDef {
-            name,
-            variants: Vec::new(),
-        });
-        let mut diagnostics = DiagnosticCollector::new();
-        let mut reported_identity_gaps = BTreeSet::new();
-        let mut resolver = IdentityResolver::new(
-            test_declared(),
-            SourceSpan::default(),
-            None,
-            &mut reported_identity_gaps,
-            &mut diagnostics,
-        );
-
-        let mut values = CanonicalValueShapeDag::new();
-        let shape = records
-            .with_metadata_session(|metadata| {
-                Ok::<_, GenericInvariant>(resolver.build_enum_value_shape(
-                    &mut values,
-                    &records,
-                    metadata,
-                    unavailable,
-                ))
-            })
-            .expect("the unavailable enum metadata session opens");
-        assert_eq!(
-            values.view(shape),
-            ValueShapeView::Scalar(ScalarType::Int.image())
-        );
-        assert!(resolver.refusal.is_some());
-        drop(resolver);
-        assert_eq!(diagnostics.probe_rows().len(), 1);
-        assert_eq!(
-            diagnostics.probe_rows()[0].code(),
-            Code::CheckUnsupported.as_str()
-        );
-        assert!(diagnostics.probe_rows()[0].identity_gap().is_none());
-    }
-
-    #[test]
-    fn ready_enum_with_struct_body_is_not_contextualized_or_resolved() {
-        let mut draft = ImageDraft::new();
-        let mut build_diagnostics = DiagnosticCollector::new();
-        let records = TypeRegistry::build(
-            &mut draft,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &mut build_diagnostics,
-            DeclarationBudget::default(),
-        )
-        .expect("the test registry stays within the ledger budget");
-        let option = records
-            .instantiate_reserved_option(
-                &mut draft,
-                GArg::Scalar(ScalarType::Int),
-                MintSite {
-                    file: crate::test_main_file_identity(),
-                    span: SourceSpan::default(),
-                },
-            )
-            .expect("Option row mints ready");
-        let expected = GenericInvariant::TypeBodyKindMismatch {
-            id: TypeInstId::Enum(option),
-            body: TypeInstKind::Struct,
-        };
-        let mut diagnostics = DiagnosticCollector::new();
-        let mut reported_identity_gaps = BTreeSet::new();
-        let mut resolver = IdentityResolver::new(
-            test_declared(),
-            SourceSpan::default(),
-            None,
-            &mut reported_identity_gaps,
-            &mut diagnostics,
-        );
-
-        assert!(
-            resolver
-                .accept_ready_shape::<()>(Err(expected), "this enum value")
-                .is_none()
-        );
-        assert_eq!(resolver.invariant, Some(expected));
-        assert!(resolver.value_memo.is_empty());
-        drop(resolver);
-        assert!(diagnostics.is_empty());
-    }
-
-    #[test]
-    fn durable_typed_error_stops_before_identity_or_draft_effects() {
-        let parsed = parse_source(
-            r#"resource Holder {
-    required value: Option<int>
-}
-
-store ^holders[id: int]: Holder
-"#,
-        );
-        assert!(!parsed.has_errors());
-        let resource = parsed
-            .file
-            .declarations
-            .iter()
-            .find_map(|declaration| match declaration {
-                Declaration::Resource(resource) => Some(resource),
-                _ => None,
-            })
-            .expect("resource parses");
-        let resources = vec![(
-            FileRef::admitted(0),
-            crate::test_file_identity("src/main.mw"),
-            resource,
-        )];
-        let mut draft = ImageDraft::new();
-        let mut diagnostics = DiagnosticCollector::new();
-        let records = TypeRegistry::build(
-            &mut draft,
-            &[],
-            &[],
-            &[],
-            &[],
-            &resources,
-            &mut diagnostics,
-            DeclarationBudget::default(),
-        )
-        .expect("the test registry stays within the ledger budget");
-        assert!(diagnostics.is_empty());
-        let option = match records.by_name("Holder").expect("record exists").fields[0].ty {
-            GArg::Enum(id) => id,
-            _ => panic!("resource field resolves to Option"),
-        };
-        let expected = GenericInvariant::TypeBodyKindMismatch {
-            id: TypeInstId::Enum(option),
-            body: TypeInstKind::Struct,
-        };
-        let before = draft.encode().expect("seeded draft encodes");
-        let mut reported_identity_gaps = BTreeSet::new();
-        let mut resolver = IdentityResolver::new(
-            test_declared(),
-            SourceSpan::default(),
-            None,
-            &mut reported_identity_gaps,
-            &mut diagnostics,
-        );
-        assert!(
-            resolver
-                .accept_ready_shape::<()>(Err(expected), "this durable value")
-                .is_none()
-        );
-        assert_eq!(resolver.invariant, Some(expected));
-        assert!(resolver.value_memo.is_empty());
-        drop(resolver);
-        assert!(diagnostics.is_empty());
-        let after = draft.encode().expect("rejected draft still encodes");
-        assert_eq!(after.bytes, before.bytes);
-        assert_eq!(after.image_id, before.image_id);
-    }
-
-    /// The projection is appended in the same statement as the ledger entry, so a
-    /// resource naming a placement the ledger does not know is the two having drifted.
-    /// Answering `Absent` there would put a fabricated absence back at the use site — the
-    /// defect this projection exists to remove — reached through the projection instead of
-    /// through the executable list.
-    #[test]
-    fn a_projection_naming_an_unknown_placement_is_drift_not_absence() {
-        let mut registry = DurableRegistry::empty(DeclarationBudget::default());
-        registry.products.insert(
-            "Holder".to_string(),
-            ProductStores {
-                admitted: vec!["holders".to_string()],
-                first_refused: None,
-                declared_branches: false,
-            },
-        );
-        assert!(matches!(
-            registry.product("Holder"),
-            Err(DeclarationIndexDrift)
-        ));
-        // A resource whose every store was refused steers to the first cause; a
-        // projection recording neither an admitted nor a refused store is incoherent.
-        registry.products.insert(
-            "Neither".to_string(),
-            ProductStores {
-                admitted: Vec::new(),
-                first_refused: None,
-                declared_branches: false,
-            },
-        );
-        assert!(matches!(
-            registry.product("Neither"),
-            Err(DeclarationIndexDrift)
-        ));
-        // A resource no store binds has no projection entry at all, which is the
-        // genuine absence and stays one.
-        assert!(matches!(
-            registry.product("Unbound"),
-            Ok(ProductBinding::Absent)
-        ));
-    }
-}
-
-#[cfg(test)]
-mod declaration_command_bound_tests {
-    use super::*;
-    use marrow_image::{ExportId, FunctionDef, ImageBuildError, Instr, SpanEntry};
-
-    const APPLICATION_ID: [u8; 16] = [0x0a; 16];
-    const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
-    const KEY_ID: [u8; 16] = [0x0c; 16];
-    const PRODUCT_ID: [u8; 16] = [0x0d; 16];
-
-    /// A distinct member ledger id seeded by `n`, so a width fixture cannot be
-    /// answered by an identity-collision refusal instead of the bound under test.
-    fn member_id(n: usize) -> LedgerIdBytes {
-        let mut bytes = [0x40u8; 16];
-        bytes[0] = n as u8;
-        bytes[1] = (n >> 8) as u8;
-        LedgerIdBytes::from_bytes(bytes)
-    }
-
-    /// Encode a minimal image whose one keyed root projects a Product declaring exactly
-    /// `commands`, so the declaration width is the only reason an encode can fail.
-    fn encode_product(
-        commands: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
-    ) -> Result<(), ImageBuildError> {
-        /// The construction budget these producer-seam fixtures are admitted under.
-        ///
-        /// The command term is the image's own [`bounds::MAX_ADMITTED_DECLARATION_COMMANDS`],
-        /// which sits exactly one past the member bound, so the over-wide declaration below
-        /// is admitted into the draft and refused where that refusal lives — at the encoder.
-        fn admitted_plan() -> AdmittedGraphInputPlan {
-            AdmittedGraphInputPlan::admit(1, 1, bounds::MAX_ADMITTED_DECLARATION_COMMANDS)
-                .expect("one Product, one root, and the image's own command ceiling")
-        }
-
-        let mut draft = ImageDraft::new();
-        let commands = commands(&mut draft);
-        let type_name = draft.intern_string("R");
-        let record = draft.add_record_type(RecordTypeDef {
-            name: type_name,
-            fields: Vec::new(),
-        });
-        draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-        let root_name = draft.intern_string("r");
-        draft
-            .declare_product(
-                &admitted_plan(),
-                LedgerIdBytes::from_bytes(PRODUCT_ID),
-                record,
-                commands,
-            )
-            .expect("a well-formed flat declaration");
-        draft
-            .add_root_occurrence(
-                &admitted_plan(),
-                LedgerIdBytes::from_bytes(PRODUCT_ID),
-                RootOccurrenceDef {
-                    name: root_name,
-                    keys: vec![KeyColumn {
-                        scalar: Scalar::Int,
-                        id: LedgerIdBytes::from_bytes(KEY_ID),
-                    }],
-                    placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                    indexes: Vec::new().into(),
-                },
-            )
-            .expect("the Product is declared");
-        let src = draft.intern_string("src/main.mw");
-        let main_name = draft.intern_string("main");
-        let zero = draft.intern_int(0);
-        let code = vec![Instr::ConstLoad(zero), Instr::Return];
-        let spans = (0..code.len())
-            .map(|index| SpanEntry {
-                instr_index: index as u32,
-                line: 1,
-                column: 1,
-            })
-            .collect();
-        let main = draft
-            .add_function(FunctionDef {
-                name: main_name,
-                source: src,
-                params: Vec::new(),
-                ret: ImageType::scalar(Scalar::Int),
-                local_count: 0,
-                code,
-                spans,
-            })
-            .expect("every site operand is live");
-        draft.add_export(ExportId::of_local("", "main"), main);
-        draft.encode().map(|_| ())
-    }
-
-    /// The declaration member bound is admitted, emitted, and refused by three owners that
-    /// agree by exactly one command.
-    /// This module stops emitting at [`bounds::MAX_ADMITTED_DECLARATION_COMMANDS`] — the same count an
-    /// [`AdmittedGraphInputPlan`] admits for one declaration; `marrow-image` records
-    /// a declaration as over-bound only at *more* than `MAX_DURABLE_MEMBERS` rows and the
-    /// encoder then refuses the image with
-    /// [`ImageBuildError::TooManyDurableMembers`] — which the compiler classifies as a
-    /// producer contradiction. Truncating one command lower would hand the image
-    /// owner a full-width declaration it accepts, and the over-wide resource would encode
-    /// silently short instead of being refused. This drives the real emitter with an
-    /// over-wide node buffer and carries its output to a real encode, so moving either
-    /// bound without the other fails here.
-    ///
-    /// It is a producer-seam fixture rather than a `compile()`-tier one because the width
-    /// is not reachable from source today: every member anchors one identity ledger row,
-    /// and `marrow-project`'s `MAX_IDS_ROWS` (8192) admits no ledger that also carries the
-    /// application, product, placement, and key rows a resource of this width needs.
-    #[test]
-    fn one_member_past_the_member_bound_encodes_as_too_many_durable_members() {
-        assert_eq!(
-            bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-            bounds::MAX_DURABLE_MEMBERS + 1,
-            "the admitted command count must sit exactly one past the image owner's bound"
-        );
-
-        let flat_fields = |draft: &mut ImageDraft, count: usize| {
-            let value = draft.value_shapes_mut().scalar(Scalar::Int);
-            declaration_commands(
-                (0..count)
-                    .map(|n| {
-                        DeclarationDraftNode::declared(
-                            None,
-                            DeclarationWireClass::Field,
-                            DeclarationMemberShape::Field {
-                                id: member_id(n),
-                                required: false,
-                                value,
-                            },
-                        )
-                    })
-                    .collect(),
-            )
-        };
-
-        assert!(
-            matches!(
-                encode_product(|draft| {
-                    let commands = flat_fields(draft, bounds::MAX_DURABLE_MEMBERS + 64);
-                    assert_eq!(
-                        commands.len(),
-                        bounds::MAX_DURABLE_MEMBERS + 1,
-                        "an over-wide resource emits exactly one command past the member bound"
-                    );
-                    commands
-                }),
-                Err(ImageBuildError::TooManyDurableMembers)
-            ),
-            "one command past the bound must reach the encoder as the durable-member limit"
-        );
-
-        assert!(
-            encode_product(|draft| {
-                let at_bound = flat_fields(draft, bounds::MAX_DURABLE_MEMBERS);
-                assert_eq!(at_bound.len(), bounds::MAX_DURABLE_MEMBERS);
-                at_bound
-            })
-            .is_ok(),
-            "a declaration exactly at the member bound still encodes"
-        );
-    }
-}
+#[path = "durable_build_tests.rs"]
+mod durable_build_tests;

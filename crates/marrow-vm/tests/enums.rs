@@ -6,14 +6,15 @@
 //! reading a differently-typed leaf.
 
 use marrow_image::{
-    EnumTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, VariantDef,
+    DraftTxn, EnumTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
+    VariantDef,
 };
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
 /// An enum `Shape { dot, circle(int), rect(int, int) }` interned into `draft`,
 /// returning its enum index.
-fn shape_enum(draft: &mut ImageDraft) -> marrow_image::EnumId {
+fn shape_enum(draft: &mut DraftTxn<'_>) -> marrow_image::EnumId {
     let name = draft.intern_string("Shape");
     let dot = draft.intern_string("dot");
     let circle = draft.intern_string("circle");
@@ -44,9 +45,12 @@ fn shape_enum(draft: &mut ImageDraft) -> marrow_image::EnumId {
 }
 
 fn build_and_run(
-    build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>),
+    build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>),
 ) -> Result<Option<Value>, String> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     let (ret, code) = build(&mut draft);

@@ -11,10 +11,10 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, EnumId,
-    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId,
-    VariantDef, image_id,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, DurableIndexComponent,
+    DurableIndexShape, EnumId, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
+    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
+    SpanEntry, TypeId, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -25,6 +25,13 @@ use site_seam::site;
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 fn ledger(bytes: [u8; 16]) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(bytes)
@@ -71,7 +78,8 @@ fn seed() -> u64 {
 }
 
 fn a_good_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let answer = draft.intern_int(42);
@@ -101,7 +109,8 @@ fn a_good_image() -> Vec<u8> {
 /// Mutating this reaches the record-field record/enum index decode and the value-
 /// graph cycle pass that plain scalar images never touch.
 fn a_nested_value_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let src = draft.intern_string("src/main.mw");
     let outer = draft.intern_string("Outer");
     let inner = draft.intern_string("Inner");
@@ -224,7 +233,8 @@ fn structured_prefix_of_a_good_image_never_panics() {
 /// one verifying mutating export. Mutating it reaches the DURABLE-table decode and
 /// the durable-contract-id recomputation that scalar/value images never touch.
 fn a_durable_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -246,8 +256,8 @@ fn a_durable_image() -> Vec<u8> {
     let root = draft.intern_string("counters");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let int_value = draft.value_scalar(Scalar::Int);
+    let text_value = draft.value_scalar(Scalar::Text);
     draft
         .declare_product(
             &admitted_plan(),
@@ -359,7 +369,8 @@ fn mutated_durable_images_never_panic_the_verifier() {
 /// and the index-site path/target resolver (the unique-flag agreement), which a
 /// root without indexes never exercises.
 fn an_indexed_durable_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -381,8 +392,8 @@ fn an_indexed_durable_image() -> Vec<u8> {
     let root = draft.intern_string("counters");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let int_value = draft.value_scalar(Scalar::Int);
+    let text_value = draft.value_scalar(Scalar::Text);
     draft
         .declare_product(
             &admitted_plan(),
@@ -474,7 +485,8 @@ fn mutated_indexed_durable_images_never_panic_the_verifier() {
 /// (a `u16` site, a `u16` key-path length, then one `u16` per key-path slot) and the
 /// place-slot presence lattice, which a bare-set image never exercises.
 fn a_strict_durable_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -496,8 +508,8 @@ fn a_strict_durable_image() -> Vec<u8> {
     let root = draft.intern_string("counters");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let int_value = draft.value_scalar(Scalar::Int);
+    let text_value = draft.value_scalar(Scalar::Text);
     draft
         .declare_product(
             &admitted_plan(),
@@ -622,7 +634,8 @@ fn mutated_strict_durable_images_never_panic_the_verifier() {
 /// placement and key tuple, and the nesting-depth and member-count bounds — that a
 /// flat root never exercises.
 fn a_group_branch_durable_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
     // The group's own leaf record, referenced by the root record's trailing group slot.
@@ -671,8 +684,8 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     });
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let int_value = draft.value_scalar(Scalar::Int);
+    let text_value = draft.value_scalar(Scalar::Text);
     draft
         .declare_product(
             &admitted_plan(),
@@ -830,7 +843,8 @@ fn mutated_group_branch_durable_images_never_panic_the_verifier() {
 /// count, and the value-nesting-depth bound — plus the value-shape/record cross-check
 /// that a flat scalar root never exercises.
 fn a_widened_durable_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     // Enum `Access { a, b(int) }` — `b` carries an int payload leaf.
     let access = draft.intern_string("Access");
     let a = draft.intern_string("a");
@@ -903,19 +917,17 @@ fn a_widened_durable_image() -> Vec<u8> {
     let root = draft.intern_string("ws");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
-    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let int_value = draft.value_scalar(Scalar::Int);
+    let text_value = draft.value_scalar(Scalar::Text);
     // An `Option[int]`-shaped enum and a dense `struct { int, text }`.
-    let enum_value = draft.value_shapes_mut().enum_shape(
+    let enum_value = draft.value_enum(
         ledger([0x50; 16]),
         vec![
             (ledger([0x51; 16]), Vec::new()),
             (ledger([0x52; 16]), vec![int_value]),
         ],
     );
-    let struct_value = draft
-        .value_shapes_mut()
-        .struct_shape(vec![int_value, text_value]);
+    let struct_value = draft.value_struct(vec![int_value, text_value]);
     draft
         .declare_product(
             &admitted_plan(),
@@ -1014,7 +1026,8 @@ fn mutated_widened_durable_images_never_panic_the_verifier() {
 /// path against the reconstructed node set — that a one- or two-site image barely
 /// exercises.
 fn a_multi_site_durable_image() -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let rec = draft.intern_string("Row");
     let mut field_defs = Vec::new();
     for name in ["a", "b", "c", "d"] {
@@ -1040,7 +1053,7 @@ fn a_multi_site_durable_image() -> Vec<u8> {
         ledger([0x1f; 16]),
     ];
     let product = ledger([0x0d; 16]);
-    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let int_value = draft.value_scalar(Scalar::Int);
     draft
         .declare_product(
             &admitted_plan(),

@@ -745,16 +745,21 @@ impl ProductDeclarationTable {
 
     /// Drop every declaration appended after `len`, restoring the table to the exact
     /// rows it held at that mark. The table is append-only, so a row's index — the
-    /// occurrence rows' reference into it — is stable across the truncation.
+    /// occurrence rows' reference into it — is stable across the restore.
     ///
-    /// The index is rebuilt by removing exactly the discarded rows' identities, so the
-    /// cost is the discarded suffix rather than the whole table: a template proof that
-    /// declares nothing must not pay for every declaration the real draft already holds.
-    pub(crate) fn truncate(&mut self, len: usize) {
-        for discarded in self.rows.drain(len..) {
-            self.by_identity.remove(&discarded.claim.identity());
+    /// The total suffix inverse the armed rollback calls: a suffix pop loop whose only
+    /// bound is its own condition, each popped row's identity key removed while the row
+    /// is still live — no range `drain`, no indexing, no allocation, no panic — so the
+    /// cost is the discarded suffix rather than the whole table.
+    pub(crate) fn pop_suffix_to(&mut self, len: usize) {
+        while self.rows.len() > len {
+            if let Some(discarded) = self.rows.last() {
+                self.by_identity.remove(&discarded.claim.identity());
+            }
+            self.rows.pop();
         }
     }
+    // drop-path audit sentinel: end of ProductDeclarationTable::pop_suffix_to
 }
 
 /// One flat root-occurrence row: the occurrence facts of one `store` root, referencing
@@ -910,7 +915,7 @@ pub(crate) enum CanonicalDeclarationPathOrdinal {
     /// The root occurrence's own keyed placement.
     RootPlacement,
     /// The managed index at this ordinal of the root occurrence's index list.
-    RootIndex(u16),
+    RootIndex(u32),
     /// One row of the Product declaration's member graph.
     DeclarationNode(DeclarationNodeOrdinal),
 }
@@ -1022,7 +1027,7 @@ impl<'draft> OccurrenceGraph<'draft> {
                 Some(CanonicalDeclarationPathSelector {
                     draft: self.draft,
                     publisher,
-                    ordinal: CanonicalDeclarationPathOrdinal::RootIndex(u16::try_from(index).ok()?),
+                    ordinal: CanonicalDeclarationPathOrdinal::RootIndex(u32::try_from(index).ok()?),
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -1163,7 +1168,7 @@ impl<'draft> OccurrenceGraph<'draft> {
             CanonicalDeclarationPathOrdinal::RootIndex(index) => {
                 let shape = row
                     .indexes
-                    .get(usize::from(index))
+                    .get(index as usize)
                     .ok_or(BindRefusal::InvalidDemand)?;
                 if shape.unique {
                     SemanticTarget::IndexLookup
@@ -1263,7 +1268,7 @@ impl<'draft> OccurrenceGraph<'draft> {
         match key.path {
             CanonicalDeclarationPathOrdinal::RootPlacement => Some(()),
             CanonicalDeclarationPathOrdinal::RootIndex(index) => {
-                let shape = row.indexes.get(usize::from(index))?;
+                let shape = row.indexes.get(index as usize)?;
                 emit(SemanticStep::new(SemanticStepKind::Index, shape.id));
                 Some(())
             }
@@ -1353,6 +1358,7 @@ impl OccurrenceSiteDemandKey {
 /// carries no graph identity, so it is only ever handed back to the graph that published
 /// it — the owner that publishes it also owns the exclusive borrow through which a pass
 /// appends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DurableGraphCheckpoint {
     application: Option<LedgerIdBytes>,
     products: usize,
@@ -1487,12 +1493,13 @@ impl DurableContractGraph {
     /// Discard every row appended after `at`, restoring the exact rows the graph held at
     /// that mark. It allocates nothing and cannot panic, so it is safe to run during an
     /// unwind.
-    pub(crate) fn rewind(&mut self, at: &DurableGraphCheckpoint) {
+    pub(crate) fn rewind_total(&mut self, at: &DurableGraphCheckpoint) {
         self.occurrences.truncate(at.occurrences);
-        self.products.truncate(at.products);
+        self.products.pop_suffix_to(at.products);
         self.values.truncate(at.values);
         self.application = at.application;
     }
+    // drop-path audit sentinel: end of DurableContractGraph::rewind_total
 
     /// Admit one Product declaration under `plan`, returning the declaration row it
     /// references and the first divergence a repeat of an already-bound identity states.

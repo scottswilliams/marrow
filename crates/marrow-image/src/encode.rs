@@ -765,40 +765,52 @@ mod counted_equals_emitted {
             name: record_name,
             fields: Vec::new(),
         });
-        draft.set_record_fields(
-            record,
-            vec![
-                FieldDef {
-                    name: field_name,
-                    ty: ImageType::scalar(Scalar::Int),
-                    required: true,
-                },
-                FieldDef {
-                    name: alpha,
-                    ty: ImageType::scalar(Scalar::Text),
-                    required: false,
-                },
-            ],
-        );
+        let mut fills = draft
+            .begin_transaction(draft.savepoint())
+            .expect("a fresh savepoint admits");
+        fills
+            .set_record_fields(
+                record,
+                vec![
+                    FieldDef {
+                        name: field_name,
+                        ty: ImageType::scalar(Scalar::Int),
+                        required: true,
+                    },
+                    FieldDef {
+                        name: alpha,
+                        ty: ImageType::scalar(Scalar::Text),
+                        required: false,
+                    },
+                ],
+            )
+            .expect("the reserved row fills once");
+        fills.commit();
         let choice = draft.add_enum_type(crate::draft::EnumTypeDef {
             name: enum_name,
             variants: Vec::new(),
         });
-        draft.set_enum_variants(
-            choice,
-            vec![
-                VariantDef {
-                    name: variant_one,
-                    category: false,
-                    payload: vec![ImageType::scalar(Scalar::Int)],
-                },
-                VariantDef {
-                    name: variant_two,
-                    category: false,
-                    payload: Vec::new(),
-                },
-            ],
-        );
+        let mut fills = draft
+            .begin_transaction(draft.savepoint())
+            .expect("a fresh savepoint admits");
+        fills
+            .set_enum_variants(
+                choice,
+                vec![
+                    VariantDef {
+                        name: variant_one,
+                        category: false,
+                        payload: vec![ImageType::scalar(Scalar::Int)],
+                    },
+                    VariantDef {
+                        name: variant_two,
+                        category: false,
+                        payload: Vec::new(),
+                    },
+                ],
+            )
+            .expect("the reserved row fills once");
+        fills.commit();
         let list = draft.add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
         });

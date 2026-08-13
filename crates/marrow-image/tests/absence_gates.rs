@@ -1017,33 +1017,52 @@ fn the_interior_mutability_scan_detects_a_planted_field() {
     assert_eq!(shared_mutation_needles(&planted), ["Cell<", "RefCell<"]);
 }
 
-/// There is no free-standing draft rollback mark.
+/// The draft savepoint is an affine allocation-identity admission token.
 ///
-/// `DraftSavepoint` was a `Clone` value a caller held: it could be copied, stored, and
-/// offered to a draft other than the one it was taken on, where it truncated unrelated
-/// tables to lengths that meant nothing there. Its replacement is
-/// `TemplateProofDraftGuard`, whose checkpoint is a private type this crate never returns —
-/// so there is no mark to transplant, and the exclusive borrow makes the draft unreachable
-/// while a proof is open. A returned mark is that capability coming back.
+/// The prototype's `DraftSavepoint` was a `Clone` value a caller held: it could be
+/// copied, stored, and offered to a draft other than the one it was taken on. Its
+/// sanctioned successor keeps the name but not the capability: it strongly retains
+/// the draft's allocation-identity anchor and one-shot epoch, is consumed whole by
+/// `begin_transaction`, and derives neither `Clone` nor `Copy` — so a consumed epoch
+/// cannot be re-presented and no mark can be transplanted. The old raw
+/// `TemplateProofDraftGuard` and `rewind_to` faces stay absent: the armed
+/// transaction is the one rollback owner.
 #[test]
-fn no_free_standing_draft_rollback_mark_exists() {
-    for needle in ["DraftSavepoint", "fn savepoint", "fn rewind_to"] {
-        let found = occurrences(needle);
-        assert!(
-            found.is_empty(),
-            "`{needle}` is a rollback mark a caller can hold: {found:?}",
-        );
-    }
+fn the_draft_savepoint_is_an_affine_admission_token() {
     assert!(
-        !occurrences("TemplateProofDraftGuard").is_empty(),
-        "the guard that replaced the mark is present, so this gate has a live subject",
+        occurrences("TemplateProofDraftGuard").is_empty(),
+        "the raw template-proof guard was deleted with the transaction surface",
     );
-    let checkpoint = occurrences("DraftCheckpoint");
     assert!(
-        checkpoint
-            .iter()
-            .all(|(path, _)| path.ends_with("draft.rs")),
-        "the checkpoint stays inside the draft owner: {checkpoint:?}",
+        occurrences("fn rewind_to(").is_empty(),
+        "no free-standing rewind mark survives",
+    );
+    assert!(
+        !occurrences("DraftSavepoint").is_empty(),
+        "the affine savepoint is present, so this gate has a live subject",
+    );
+    let code = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/draft.rs"))
+            .expect("read the draft owner"),
+    );
+    assert!(
+        !code.contains("impl Clone for DraftSavepoint")
+            && !code.contains("impl Copy for DraftSavepoint"),
+        "a hand-written Clone/Copy would let a consumed savepoint be re-presented",
+    );
+    let declaration = code
+        .split("pub struct DraftSavepoint")
+        .next()
+        .expect("the declaration splits");
+    let attributes: String = declaration.lines().rev().take(6).collect();
+    assert!(
+        !attributes.contains("Clone") && !attributes.contains("Copy"),
+        "the savepoint declaration derives neither Clone nor Copy",
+    );
+    let snapshot = occurrences("DraftSnapshot");
+    assert!(
+        snapshot.iter().all(|(path, _)| path.ends_with("draft.rs")),
+        "the restore snapshot stays inside the draft owner: {snapshot:?}",
     );
 }
 
@@ -1593,26 +1612,37 @@ fn no_value_shape_is_minted_inside_a_template_proof() {
         "value shapes are minted at exactly the pinned owners; found {minting:?}",
     );
 
-    let proof_openers: Vec<String> = sources
+    // The compiler's durable lowering reaches the arena only through the typed
+    // transaction appenders.
+    let compiler_durable = sources
         .iter()
-        .filter(|(_, code)| {
-            let production = without_cfg_test_items(code);
-            contains_symbol(&production, "template_proof") || production.contains("proof_draft()")
-        })
-        .map(|(path, _)| path.display().to_string())
-        .collect();
+        .find(|(path, _)| path.ends_with("marrow-compile/src/durable.rs"))
+        .map(|(_, code)| without_cfg_test_items(code))
+        .expect("the compiler's durable owner is scanned");
     assert!(
-        !proof_openers.is_empty(),
-        "the template proof still exists, so this gate has a live subject",
+        compiler_durable.contains(".value_scalar(")
+            && compiler_durable.contains(".value_struct(")
+            && compiler_durable.contains(".value_enum("),
+        "the compiler's durable lowering mints through the transaction appenders",
     );
-    let both: Vec<&String> = minting
+
+    // The F-5 absence half: the draft's raw `&mut` arena escape is gone from the
+    // public surface — on `ImageDraft` the accessor survives only crate-private,
+    // behind the typed transaction appenders. The one public arena escape left is
+    // the contract graph's own, whose sole cross-crate caller is the verifier
+    // minting into the twin arena its decoded graph owns.
+    let draft_owner_code = sources
         .iter()
-        .filter(|path| proof_openers.contains(path))
-        .collect();
+        .find(|(path, _)| path.ends_with("src/draft.rs"))
+        .map(|(_, code)| without_cfg_test_items(code))
+        .expect("the draft owner is scanned");
     assert!(
-        both.is_empty(),
-        "these owners mint a value shape and open a template proof, so a minted id can \
-         outlive the arena entry it names: {both:?}",
+        !draft_owner_code.contains("pub fn value_shapes_mut"),
+        "the draft's raw arena escape returned",
+    );
+    assert!(
+        draft_owner_code.contains("pub(crate) fn value_shapes_mut"),
+        "the crate-private interior is present, so this gate has a live subject",
     );
 }
 
@@ -1620,11 +1650,13 @@ fn no_value_shape_is_minted_inside_a_template_proof() {
 /// which resolves a durable field's value type into the draft's arena. It opens no
 /// template proof. A second owner appearing here is a second place a `ValueShapeNodeId`
 /// can come from, and the first thing to ask of it is whether it mints under a proof.
-/// The two production owners that mint value shapes: the compiler's durable lowering, into
-/// its draft's arena, and the verifier's durable decode, into the arena its own contract
-/// graph owns. Neither opens a template proof, which is the property this pins.
+/// The two production owners whose text mints value shapes: the image draft — whose
+/// typed transaction appenders are the sole mint path into the draft's arena now that
+/// the raw `&mut` arena escape is deleted — and the verifier's durable decode, into
+/// the arena its own contract graph owns. The compiler's durable lowering mints only
+/// through the draft's appenders, which the assertion below names.
 const VALUE_SHAPE_MINT_OWNERS: [&str; 2] = [
-    "marrow-compile/src/durable.rs",
+    "marrow-image/src/draft.rs",
     "marrow-verify/src/verify/durable.rs",
 ];
 
@@ -2014,7 +2046,7 @@ fn the_representation_scan_detects_a_planted_escape() {
 /// reverse dependency order, allocating and indexing nothing — and preserving it exactly is
 /// this row's own stop condition. It is exempted by name rather than by relaxing the needle,
 /// so a second `Drop` implementation still fires.
-const PRESERVED_PROOF_GUARD: &str = "TemplateProofDraftGuard";
+const PRESERVED_PROOF_GUARD: &str = "DraftTxn";
 
 /// The graph's arena has one owner, and no second index shadows it.
 ///

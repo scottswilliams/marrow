@@ -11,7 +11,16 @@
 //! - EXPORTS (0x06): entries ascending by the 32 `ExportId` bytes;
 //! - TEST-ENTRY (0x08): entries ascending by the remapped (byte-sorted) name index.
 
-use marrow_image::{EncodedImage, ExportId, FunctionDef, ImageDraft, ImageType, Instr, StrId};
+use marrow_image::{
+    DraftTxn, EncodedImage, ExportId, FunctionDef, ImageDraft, ImageType, Instr, StrId,
+};
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 /// The body of section `id` in `image`: the container is `magic(4) ‖ version(1) ‖
 /// image-id(32) ‖ section-count(1)` followed by `id(1) ‖ len(u32) ‖ body` sections.
@@ -51,7 +60,8 @@ fn function(name: StrId, source: StrId) -> FunctionDef {
 /// Strings are emitted byte-sorted, whatever order interned them.
 #[test]
 fn the_string_pool_is_emitted_byte_sorted() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.intern_string("pear");
     draft.intern_string("apple");
     draft.intern_string("mango");
@@ -71,7 +81,8 @@ fn the_string_pool_is_emitted_byte_sorted() {
 /// even though it is numerically smallest; bool and text tags follow every int.
 #[test]
 fn the_const_pool_is_emitted_in_wire_byte_order() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.intern_text("a");
     draft.intern_int(-1);
     draft.intern_bool(true);
@@ -98,7 +109,8 @@ fn the_const_pool_is_emitted_in_wire_byte_order() {
 /// ascending with each id still beside the function it was bound to.
 #[test]
 fn the_export_table_is_emitted_in_ascending_id_order() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let source = draft.intern_string("src/main.mw");
     let mut named: Vec<(ExportId, &str)> = ["a", "b", "c"]
         .into_iter()
@@ -132,7 +144,8 @@ fn the_export_table_is_emitted_in_ascending_id_order() {
 /// the name text once the pool is sorted — whatever order registered them.
 #[test]
 fn the_test_entry_table_is_emitted_in_ascending_name_order() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let source = draft.intern_string("s");
     let mut funcs = Vec::new();
     for text in ["zeta", "alpha", "mid"] {

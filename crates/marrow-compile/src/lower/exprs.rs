@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<'a> FnLowerer<'a> {
+impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- expressions ---
 
     /// Lower `expr`, emitting code that pushes its value, then coerce that value to

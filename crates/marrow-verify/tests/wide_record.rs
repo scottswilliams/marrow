@@ -30,7 +30,10 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// A draft carrying a `main` returning `0` and one record type of `field_count`
 /// scalar fields.
 fn draft_with_record(field_count: usize) -> ImageDraft {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = draft_owner
+        .begin_transaction(draft_owner.savepoint())
+        .expect("a fresh savepoint admits");
     let src = draft.intern_string("src/main.mw");
     let type_name = draft.intern_string("Wide");
     let fields = (0..field_count)
@@ -60,7 +63,8 @@ fn draft_with_record(field_count: usize) -> ImageDraft {
         })
         .expect("every site operand is live");
     draft.add_export(marrow_image::ExportId::of_local("", "main"), main);
-    draft
+    draft.commit();
+    draft_owner
 }
 
 /// The independent verifier admits a record type at the full widened field width.

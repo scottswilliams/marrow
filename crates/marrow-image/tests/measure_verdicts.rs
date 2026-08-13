@@ -47,7 +47,7 @@ use marrow_image::bounds::{
     MAX_STRING_BYTES, MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES, MAX_VARIANTS,
 };
 use marrow_image::{
-    CollTypeId, CollectionTypeDef, ConstId, DeclarationMemberDef, DeclarationMemberShape,
+    CollTypeId, CollectionTypeDef, ConstId, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, EnumId, EnumTypeDef, ExportId, FieldDef, FuncId,
     FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
     RecordTypeDef, RootId, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId, TypeId,
@@ -57,6 +57,13 @@ use marrow_image::{
 #[path = "common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
@@ -84,33 +91,32 @@ enum Value {
 }
 
 impl Value {
-    fn shape(self, draft: &mut ImageDraft) -> ValueShapeNodeId {
-        let values = draft.value_shapes_mut();
-        let int = values.scalar(Scalar::Int);
+    fn shape(self, draft: &mut DraftTxn<'_>) -> ValueShapeNodeId {
+        let int = draft.value_scalar(Scalar::Int);
         match self {
             Value::Scalar => int,
             Value::OverCeiling => {
                 let mut level = int;
                 for _ in 0..10 {
-                    level = values.struct_shape(vec![level; 4]);
+                    level = draft.value_struct(vec![level; 4]);
                 }
                 level
             }
-            Value::OverWideStruct => values.struct_shape(vec![int; MAX_STRUCT_LEAVES + 1]),
+            Value::OverWideStruct => draft.value_struct(vec![int; MAX_STRUCT_LEAVES + 1]),
             Value::OverDeep => {
                 let mut level = int;
                 for _ in 0..MAX_DURABLE_VALUE_DEPTH {
-                    level = values.struct_shape(vec![level]);
+                    level = draft.value_struct(vec![level]);
                 }
                 level
             }
             Value::Forged => {
                 // Index 2 in a three-node arena; the fixture draft's arena holds one.
-                let mut other = ImageDraft::new();
-                let foreign = other.value_shapes_mut();
-                foreign.scalar(Scalar::Int);
-                foreign.scalar(Scalar::Bool);
-                foreign.scalar(Scalar::Text)
+                let mut other_owner = ImageDraft::new();
+                let mut other = admitted(&mut other_owner);
+                other.value_scalar(Scalar::Int);
+                other.value_scalar(Scalar::Bool);
+                other.value_scalar(Scalar::Text)
             }
         }
     }
@@ -478,7 +484,8 @@ impl Fixture {
     }
 
     fn encode(self) -> Result<(), ImageBuildError> {
-        let mut draft = ImageDraft::new();
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
         let value = self.value.shape(&mut draft);
         let type_name = if self.forged_record_name {
             StrId::from_index(FORGED_RECORD_NAME)
@@ -538,9 +545,7 @@ impl Fixture {
             let members = (0..=MAX_VARIANTS)
                 .map(|index| (seeded_id(0x61, index), Vec::new()))
                 .collect();
-            draft
-                .value_shapes_mut()
-                .enum_shape(seeded_id(0x60, 0), members);
+            draft.value_enum(seeded_id(0x60, 0), members);
         }
         let mut members = vec![DeclarationMemberDef {
             parent: None,
@@ -827,7 +832,8 @@ fn body(code: Code, zero: ConstId) -> Vec<Instr> {
 /// overflow can grow: an ordinal of 1 would be healed into validity by the fixtures
 /// that append real functions (the TestEntries and Exports overflows).
 fn forged_func_id() -> FuncId {
-    let mut other = ImageDraft::new();
+    let mut other_owner = ImageDraft::new();
+    let mut other = admitted(&mut other_owner);
     let src = other.intern_string("s");
     let name = other.intern_string("f");
     let def = FunctionDef {
@@ -852,7 +858,7 @@ fn forged_func_id() -> FuncId {
 
 /// Drive exactly one resource-policy aggregate over its cap on an otherwise complete
 /// draft, leaving every other table inside its bound.
-fn apply_policy(policy: Overflow, draft: &mut ImageDraft) {
+fn apply_policy(policy: Overflow, draft: &mut DraftTxn<'_>) {
     match policy {
         // The base draft interns a handful of strings, so a full extra pool is over.
         Overflow::Strings => {
@@ -919,7 +925,7 @@ fn apply_policy(policy: Overflow, draft: &mut ImageDraft) {
         // A second Product as wide as the site table itself: demanding every field leaf
         // fills the table, and the root's whole-payload demand is the crossing.
         Overflow::Sites => {
-            let value = draft.value_shapes_mut().scalar(Scalar::Int);
+            let value = draft.value_scalar(Scalar::Int);
             let entry_name = draft.intern_string("S");
             let entry = draft.add_record_type(RecordTypeDef {
                 name: entry_name,

@@ -12,11 +12,18 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId, FieldDef, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, EnumTypeDef, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT: [u8; 16] = [0x0b; 16];
@@ -46,7 +53,7 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 
 /// Add the enum type `Access { reader, writer, admin }` (all empty-payload) and return
 /// its table index.
-fn access_enum(draft: &mut ImageDraft) -> marrow_image::EnumId {
+fn access_enum(draft: &mut DraftTxn<'_>) -> marrow_image::EnumId {
     let name = draft.intern_string("Access");
     let reader = draft.intern_string("reader");
     let writer = draft.intern_string("writer");
@@ -78,8 +85,8 @@ fn access_enum(draft: &mut ImageDraft) -> marrow_image::EnumId {
 type AccessShape = ([u8; 16], [[u8; 16]; 3]);
 
 /// Mint the durable value shape of an `Access` field into `draft`'s value arena.
-fn access_shape(draft: &mut ImageDraft, (sum, members): AccessShape) -> ValueShapeNodeId {
-    draft.value_shapes_mut().enum_shape(
+fn access_shape(draft: &mut DraftTxn<'_>, (sum, members): AccessShape) -> ValueShapeNodeId {
+    draft.value_enum(
         id(sum),
         members.iter().map(|m| (id(*m), Vec::new())).collect(),
     )
@@ -94,7 +101,8 @@ fn build(
     field_two: [u8; 16],
     shape_two: AccessShape,
 ) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(id(APPLICATION_ID));
     let shape_one = access_shape(&mut draft, shape_one);
     let shape_two = access_shape(&mut draft, shape_two);
@@ -407,7 +415,7 @@ impl GraphSpec {
 }
 
 /// The durable value shape of an `Access` field for one root's enum declaration.
-fn spec_enum_shape(draft: &mut ImageDraft, spec: &RootSpec) -> ValueShapeNodeId {
+fn spec_enum_shape(draft: &mut DraftTxn<'_>, spec: &RootSpec) -> ValueShapeNodeId {
     access_shape(draft, (spec.sum, spec.members))
 }
 
@@ -416,7 +424,8 @@ fn spec_enum_shape(draft: &mut ImageDraft, spec: &RootSpec) -> ValueShapeNodeId 
 /// and one unique managed index — so the artifacts differ only in which ledger ids
 /// they claim.
 fn forge(spec: &GraphSpec) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(id(spec.application));
     let enum_idx = access_enum(&mut draft);
     let access = ImageType::Enum {
@@ -476,7 +485,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
 
     for (position, root) in spec.roots.iter().enumerate() {
         let name = draft.intern_string(if position == 0 { "a" } else { "b" });
-        let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+        let int_value = draft.value_scalar(Scalar::Int);
         let enum_value = spec_enum_shape(&mut draft, root);
         // Flat commands, in pre-order: the two direct fields, the group and its one
         // member, then the branch and its one member.

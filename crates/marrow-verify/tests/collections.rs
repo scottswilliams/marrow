@@ -4,10 +4,17 @@
 //! digest), so every rejection is a structural/type invariant, not a digest flip.
 
 use marrow_image::{
-    CollectionTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    Scalar, SpanEntry,
+    CollectionTypeDef, DraftTxn, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType,
+    Instr, Scalar, SpanEntry,
 };
 use marrow_verify::verify;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
@@ -22,7 +29,8 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// Build a single-export image whose `main` body is `code`, returning `ret`, over a
 /// caller-supplied COLLTYPES table.
 fn image_with(colls: &[CollectionTypeDef], code: Vec<Instr>, ret: ImageType) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     for coll in colls {
         draft.add_collection_type(*coll);
     }
@@ -64,7 +72,8 @@ const MAP_STR_INT: CollectionTypeDef = CollectionTypeDef::Map {
 
 #[test]
 fn a_well_formed_list_program_verifies_and_seals() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(LIST_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
@@ -96,7 +105,8 @@ fn a_well_formed_list_program_verifies_and_seals() {
 
 #[test]
 fn a_well_formed_map_program_verifies() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(MAP_STR_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
@@ -129,7 +139,8 @@ fn a_well_formed_map_program_verifies() {
 #[test]
 fn a_list_new_index_out_of_range_is_refused_by_the_producer() {
     // Only one collection type exists, so `ListNew(9)` names no collection.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(LIST_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
@@ -176,7 +187,8 @@ fn a_map_op_on_a_list_type_rejects() {
 #[test]
 fn a_list_append_element_type_mismatch_rejects() {
     // Appending a bool to a `List[int]` is a per-opcode type violation.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(LIST_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
@@ -233,7 +245,8 @@ const LIST_STR: CollectionTypeDef = CollectionTypeDef::List {
 fn a_well_formed_text_split_join_program_verifies() {
     // `join(split(text, sep), sep)` over a `List[string]`: split consumes two texts
     // and yields the list, join consumes the list and a text and yields a text.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(LIST_STR);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
@@ -268,7 +281,8 @@ fn a_well_formed_text_split_join_program_verifies() {
 fn a_text_split_naming_a_non_string_list_rejects() {
     // `TextSplit(0)` names a `List[int]`, but the text floor produces only a
     // `List[string]`; the hostile image is rejected rather than run.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(LIST_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
@@ -304,7 +318,8 @@ fn a_text_split_naming_a_non_string_list_rejects() {
 #[test]
 fn a_text_join_on_a_non_string_list_rejects() {
     // `TextJoin` requires a `List[string]`; a `List[int]` operand is rejected.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     draft.add_collection_type(LIST_INT);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");

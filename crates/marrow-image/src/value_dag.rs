@@ -257,6 +257,7 @@ impl CanonicalValueShapeDag {
         self.nodes.truncate(len);
         self.depth.truncate(len);
     }
+    // drop-path audit sentinel: end of CanonicalValueShapeDag::truncate
 
     /// Mint `node`, or return the id of the structurally identical node already held.
     ///

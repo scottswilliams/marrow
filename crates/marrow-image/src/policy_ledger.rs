@@ -1,0 +1,285 @@
+//! The fixed inline eight-slot table-policy ledger and its independent audit.
+//!
+//! The ledger is an **observer, not an authority**: each slot records the earliest
+//! policy crossing of its kind in canonical validation order, the order the legacy
+//! policy walk visits its candidates. It stores no counts, authorizes no encode or
+//! narrowing, and the still-authoritative legacy walk (`crate::measure`) remains the
+//! public candidate owner; every applicable table-owned verdict is shadow-compared
+//! against this ledger at the fence, so a ledger that drifts from the draft state it
+//! observes is a producer invariant, never a changed verdict.
+//!
+//! The slot array index is the canonical kind rank — the legacy walk's candidate
+//! order: Strings, StringBytes, Consts, Types, Enums, Collections, Roots, Sites.
+//! "Earliest" is earliest in that order, never earliest in time: a later-in-time
+//! Strings crossing outranks an earlier-in-time Consts crossing. The Sites slot is
+//! present in the fixed array but **inert** until the atomic Sites carrier transfer
+//! activates it; the audit asserts it vacant by construction.
+
+use crate::bounds;
+use crate::draft::ImageDraft;
+
+/// The number of ledger slots: the eight owned table-policy families, fixed.
+pub(crate) const TABLE_POLICY_KIND_COUNT: usize = 8;
+
+/// The closed owned policy-kind set, in canonical validation order. The declaration
+/// order IS the legacy walk's candidate order; [`TablePolicyKind::rank`] is the slot
+/// index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TablePolicyKind {
+    Strings,
+    StringBytes,
+    Consts,
+    Types,
+    Enums,
+    Collections,
+    Roots,
+    /// Present in the fixed array, inert until the atomic Sites carrier transfer.
+    Sites,
+}
+
+impl TablePolicyKind {
+    /// The canonical kind rank: this kind's slot index and its position in the legacy
+    /// walk's candidate order.
+    pub(crate) const fn rank(self) -> usize {
+        match self {
+            TablePolicyKind::Strings => 0,
+            TablePolicyKind::StringBytes => 1,
+            TablePolicyKind::Consts => 2,
+            TablePolicyKind::Types => 3,
+            TablePolicyKind::Enums => 4,
+            TablePolicyKind::Collections => 5,
+            TablePolicyKind::Roots => 6,
+            TablePolicyKind::Sites => 7,
+        }
+    }
+}
+
+/// The canonical legacy-validation coordinate of one kind's earliest crossing: the
+/// wide logical row ordinal of the first row the kind's policy predicate refuses
+/// under the legacy walk's own iteration.
+///
+/// For a count kind (Strings, Consts, Types, Enums, Collections, Roots) this is
+/// exactly the ordinal `MAX_<kind>` — the N+1 row; for StringBytes it is the row
+/// ordinal of the first over-`MAX_STRING_BYTES` string in pool order. It is never a
+/// mutation stamp: every slot value is recomputable from final draft state alone,
+/// which is what keeps the audit independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CurrentValidationOccurrence {
+    row: u32,
+}
+
+impl CurrentValidationOccurrence {
+    pub(crate) const fn at_row(row: u32) -> Self {
+        Self { row }
+    }
+}
+
+/// A slot index into the fixed eight-slot array: the canonical kind rank of the
+/// cached subset minimum. Caching the index preserves both the kind rank (the index
+/// itself) and the row coordinate (read through the slot on demand).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LedgerSlotIndex(usize);
+
+impl LedgerSlotIndex {
+    pub(crate) const fn of(kind: TablePolicyKind) -> Self {
+        Self(kind.rank())
+    }
+}
+
+/// The fixed inline eight-slot policy ledger: one optional canonical occurrence per
+/// owned kind plus the cached lowest-ranked occupied slot. Allocation-free, `Copy`
+/// (the one armed-inverse copy at transaction admission), no vector, map, payload
+/// spelling, span, cause, availability witness, or image byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TablePolicyLedger {
+    slots: [Option<CurrentValidationOccurrence>; TABLE_POLICY_KIND_COUNT],
+    cached_minimum: Option<LedgerSlotIndex>,
+}
+
+impl TablePolicyLedger {
+    /// The vacant ledger a fresh draft holds.
+    pub(crate) const fn vacant() -> Self {
+        Self {
+            slots: [None; TABLE_POLICY_KIND_COUNT],
+            cached_minimum: None,
+        }
+    }
+
+    /// Record one crossing observation. The earliest observation of a kind wins — an
+    /// equal-or-later observation in canonical order is idempotent — and the cached
+    /// subset minimum is maintained in O(1) on every insert: a newly occupied slot
+    /// with a lower rank replaces the cache.
+    pub(crate) fn observe(
+        &mut self,
+        kind: TablePolicyKind,
+        occurrence: CurrentValidationOccurrence,
+    ) {
+        let rank = kind.rank();
+        if let Some(slot) = self.slots.get_mut(rank)
+            && slot.is_none()
+        {
+            *slot = Some(occurrence);
+            match self.cached_minimum {
+                Some(LedgerSlotIndex(current)) if current <= rank => {}
+                _ => self.cached_minimum = Some(LedgerSlotIndex(rank)),
+            }
+        }
+    }
+
+    /// The lowest-ranked occupied slot, if any — the kind the legacy walk's first
+    /// table-owned candidate must name.
+    pub(crate) fn cached_minimum(&self) -> Option<LedgerSlotIndex> {
+        self.cached_minimum
+    }
+
+    fn slot(&self, kind: TablePolicyKind) -> Option<CurrentValidationOccurrence> {
+        self.slots.get(kind.rank()).copied().flatten()
+    }
+}
+
+/// The independent read-only ledger audit: it recomputes exactly the owned subset
+/// from final draft state — per kind, whether the current state is over policy and
+/// the canonical coordinate of the crossing — and cross-validates each slot's
+/// presence, absence, and value plus the cached subset minimum, byte-exactly.
+///
+/// It is neither a full candidate decision nor a clean witness: it authorizes no
+/// encode, narrowing, or mutation-clean conclusion, and a mismatch (corrupt,
+/// missing, extra, stale, wrong-occurrence, wrong-minimum) is a producer invariant.
+pub(crate) struct TablePolicyAudit;
+
+impl TablePolicyAudit {
+    /// Recompute the owned subset over `draft`'s final state and cross-validate the
+    /// ledger, returning the first mismatch's description.
+    pub(crate) fn cross_validate(draft: &ImageDraft) -> Result<(), &'static str> {
+        let ledger = draft.policy_ledger();
+        let mut minimum = None;
+        for (kind, expected) in [
+            (
+                TablePolicyKind::Strings,
+                count_crossing(draft.strings().len(), bounds::MAX_STRINGS),
+            ),
+            (TablePolicyKind::StringBytes, first_over_long(draft)),
+            (
+                TablePolicyKind::Consts,
+                count_crossing(draft.consts().len(), bounds::MAX_CONSTS),
+            ),
+            (
+                TablePolicyKind::Types,
+                count_crossing(draft.types().len(), bounds::MAX_TYPES),
+            ),
+            (
+                TablePolicyKind::Enums,
+                count_crossing(draft.enums().len(), bounds::MAX_ENUMS),
+            ),
+            (
+                TablePolicyKind::Collections,
+                count_crossing(draft.collections().len(), bounds::MAX_COLLECTIONS),
+            ),
+            (
+                TablePolicyKind::Roots,
+                count_crossing(draft.root_occurrences().len(), bounds::MAX_ROOTS),
+            ),
+            // Inert until the atomic Sites carrier transfer: vacant by construction.
+            (TablePolicyKind::Sites, None),
+        ] {
+            if ledger.slot(kind) != expected {
+                return Err("a ledger slot disagrees with the recomputed final draft state");
+            }
+            if expected.is_some() && minimum.is_none() {
+                minimum = Some(LedgerSlotIndex::of(kind));
+            }
+        }
+        if ledger.cached_minimum() != minimum {
+            return Err("the cached subset minimum disagrees with the recomputed slots");
+        }
+        Ok(())
+    }
+}
+
+/// The canonical occurrence of a count kind's crossing: the N+1 ordinal `MAX_<kind>`,
+/// present exactly when the table's row count exceeds its policy maximum.
+fn count_crossing(len: usize, max: usize) -> Option<CurrentValidationOccurrence> {
+    (len > max).then(|| CurrentValidationOccurrence::at_row(max as u32))
+}
+
+/// The canonical StringBytes occurrence: the pool ordinal of the first
+/// over-`MAX_STRING_BYTES` string in pool order.
+fn first_over_long(draft: &ImageDraft) -> Option<CurrentValidationOccurrence> {
+    draft
+        .strings()
+        .iter()
+        .position(|text| text.len() > bounds::MAX_STRING_BYTES)
+        .map(|row| CurrentValidationOccurrence::at_row(row as u32))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frozen representation constants: eight slots, and the exact inline
+    /// size/alignment of the `Copy` ledger the armed inverse copies at admission.
+    #[test]
+    fn the_ledger_representation_holds_its_frozen_widths() {
+        assert_eq!(
+            TABLE_POLICY_KIND_COUNT, 8,
+            "the slot count is frozen at eight"
+        );
+        assert_eq!(
+            size_of::<TablePolicyLedger>(),
+            80,
+            "B_TABLE_POLICY_LEDGER: eight 8-byte optional occurrences plus the cached minimum",
+        );
+        assert_eq!(align_of::<TablePolicyLedger>(), 8, "the ledger's alignment");
+    }
+
+    /// The earliest observation per kind wins; an equal-or-later observation in
+    /// canonical order is idempotent.
+    #[test]
+    fn a_later_observation_of_an_occupied_slot_is_idempotent() {
+        let mut ledger = TablePolicyLedger::vacant();
+        ledger.observe(
+            TablePolicyKind::Consts,
+            CurrentValidationOccurrence::at_row(64),
+        );
+        ledger.observe(
+            TablePolicyKind::Consts,
+            CurrentValidationOccurrence::at_row(65),
+        );
+        assert_eq!(
+            ledger.slot(TablePolicyKind::Consts),
+            Some(CurrentValidationOccurrence::at_row(64)),
+        );
+    }
+
+    /// A later-in-time crossing of a lower-ranked kind takes the cached minimum: the
+    /// ranking is canonical validation order, never mutation-time order.
+    #[test]
+    fn a_later_lower_ranked_crossing_takes_the_cached_minimum() {
+        let mut ledger = TablePolicyLedger::vacant();
+        ledger.observe(
+            TablePolicyKind::Consts,
+            CurrentValidationOccurrence::at_row(64),
+        );
+        assert_eq!(
+            ledger.cached_minimum(),
+            Some(LedgerSlotIndex::of(TablePolicyKind::Consts)),
+        );
+        ledger.observe(
+            TablePolicyKind::Strings,
+            CurrentValidationOccurrence::at_row(8192),
+        );
+        assert_eq!(
+            ledger.cached_minimum(),
+            Some(LedgerSlotIndex::of(TablePolicyKind::Strings)),
+        );
+        // A higher-ranked crossing afterwards leaves the minimum where it is.
+        ledger.observe(
+            TablePolicyKind::Roots,
+            CurrentValidationOccurrence::at_row(4096),
+        );
+        assert_eq!(
+            ledger.cached_minimum(),
+            Some(LedgerSlotIndex::of(TablePolicyKind::Strings)),
+        );
+    }
+}

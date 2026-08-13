@@ -6,10 +6,17 @@
 //! every defect the producer still emits stays the verifier's own rejection.
 
 use marrow_image::{
-    CollectionTypeDef, EnumId, EnumTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft,
-    ImageType, Instr, Scalar, SpanEntry, VariantDef,
+    CollectionTypeDef, DraftTxn, EnumId, EnumTypeDef, ExportId, FunctionDef, ImageBuildError,
+    ImageDraft, ImageType, Instr, Scalar, SpanEntry, VariantDef,
 };
 use marrow_verify::verify;
+
+/// The armed transaction a fresh savepoint admits over `owner`.
+fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    owner
+        .begin_transaction(owner.savepoint())
+        .expect("a fresh savepoint admits")
+}
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
@@ -22,7 +29,7 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 }
 
 /// Add a `Shape { dot, circle(int), rect(int, int) }` enum to `draft`.
-fn shape(draft: &mut ImageDraft) -> EnumId {
+fn shape(draft: &mut DraftTxn<'_>) -> EnumId {
     let name = draft.intern_string("Shape");
     let dot = draft.intern_string("dot");
     let circle = draft.intern_string("circle");
@@ -55,11 +62,12 @@ fn shape(draft: &mut ImageDraft) -> EnumId {
 /// Encode `draft` (adding `f` as a storeless export over `code` returning `ret`)
 /// and verify, returning the rejection code or `"VERIFIED"`.
 fn verify_fn(
-    mut draft: ImageDraft,
+    mut owner: ImageDraft,
     params: Vec<ImageType>,
     ret: ImageType,
     code: Vec<Instr>,
 ) -> String {
+    let mut draft = admitted(&mut owner);
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     let local_count = params.len() as u16 + 4;
@@ -85,11 +93,12 @@ fn verify_fn(
 /// Add the same storeless export shape as [`verify_fn`] and return the producer's
 /// own verdict, for the defects the coherence hoist refuses before any byte exists.
 fn encode_fn(
-    mut draft: ImageDraft,
+    mut owner: ImageDraft,
     params: Vec<ImageType>,
     ret: ImageType,
     code: Vec<Instr>,
 ) -> Result<(), ImageBuildError> {
+    let mut draft = admitted(&mut owner);
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     let local_count = params.len() as u16 + 4;
@@ -110,7 +119,8 @@ fn encode_fn(
 
 #[test]
 fn a_well_formed_enum_image_verifies() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let enum_idx = shape(&mut draft);
     let two = draft.intern_int(2);
     // f(): int = Shape::circle(2) then read its payload leaf.
@@ -127,7 +137,15 @@ fn a_well_formed_enum_image_verifies() {
         Instr::Return,
     ];
     assert_eq!(
-        verify_fn(draft, vec![], ImageType::scalar(Scalar::Int), code),
+        verify_fn(
+            {
+                draft.commit();
+                draft_owner
+            },
+            vec![],
+            ImageType::scalar(Scalar::Int),
+            code
+        ),
         "VERIFIED"
     );
 }
@@ -136,13 +154,17 @@ fn a_well_formed_enum_image_verifies() {
 /// an out-of-range enum parameter reference is refused by the producer.
 #[test]
 fn an_enum_param_index_out_of_range_is_refused_by_the_producer() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let _ = shape(&mut draft); // one enum exists (index 0)
     // A parameter references enum index 7, which is out of range.
     let code = vec![Instr::Return];
     assert_eq!(
         encode_fn(
-            draft,
+            {
+                draft.commit();
+                draft_owner
+            },
             vec![ImageType::Enum {
                 idx: EnumId::from_index(7),
                 optional: false,
@@ -176,7 +198,8 @@ fn an_enum_return_index_out_of_range_is_refused_by_the_producer() {
 
 #[test]
 fn a_duplicate_variant_name_rejects_at_table() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("E");
     let a = draft.intern_string("a");
     draft.add_enum_type(EnumTypeDef {
@@ -196,7 +219,15 @@ fn a_duplicate_variant_name_rejects_at_table() {
     });
     let code = vec![Instr::Return];
     assert_eq!(
-        verify_fn(draft, vec![], ImageType::Unit, code),
+        verify_fn(
+            {
+                draft.commit();
+                draft_owner
+            },
+            vec![],
+            ImageType::Unit,
+            code
+        ),
         "image.table"
     );
 }
@@ -205,7 +236,8 @@ fn a_duplicate_variant_name_rejects_at_table() {
 /// a construct variant outside the resolved enum is refused by the producer.
 #[test]
 fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let enum_idx = shape(&mut draft);
     // Shape has 3 variants; constructing variant 9 is out of range.
     let code = vec![
@@ -217,7 +249,10 @@ fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
     ];
     assert_eq!(
         encode_fn(
-            draft,
+            {
+                draft.commit();
+                draft_owner
+            },
             vec![],
             ImageType::Enum {
                 idx: marrow_image::EnumId::from_index(0),
@@ -231,7 +266,8 @@ fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
 
 #[test]
 fn an_out_of_range_payload_field_rejects_at_function() {
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let enum_idx = shape(&mut draft);
     let two = draft.intern_int(2);
     // circle has one payload field (index 0); reading field 5 is out of range.
@@ -248,7 +284,15 @@ fn an_out_of_range_payload_field_rejects_at_function() {
         Instr::Return,
     ];
     assert_eq!(
-        verify_fn(draft, vec![], ImageType::scalar(Scalar::Int), code),
+        verify_fn(
+            {
+                draft.commit();
+                draft_owner
+            },
+            vec![],
+            ImageType::scalar(Scalar::Int),
+            code
+        ),
         "image.function"
     );
 }
@@ -260,7 +304,8 @@ fn a_collection_enum_payload_leaf_rejects_at_table() {
     // `List` collection type is refused at the phase that owns the ENUMS table, so the
     // compiler's check-time refusal of the same shape is defense in depth, not the
     // trust boundary.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let list_int = draft.add_collection_type(CollectionTypeDef::List {
         elem: ImageType::scalar(Scalar::Int),
     });
@@ -279,7 +324,15 @@ fn a_collection_enum_payload_leaf_rejects_at_table() {
     });
     let code = vec![Instr::Return];
     assert_eq!(
-        verify_fn(draft, vec![], ImageType::Unit, code),
+        verify_fn(
+            {
+                draft.commit();
+                draft_owner
+            },
+            vec![],
+            ImageType::Unit,
+            code
+        ),
         "image.table"
     );
 }
@@ -288,7 +341,8 @@ fn a_collection_enum_payload_leaf_rejects_at_table() {
 fn a_truncated_enum_table_rejects_at_envelope() {
     // A valid enum image with its final byte flipped but not rehashed rejects at
     // the envelope; truncating the trailing ENUMS section corrupts the digest.
-    let mut draft = ImageDraft::new();
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
     let _ = shape(&mut draft);
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
