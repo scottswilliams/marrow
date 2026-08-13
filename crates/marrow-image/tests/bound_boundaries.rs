@@ -160,8 +160,9 @@ fn a_dense_struct_at_the_leaf_limit_encodes() {
     );
 }
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`a_dense_struct_one_leaf_over_the_limit_is_refused`, fence
 /// `TooManyStructLeaves`): one leaf past the dense-composite limit is the typed
 /// carrier-domain refusal at the append surface, mutating nothing, and the fence's

@@ -190,6 +190,18 @@ pub(crate) fn wide_ordinal(len: usize) -> Result<u32, DraftStateError> {
     u32::try_from(len).map_err(|_| DraftStateError::CarrierDomain)
 }
 
+/// The function-slot ordinal, checked at its mint.
+///
+/// Function width is `IMGFUNC01`'s to widen and stays `u16` here, but *unchecked* is a
+/// different property from *narrow*: a draft carrying more functions than the carrier
+/// spells would wrap and alias slot zero, and an arbitrary external caller on this
+/// `#[doc(hidden)] pub` surface can reach that. The mint therefore returns the same
+/// closed builder-domain refusal every other id-minting mutator returns, rather than
+/// leaving the bound to the encoder to notice afterwards.
+fn function_ordinal(len: usize) -> Result<u16, DraftStateError> {
+    u16::try_from(len).map_err(|_| DraftStateError::CarrierDomain)
+}
+
 /// A logical string-pool id, stable across the sort the encoder performs.
 ///
 /// Like every owned pre-seal logical id it is a typed newtype over a private wide
@@ -789,6 +801,16 @@ impl std::fmt::Display for DraftStateError {
 
 impl std::error::Error for DraftStateError {}
 
+/// A site operation the draft did not answer for is an incoherent token at the builder
+/// surface: the reference names a row that no longer admits the operation. The site
+/// error's own private cases stay private — this crossing carries the classification, not
+/// the cause.
+impl From<crate::site_plan::SitePlanStateError> for DraftStateError {
+    fn from(_: crate::site_plan::SitePlanStateError) -> Self {
+        DraftStateError::IncoherentToken
+    }
+}
+
 /// The private structural image a savepoint carries and a transaction's journal
 /// restores to: every owner's append-only length, the durable graph's checkpoint,
 /// and the conflict/receipt slots. Deliberately **not** a ledger copy — the one-shot
@@ -832,10 +854,14 @@ struct DraftSnapshot {
 /// carries.
 ///
 /// ```compile_fail,E0599
-/// // A savepoint cannot mint, carry, or validate an element reference.
-/// let draft = marrow_image::ImageDraft::new();
+/// // A savepoint cannot mint, carry, or validate an element reference. The method named
+/// // here is the transaction's real one, so the refusal is that a *savepoint* does not
+/// // have it — not that no type does. A spelling no type carries would fail to compile
+/// // for a reason that pins nothing about this boundary.
+/// let mut draft = marrow_image::ImageDraft::new();
 /// let sp = draft.savepoint();
-/// let _: marrow_image::PlannedSiteRef = sp.site_ref();
+/// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
+/// let _ = sp.request_site(&handle);
 /// ```
 ///
 /// The separation runs both ways: an element reference authenticates against the draft
@@ -1127,7 +1153,7 @@ impl<'d> DraftTxn<'d> {
         self.draft.request_site(handle)
     }
 
-    pub fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, SitePlanStateError> {
+    pub fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, DraftStateError> {
         self.draft.add_function(def)
     }
 
@@ -1733,13 +1759,13 @@ impl ImageDraft {
     /// discarded, is refused and **no** row is appended. The success carrier is unchanged
     /// — a function is still named by its [`FuncId`] — so the check widens neither
     /// function identity nor the site-binding state error's authority.
-    pub(crate) fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, SitePlanStateError> {
+    pub(crate) fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, DraftStateError> {
         for instr in &def.code {
             if let Some(site) = instr.site_operand() {
                 self.validate_site_ref(site)?;
             }
         }
-        let id = FuncId(self.functions.len() as u16);
+        let id = FuncId(function_ordinal(self.functions.len())?);
         self.functions.push(def);
         Ok(id)
     }

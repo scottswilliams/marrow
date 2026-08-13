@@ -2549,7 +2549,7 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
     (
         "marrow-image",
         "draft.rs",
-        "let id = FuncId(self.functions.len() as u16);",
+        "u16::try_from(len).map_err(|_| DraftStateError::CarrierDomain)",
     ),
     (
         "marrow-image",

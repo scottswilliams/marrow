@@ -133,7 +133,7 @@ impl EncodeDriftSection {
     /// The envelope marker: the assembled header/frame total, not a section body.
     const ENVELOPE: u8 = 0x00;
 
-    fn of(section_id: u8) -> Self {
+    pub(crate) fn of(section_id: u8) -> Self {
         Self(section_id)
     }
 

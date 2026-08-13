@@ -749,15 +749,15 @@ impl DurableRegistry {
                     continue;
                 }
                 // One admitted transaction per store: an accepted store commits its
-                // interned spelling, root, sites, and application identity as one
-                // unit; an ordinary checked refusal drops the armed guard, so no
-                // orphan row (the old build_extras wart) survives the refusal.
+                // interned spelling, root, sites, and application identity as one unit,
+                // and an ordinary checked refusal runs the guard's total inverse, so a
+                // refused store leaves no orphan row behind.
                 //
-                // The diagnostic custody seam: rows this store's build refuses are
-                // staged while the guard is armed and settle into the real collector
-                // only after the local restore (the guard drop) or the commit has
-                // completed — restore before settlement. An invariant abort returns
-                // through `?` before the settlement line, so it settles nothing.
+                // The diagnostic custody seam: rows this store's build refuses are staged
+                // outside every collector the caller can read, and are released only
+                // against the capability the consumed guard produces — so the local
+                // restore or commit precedes settlement as a type fact. An invariant
+                // abort leaves through `?` without that capability and settles nothing.
                 let mut staged = StagedStoreDiagnostics::new();
                 let mut txn = admitted(draft);
                 let (occurrence, authority) = match build_one(

@@ -2004,8 +2004,10 @@ fn lower_declared_functions(
                     function,
                 ) {
                     Ok(BodyOutcome::Lowered(result)) => Some(result),
-                    // An ordinary refusal keeps the batch: the retained interns and
-                    // registry rows stay aligned, exactly as before the surface moved.
+                    // An ordinary refusal commits the batch rather than rolling it back:
+                    // the interns and registry rows a refused body already minted are
+                    // referenced by rows outside it, so discarding them would leave the
+                    // registry and the draft describing different populations.
                     Ok(BodyOutcome::Refused) => None,
                     Err(invariant) => {
                         return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
@@ -2157,8 +2159,10 @@ fn lower_declared_tests(
                     &test.body,
                 ) {
                     Ok(BodyOutcome::Lowered(result)) => Some(result),
-                    // An ordinary refusal keeps the batch: the retained interns and
-                    // registry rows stay aligned, exactly as before the surface moved.
+                    // An ordinary refusal commits the batch rather than rolling it back:
+                    // the interns and registry rows a refused body already minted are
+                    // referenced by rows outside it, so discarding them would leave the
+                    // registry and the draft describing different populations.
                     Ok(BodyOutcome::Refused) => None,
                     Err(invariant) => {
                         return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));

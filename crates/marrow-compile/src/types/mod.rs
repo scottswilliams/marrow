@@ -2519,10 +2519,17 @@ impl TypeRegistry {
                 .into());
             };
             // The declaration list is copied out rather than held: resolving a field
-            // mints through the exclusively held registry, and no read of a template
-            // may stay live across that. The copy is exact — `type_templates` is fixed
-            // after build — and costs the same order per instantiation as the resolved
-            // and definition vectors this fill already builds from it.
+            // mints through the exclusively held registry, and no read of a template may
+            // stay live across that. The copy is exact — `type_templates` is fixed after
+            // build — and costs the same order per instantiation as the resolved and
+            // definition vectors this fill already builds from it.
+            //
+            // Resource bound: one copy per instantiation of the template's declared
+            // fields, so the whole cost is at most `MAX_INSTANTIATIONS` copies of the
+            // widest admissible body. That is measured, not asserted: the issuance RSS
+            // gate's type-amplification corpus is a maximum-width generic struct driven
+            // to the instantiation ceiling, which is exactly this term, and its peak sits
+            // an order of magnitude under the declared owned-heap ceiling.
             (subst, fields.clone())
         };
         let mut resolved = Vec::with_capacity(fields.len());
@@ -2577,8 +2584,8 @@ impl TypeRegistry {
                 .into());
             };
             // Copied out for the same reason as a struct fill: a payload resolution
-            // mints through the exclusively held registry, so no template read may
-            // stay live across it.
+            // mints through the exclusively held registry, so no template read may stay
+            // live across it. Bounded and measured exactly as the struct copy above.
             (subst, variants.clone(), template_info.name.clone())
         };
         let enum_name = enum_name.as_str();

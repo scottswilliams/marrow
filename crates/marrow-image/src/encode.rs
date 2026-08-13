@@ -44,7 +44,7 @@ use crate::digest::ImageId;
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
 use crate::durable_id::{DurableGraphTooLarge, DurableIndexComponent, DurableIndexShape};
 use crate::instr::Instr;
-use crate::measure::{LegacyV0MeasureCore, wire_len, wire_ordinal};
+use crate::measure::{EncodeDriftSection, LegacyV0MeasureCore, wire_len, wire_ordinal};
 use crate::product::{DeclarationMemberShape, DeclarationNode, ProductDeclarationGraph};
 use crate::remap::{ConstRemap, SectionSink, StringRemap};
 use crate::ty::ImageType;
@@ -640,13 +640,20 @@ fn encode_declaration_members(
                 body.push(0x00);
                 body.extend_bytes(id.bytes());
                 body.push(u8::from(*required));
-                // An arity the section's own `u16` cannot spell has no encodable image,
-                // which is the whole-image ceiling's answer under a different name. The
-                // draft's arena fan-out recheck runs first and bounds every arity far
-                // below that width, so this propagates a refusal rather than opening a
-                // second way to reach one.
-                expand(values, *value, ValueShapeWireForm::DurableSection, body)
-                    .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
+                // This runs behind a minted plan, and the plan is the witness that the
+                // whole image fits. A ceiling verdict issued here would be a policy
+                // decision made after the policy decision closed, so an arity the
+                // section's `u16` cannot spell is reported as what it actually is at this
+                // point: the emission disagreeing with the measurement that admitted it —
+                // encode drift in the DURABLE section, which is invariant-classed. The
+                // draft's arena fan-out recheck bounds every arity far below this width
+                // before the plan is minted, which is why the arm is unreachable rather
+                // than merely reclassified.
+                expand(values, *value, ValueShapeWireForm::DurableSection, body).map_err(
+                    |DurableGraphTooLarge| {
+                        ImageBuildError::EncodeDrift(EncodeDriftSection::of(0x03))
+                    },
+                )?;
             }
             DeclarationMemberShape::Group { id } => {
                 body.push(0x01);

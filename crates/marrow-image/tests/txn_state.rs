@@ -819,3 +819,60 @@ fn every_pair_of_policy_crossings_yields_the_canonical_minimum_in_either_order()
         }
     }
 }
+
+/// The function-slot mint is checked at its own mutator, like every other id-minting
+/// mutator on this surface.
+///
+/// Function *width* belongs to a later row; being **unchecked** is a separate property
+/// from being narrow. This surface is `#[doc(hidden)] pub` and is explicitly not treated
+/// as a privacy boundary, so an arbitrary external caller can drive the row count past
+/// what the ordinal spells — and unlike the wide carriers, that boundary is reachable: it
+/// is 65,536 rows, not 2^32. Before the mint was checked the 65,537th function wrapped to
+/// slot zero and two functions shared one image index, with nothing noticing until the
+/// encoder's own bound much later.
+#[test]
+fn the_function_slot_mint_refuses_past_its_carrier_without_aliasing_slot_zero() {
+    let mut owner = ImageDraft::new();
+    let mut draft = admitted(&mut owner);
+    let name = draft.intern_string("f").expect("a within-domain mint");
+    let function = || FunctionDef {
+        name,
+        source: name,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        code: vec![Instr::Return],
+        spans: Vec::new(),
+    };
+
+    // Exactly the carrier's worth of rows is admitted, and the last one takes the last
+    // ordinal rather than any earlier one.
+    let mut last = None;
+    for _ in 0..=u16::MAX {
+        last = Some(draft.add_function(function()).expect("in-domain mint"));
+    }
+    let last = last.expect("the loop minted");
+    assert_eq!(
+        format!("{last:?}"),
+        format!("FuncId({})", FIRST_OVERFLOWING_ORDINAL - 1),
+        "the final admitted row takes the final ordinal",
+    );
+
+    // One more is the closed builder-domain refusal. This is the whole subject: an
+    // unchecked mint hands back `FuncId(0)` here — a second function answering to slot
+    // zero — and the returned id is the artifact that distinguishes the two behaviours.
+    assert_eq!(
+        draft.add_function(function()),
+        Err(DraftStateError::CarrierDomain),
+        "the mint past the carrier refuses instead of aliasing an occupied slot",
+    );
+    // Still refuses on a second attempt: the refusal did not advance the row count past
+    // the carrier and then start succeeding again.
+    assert_eq!(
+        draft.add_function(function()),
+        Err(DraftStateError::CarrierDomain),
+    );
+}
+
+/// The first ordinal the function-slot carrier cannot spell.
+const FIRST_OVERFLOWING_ORDINAL: u32 = 65_536;

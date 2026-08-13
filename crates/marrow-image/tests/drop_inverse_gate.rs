@@ -7,8 +7,13 @@
 //! truncated extraction fails loudly, and a plant probe proves the scanner sees each
 //! forbidden token in real code while ignoring it inside a literal.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[path = "../../marrow-compile/tests/common/source_projection.rs"]
+mod source_projection;
+use source_projection::is_ident_byte;
 
 /// The audited drop-reachable set: `(source file, function name)`, each body closed
 /// by its `// drop-path audit sentinel` line. The two `Drop` implementations are the
@@ -41,7 +46,7 @@ const COMPOSITE_DROP: (&str, &str) = (
 /// allocation-free, non-panicking inverse law — the panic family, range `drain`,
 /// the allocation family, and the fallible-call family (`?` propagation has no
 /// caller to propagate to inside a `Drop` inverse).
-const FORBIDDEN: [&str; 25] = [
+const FORBIDDEN: [&str; 30] = [
     "panic!",
     "assert!",
     "assert_eq!",
@@ -54,7 +59,12 @@ const FORBIDDEN: [&str; 25] = [
     "todo!",
     "unimplemented!",
     ".push(",
+    ".push_front(",
+    ".push_back(",
     ".insert(",
+    ".extend(",
+    ".extend_from_slice(",
+    ".resize(",
     "Vec::with_capacity",
     ".to_string(",
     ".to_owned(",
@@ -69,17 +79,39 @@ const FORBIDDEN: [&str; 25] = [
     ")?",
 ];
 
+/// Whether `body` propagates a fallible call, including the whitespace-separated
+/// spellings `)\n?` and `) ?` that a literal `")?"` scan cannot see. A `Drop` inverse has
+/// no caller to propagate to, so any of them breaks the total-inverse law.
+fn contains_fallible_propagation(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    body.match_indices(')').any(|(at, _)| {
+        bytes[at + 1..]
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .is_some_and(|offset| bytes[at + 1 + offset] == b'?')
+    })
+}
+
 /// Whether `body` contains a slice/array index expression — `[` directly after an
 /// identifier character, `)`, or `]` — the panicking access the inverse law forbids.
 /// Attribute markers (`#[`) and bare array types/literals do not match.
 fn contains_index_expression(body: &str) -> bool {
     let bytes = body.as_bytes();
     body.match_indices('[').any(|(at, _)| {
-        at > 0
+        // Skip back over whitespace: `rows [0]` and `rows\n    [0]` index exactly as
+        // `rows[0]` does, and a scan anchored on the immediately preceding byte sees
+        // neither.
+        let mut before = at;
+        while before > 0 && bytes[before - 1].is_ascii_whitespace() {
+            before -= 1;
+        }
+        before > 0
             && matches!(
-                bytes[at - 1],
+                bytes[before - 1],
                 b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b')' | b']'
             )
+            // An attribute is not an index expression.
+            && bytes[before - 1] != b'#'
     })
 }
 
@@ -87,69 +119,26 @@ fn workspace_file(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
 }
 
-/// `code` with every string and char literal blanked, including raw forms, so a
-/// forbidden token inside a message cannot hide a real one and a literal cannot trip
-/// the scan. Comments are preserved (a token in a comment is not code, but the
-/// audited bodies keep their comments free of forbidden spellings).
+/// `code` with every string and char literal blanked, so a forbidden token inside a
+/// message cannot hide a real one and a literal cannot trip the scan.
+///
+/// This crate's projection owner is the authority for the complete literal grammar —
+/// ordinary, raw, byte, byte-raw, C, C-raw, and char forms. A scanner that blanks only
+/// some of them silently disables itself for the rest: a forbidden token spelled inside
+/// a `br"..."` is invisible to a scan that does not know the prefix, so a body could
+/// carry `br".push("` beside a real `.push(` and the real one would still be found —
+/// but a body carrying the token only inside such a literal would be *falsely* flagged,
+/// and worse, a prefix the blanker mishandles desynchronizes the whole rest of the file.
 fn without_literals(code: &str) -> String {
-    let mut out = String::with_capacity(code.len());
-    let mut chars = code.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                out.push('"');
-                let mut prev_backslash = false;
-                for inner in chars.by_ref() {
-                    if inner == '"' && !prev_backslash {
-                        break;
-                    }
-                    prev_backslash = inner == '\\' && !prev_backslash;
-                    if inner == '\n' {
-                        out.push('\n');
-                    }
-                }
-                out.push('"');
-            }
-            'r' if matches!(chars.peek(), Some('"') | Some('#')) => {
-                // A raw string: consume to its matching close.
-                let mut hashes = 0;
-                while matches!(chars.peek(), Some('#')) {
-                    chars.next();
-                    hashes += 1;
-                }
-                if matches!(chars.peek(), Some('"')) {
-                    chars.next();
-                    let close: String = std::iter::once('"')
-                        .chain(std::iter::repeat_n('#', hashes))
-                        .collect();
-                    let mut window = String::new();
-                    for inner in chars.by_ref() {
-                        if inner == '\n' {
-                            out.push('\n');
-                        }
-                        window.push(inner);
-                        if window.ends_with(&close) {
-                            break;
-                        }
-                    }
-                    out.push('"');
-                } else {
-                    out.push('r');
-                    for _ in 0..hashes {
-                        out.push('#');
-                    }
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
+    // Delegate to the workspace's one projection owner rather than keeping a second,
+    // narrower copy of the literal grammar here.
+    source_projection::without_literals(code)
 }
 
 /// The body of `name` in `code`: from the declaration through its balanced closing
 /// brace, asserting the sentinel line follows — the proof the extraction saw the
 /// whole body rather than a truncated prefix.
-fn audited_body(code: &str, name: &str, file: &str) -> String {
+fn audited_body(code: &str, raw: &str, name: &str, file: &str) -> String {
     let start = code
         .find(name)
         .unwrap_or_else(|| panic!("{file}: audited function `{name}` not found"));
@@ -175,7 +164,9 @@ fn audited_body(code: &str, name: &str, file: &str) -> String {
     let end = end.unwrap_or_else(|| panic!("{file}: `{name}` body is unbalanced"));
     // The sentinel may sit after the enclosing impl's own closing brace when the
     // audited function is the impl's last item.
-    let mut tail = code[end..].trim_start();
+    // The sentinel is a comment, and the projection blanks comments, so it is asserted
+    // against the raw source at the same offset the projection matched.
+    let mut tail = raw[end..].trim_start();
     while let Some(rest) = tail.strip_prefix('}') {
         tail = rest.trim_start();
     }
@@ -215,34 +206,276 @@ const COUNT_FORBIDDEN: [&str; 11] = [
 ];
 
 /// The body of `name` in `code`, terminated by the count-path sentinel.
-fn counted_body(code: &str, name: &str, file: &str) -> String {
+fn counted_body(code: &str, raw: &str, name: &str, file: &str) -> String {
     let start = code
         .find(name)
         .unwrap_or_else(|| panic!("{file}: counted function `{name}` not found"));
-    let sentinel = code[start..]
+    let sentinel = raw[start..]
         .find("// count-path audit sentinel: end of")
         .unwrap_or_else(|| panic!("{file}: `{name}` is not count-sentinel-terminated"));
     code[start..start + sentinel].to_string()
 }
 
-/// Every counting-run body is free of the allocation-class tokens: the structural
-/// zero-heap posture of the measurement step, enforced as an absence scan (the
-/// observed-zero-allocation run itself remains a recorded open item — a counting
-/// global allocator needs `unsafe`, which the workspace forbids).
+/// Every counting-run body is free of the allocation-class tokens — **transitively**.
+///
+/// A lexical scan of four named bodies is weaker than its subject: adding a call to an
+/// existing allocating helper introduces no forbidden token at the call site, so the
+/// scan stays green while the counting run allocates. The audit therefore follows the
+/// call graph out of those four roots and scans every body it reaches, and it asserts
+/// the reached set against a census so a newly reached callee is conspicuous rather than
+/// silently absorbed.
+///
+/// (The observed-zero-allocation run itself remains a recorded open item: a counting
+/// global allocator needs `unsafe`, which the workspace forbids.)
 #[test]
 fn the_counting_run_spells_no_allocation() {
+    let definitions = crate_function_bodies();
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    let mut frontier: Vec<String> = Vec::new();
+
     for (file, name) in COUNT_PATH {
-        let code = fs::read_to_string(workspace_file(file))
+        let raw = fs::read_to_string(workspace_file(file))
             .unwrap_or_else(|_| panic!("read {file} for the count-path audit"));
-        let code = without_literals(&code);
-        let body = counted_body(&code, name, file);
-        for token in COUNT_FORBIDDEN {
-            assert!(
-                !body.contains(token),
-                "{file}: `{name}` contains allocation-class `{token}` on the counting path",
-            );
+        let code = without_literals(&raw);
+        let body = counted_body(&code, &raw, name, file);
+        assert_count_clean(&body, file, name);
+        frontier.push(body);
+    }
+
+    // Resolution is by name, which is sound only when a name has exactly one definition
+    // in the crate. A name with several (`members`, `len`, `new`) does not identify the
+    // code that actually runs, so scanning all of them would report an allocation in a
+    // body the counting run never enters. Uniquely resolved callees are followed and
+    // scanned; ambiguous ones are recorded in a census instead, so a newly ambiguous
+    // reach is visible rather than silently dropped.
+    let mut ambiguous: BTreeSet<String> = BTreeSet::new();
+    while let Some(body) = frontier.pop() {
+        for callee in called_names(&body) {
+            if !reached.insert(callee.clone()) {
+                continue;
+            }
+            let Some(bodies) = definitions.get(&callee) else {
+                continue;
+            };
+            if bodies.len() > 1 {
+                ambiguous.insert(callee.clone());
+                continue;
+            }
+            for (file, callee_body) in bodies {
+                assert_count_clean(callee_body, file, &callee);
+                frontier.push(callee_body.clone());
+            }
         }
     }
+    let recorded: BTreeSet<String> = AMBIGUOUS_COUNT_PATH_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    assert_eq!(
+        ambiguous, recorded,
+        "the set of counting-path callees this crate defines under more than one name \
+         moved. Each is unresolvable by a text scan, so it is recorded rather than \
+         scanned; a new one must be adjudicated by hand.",
+    );
+
+    // The walk really followed the graph out of the roots rather than stopping at them.
+    assert!(
+        reached.len() > 20,
+        "the counting-run walk reached only {} callees, so it is not following the call \
+         graph out of the four roots",
+        reached.len(),
+    );
+    assert!(
+        reached.contains("expand"),
+        "the walk reaches `expand`, the DURABLE traversal the roots drive; if it does \
+         not, the graph is not being followed",
+    );
+}
+
+/// The counting-path callees this crate defines under more than one name, which a text
+/// scan cannot resolve to the definition that actually runs.
+///
+/// This list is a census, not a clearance: it does **not** assert that each of these is
+/// allocation-free. It exists so the walk's own blind spot is stated and bounded — a
+/// newly ambiguous reach is a census change that has to be looked at, rather than a name
+/// the scan quietly steps over. Resolving them properly needs receiver types and module
+/// paths, which a lexical scanner does not have; that remains the recorded limit of this
+/// gate.
+const AMBIGUOUS_COUNT_PATH_NAMES: &[&str] = &[
+    "application",
+    "bytes",
+    "declaration",
+    "default",
+    "emit",
+    "encode",
+    "encoded_len",
+    "extend_bytes",
+    "from",
+    "func",
+    "graph",
+    "id",
+    "identity",
+    "index",
+    "indexes",
+    "is_empty",
+    "is_full",
+    "key",
+    "keys",
+    "ledger_id",
+    "len",
+    "members",
+    "members_of",
+    "name",
+    "new",
+    "of",
+    "over",
+    "placement",
+    "products",
+    "push",
+    "root_entry_record",
+    "rows",
+    "scalar",
+    "shape",
+    "tag",
+    "token",
+    "value_shapes",
+    "wire_ordinal",
+];
+
+/// The adjudicated allocations on the counting path: `(file, function, token)`.
+///
+/// The counting run's zero-heap posture has exactly one sanctioned exception — the
+/// DURABLE expansion worklist, which the traversal owner allocates once so that a shared
+/// value graph is walked without materializing its expansion. The previous gate stated
+/// this exception in prose while scanning only four bodies that did not contain it, so
+/// nothing checked that it stayed the only one. It is now an entry: a second allocation
+/// anywhere on the reachable counting path fails until it is adjudicated here.
+const SANCTIONED_COUNT_PATH_ALLOCATIONS: &[(&str, &str, &str)] =
+    &[("value_dag.rs", "expand", "vec!")];
+
+/// One body carries no allocation-class token beyond its adjudicated exceptions.
+fn assert_count_clean(body: &str, file: &str, name: &str) {
+    for token in COUNT_FORBIDDEN {
+        if SANCTIONED_COUNT_PATH_ALLOCATIONS.contains(&(file, name, token)) {
+            continue;
+        }
+        assert!(
+            !body.contains(token),
+            "{file}: `{name}` contains allocation-class `{token}` on the counting path",
+        );
+    }
+}
+
+/// Every `fn name` definition in this crate's production source, with its brace-matched
+/// body, so the counting walk can resolve a call to the code it runs.
+fn crate_function_bodies() -> std::collections::BTreeMap<String, Vec<(String, String)>> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    files.sort();
+    let mut definitions: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for path in files {
+        let name = path
+            .display()
+            .to_string()
+            .split_once("src/")
+            .expect("a src path")
+            .1
+            .to_string();
+        let code = without_literals(&fs::read_to_string(&path).expect("read source"));
+        for (fn_name, body) in function_bodies(&code) {
+            definitions
+                .entry(fn_name)
+                .or_default()
+                .push((name.clone(), body));
+        }
+    }
+    assert!(
+        !definitions.is_empty(),
+        "the source tree yielded definitions"
+    );
+    definitions
+}
+
+/// Every `fn name` definition in `code`, paired with its brace-matched body.
+fn function_bodies(code: &str) -> Vec<(String, String)> {
+    let bytes = code.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let Some(hit) = code[at..].find("fn ") {
+        let start = at + hit;
+        at = start + 3;
+        if start > 0 && is_ident_byte(bytes[start - 1]) {
+            continue;
+        }
+        let rest = &code[start + 3..];
+        let name_len = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        if name_len == 0 {
+            continue;
+        }
+        let name = rest[..name_len].to_string();
+        let Some(open) = code[start..].find('{').map(|n| start + n) else {
+            continue;
+        };
+        let mut depth = 0i32;
+        let mut end = None;
+        for (offset, byte) in bytes[open..].iter().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(end) = end {
+            out.push((name, code[open..=end].to_string()));
+        }
+    }
+    out
+}
+
+/// Every identifier `body` calls.
+fn called_names(body: &str) -> Vec<String> {
+    const KEYWORDS: [&str; 8] = ["if", "while", "for", "match", "fn", "return", "let", "in"];
+    let bytes = body.as_bytes();
+    let mut names = Vec::new();
+    for (at, _) in body.match_indices('(') {
+        let mut start = at;
+        while start > 0 && is_ident_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start == at {
+            continue;
+        }
+        let name = &body[start..at];
+        if KEYWORDS.contains(&name) || name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// The count-path scanner sees a planted allocation token and refuses a body with no
@@ -253,7 +486,7 @@ fn the_count_path_scanner_detects_a_planted_allocation() {
         let planted = format!(
             "fn probe() {{ let _ = {token}; }}\n// count-path audit sentinel: end of probe\n"
         );
-        let body = counted_body(&without_literals(&planted), "fn probe", "planted");
+        let body = counted_body(&without_literals(&planted), &planted, "fn probe", "planted");
         assert!(
             body.contains(token),
             "the count-path scanner failed to see planted `{token}`",
@@ -261,7 +494,12 @@ fn the_count_path_scanner_detects_a_planted_allocation() {
     }
     let unterminated = "fn probe() { }\n";
     let outcome = std::panic::catch_unwind(|| {
-        counted_body(&without_literals(unterminated), "fn probe", "planted")
+        counted_body(
+            &without_literals(unterminated),
+            unterminated,
+            "fn probe",
+            "planted",
+        )
     });
     assert!(
         outcome.is_err(),
@@ -273,17 +511,18 @@ fn the_count_path_scanner_detects_a_planted_allocation() {
 #[test]
 fn the_armed_inverse_paths_are_total_and_allocation_free() {
     let mut audited = 0usize;
+    let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
     for (file, name) in DROP_REACHABLE.into_iter().chain([COMPOSITE_DROP]) {
-        let code = fs::read_to_string(workspace_file(file))
+        let raw = fs::read_to_string(workspace_file(file))
             .unwrap_or_else(|_| panic!("read {file} for the drop-path audit"));
-        let code = without_literals(&code);
+        let code = without_literals(&raw);
         // Audit every same-named function in the file (`pop_suffix_to` appears once
         // per owner; `fn drop` is matched at each audited impl's sentinel).
         let mut from = 0usize;
         while let Some(at) = code[from..].find(name) {
             let region = &code[from + at..];
             // Only audit occurrences that are sentinel-terminated definitions.
-            let body = audited_body(region, name, file);
+            let body = audited_body(region, &raw[from + at..], name, file);
             for token in FORBIDDEN {
                 assert!(
                     !body.contains(token),
@@ -294,14 +533,32 @@ fn the_armed_inverse_paths_are_total_and_allocation_free() {
                 !contains_index_expression(&body),
                 "{file}: `{name}` contains a panicking index expression on the Drop path",
             );
+            assert!(
+                !contains_fallible_propagation(&body),
+                "{file}: `{name}` propagates a fallible call on the Drop path, which has \
+                 no caller to propagate to",
+            );
             audited += 1;
+            seen.insert((file, name));
             from += at + body.len();
         }
     }
-    assert!(
-        audited >= DROP_REACHABLE.len(),
-        "the drop-path audit lost a subject; found {audited} bodies",
+    // Fail loud *per subject*: a total count can be met by one file contributing two
+    // bodies while another contributes none, so the audit asserts that every declared
+    // subject was found by name.
+    for (file, name) in DROP_REACHABLE.into_iter().chain([COMPOSITE_DROP]) {
+        assert!(
+            seen.contains(&(file, name)),
+            "the drop-path audit lost the subject `{name}` in {file}; it must be found and \
+             scanned, not merely counted",
+        );
+    }
+    assert_eq!(
+        seen.len(),
+        DROP_REACHABLE.len() + 1,
+        "every declared drop-reachable subject is audited exactly once by name",
     );
+    assert!(audited >= seen.len(), "found {audited} bodies");
 }
 
 /// The plant probe: the scanner must flag each forbidden token in real code and must
@@ -313,24 +570,53 @@ fn the_drop_path_scanner_detects_a_planted_violation() {
         let planted = format!(
             "fn probe() {{ let _ = {token}; }}\n// drop-path audit sentinel: end of probe\n"
         );
-        let body = audited_body(&without_literals(&planted), "fn probe", "planted");
+        let body = audited_body(&without_literals(&planted), &planted, "fn probe", "planted");
         assert!(
             body.contains(token),
             "the scanner failed to see planted `{token}` in code",
         );
-        let literal = format!(
-            "fn probe() {{ let _ = \"{token}\"; let _ = r#\"{token}\"#; }}\n// drop-path audit sentinel: end of probe\n"
+        // Every literal form, not only the two the previous plant covered: a prefixed
+        // raw form the blanker does not know desynchronizes the rest of the scan.
+        for spelling in [
+            format!("\"{token}\""),
+            format!("r\"{token}\""),
+            format!("r#\"{token}\"#"),
+            format!("b\"{token}\""),
+            format!("br\"{token}\""),
+            format!("br#\"{token}\"#"),
+            format!("c\"{token}\""),
+            format!("cr\"{token}\""),
+            format!("cr#\"{token}\"#"),
+        ] {
+            let literal = format!(
+                "fn probe() {{ let _ = {spelling}; }}\n// drop-path audit sentinel: end of probe\n"
+            );
+            let body = audited_body(&without_literals(&literal), &literal, "fn probe", "planted");
+            assert!(
+                !body.contains(token),
+                "the scanner saw `{token}` inside a blanked {spelling} literal",
+            );
+        }
+        // A char literal must not desynchronize the blanker either.
+        let with_char = format!(
+            "fn probe() {{ let _ = '\\''; let _ = \"{token}\"; }}\n// drop-path audit sentinel: end of probe\n"
         );
-        let body = audited_body(&without_literals(&literal), "fn probe", "planted");
+        let body = audited_body(
+            &without_literals(&with_char),
+            &with_char,
+            "fn probe",
+            "planted",
+        );
         assert!(
             !body.contains(token),
-            "the scanner saw `{token}` inside a blanked literal",
+            "a char literal desynchronized the blanker before `{token}`",
         );
     }
     let indexed = "fn probe() { let _ = rows[0]; }\n// drop-path audit sentinel: end of probe\n";
     assert!(
         contains_index_expression(&audited_body(
             &without_literals(indexed),
+            indexed,
             "fn probe",
             "planted"
         )),
@@ -340,6 +626,7 @@ fn the_drop_path_scanner_detects_a_planted_violation() {
     assert!(
         !contains_index_expression(&audited_body(
             &without_literals(attribute),
+            attribute,
             "fn probe",
             "planted"
         )),
@@ -347,7 +634,12 @@ fn the_drop_path_scanner_detects_a_planted_violation() {
     );
     let unterminated = "fn probe() { }\nfn other() {}\n";
     let outcome = std::panic::catch_unwind(|| {
-        audited_body(&without_literals(unterminated), "fn probe", "planted")
+        audited_body(
+            &without_literals(unterminated),
+            unterminated,
+            "fn probe",
+            "planted",
+        )
     });
     assert!(
         outcome.is_err(),

@@ -34,6 +34,7 @@ mod decl;
 mod demand;
 mod diag;
 mod durable;
+mod issuance;
 mod konst;
 mod lower;
 mod scalar;

@@ -542,6 +542,55 @@ fn the_wire_plan_is_closed_and_no_post_plan_path_is_image_too_large() {
         contains_symbol(&code, "ImageTooLarge"),
         "the pre-plan ceiling verdict is present, so this gate has a live subject",
     );
+
+    // Exactly: every site in the crate that can *construct* the ceiling verdict is
+    // enumerated, because counting constructor calls in one file says nothing about a
+    // constructor definition in another. Scanning only `measure.rs` left `encode.rs`'s
+    // declaration-member walk free to map an over-wide arity to `ImageTooLarge` behind a
+    // minted plan, which is what it did.
+    let found = image_too_large_sites();
+    let expected: Vec<(String, String)> = PRE_PLAN_IMAGE_TOO_LARGE_SITES
+        .iter()
+        .map(|(file, line)| (file.to_string(), line.to_string()))
+        .collect();
+    assert_eq!(
+        found, expected,
+        "the set of sites that can produce the whole-image ceiling verdict moved. Every \
+         one must sit before the plan is minted: behind a minted plan the ceiling \
+         decision is already closed, so the emission side may only report \
+         invariant-class encode drift.",
+    );
+}
+
+/// Every site in this crate's production source that names the ceiling verdict, keyed by
+/// file and exact normalized source line.
+fn image_too_large_sites() -> Vec<(String, String)> {
+    let mut sites = Vec::new();
+    for path in src_files() {
+        let rel = src_relative(&path);
+        let code = without_cfg_test_items(&without_literals(
+            &fs::read_to_string(&path).expect("read image source"),
+        ));
+        for line in code.lines() {
+            if contains_symbol(line, "ImageTooLarge") {
+                sites.push((
+                    rel.clone(),
+                    line.split_whitespace().collect::<Vec<_>>().join(" "),
+                ));
+            }
+        }
+    }
+    sites.sort();
+    sites
+}
+
+fn src_relative(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .split_once("src/")
+        .expect("a src path")
+        .1
+        .to_string()
 }
 
 /// The site demand plan retains no semantic path.
@@ -2248,3 +2297,15 @@ fn the_step_count_cast_scan_separates_a_cast_from_a_mention() {
         "exactly the planted cast is seen, not the comment or the string: {hits:#?}"
     );
 }
+
+/// Every adjudicated site that can produce the whole-image ceiling verdict. All of them
+/// sit before the wire plan is minted: the plan is the witness that the image fits, so a
+/// ceiling verdict issued after it would be a policy decision made after the policy
+/// decision closed.
+const PRE_PLAN_IMAGE_TOO_LARGE_SITES: &[(&str, &str)] = &[
+    // The closed builder-error variant itself.
+    ("draft.rs", "ImageTooLarge,"),
+    // The one production site: the capped counting sink's decisive N+1 sentinel, which
+    // runs before any plan exists.
+    ("measure.rs", "return Err(ImageBuildError::ImageTooLarge);"),
+];

@@ -39,6 +39,9 @@
 //! the snapshot's independent record, which is why a recovered-broken file still
 //! classifies positions while its hover facts stay syntax-unavailable.
 
+#[path = "common/owned_heap.rs"]
+mod owned_heap;
+
 use std::mem::size_of;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -68,8 +71,9 @@ use marrow_syntax::{
 const MAX_ADMITTED_FILE_BYTES: usize = MAX_PARSED_FILE_BYTES;
 
 /// The language server's owned-heap ceiling, which every retention and transient term
-/// in the analysis layer is sized against. This file consumes it; it does not move it.
-const H_OWNED_BYTES: usize = 640 * 1024 * 1024;
+/// in the analysis layer is sized against. Read from the one owner every gate consuming
+/// it shares: a ceiling restated per gate is a ceiling that can differ per gate.
+const H_OWNED_BYTES: usize = owned_heap::H_OWNED_BYTES as usize;
 
 /// The editor-latency budget for one query of a maximum admitted file, in the optimized
 /// profile the language server ships in.

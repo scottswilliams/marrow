@@ -488,8 +488,9 @@ fn a_divergent_application_identity_latches_a_sticky_conflict() {
 
 // ---- The value-shape appenders are checked and the raw arena escape is deleted.
 
-/// **Flipped to the design of record's F-5 disposition (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the two pins this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so an
+/// over-wide or foreign shape is a typed refusal that mutates nothing rather than a
+/// state the fence later rejects. Prior pins:**
 /// (`an_over_wide_raw_arena_append_succeeds_and_only_encode_refuses`, then
 /// `an_over_wide_typed_arena_append_is_admitted_and_only_encode_refuses`): the typed
 /// appenders are checked — an over-wide struct is the typed carrier-domain refusal

@@ -555,7 +555,7 @@ impl Fixture {
         }
         if self.wide_enum_value_node {
             // The over-wide value node is the typed surface refusal (post-build
-            // ruling F2; design draft 2 §10 F-5): nothing enters the arena, whether
+            // checked at the append surface: nothing enters the arena, whether
             // or not any field would have referenced it.
             let members = (0..=MAX_VARIANTS)
                 .map(|index| (seeded_id(0x61, index), Vec::new()))
@@ -1154,7 +1154,7 @@ fn code_bytes_outranks_the_body_ceiling() {
 
 /// The over-wide struct append is the typed carrier-domain refusal at the surface,
 /// mutating nothing: the checked-appender disposition of the design of record
-/// (post-build ruling F2; design draft 2 §10 F-5). The over-wide arena state the
+/// at the append surface. The over-wide arena state the
 /// flipped pins below used to stage is unrepresentable through the one mutation
 /// surface, so each pin now proves the surface refusal and the residual verdict.
 fn an_over_wide_struct_append_is_refused_at_the_surface() {
@@ -1170,8 +1170,9 @@ fn an_over_wide_struct_append_is_refused_at_the_surface() {
     assert_eq!(draft.value_shapes().len(), 1, "the refusal mutated nothing");
 }
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`a_declaration_bound_outranks_code_bytes_and_the_body_ceiling`): the struct
 /// width is decided at the append surface — earlier than the fence pass the prior
 /// pin froze — and the residual draft draws the code-bytes verdict.
@@ -1224,8 +1225,9 @@ fn the_graph_anchor_outranks_code_bytes_and_the_body_ceiling() {
 // ---- The mixed-corruption matrix (see the module header). Each test pins the
 // pre-restructure verdict of one resource-policy cap crossed with one invariant defect.
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`over_strings_with_an_over_wide_struct_draws_the_struct_leaf_invariant`): the
 /// struct width is decided at the append surface, and the residual draft draws the
 /// Strings policy verdict.
@@ -1238,8 +1240,9 @@ fn over_strings_with_a_refused_over_wide_append_draws_the_strings_policy() {
     );
 }
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`an_over_long_string_with_an_over_wide_struct_draws_the_struct_leaf_invariant`):
 /// the struct width is decided at the append surface, and the residual draft draws
 /// the string-length policy verdict.
@@ -1266,8 +1269,9 @@ fn over_consts_with_an_over_wide_key_draws_the_key_column_invariant() {
     );
 }
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`over_types_with_an_over_wide_struct_draws_the_struct_leaf_invariant`): the
 /// struct width is decided at the append surface, and the residual draft draws the
 /// Types policy verdict.
@@ -1371,8 +1375,9 @@ fn over_functions_with_over_locals_draws_the_local_invariant() {
     );
 }
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`over_functions_with_an_over_wide_struct_currently_draws_the_struct_leaf_invariant`):
 /// the struct width is decided at the append surface, and the residual draft draws
 /// the Functions policy verdict.
@@ -1479,8 +1484,9 @@ fn an_over_wide_record_with_an_over_wide_key_currently_draws_the_field_width_inv
     );
 }
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`an_over_wide_struct_with_over_locals_currently_draws_the_struct_leaf_invariant`):
 /// the frozen relative order — struct width decided before the function frame —
 /// holds even more strongly at the append surface, and the residual draft draws the
@@ -1649,8 +1655,9 @@ fn a_bad_jump_alone_currently_draws_the_jump_target_reference() {
 // order must not silently reorder, so each pair is pinned with both sites armed and
 // each site alone.
 
-/// **Flipped under the sanctioned F-5 conformance fix (post-build ruling F2; design
-/// draft 2 §10 F-5), citing the pin this test carried**
+/// **The value-shape appenders became checked at the transaction surface, so the
+/// over-wide arena state this test previously staged is now unrepresentable. Prior
+/// pin:**
 /// (`an_enum_definition_and_a_value_dag_node_both_over_variants_currently_draw_too_many_variants`):
 /// the value-DAG site is now decided at the append surface (the fixture asserts the
 /// typed refusal), so the definition site keeps drawing `TooManyVariants` alone and
