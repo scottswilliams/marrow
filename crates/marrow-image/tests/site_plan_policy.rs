@@ -804,6 +804,45 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     .expect("the control ref's occurrence and receipt are unchanged and still live");
 }
 
+/// A Sites crossing beside a lower-ranked Consts crossing yields the canonical minimum
+/// `TooManyConsts` — never ledger drift and never the Sites verdict — in either mutation
+/// order: the ranking is canonical validation order, not mutation-time order, and the
+/// fence's shadow-compare would report drift if either slot were lost.
+#[test]
+fn a_sites_crossing_beside_a_consts_crossing_yields_the_canonical_minimum() {
+    for consts_first in [false, true] {
+        let (mut owner, root, members) = wide_owner(MAX_SITES);
+        let mut draft = admitted(&mut owner);
+        let cross_consts = |draft: &mut DraftTxn<'_>| {
+            for value in 0..=(marrow_image::bounds::MAX_CONSTS as i64) {
+                draft.intern_int(value);
+            }
+        };
+        let cross_sites = |draft: &mut DraftTxn<'_>, excess: &AdmittedRoot| {
+            let _ = site(
+                draft,
+                excess.occurrence(),
+                members[0].path(),
+                SemanticTarget::FieldLeaf,
+            );
+        };
+        demand_every_leaf(&mut draft, &root, &members);
+        let excess = admit_root(&mut draft, 0x22);
+        if consts_first {
+            cross_consts(&mut draft);
+            cross_sites(&mut draft, &excess);
+        } else {
+            cross_sites(&mut draft, &excess);
+            cross_consts(&mut draft);
+        }
+        assert_eq!(
+            draft.encode().map(|_| ()),
+            Err(ImageBuildError::TooManyConsts),
+            "the canonical minimum outranks the Sites crossing (consts_first={consts_first})",
+        );
+    }
+}
+
 // --- The site-plan policy corpora ---
 
 /// Corpus 2: 1,024 keyed roots each touching 64 fields of one shared Product — 66,560

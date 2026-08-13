@@ -1961,6 +1961,72 @@ impl ConstValue {
 }
 
 #[cfg(test)]
+mod ledger_corruption_tests {
+    use super::ImageDraft;
+    use crate::draft::ImageBuildError;
+    use crate::policy_ledger::{CurrentValidationOccurrence, TablePolicyKind, TablePolicyLedger};
+
+    /// A draft whose constant pool has crossed `MAX_CONSTS` through the production
+    /// transaction surface.
+    fn consts_crossed_owner() -> ImageDraft {
+        let mut owner = ImageDraft::new();
+        let mut txn = owner
+            .begin_transaction(owner.savepoint())
+            .expect("a fresh savepoint admits");
+        for value in 0..=(crate::bounds::MAX_CONSTS as i64) {
+            txn.intern_int(value);
+        }
+        txn.commit();
+        owner
+    }
+
+    /// A missing, wrong-occurrence, or extra ledger state — unreachable through the one
+    /// mutation surface, planted here through the owner's own private field — is refused
+    /// at the fence as the ledger-drift invariant, before any policy verdict.
+    #[test]
+    fn a_corrupted_ledger_is_invariant_at_the_fence() {
+        // Missing: a crossed draft whose ledger observed nothing.
+        let mut owner = consts_crossed_owner();
+        assert_eq!(
+            owner.encode().map(|_| ()),
+            Err(ImageBuildError::TooManyConsts),
+            "the true ledger reaches the policy verdict",
+        );
+        owner.ledger = TablePolicyLedger::vacant();
+        assert!(
+            matches!(owner.encode(), Err(ImageBuildError::LedgerDrift(_))),
+            "a vacant ledger over a crossed draft is the drift invariant",
+        );
+
+        // Wrong occurrence: the right slot at a coordinate the walk would never report.
+        let mut owner = consts_crossed_owner();
+        let mut wrong = TablePolicyLedger::vacant();
+        wrong.observe(
+            TablePolicyKind::Consts,
+            CurrentValidationOccurrence::at_row(crate::bounds::MAX_CONSTS as u32 + 7),
+        );
+        owner.ledger = wrong;
+        assert!(matches!(
+            owner.encode(),
+            Err(ImageBuildError::LedgerDrift(_))
+        ));
+
+        // Extra: a clean draft whose ledger claims a crossing that never happened.
+        let mut owner = ImageDraft::new();
+        let mut extra = TablePolicyLedger::vacant();
+        extra.observe(
+            TablePolicyKind::Strings,
+            CurrentValidationOccurrence::at_row(crate::bounds::MAX_STRINGS as u32),
+        );
+        owner.ledger = extra;
+        assert!(matches!(
+            owner.encode(),
+            Err(ImageBuildError::LedgerDrift(_))
+        ));
+    }
+}
+
+#[cfg(test)]
 mod collection_count_tests {
     use super::{CollectionTypeDef, ImageDraft};
     use crate::{ImageType, Scalar};

@@ -4,12 +4,17 @@
 //! rollback restores the exact pre-transaction verdict and bytes.
 
 use marrow_image::bounds::{
-    MAX_COLLECTIONS, MAX_CONSTS, MAX_ENUMS, MAX_STRING_BYTES, MAX_STRINGS, MAX_TYPES,
+    MAX_COLLECTIONS, MAX_CONSTS, MAX_ENUMS, MAX_ROOTS, MAX_STRING_BYTES, MAX_STRINGS, MAX_TYPES,
 };
 use marrow_image::{
-    CollectionTypeDef, DraftStateError, DraftTxn, EnumTypeDef, ExportId, FieldDef, FunctionDef,
-    ImageBuildError, ImageDraft, ImageType, Instr, RecordTypeDef, Scalar,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftStateError, DraftTxn,
+    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
 };
+
+#[path = "common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
 
 /// The armed transaction a fresh savepoint admits over `owner`.
 fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
@@ -102,6 +107,12 @@ fn a_savepoint_outliving_its_draft_cannot_admit_a_successor() {
         let doomed = ImageDraft::new();
         doomed.savepoint()
     };
+    // Forced allocator-reuse pressure: many byte-identical drafts are allocated and
+    // dropped, inviting the freed draft's addresses back into circulation. The orphan
+    // strongly retains its own token allocations, so no successor can be handed them.
+    for _ in 0..1024 {
+        drop(ImageDraft::new());
+    }
     let mut successor = ImageDraft::new();
     assert_eq!(
         successor.begin_transaction(orphan).err(),
@@ -284,4 +295,125 @@ fn each_active_kind_admits_its_crossing_and_the_fence_refuses_it() {
         txn.commit();
         assert_eq!(owner.encode().map(|_| ()), Err(kind.verdict));
     }
+}
+
+/// The Roots kind's N/N+1 law: the N+1 root occurrence is admitted, the fence refuses
+/// with exactly `TooManyRoots` (never ledger drift), rollback restores the exact
+/// pre-transaction verdict and bytes, and commit retains the crossing.
+#[test]
+fn the_roots_crossing_is_admitted_and_the_fence_refuses_it() {
+    let product = LedgerIdBytes::from_bytes([0x0d; 16]);
+    let mut owner = ImageDraft::new();
+    let mut txn = admitted(&mut owner);
+    let name = txn.intern_string("R");
+    let record = txn.add_record_type(RecordTypeDef {
+        name,
+        fields: Vec::new(),
+    });
+    txn.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    let value = txn.value_scalar(Scalar::Int);
+    txn.declare_product(
+        &admitted_plan(),
+        product,
+        record,
+        vec![DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Field {
+                id: LedgerIdBytes::from_bytes([0x50; 16]),
+                required: true,
+                value,
+            },
+        }],
+    )
+    .expect("a well-formed declaration");
+    let mut roots = 0u32;
+    let mut admit_one = |txn: &mut DraftTxn<'_>| {
+        let name = txn.intern_string(&format!("r{roots:05}"));
+        let mut placement = [0x60u8; 16];
+        placement[0] = (roots & 0xff) as u8;
+        placement[1] = ((roots >> 8) & 0xff) as u8;
+        roots += 1;
+        txn.add_root_occurrence(
+            &admitted_plan(),
+            product,
+            RootOccurrenceDef {
+                name,
+                keys: Vec::new(),
+                placement: LedgerIdBytes::from_bytes(placement),
+                indexes: Vec::new().into(),
+            },
+        )
+        .expect("the Product is declared");
+    };
+    for _ in 0..MAX_ROOTS {
+        admit_one(&mut txn);
+    }
+    txn.commit();
+    let clean = owner.encode().expect("exactly MAX_ROOTS fits").bytes;
+
+    // Rollback: the crossing and its ledger delta are restored exactly.
+    {
+        let mut txn = admitted(&mut owner);
+        admit_one(&mut txn);
+        assert_eq!(
+            txn.encode().map(|_| ()),
+            Err(ImageBuildError::TooManyRoots),
+            "the provisional N+1 root is refused only at the fence",
+        );
+    }
+    assert_eq!(
+        owner.encode().expect("the restored draft encodes").bytes,
+        clean,
+        "rollback restored the rows and the ledger byte for byte",
+    );
+
+    // Commit: the crossing is retained and the fence still refuses.
+    let mut txn = admitted(&mut owner);
+    admit_one(&mut txn);
+    txn.commit();
+    assert_eq!(
+        owner.encode().map(|_| ()),
+        Err(ImageBuildError::TooManyRoots)
+    );
+}
+
+/// The `intern_text` compound law at `MAX_CONSTS`: the new text commits its string, its
+/// N+1 constant, and the Consts candidate as one delta; a later Strings crossing adds
+/// that earlier-ranked candidate without erasing Consts — the fence's shadow-compare
+/// would report drift, not a verdict, if either slot were lost — and rollback restores
+/// both tables, both indexes, and the exact prior ledger.
+#[test]
+fn an_intern_text_at_the_const_cap_commits_its_whole_compound() {
+    let mut owner = exporting_owner();
+    let clean = owner.encode().expect("the base draft encodes").bytes;
+    {
+        let mut txn = admitted(&mut owner);
+        for value in 0..(MAX_CONSTS as i64) {
+            txn.intern_int(value);
+        }
+        txn.intern_text("the crossing text");
+        assert_eq!(
+            txn.encode().map(|_| ()),
+            Err(ImageBuildError::TooManyConsts),
+            "the compound committed the N+1 constant and the Consts candidate",
+        );
+        // The compound's string half committed: re-interning is a hit, not a growth.
+        let first = txn.intern_string("the crossing text");
+        let again = txn.intern_string("the crossing text");
+        assert_eq!(first, again, "the compound's string row is retained");
+        // A later Strings crossing outranks Consts without erasing it.
+        for index in 0..=MAX_STRINGS {
+            txn.intern_string(&format!("s{index:05}"));
+        }
+        assert_eq!(
+            txn.encode().map(|_| ()),
+            Err(ImageBuildError::TooManyStrings),
+            "the earlier-ranked Strings candidate is added and Consts is retained",
+        );
+    }
+    assert_eq!(
+        owner.encode().expect("the restored draft encodes").bytes,
+        clean,
+        "rollback restored both tables, both indexes, and the exact prior ledger",
+    );
 }

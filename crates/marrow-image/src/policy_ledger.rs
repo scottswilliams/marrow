@@ -148,7 +148,15 @@ impl TablePolicyAudit {
     /// Recompute the owned subset over `draft`'s final state and cross-validate the
     /// ledger, returning the first mismatch's description.
     pub(crate) fn cross_validate(draft: &ImageDraft) -> Result<(), &'static str> {
-        let ledger = draft.policy_ledger();
+        Self::cross_validate_against(draft.policy_ledger(), draft)
+    }
+
+    /// The comparison core behind [`Self::cross_validate`]: `ledger` is the observed
+    /// state under audit, always the draft's own in production.
+    fn cross_validate_against(
+        ledger: &TablePolicyLedger,
+        draft: &ImageDraft,
+    ) -> Result<(), &'static str> {
         let mut minimum = None;
         for (kind, expected) in [
             (
@@ -299,6 +307,82 @@ mod tests {
                 .expect("a canonical path of this occurrence");
             let _ = draft.request_site(&handle).expect("the binding is live");
         }
+    }
+
+    /// A draft whose constant pool has crossed `MAX_CONSTS` through the production
+    /// transaction surface, so its true ledger holds exactly the Consts slot.
+    fn consts_crossed_draft() -> ImageDraft {
+        let mut owner = ImageDraft::new();
+        let mut txn = owner
+            .begin_transaction(owner.savepoint())
+            .expect("a fresh savepoint admits");
+        for value in 0..=(bounds::MAX_CONSTS as i64) {
+            txn.intern_int(value);
+        }
+        txn.commit();
+        owner
+    }
+
+    /// A wrong-occurrence ledger — the right slot occupied at the wrong canonical
+    /// coordinate — and a wrong-minimum cache — the right slots under a cache naming a
+    /// different kind — are each invariant at the audit, alongside a corrupt slot value
+    /// on a kind the draft never crossed.
+    #[test]
+    fn wrong_occurrence_and_wrong_minimum_ledger_states_are_invariant_at_the_audit() {
+        let draft = consts_crossed_draft();
+        assert!(
+            TablePolicyAudit::cross_validate(&draft).is_ok(),
+            "the true ledger audits clean",
+        );
+
+        // Wrong occurrence: Consts occupied, but at a coordinate the legacy walk would
+        // never report.
+        let mut wrong_occurrence = TablePolicyLedger::vacant();
+        wrong_occurrence.observe(
+            TablePolicyKind::Consts,
+            CurrentValidationOccurrence::at_row(bounds::MAX_CONSTS as u32 + 7),
+        );
+        assert!(
+            TablePolicyAudit::cross_validate_against(&wrong_occurrence, &draft).is_err(),
+            "a wrong-occurrence slot is invariant",
+        );
+
+        // Wrong minimum: the correct slot set under a cache naming a different kind.
+        let wrong_minimum = TablePolicyLedger {
+            slots: {
+                let mut slots = [None; TABLE_POLICY_KIND_COUNT];
+                slots[TablePolicyKind::Consts.rank()] = Some(CurrentValidationOccurrence::at_row(
+                    bounds::MAX_CONSTS as u32,
+                ));
+                slots
+            },
+            cached_minimum: Some(LedgerSlotIndex::of(TablePolicyKind::Sites)),
+        };
+        assert!(
+            TablePolicyAudit::cross_validate_against(&wrong_minimum, &draft).is_err(),
+            "a wrong cached minimum is invariant",
+        );
+
+        // Corrupt: a slot occupied for a kind the draft never crossed.
+        let mut corrupt = TablePolicyLedger::vacant();
+        corrupt.observe(
+            TablePolicyKind::Consts,
+            CurrentValidationOccurrence::at_row(bounds::MAX_CONSTS as u32),
+        );
+        corrupt.observe(
+            TablePolicyKind::Sites,
+            CurrentValidationOccurrence::at_row(bounds::MAX_SITES as u32),
+        );
+        assert!(
+            TablePolicyAudit::cross_validate_against(&corrupt, &draft).is_err(),
+            "an extra occupied slot is invariant",
+        );
+
+        // Missing: the vacant ledger against a genuinely crossed draft.
+        assert!(
+            TablePolicyAudit::cross_validate_against(&TablePolicyLedger::vacant(), &draft).is_err(),
+            "a missing slot is invariant",
+        );
     }
 
     /// The one mint path's crossing populates the Sites slot with the virtual zero-based
