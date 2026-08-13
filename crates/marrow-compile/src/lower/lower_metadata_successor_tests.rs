@@ -49,7 +49,7 @@ fn expected_ints(values: &[i64]) -> (Vec<u8>, marrow_image::ImageId) {
 #[allow(clippy::too_many_arguments)]
 fn lowerer<'a, 'd>(
     draft: &'a mut DraftTxn<'d>,
-    records: &'a TypeRegistry,
+    records: &'a mut TypeRegistry,
     durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
     generics: &'a GenericRegistry<'a>,
@@ -85,7 +85,7 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     else {
         panic!("fixture contains an interpolation")
     };
-    let records = cache_ahead_registry();
+    let mut records = cache_ahead_registry();
     let durable = DurableRegistry::empty(DeclarationBudget::default());
     let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
@@ -95,7 +95,7 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
-        &records,
+        &mut records,
         &durable,
         &functions,
         &generics,
@@ -133,7 +133,7 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
         "fn probe() {\n    const value: List<int> = checked 1 + 2\n        on out_of_range {\n            unreachable(\"AFTER_CHECKED_HANDLER\")\n        }\n}\n",
     );
     let statement = &function.body.statements[0];
-    let records = cache_ahead_registry();
+    let mut records = cache_ahead_registry();
     let durable = DurableRegistry::empty(DeclarationBudget::default());
     let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
@@ -143,7 +143,7 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
-        &records,
+        &mut records,
         &durable,
         &functions,
         &generics,
@@ -191,7 +191,7 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
         "fn probe() {\n    if const present = maybe {\n    } else if isEmpty(List(1)) {\n        const after = trim(\"AFTER_COND\")\n    } else {\n    }\n}\n",
     );
     let statement = &function.body.statements[0];
-    let records = cache_ahead_registry();
+    let mut records = cache_ahead_registry();
     let durable = DurableRegistry::empty(DeclarationBudget::default());
     let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
@@ -201,7 +201,7 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
-        &records,
+        &mut records,
         &durable,
         &functions,
         &generics,
@@ -260,7 +260,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let function = function(
         "fn probe() {\n    const first = List(1)\n    const later = List(\"AFTER_BLOCK_MINT\")\n}\n",
     );
-    let records = cache_ahead_registry();
+    let mut records = cache_ahead_registry();
     let durable = DurableRegistry::empty(DeclarationBudget::default());
     let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
@@ -270,7 +270,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let mut draft = admitted(&mut draft_owner);
     let mut lowerer = lowerer(
         &mut draft,
-        &records,
+        &mut records,
         &durable,
         &functions,
         &generics,
@@ -364,7 +364,7 @@ fn built_reserved_registry() -> (TypeRegistry, DraftTxn<'static>) {
 
 #[test]
 fn generic_struct_constructor_transfers_the_registry_witness_error() {
-    let (records, mut draft) = built_reserved_registry();
+    let (mut records, mut draft) = built_reserved_registry();
     let template = records
         .type_template_by_name("Option")
         .expect("reserved Option template exists");
@@ -376,7 +376,7 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
     let mut diagnostics = DiagnosticCollector::new();
     let mut lowerer = lowerer(
         &mut draft,
-        &records,
+        &mut records,
         &durable,
         &functions,
         &generics,
@@ -408,7 +408,7 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
 
 #[test]
 fn generic_enum_constructor_transfers_the_registry_witness_error() {
-    let (records, mut draft, template) = built_registry_with_generic_struct();
+    let (mut records, mut draft, template) = built_registry_with_generic_struct();
     let draft_before = draft_fingerprint(&draft);
     let durable = DurableRegistry::empty(DeclarationBudget::default());
     let functions = FunctionRegistry::empty(DeclarationBudget::default());
@@ -417,7 +417,7 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
     let mut diagnostics = DiagnosticCollector::new();
     let mut lowerer = lowerer(
         &mut draft,
-        &records,
+        &mut records,
         &durable,
         &functions,
         &generics,

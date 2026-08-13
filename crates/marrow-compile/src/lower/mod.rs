@@ -319,7 +319,7 @@ pub(super) fn annotation_refusal_row(
 
 pub(crate) struct FnLowerer<'a, 'd> {
     draft: &'a mut DraftTxn<'d>,
-    records: &'a TypeRegistry,
+    records: &'a mut TypeRegistry,
     durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
     /// The generic function templates, for resolving a generic call target.
@@ -446,7 +446,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         draft: &'a mut DraftTxn<'d>,
-        records: &'a TypeRegistry,
+        records: &'a mut TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -543,7 +543,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
         draft: &'a mut DraftTxn<'d>,
-        records: &'a TypeRegistry,
+        records: &'a mut TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -579,7 +579,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_instance(
         draft: &'a mut DraftTxn<'d>,
-        records: &'a TypeRegistry,
+        records: &'a mut TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -700,7 +700,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     fn lower_with_env(
         draft: &'a mut DraftTxn<'d>,
-        records: &'a TypeRegistry,
+        records: &'a mut TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -866,7 +866,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_test(
         draft: &'a mut DraftTxn<'d>,
-        records: &'a TypeRegistry,
+        records: &'a mut TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -1088,15 +1088,36 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// is what keeps the other refusal classes from claiming an identity failure
     /// that was never reported.
     fn steer_refusal(&mut self, summary: &DeclarationRefusalSummary, span: SourceSpan) {
+        let row = self.steer_row(summary, span);
+        self.settle_steer(row);
+    }
+
+    /// The row a steered refusal owes, derived under a shared borrow alone.
+    ///
+    /// Splitting derivation from reporting is what lets a steer read its summary
+    /// straight out of the exclusively held registry: the summary's borrow ends with
+    /// the owned row, so the reporting mutation follows it rather than overlapping it.
+    fn steer_row(
+        &self,
+        summary: &DeclarationRefusalSummary,
+        span: SourceSpan,
+    ) -> Option<SourceDiagnostic> {
         if !summary.steer_once() {
-            self.failed = true;
-            return;
+            return None;
         }
-        let row = match summary.gap() {
+        Some(match summary.gap() {
             Some(_) => identity_admission_failed(self.file, span, summary),
             None => declaration_refused(self.file, span, summary),
-        };
-        self.fail(row);
+        })
+    }
+
+    /// Report a derived steer: the first use of a refused key carries the row, every
+    /// later one fails silently.
+    fn settle_steer(&mut self, row: Option<SourceDiagnostic>) {
+        match row {
+            Some(row) => self.fail(row),
+            None => self.failed = true,
+        }
     }
 
     /// Steer a use that named a refused type to that declaration's cause, if the
@@ -1107,14 +1128,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// own not-in-scope report without ever consulting a `ResolveRefusal`. This is
     /// the one probe that keeps those paths from calling a refused type undeclared.
     fn steer_refused_type(&mut self, name: &str, span: SourceSpan) -> bool {
-        match self.records.named_type(name) {
-            Ok(Binding::Refused(_, summary)) => {
-                self.steer_refusal(summary, span);
+        let steer = match self.records.named_type(name) {
+            Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
+            Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
+            Err(drift) => Err(LowerInvariant::from(drift)),
+        };
+        match steer {
+            Ok(None) => false,
+            Ok(Some(row)) => {
+                self.settle_steer(row);
                 true
             }
-            Ok(Binding::Accepted(_) | Binding::Absent) => false,
-            Err(drift) => {
-                self.record_invariant(LowerInvariant::from(drift));
+            Err(invariant) => {
+                self.record_invariant(invariant);
                 true
             }
         }
@@ -1127,16 +1153,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// `owner` is a resource record's name, or the `Record.group` anchor of an
     /// unkeyed group.
     fn steer_refused_member(&mut self, owner: &str, member: &str, span: SourceSpan) -> bool {
-        match self.records.member(owner, member) {
-            Ok(Binding::Refused(_, summary)) => {
-                self.steer_refusal(summary, span);
-                true
-            }
-            Ok(Binding::Accepted(_) | Binding::Absent) => false,
+        let steer = match self.records.member(owner, member) {
+            Ok(Binding::Refused(_, summary)) => Ok(Some(self.steer_row(summary, span))),
+            Ok(Binding::Accepted(_) | Binding::Absent) => Ok(None),
             // The ledger cannot say whether the owner declared this member, so no
             // "has no field" report may be made from here either.
-            Err(drift) => {
-                self.record_invariant(LowerInvariant::from(drift));
+            Err(drift) => Err(LowerInvariant::from(drift)),
+        };
+        match steer {
+            Ok(None) => false,
+            Ok(Some(row)) => {
+                self.settle_steer(row);
+                true
+            }
+            Err(invariant) => {
+                self.record_invariant(invariant);
                 true
             }
         }
@@ -1635,7 +1666,7 @@ mod generic_cache_boundary_tests {
     #[allow(clippy::too_many_arguments)]
     fn lowerer<'a, 'd>(
         draft: &'a mut DraftTxn<'d>,
-        records: &'a TypeRegistry,
+        records: &'a mut TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -1665,7 +1696,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
         let functions = FunctionRegistry::empty(DeclarationBudget::default());
@@ -1680,7 +1711,7 @@ mod generic_cache_boundary_tests {
         };
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -1751,7 +1782,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
         let functions = FunctionRegistry::empty(DeclarationBudget::default());
@@ -1760,7 +1791,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -1817,7 +1848,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let (enum_id, _) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
@@ -1827,7 +1858,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -1878,7 +1909,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let (_, struct_id) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
@@ -1888,7 +1919,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -1943,7 +1974,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let (_, type_id) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
@@ -1953,7 +1984,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2002,7 +2033,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_struct_registry(&mut draft);
+        let mut records = generic_struct_registry(&mut draft);
         let template = records
             .type_template_by_name("Box")
             .expect("Box template exists");
@@ -2033,7 +2064,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2078,7 +2109,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")
             .expect("Option template exists");
@@ -2105,7 +2136,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2150,7 +2181,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let enum_id = records
             .instantiate_reserved_option(
                 &mut draft,
@@ -2173,7 +2204,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2220,7 +2251,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")
             .expect("Option template exists");
@@ -2247,7 +2278,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2296,7 +2327,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")
             .expect("Option template exists");
@@ -2323,7 +2354,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2386,7 +2417,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let option = records
             .instantiate_reserved_option(
                 &mut draft,
@@ -2409,7 +2440,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2460,7 +2491,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Option);
         draft.intern_int(1).expect("a within-domain mint");
         draft.intern_int(2).expect("a within-domain mint");
@@ -2472,7 +2503,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2554,7 +2585,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Result);
         let before = draft.encode().expect("empty draft encodes");
         let durable = DurableRegistry::empty(DeclarationBudget::default());
@@ -2564,7 +2595,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,
@@ -2622,7 +2653,7 @@ mod generic_cache_boundary_tests {
         let mut draft = draft_owner
             .begin_transaction(draft_owner.savepoint())
             .expect("a fresh savepoint admits");
-        let records = generic_enum_registry(&mut draft);
+        let mut records = generic_enum_registry(&mut draft);
         let template = records
             .type_template_by_name("Option")
             .expect("Option template exists");
@@ -2645,7 +2676,7 @@ mod generic_cache_boundary_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
-            &records,
+            &mut records,
             &durable,
             &functions,
             &generics,

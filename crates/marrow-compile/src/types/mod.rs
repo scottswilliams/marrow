@@ -1008,16 +1008,18 @@ impl<'r, 'd> TemplateProofScope<'r, 'd> {
         })
     }
 
-    /// The proof body's split borrows: the settled registry, reborrowed shared from
-    /// the guard's exclusive borrow (so any derived metadata session dies before the
-    /// guard can drop), and the armed draft transaction.
-    pub(crate) fn parts(&mut self) -> (&TypeRegistry, &mut DraftTxn<'d>) {
+    /// The proof body's split borrows: the registry and the armed draft transaction,
+    /// reborrowed from disjoint guard fields. Both are exclusive, so any metadata
+    /// session or interior borrow derived inside the proof body dies before the guard
+    /// can drop — a scope dropped under a live session is a compile error, never a
+    /// drop-time borrow panic.
+    pub(crate) fn parts(&mut self) -> (&mut TypeRegistry, &mut DraftTxn<'d>) {
         #[expect(
             clippy::expect_used,
             reason = "scope law: the guard is taken exactly once, by Drop"
         )]
         (
-            &*self.registry,
+            self.registry,
             self.draft
                 .as_mut()
                 .expect("the scope holds its armed guard until it drops"),

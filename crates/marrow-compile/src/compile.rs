@@ -1562,7 +1562,6 @@ fn run_semantic(
         Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
     };
     let resolution = Resolution {
-        records: &records,
         durable: &durable,
         signatures: signatures.signatures(),
         generics: &generics,
@@ -1571,6 +1570,7 @@ fn run_semantic(
     let phases = match registry_phases(
         parsed,
         mode,
+        &mut records,
         resolution,
         template_proofs,
         &mut draft,
@@ -1679,12 +1679,15 @@ fn run_semantic(
     }))
 }
 
-/// Everything the registry-dependent phases resolve names through. Shared and read-only
-/// for the whole region: the type registry records an instantiation behind its own
-/// interior mutability, so no phase needs to own it.
+/// The registries the registry-dependent phases resolve names through that stay shared
+/// and read-only for the whole region.
+///
+/// The type registry is deliberately not among them: it is the one owner these phases
+/// mutate, so it travels beside this bundle as an exclusive borrow. Bundling it would
+/// make a `Copy` alias of a mutating owner, which is exactly what the generic-owner
+/// custody guard must be able to hold alone.
 #[derive(Clone, Copy)]
 struct Resolution<'a, 'p> {
-    records: &'a TypeRegistry,
     durable: &'a DurableRegistry,
     signatures: &'a FunctionRegistry,
     generics: &'a GenericRegistry<'p>,
@@ -1797,17 +1800,17 @@ fn template_proof_phase(
 /// once-checked template proof, the declared function bodies, the declared test bodies,
 /// and the generic instance drain. Each phase records its own artifact as it completes;
 /// none is inferred from the diagnostic set.
+#[allow(clippy::too_many_arguments)]
 fn registry_phases(
     parsed: &[Module],
     mode: TestMode,
+    records: &mut TypeRegistry,
     resolution: Resolution<'_, '_>,
     template_proofs: AcceptedQueuedTemplateProofs,
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
 ) -> Result<RegistryPhases, PhaseStop> {
-    let records = resolution.records;
-
     // Generic instances are image functions with no stable identity, indexed after every
     // monomorphic function and test. `base` is that boundary; the shared `Monomorph`
     // assigns each distinct instance the next index from `base` in discovery order, so
@@ -1823,13 +1826,14 @@ fn registry_phases(
     };
     records.set_fn_base(resolution.signatures.concrete_count() + test_count);
 
-    let functions = lower_declared_functions(parsed, resolution, draft, diagnostics, facts)?;
+    let functions =
+        lower_declared_functions(parsed, records, resolution, draft, diagnostics, facts)?;
     let function_bodies = functions
         .exit
         .complete()
         .then_some(CompleteDeclaredFunctionBodies);
 
-    let tests = lower_declared_tests(parsed, mode, resolution, draft, diagnostics, facts)?;
+    let tests = lower_declared_tests(parsed, mode, records, resolution, draft, diagnostics, facts)?;
     let test_bodies = tests.exit.complete().then_some(CompleteDeclaredTestBodies);
 
     let mut lowered = functions.lowered;
@@ -1920,12 +1924,12 @@ fn registry_phases(
 /// skipped — they are monomorphized on demand and drained separately.
 fn lower_declared_functions(
     parsed: &[Module],
+    records: &mut TypeRegistry,
     resolution: Resolution<'_, '_>,
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
 ) -> Result<LoweredFunctions, PhaseStop> {
-    let records = resolution.records;
     let mut lowered: Vec<LoweredFn> = Vec::new();
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut exit = DeclarationExit::Exhausted;
@@ -2068,12 +2072,12 @@ fn lower_declared_functions(
 fn lower_declared_tests(
     parsed: &[Module],
     mode: TestMode,
+    records: &mut TypeRegistry,
     resolution: Resolution<'_, '_>,
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
 ) -> Result<LoweredTests, PhaseStop> {
-    let records = resolution.records;
     let mut lowered: Vec<LoweredFn> = Vec::new();
     let mut entries: Vec<TestEntry> = Vec::new();
     if mode != TestMode::Include {
