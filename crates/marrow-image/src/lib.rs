@@ -18,6 +18,7 @@ mod encode;
 mod export_id;
 mod instr;
 mod interface;
+mod issuance;
 mod measure;
 mod policy_ledger;
 mod product;

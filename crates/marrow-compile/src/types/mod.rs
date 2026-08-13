@@ -112,6 +112,11 @@ pub(crate) struct TypeParamIndex(u32);
 impl TypeParamIndex {
     /// Mint from a declaration position (see the type's domain proof).
     pub(crate) fn from_position(position: usize) -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "domain proof: a declared parameter costs at least two source bytes and the \
+                      64 MiB capture ceiling bounds every position far inside u32"
+        )]
         Self(u32::try_from(position).expect("a type-parameter position fits the proved u32 domain"))
     }
 

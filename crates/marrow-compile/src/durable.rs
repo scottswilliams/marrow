@@ -746,6 +746,13 @@ impl DurableRegistry {
                 // interned spelling, root, sites, and application identity as one
                 // unit; an ordinary checked refusal drops the armed guard, so no
                 // orphan row (the old build_extras wart) survives the refusal.
+                //
+                // The diagnostic custody seam: rows this store's build refuses are
+                // staged while the guard is armed and settle into the real collector
+                // only after the local restore (the guard drop) or the commit has
+                // completed — restore before settlement. An invariant abort returns
+                // through `?` before the settlement line, so it settles nothing.
+                let mut staged = DiagnosticCollector::new();
                 let mut txn = admitted(draft);
                 let occurrence = match build_one(
                     AdmittedDraft {
@@ -760,7 +767,7 @@ impl DurableRegistry {
                         multiplicity: census.multiplicity(&store.resource),
                     },
                     &mut identity_build,
-                    diagnostics,
+                    &mut staged,
                 )? {
                     StoreBuild::Admitted(built) => {
                         txn.commit();
@@ -776,6 +783,7 @@ impl DurableRegistry {
                         DeclarationOccurrence::Refused(refusal)
                     }
                 };
+                diagnostics.absorb(staged.finish());
                 // The resource projection is appended in the same statement as the
                 // ledger entry, so a store cannot be declared without being reachable
                 // by the resource it binds.

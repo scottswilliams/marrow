@@ -1038,11 +1038,7 @@ fn member_references(
 /// coherence invariant: a reservation is a producer promise to fill, distinct from
 /// a valid filled-empty definition.
 fn types_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
-    if draft
-        .types_fill()
-        .iter()
-        .any(|state| *state == FillState::Unfilled)
-    {
+    if draft.types_fill().contains(&FillState::Unfilled) {
         return Err(ImageBuildError::InvalidReference("vacant record type"));
     }
     for record in draft.types() {
@@ -1179,11 +1175,7 @@ fn test_entry_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 /// payload type references, in row order. A reserved row still `Vacant` at the
 /// fence is the coherence invariant, exactly as for records.
 fn enums_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
-    if draft
-        .enums_fill()
-        .iter()
-        .any(|state| *state == FillState::Unfilled)
-    {
+    if draft.enums_fill().contains(&FillState::Unfilled) {
         return Err(ImageBuildError::InvalidReference("vacant enum type"));
     }
     for enum_def in draft.enums() {
