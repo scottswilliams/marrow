@@ -2342,6 +2342,15 @@ fn the_over_wide_visibility_enumeration_is_recorded() {
         ("MAX_ADMITTED_FILES", "issuance.rs", "private"),
         ("MAX_DERIVED_ROWS", "issuance.rs", "private"),
         ("RegistryInverse", "types/owner_txn.rs", "pub(super)"),
+        // The three methods that carry `RegistryInverse` across the surface. Narrowing the
+        // type without them is a "more private than its item" error, which is how clippy
+        // found that these were over-wide too. They are private rather than `pub(super)`:
+        // a private item is visible to its module's descendants, which is exactly the reach
+        // `types::owner_txn` needs, while `pub(super)` from `types/mod.rs` would name the
+        // crate root and be wider than the type it carries.
+        ("enter_template_proof", "types/mod.rs", "private"),
+        ("admit_generic_owners", "types/mod.rs", "private"),
+        ("restore_generic_owners", "types/mod.rs", "private"),
         ("MetadataBuildCounter", "types/test_probes.rs", "private"),
         ("ReadyBodyMatchCounter", "types/test_probes.rs", "private"),
         ("AliasCycleCounts", "types/test_probes.rs", "pub(super)"),

@@ -3767,7 +3767,7 @@ impl TypeRegistry {
     ///
     /// `entry_records`/`entry_enums` are the draft's record/enum id ceilings at entry, used
     /// to roll the reused metadata directory back to the pre-proof image.
-    pub(crate) fn enter_template_proof(
+    fn enter_template_proof(
         &self,
         entry_records: usize,
         entry_enums: usize,
@@ -3845,7 +3845,7 @@ impl TypeRegistry {
     ///
     /// `entry_records`/`entry_enums` are the draft's record/enum id ceilings at
     /// admission, which the reused metadata directory rolls back to.
-    pub(crate) fn admit_generic_owners(
+    fn admit_generic_owners(
         &self,
         entry_records: usize,
         entry_enums: usize,
@@ -3913,7 +3913,7 @@ impl TypeRegistry {
     /// batch, but possibly dirty after a proof that failed mid-fill — is reset; and the
     /// argument domain, ordered-diagnostic buffer, and instantiation-limit owner are
     /// re-seated. The reused metadata directory is rolled back to the pre-proof image.
-    pub(crate) fn restore_generic_owners(&mut self, inverse: RegistryInverse) {
+    fn restore_generic_owners(&mut self, inverse: RegistryInverse) {
         let RegistryInverse {
             type_insts,
             collections,
