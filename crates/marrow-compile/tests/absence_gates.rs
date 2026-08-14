@@ -2084,13 +2084,22 @@ fn fallible_work_follows_the_first_eager_site_staging_in_the_store_build() {
         .expect("the store build stages eager sites");
     let after = &body[first_staging..];
 
-    // Every `?` after the first staging call is a path that leaves with sites already
-    // staged. `request_eager_site` itself propagates, so the count is at least its own.
-    let propagations = after.matches('?').count();
-    assert!(
-        propagations >= 3,
-        "only {propagations} fallible propagations follow the first eager-site staging; \
-         the 'all failures precede staging' reading would need zero",
+    // Each propagating call is named, not counted. A `?`-character floor is satisfied by
+    // whichever exits happen to exist, so it cannot tell a reordering that removed one exit
+    // from a body that never had it; and it reads `?` wherever the character falls rather
+    // than where a call actually leaves. The subject is the exact set of calls that exit
+    // with sites already staged.
+    let propagating = propagating_callees(after);
+    assert_eq!(
+        propagating,
+        vec![
+            "emit_root_member_sites",
+            "member_flat_at_root",
+            "request_eager_site",
+        ],
+        "the calls that can leave the store build with eager sites already staged moved. \
+         An empty set would mean nothing fallible follows staging, and the record's \
+         'all failures precede staging' reading would be correct after all.",
     );
     for callee in ["emit_root_member_sites(", "member_flat_at_root("] {
         assert!(
@@ -2604,5 +2613,85 @@ fn the_shared_receiver_reader_separates_a_receiver_from_a_line_break() {
         vec!["shared", "wrapped"],
         "an exclusive receiver, a shared reader, and a free function are not this family, \
          and a receiver on its own line is still a receiver",
+    );
+}
+
+/// Every callee in `body` whose call propagates with `?`, by name, sorted and deduplicated.
+///
+/// The callee is read by walking back from the operator over its balanced argument list, so
+/// a call broken across lines is named by what it calls and a `?` that is not a call's own —
+/// on a field, a variable, or a `?Sized` bound — contributes no name.
+fn propagating_callees(body: &str) -> Vec<String> {
+    let bytes = body.as_bytes();
+    let mut found: Vec<String> = Vec::new();
+    for (at, _) in body.match_indices('?') {
+        let mut before = at;
+        while before > 0 && bytes[before - 1].is_ascii_whitespace() {
+            before -= 1;
+        }
+        if before == 0 || bytes[before - 1] != b')' {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut cursor = before - 1;
+        let open = loop {
+            match bytes[cursor] {
+                b')' => depth += 1,
+                b'(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break Some(cursor);
+                    }
+                }
+                _ => {}
+            }
+            if cursor == 0 {
+                break None;
+            }
+            cursor -= 1;
+        };
+        let Some(open) = open else {
+            continue;
+        };
+        let mut start = open;
+        while start > 0 && is_ident_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start < open {
+            found.push(body[start..open].to_string());
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The propagating-call reader names the call a `?` belongs to, across a line break, and
+/// reports nothing for a body whose fallible work does not propagate.
+///
+/// This is the plant probe the staging gate did without. Without it the gate's subject could
+/// be empty — a reader that named nothing would make the census `[]`, which is exactly the
+/// state the gate exists to refuse, and it would have refused it for the wrong reason.
+#[test]
+fn the_propagating_call_reader_names_a_planted_exit() {
+    let planted = "{\n    stage(site)?;\n    let value = compute(\n        a,\n        b,\n    )?;\n    other(value);\n}";
+    assert_eq!(
+        propagating_callees(planted),
+        vec!["compute".to_string(), "stage".to_string()],
+        "a call broken across lines is named by what it calls",
+    );
+
+    let none = "{\n    stage(site);\n    let value = compute(a, b);\n    other(value);\n}";
+    assert!(
+        propagating_callees(none).is_empty(),
+        "a body whose calls do not propagate has no exits to name",
+    );
+
+    // A `?` that is not a call's own contributes no name, so the census cannot be padded
+    // by a character that never leaves the body.
+    let not_a_call = "{\n    let value = optional?;\n    let field = holder.slot?;\n}";
+    assert!(
+        propagating_callees(not_a_call).is_empty(),
+        "a `?` on a value rather than a call is not a propagating callee",
     );
 }

@@ -298,9 +298,18 @@ fn the_counting_run_spells_no_allocation() {
 /// This list is a census, not a clearance: it does **not** assert that each of these is
 /// allocation-free. It exists so the walk's own blind spot is stated and bounded — a
 /// newly ambiguous reach is a census change that has to be looked at, rather than a name
-/// the scan quietly steps over. Resolving them properly needs receiver types and module
-/// paths, which a lexical scanner does not have; that remains the recorded limit of this
-/// gate.
+/// the scan quietly steps over.
+///
+/// **The residue, stated exactly.** Resolving these needs receiver types, which a lexical
+/// scanner does not have. The obvious tightening — prefer a definition in the calling
+/// body's own file — is *unsound*, not merely incomplete, and
+/// [`the_same_file_tightening_binds_a_method_call_to_the_wrong_definition`] demonstrates it
+/// on this crate: `encode.rs` calls `field.ty.encode(sink)`, a method of `ImageType`
+/// declared in `ty.rs`, while `encode.rs` also declares exactly one `fn encode` —
+/// `ImageDraft::encode`, the whole emission driver. A file-preferring resolver binds the
+/// method call to the driver and walks the counting audit straight into emission, reporting
+/// an allocation on a path the counting run never enters. Recording the name is therefore
+/// the tighter answer available to a scanner without types, and this is why.
 const AMBIGUOUS_COUNT_PATH_NAMES: &[&str] = &[
     "application",
     "bytes",
@@ -741,5 +750,55 @@ fn the_drop_path_resolver_reports_a_planted_unresolved_call() {
     assert!(
         !RESOLVED_PRIMITIVES.contains(&"some_unaudited_helper"),
         "an unknown callee is not silently allowlisted, so the audit above fails on it",
+    );
+}
+
+/// The residue is unresolvable rather than merely unresolved: the obvious tightening binds
+/// a method call to the wrong definition, on this crate's own source.
+///
+/// A scanner sees `receiver.name(args)` and `name(args)` as the same shape. Preferring a
+/// definition beside the caller therefore resolves a method call by where its *caller*
+/// lives, which has nothing to do with the receiver's type. This is the check that turns
+/// "a lexical scanner cannot do better" from a claim in a doc comment into a fact about
+/// this tree, so a later pass does not spend the tightening again and ship the false reach.
+#[test]
+fn the_same_file_tightening_binds_a_method_call_to_the_wrong_definition() {
+    let definitions = crate_function_bodies();
+
+    // `encode` is declared in several files, so a crate-wide lookup correctly refuses it.
+    let encodes = definitions
+        .get("encode")
+        .expect("this crate declares `encode`");
+    assert!(
+        encodes.len() > 1,
+        "`encode` is ambiguous crate-wide, which is why it is censused",
+    );
+
+    // Exactly one of them is in `encode.rs`, so a file-preferring resolver would pick it.
+    let in_encode: Vec<&(String, String)> = encodes
+        .iter()
+        .filter(|(file, _)| file == "encode.rs")
+        .collect();
+    assert_eq!(
+        in_encode.len(),
+        1,
+        "`encode.rs` declares exactly one `fn encode`, so a file-preferring resolver has \
+         a unique — and wrong — answer for every `encode(` call that file spells",
+    );
+
+    // And that one definition is the emission driver, which allocates and calls the
+    // emission the counting run must never be walked into.
+    let (_, driver) = in_encode[0];
+    assert!(
+        driver.contains("emit_image("),
+        "the definition a file-preferring resolver would bind to is the emission driver",
+    );
+
+    // The call it would be bound to is a method on a type declared elsewhere.
+    let calls = fs::read_to_string(workspace_file("marrow-image/src/encode.rs"))
+        .expect("read the emission owner");
+    assert!(
+        without_literals(&calls).contains(".ty.encode(sink)"),
+        "`encode.rs` calls `encode` as a method of a type it does not declare",
     );
 }
