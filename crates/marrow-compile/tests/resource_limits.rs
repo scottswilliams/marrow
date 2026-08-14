@@ -1301,21 +1301,26 @@ fn the_compiler_side_maximum_live_graph_holds_its_accounted_figures() {
 /// left standing as folklore.
 #[test]
 fn the_value_arena_is_measured_against_the_declared_ceiling_and_exceeds_it() {
+    // Both terms are constants, so the comparison is read through an opaque binding: a
+    // constant-folded `assert!` is an assertion the compiler removes, which is the same
+    // vacancy in a different costume.
+    let arena = std::hint::black_box(MAX_LIVE_DURABLE_VALUE_ARENA_BYTES);
+    let ceiling = std::hint::black_box(owned_heap::H_OWNED_BYTES);
     assert!(
-        MAX_LIVE_DURABLE_VALUE_ARENA_BYTES > owned_heap::H_OWNED_BYTES,
+        arena > ceiling,
         "the value arena came under the declared owned-heap ceiling; re-derive the term and \
          retire the recorded finding rather than leaving this assertion inverted",
     );
     assert_eq!(
-        MAX_LIVE_DURABLE_VALUE_ARENA_BYTES / owned_heap::H_OWNED_BYTES,
+        arena / ceiling,
         12,
         "the overshoot against the declared owned-heap ceiling moved",
     );
 
     // Where a re-derivation has to look: the enum payload references, not the struct
     // leaves, are effectively the whole term, so a joint bound anywhere else moves nothing.
-    let struct_leaves = (marrow_image::bounds::MAX_TYPES
-        * marrow_image::bounds::MAX_STRUCT_LEAVES) as u64;
+    let struct_leaves =
+        (marrow_image::bounds::MAX_TYPES * marrow_image::bounds::MAX_STRUCT_LEAVES) as u64;
     let enum_references = (marrow_image::bounds::MAX_ENUMS
         * marrow_image::bounds::MAX_VARIANTS
         * (1 + marrow_image::bounds::MAX_PAYLOAD_FIELDS)) as u64;

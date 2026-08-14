@@ -2430,7 +2430,10 @@ fn the_value_shape_arena_publishes_no_unchecked_id_lookup() {
     let found = published_id_lookups(arena);
     let expected: Vec<String> = ARENA_ID_LOOKUPS.iter().map(|n| (*n).to_string()).collect();
     assert_eq!(
-        found.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
+        found
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>(),
         expected,
         "the arena's published id-taking lookups moved",
     );

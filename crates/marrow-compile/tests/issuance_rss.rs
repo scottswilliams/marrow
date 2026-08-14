@@ -472,7 +472,9 @@ fn each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it() {
     // Scoped to the enum declaration: the arm also carries a wrapper struct and a driver
     // function, whose own annotations are not variant payloads.
     let arm = enum_amplification_arm();
-    let opened = arm.find("enum Grown<T> {").expect("the enum arm declares its enum");
+    let opened = arm
+        .find("enum Grown<T> {")
+        .expect("the enum arm declares its enum");
     let enums = &arm[opened..arm[opened..].find("\n}\n").expect("the enum closes") + opened];
     assert_eq!(
         enums.matches("    v").count() + 1,

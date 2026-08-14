@@ -162,7 +162,8 @@ fn the_narrowing_census_reads_arithmetic_over_a_narrow_carrier() {
         "arithmetic naming no narrow carrier is not a site",
     );
 
-    let not_arithmetic = "fn probe(v: &u16, n: u16) -> u16 {\n    let mut t = *v;\n    t += n;\n    t\n}\n";
+    let not_arithmetic =
+        "fn probe(v: &u16, n: u16) -> u16 {\n    let mut t = *v;\n    t += n;\n    t\n}\n";
     assert!(
         narrowing_hits_in(&production_code(not_arithmetic)).is_empty(),
         "a dereference, a return arrow, and a compound assignment are not binary arithmetic",
@@ -253,8 +254,16 @@ fn narrowing_hits_in(code: &str) -> Vec<String> {
 /// The narrow-carrier spellings an arithmetic operand may name. A window holding one of
 /// these is arithmetic on a `u16`/`u32` carrier, whatever the surrounding types are.
 const NARROW_OPERAND_SPELLINGS: [&str; 10] = [
-    "as u16", "as u32", "u16::MAX", "u16::MIN", "u32::MAX", "u32::MIN", "u16::from", "u32::from",
-    "u16>", "u32>",
+    "as u16",
+    "as u32",
+    "u16::MAX",
+    "u16::MIN",
+    "u32::MAX",
+    "u32::MIN",
+    "u16::from",
+    "u32::from",
+    "u16>",
+    "u32>",
 ];
 
 /// Whether an arithmetic operator opens at `at`, with `-` in `->`, `*` in a dereference or
@@ -837,11 +846,7 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "value_dag.rs",
         "let count = u32::try_from(self.store.len()).unwrap_or(u32::MAX);",
     ),
-    (
-        "marrow-image",
-        "value_dag.rs",
-        "+ size_of::<u32>() as u64",
-    ),
+    ("marrow-image", "value_dag.rs", "+ size_of::<u32>() as u64"),
     (
         "marrow-image",
         "value_dag.rs",
