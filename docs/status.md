@@ -305,12 +305,13 @@ at the current revision. No statement that Marrow is fast is current.
   about it — including a statement that it is adequate — has evidence today.
   Establishing a first baseline, and the workload and method that define it, is
   outstanding work.
-- **Workspace test wall time: measured, one host, method not recorded.** The
-  workspace battery is 3,534 tests across 229 suites. The most recent recorded
-  architecture-health sweep measured its wall time at approximately 144
-  seconds. That figure is an internal trend reference taken on a single
-  development host; it names no platform, toolchain, or settings, and supports
-  no comparison with another machine or another project.
+- **Workspace test wall time: measured, one host, method not recorded.** At the
+  last recorded architecture-health sweep the battery counted 3,534 tests
+  across 229 suites, and its wall time measured approximately 144 seconds. That
+  figure is an internal trend reference taken on a single development host; it
+  names no platform, toolchain, or settings, and supports no comparison with
+  another machine or another project. Both numbers move as lanes land, and
+  neither is re-measured by reading this page.
 - **Rust clean and incremental build time: no recorded baseline.** Neither
   time is recorded at the current revision.
 
