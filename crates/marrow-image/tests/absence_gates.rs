@@ -2398,3 +2398,148 @@ fn the_coupled_mint_scanner_sees_a_planted_inversion() {
         "the scanner must reject a body that commits its first row before preparing its second",
     );
 }
+
+/// Every published lookup of the value-shape arena that takes a caller-supplied id, with
+/// the checked return each one must carry.
+///
+/// A [`marrow_image::ValueShapeNodeId`] authenticates nothing: it is an ordinal, and it
+/// names a node only in the arena that minted it. An arena is reachable from another
+/// crate through `DurableContractGraph::value_shapes_mut`, so every one of these is a
+/// safe public entry point that a foreign id reaches. Each previously indexed a backing
+/// vector directly, which turned a foreign id into a process abort one method away from a
+/// refusal the mints already stated properly.
+const ARENA_ID_LOOKUPS: [&str; 5] = ["contains", "depth", "enum_shape", "struct_shape", "view"];
+
+/// The value-shape arena's published lookups are checked, and its backing vectors stay
+/// behind the module boundary that makes an unchecked one unwritable.
+///
+/// The census is exact rather than a floor: a lookup added to the arena is a new safe
+/// entry point for a foreign id, and one removed means the surface moved. Either has to
+/// be looked at rather than silently absorbed.
+#[test]
+fn the_value_shape_arena_publishes_no_unchecked_id_lookup() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("value_dag.rs"),
+    )
+    .expect("read the value-shape arena");
+    let code = without_cfg_test_items(&without_literals(&source));
+
+    let arena = brace_body(&code, "impl CanonicalValueShapeDag {");
+    let found = published_id_lookups(arena);
+    let expected: Vec<String> = ARENA_ID_LOOKUPS.iter().map(|n| (*n).to_string()).collect();
+    assert_eq!(
+        found.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
+        expected,
+        "the arena's published id-taking lookups moved",
+    );
+    for (name, returns) in &found {
+        assert!(
+            is_checked_return(returns),
+            "`{name}` takes a caller-supplied id and returns `{returns}`, which cannot \
+             report an id this arena never minted; it must answer with `Option`, `Result`, \
+             or `bool` rather than indexing a backing vector",
+        );
+    }
+
+    // The boundary the checked lookups rest on: the store's vectors are private to their
+    // own module, and a module's ancestors cannot reach a descendant's private items, so
+    // no method of the arena can index them however it is written.
+    let store = brace_body(&code, "pub(super) struct ValueShapeNodeStore {");
+    assert!(
+        !store.contains("pub"),
+        "the value-shape store published a field; the arena could then index it directly \
+         again and the checked lookups would stop being the only lookup: {store}",
+    );
+
+    // The expansion takes a caller-supplied root on the same terms and has no cross-crate
+    // caller, so it is not published either.
+    assert!(
+        !code.contains("pub fn expand"),
+        "`expand` takes a caller-supplied root; it is crate-internal and stays so",
+    );
+}
+
+/// Whether `returns` is a return type that can report an id the arena never minted.
+fn is_checked_return(returns: &str) -> bool {
+    let returns = returns.trim();
+    returns.starts_with("Option<") || returns.starts_with("Result<") || returns == "bool"
+}
+
+/// Every `pub fn` of `body` whose parameters name a [`marrow_image::ValueShapeNodeId`],
+/// as `(name, return type)`, sorted by name.
+///
+/// The signature is read from `pub fn` to the `{` that opens the body, so a return type
+/// is the text after the last `->` at parameter depth zero. A function with no arrow
+/// yields the unit spelling, which is not a checked return and therefore fails loudly
+/// rather than being skipped.
+fn published_id_lookups(body: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let bytes = body.as_bytes();
+    let mut from = 0usize;
+    while let Some(at) = body[from..].find("pub fn ").map(|n| n + from) {
+        // `pub(crate) fn` and `pub(super) fn` are not this surface; the literal `pub fn `
+        // matches only the unrestricted form.
+        let signature_start = at + "pub fn ".len();
+        let mut cursor = signature_start;
+        while cursor < bytes.len() && bytes[cursor] != b'{' {
+            cursor += 1;
+        }
+        let signature = &body[signature_start..cursor];
+        from = cursor.max(at + 1);
+        let name_len = signature
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(signature.len());
+        let name = signature[..name_len].to_string();
+        let Some(open) = signature.find('(') else {
+            continue;
+        };
+        let Some(close) = signature.rfind(')') else {
+            continue;
+        };
+        if !signature[open..close].contains("ValueShapeNodeId") {
+            continue;
+        }
+        let returns = match signature[close..].split_once("->") {
+            Some((_, tail)) => tail.trim().to_string(),
+            None => "()".to_string(),
+        };
+        found.push((name, returns));
+    }
+    found.sort();
+    found
+}
+
+/// The signature reader sees an unchecked return, and does not mistake a restricted
+/// `pub(crate) fn` or an id-free accessor for this surface.
+#[test]
+fn the_published_lookup_reader_sees_an_unchecked_signature() {
+    let planted = "{\n    pub fn depth(&self, node: ValueShapeNodeId) -> usize {\n        0\n    }\n\
+                   \n    pub fn view(&self, node: ValueShapeNodeId) -> Option<u8> {\n        None\n    }\n\
+                   \n    pub(crate) fn hidden(&self, node: ValueShapeNodeId) -> usize {\n        0\n    }\n\
+                   \n    pub fn len(&self) -> usize {\n        0\n    }\n}\n";
+    let found = published_id_lookups(planted);
+    assert_eq!(
+        found,
+        vec![
+            ("depth".to_string(), "usize".to_string()),
+            ("view".to_string(), "Option<u8>".to_string()),
+        ],
+        "the reader takes exactly the unrestricted id-taking signatures",
+    );
+    assert!(
+        !is_checked_return("usize"),
+        "a bare `usize` return cannot report an id the arena never minted",
+    );
+    assert!(is_checked_return("Option<u8>"));
+    assert!(is_checked_return("Result<u8, E>"));
+    assert!(is_checked_return("bool"));
+    // A signature with no arrow returns unit, which is unchecked and must not be skipped.
+    let arrowless = "{\n    pub fn touch(&self, node: ValueShapeNodeId) {\n    }\n}\n";
+    assert_eq!(
+        published_id_lookups(arrowless),
+        vec![("touch".to_string(), "()".to_string())],
+    );
+    assert!(!is_checked_return("()"));
+}

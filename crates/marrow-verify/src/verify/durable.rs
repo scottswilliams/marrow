@@ -1526,7 +1526,10 @@ fn decode_indexes(
     let index_eligible_field_ids: Vec<LedgerIdBytes> = members
         .iter()
         .filter_map(|member| match member.kind() {
-            DurableMemberViewKind::Field(field) => match values.view(field.value()) {
+            // A field whose shape names no node of this arena is not eligible. The
+            // lookup is checked because the decoded image supplies both the id and the
+            // arena, and refusing eligibility can only narrow what an index may name.
+            DurableMemberViewKind::Field(field) => match values.view(field.value())? {
                 ValueShapeView::Scalar(
                     Scalar::Int
                     | Scalar::Text
@@ -1839,7 +1842,13 @@ fn value_shape_matches(
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
 ) -> bool {
-    match (values.view(shape), ty) {
+    // A shape naming no node of this arena matches no record type: the decoded image
+    // supplies both the id and the arena, so a dangling reference is a mismatch rather
+    // than an abort inside the only decoder a hostile image reaches.
+    let Some(view) = values.view(shape) else {
+        return false;
+    };
+    match (view, ty) {
         (
             ValueShapeView::Scalar(shape_scalar),
             ImageType::Scalar {

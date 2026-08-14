@@ -85,7 +85,7 @@ mod generic_enum_shape_tests {
             })
             .expect("the Ready Option metadata session opens")
             .expect("the Ready Option value shape is built");
-        let ValueShapeView::Enum { members, .. } = values.value_shapes().view(shape) else {
+        let Some(ValueShapeView::Enum { members, .. }) = values.value_shapes().view(shape) else {
             panic!("a Ready Option remains enum-shaped")
         };
         assert_eq!(members.len(), 2);
@@ -93,7 +93,7 @@ mod generic_enum_shape_tests {
         assert_eq!(members[1].payload().len(), 1);
         assert_eq!(
             values.value_shapes().view(members[1].payload()[0]),
-            ValueShapeView::Scalar(ScalarType::Int.image())
+            Some(ValueShapeView::Scalar(ScalarType::Int.image()))
         );
         assert!(
             resolver.refusal.is_some(),
@@ -164,7 +164,7 @@ mod generic_enum_shape_tests {
             .expect("the unavailable enum value shape is built");
         assert_eq!(
             values.value_shapes().view(shape),
-            ValueShapeView::Scalar(ScalarType::Int.image())
+            Some(ValueShapeView::Scalar(ScalarType::Int.image()))
         );
         assert!(resolver.refusal.is_some());
         drop(resolver);

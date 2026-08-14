@@ -113,12 +113,13 @@ pub(crate) struct DurableIndex {
 /// The compiler scalar carried by an orderable durable-key stored shape. This stored
 /// shape is the sole index-eligibility classifier: a nominal has already erased to
 /// `int`, while a dense struct, closed enum, duration, or other non-key value returns
-/// `None`.
+/// `None`. A shape naming no node of `values` is not orderable either, so an id read
+/// against an arena that did not mint it narrows eligibility rather than aborting.
 fn orderable_key_scalar(
     values: &CanonicalValueShapeDag,
     value: ValueShapeNodeId,
 ) -> Option<ScalarType> {
-    match values.view(value) {
+    match values.view(value)? {
         ValueShapeView::Scalar(Scalar::Int) => Some(ScalarType::Int),
         ValueShapeView::Scalar(Scalar::Text) => Some(ScalarType::Text),
         ValueShapeView::Scalar(Scalar::Bool) => Some(ScalarType::Bool),
@@ -1764,7 +1765,11 @@ impl<'a> IdentityResolver<'a> {
         ty: GArg,
     ) -> Option<ValueShapeNodeId> {
         let node = self.build_value_shape(draft, records, metadata, ty)?;
-        if draft.value_shapes().depth(node) > bounds::MAX_DURABLE_VALUE_DEPTH {
+        // The node was just minted into this draft's own arena, so the checked lookup
+        // answers; a `None` would mean the mint and the read disagree about the arena,
+        // which is the same over-deep refusal from the caller's side.
+        let depth = draft.value_shapes().depth(node).unwrap_or(usize::MAX);
+        if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
             self.reject_resource_limit(self.span, over_deep_value_message());
         }
         Some(node)

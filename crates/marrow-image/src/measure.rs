@@ -768,10 +768,10 @@ fn validate_declaration_graph(
             // A field value rooted at this node occupies `depth(node)` levels, whatever
             // depth the same node reaches under some other field.
             DeclarationMemberShape::Field { value, .. } => {
-                if !values.contains(*value) {
+                let Some(value_depth) = values.depth(*value) else {
                     return Err(ImageBuildError::InvalidReference("value shape"));
-                }
-                if values.depth(*value) > bounds::MAX_DURABLE_VALUE_DEPTH {
+                };
+                if value_depth > bounds::MAX_DURABLE_VALUE_DEPTH {
                     return Err(ImageBuildError::DurableValueTooDeep);
                 }
             }
@@ -798,7 +798,10 @@ fn validate_declaration_graph(
 /// assume an encoded arena is within the value bounds, whatever part a walk visits.
 fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBuildError> {
     for node in values.nodes() {
-        match values.view(node) {
+        let Some(view) = values.view(node) else {
+            return Err(ImageBuildError::InvalidReference("value shape"));
+        };
+        match view {
             ValueShapeView::Scalar(_) => {}
             ValueShapeView::Struct(leaves) => {
                 if leaves.len() > bounds::MAX_STRUCT_LEAVES {

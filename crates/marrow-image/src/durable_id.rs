@@ -199,8 +199,11 @@ const _: () = assert!(MAX_FITTING_DURABLE_BODY_BYTES <= usize::MAX / PREIMAGE_ID
 const _: () = assert!(MAX_FITTING_CONTRACT_PREIMAGE_BYTES >= MAX_FITTING_DURABLE_BODY_BYTES);
 
 /// A durable graph no image could carry, refused before its identity is computed: its
-/// canonical payload runs past [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`], or one of its nodes
-/// states more positions than the `u16` both v0 wire forms count with can spell.
+/// canonical payload runs past [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`], one of its nodes
+/// states more positions than the `u16` both v0 wire forms count with can spell, or one
+/// of its value-shape references names no node of the arena it is read against — the
+/// declaration recheck refuses that graph as an invalid reference, so no image carries it
+/// either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DurableGraphTooLarge;
 
@@ -1303,7 +1306,7 @@ mod tests {
             }
         }
         fn value(out: &mut Vec<u8>, values: &CanonicalValueShapeDag, shape: ValueShapeNodeId) {
-            match values.view(shape) {
+            match values.view(shape).expect("a shape minted by this arena") {
                 ValueShapeView::Scalar(scalar) => {
                     out.push(0);
                     out.push(scalar.tag());
