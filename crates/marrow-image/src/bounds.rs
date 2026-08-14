@@ -377,6 +377,17 @@ const _: () = {
         MAX_DURABLE_MEMBERS <= u16::MAX as usize,
         "a member run's count is u16",
     );
+    // The mutator enforces the *intake* ceiling, not the bound: `admit_under` refuses a
+    // command vector wider than the admitted plan, and a plan admits up to one past
+    // `MAX_DURABLE_MEMBERS` so the over-wide declaration still reaches its own refusal
+    // owner. That off-by-one is the value a member ordinal is actually checked against, so
+    // it is the value that must fit the carrier — asserting only the bound would leave a
+    // member ordinal admissible at a width the wire cannot spell the moment the bound is
+    // ever raised to the carrier's own edge.
+    assert!(
+        MAX_ADMITTED_DECLARATION_COMMANDS <= u16::MAX as usize,
+        "the admitted member-command intake ceiling is u16",
+    );
     assert!(
         MAX_KEY_COLUMNS <= u16::MAX as usize,
         "a key tuple's column count is u16",
