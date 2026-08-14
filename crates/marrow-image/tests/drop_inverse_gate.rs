@@ -646,3 +646,100 @@ fn the_drop_path_scanner_detects_a_planted_violation() {
         "an unterminated audited body must fail the sentinel check loudly",
     );
 }
+
+/// Every call expression in an audited Drop-path body resolves to something known.
+///
+/// This is the completeness half of the audit, and it replaces a closure keyed on call
+/// names. That closure over-approximated badly — `new`, `len`, and `members` each resolve to
+/// many definitions, so following all of them reported allocations in bodies the Drop path
+/// never enters — and it was backed out twice for that reason.
+///
+/// Inverting the burden fixes it. Rather than resolving the whole crate, every call in an
+/// audited body must land in one of exactly two places: an allowlisted primitive whose
+/// safety on this path was reviewed once, or another audited body, which is scanned by the
+/// same rules. Anything else is UNRESOLVED and fails loudly. A newly reachable callee
+/// therefore cannot be absorbed silently — it either joins the allowlist with a reason or
+/// joins the audit.
+///
+/// Completeness without false positives: the allowlist is derived from what the bodies
+/// actually call, not guessed, and it is small enough to read.
+const RESOLVED_PRIMITIVES: &[&str] = &[
+    // Constructors and readers: no heap event, no panic, total on any state.
+    "Some", "as_mut", "first", "last", "len", "identity", "index",
+    // In-place shrink and lookup. `remove`/`pop`/`retain` free rather than allocate, and
+    // `truncate` past the length is a no-op rather than a panic. `get_mut` is the checked
+    // lookup that replaced an indexing expression on this path.
+    "clear", "get_mut", "pop", "remove", "retain", "truncate",
+];
+
+#[test]
+fn every_drop_path_call_resolves_to_a_primitive_or_another_audited_body() {
+    let audited: BTreeSet<&str> = DROP_REACHABLE
+        .iter()
+        .map(|(_, name)| name.trim_start_matches("fn "))
+        .collect();
+
+    let mut resolved = 0usize;
+    for (file, name) in DROP_REACHABLE {
+        let raw = fs::read_to_string(workspace_file(file))
+            .unwrap_or_else(|_| panic!("read {file} for the drop-path resolution audit"));
+        let code = without_literals(&raw);
+        let body = audited_body(&code, &raw, name, file);
+        for call in called_names_in(&body) {
+            let known =
+                RESOLVED_PRIMITIVES.contains(&call.as_str()) || audited.contains(call.as_str());
+            assert!(
+                known,
+                "{file}: `{name}` calls `{call}`, which is neither an allowlisted Drop-path \
+                 primitive nor another audited body. Resolve it: add it to the audit if it \
+                 is reachable code of the inverse, or to the primitive allowlist with the \
+                 reason it is non-allocating, non-panicking, and total here",
+            );
+            resolved += 1;
+        }
+    }
+    assert!(
+        resolved > 20,
+        "the resolution audit examined only {resolved} calls, so it is not reading the bodies",
+    );
+}
+
+/// Every identifier `body` calls.
+fn called_names_in(body: &str) -> BTreeSet<String> {
+    let bytes = body.as_bytes();
+    let mut names = BTreeSet::new();
+    for (at, _) in body.match_indices('(') {
+        let mut start = at;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            start -= 1;
+        }
+        if start == at {
+            continue;
+        }
+        let name = &body[start..at];
+        if ["if", "while", "for", "match", "fn", "return", "let", "in"].contains(&name)
+            || name.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        names.insert(name.to_string());
+    }
+    names
+}
+
+/// The resolver reports an unknown callee rather than stepping over it.
+#[test]
+fn the_drop_path_resolver_reports_a_planted_unresolved_call() {
+    let planted = "fn probe() { let _ = some_unaudited_helper(x); }\n\
+                   // drop-path audit sentinel: end of probe\n";
+    let body = audited_body(&without_literals(planted), planted, "fn probe", "planted");
+    let calls = called_names_in(&body);
+    assert!(
+        calls.contains("some_unaudited_helper"),
+        "the resolver sees the call at all: {calls:?}",
+    );
+    assert!(
+        !RESOLVED_PRIMITIVES.contains(&"some_unaudited_helper"),
+        "an unknown callee is not silently allowlisted, so the audit above fails on it",
+    );
+}
