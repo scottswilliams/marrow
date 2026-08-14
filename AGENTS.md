@@ -26,6 +26,41 @@ trough is explicit — a feature is absent until its refounding lane lands it. D
 not describe a stub or a future capability as implemented today, and do not turn
 the current topology into a compatibility requirement.
 
+## Compilation and test speed
+
+Marrow is designed around fast compilation and fast test execution. Treat this
+as an architectural constraint at design time, not a maintenance chore and not
+a later optimization pass: it governs representation, crate structure,
+algorithms, and test architecture, and a design that is correct but slow is not
+finished. It never licenses an unsound shortcut, a skipped gate, or a weakened
+bound; when the two genuinely conflict, soundness wins and the cost is recorded
+as a finding.
+
+Three clocks are ranked by the impact of a regression: (1) Marrow compile time
+over `.mw` programs, which a Marrow program's author pays on every edit and
+which belongs to the product rather than the source tree; (2) workspace test
+wall time; (3) Rust clean and incremental build time. A change that materially
+increases one names the cause; an unexplained increase is a finding.
+
+Prefer representations that are cheap to build and traverse — arenas, interned
+symbols, indices, flat slices — over pointer-chasing graphs, and one pass over
+several. Do not add whole-program analysis, a global fixpoint, or cross-phase
+re-derivation where a forward pass carries the fact; a phase that re-parses,
+re-resolves, or re-walks what an earlier owner already computed is a defect
+regardless of correctness. Keep crates small behind narrow public seams so an
+incremental rebuild stays local, and give any proc-macro-heavy or
+monomorphization-heavy dependency a named reason. Tests are fast by
+construction: source-driven fixtures over process-spawning integration
+binaries, shared expensive setup, and each test's wall time proportionate to
+what it proves. Slow measurement that is genuinely necessary is `#[ignore]`d
+with a stated reason and run with `--ignored`, rather than added to the default
+battery.
+
+Speed is a design constraint here, not a claim: `docs/status.md` records what
+has been measured, and the clock ranked first has no baseline at all. Do not
+write that Marrow compiles or tests fast in public documentation.
+`docs/implementation/speed.md` is the reference for these rules.
+
 ## Documentation authority
 
 Use one owner for each question:

@@ -41,6 +41,7 @@ direction.
 - [Syntax](syntax.md)
 - [Storage](storage.md)
 - [Testing](testing.md)
+- [Compilation and test speed](speed.md)
 - [Diagnostic voice](diagnostic-voice.md)
 
 ## Ownership rule

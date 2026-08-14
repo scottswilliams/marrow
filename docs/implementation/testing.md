@@ -17,6 +17,14 @@ with their owners. Tests should assert typed codes, spans, values, and facts
 rather than prose messages. CLI tests remain thin when the same behavior can be
 exercised below process rendering.
 
+The battery's wall time is a design constraint rather than a cleanup task, so a
+test takes the cheapest layer above that proves its invariant, and slow
+measurement is `#[ignore]`d with a stated reason and run with `--ignored`
+instead of joining the default battery. [Compilation and test
+speed](speed.md#test-architecture) states the rules; [project
+status](../status.md#compilation-and-test-speed) records the measured wall
+time.
+
 ## Fixtures
 
 `fixtures/v01/` is the preserved-semantics corpus extracted from the prototype:

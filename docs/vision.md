@@ -11,6 +11,11 @@ places, transaction boundaries, potentially large traversal, and authority
 visible. Persistence should require no parallel table/document model,
 serializer, repository layer, or string-keyed database API.
 
+The speed of compiling and testing Marrow is a design constraint of the same
+standing as that model: it is settled when a representation or a crate boundary
+is chosen, not after. [Compilation and test speed](#compilation-and-test-speed)
+states it below.
+
 Marrow is not an experimental or hobby language. It is designed to be built with
 production at scale in mind: its architecture, representations, and semantics are
 judged against what a widely used mainstream language and its largest deployments
@@ -41,6 +46,33 @@ systems often repeat across source types, persistence calls, migrations,
 external interfaces, and authorization code. Compilation itself remains
 storeless. A separate lifecycle admits and binds an exact verified image to a
 particular store before durable execution.
+
+## Compilation and test speed
+
+Compilation and test execution speed is an architectural constraint on the
+design rather than a later optimization pass. It governs representation, crate
+structure, algorithms, and test architecture at the time a design is chosen,
+and a design that is correct but slow is not finished. It stands beside the
+durable-data model above rather than beneath it, and it never licenses an
+unsound shortcut, a skipped gate, or a weakened bound; where the two genuinely
+conflict, soundness wins and the cost is recorded rather than absorbed.
+
+Three intervals are ranked, in this order:
+
+1. the time to compile a `.mw` program, which a Marrow program's author pays on
+   every edit and which is the only one of the three that belongs to the
+   product rather than to the source tree;
+2. the time to run the workspace test battery, which every contributor pays
+   many times a day; and
+3. the time to build the Rust workspace clean and incrementally, which gates
+   every experiment on the implementation.
+
+This states a design constraint, not a result. Marrow makes no current claim
+about how fast it compiles: the first interval has no recorded baseline at all,
+and no measured comparison against another implementation exists. [Project
+status](status.md#compilation-and-test-speed) records what has and has not been
+measured; [Compilation and test speed](implementation/speed.md) states the
+design rules that follow for contributors.
 
 ## Language experience
 

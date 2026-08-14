@@ -291,6 +291,33 @@ lane, rebuilt as a new owner:
   refounded at B01 as a pure-project-owner scaffold with no store); and
 - the redb page-level recovery probe and the process-global panic-hook swap.
 
+## Compilation and test speed
+
+[Vision](vision.md#compilation-and-test-speed) ranks compilation and test speed
+as a design constraint, and [Compilation and test
+speed](implementation/speed.md) states the rules that follow from it. This
+section records what has been measured against each of the three ranked clocks
+at the current revision. No statement that Marrow is fast is current.
+
+- **Marrow compile time over `.mw` programs: no baseline.** The clock this
+  project ranks first has never been measured or recorded. How long the current
+  compiler takes over a `.mw` program of any size is unknown, so no statement
+  about it — including a statement that it is adequate — has evidence today.
+  Establishing a first baseline, and the workload and method that define it, is
+  outstanding work.
+- **Workspace test wall time: measured, one host, method not recorded.** The
+  workspace battery is 3,534 tests across 229 suites. The most recent recorded
+  architecture-health sweep measured its wall time at approximately 144
+  seconds. That figure is an internal trend reference taken on a single
+  development host; it names no platform, toolchain, or settings, and supports
+  no comparison with another machine or another project.
+- **Rust clean and incremental build time: no recorded baseline.** Neither
+  time is recorded at the current revision.
+
+A recorded figure here is a trend reference for this repository. It is neither
+a benchmark nor a performance guarantee, and a later measurement may replace it
+without notice.
+
 ## Future: v0.1 beta
 
 The planned beta direction includes:
