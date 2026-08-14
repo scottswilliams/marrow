@@ -1419,6 +1419,32 @@ impl RowDirectory {
     /// checks only image-identity placement; the full `try_new` semantic-key scan still
     /// runs on every cold or invalidated build and on every unrouted projection path.
     fn extend(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
+        // Atomic. A placement can fail on an identity collision, and it resizes the owner
+        // before it does, so a failed extension would otherwise leave scratch rows the
+        // watermark does not account for — a directory claiming a classification it does
+        // not hold. The captured lengths are the inverse of exactly the appends below, and
+        // running it here is what lets an admitted cache survive a failed probe instead of
+        // being dropped with the classification it already paid for.
+        let placed_records = self.scratch.records.len();
+        let placed_enums = self.scratch.enums.len();
+        let prior_type_insts = self.built_type_insts;
+        let prior_collections = self.built_collections;
+        match self.extend_appended(view) {
+            Ok(()) => Ok(()),
+            Err(invariant) => {
+                self.rewind_to(
+                    placed_records,
+                    placed_enums,
+                    prior_type_insts,
+                    prior_collections,
+                );
+                Err(invariant)
+            }
+        }
+    }
+
+    /// The appending half of [`Self::extend`], which its caller makes atomic.
+    fn extend_appended(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
         let type_insts = view.generics.type_insts.len();
         for row in self.built_type_insts..type_insts {
             // During an isolated template proof the reused directory already classifies the
@@ -1766,7 +1792,14 @@ impl TypeRegistry {
             Some(directory) => directory,
             None => RowDirectory::build_full(view)?,
         };
-        directory.extend(view)?;
+        // An admitted directory is not lost to a failed probe. `extend` restores it to the
+        // state this scope received it in, so putting it back is the whole inverse of
+        // having taken it: the next probe reuses the classification rather than paying for
+        // a cold rebuild, and the registry never holds a directory some path emptied.
+        if let Err(invariant) = directory.extend(view) {
+            *self.row_directory.borrow_mut() = Some(directory);
+            return Err(invariant);
+        }
         directory.reset_marks(view);
         Ok(RowDirectoryGuard {
             registry: self,

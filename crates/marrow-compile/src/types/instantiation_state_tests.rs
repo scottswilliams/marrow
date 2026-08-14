@@ -1039,6 +1039,60 @@ fn proof_clone_validates_every_ready_row_even_when_ids_are_duplicated() {
     assert_eq!(draft_snapshot(&draft), draft_before);
 }
 
+/// A failed extension returns the admitted row directory to the registry.
+///
+/// The directory is taken out of its cell before the fallible build and extension run, so
+/// an invariant leaving that scope used to drop it — and the pass paid for a cold rebuild
+/// of a classification it had already completed. The existing red covers the other arm
+/// (`None -> Some -> None`, a batch that opened the first directory leaving none behind);
+/// this is the `Some -> fallible extension -> Some` arm it did not reach.
+#[test]
+fn a_failed_extension_returns_the_admitted_row_directory() {
+    let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
+    let mut draft = fresh_draft();
+    registry
+        .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
+        .expect("first Box row mints ready");
+    registry
+        .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Bool)], site(3))
+        .expect("second Box row mints ready");
+    assert!(
+        registry.row_directory.borrow().is_some(),
+        "the mints probed, so the pass holds a classified directory to lose",
+    );
+
+    // A row appended *after* that probe carries row 0's identity, so the next extension
+    // collides while classifying it — the fallible path, reached with a live cache.
+    let duplicate = {
+        let mut generics = registry.generics.borrow_mut();
+        let clash = generics.type_insts[0].clone();
+        generics.type_insts.push(clash);
+        generics.type_insts[0].id
+    };
+    let expected = GenericInvariant::TypeIdentityCollision(duplicate);
+
+    // The probe is a mint, which is what routes through the cached directory. A checker
+    // that reaches the collision by its own scan never enters the extension at all, so it
+    // cannot observe whether the cache survived it.
+    assert!(matches!(
+        registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Text)], site(4)),
+        Err(ResolveError::Invariant(found)) if found == expected
+    ));
+    assert!(
+        registry.row_directory.borrow().is_some(),
+        "a failed extension returns the admitted directory; dropping it costs the pass the \
+         classification it already paid for and leaves the registry holding none",
+    );
+
+    // And the returned directory is the one it received, not a half-extended one: the
+    // watermark still describes exactly the rows the scratch classifies, so a second probe
+    // reaches the same verdict rather than a different one.
+    assert!(matches!(
+        registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Text)], site(5)),
+        Err(ResolveError::Invariant(found)) if found == expected
+    ));
+}
+
 #[test]
 fn metadata_rejects_distinct_ids_with_the_same_semantic_cache_key() {
     let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
