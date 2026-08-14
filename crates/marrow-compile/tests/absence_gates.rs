@@ -2875,3 +2875,44 @@ fn function_bodies(code: &str) -> Vec<(String, String)> {
     }
     out
 }
+
+/// A lowered body reports into a staged collector, never into the caller's.
+///
+/// The custody law is that a refused body's rows settle only after its batch has
+/// committed or run its inverse. Handing `FnLowerer::lower` the caller's own collector
+/// publishes them the moment they are pushed — while the batch is still armed — so an
+/// invariant that aborts the batch afterwards leaves them behind. The capability type
+/// makes the *settlement* unreachable without a consumed guard; this gate pins the other
+/// half, that nothing is written where settlement is not needed to make it visible.
+#[test]
+fn a_lowered_body_reports_into_a_staged_collector() {
+    let code = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compile.rs"))
+            .expect("read the compile coordinator"),
+    );
+    // Named explicitly and asserted present: a body this gate cannot find is a gate that
+    // silently checks nothing, which is the failure mode it exists to catch elsewhere.
+    let bodies = function_bodies(&code);
+    let mut checked = 0usize;
+    for name in ["lower_declared_functions", "lower_declared_tests"] {
+        let (_, body) = bodies
+            .iter()
+            .find(|(found, _)| found == name)
+            .unwrap_or_else(|| panic!("`{name}` is present, so this gate has a live subject"));
+        assert!(
+            body.contains("FnLowerer::lower"),
+            "`{name}` lowers a body, so this gate has a live subject",
+        );
+        assert!(
+            body.contains("staged.sink()"),
+            "`{name}` hands the lowerer a staged collector",
+        );
+        assert!(
+            !body.contains("\n                    diagnostics,\n                    facts.sink("),
+            "`{name}` hands the lowerer the caller's collector, so a refused body's rows \
+             are published while its batch is still armed",
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2, "both lowering entry points were scanned");
+}

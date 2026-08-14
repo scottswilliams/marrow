@@ -17,6 +17,7 @@
 
 use crate::decl::{DeclarationNamespace, RefusalReport};
 use marrow_codes::Code;
+use marrow_image::SettlementAuthority;
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind};
 use marrow_syntax::{
     Diagnostic, DiagnosticReason, Severity, SourceSpan, SyntaxDiagnosticLimit, SyntaxDiagnostics,
@@ -433,6 +434,36 @@ pub(crate) enum BoundedDiagnostics {
         owned_bytes: usize,
         limit: CompileDiagnosticLimit,
     },
+}
+
+/// Rows held outside every collector a reader can reach until the transaction that
+/// produced them has committed or run its inverse.
+///
+/// [`Self::settle`] consumes a [`SettlementAuthority`], which only a consumed guard can
+/// produce, so "the local restore or commit precedes settlement" is a property of the type
+/// rather than of the order two statements happen to appear in. A path that leaves while a
+/// guard is still armed — an invariant through `?`, or an unwind — drops the staged rows
+/// with it, because it never obtained the capability that would have released them.
+pub(crate) struct StagedDiagnostics {
+    rows: DiagnosticCollector,
+}
+
+impl StagedDiagnostics {
+    pub(crate) fn new() -> Self {
+        Self {
+            rows: DiagnosticCollector::new(),
+        }
+    }
+
+    /// Where the guarded work reports, in place of any collector the caller owns.
+    pub(crate) fn sink(&mut self) -> &mut DiagnosticCollector {
+        &mut self.rows
+    }
+
+    /// Release the staged rows against the capability the consumed guard produced.
+    pub(crate) fn settle(self, _authority: SettlementAuthority) -> BoundedDiagnostics {
+        self.rows.finish()
+    }
 }
 
 impl BoundedDiagnostics {

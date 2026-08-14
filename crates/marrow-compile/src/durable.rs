@@ -34,7 +34,7 @@ use marrow_image::{
     DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
     DurableIndexComponent, DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn,
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, RootOccurrenceSelector, Scalar,
-    SemanticTarget, SettlementAuthority, ValueShapeNodeId, ValueShapeView, bounds,
+    SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -50,7 +50,7 @@ use crate::decl::{
     RefusalReport, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
-use crate::diag::{BoundedDiagnostics, DiagnosticCollector, IdentityGap, SourceDiagnostic};
+use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic, StagedDiagnostics};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
@@ -758,7 +758,7 @@ impl DurableRegistry {
                 // against the capability the consumed guard produces — so the local
                 // restore or commit precedes settlement as a type fact. An invariant
                 // abort leaves through `?` without that capability and settles nothing.
-                let mut staged = StagedStoreDiagnostics::new();
+                let mut staged = StagedDiagnostics::new();
                 let mut txn = admitted(draft);
                 let (occurrence, authority) = match build_one(
                     AdmittedDraft {
@@ -847,38 +847,6 @@ impl DurableRegistry {
             diagnostics.absorb(settled.finish());
             Ok(registry)
         })
-    }
-}
-
-/// One store's refusal rows, held outside every collector the caller can read until
-/// that store's local restore or commit has completed.
-///
-/// The rows are only released by [`Self::settle`], which consumes a
-/// [`SettlementAuthority`] — a capability that exists only after the store's
-/// transaction was committed or rolled back. Restore-before-settlement is therefore a
-/// type fact here: a path that leaves while the guard is still armed (an invariant
-/// through `?`, or an unwind) drops the staged rows with the guard, because it never
-/// obtained the capability that would have released them.
-struct StagedStoreDiagnostics {
-    rows: DiagnosticCollector,
-}
-
-impl StagedStoreDiagnostics {
-    fn new() -> Self {
-        Self {
-            rows: DiagnosticCollector::new(),
-        }
-    }
-
-    /// Where this store's build reports. The build writes here rather than into any
-    /// collector the caller owns.
-    fn sink(&mut self) -> &mut DiagnosticCollector {
-        &mut self.rows
-    }
-
-    /// Release the staged rows against the capability the consumed guard produced.
-    fn settle(self, _authority: SettlementAuthority) -> BoundedDiagnostics {
-        self.rows.finish()
     }
 }
 

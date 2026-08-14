@@ -1,7 +1,7 @@
 //! The generic-owner composite guard: one admitted batch over the compiler's type
 //! registry and the image draft, and the inverse that restores both.
 
-use marrow_image::{DraftTxn, ImageDraft};
+use marrow_image::{DraftTxn, ImageDraft, SettlementAuthority};
 
 use super::{ArgumentDomain, DiagnosticCollector, GenericInvariant, TypeRegistry};
 
@@ -45,9 +45,15 @@ pub(crate) struct RegistryInverse {
 /// ordered collection-payload diagnostic buffer. Both are diagnostic payload, which the
 /// phase places exclusively in the predecessor substrate's custody: `DraftTxn` never
 /// owns, copies, journals, or exposes it, and this inverse mirrors that boundary rather
-/// than opening a second custody for the same rows. What governs whether a batch's
-/// diagnostics become visible is the settlement capability a committed or rolled-back
-/// guard produces, not a registry rollback.
+/// than opening a second custody for the same rows.
+///
+/// That exclusion is only sound because something else decides visibility, and it now
+/// does: a guarded body reports into a staged collector, and those rows are released only
+/// against the [`marrow_image::SettlementAuthority`] a committed or rolled-back guard
+/// produces. So a batch that ends in an invariant publishes nothing regardless of what
+/// these two owners hold — the capability, not a registry rollback, is what makes the
+/// diagnostic effects of an abandoned batch invisible. Journaling them here as well would
+/// be a second custody over rows this inverse is not entitled to own.
 ///
 /// An isolated template proof is the one exception, and it is not a restoration of
 /// these owners either: it *swaps them out* at admission so the throwaway pass cannot
@@ -151,11 +157,17 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
 
     /// Keep this batch: the draft transaction commits first, then the registry inverse
     /// is disarmed, so no path can retain draft rows whose registry rows were erased.
-    pub(crate) fn commit(mut self) {
-        if let Some(txn) = self.draft.take() {
-            txn.commit();
-        }
+    /// Commit the batch, yielding the capability that authorizes the matching
+    /// predecessor custody settlement.
+    ///
+    /// `None` is unreachable for a live batch — admission always installs the guard — but
+    /// the guard is held in an `Option` so `Drop` can take it, and a capability cannot be
+    /// fabricated outside the image crate that mints it. The caller therefore settles
+    /// against what the consumed guard actually produced rather than against an assumption.
+    pub(crate) fn commit(mut self) -> Option<SettlementAuthority> {
+        let authority = self.draft.take().map(DraftTxn::commit);
         self.inverse = None;
+        authority
     }
 }
 
