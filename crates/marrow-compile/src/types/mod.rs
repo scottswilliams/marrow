@@ -2527,10 +2527,11 @@ impl TypeRegistry {
             //
             // Resource bound: one copy per instantiation of the template's declared
             // fields, so the whole cost is at most `MAX_INSTANTIATIONS` copies of the
-            // widest admissible body. That is measured, not asserted: the issuance RSS
-            // gate's type-amplification corpus is a maximum-width generic struct driven
-            // to the instantiation ceiling, which is exactly this term, and its peak sits
-            // an order of magnitude under the declared owned-heap ceiling.
+            // widest admissible record body. That is measured, not asserted: the issuance
+            // RSS gate's type-amplification corpus is a `MAX_RECORD_FIELDS`-wide generic
+            // struct driven to the instantiation ceiling, which is exactly this term. Its
+            // measured peak is 272 MB, inside the declared 640 MiB owned-heap ceiling —
+            // unlike the enum copy below, which is not.
             (subst, fields.clone())
         };
         let mut resolved = Vec::with_capacity(fields.len());
@@ -2586,7 +2587,13 @@ impl TypeRegistry {
             };
             // Copied out for the same reason as a struct fill: a payload resolution
             // mints through the exclusively held registry, so no template read may stay
-            // live across it. Bounded and measured exactly as the struct copy above.
+            // live across it.
+            //
+            // Resource bound: one copy per instantiation of `MAX_VARIANTS` variants each
+            // of `MAX_PAYLOAD_FIELDS` leaves — a wider body than the struct copy, and the
+            // larger of the two terms. Its corpus measures 1.07 GB, over the declared
+            // 640 MiB owned-heap ceiling; that overshoot is a recorded finding pinned by
+            // the issuance RSS gate, not an accepted cost.
             (subst, variants.clone(), template_info.name.clone())
         };
         let enum_name = enum_name.as_str();

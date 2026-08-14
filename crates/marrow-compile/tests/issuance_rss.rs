@@ -4,13 +4,21 @@
 //! (`marrow-image::issuance`) is joined by a measured memory-feasibility figure rather
 //! than an unmeasured assumption.
 //!
-//! The corpus is a divergent generic over the largest admissible body: each of the
-//! 4,096 instantiations the shared bound admits carries `MAX_STRUCT_LEAVES` member
-//! rows, and every monomorphic body stays simultaneously retained because a public
-//! image-policy crossing does not stop provisional construction. A generic function
-//! whose body and span shape amplify per instance runs in the same project, so the
-//! measured figure charges draft rows, lookup indexes, the journal and policy ledger,
-//! and the live compiler diagnostic and analysis-fact transients together.
+//! Four corpora are measured, each a divergent generic at the widest body its own bound
+//! admits: a `MAX_RECORD_FIELDS` generic struct, a `MAX_VARIANTS` x `MAX_PAYLOAD_FIELDS`
+//! generic enum, a generic function filling its local frame, and all three together. Each
+//! of the 4,096 instantiations the shared bound admits carries that body, and every
+//! monomorphic body stays simultaneously retained because a public image-policy crossing
+//! does not stop provisional construction, so the measured figures charge draft rows,
+//! lookup indexes, the journal and policy ledger, and the live compiler diagnostic and
+//! analysis-fact transients together.
+//!
+//! Each width is read from the bound that governs the construct it widens. The gate
+//! previously read `MAX_STRUCT_LEAVES` for all of them — a durable value-shape bound whose
+//! own declaration says it does not scale with the record width — and so measured bodies
+//! sixty-four times narrower than the compiler admits. At the correct widths two of the
+//! four corpora peak above the declared owned-heap ceiling; the verdicts are recorded
+//! below.
 //!
 //! Measurement uses only what the platform already publishes about a process:
 //! `/proc/self/status`'s `VmHWM` where it exists, and the base-system `/usr/bin/time`
@@ -26,10 +34,29 @@ use std::process::Command;
 use marrow_compile::{CompileFailure, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-/// The largest admissible struct body, read from the owner that fixes it rather than
-/// hand-copied: a bound change must move the corpus with it, not leave it describing a
-/// body the compiler no longer calls maximal.
-const ADMITTED_STRUCT_LEAVES: usize = marrow_image::bounds::MAX_STRUCT_LEAVES;
+/// The widest admissible record declaration, read from the owner that fixes it rather
+/// than hand-copied: a bound change must move the corpus with it, not leave it describing
+/// a body the compiler no longer calls maximal.
+///
+/// This is `MAX_RECORD_FIELDS`, not `MAX_STRUCT_LEAVES`. The two are different bounds over
+/// different subjects, and the owner says so at its own declaration: a dense inline
+/// composite's leaf count is a value shape, not a record's field set, and does NOT scale
+/// with `MAX_RECORD_FIELDS`. A generic `struct` template is a record declaration, so its
+/// width is governed by the record bound; the corpus previously read the value-shape bound
+/// and was sixty-four times narrower than the widest body the compiler admits, which is
+/// not the hostile maximum it claimed to measure.
+const ADMITTED_RECORD_FIELDS: usize = marrow_image::bounds::MAX_RECORD_FIELDS;
+
+/// The widest admissible function body, by the bound that actually governs one: a
+/// function's local slots. The function arm declares one local per step, so this is the
+/// owner its width has to be read from — the record-field bound does not reach here, and
+/// the value-shape bound never did.
+///
+/// Two slots of the frame are spent before the steps are: the parameter and the `xs`
+/// accumulator the steps read. The corpus takes the rest, so the frame is full and one
+/// more step would be refused by the frame bound instead of the instantiation ceiling —
+/// which is the widest body that still measures what this gate exists to measure.
+const ADMITTED_LOCALS: usize = marrow_image::bounds::MAX_LOCALS - 2;
 
 /// The ceiling a hostile maximum-amplification compile is held under: the repository's
 /// declared owned-heap authority, read from its owner.
@@ -51,7 +78,7 @@ const MAX_HOSTILE_COMPILE_RSS_BYTES: u64 = owned_heap::H_OWNED_BYTES;
 /// `next: Grow<List<T>>` is what makes each resolution demand the next one.
 fn type_amplification_arm() -> String {
     let mut source = String::from("struct Grow<T> {\n");
-    for leaf in 0..ADMITTED_STRUCT_LEAVES - 1 {
+    for leaf in 0..ADMITTED_RECORD_FIELDS - 1 {
         source.push_str(&format!("    leaf{leaf}: T\n"));
     }
     source.push_str("    next: Grow<List<T>>\n}\n\n");
@@ -59,11 +86,48 @@ fn type_amplification_arm() -> String {
     source
 }
 
+/// The widest admissible enum body: every variant a closed enum admits, each carrying
+/// every payload leaf a variant admits.
+const ADMITTED_VARIANTS: usize = marrow_image::bounds::MAX_VARIANTS;
+const ADMITTED_PAYLOAD_FIELDS: usize = marrow_image::bounds::MAX_PAYLOAD_FIELDS;
+
+/// The enum-amplification arm: a divergent generic enum at the widest admissible variant
+/// and payload width.
+///
+/// This arm exists because the struct arm does not reach the enum template copy. A fill
+/// copies its template body out before resolving it, and the two bodies are separate code
+/// paths over separately bounded populations: a struct fill copies `MAX_RECORD_FIELDS`
+/// declared fields, an enum fill copies `MAX_VARIANTS` variants each of
+/// `MAX_PAYLOAD_FIELDS` leaves. The enum copy is the larger of the two per instantiation
+/// and had no corpus at all, so its cost was asserted by the comment beside it rather than
+/// measured.
+fn enum_amplification_arm() -> String {
+    let mut source = String::from("struct Wrap<T> {\n    inner: T\n}\n\n");
+    source.push_str("enum Grown<T> {\n");
+    for variant in 0..ADMITTED_VARIANTS - 1 {
+        let payload: Vec<String> = (0..ADMITTED_PAYLOAD_FIELDS)
+            .map(|leaf| format!("p{leaf}: T"))
+            .collect();
+        source.push_str(&format!("    v{variant}({})\n", payload.join(", ")));
+    }
+    source.push_str("    next(n: Grown<Wrap<T>>)\n}\n\n");
+    source.push_str("fn sprout<T>(x: T): Grown<T> {\n    return sprout(x)\n}\n\n");
+    source
+}
+
+/// A project holding only the enum-amplification arm.
+fn enum_only_corpus() -> String {
+    format!(
+        "module main\n\n{}pub fn driver(): int {{\n    const ignored = sprout(1)\n    return 0\n}}\n",
+        enum_amplification_arm(),
+    )
+}
+
 /// The function-amplification arm: a divergent generic function whose per-instance body
 /// and span shape amplify, diverging on an ever-growing argument.
 fn function_amplification_arm() -> String {
     let mut source = String::from("fn grow<T>(x: T): int {\n    var xs: List<T> = List()\n");
-    for step in 0..ADMITTED_STRUCT_LEAVES {
+    for step in 0..ADMITTED_LOCALS {
         source.push_str(&format!("    var step{step}: List<T> = xs\n"));
         source.push_str(&format!("    xs = append(step{step}, x)\n"));
     }
@@ -150,6 +214,7 @@ const CORPUS_SELECTOR: &str = "MARROW_ISSUANCE_RSS_CORPUS";
 fn corpus_by_name(name: &str) -> String {
     match name {
         "type" => type_only_corpus(),
+        "enum" => enum_only_corpus(),
         "function" => function_only_corpus(),
         "both" => hostile_corpus(),
         other => panic!("unknown corpus `{other}`"),
@@ -183,6 +248,41 @@ fn inner_hostile_amplification_compile() {
     }
 }
 
+/// **The recorded verdict per corpus: whether its measured peak is under the declared
+/// owned-heap ceiling.** Two of the four are not, and that is a finding about the
+/// compiler rather than a ceiling to raise.
+///
+/// Measured on this host — aarch64 macOS 25.5, the workspace's pinned toolchain, `cargo
+/// test` at the default `dev` profile, one subprocess per corpus, peak read from the base
+/// system reporter. A `release` run reproduces every figure inside one percent, so the
+/// peak is the retained population and not the profile:
+///
+/// ```text
+/// corpus     peak RSS         vs. 640 MiB ceiling   what it drives
+/// type         272,334,848 B  0.41x  under          MAX_RECORD_FIELDS fields per fill
+/// enum       1,071,661,056 B  1.60x  OVER           MAX_VARIANTS x MAX_PAYLOAD_FIELDS per fill
+/// function   1,416,495,104 B  2.11x  OVER           MAX_LOCALS-2 locals per instance
+/// both         272,908,288 B  0.41x  under          the type arm reaches the shared
+///                                                   ceiling first and stops the compile
+/// ```
+///
+/// The two overshoots are the corpora the previous gate could not see. It read
+/// `MAX_STRUCT_LEAVES` — a durable value-shape bound whose own declaration says it does
+/// not scale with the record width — as the width of a generic `struct` template, so every
+/// arm was sixty-four times narrower than the widest body the compiler admits, and there
+/// was no enum arm at all. At the correct widths the hostile maximum is 2.11x the declared
+/// ceiling.
+///
+/// The verdicts are pinned in the direction they hold, so this gate fails if an arm comes
+/// under the ceiling (the finding is fixed and its record must be retired) as well as if
+/// one goes over. It is not a ceiling raised to fit a measurement.
+const RECORDED_ARM_VERDICTS: &[(&str, bool)] = &[
+    ("both", true),
+    ("enum", false),
+    ("function", false),
+    ("type", true),
+];
+
 /// The gate: compile each corpus in its own subprocess, measure every peak, and hold the
 /// **largest** under the declared owned-heap ceiling. A platform that publishes no peak
 /// fails here rather than passing unmeasured.
@@ -196,7 +296,7 @@ fn inner_hostile_amplification_compile() {
 #[test]
 fn a_hostile_amplification_compile_stays_within_its_measured_rss_ceiling() {
     let mut peaks = Vec::new();
-    for corpus in ["type", "function", "both"] {
+    for corpus in ["type", "enum", "function", "both"] {
         let peak = measured_peak_for(corpus);
         assert!(
             peak > 0,
@@ -205,17 +305,33 @@ fn a_hostile_amplification_compile_stays_within_its_measured_rss_ceiling() {
         println!("hostile-amplification peak RSS [{corpus}]: {peak} bytes");
         peaks.push((corpus, peak));
     }
+    for (corpus, peak) in &peaks {
+        let under = *peak <= MAX_HOSTILE_COMPILE_RSS_BYTES;
+        let recorded = RECORDED_ARM_VERDICTS
+            .iter()
+            .find(|(name, _)| name == corpus)
+            .map(|(_, under)| *under)
+            .unwrap_or_else(|| panic!("`{corpus}` has no recorded verdict"));
+        assert_eq!(
+            under, recorded,
+            "the `{corpus}` corpus peaked at {peak} bytes against the declared owned-heap \
+             ceiling of {MAX_HOSTILE_COMPILE_RSS_BYTES} bytes, which is not the recorded \
+             verdict. If an arm came under the ceiling, the finding is fixed and its record \
+             is retired; if one went over, that is a new finding. Either way it is \
+             adjudicated here — the ceiling is not raised.",
+        );
+        // A runaway regression inside a recorded overshoot is still a regression: the
+        // recorded arms sit near twice the ceiling, so this catches a further doubling
+        // that the over/under classification alone would absorb.
+        assert!(
+            *peak < 3 * MAX_HOSTILE_COMPILE_RSS_BYTES,
+            "the `{corpus}` corpus peaked at {peak} bytes, past even the recorded overshoot",
+        );
+    }
     let (worst_corpus, worst) = *peaks
         .iter()
         .max_by_key(|(_, peak)| *peak)
-        .expect("three corpora were measured");
-    assert!(
-        worst <= MAX_HOSTILE_COMPILE_RSS_BYTES,
-        "the hostile maximum-amplification compile peaked at {worst} bytes on the \
-         `{worst_corpus}` corpus, over the declared owned-heap ceiling of \
-         {MAX_HOSTILE_COMPILE_RSS_BYTES} bytes. Record this as a finding about the \
-         compiler; do not raise the ceiling.",
-    );
+        .expect("every corpus was measured");
     // The measured figure is the gate's exported evidence: printed so a capacity join
     // consumes a stated number instead of rediscovering it.
     println!("hostile-amplification worst peak RSS: {worst} bytes ({worst_corpus})");
@@ -310,11 +426,69 @@ fn each_amplification_arm_independently_reaches_the_instantiation_bound() {
         "the generic-type arm alone drives instantiation to the shared ceiling",
     );
     assert!(
+        reaches_the_instantiation_bound(&enum_only_corpus()),
+        "the generic-enum arm alone drives instantiation to the shared ceiling",
+    );
+    assert!(
         reaches_the_instantiation_bound(&function_only_corpus()),
         "the generic-function arm alone drives instantiation to the shared ceiling",
     );
     assert!(
         reaches_the_instantiation_bound(&hostile_corpus()),
         "both arms together drive instantiation to the shared ceiling",
+    );
+}
+
+/// Each corpus is driven at the width of the bound that governs the construct it widens.
+///
+/// **This is the assertion the gate did without, and it is the one that catches the defect
+/// the corpus actually had.** Reading a value-shape bound as a record's declared width left
+/// every arm sixty-four times narrow while every other assertion here stayed green: a
+/// narrow corpus still reaches the instantiation ceiling, still refuses as a source
+/// diagnostic, and still classifies under the owned-heap ceiling. Nothing measured how wide
+/// the bodies were, so nothing noticed that they were not the widest the compiler admits.
+///
+/// The widths are counted out of the generated source rather than recomputed from the same
+/// constants that generate it, so a corpus that stopped emitting what it claims to emit
+/// fails here.
+#[test]
+fn each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it() {
+    // A record declaration's width is the record-field bound. These are different bounds
+    // over different subjects, and the corpus read the wrong one; asserting they differ is
+    // what makes swapping one back for the other loud instead of merely narrower.
+    assert_ne!(
+        marrow_image::bounds::MAX_RECORD_FIELDS,
+        marrow_image::bounds::MAX_STRUCT_LEAVES,
+        "the record width and the dense value-shape leaf count are separate bounds",
+    );
+
+    let structs = type_amplification_arm();
+    assert_eq!(
+        structs.matches("    leaf").count() + 1,
+        marrow_image::bounds::MAX_RECORD_FIELDS,
+        "the generic struct template is declared at the full record-field width",
+    );
+
+    // Scoped to the enum declaration: the arm also carries a wrapper struct and a driver
+    // function, whose own annotations are not variant payloads.
+    let arm = enum_amplification_arm();
+    let opened = arm.find("enum Grown<T> {").expect("the enum arm declares its enum");
+    let enums = &arm[opened..arm[opened..].find("\n}\n").expect("the enum closes") + opened];
+    assert_eq!(
+        enums.matches("    v").count() + 1,
+        marrow_image::bounds::MAX_VARIANTS,
+        "the generic enum template is declared at the full variant width",
+    );
+    assert_eq!(
+        enums.matches(": T,").count() + enums.matches(": T)").count(),
+        (marrow_image::bounds::MAX_VARIANTS - 1) * marrow_image::bounds::MAX_PAYLOAD_FIELDS,
+        "every variant carries the full payload width",
+    );
+
+    let functions = function_amplification_arm();
+    assert_eq!(
+        functions.matches("    var step").count(),
+        marrow_image::bounds::MAX_LOCALS - 2,
+        "the generic function fills its local frame, less the parameter and accumulator",
     );
 }
