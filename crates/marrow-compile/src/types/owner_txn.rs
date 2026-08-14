@@ -169,6 +169,23 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
         self.inverse = None;
         authority
     }
+
+    /// Erase this batch now — registry inverse first, then the armed draft guard's own
+    /// inverse — and yield the capability that authorizes settling what the erased pass
+    /// staged.
+    ///
+    /// This is the explicit spelling of the isolated template proof's exit, whose product
+    /// is its diagnostics and its editor facts rather than the throwaway image work it
+    /// emits. Dropping the guard instead restores exactly the same owners but produces no
+    /// capability, which is what leaves an early lowering invariant unable to settle
+    /// anything. The order matches `Drop`'s: a path may not retain draft rows whose
+    /// registry rows were erased.
+    pub(crate) fn erase(mut self) -> Option<SettlementAuthority> {
+        if let Some(inverse) = self.inverse.take() {
+            self.registry.restore_generic_owners(inverse);
+        }
+        self.draft.take().map(DraftTxn::rollback)
+    }
 }
 
 impl Drop for GenericOwnerTxn<'_, '_> {

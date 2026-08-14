@@ -461,7 +461,12 @@ impl StagedDiagnostics {
     }
 
     /// Release the staged rows against the capability the consumed guard produced.
-    pub(crate) fn settle(self, _authority: SettlementAuthority) -> BoundedDiagnostics {
+    ///
+    /// The capability is borrowed rather than consumed: one committed guard settles every
+    /// owner that guard's work staged — this crate's bodies stage diagnostics and editor
+    /// facts against a single commit — and double release is already impossible because
+    /// this consumes `self`.
+    pub(crate) fn settle(self, _authority: &SettlementAuthority) -> BoundedDiagnostics {
         self.rows.finish()
     }
 }

@@ -795,7 +795,7 @@ impl DurableRegistry {
                         (DeclarationOccurrence::Refused(refusal), authority)
                     }
                 };
-                settled.absorb(staged.settle(authority));
+                settled.absorb(staged.settle(&authority));
                 // The resource projection is appended in the same statement as the
                 // ledger entry, so a store cannot be declared without being reachable
                 // by the resource it binds.

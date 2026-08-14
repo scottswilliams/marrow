@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use marrow_image::SettlementAuthority;
 use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{Declaration, EnumMember, FormatRefusal, SourceSpan};
 
@@ -880,6 +881,22 @@ struct RetainingFacts {
 }
 
 impl RetainingFacts {
+    /// Append one settled body's rows, preserving the order they were produced in: the
+    /// body's own rows follow every row already retained, exactly as they would have
+    /// landed had the body written straight through.
+    fn absorb(&mut self, other: RetainingFacts) {
+        let RetainingFacts {
+            hover_facts,
+            broken_files,
+            dependency_gaps,
+            document_symbols,
+        } = other;
+        self.hover_facts.extend(hover_facts);
+        self.broken_files.extend(broken_files);
+        self.dependency_gaps.extend(dependency_gaps);
+        self.document_symbols.extend(document_symbols);
+    }
+
     fn seal(self) -> RetainedFacts {
         RetainedFacts {
             hover_facts: self.hover_facts.into_boxed_slice(),
@@ -915,10 +932,19 @@ impl AnalysisFactCollector {
         matches!(self.state, FactState::Limited { .. })
     }
 
-    /// A scoped borrow for one body's lowering, so a producer writes facts through the
-    /// ledger rather than into a vector of its own.
-    pub(crate) fn sink(&mut self, file: FileRef) -> FactSink<'_> {
-        FactSink::Retaining { ledger: self, file }
+    /// Release one settled body's staged facts into this ledger.
+    ///
+    /// The staged charge composed over exactly these totals while the body ran, so
+    /// re-composing it here reaches the same verdict the body already observed: a body
+    /// that crossed the ceiling live limits the ledger the moment it settles, and one
+    /// that did not cannot.
+    pub(crate) fn absorb(&mut self, released: ReleasedFacts) {
+        let ReleasedFacts {
+            count,
+            bytes,
+            facts,
+        } = released;
+        self.admit(count, bytes, move |retained| retained.absorb(facts));
     }
 
     /// The logical byte charge of one file's spelling. Every coordinate the drive mints
@@ -933,34 +959,6 @@ impl AnalysisFactCollector {
             "a coordinate names a module of this ledger's own project"
         );
         self.file_bytes.get(file.index()).copied().unwrap_or(0) as u64
-    }
-
-    /// Retain one hover fact. Charges one count and the fact's own logical byte charge —
-    /// unchanged by the compact representation, which no longer stores a file spelling
-    /// per fact.
-    pub(crate) fn admit_hover(
-        &mut self,
-        file: FileRef,
-        span: SourceSpan,
-        display: Box<str>,
-        definition: Option<DefinitionTarget>,
-    ) {
-        let fact = HoverFact {
-            file,
-            span: FactSpan::of(span),
-            display,
-            definition,
-        };
-        let bytes = fact.retained_bytes(|at| self.spelling_bytes(at));
-        self.admit(1, bytes, move |facts| facts.hover_facts.push(fact));
-    }
-
-    /// Retain one dependency gap. It carries only fixed-size references and a span, so
-    /// the count bound charges it and it charges no bytes.
-    pub(crate) fn admit_gap(&mut self, file: FileRef, span: SourceSpan) {
-        self.admit(1, 0, |facts| {
-            facts.dependency_gaps.push((file, FactSpan::of(span)));
-        });
     }
 
     /// Retain one module's declaration-hierarchy outline. Charges one count per
@@ -991,6 +989,16 @@ impl AnalysisFactCollector {
         }
     }
 
+    /// The running totals, in either state. A staged body composes its own contribution
+    /// over these to reach the same ceiling verdict the ledger would have reached for
+    /// the same fact.
+    fn totals(&self) -> (u64, u64) {
+        match self.state {
+            FactState::Retaining { count, bytes, .. } => (count, bytes),
+            FactState::Limited { count, bytes, .. } => (count, bytes),
+        }
+    }
+
     /// Admit one contribution against both ceilings before `retain` may allocate for
     /// it. Crossing discards the whole payload, including the admitted prefix, and
     /// Count wins a simultaneous crossing.
@@ -1008,26 +1016,15 @@ impl AnalysisFactCollector {
             } => {
                 let new_count = count.saturating_add(added_count);
                 let new_bytes = bytes.saturating_add(added_bytes);
-                if new_count > MAX_SNAPSHOT_FACT_COUNT {
-                    self.state = limited_facts(
-                        new_count,
-                        new_bytes,
-                        AnalysisFactLimit::Count {
-                            limit: MAX_SNAPSHOT_FACT_COUNT,
-                        },
-                    );
-                } else if new_bytes > MAX_SNAPSHOT_FACT_BYTES {
-                    self.state = limited_facts(
-                        new_count,
-                        new_bytes,
-                        AnalysisFactLimit::Bytes {
-                            limit: MAX_SNAPSHOT_FACT_BYTES,
-                        },
-                    );
-                } else {
-                    *count = new_count;
-                    *bytes = new_bytes;
-                    retain(facts);
+                match crossed_ceiling(new_count, new_bytes) {
+                    Some(limit) => {
+                        self.state = limited_facts(new_count, new_bytes, limit);
+                    }
+                    None => {
+                        *count = new_count;
+                        *bytes = new_bytes;
+                        retain(facts);
+                    }
                 }
             }
             FactState::Limited {
@@ -1053,6 +1050,26 @@ impl AnalysisFactCollector {
     }
 }
 
+/// Classify one composed total against both ceilings, Count taking precedence over
+/// Bytes at a simultaneous crossing.
+///
+/// The sole owner of the ceiling comparison. The ledger's own admissions and a staged
+/// body's live charge both classify through here, so a body cannot reach a different
+/// verdict for a fact than the ledger reaches when that fact settles.
+fn crossed_ceiling(count: u64, bytes: u64) -> Option<AnalysisFactLimit> {
+    if count > MAX_SNAPSHOT_FACT_COUNT {
+        Some(AnalysisFactLimit::Count {
+            limit: MAX_SNAPSHOT_FACT_COUNT,
+        })
+    } else if bytes > MAX_SNAPSHOT_FACT_BYTES {
+        Some(AnalysisFactLimit::Bytes {
+            limit: MAX_SNAPSHOT_FACT_BYTES,
+        })
+    } else {
+        None
+    }
+}
+
 /// The saturated Limited state: totals cap at ceiling plus one, so later input keeps
 /// composing without unbounded growth. The whole retained payload is dropped here — it
 /// never re-materializes.
@@ -1064,15 +1081,159 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
     }
 }
 
+/// One lowered body's editor facts, held outside every ledger a consumer can reach until
+/// the transaction that produced them has committed or run its inverse.
+///
+/// The split this carries is three-part, and each part is load-bearing.
+///
+/// The **charge** is live. Every fact composes over the ledger's settled totals at the
+/// push that produced it and classifies through [`crossed_ceiling`], the ledger's own
+/// comparison, so a body whose facts cross the snapshot ceiling stops rendering displays
+/// *inside itself* rather than after it, and no fact population larger than a snapshot
+/// admits is ever materialized. The ledger cannot move underneath a running body: this
+/// value borrows it shared for the body's whole extent, so the totals a push composes
+/// over are the totals settlement will compose over.
+///
+/// The **retain** is body-local. The rows and the charge they made live here, not in the
+/// ledger, and [`Self::release`] is the only path from here into it.
+///
+/// The **inverse** is this value's drop, and it is total because it is structural rather
+/// than arithmetic: the ledger was never touched, so there is no state in which undoing
+/// the charge can fail, and a ceiling an abandoned body crossed cannot latch on a
+/// snapshot that body's facts never entered. Subtracting a charge back out could not be
+/// total — a crossing discards the ledger's whole retained payload, and no subtraction
+/// re-materializes it.
+pub(crate) struct StagedFacts {
+    /// This body's own contribution, over and above the ledger's settled totals.
+    count: u64,
+    bytes: u64,
+    /// The ceiling this body's own facts crossed, if any. A crossing discards this body's
+    /// staged rows at once — the same whole-payload discard the ledger performs — and
+    /// stops further rendering, while latching nothing on the ledger until settlement.
+    limit: Option<AnalysisFactLimit>,
+    facts: RetainingFacts,
+}
+
+/// One settled body's facts on their way into the ledger. Produced only by
+/// [`StagedFacts::release`], so it cannot exist for a body that did not settle.
+pub(crate) struct ReleasedFacts {
+    count: u64,
+    bytes: u64,
+    facts: RetainingFacts,
+}
+
+impl StagedFacts {
+    pub(crate) fn new() -> Self {
+        Self {
+            count: 0,
+            bytes: 0,
+            limit: None,
+            facts: RetainingFacts::default(),
+        }
+    }
+
+    /// Where this body's lowering writes its editor facts, in place of any ledger the
+    /// caller owns. The ledger is borrowed shared: a producer can charge against its
+    /// totals and cannot retain into it.
+    pub(crate) fn sink<'a>(
+        &'a mut self,
+        ledger: &'a AnalysisFactCollector,
+        file: FileRef,
+    ) -> FactSink<'a> {
+        FactSink::Retaining {
+            ledger,
+            staged: self,
+            file,
+        }
+    }
+
+    /// Release this body's facts against the capability the consumed guard produced.
+    ///
+    /// The crossing verdict is not carried across: `absorb` re-composes exactly this
+    /// charge over exactly the totals it was composed over, and the composition is
+    /// monotone, so the ledger reaches the same verdict this body already observed.
+    pub(crate) fn release(self, _authority: &SettlementAuthority) -> ReleasedFacts {
+        ReleasedFacts {
+            count: self.count,
+            bytes: self.bytes,
+            facts: self.facts,
+        }
+    }
+
+    /// Whether a fact staged here would still be retained at settlement.
+    fn retains(&self, ledger: &AnalysisFactCollector) -> bool {
+        !ledger.is_limited() && self.limit.is_none()
+    }
+
+    /// Charge one contribution live against the composed total, then stage its payload.
+    ///
+    /// Crossing discards this body's whole staged payload for the same reason the ledger
+    /// discards its own: a crossing refuses the whole snapshot, so there is no partial
+    /// population to keep.
+    fn admit(
+        &mut self,
+        ledger: &AnalysisFactCollector,
+        added_count: u64,
+        added_bytes: u64,
+        retain: impl FnOnce(&mut RetainingFacts),
+    ) {
+        let (settled_count, settled_bytes) = ledger.totals();
+        self.count = self.count.saturating_add(added_count);
+        self.bytes = self.bytes.saturating_add(added_bytes);
+        if self.limit.is_some() {
+            return;
+        }
+        let composed_count = settled_count.saturating_add(self.count);
+        let composed_bytes = settled_bytes.saturating_add(self.bytes);
+        match crossed_ceiling(composed_count, composed_bytes) {
+            Some(limit) => {
+                self.limit = Some(limit);
+                self.facts = RetainingFacts::default();
+            }
+            None => retain(&mut self.facts),
+        }
+    }
+
+    /// Stage one editor hover fact in `file`, charged at the push that produced it.
+    fn hover_fact(
+        &mut self,
+        ledger: &AnalysisFactCollector,
+        file: FileRef,
+        span: SourceSpan,
+        display: Box<str>,
+        definition: Option<DefinitionTarget>,
+    ) {
+        let fact = HoverFact {
+            file,
+            span: FactSpan::of(span),
+            display,
+            definition,
+        };
+        let bytes = fact.retained_bytes(|at| ledger.spelling_bytes(at));
+        self.admit(ledger, 1, bytes, move |facts| facts.hover_facts.push(fact));
+    }
+
+    /// Stage one dependency gap in `file`. It carries only fixed-size references and a
+    /// span, so the count bound charges it and it charges no bytes.
+    fn gap_fact(&mut self, ledger: &AnalysisFactCollector, file: FileRef, span: SourceSpan) {
+        self.admit(ledger, 1, 0, |facts| {
+            facts.dependency_gaps.push((file, FactSpan::of(span)));
+        });
+    }
+}
+
 /// The scoped borrow one body's lowering writes its editor facts through.
 ///
-/// A producer never holds a fact vector: every fact reaches the ledger's ceilings at the
-/// push that produced it, so no single body can stage more facts than a whole snapshot
-/// admits. A body whose facts duplicate an already-collected template's is given the
-/// `Discarding` state rather than a scratch vector nobody reads.
+/// A producer never holds a fact vector of its own: every fact reaches the composed
+/// ceilings at the push that produced it, so no single body can stage more facts than a
+/// whole snapshot admits. A body whose facts duplicate an already-collected template's is
+/// given the `Discarding` state rather than a scratch vector nobody reads.
 pub(crate) enum FactSink<'a> {
     Retaining {
-        ledger: &'a mut AnalysisFactCollector,
+        /// Shared: a producer charges against the settled totals and cannot retain into
+        /// them.
+        ledger: &'a AnalysisFactCollector,
+        staged: &'a mut StagedFacts,
         file: FileRef,
     },
     /// This body's facts duplicate a template's, which were collected once at the
@@ -1082,25 +1243,34 @@ pub(crate) enum FactSink<'a> {
 
 impl FactSink<'_> {
     /// Admit one editor hover fact in this sink's file, at the push that produced it.
-    /// The ledger charges it against both ceilings before it is retained, so the count a
-    /// single body can hold live is bounded by the snapshot ceiling rather than by the
-    /// body's length.
+    /// The composed ceilings charge it before it is staged, so the count a single body
+    /// can hold live is bounded by the snapshot ceiling rather than by the body's length.
     pub(crate) fn hover(
         &mut self,
         span: SourceSpan,
         display: Box<str>,
         definition: Option<DefinitionTarget>,
     ) {
-        if let FactSink::Retaining { ledger, file } = self {
-            ledger.admit_hover(*file, span, display, definition);
+        if let FactSink::Retaining {
+            ledger,
+            staged,
+            file,
+        } = self
+        {
+            staged.hover_fact(ledger, *file, span, display, definition);
         }
     }
 
-    /// Retain one dependency gap in this sink's file. Gaps are written as they are
-    /// discovered, so one survives even when the body it sits in fails to lower.
+    /// Stage one dependency gap in this sink's file. Gaps are written as they are
+    /// discovered, so one survives an ordinary refusal of the body it sits in.
     pub(crate) fn gap(&mut self, span: SourceSpan) {
-        if let FactSink::Retaining { ledger, file } = self {
-            ledger.admit_gap(*file, span);
+        if let FactSink::Retaining {
+            ledger,
+            staged,
+            file,
+        } = self
+        {
+            staged.gap_fact(ledger, *file, span);
         }
     }
 
@@ -1109,7 +1279,7 @@ impl FactSink<'_> {
     /// ledger is Limited the whole snapshot is already refused, so both are waste.
     pub(crate) fn renders_facts(&self) -> bool {
         match self {
-            FactSink::Retaining { ledger, .. } => !ledger.is_limited(),
+            FactSink::Retaining { ledger, staged, .. } => staged.retains(ledger),
             FactSink::Discarding => false,
         }
     }
@@ -3090,6 +3260,32 @@ mod fact_ledger_tests {
         }
     }
 
+    /// The capability a committed transaction produces, minted the one way production
+    /// mints one. It carries no payload, so the capability a fixture's committed
+    /// transaction establishes is the same fact a lowered body's batch establishes.
+    fn settlement() -> SettlementAuthority {
+        let mut draft = marrow_image::ImageDraft::new();
+        crate::compile::admitted(&mut draft).commit()
+    }
+
+    /// One staged body over `facts`, settled — the production shape. A body writes
+    /// through a sink into its own staged owner, and that owner reaches the ledger only
+    /// against a settlement capability, so these fixtures exercise the same path a
+    /// lowered body takes rather than a ledger-poking replica of it.
+    fn settled_body(
+        facts: &mut AnalysisFactCollector,
+        authority: &SettlementAuthority,
+        file: FileRef,
+        body: impl FnOnce(&mut FactSink<'_>),
+    ) {
+        let mut staged = StagedFacts::new();
+        {
+            let mut sink = staged.sink(facts, file);
+            body(&mut sink);
+        }
+        facts.absorb(staged.release(authority));
+    }
+
     fn ledger(input: &ProjectInput) -> AnalysisFactCollector {
         AnalysisFactCollector::new(input)
     }
@@ -3125,17 +3321,22 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let spelling = input.modules()[0].identity().as_str().len() as u64;
 
+        let authority = settlement();
+
         let mut plain = ledger(&input);
-        plain.admit_hover(first(), span(0, 1), "int".into(), None);
+        settled_body(&mut plain, &authority, first(), |sink| {
+            sink.hover(span(0, 1), "int".into(), None);
+        });
         assert_eq!(charged_bytes(&plain), 3);
 
         let mut targeted = ledger(&input);
-        targeted.admit_hover(
-            first(),
-            span(0, 1),
-            "int".into(),
-            Some(DefinitionTarget::new(first(), span(4, 8), span(0, 20))),
-        );
+        settled_body(&mut targeted, &authority, first(), |sink| {
+            sink.hover(
+                span(0, 1),
+                "int".into(),
+                Some(DefinitionTarget::new(first(), span(4, 8), span(0, 20))),
+            );
+        });
         assert_eq!(charged_bytes(&targeted), 3 + spelling);
     }
 
@@ -3145,7 +3346,9 @@ mod fact_ledger_tests {
     fn a_dependency_gap_charges_only_the_count() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
-        facts.admit_gap(first(), span(0, 4));
+        settled_body(&mut facts, &settlement(), first(), |sink| {
+            sink.gap(span(0, 4));
+        });
         assert_eq!(charged(&facts), (1, 0));
     }
 
@@ -3181,9 +3384,11 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
         let target = DefinitionTarget::new(first(), span(4, 8), span(0, 20));
-        for start in 0..16 {
-            facts.admit_hover(first(), span(start, start + 1), "int".into(), Some(target));
-        }
+        settled_body(&mut facts, &settlement(), first(), |sink| {
+            for start in 0..16 {
+                sink.hover(span(start, start + 1), "int".into(), Some(target));
+            }
+        });
         let (count, bytes) = charged(&facts);
         assert_eq!(count, 16, "one count per admitted fact, never two");
         // "int" plus the one file spelling each target charges.
@@ -3210,14 +3415,19 @@ mod fact_ledger_tests {
     fn crossing_the_count_discards_the_admitted_prefix() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
-        for index in 0..MAX_SNAPSHOT_FACT_COUNT {
-            facts.admit_gap(first(), span(index as usize, index as usize + 1));
-        }
+        let authority = settlement();
+        settled_body(&mut facts, &authority, first(), |sink| {
+            for index in 0..MAX_SNAPSHOT_FACT_COUNT {
+                sink.gap(span(index as usize, index as usize + 1));
+            }
+        });
         assert!(!facts.is_limited(), "the ceiling itself is admitted");
-        facts.admit_gap(first(), span(0, 1));
+        settled_body(&mut facts, &authority, first(), |sink| sink.gap(span(0, 1)));
         assert!(facts.is_limited());
         // A later admission composes into the limited state; nothing re-materializes.
-        facts.admit_hover(first(), span(0, 1), "int".into(), None);
+        settled_body(&mut facts, &authority, first(), |sink| {
+            sink.hover(span(0, 1), "int".into(), None);
+        });
         assert!(matches!(
             facts.finish(),
             BoundedAnalysisFacts::Limited {
@@ -3233,9 +3443,11 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
         let chunk = MAX_SNAPSHOT_FACT_BYTES as usize / 8;
-        for _ in 0..9 {
-            facts.admit_hover(first(), span(0, 1), "x".repeat(chunk).into(), None);
-        }
+        settled_body(&mut facts, &settlement(), first(), |sink| {
+            for _ in 0..9 {
+                sink.hover(span(0, 1), "x".repeat(chunk).into(), None);
+            }
+        });
         assert!(matches!(
             facts.finish(),
             BoundedAnalysisFacts::Limited {
@@ -3250,10 +3462,12 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
         let display = "x".repeat(MAX_SNAPSHOT_FACT_BYTES as usize + 1);
-        for _ in 0..MAX_SNAPSHOT_FACT_COUNT {
-            facts.admit_gap(first(), span(0, 1));
-        }
-        facts.admit_hover(first(), span(0, 1), display.into(), None);
+        settled_body(&mut facts, &settlement(), first(), |sink| {
+            for _ in 0..MAX_SNAPSHOT_FACT_COUNT {
+                sink.gap(span(0, 1));
+            }
+            sink.hover(span(0, 1), display.into(), None);
+        });
         assert!(matches!(
             facts.finish(),
             BoundedAnalysisFacts::Limited {
@@ -3268,16 +3482,20 @@ mod fact_ledger_tests {
     fn bytes_strengthens_to_count_and_count_never_weakens() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
-        facts.admit_hover(
-            first(),
-            span(0, 1),
-            "x".repeat(MAX_SNAPSHOT_FACT_BYTES as usize + 1).into(),
-            None,
-        );
+        let authority = settlement();
+        settled_body(&mut facts, &authority, first(), |sink| {
+            sink.hover(
+                span(0, 1),
+                "x".repeat(MAX_SNAPSHOT_FACT_BYTES as usize + 1).into(),
+                None,
+            );
+        });
         assert!(facts.is_limited());
-        for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
-            facts.admit_gap(first(), span(index as usize, index as usize + 1));
-        }
+        settled_body(&mut facts, &authority, first(), |sink| {
+            for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
+                sink.gap(span(index as usize, index as usize + 1));
+            }
+        });
         assert!(matches!(
             facts.finish(),
             BoundedAnalysisFacts::Limited {
@@ -3286,15 +3504,16 @@ mod fact_ledger_tests {
         ));
 
         let mut reverse = ledger(&input);
-        for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
-            reverse.admit_gap(first(), span(index as usize, index as usize + 1));
-        }
-        reverse.admit_hover(
-            first(),
-            span(0, 1),
-            "x".repeat(MAX_SNAPSHOT_FACT_BYTES as usize + 1).into(),
-            None,
-        );
+        settled_body(&mut reverse, &authority, first(), |sink| {
+            for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
+                sink.gap(span(index as usize, index as usize + 1));
+            }
+            sink.hover(
+                span(0, 1),
+                "x".repeat(MAX_SNAPSHOT_FACT_BYTES as usize + 1).into(),
+                None,
+            );
+        });
         assert!(matches!(
             reverse.finish(),
             BoundedAnalysisFacts::Limited {
@@ -3365,6 +3584,102 @@ mod fact_ledger_tests {
             at_the_ceiling < 64,
             "a body whose facts cross the ceiling must stop rendering displays inside \
              itself, not after it: {at_the_ceiling} characters rendered"
+        );
+    }
+
+    /// A body that never settles leaves the ledger exactly as it found it.
+    ///
+    /// This is the inverse, and it is structural rather than arithmetic: the staged owner
+    /// holds both the rows and the charge, so dropping it un-charges the body completely.
+    /// The comparison is against a ledger that never saw the body at all, so a charge that
+    /// leaked through in either direction shows as a terminal difference.
+    #[test]
+    fn an_abandoned_body_leaves_the_ledger_exactly_as_it_found_it() {
+        let input = project(&[("src/main.mw", "")]);
+        let authority = settlement();
+        let target = DefinitionTarget::new(first(), span(4, 8), span(0, 20));
+
+        let mut abandoned = ledger(&input);
+        let mut untouched = ledger(&input);
+        for facts in [&mut abandoned, &mut untouched] {
+            settled_body(facts, &authority, first(), |sink| {
+                sink.hover(span(0, 1), "int".into(), Some(target));
+                sink.gap(span(2, 3));
+            });
+        }
+
+        // One body writes a wide fact population and is then abandoned: the staged owner
+        // is dropped without ever being released.
+        {
+            let mut staged = StagedFacts::new();
+            let mut sink = staged.sink(&abandoned, first());
+            for index in 0..512 {
+                sink.hover(span(index, index + 1), "x".repeat(64).into(), Some(target));
+                sink.gap(span(index, index + 1));
+            }
+        }
+
+        assert_eq!(
+            charged(&abandoned),
+            charged(&untouched),
+            "an abandoned body charges the ledger nothing",
+        );
+        let (BoundedAnalysisFacts::Complete(abandoned), BoundedAnalysisFacts::Complete(untouched)) =
+            (abandoned.finish(), untouched.finish())
+        else {
+            panic!("both fixtures are far under either ceiling")
+        };
+        assert_eq!(
+            abandoned.hover_facts.len(),
+            untouched.hover_facts.len(),
+            "an abandoned body retains no hover fact",
+        );
+        assert_eq!(
+            abandoned.dependency_gaps.len(),
+            untouched.dependency_gaps.len(),
+            "an abandoned body retains no dependency gap",
+        );
+    }
+
+    /// A body that crossed the ceiling and was then abandoned does not limit the snapshot.
+    ///
+    /// This is the case an arithmetic un-charge cannot serve. Latching the crossing on the
+    /// ledger discards its whole retained payload, and subtracting the abandoned body's
+    /// count back out afterwards cannot re-materialize what was discarded — so the ledger
+    /// would report a limit, and lose every earlier fact, on account of a body whose facts
+    /// never entered the snapshot. Staging the crossing with the body is what makes the
+    /// inverse total.
+    #[test]
+    fn a_body_that_crossed_the_ceiling_and_was_abandoned_limits_nothing() {
+        let input = project(&[("src/main.mw", "")]);
+        let mut facts = ledger(&input);
+        settled_body(&mut facts, &settlement(), first(), |sink| {
+            sink.hover(span(0, 1), "int".into(), None);
+        });
+
+        {
+            let mut staged = StagedFacts::new();
+            let mut sink = staged.sink(&facts, first());
+            for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
+                sink.gap(span(index as usize, index as usize + 1));
+            }
+            assert!(
+                !sink.renders_facts(),
+                "the staged body observed its own crossing live, inside itself",
+            );
+        }
+
+        assert!(
+            !facts.is_limited(),
+            "a ceiling crossed by a body that never settled limits no snapshot",
+        );
+        let BoundedAnalysisFacts::Complete(retained) = facts.finish() else {
+            panic!("the abandoned crossing must not limit the ledger")
+        };
+        assert_eq!(
+            retained.hover_facts.len(),
+            1,
+            "the fact settled before the abandoned body is still retained",
         );
     }
 

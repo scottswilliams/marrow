@@ -2154,159 +2154,229 @@ fn function_bodies(code: &str) -> Vec<(String, String)> {
     out
 }
 
-/// A lowered body reports into a staged collector, never into the caller's.
+/// Every producer a lowering call drives reports into staged owners, never into the
+/// caller's.
 ///
-/// The custody law is that a refused body's rows settle only after its batch has
-/// committed or run its inverse. Handing `FnLowerer::lower` the caller's own collector
-/// publishes them the moment they are pushed — while the batch is still armed — so an
-/// invariant that aborts the batch afterwards leaves them behind. The capability type
-/// makes the *settlement* unreachable without a consumed guard; this gate pins the other
-/// half, that nothing is written where settlement is not needed to make it visible.
+/// The custody law is that a body's rows and its editor facts settle only after its batch
+/// has committed or run its inverse. Handing a lowering call the caller's own collector
+/// publishes its rows the moment they are pushed — while the batch is still armed — so an
+/// invariant that aborts the batch afterwards leaves them behind. The capability types
+/// make *settlement* unreachable without a consumed guard; this gate pins the other half,
+/// that nothing is written where settlement is not needed to make it visible.
+///
+/// It enumerates the call sites rather than a list of enclosing function names. Naming the
+/// enclosing functions is what let the generic-instance drain keep the live collector: the
+/// drain lives inside `registry_phases`, which was not on the list, so the gate reported a
+/// clean result over a caller it never read.
 #[test]
-fn a_lowered_body_reports_into_a_staged_collector() {
+fn every_lowering_call_hands_its_producers_staged_owners() {
     let code = production_code(
         &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compile.rs"))
             .expect("read the compile coordinator"),
     );
-    // Named explicitly and asserted present: a body this gate cannot find is a gate that
-    // silently checks nothing, which is the failure mode it exists to catch elsewhere.
-    let bodies = function_bodies(&code);
-    let mut checked = 0usize;
-    for name in ["lower_declared_functions", "lower_declared_tests"] {
-        let (_, body) = bodies
-            .iter()
-            .find(|(found, _)| found == name)
-            .unwrap_or_else(|| panic!("`{name}` is present, so this gate has a live subject"));
+
+    let sites = lowering_call_sites(&code);
+    // The set is asserted, not merely iterated: a gate that finds no site is a gate that
+    // silently checks nothing, and a new lowering entry point must be adjudicated here
+    // rather than absorbed.
+    let found: Vec<&str> = sites.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        found,
+        vec![
+            "FnLowerer::check_template",
+            "FnLowerer::lower_instance",
+            "FnLowerer::lower",
+            "FnLowerer::lower_test",
+        ],
+        "the set of lowering call sites in the compile coordinator moved; each one places \
+         its producers' output in staged custody, so a new one is adjudicated here",
+    );
+
+    for (name, arguments) in &sites {
+        // Whole-token: `staged_facts.sink(` ends with the same bytes as the live ledger's
+        // `facts.sink(`, so a substring test would report the staged spelling as the live
+        // one and refuse the very shape this gate requires.
         assert!(
-            body.contains("FnLowerer::lower"),
-            "`{name}` lowers a body, so this gate has a live subject",
+            !names_the_live_ledger_sink(arguments),
+            "`{name}` hands a producer the live fact ledger, so a body abandoned after \
+             writing facts leaves them in the ledger a snapshot is projected from",
         );
+        let staged_facts = arguments.contains("staged_facts.sink(")
+            || arguments.contains("FactSink::Discarding");
         assert!(
-            body.contains("staged.sink()"),
-            "`{name}` hands the lowerer a staged collector",
+            staged_facts,
+            "`{name}` must hand its producer a staged fact owner, or `FactSink::Discarding` \
+             where the facts were collected once at the template proof",
         );
-        assert!(
-            !body.contains("\n                    diagnostics,\n                    facts.sink("),
-            "`{name}` hands the lowerer the caller's collector, so a refused body's rows \
-             are published while its batch is still armed",
-        );
-        checked += 1;
+        // `check_template` owns its diagnostics in a local collector that its own failure
+        // drops, so it takes no collector argument at all; every other call takes one and
+        // it must be the staged one.
+        if *name != "FnLowerer::check_template" {
+            assert!(
+                arguments.contains("staged.sink()"),
+                "`{name}` hands the lowerer a staged diagnostic collector",
+            );
+            assert!(
+                !arguments.contains("\n                    diagnostics,\n"),
+                "`{name}` hands the lowerer the caller's collector, so a refused body's \
+                 rows are published while its batch is still armed",
+            );
+        }
     }
-    assert_eq!(checked, 2, "both lowering entry points were scanned");
 }
 
-/// An abandoned body's analysis facts cannot reach a consumer, and the two properties that
-/// make that true are pinned here rather than argued in prose.
+/// Whether `arguments` names the live fact ledger's sink as a whole token, rather than a
+/// staged owner's sink whose receiver merely ends in the same bytes.
+fn names_the_live_ledger_sink(arguments: &str) -> bool {
+    arguments.match_indices("facts.sink(").any(|(at, _)| {
+        at == 0
+            || !arguments.as_bytes()[at - 1].is_ascii_alphanumeric()
+                && arguments.as_bytes()[at - 1] != b'_'
+    })
+}
+
+/// Every `FnLowerer::` lowering call in `code`, with the exact text of its argument list.
+fn lowering_call_sites(code: &str) -> Vec<(String, String)> {
+    let mut sites = Vec::new();
+    for (at, _) in code.match_indices("FnLowerer::") {
+        let rest = &code[at..];
+        let open = match rest.find('(') {
+            Some(open) => open,
+            None => continue,
+        };
+        let name = &rest[.."FnLowerer::".len() + rest["FnLowerer::".len()..open].trim_end().len()];
+        if !name.contains("lower") && !name.contains("check_template") {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (offset, byte) in rest[open..].bytes().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(end) = end {
+            sites.push((name.to_string(), rest[open..=end].to_string()));
+        }
+    }
+    sites
+}
+
+/// The three-part fact seam is spelled where it is load-bearing.
 ///
-/// A lowered body's batch is abandoned on exactly one class of exit: an invariant returned
-/// through `PhaseStop::Invariant`, or an unwind. The ordinary-refusal arm *commits* its
-/// batch, so its facts are legitimately retained and nothing is abandoned. An invariant
-/// becomes `SemanticOutcome::Invariant`, and `analyze` — the only public consumer of facts,
-/// and the only caller of `analyze_project` — returns on that arm **before** it reads the
-/// fact terminal. `compile` projects no facts at all.
+/// A body's editor facts are charged **live** against the ledger's settled totals, so a
+/// body that crosses the snapshot ceiling stops rendering displays inside itself; they are
+/// **retained** in a body-local owner; and the **inverse** is that owner's drop. The
+/// reachable defect this closes is that `analyze` reads the fact terminal on the
+/// diagnostics arm — which a precheck in *another* module makes the arm a suppressed
+/// semantic invariant takes — so a body abandoned mid-project published its facts.
 ///
-/// So facts written under a batch that is later abandoned are computed and dropped, never
-/// published. That makes the write-through-to-the-live-ledger a hygiene defect rather than
-/// a correctness one, and it is why this lane does not stage them: staging defers
-/// admission, and admission is what trips the ledger's ceiling *inside* a body — the bound
-/// `one_body_stops_rendering_hover_displays_at_the_ceiling` exists to hold. Trading that
-/// live bound for a custody property needs `admit` split into a live charge, a deferred
-/// retain, and an inverse that un-charges an abandoned body, which is the fact-side seam
-/// the phase fixes at a later design gate.
-///
-/// This gate guards the proof: if either property moves, the reasoning above stops holding
-/// and has to be redone rather than silently inherited.
+/// What makes the write-through unrepresentable is the borrow: the sink holds the ledger
+/// **shared**, so a producer can charge against the settled totals and cannot retain into
+/// them. That single spelling is the enforcement artifact, and it is pinned here because
+/// nothing else in the tree states it.
 #[test]
-fn an_abandoned_bodys_facts_cannot_reach_a_consumer() {
+fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
     let analysis = production_code(
         &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis.rs"))
             .expect("read the analysis owner"),
     );
 
     assert!(
-        invariant_return_precedes_fact_projection(&analysis),
-        "`analyze` must return on the invariant arm before it reads the fact terminal; \
-         reading facts first would publish an abandoned body's facts to a consumer and \
-         turn this hygiene finding into a correctness one",
+        analysis.contains("ledger: &'a AnalysisFactCollector,"),
+        "the fact sink borrows the ledger shared; an exclusive borrow lets a producer \
+         retain into the ledger a snapshot is projected from, which is the write-through \
+         this seam replaced",
     );
-
-    // The consumer set is closed: across production source, `analyze_project` appears
-    // exactly twice — its definition and the one call inside `analyze`. A second caller
-    // could project facts on a path `analyze` refuses.
-    let mut mentions = 0usize;
-    for path in src_files() {
-        if is_test_only_file(&path) {
-            continue;
-        }
-        mentions += production_code(&fs::read_to_string(&path).expect("read source"))
-            .matches("analyze_project(")
-            .count();
-    }
-    assert_eq!(
-        mentions, 2,
-        "`analyze_project` has exactly its definition and its single call in `analyze`",
-    );
-
-    // And `analyze` is the only public entry that projects facts at all.
-    let mut public_entries = 0usize;
-    for path in src_files() {
-        if is_test_only_file(&path) {
-            continue;
-        }
-        public_entries += production_code(&fs::read_to_string(&path).expect("read source"))
-            .matches("pub fn analyze(")
-            .count();
-    }
-    assert_eq!(
-        public_entries, 1,
-        "`analyze` is the sole public fact consumer"
-    );
-
-    // The asymmetry, named at the boundary that would have to change. A staging sink is
-    // exactly the shape that defers admission, so its appearance means the charge/retain
-    // split and its inverse were designed — or that they were skipped.
     assert!(
-        !analysis.contains("FactSink::Staging"),
-        "a staging fact sink defers admission, so the ledger's ceiling no longer trips \
-         inside the body that crossed it. Staging facts requires the three-part split \
-         (live charge, deferred retain, inverse for an abandoned charge), which is a \
-         fact-substrate design decision and not a change to make in passing",
+        !analysis.contains("ledger: &'a mut AnalysisFactCollector"),
+        "an exclusive ledger borrow in the fact sink restores the write-through",
+    );
+    assert!(
+        analysis.contains("fn release(self, _authority: &SettlementAuthority) -> ReleasedFacts"),
+        "a staged body's facts reach the ledger only against a settlement capability, \
+         which only a committed or explicitly erased guard produces",
+    );
+
+    // The released value is the sole path from a staged body into the ledger, so a second
+    // construction of it would be a settlement with no capability behind it. Its
+    // declaration, the destructuring binding in `absorb`, and the return type of `release`
+    // are excluded by the token that precedes each, so what is counted is construction.
+    let constructions = analysis
+        .match_indices("ReleasedFacts {")
+        .filter(|(at, _)| {
+            let before = analysis[..*at].trim_end();
+            !before.ends_with("struct") && !before.ends_with("let") && !before.ends_with("->")
+        })
+        .count();
+    assert_eq!(
+        constructions, 1,
+        "`ReleasedFacts` is constructed exactly once — in `release`, against the \
+         capability — so no path settles a body's facts without one",
+    );
+
+    // The ledger keeps no row-admission surface a producer could reach: hover and gap rows
+    // exist only on the staged owner.
+    assert!(
+        !analysis.contains("fn admit_hover")
+            && !analysis.contains("fn admit_gap"),
+        "the ledger admits body-produced rows only through `absorb`, against a released \
+         staged body",
     );
 }
 
-/// Whether `code`'s `analyze` returns on the invariant arm before reading the fact
-/// terminal. Factored out so the plant probe below can exercise the same predicate.
-fn invariant_return_precedes_fact_projection(code: &str) -> bool {
-    let (_, body) = function_bodies(code)
-        .into_iter()
-        .find(|(name, _)| name == "analyze")
-        .unwrap_or_else(|| panic!("`analyze` is present, so this gate has a live subject"));
-    let invariant_return = body
-        .find("AnalysisFailure::Invariant")
-        .unwrap_or_else(|| panic!("`analyze` refuses an invariant, so this gate has a subject"));
-    let fact_read = body
-        .find("analysis.facts")
-        .unwrap_or_else(|| panic!("`analyze` reads the fact terminal, so this gate has a subject"));
-    invariant_return < fact_read
-}
-
-/// The ordering scanner sees a planted inversion — the standing rule that a gate is assumed
-/// vacuous until a plant proves it is not.
+/// The lowering-call scanner sees a planted live-collector call — the standing rule that a
+/// gate is assumed vacuous until a plant proves it is not.
+///
+/// The plant is the exact shape the gate exists to catch and the shape the generic-instance
+/// drain actually had: a lowering call handed the caller's `diagnostics` and the live
+/// `facts.sink(`. A scanner that read enclosing function names rather than argument lists
+/// reported this clean.
 #[test]
-fn the_abandoned_fact_ordering_scanner_sees_a_planted_inversion() {
-    let ordered = "fn analyze() {\n    let facts = match analysis.outcome {\n        \
-                   Invariant => return Err(AnalysisFailure::Invariant),\n    };\n    \
-                   let f = analysis.facts;\n}\n";
+fn the_lowering_call_scanner_sees_a_planted_live_collector() {
+    let planted = "fn registry_phases() {\n    let r = FnLowerer::lower_instance(\n        \
+                   txn,\n        records,\n        diagnostics,\n        \
+                   facts.sink(module.at),\n        template,\n    );\n}\n";
+    let sites = lowering_call_sites(planted);
+    assert_eq!(
+        sites.len(),
+        1,
+        "the scanner finds the planted lowering call by its call site, not by the name of \
+         the function that encloses it",
+    );
+    let (name, arguments) = &sites[0];
+    assert_eq!(name, "FnLowerer::lower_instance");
     assert!(
-        invariant_return_precedes_fact_projection(ordered),
-        "the scanner accepts the real ordering",
+        names_the_live_ledger_sink(arguments),
+        "the scanner reads the call's own argument list, so a live fact ledger passed \
+         there is visible to it",
+    );
+    assert!(
+        !names_the_live_ledger_sink("staged_facts.sink(facts, module.at),"),
+        "the staged owner's sink ends in the same bytes as the live ledger's, so the \
+         scanner matches whole tokens rather than a suffix",
+    );
+    assert!(
+        !arguments.contains("staged.sink()"),
+        "the planted call stages nothing, which is what the gate refuses",
     );
 
-    let inverted = "fn analyze() {\n    let f = analysis.facts;\n    let d = match x {\n        \
-                    Invariant => return Err(AnalysisFailure::Invariant),\n    };\n}\n";
+    // And the real coordinator is a live subject for the same scanner.
+    let code = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compile.rs"))
+            .expect("read the compile coordinator"),
+    );
     assert!(
-        !invariant_return_precedes_fact_projection(inverted),
-        "the scanner must reject a body that projects facts before refusing the invariant",
+        lowering_call_sites(&code).len() >= 4,
+        "the coordinator's lowering calls are found, so the gate has live subjects",
     );
 }
 

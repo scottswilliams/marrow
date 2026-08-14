@@ -683,13 +683,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 LowerMode::Template,
             )?;
         }
-        // Take the proof's diagnostics before the scope drops: `take_generic_diagnostics`
-        // drains the swapped-in buffer and limit owner that the guard then re-seats.
+        // Take the proof's diagnostics before the scope is erased:
+        // `take_generic_diagnostics` drains the swapped-in buffer and limit owner that the
+        // guard then re-seats.
         let generic = scope.registry().take_generic_diagnostics();
-        drop(scope);
+        // Erase rather than drop, so the proof's own exit produces the capability its
+        // staged facts settle against. The `?` above leaves without reaching this, which
+        // is exactly the path whose facts must not survive.
+        let settlement = scope.erase();
         Ok(TemplateProofOutcome {
             diagnostics: diagnostics.finish(),
             generic,
+            settlement,
         })
     }
 
