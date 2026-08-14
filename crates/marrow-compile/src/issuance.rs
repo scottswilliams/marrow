@@ -60,14 +60,14 @@ use crate::types::MAX_INSTANTIATIONS;
 
 /// The admitted whole-project source ceiling, read from the capture owner rather than
 /// restated, so a capture widening cannot drift past this derivation silently.
-pub(crate) const MAX_ADMITTED_SOURCE_BYTES: usize = CaptureLimits::DEFAULT.max_total_bytes();
+const MAX_ADMITTED_SOURCE_BYTES: usize = CaptureLimits::DEFAULT.max_total_bytes();
 
 /// The admitted whole-project file ceiling, for the per-file terms above.
-pub(crate) const MAX_ADMITTED_FILES: usize = CaptureLimits::DEFAULT.max_files();
+const MAX_ADMITTED_FILES: usize = CaptureLimits::DEFAULT.max_files();
 
 /// The derived per-kind row maximum: declared rows charged to distinct source bytes, plus
 /// the generated rows the instantiation ceiling admits.
-pub(crate) const MAX_DERIVED_ROWS: usize = MAX_ADMITTED_SOURCE_BYTES + MAX_INSTANTIATIONS;
+const MAX_DERIVED_ROWS: usize = MAX_ADMITTED_SOURCE_BYTES + MAX_INSTANTIATIONS;
 
 /// The derivation's conclusion, as one named predicate: the population an admitted
 /// project can drive fits the wide carrier, with margin.

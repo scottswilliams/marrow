@@ -15,7 +15,7 @@ use super::{ArgumentDomain, DiagnosticCollector, GenericInvariant, TypeRegistry}
 /// clears the active suffix, and admission proves no fill is open, so every row a batch
 /// can reach lies at or above the length captured here.
 #[must_use = "an admitted generic-owner batch must restore or disarm its inverse"]
-pub(crate) struct RegistryInverse {
+pub(super) struct RegistryInverse {
     pub(super) type_insts: usize,
     pub(super) collections: usize,
     pub(super) fn_insts: usize,

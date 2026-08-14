@@ -54,8 +54,9 @@ use build::{
     validate_alias_targets,
 };
 use metadata::{collection_generic_target, place_generic_row};
+pub(crate) use owner_txn::GenericOwnerTxn;
 use owner_txn::ProofIsolation;
-pub(crate) use owner_txn::{GenericOwnerTxn, RegistryInverse};
+use owner_txn::RegistryInverse;
 #[cfg(test)]
 use render::garg_anchor_spelling;
 use render::{

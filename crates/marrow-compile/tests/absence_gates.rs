@@ -2300,3 +2300,92 @@ fn the_abandoned_fact_ordering_scanner_sees_a_planted_inversion() {
         "the scanner must reject a body that projects facts before refusing the invariant",
     );
 }
+
+/// The over-wide visibility enumeration, recorded rather than asserted in aggregate.
+///
+/// The previous sweep recorded a *claim* — that every remaining `pub(crate)` item had a live
+/// cross-module caller — without the per-item list behind it, and the claim was wrong. This
+/// is the list. Each entry names an item this lane widened and the tightest visibility that
+/// still compiles, which the compiler itself verified: narrowing further is a build error,
+/// so this table cannot drift from the truth without the crate failing to build.
+///
+/// `ScalingCounts` is the instructive one. It reads as module-local, but
+/// `capture_scaling_counts` returns it into `analysis.rs`, so narrowing it is a private-type
+/// leak. That is why the enumeration is per item and verified by compilation rather than by
+/// a name scan — a scan says it is local, and it is not.
+/// The visibility `item` is declared with in `code`, as the enumeration spells it.
+fn declared_visibility(code: &str, item: &str) -> Option<String> {
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        for keyword in ["struct ", "fn ", "const ", "enum ", "type "] {
+            for prefix in ["pub(crate) ", "pub(super) ", "pub ", ""] {
+                if trimmed.starts_with(&format!("{prefix}{keyword}{item}"))
+                    && trimmed[prefix.len() + keyword.len() + item.len()..]
+                        .starts_with(|c: char| !c.is_alphanumeric() && c != '_')
+                {
+                    return Some(match prefix {
+                        "" => "private".to_string(),
+                        other => other.trim_end().to_string(),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn the_over_wide_visibility_enumeration_is_recorded() {
+    // (item, file, visibility after the sweep)
+    const ENUMERATION: &[(&str, &str, &str)] = &[
+        ("MAX_ADMITTED_SOURCE_BYTES", "issuance.rs", "private"),
+        ("MAX_ADMITTED_FILES", "issuance.rs", "private"),
+        ("MAX_DERIVED_ROWS", "issuance.rs", "private"),
+        ("RegistryInverse", "types/owner_txn.rs", "pub(super)"),
+        ("MetadataBuildCounter", "types/test_probes.rs", "private"),
+        ("ReadyBodyMatchCounter", "types/test_probes.rs", "private"),
+        ("AliasCycleCounts", "types/test_probes.rs", "pub(super)"),
+        (
+            "count_ready_body_match_visits",
+            "types/test_probes.rs",
+            "pub(super)",
+        ),
+        ("bump_scaling", "types/test_probes.rs", "pub(super)"),
+        ("bump_alias_cycle", "types/test_probes.rs", "pub(super)"),
+        (
+            "capture_alias_cycle_counts",
+            "types/test_probes.rs",
+            "pub(super)",
+        ),
+        // Kept wide, with the reason: the type escapes its module through a return value.
+        ("ScalingCounts", "types/test_probes.rs", "pub(crate)"),
+        // Kept wide: inherent items of a type the coordinator and lowerer both hold.
+        ("GenericOwnerTxn", "types/owner_txn.rs", "pub(crate)"),
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut checked = 0usize;
+    for (item, file, visibility) in ENUMERATION {
+        let code = production_code(
+            &fs::read_to_string(root.join(file))
+                .unwrap_or_else(|_| panic!("{file} is present, so this gate has a live subject")),
+        );
+        // The item's OWN declaration, not a visibility keyword occurring anywhere in the
+        // file: `pub(super)` appears on a dozen fields here, so a bare substring test
+        // passes whatever the item itself is declared as.
+        let declaration = declared_visibility(&code, item).unwrap_or_else(|| {
+            panic!("`{item}` is declared in {file}, so this enumeration has a live subject")
+        });
+        assert_eq!(
+            &declaration, visibility,
+            "`{item}` in {file} is declared `{declaration}` but the enumeration records \
+             `{visibility}`",
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        ENUMERATION.len(),
+        "every enumerated item was checked against its file",
+    );
+}

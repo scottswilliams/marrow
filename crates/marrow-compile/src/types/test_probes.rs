@@ -9,7 +9,7 @@ thread_local! {
     pub(crate) static READY_BODY_MATCH_VISITS: Cell<usize> = const { Cell::new(0) };
 }
 
-pub(crate) struct MetadataBuildCounter {
+struct MetadataBuildCounter {
     pub(crate) previous: usize,
 }
 
@@ -30,7 +30,7 @@ pub(crate) fn count_metadata_directory_builds<T>(run: impl FnOnce() -> T) -> (T,
     (result, builds)
 }
 
-pub(crate) struct ReadyBodyMatchCounter {
+struct ReadyBodyMatchCounter {
     pub(crate) previous: usize,
 }
 
@@ -42,7 +42,7 @@ impl Drop for ReadyBodyMatchCounter {
 
 /// Count borrowed template-body matcher frames in one test journey. The counter
 /// observes work only; it cannot alter metadata or make a hostile row reachable.
-pub(crate) fn count_ready_body_match_visits<T>(run: impl FnOnce() -> T) -> (T, usize) {
+pub(super) fn count_ready_body_match_visits<T>(run: impl FnOnce() -> T) -> (T, usize) {
     let previous = READY_BODY_MATCH_VISITS.with(|count| count.replace(0));
     let guard = ReadyBodyMatchCounter { previous };
     let result = run();
@@ -114,7 +114,7 @@ pub(crate) fn bump_hover_spelling_chars(chars: usize) {
     bump_scaling(|counts| counts.hover_spelling_chars += chars);
 }
 
-pub(crate) fn bump_scaling(update: impl FnOnce(&mut ScalingCounts)) {
+pub(super) fn bump_scaling(update: impl FnOnce(&mut ScalingCounts)) {
     SCALING_COUNTS.with(|cell| {
         let mut counts = cell.get();
         update(&mut counts);
@@ -136,7 +136,7 @@ pub(crate) fn capture_scaling_counts<T>(run: impl FnOnce() -> T) -> (T, ScalingC
 /// real alias-table owner only in ordinary test builds and cannot affect graph
 /// state, diagnostics, or accepted programs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AliasCycleCounts {
+pub(super) struct AliasCycleCounts {
     pub(crate) target_visits: usize,
     pub(crate) resolved_edges: usize,
     pub(crate) node_entries: usize,
@@ -156,7 +156,7 @@ thread_local! {
     };
 }
 
-pub(crate) fn bump_alias_cycle(update: impl FnOnce(&mut AliasCycleCounts)) {
+pub(super) fn bump_alias_cycle(update: impl FnOnce(&mut AliasCycleCounts)) {
     ALIAS_CYCLE_COUNTS.with(|cell| {
         let mut counts = cell.get();
         update(&mut counts);
@@ -164,7 +164,7 @@ pub(crate) fn bump_alias_cycle(update: impl FnOnce(&mut AliasCycleCounts)) {
     });
 }
 
-pub(crate) fn capture_alias_cycle_counts<T>(run: impl FnOnce() -> T) -> (T, AliasCycleCounts) {
+pub(super) fn capture_alias_cycle_counts<T>(run: impl FnOnce() -> T) -> (T, AliasCycleCounts) {
     let previous = ALIAS_CYCLE_COUNTS.with(|cell| cell.replace(AliasCycleCounts::default()));
     let result = run();
     let counts = ALIAS_CYCLE_COUNTS.with(Cell::get);
