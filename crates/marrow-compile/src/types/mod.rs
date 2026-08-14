@@ -2361,17 +2361,13 @@ impl TypeRegistry {
             // definition vectors this fill already builds from it.
             //
             // Resource bound: one copy per instantiation of the template's declared
-            // fields, so the whole cost is at most `MAX_INSTANTIATIONS` copies of the
-            // widest admissible record body.
-            //
-            // The copy is counted where it happens. An aggregate resident-set measurement
-            // cannot attribute a figure to this term, and a corpus that reaches a *bound*
-            // is not evidence that it reached the instantiation ceiling — the divergent
-            // struct corpus stops on the 256-deep mint bound, not on the 4096-wide count.
-            // `a_fill_copies_exactly_one_template_body_per_instantiation` pins the exact
-            // entry count instead.
+            // fields, at most `MAX_INSTANTIATIONS` copies of the widest record body. The
+            // copy is counted where it happens — an aggregate resident-set figure cannot
+            // attribute one term, and the divergent struct corpus stops on the 256-deep
+            // mint bound rather than the 4096-wide count, so neither is evidence for it.
+            // `a_fill_copies_exactly_one_template_body_per_instantiation` pins it.
             #[cfg(test)]
-            bump_scaling(|counts| counts.template_body_clone_entries += fields.len());
+            count_template_body_copy(fields.len());
             (subst, fields.clone())
         };
         let mut resolved = Vec::with_capacity(fields.len());
@@ -2429,19 +2425,11 @@ impl TypeRegistry {
             // mints through the exclusively held registry, so no template read may stay
             // live across it.
             //
-            // Resource bound: one copy per instantiation of `MAX_VARIANTS` variants each
-            // of `MAX_PAYLOAD_FIELDS` leaves — a wider body than the struct copy, and the
-            // larger of the two terms. Counted here for the same reason as the struct copy:
-            // the resident-set gate measures an aggregate and its enum corpus stops on the
-            // mint-depth bound, so neither attributes a figure to this term.
+            // Resource bound: one copy per instantiation of `MAX_VARIANTS` variants each of
+            // `MAX_PAYLOAD_FIELDS` leaves — the larger term. Counted for the same reason as
+            // the struct copy: no aggregate or depth-bounded figure attributes this term.
             #[cfg(test)]
-            bump_scaling(|counts| {
-                counts.template_body_clone_entries += variants.len()
-                    + variants
-                        .iter()
-                        .map(|variant| variant.payload.len())
-                        .sum::<usize>();
-            });
+            count_template_body_copy(variant_entries(variants));
             (subst, variants.clone(), template_info.name.clone())
         };
         let enum_name = enum_name.as_str();

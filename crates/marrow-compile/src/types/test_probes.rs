@@ -183,3 +183,18 @@ pub(super) fn capture_alias_cycle_counts<T>(run: impl FnOnce() -> T) -> (T, Alia
     ALIAS_CYCLE_COUNTS.with(|cell| cell.set(previous));
     (result, counts)
 }
+
+/// Count one template body copied out for an instantiation.
+pub(super) fn count_template_body_copy(entries: usize) {
+    bump_scaling(|counts| counts.template_body_clone_entries += entries);
+}
+
+/// The declaration entries an enum template body carries: one per declared variant plus
+/// one per declared payload leaf.
+pub(super) fn variant_entries(variants: &[TemplateVariant]) -> usize {
+    variants.len()
+        + variants
+            .iter()
+            .map(|variant| variant.payload.len())
+            .sum::<usize>()
+}

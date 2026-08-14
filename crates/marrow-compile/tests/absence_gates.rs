@@ -349,7 +349,15 @@ fn no_fact_carrier_outside_the_ledger_exists() {
     for carrier in ["Vec<DeclSymbol", "Vec<(FileRef, FactSpan)"] {
         let found: Vec<(PathBuf, usize)> = occurrences(carrier)
             .into_iter()
-            .filter(|(path, _)| src_relative(path) != "analysis.rs")
+            // The ledger's own module is the analysis module and its fact child: the bulk
+            // carriers moved to `analysis/facts.rs` with the ledger they belong to, and the
+            // outline carrier stays with the projection that builds it.
+            .filter(|(path, _)| {
+                !matches!(
+                    src_relative(path).as_str(),
+                    "analysis.rs" | "analysis/facts.rs"
+                )
+            })
             .collect();
         assert!(
             found.is_empty(),
@@ -765,7 +773,7 @@ fn no_phase_runs_on_an_empty_diagnostic_set() {
 /// would churn on.
 const PROFILE_GUARD_ALLOWLIST: &[(&str, &str)] = &[
     ("analysis.rs", "debug_assert!("),
-    ("analysis.rs", "debug_assert!("),
+    ("analysis/facts.rs", "debug_assert!("),
     (
         "types/metadata.rs",
         "debug_assert!(scratch.seen_rows[index]);",
