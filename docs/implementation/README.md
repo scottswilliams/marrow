@@ -406,15 +406,22 @@ admission owner derives its own maximum from those charges rather than sampling 
 ```text
 compiler-side, at the identity ledger's admitted anchors    =  43,243,432 B  (<= 64 MiB declared)
 verifier-side, at the whole-image ceiling                   =  72,876,264 B  (<= 256 MiB declared)
-durable value arena, at the type population                 = 8,212,611,072 B  (exported, unbounded here)
+durable value arena, at the type population                 = 8,212,611,072 B  (> 640 MiB declared)
 ```
 
 The first two are asserted in a `const` context, so a representation change that breached
-either ceiling fails the build. The third is an exported term, not a bound this layer
-asserts: the arena's populations are bounded by the type population rather than by the
-identity ledger, and tightening them belongs to the durable-value owner. A negative control
-holds the first figure honest — the superseded representation, which expanded a member tree
-per root occurrence, does not close under the same ceiling.
+either ceiling fails the build. The third is measured against the declared 640 MiB
+owned-heap ceiling and **exceeds it, by twelve times**. That is a current finding about the
+compiler, recorded rather than absorbed: the arena's populations are bounded by the type
+population rather than by the identity ledger, and the three admissions that produce the
+dominating term — `MAX_ENUMS` enums, each of `MAX_VARIANTS` variants, each of
+`MAX_PAYLOAD_FIELDS` payload leaves — are independent checks with no joint bound, so a
+draft can hold an arena no owned-heap ceiling admits and the whole-image ceiling that would
+refuse it is not decided until `encode`. The gate asserts the overshoot in the failing
+direction, so a joint bound that closed it would fail the build and force the term and this
+record to move together. A negative control holds the first figure honest — the superseded
+representation, which expanded a member tree per root occurrence, does not close under the
+same ceiling.
 
 A declaration's branch entry records are materialized once for the Product, at its
 first executable occurrence. `marrow-verify` reconstructs the declaration and its

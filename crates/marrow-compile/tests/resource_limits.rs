@@ -17,6 +17,9 @@ use marrow_syntax::SourceSpan;
 #[path = "common/ids.rs"]
 mod ids;
 
+#[path = "common/owned_heap.rs"]
+mod owned_heap;
+
 fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let files = vec![CapturedFile::new(
@@ -1238,15 +1241,25 @@ const _: () = {
     );
 };
 
-/// The maximum-live value arena the same drive holds, in bytes — **an exported term, not a
-/// bound this suite asserts.**
+/// The maximum-live value arena the same drive holds, in bytes.
 ///
 /// The arena's populations are bounded by the type population (`MAX_TYPES` distinct
 /// composite shapes, `MAX_ENUMS` distinct enum shapes, each at its own admitted width), not
-/// by the identity ledger, so this figure is dominated by enum payload leaves and is far
-/// looser than anything the durable graph contributes. Tightening it is the durable-value
-/// owner's work; it is derived and published here so that owner and the capacity join
-/// consume a stated number rather than rediscovering it.
+/// by the identity ledger, so this figure is dominated by enum payload leaves.
+///
+/// **The ceiling is stated below and it does not close.** That is the answer, not a reason
+/// to leave the figure unbounded: `H_OWNED_BYTES` is the declared owned-heap ceiling every
+/// other retention term here is sized against, and a draft admitting each value-shape
+/// construct at its own maximum reaches an arena twelve times that. The per-construct
+/// admissions carry no joint bound — `MAX_ENUMS` enums, each of `MAX_VARIANTS` variants,
+/// each of `MAX_PAYLOAD_FIELDS` payload leaves, are three independent checks — so nothing
+/// in the draft refuses the combination, and the whole-image ceiling that would refuse it
+/// is decided only at `encode`, long after the arena is live.
+///
+/// It is recorded as a finding about the compiler rather than absorbed by raising a number,
+/// and it is pinned in the failing direction: the assertion below holds *because* the term
+/// exceeds the ceiling, so a joint bound that brought the arena under it would fail this
+/// build and force the term, the ceiling, and this record to be re-derived together.
 const MAX_LIVE_DURABLE_VALUE_ARENA_BYTES: u64 =
     marrow_image::bounds::max_live_durable_graph_bytes(marrow_image::bounds::DurableGraphCounts {
         products: 0,
@@ -1277,6 +1290,51 @@ fn the_compiler_side_maximum_live_graph_holds_its_accounted_figures() {
         MAX_LIVE_DURABLE_VALUE_ARENA_BYTES, 8_212_611_072,
         "the accounted durable value arena moved; it is the durable-value owner's term and \
          the implementation map publishes it"
+    );
+}
+
+/// The stated ceiling for the value arena, and the verdict it returns.
+///
+/// This is the assertion the term previously did without. It fails in both directions: if
+/// the arena grows, the pinned figure above moves; if a joint bound lands and brings the
+/// arena under the declared ceiling, this test fails and the finding is retired rather than
+/// left standing as folklore.
+#[test]
+fn the_value_arena_is_measured_against_the_declared_ceiling_and_exceeds_it() {
+    assert!(
+        MAX_LIVE_DURABLE_VALUE_ARENA_BYTES > owned_heap::H_OWNED_BYTES,
+        "the value arena came under the declared owned-heap ceiling; re-derive the term and \
+         retire the recorded finding rather than leaving this assertion inverted",
+    );
+    assert_eq!(
+        MAX_LIVE_DURABLE_VALUE_ARENA_BYTES / owned_heap::H_OWNED_BYTES,
+        12,
+        "the overshoot against the declared owned-heap ceiling moved",
+    );
+
+    // Where a re-derivation has to look: the enum payload references, not the struct
+    // leaves, are effectively the whole term, so a joint bound anywhere else moves nothing.
+    let struct_leaves = (marrow_image::bounds::MAX_TYPES
+        * marrow_image::bounds::MAX_STRUCT_LEAVES) as u64;
+    let enum_references = (marrow_image::bounds::MAX_ENUMS
+        * marrow_image::bounds::MAX_VARIANTS
+        * (1 + marrow_image::bounds::MAX_PAYLOAD_FIELDS)) as u64;
+    assert_eq!(struct_leaves, 262_144);
+    assert_eq!(enum_references, 68_157_440);
+    assert!(
+        enum_references > 200 * struct_leaves,
+        "the enum payload term dominates the arena, so it is what a joint bound must reach",
+    );
+
+    // And the combination is not an arithmetic fiction that no project could express: the
+    // production capture path admits `max_total_bytes` of source, and a declared payload
+    // leaf cannot cost less than one source byte, so source capacity leaves the term within
+    // one order of magnitude of reachable. A term this close to reachable is a bound the
+    // compiler has to earn, not a loose product to wave away.
+    let source_admitted = marrow_project::CaptureLimits::DEFAULT.max_total_bytes() as u64;
+    assert!(
+        enum_references < 2 * source_admitted,
+        "the arena's dominating population is inside twice what captured source can declare",
     );
 }
 
