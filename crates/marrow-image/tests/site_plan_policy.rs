@@ -166,9 +166,13 @@ fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
     let (mut draft_owner, root, members) = wide_draft(MAX_SITES);
     let mut draft = admitted(&mut draft_owner);
     demand_every_leaf(&mut draft, &root, &members);
+    // The exact verdict, not "not this one error": a negative match is satisfied by every
+    // other failure, including ones meaning the demand never reached the site policy. A
+    // demand of exactly `MAX_SITES` clears that policy and is refused one owner later, by
+    // the whole-image ceiling — which is what "fits the site table" means at this width.
     assert!(
-        !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
-        "a demand of exactly MAX_SITES fits",
+        matches!(draft.encode(), Err(ImageBuildError::ImageTooLarge)),
+        "a demand of exactly MAX_SITES clears the site policy and meets the byte ceiling",
     );
 
     // A second occurrence over the same declaration: every one of its leaf demands is a
@@ -598,8 +602,10 @@ fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
         );
         assert!(matches!(proof.encode(), Err(ImageBuildError::TooManySites)));
     }
+    // The finished draft encodes, which is stronger than "not this one error" and is the
+    // fact the discarded proof is being tested against: its crossing left nothing behind.
     assert!(
-        !matches!(owner.encode(), Err(ImageBuildError::TooManySites)),
+        owner.encode().is_ok(),
         "the discarded proof's crossing is not the finished draft's",
     );
 }
@@ -994,9 +1000,11 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         LEGACY_DEMAND, 404_000,
         "what pre-seeding every occurrence's member graph would demand",
     );
-    // The identity census: the application, the Product, one placement per keyless root,
-    // and one row per declared group namespace and group field.
-    assert_eq!(1 + 1 + ROOTS + 2 * GROUPS, 4_202);
+    // The identity census is measured from the ids this corpus actually mints, gathered
+    // below as they are handed to the draft, rather than restated as arithmetic over the
+    // same two constants the corpus is built from — an equation compared with itself would
+    // hold on a corpus whose seeds collided and whose real census was smaller.
+    let mut minted: BTreeSet<LedgerIdBytes> = BTreeSet::new();
 
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
@@ -1008,22 +1016,26 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         })
         .expect("a within-domain mint");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    minted.insert(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    minted.insert(product());
     let value = draft
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
     let mut commands = Vec::with_capacity(2 * GROUPS);
     for group in 0..GROUPS {
         let parent = u32::try_from(commands.len()).expect("inside the member bound");
+        let namespace = field_id(0x30_0000 + group);
+        let field = field_id(0x40_0000 + group);
+        minted.insert(namespace);
+        minted.insert(field);
         commands.push(DeclarationMemberDef {
             parent: None,
-            shape: DeclarationMemberShape::Group {
-                id: field_id(0x30_0000 + group),
-            },
+            shape: DeclarationMemberShape::Group { id: namespace },
         });
         commands.push(DeclarationMemberDef {
             parent: Some(parent),
             shape: DeclarationMemberShape::Field {
-                id: field_id(0x40_0000 + group),
+                id: field,
                 required: true,
                 value,
             },
@@ -1037,6 +1049,8 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         let name = draft
             .intern_string(&format!("r{n}"))
             .expect("a within-domain mint");
+        let placement = field_id(0x50_0000 + n);
+        minted.insert(placement);
         let admitted = draft
             .add_root_occurrence(
                 &admitted_plan(),
@@ -1044,7 +1058,7 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
                 RootOccurrenceDef {
                     name,
                     keys: Vec::new(),
-                    placement: field_id(0x50_0000 + n),
+                    placement,
                     indexes: Vec::new().into(),
                 },
             )
@@ -1057,9 +1071,21 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         );
     }
 
+    // The application, the Product, one placement per keyless root, and one row per
+    // declared group namespace and group field — counted as distinct ids, not derived.
+    assert_eq!(
+        minted.len(),
+        4_202,
+        "the corpus mints the identity census it claims, all of them distinct",
+    );
+
+    // The exact verdict: the 4,000 occurrence sites clear the site policy — the corpus this
+    // test exists for — and the image then meets the whole-image byte ceiling. A negative
+    // match would also have passed on a draft that never reached the site policy at all.
     assert!(
-        !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
-        "4,000 occurrence sites over a 200-row declaration is inside the site table",
+        matches!(draft.encode(), Err(ImageBuildError::ImageTooLarge)),
+        "4,000 occurrence sites over a 200-row declaration clear the site table and meet \
+         the byte ceiling",
     );
 }
 
@@ -1075,21 +1101,79 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
 /// whatever order its own traversal produces without changing which program the image
 /// describes.
 ///
-/// What is compared is deliberately not a count. Two sweeps over one `members` vector
-/// mint the same number of refs by construction, so comparing lengths compares a
-/// constant with itself and would hold even if a sweep aliased every demand onto one
-/// row. The comparison is therefore over the *identities* minted and the bytes the draft
-/// then encodes, and the fences assert `Ok` rather than "not this one error" — a negative
-/// match is satisfied by every other failure, including ones that mean the sweep never
-/// ran.
+/// What is compared is deliberately not a count, and not a set of ordinals either. Two
+/// sweeps over one `members` vector mint the same number of refs by construction, and —
+/// because a `PlannedSiteRef` renders as its logical ordinal and nothing else — they mint
+/// the same *set* of renderings by construction too: both are `{"0".."199"}` whatever the
+/// plan keyed on. Comparing those sets is a constant compared with itself.
+///
+/// The demand key is observed instead, through the one behaviour that exposes it on the
+/// public surface: **re-requesting a demand a plan already retains returns the operand
+/// that demand was given.** Sweeping one plan forward and then backward over the same
+/// members, and pairing each member with the operand it received each time, therefore
+/// reads what the plan keyed on. Had it keyed on request order, member `i` would have come
+/// back holding member `n-1-i`'s operand; had it minted per request, the second sweep
+/// would have returned 200 fresh ordinals.
 #[test]
 fn a_reversed_demand_sweep_yields_the_same_artifact() {
     /// A declaration wide enough that request order is observable, and narrow enough that
     /// the draft still encodes.
     const ORDER_INDEPENDENCE_FIELDS: usize = 200;
 
-    /// One sweep's artifacts: the distinct ref identities it minted, how many refs it
-    /// minted, and the bytes the committed draft encodes to.
+    /// The operand `member` receives under `root`, rendered as the ordinal it carries.
+    fn operand_for(
+        draft: &mut DraftTxn<'_>,
+        root: &AdmittedRoot,
+        member: &DeclarationMember,
+    ) -> String {
+        format!(
+            "{:?}",
+            site(
+                draft,
+                root.occurrence(),
+                member.path(),
+                SemanticTarget::FieldLeaf,
+            )
+        )
+    }
+
+    // The demand key, observed. One plan, swept forward and then backward.
+    let (mut owner, root, members) = wide_draft(ORDER_INDEPENDENCE_FIELDS);
+    let mut draft = admitted(&mut owner);
+    let forward: Vec<String> = members
+        .iter()
+        .map(|member| operand_for(&mut draft, &root, member))
+        .collect();
+    let mut reversed = vec![String::new(); members.len()];
+    for index in (0..members.len()).rev() {
+        reversed[index] = operand_for(&mut draft, &root, &members[index]);
+    }
+    assert_eq!(
+        forward, reversed,
+        "the demand — not the request sequence — decides which operand a member gets",
+    );
+    // The pairing above is only meaningful over distinct operands: 200 members holding one
+    // shared ordinal would satisfy it too. They do not.
+    assert_eq!(
+        forward.iter().collect::<BTreeSet<_>>().len(),
+        members.len(),
+        "every demand kept a distinct operand",
+    );
+    // The occurrence half of the key, observed the same way: the same declaration path
+    // under a second root occurrence is a different demand and gets a different operand,
+    // so the plan is keying on more than the path it was handed.
+    let second_root = admit_root(&mut draft, 0x23);
+    let under_second: BTreeSet<String> = members
+        .iter()
+        .map(|member| operand_for(&mut draft, &second_root, member))
+        .collect();
+    assert!(
+        under_second.is_disjoint(&forward.iter().cloned().collect()),
+        "a second occurrence over the same paths shares no operand with the first",
+    );
+    draft.commit();
+
+    /// The bytes a fresh draft encodes to after one sweep in the given order.
     ///
     /// The width is inside the whole-image byte ceiling on purpose: the point of this arm
     /// is to compare a real encoded artifact, and a draft that cannot encode has none to
@@ -1097,56 +1181,51 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
     /// site cap is the binding constraint — which is precisely why the previous fence,
     /// spelled as "not `TooManySites`", passed while the sweep produced no image at all.)
     /// The crossing arm below drives the site cap itself, where a refusal is the artifact.
-    fn sweep(reverse: bool) -> (BTreeSet<String>, usize, Vec<u8>) {
+    fn swept_bytes(reverse: bool) -> Vec<u8> {
         let (mut owner, root, members) = wide_draft(ORDER_INDEPENDENCE_FIELDS);
         let mut draft = admitted(&mut owner);
-        let mut refs: Vec<PlannedSiteRef> = Vec::new();
         let order: Vec<&DeclarationMember> = if reverse {
             members.iter().rev().collect()
         } else {
             members.iter().collect()
         };
         for member in order {
-            refs.push(site(
+            let _ = site(
                 &mut draft,
                 root.occurrence(),
                 member.path(),
                 SemanticTarget::FieldLeaf,
-            ));
+            );
         }
         let bytes = draft
             .encode()
             .expect("a sweep inside the site cap encodes")
             .bytes;
         draft.commit();
-        let identities: BTreeSet<String> = refs.iter().map(|r| format!("{r:?}")).collect();
-        (identities, refs.len(), bytes)
+        bytes
     }
 
-    let (forward_ids, forward_count, forward_bytes) = sweep(false);
-    let (reversed_ids, reversed_count, reversed_bytes) = sweep(true);
-
-    // Structure, not a counter: every demand kept a distinct operand in both orders. A
-    // sweep that aliased demands onto one row would have a smaller identity set while its
-    // ref count stayed the same.
+    let forward_bytes = swept_bytes(false);
+    let reversed_bytes = swept_bytes(true);
+    // The length fence below is only worth stating if the bytes carry the site rows at
+    // all. Two controls establish that they do: an identical sweep reproduces the image
+    // exactly, and the reversed sweep does not — so request order is genuinely visible in
+    // these bytes, and an equal length is a fact about the material rather than about a
+    // constant-width image the sweep never touched.
+    assert!(!forward_bytes.is_empty(), "the sweep encodes an image");
     assert_eq!(
-        forward_ids.len(),
-        forward_count,
-        "the forward sweep minted a distinct identity per demand",
+        forward_bytes,
+        swept_bytes(false),
+        "the encode is deterministic, so a byte difference below means the rows moved",
     );
-    assert_eq!(
-        reversed_ids.len(),
-        reversed_count,
-        "the reversed sweep minted a distinct identity per demand",
+    assert_ne!(
+        forward_bytes, reversed_bytes,
+        "request order is visible in the emitted rows",
     );
-    assert_eq!(
-        forward_ids, reversed_ids,
-        "the reversed sweep minted the same set of identities, not merely as many",
-    );
-    // Not byte equality: the SITES rows are emitted in request order, so reversing the
-    // sweep reorders them and the bytes genuinely differ. What the demand set fixes is how
-    // much site material exists — the same rows, permuted — so the encoded length is the
-    // artifact that holds, and it fails if a sweep dropped or duplicated a row.
+    // Not byte equality, then: the SITES rows are emitted in request order, so reversing
+    // the sweep reorders them. What the demand set fixes is how much site material exists —
+    // the same rows, permuted — so the encoded length is the artifact that holds, and it
+    // fails if a sweep dropped or duplicated a row.
     assert_eq!(
         forward_bytes.len(),
         reversed_bytes.len(),
