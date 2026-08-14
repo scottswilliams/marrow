@@ -32,7 +32,7 @@ const DROP_REACHABLE: [(&str, &str); 9] = [
         "marrow-compile/src/types/mod.rs",
         "fn restore_generic_owners",
     ),
-    ("marrow-compile/src/types/mod.rs", "fn rewind_to"),
+    ("marrow-compile/src/types/metadata.rs", "fn rewind_to"),
 ];
 
 /// The compiler composite guard's own `Drop`, audited with its sentinel like the

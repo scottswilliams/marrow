@@ -441,7 +441,7 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
     ),
     (
         "marrow-compile",
-        "analysis.rs",
+        "analysis/facts.rs",
         ".map(|module| module.identity().as_str().len() as u32)",
     ),
     (
