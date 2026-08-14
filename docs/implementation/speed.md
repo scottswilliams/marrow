@@ -67,11 +67,11 @@ A change is reviewed against six rules.
 A test whose cost is out of proportion to the rest of the battery is marked
 `#[ignore]` with a reason that states that cost, and is run explicitly with
 `--ignored`, so the default battery stays fast for the contributor who runs it
-many times a day. The reason is the place the cost is justified:
+many times a day. The reason is the place the cost is justified, as in
+`crates/marrow/tests/durable_transactions.rs`:
 
 ```text
-#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no
-override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
+#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
 ```
 
 The same treatment carries the measurement harnesses, whose output is a recorded
