@@ -267,21 +267,27 @@ const NARROW_OPERAND_SPELLINGS: [&str; 10] = [
 ];
 
 /// Whether an arithmetic operator opens at `at`, with `-` in `->`, `*` in a dereference or
-/// a raw pointer, and every compound-assignment or comparison form excluded.
+/// a raw pointer, and every comparison form excluded.
+///
+/// Compound assignment counts. `offset += width` is addition over `offset`'s carrier as
+/// surely as `offset = offset + width` is, and excluding it left an accumulator over a
+/// `u32` carrier — the one at `code_layout` in the image encoder — outside the census that
+/// exists to hold exactly those. A census that cannot see a live site is the failure it
+/// exists to prevent, so the compound forms are read as the arithmetic they are.
 fn arithmetic_operator_at(bytes: &[u8], at: usize) -> Option<usize> {
     let before = (0..at)
         .rev()
         .find(|index| !bytes[*index].is_ascii_whitespace())
         .map(|index| bytes[index]);
     let after = bytes.get(at + 1).copied();
-    // An operator directly beside another operator character is part of a compound form
-    // (`+=`, `<<`, `->`, `=*`), which is not the binary arithmetic this census reads.
+    // An operand must precede the operator, which is what separates `x * y` from a
+    // dereference or a raw-pointer type. `<<`/`>>` are excluded by the same rule.
     let operand_before = before.is_some_and(|byte| {
         is_ident_byte(byte) || byte == b')' || byte == b']' || byte == b'\'' || byte == b'"'
     });
     match bytes[at] {
-        b'+' | b'*' if operand_before && after != Some(b'=') => Some(at + 1),
-        b'-' if operand_before && after != Some(b'=') && after != Some(b'>') => Some(at + 1),
+        b'+' | b'*' if operand_before => Some(at + 1),
+        b'-' if operand_before && after != Some(b'>') => Some(at + 1),
         _ => None,
     }
 }
@@ -304,10 +310,35 @@ fn operand_window(code: &str, bytes: &[u8], at: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// The whole statement an operator at `at` sits in: the text between the nearest enclosing
+/// statement delimiters. Used for the compound-assignment forms, whose operands straddle
+/// the `=` an expression window stops at.
+fn statement_window(bytes: &[u8], at: usize) -> (usize, usize) {
+    const BOUNDARY: [u8; 3] = [b';', b'{', b'}'];
+    let mut start = at;
+    while start > 0 && !BOUNDARY.contains(&bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = at;
+    while end < bytes.len() && !BOUNDARY.contains(&bytes[end]) {
+        end += 1;
+    }
+    (start, end)
+}
+
 /// If a narrowing spelling starts at `at`, its end offset.
 fn narrowing_at(code: &str, bytes: &[u8], at: usize) -> Option<usize> {
     if let Some(end) = arithmetic_operator_at(bytes, at) {
-        let (start, stop) = operand_window(code, bytes, at);
+        // A compound assignment's two operands sit on opposite sides of its `=`, which is
+        // an expression-window boundary. Reading the expression window alone therefore
+        // reads only the accumulator and never the value being folded into it — which is
+        // where the narrow spelling is. `offset += instr.encoded_len() as u32` is exactly
+        // that shape, and it is why widening the operator set alone did not reach it.
+        let (start, stop) = if bytes.get(at + 1) == Some(&b'=') {
+            statement_window(bytes, at)
+        } else {
+            operand_window(code, bytes, at)
+        };
         let window = &code[start..stop];
         if NARROW_OPERAND_SPELLINGS
             .iter()
@@ -684,6 +715,18 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "marrow-image",
         "encode.rs",
         "code.iter().map(|instr| instr.encoded_len() as u32).sum()",
+    ),
+    // Twice: the cast to the narrow carrier, and the compound addition that folds it into
+    // the running total. The addition is a `u32` accumulation with no conversion to find it
+    // by, and it was invisible to this census until the compound forms were read as the
+    // arithmetic they are. Both occurrences are bounded by the same located check —
+    // `encode_functions` rechecks `total_len` against `MAX_CODE_BYTES` before the layout is
+    // used, and an instruction is at least one encoded byte, so reaching the carrier's
+    // domain would need a code vector orders of magnitude past the draft's own footprint.
+    (
+        "marrow-image",
+        "encode.rs",
+        "offset += instr.encoded_len() as u32;",
     ),
     (
         "marrow-image",

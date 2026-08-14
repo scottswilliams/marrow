@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 #[path = "../../marrow-compile/tests/common/source_projection.rs"]
 mod source_projection;
-use source_projection::is_ident_byte;
+use source_projection::{is_ident_byte, without_cfg_test_items};
 
 /// The audited drop-reachable set: `(source file, function name)`, each body closed
 /// by its `// drop-path audit sentinel` line. The two `Drop` implementations are the
@@ -249,6 +249,7 @@ fn the_counting_run_spells_no_allocation() {
     // scanned; ambiguous ones are recorded in a census instead, so a newly ambiguous
     // reach is visible rather than silently dropped.
     let mut ambiguous: BTreeSet<String> = BTreeSet::new();
+    let mut cleared_by_exhaustion = 0usize;
     while let Some(body) = frontier.pop() {
         for callee in called_names(&body) {
             if !reached.insert(callee.clone()) {
@@ -258,7 +259,25 @@ fn the_counting_run_spells_no_allocation() {
                 continue;
             };
             if bodies.len() > 1 {
-                ambiguous.insert(callee.clone());
+                // Ambiguous by name, but not therefore unresolved. Which definition runs
+                // is unknowable to a text scan; whether *any* of them could allocate is
+                // not. Scanning every definition resolves the name by exhaustion: if all
+                // of them are clean, the call is clean whichever one runs. Only a name
+                // with an unclean definition is left as residue, and that residue is what
+                // has to be adjudicated by hand.
+                //
+                // The definitions are not expanded. Following the callees of every
+                // candidate would walk the audit into code this path never enters — the
+                // `encode` case below demonstrates it on this crate — so resolution by
+                // exhaustion is stated at the body and not claimed transitively.
+                if bodies
+                    .iter()
+                    .all(|(_, candidate)| count_clean(candidate))
+                {
+                    cleared_by_exhaustion += 1;
+                } else {
+                    ambiguous.insert(callee.clone());
+                }
                 continue;
             }
             for (file, callee_body) in bodies {
@@ -267,15 +286,20 @@ fn the_counting_run_spells_no_allocation() {
             }
         }
     }
-    let recorded: BTreeSet<String> = AMBIGUOUS_COUNT_PATH_NAMES
+    assert!(
+        cleared_by_exhaustion > 0,
+        "no ambiguous name was resolved by exhaustion, so the walk is not scanning the \
+         candidate definitions it cannot choose between",
+    );
+    let recorded: BTreeSet<String> = UNRESOLVED_COUNT_PATH_NAMES
         .iter()
         .map(|name| (*name).to_string())
         .collect();
     assert_eq!(
         ambiguous, recorded,
-        "the set of counting-path callees this crate defines under more than one name \
-         moved. Each is unresolvable by a text scan, so it is recorded rather than \
-         scanned; a new one must be adjudicated by hand.",
+        "the residue moved: these are the counting-path callees this crate defines under \
+         more than one name where at least one candidate definition is not count-clean, so \
+         exhaustion does not resolve them. A new one must be adjudicated by hand.",
     );
 
     // The walk really followed the graph out of the roots rather than stopping at them.
@@ -292,63 +316,35 @@ fn the_counting_run_spells_no_allocation() {
     );
 }
 
-/// The counting-path callees this crate defines under more than one name, which a text
-/// scan cannot resolve to the definition that actually runs.
+/// The counting-path callees this crate defines under more than one name **and** whose
+/// candidate definitions are not all allocation-free, so the walk cannot clear them.
 ///
-/// This list is a census, not a clearance: it does **not** assert that each of these is
-/// allocation-free. It exists so the walk's own blind spot is stated and bounded — a
-/// newly ambiguous reach is a census change that has to be looked at, rather than a name
-/// the scan quietly steps over.
+/// This list is a residue, not a skip list, and it is three names rather than thirty-eight.
+/// A name with several definitions is not thereby unresolved: which definition runs is
+/// unknowable to a text scan, but whether *any* of them could allocate is not. The walk
+/// scans every candidate, and a name whose candidates are all clean is resolved by
+/// exhaustion — clean whichever one runs. Only a name with an unclean candidate survives
+/// here, and each survivor is adjudicated by hand.
 ///
-/// **The residue, stated exactly.** Resolving these needs receiver types, which a lexical
-/// scanner does not have. The obvious tightening — prefer a definition in the calling
-/// body's own file — is *unsound*, not merely incomplete, and
-/// [`the_same_file_tightening_binds_a_method_call_to_the_wrong_definition`] demonstrates it
-/// on this crate: `encode.rs` calls `field.ty.encode(sink)`, a method of `ImageType`
-/// declared in `ty.rs`, while `encode.rs` also declares exactly one `fn encode` —
-/// `ImageDraft::encode`, the whole emission driver. A file-preferring resolver binds the
-/// method call to the driver and walks the counting audit straight into emission, reporting
-/// an allocation on a path the counting run never enters. Recording the name is therefore
-/// the tighter answer available to a scanner without types, and this is why.
-const AMBIGUOUS_COUNT_PATH_NAMES: &[&str] = &[
-    "application",
-    "bytes",
-    "declaration",
-    "default",
-    "emit",
-    "encode",
-    "encoded_len",
-    "extend_bytes",
-    "from",
-    "func",
-    "graph",
-    "id",
-    "identity",
-    "index",
-    "indexes",
-    "is_empty",
-    "is_full",
-    "key",
-    "keys",
-    "ledger_id",
-    "len",
-    "members",
-    "members_of",
-    "name",
-    "new",
-    "of",
-    "over",
-    "placement",
-    "products",
-    "push",
-    "root_entry_record",
-    "rows",
-    "scalar",
-    "shape",
-    "tag",
-    "token",
-    "value_shapes",
-    "wire_ordinal",
+/// Two tightenings got the count down and both are sound. Test-module definitions are no
+/// longer counted as candidates: they are not code the counting run can enter, and
+/// including them made names ambiguous that production defines exactly once. And exhaustion
+/// replaced the skip.
+///
+/// **The residue is stated at the body, not transitively.** A resolved-by-exhaustion name's
+/// callees are deliberately not expanded: following the callees of every candidate walks the
+/// audit into code this path never enters, and
+/// [`the_same_file_tightening_binds_a_method_call_to_the_wrong_definition`] demonstrates the
+/// same class of false reach on this crate — `encode.rs` calls `field.ty.encode(sink)`, a
+/// method of `ImageType` declared in `ty.rs`, while `encode.rs` also declares exactly one
+/// `fn encode`, the whole emission driver. Binding by proximity walks the counting audit
+/// straight into emission. Resolution by exhaustion at the body is the tighter answer
+/// available to a scanner without types, and this is why.
+const UNRESOLVED_COUNT_PATH_NAMES: &[&str] = &[
+    // `new` is the clearest case and stands for the other two: several of this crate's
+    // `new` definitions build owners, so exhaustion cannot clear the name — a scan that
+    // cannot say which `new` runs cannot say the call is allocation-free.
+    "members", "members_of", "new",
 ];
 
 /// The adjudicated allocations on the counting path: `(file, function, token)`.
@@ -373,6 +369,15 @@ fn assert_count_clean(body: &str, file: &str, name: &str) {
             "{file}: `{name}` contains allocation-class `{token}` on the counting path",
         );
     }
+}
+
+/// Whether `body` is free of every allocation-class token, with no sanction applied.
+///
+/// Resolution by exhaustion asks whether a candidate could allocate at all, so it reads
+/// the unsanctioned answer: a sanction is granted to a named site on the counting path,
+/// and a candidate this walk cannot even name has not been granted one.
+fn count_clean(body: &str) -> bool {
+    COUNT_FORBIDDEN.iter().all(|token| !body.contains(token))
 }
 
 /// Every `fn name` definition in this crate's production source, with its brace-matched
@@ -404,7 +409,11 @@ fn crate_function_bodies() -> std::collections::BTreeMap<String, Vec<(String, St
             .expect("a src path")
             .1
             .to_string();
-        let code = without_literals(&fs::read_to_string(&path).expect("read source"));
+        // Test-module definitions are not code the counting run can enter, and counting
+        // them as candidates made names ambiguous that production defines exactly once.
+        let code = without_cfg_test_items(&without_literals(
+            &fs::read_to_string(&path).expect("read source"),
+        ));
         for (fn_name, body) in function_bodies(&code) {
             definitions
                 .entry(fn_name)
@@ -465,7 +474,6 @@ fn function_bodies(code: &str) -> Vec<(String, String)> {
 
 /// Every identifier `body` calls.
 fn called_names(body: &str) -> Vec<String> {
-    const KEYWORDS: [&str; 8] = ["if", "while", "for", "match", "fn", "return", "let", "in"];
     let bytes = body.as_bytes();
     let mut names = Vec::new();
     for (at, _) in body.match_indices('(') {
@@ -664,21 +672,86 @@ fn the_drop_path_scanner_detects_a_planted_violation() {
 /// never enters — and it was backed out twice for that reason.
 ///
 /// Inverting the burden fixes it. Rather than resolving the whole crate, every call in an
-/// audited body must land in one of exactly two places: an allowlisted primitive whose
-/// safety on this path was reviewed once, or another audited body, which is scanned by the
-/// same rules. Anything else is UNRESOLVED and fails loudly. A newly reachable callee
-/// therefore cannot be absorbed silently — it either joins the allowlist with a reason or
-/// joins the audit.
+/// audited body must land in one of exactly two places: an allowlisted call whose safety on
+/// this path was reviewed once, or another audited body, which is scanned by the same
+/// rules. Anything else is UNRESOLVED and fails loudly. A newly reachable callee therefore
+/// cannot be absorbed silently — it either joins the allowlist with a reason or joins the
+/// audit.
 ///
-/// Completeness without false positives: the allowlist is derived from what the bodies
-/// actually call, not guessed, and it is small enough to read.
-const RESOLVED_PRIMITIVES: &[&str] = &[
-    // Constructors and readers: no heap event, no panic, total on any state.
-    "Some", "as_mut", "first", "last", "len", "identity", "index",
-    // In-place shrink and lookup. `remove`/`pop`/`retain` free rather than allocate, and
-    // `truncate` past the length is a no-op rather than a panic. `get_mut` is the checked
-    // lookup that replaced an indexing expression on this path.
-    "clear", "get_mut", "pop", "remove", "retain", "truncate",
+/// **The allowlist is keyed on the whole call path, not on the bare name.** A bare name
+/// admits every call that happens to end in it: allowlisting `remove` for
+/// `HashMap::remove` also cleared any other `remove` a Drop body might grow, and
+/// allowlisting `take` cleared a free `take` as readily as `Option::take`. The receiver is
+/// the part that carries the safety argument, so it is the part that is recorded.
+const RESOLVED_CALL_PATHS: &[&str] = &[
+    // `Option::as_mut` and the `RefCell::get_mut` family: an exclusive borrow of an owner
+    // the guard already holds. No heap event, no panic, total on any state.
+    "as_mut",
+    // `Option::take` on the composite guard's own owners: taking each out is what makes
+    // every armed inverse run exactly once, on the drop path as on the explicit one.
+    "self.draft.take",
+    "self.inverse.take",
+    "draft.enums.get_mut",
+    "draft.enums_fill.get_mut",
+    "draft.types.get_mut",
+    "draft.types_fill.get_mut",
+    "self.collection_index.get_mut",
+    "self.collections.get_mut",
+    "self.generics.get_mut",
+    "self.row_directory.get_mut",
+    // Length and last-element reads on the owners the inverse rewinds. Total on an empty
+    // owner — `last` answers `None` rather than panicking.
+    "colls.len",
+    "draft.consts.last",
+    "draft.consts.len",
+    "draft.strings.last",
+    "draft.strings.len",
+    "generics.fn_insts.len",
+    "generics.type_insts.len",
+    "self.store.len",
+    // Identity and index readers on a value the inverse already owns: field projections
+    // that allocate nothing.
+    "discarded.claim.identity",
+    "id.index",
+    // In-place shrink. `pop` on an empty owner answers `None`, and every `pop` here is
+    // guarded by the matching length read above; none of them can allocate.
+    "colls.pop",
+    "draft.consts.pop",
+    "draft.strings.pop",
+    "generics.fn_insts.pop",
+    "generics.type_insts.pop",
+    "self.journal.fills.pop",
+    "self.rows.last",
+    "self.rows.len",
+    "self.rows.pop",
+    // Keyed removal from the reuse indexes the rewound rows were registered in. A map
+    // removal frees rather than allocates, and a missing key answers `None`.
+    "draft.const_index.remove",
+    "draft.string_index.remove",
+    "generics.fn_index.remove",
+    "generics.type_index.remove",
+    "index.remove",
+    "self.by_identity.remove",
+    "self.retained.remove",
+    // Whole-owner resets and the retain that drops interned rows above the restored
+    // length. `clear` and `retain` free; neither can grow an owner.
+    "generics.fill_failures.clear",
+    "generics.fill_rows.clear",
+    "generics.fill_stack.clear",
+    "self.interned.retain",
+    // Constructors and the bare standard-library leaves reached without a receiver
+    // spelling. `truncate` past the length is a no-op rather than a panic.
+    "Some",
+    "clear",
+    "first",
+    "identity",
+    "index",
+    "last",
+    "len",
+    "pop",
+    "remove",
+    "retain",
+    "truncate",
 ];
 
 #[test]
@@ -689,67 +762,129 @@ fn every_drop_path_call_resolves_to_a_primitive_or_another_audited_body() {
         .collect();
 
     let mut resolved = 0usize;
-    for (file, name) in DROP_REACHABLE {
+    let mut unresolved: Vec<String> = Vec::new();
+    // The composite guard's own `Drop` is audited by the scan beside this one, so it is
+    // audited by this one too: a resolver that reads a smaller set than the scanner leaves
+    // the difference unresolved while reporting a clean result.
+    for (file, name) in DROP_REACHABLE.into_iter().chain([COMPOSITE_DROP]) {
         let raw = fs::read_to_string(workspace_file(file))
             .unwrap_or_else(|_| panic!("read {file} for the drop-path resolution audit"));
         let code = without_literals(&raw);
         let body = audited_body(&code, &raw, name, file);
-        for call in called_names_in(&body) {
-            let known =
-                RESOLVED_PRIMITIVES.contains(&call.as_str()) || audited.contains(call.as_str());
-            assert!(
-                known,
-                "{file}: `{name}` calls `{call}`, which is neither an allowlisted Drop-path \
-                 primitive nor another audited body. Resolve it: add it to the audit if it \
-                 is reachable code of the inverse, or to the primitive allowlist with the \
-                 reason it is non-allocating, non-panicking, and total here",
-            );
+        for call in called_paths_in(&body) {
+            let known = RESOLVED_CALL_PATHS.contains(&call.as_str())
+                || audited.contains(final_segment(&call));
+            if !known {
+                unresolved.push(format!("{file}: `{name}` calls `{call}`"));
+            }
             resolved += 1;
         }
     }
+    assert!(
+        unresolved.is_empty(),
+        "these Drop-path calls resolve to neither an allowlisted call path nor another \
+         audited body. Resolve each: add it to the audit if it is reachable code of the \
+         inverse, or to the allowlist with the reason it is non-allocating, non-panicking, \
+         and total here.\n{}",
+        unresolved.join("\n"),
+    );
     assert!(
         resolved > 20,
         "the resolution audit examined only {resolved} calls, so it is not reading the bodies",
     );
 }
 
-/// Every identifier `body` calls.
-fn called_names_in(body: &str) -> BTreeSet<String> {
-    let bytes = body.as_bytes();
-    let mut names = BTreeSet::new();
-    for (at, _) in body.match_indices('(') {
-        let mut start = at;
-        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
-            start -= 1;
-        }
-        if start == at {
-            continue;
-        }
-        let name = &body[start..at];
-        if ["if", "while", "for", "match", "fn", "return", "let", "in"].contains(&name)
-            || name.chars().next().is_some_and(|c| c.is_ascii_digit())
-        {
-            continue;
-        }
-        names.insert(name.to_string());
-    }
-    names
+/// The call-path scanner distinguishes receivers that a bare-name scanner collapsed.
+#[test]
+fn the_call_path_scanner_keeps_the_receiver() {
+    let body = "{ self.journal.pop(); other.pop(); Vec::pop(v); pop(); }";
+    let paths = called_paths_in(body);
+    assert!(
+        paths.contains("self.journal.pop"),
+        "the receiver is part of the resolved call path: {paths:?}",
+    );
+    assert!(
+        paths.contains("Vec::pop") && paths.contains("other.pop") && paths.contains("pop"),
+        "each distinct receiver is its own call path rather than one shared bare name: \
+         {paths:?}",
+    );
+    assert_eq!(
+        paths.len(),
+        4,
+        "four distinct receivers are four call paths, not one: {paths:?}",
+    );
+    assert_eq!(final_segment("self.journal.pop"), "pop");
+    assert_eq!(final_segment("Vec::pop"), "pop");
+    assert_eq!(final_segment("pop"), "pop");
 }
 
-/// The resolver reports an unknown callee rather than stepping over it.
+/// The control-flow keywords a backward walk from `(` can land on, which are not calls.
+const KEYWORDS: [&str; 8] = ["if", "while", "for", "match", "fn", "return", "let", "in"];
+
+/// The final segment of a call path — the name a definition would carry.
+fn final_segment(path: &str) -> &str {
+    let after_colons = path.rsplit("::").next().unwrap_or(path);
+    after_colons.rsplit('.').next().unwrap_or(after_colons)
+}
+
+/// Every call path `body` calls, receiver included.
+///
+/// The walk back from an opening parenthesis takes `.` and `::` as part of the path rather
+/// than as boundaries, so `self.journal.pop()`, `Vec::pop(v)`, and a free `pop()` are three
+/// distinct call paths instead of one name `pop`.
+fn called_paths_in(body: &str) -> BTreeSet<String> {
+    let bytes = body.as_bytes();
+    let mut paths = BTreeSet::new();
+    for (at, _) in body.match_indices('(') {
+        let mut start = at;
+        while start > 0 {
+            let byte = bytes[start - 1];
+            if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.' {
+                start -= 1;
+            } else if byte == b':' && start >= 2 && bytes[start - 2] == b':' {
+                start -= 2;
+            } else {
+                break;
+            }
+        }
+        let path = body[start..at].trim_matches('.');
+        if path.is_empty() {
+            continue;
+        }
+        let head = final_segment(path);
+        if KEYWORDS.contains(&head) || head.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        paths.insert(path.to_string());
+    }
+    paths
+}
+
+/// The plant probe for the resolver: an unaudited callee is reported rather than stepped
+/// over, and a receiver-qualified spelling of an allowlisted name is reported too.
 #[test]
 fn the_drop_path_resolver_reports_a_planted_unresolved_call() {
     let planted = "fn probe() { let _ = some_unaudited_helper(x); }\n\
                    // drop-path audit sentinel: end of probe\n";
     let body = audited_body(&without_literals(planted), planted, "fn probe", "planted");
-    let calls = called_names_in(&body);
+    let calls = called_paths_in(&body);
     assert!(
         calls.contains("some_unaudited_helper"),
         "the resolver sees the call at all: {calls:?}",
     );
     assert!(
-        !RESOLVED_PRIMITIVES.contains(&"some_unaudited_helper"),
+        !RESOLVED_CALL_PATHS.contains(&"some_unaudited_helper"),
         "an unknown callee is not silently allowlisted, so the audit above fails on it",
+    );
+    // The bare-name allowlist would have cleared this; the call-path allowlist does not,
+    // because the receiver is what carries the safety argument.
+    assert!(
+        RESOLVED_CALL_PATHS.contains(&"pop"),
+        "the bare primitive is allowlisted, so this contrast has a live subject",
+    );
+    assert!(
+        !RESOLVED_CALL_PATHS.contains(&"some_unaudited_owner.pop"),
+        "a new receiver for an allowlisted name is a new call path, not an absorbed one",
     );
 }
 

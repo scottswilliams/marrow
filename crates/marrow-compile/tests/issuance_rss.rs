@@ -58,6 +58,21 @@ const ADMITTED_RECORD_FIELDS: usize = marrow_image::bounds::MAX_RECORD_FIELDS;
 /// which is the widest body that still measures what this gate exists to measure.
 const ADMITTED_LOCALS: usize = marrow_image::bounds::MAX_LOCALS - 2;
 
+/// The widest admissible function body by the *other* bound that governs one: the bytes of
+/// compiled code a single function admits.
+///
+/// The frame width and the code width are independent — a body can fill all 256 local slots
+/// and still carry a small fraction of the 64 KiB of code a function admits — and each
+/// generic instance retains a copy of both. Measuring only the frame therefore measured one
+/// of the two dimensions.
+///
+/// The number is **observed, not computed**: it is the largest padding whose body still
+/// encodes, and one more statement is refused with the typed `CodeBytes` limit.
+/// `the_function_arm_sits_exactly_at_the_code_byte_envelope` re-observes both halves of
+/// that boundary on the arm's own generator, so this constant cannot drift away from the
+/// bound it claims to sit at.
+const ADMITTED_CODE_PADDING: usize = 6145;
+
 /// The ceiling a hostile maximum-amplification compile is held under: the repository's
 /// declared owned-heap authority, read from its owner.
 ///
@@ -110,7 +125,15 @@ fn enum_amplification_arm() -> String {
             .collect();
         source.push_str(&format!("    v{variant}({})\n", payload.join(", ")));
     }
-    source.push_str("    next(n: Grown<Wrap<T>>)\n}\n\n");
+    // The recursive variant carries the full payload width like every other: one leaf is
+    // the recursion that mints the next instance, and the rest are ordinary payload. A
+    // final variant one leaf wide would leave the widest admitted enum body unmeasured at
+    // exactly the variant whose resolution drives the amplification.
+    let mut tail: Vec<String> = (0..ADMITTED_PAYLOAD_FIELDS - 1)
+        .map(|leaf| format!("p{leaf}: T"))
+        .collect();
+    tail.push("n: Grown<Wrap<T>>".to_string());
+    source.push_str(&format!("    next({})\n}}\n\n", tail.join(", ")));
     source.push_str("fn sprout<T>(x: T): Grown<T> {\n    return sprout(x)\n}\n\n");
     source
 }
@@ -131,8 +154,41 @@ fn function_amplification_arm() -> String {
         source.push_str(&format!("    var step{step}: List<T> = xs\n"));
         source.push_str(&format!("    xs = append(step{step}, x)\n"));
     }
+    // The frame width and the code width are independent dimensions: a body may fill the
+    // local frame and still carry a fraction of the code a function admits, and each
+    // instance retains a copy of the code as well as of the frame. Padding to the
+    // code-byte envelope is what drives the second dimension.
+    for _ in 0..ADMITTED_CODE_PADDING {
+        source.push_str("    xs = append(xs, x)\n");
+    }
     source.push_str("    return grow(xs)\n}\n\n");
     source
+}
+
+/// The generic function arm's body with its divergence removed, so it reaches the encoder
+/// that owns the code-byte bound. Derived from the arm's own generator by substitution, so
+/// the two cannot drift into different bodies.
+fn code_envelope_mirror(pad: usize) -> String {
+    let mut arm = String::from("fn grow<T>(x: T): int {\n    var xs: List<T> = List()\n");
+    for step in 0..ADMITTED_LOCALS {
+        arm.push_str(&format!("    var step{step}: List<T> = xs\n"));
+        arm.push_str(&format!("    xs = append(step{step}, x)\n"));
+    }
+    for _ in 0..pad {
+        arm.push_str("    xs = append(xs, x)\n");
+    }
+    arm.push_str("    return grow(xs)\n}\n\n");
+    // The divergence is replaced by a call of the same shape rather than removed: a
+    // monomorphic self-call is a refused recursion cycle, and dropping the call instead
+    // would measure a body one call instruction narrower than the arm's.
+    let body = arm
+        .replace("fn grow<T>(x: T): int", "fn grow(x: int): int")
+        .replace("List<T>", "List<int>")
+        .replace("    return grow(xs)\n", "    return settle(xs)\n");
+    format!(
+        "module main\n\nfn settle(v: List<int>): int {{\n    return 0\n}}\n\n{body}\
+         pub fn driver(): int {{\n    return grow(1)\n}}\n"
+    )
 }
 
 /// A project holding only the type-amplification arm.
@@ -151,8 +207,9 @@ fn function_only_corpus() -> String {
     )
 }
 
-/// The hostile maximum-amplification project: both arms in one project, so the measured
-/// figure charges generic type rows and generic function rows together, along with the
+/// The hostile maximum-amplification project: every arm in one project, so the measured
+/// figure charges generic type rows, generic enum rows, and generic function rows
+/// together, along with the
 /// draft rows, lookup indexes, journal, policy ledger, and the live compiler diagnostic
 /// and analysis-fact transients.
 ///
@@ -162,8 +219,9 @@ fn function_only_corpus() -> String {
 /// and claiming two independent 4,096-row populations would overstate it.
 fn hostile_corpus() -> String {
     format!(
-        "module main\n\n{}{}pub fn driver(): int {{\n    const ignored = deepen(1)\n    return grow(1)\n}}\n",
+        "module main\n\n{}{}{}pub fn driver(): int {{\n    const ignored = deepen(1)\n             const grown = sprout(1)\n    return grow(1)\n}}\n",
         type_amplification_arm(),
+        enum_amplification_arm(),
         function_amplification_arm(),
     )
 }
@@ -259,19 +317,33 @@ fn inner_hostile_amplification_compile() {
 ///
 /// ```text
 /// corpus     peak RSS         vs. 640 MiB ceiling   what it drives
-/// type         272,334,848 B  0.41x  under          MAX_RECORD_FIELDS fields per fill
-/// enum       1,071,661,056 B  1.60x  OVER           MAX_VARIANTS x MAX_PAYLOAD_FIELDS per fill
-/// function   1,416,495,104 B  2.11x  OVER           MAX_LOCALS-2 locals per instance
-/// both         272,908,288 B  0.41x  under          the type arm reaches the shared
-///                                                   ceiling first and stops the compile
+/// type         272,302,080 B   0.41x  under         MAX_RECORD_FIELDS fields per fill,
+///                                                   256 deep (the mint-depth bound)
+/// enum       1,075,691,520 B   1.60x  OVER          MAX_VARIANTS x MAX_PAYLOAD_FIELDS per
+///                                                   fill, 256 deep
+/// function   9,799,499,776 B  14.60x  OVER          MAX_LOCALS-2 locals AND the 64-KiB
+///                                                   code envelope, 4096 instances
+/// both         292,864,000 B   0.44x  under         the type arm reaches its depth bound
+///                                                   first and stops the compile
 /// ```
 ///
-/// The two overshoots are the corpora the previous gate could not see. It read
-/// `MAX_STRUCT_LEAVES` — a durable value-shape bound whose own declaration says it does
-/// not scale with the record width — as the width of a generic `struct` template, so every
-/// arm was sixty-four times narrower than the widest body the compiler admits, and there
-/// was no enum arm at all. At the correct widths the hostile maximum is 2.11x the declared
-/// ceiling.
+/// The function arm is the hostile maximum and it is **14.60x** the declared ceiling. Two
+/// successive corpus defects hid it. The first read `MAX_STRUCT_LEAVES` — a durable
+/// value-shape bound whose own declaration says it does not scale with the record width —
+/// as the width of a generic `struct` template, leaving every arm sixty-four times narrow
+/// with no enum arm at all. The second measured only one of a function body's two width
+/// dimensions: the arm filled the local frame and carried a fraction of the 64 KiB of code
+/// a function admits, and each instance retains a copy of the code as well as of the frame.
+/// Padding to the code envelope moved the figure from 1.42 GB to 9.80 GB.
+///
+/// The combined corpus is **not** the maximum and cannot be: the type arm's divergence is
+/// carried by a self-nesting field, so it exhausts the 256-deep mint bound long before the
+/// 4096-wide count ceiling, and stops the compile before the function arm amplifies. See
+/// `reaches_the_instantiation_bound` for the two bounds and why one diagnostic covers both.
+///
+/// Cost, recorded honestly: the function arm takes about 500 seconds on this host at the
+/// `dev` profile, because it lowers roughly 27 million statements. That is a real charge
+/// against the workspace battery and it is a consequence of measuring the true width.
 ///
 /// The verdicts are pinned in the direction they hold, so this gate fails if an arm comes
 /// under the ceiling (the finding is fixed and its record must be retired) as well as if
@@ -321,10 +393,13 @@ fn a_hostile_amplification_compile_stays_within_its_measured_rss_ceiling() {
              adjudicated here — the ceiling is not raised.",
         );
         // A runaway regression inside a recorded overshoot is still a regression: the
-        // recorded arms sit near twice the ceiling, so this catches a further doubling
-        // that the over/under classification alone would absorb.
+        // over/under classification alone would absorb a further doubling of an arm that is
+        // already recorded as over. This tripwire sits above the largest recorded figure —
+        // the function arm's 14.60x — and catches a doubling of it. It is a regression
+        // tripwire read from the recorded measurement, not a ceiling: the declared
+        // owned-heap authority above is the only ceiling, and it is not moved here.
         assert!(
-            *peak < 3 * MAX_HOSTILE_COMPILE_RSS_BYTES,
+            *peak < 22 * MAX_HOSTILE_COMPILE_RSS_BYTES,
             "the `{corpus}` corpus peaked at {peak} bytes, past even the recorded overshoot",
         );
     }
@@ -401,8 +476,27 @@ fn the_peak_reporter_parser_reads_each_reporters_unit() {
     assert_eq!(reported_peak_rss_bytes("no such line\n"), None);
 }
 
-/// Whether compiling `source` refuses with the shared instantiation-limit diagnostic —
-/// the observable proof that the corpus really drove generic rows to the ceiling.
+/// Whether compiling `source` refuses with the shared generic-mint diagnostic — the
+/// observable proof that the corpus really drove generic rows until the compiler stopped
+/// minting them.
+///
+/// **This does not identify which bound stopped it, and it cannot.** The compiler refuses a
+/// generic type mint when either `type_insts.len() + fn_insts.len() >= MAX_INSTANTIATIONS`
+/// (4096) or `fill_stack.len() >= MINT_DEPTH_LIMIT` (256), and reports both through one
+/// `check.instantiation_limit` code with one message. A corpus whose divergence is carried
+/// by a *self-nesting field* — `struct Grow<T> { next: Grow<List<T>> }` — recurses through
+/// `fill_type_body`, so it reaches the depth bound at 256 nested mints long before the
+/// count ceiling at 4096. The type and enum arms below are both of that shape.
+///
+/// So the type and enum figures are the peaks of a 256-deep amplification, not of a
+/// 4096-wide one, and they are recorded as such rather than as the count ceiling's maximum.
+/// The function arm is different: `reserve_fn_instance` gates on the count alone with no
+/// depth check, so that arm does reach 4096.
+///
+/// Making the type and enum arms count-bounded needs a breadth-driven shape — divergence
+/// carried by the generic *function* while a wide, non-self-nesting generic type is
+/// resolved once per instance — which is a corpus this lane records as a finding rather
+/// than one it invents a fourth unverified premise about.
 fn reaches_the_instantiation_bound(source: &str) -> bool {
     match compile(&project(source)) {
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics
@@ -481,10 +575,19 @@ fn each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it() {
         marrow_image::bounds::MAX_VARIANTS,
         "the generic enum template is declared at the full variant width",
     );
+    // Every variant carries the full payload width, the recursive one included: its last
+    // leaf is the recursion, so it contributes one fewer `: T`.
     assert_eq!(
         enums.matches(": T,").count() + enums.matches(": T)").count(),
-        (marrow_image::bounds::MAX_VARIANTS - 1) * marrow_image::bounds::MAX_PAYLOAD_FIELDS,
-        "every variant carries the full payload width",
+        marrow_image::bounds::MAX_VARIANTS * marrow_image::bounds::MAX_PAYLOAD_FIELDS - 1,
+        "every variant carries the full payload width, the recursive variant included",
+    );
+    assert!(
+        enums.contains(&format!(
+            "p{}: T, n: Grown<Wrap<T>>)",
+            marrow_image::bounds::MAX_PAYLOAD_FIELDS - 2
+        )),
+        "the recursive variant's last leaf is the recursion and the rest are payload",
     );
 
     let functions = function_amplification_arm();
@@ -493,4 +596,128 @@ fn each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it() {
         marrow_image::bounds::MAX_LOCALS - 2,
         "the generic function fills its local frame, less the parameter and accumulator",
     );
+    assert_eq!(
+        functions.matches("    xs = append(xs, x)").count(),
+        ADMITTED_CODE_PADDING,
+        "the generic function is padded to the code-byte envelope, the second and \
+         independent dimension of a function body's width",
+    );
 }
+
+/// The function arm's body sits exactly at the code-byte envelope: it encodes, and one
+/// more statement is refused with the typed `CodeBytes` limit.
+///
+/// This is what makes `ADMITTED_CODE_PADDING` an observation rather than a number someone
+/// chose. Both halves are asserted, because a padding that merely encodes proves only that
+/// the body is *somewhere* under the bound — which is the state the arm was already in,
+/// carrying a small fraction of the code a function admits while the gate reported it as
+/// the widest admissible body.
+#[test]
+fn the_function_arm_sits_exactly_at_the_code_byte_envelope() {
+    match compile(&project(&code_envelope_mirror(ADMITTED_CODE_PADDING))) {
+        Ok(_) => {}
+        other => panic!(
+            "the arm's body at {ADMITTED_CODE_PADDING} padding statements must encode: \
+             {other:?}"
+        ),
+    }
+    match compile(&project(&code_envelope_mirror(ADMITTED_CODE_PADDING + 1))) {
+        Err(CompileFailure::ResourceLimit(limit)) => assert_eq!(
+            limit.limit(),
+            marrow_image::bounds::MAX_CODE_BYTES as u64,
+            "one statement past the envelope is refused by the code-byte bound itself",
+        ),
+        other => panic!(
+            "one statement past the envelope must be refused with the code-byte limit: \
+             {other:?}"
+        ),
+    }
+}
+
+/// **The exact operation envelope each corpus drives, recorded as an artifact.**
+///
+/// Every figure is counted out of the generated source rather than restated from the
+/// constants that generate it, so a corpus that stopped emitting what it claims to emit
+/// fails here rather than reporting a width it no longer drives. This is the table a
+/// capacity join reads instead of rediscovering the widths from the generators.
+#[test]
+fn the_recorded_operation_envelope_is_exact() {
+    let structs = type_amplification_arm();
+    let arm = enum_amplification_arm();
+    // Scoped to the enum declaration: the arm also carries a wrapper struct and a driver
+    // function, whose own annotations are not variant payloads.
+    let opened = arm
+        .find("enum Grown<T> {")
+        .expect("the enum arm declares its enum");
+    let enums = &arm[opened..arm[opened..].find("\n}\n").expect("the enum closes") + opened];
+    let functions = function_amplification_arm();
+
+    let envelope: Vec<(&str, &str, usize)> = vec![
+        (
+            "type",
+            "declared record fields per template",
+            structs.matches(": T\n").count() + structs.matches(": Grow<List<T>>\n").count(),
+        ),
+        (
+            "enum",
+            "declared variants per template",
+            enums.matches("\n    v").count() + enums.matches("\n    next(").count(),
+        ),
+        (
+            "enum",
+            "declared payload leaves per template",
+            enums.matches(": T,").count()
+                + enums.matches(": T)").count()
+                + enums.matches(": Grown<Wrap<T>>)").count(),
+        ),
+        (
+            "function",
+            "declared local slots per instance",
+            functions.matches("    var ").count() + 1,
+        ),
+        (
+            "function",
+            "declared statements per instance",
+            functions.matches("\n    ").count(),
+        ),
+    ];
+
+    let expected: Vec<(&str, &str, usize)> = vec![
+        (
+            "type",
+            "declared record fields per template",
+            marrow_image::bounds::MAX_RECORD_FIELDS,
+        ),
+        (
+            "enum",
+            "declared variants per template",
+            marrow_image::bounds::MAX_VARIANTS,
+        ),
+        (
+            "enum",
+            "declared payload leaves per template",
+            marrow_image::bounds::MAX_VARIANTS * marrow_image::bounds::MAX_PAYLOAD_FIELDS,
+        ),
+        (
+            "function",
+            "declared local slots per instance",
+            marrow_image::bounds::MAX_LOCALS,
+        ),
+        (
+            "function",
+            "declared statements per instance",
+            1 + 2 * ADMITTED_LOCALS + ADMITTED_CODE_PADDING + 1,
+        ),
+    ];
+
+    assert_eq!(
+        envelope, expected,
+        "the operation envelope the corpora drive moved; each figure is the bound that \
+         governs its construct, counted out of the generated source",
+    );
+    for (corpus, dimension, width) in &envelope {
+        println!("operation envelope [{corpus}] {dimension}: {width}");
+    }
+}
+
+
