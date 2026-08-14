@@ -18,12 +18,12 @@ rather than prose messages. CLI tests remain thin when the same behavior can be
 exercised below process rendering.
 
 The battery's wall time is a design constraint rather than a cleanup task, so a
-test takes the cheapest layer above that proves its invariant, and slow
-measurement is `#[ignore]`d with a stated reason and run with `--ignored`
-instead of joining the default battery. [Compilation and test
-speed](speed.md#test-architecture) states the rules; [project
-status](../status.md#compilation-and-test-speed) records the measured wall
-time.
+test takes the cheapest layer above that proves its invariant, and a test whose
+cost is out of proportion to the rest of the battery is `#[ignore]`d with a
+reason stating that cost and run explicitly with `--ignored`. [Compilation and
+test speed](speed.md) states the rules; [project
+status](../status.md#compilation-and-test-speed) records what each clock has
+measured.
 
 ## Fixtures
 

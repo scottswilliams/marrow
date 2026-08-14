@@ -68,8 +68,8 @@ Three intervals are ranked, in this order:
    every experiment on the implementation.
 
 This states a design constraint, not a result. Marrow makes no current claim
-about how fast it compiles: the first interval has no recorded baseline at all,
-and no measured comparison against another implementation exists. [Project
+about how fast it compiles: the first interval has no end-to-end baseline, and
+no measured comparison against another implementation exists. [Project
 status](status.md#compilation-and-test-speed) records what has and has not been
 measured; [Compilation and test speed](implementation/speed.md) states the
 design rules that follow for contributors.

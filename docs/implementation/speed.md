@@ -1,81 +1,80 @@
 # Compilation and test speed
 
-Marrow is designed around fast compilation and fast test execution. This is an
-architectural constraint applied when a design is chosen, not a maintenance
-activity and not a later optimization pass: it governs which representations,
-crate boundaries, algorithms, and test structures a change may introduce, and a
-design that is correct but slow is unfinished.
+Compilation and test execution speed is an architectural constraint on Marrow's
+design rather than a later optimization pass. It is settled when a
+representation, a crate boundary, or a test's evidence layer is chosen, and a
+design that is correct but slow is unfinished. This page is the normative
+standard for that constraint: the rules a change is reviewed against.
 
-The constraint never licenses an unsound shortcut, a skipped gate, or a
-weakened bound. Where speed and soundness genuinely conflict, soundness wins
-and the cost is recorded as a finding rather than absorbed silently.
-
-This page states the rules the implementation follows. It states no
-measurement and makes no claim about how fast Marrow is. [Project
-status](../status.md#compilation-and-test-speed) records what has been measured
-against each clock and what has no baseline.
+The constraint governs cost only. It never licenses an unsound shortcut, a
+skipped gate, or a weakened bound; where speed and soundness genuinely conflict,
+soundness wins and the cost is recorded as a finding. This page states no
+measurement — [project status](../status.md#compilation-and-test-speed) records
+what each clock has measured and what it has not.
 
 ## Three clocks
 
-Work is ranked against three wall-clock intervals, in this order:
+Work is ranked against three intervals, in this order:
 
-1. **Marrow compile time over `.mw` programs** — the interval between changing
-   a `.mw` source file and obtaining a diagnostic, a formatted file, an image,
-   or a test result. It is ranked first because a Marrow program's author pays
-   it on every edit, and because it is a property of the product rather than of
-   this repository.
-2. **Workspace test wall time** — the interval a contributor pays to run the
+1. **Marrow compile time over `.mw` programs.** The interval between changing a
+   `.mw` source file and obtaining a diagnostic, a formatted file, an image, or
+   a test result. It ranks first because a Marrow program's author pays it on
+   every edit, and because it belongs to the product rather than to this
+   repository.
+2. **Workspace test wall time.** The interval a contributor pays to run the
    battery, many times a day.
-3. **Rust clean and incremental build time** — the interval that gates every
+3. **Rust clean and incremental build time.** The interval that gates every
    experiment on the implementation itself.
 
-A change that materially increases one of these names the cause. An
-unexplained increase is a defect to investigate rather than an accepted new
-baseline.
+A broad gate records all three, so a regression is visible where it occurs. A
+change that materially increases one names the cause in its completion packet;
+an unexplained increase is a finding rather than an accepted new baseline. A
+clock with no recorded baseline cannot show a regression, so establishing the
+missing baselines is itself scheduled work.
 
-## Representation and algorithm rules
+## The rules
 
-- Prefer representations that are cheap to build and traverse over
-  representations that are only structurally elegant: arenas and interned
-  symbols over pointer-chasing graphs, indices over reference cycles, and flat
-  slices over nested allocations.
-- Prefer one pass over several.
-- Do not introduce whole-program analysis, a global fixpoint, or re-derivation
-  across phases where a single forward pass carries the fact.
-- A phase that re-parses, re-resolves, or re-walks what an earlier owner
-  already computed is a defect regardless of whether its result is correct.
-  The [ownership rule](README.md#ownership-rule) states that boundary from the
-  correctness side; this is its cost side.
+A change is reviewed against six rules.
 
-## Crate and dependency rules
+1. **Cheap to build and traverse beats structurally elegant.** Prefer arenas and
+   interned symbols to pointer-chasing graphs, indices to reference cycles, and
+   flat slices to nested allocations.
+2. **One pass, not several.** Do not introduce whole-program analysis, a global
+   fixpoint, or re-derivation across phases where a single forward pass carries
+   the fact.
+3. **A phase never recomputes what an owner already computed.** Re-parsing,
+   re-resolving, or re-walking an upstream owner's result is a defect regardless
+   of whether the result is correct. The [ownership
+   rule](README.md#ownership-rule) states that boundary from the correctness
+   side; this is its cost side.
+4. **Crates stay small behind narrow public seams**, so an edit's incremental
+   rebuild stays local to the owner it touches. The ownership rule already
+   demands the same boundaries for semantic reasons.
+5. **A heavyweight dependency needs a named reason.** Proc-macro-heavy and
+   monomorphization-heavy dependencies are paid for at every build, so each
+   needs a stated need beyond the approval and license review every dependency
+   takes. Where a call is not hot, prefer a typed enum or a `dyn` seam to
+   generics that multiply generated code.
+6. **A test takes the cheapest layer that proves its invariant.** Prefer
+   source-driven fixtures through the production parser, checker, or compiler to
+   integration binaries that spawn a process; keep CLI tests thin when the same
+   behavior is reachable below process rendering; share expensive setup across
+   the cases that need it; and keep a single test's wall time proportionate to
+   what it proves. The [evidence layers](testing.md) name what each layer buys.
 
-- Keep crates small behind narrow public seams, so an edit's incremental
-  rebuild stays local to the owner it touches. The
-  [ownership rule](README.md#ownership-rule) already demands the same
-  boundaries for semantic reasons.
-- A proc-macro-heavy or monomorphization-heavy dependency needs a named reason
-  that the standard library and existing dependencies cannot satisfy, in
-  addition to the approval and license review every dependency needs.
-- Where a call is not hot, prefer a typed enum or a `dyn` seam to generics that
-  multiply generated code.
+## Slow tests are opt-in
 
-## Test architecture
+A test whose cost is out of proportion to the rest of the battery is marked
+`#[ignore]` with a reason that states that cost, and is run explicitly with
+`--ignored`, so the default battery stays fast for the contributor who runs it
+many times a day. The reason is the place the cost is justified:
 
-Test wall time is a design property of the battery, not a cleanup task, so the
-[evidence layers](testing.md) are chosen for the cheapest layer that proves the
-invariant:
+```text
+#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no
+override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
+```
 
-- Prefer source-driven fixtures through the production parser, checker, or
-  compiler over integration binaries that spawn a process; keep CLI tests thin
-  when the same behavior is reachable below process rendering.
-- Share expensive setup across the cases that need it rather than rebuilding it
-  per case.
-- Avoid link-heavy integration-binary sprawl: an additional integration target
-  costs a link at every build.
-- Keep a single test's wall time proportionate to what it proves. A test that
-  costs minutes states why in its own source.
-- Slow measurement that is genuinely necessary — hostile-input measurement,
-  soak, and the encoding measurement harnesses — is marked `#[ignore]` with a
-  stated reason and run explicitly with `--ignored`, so it is opt-in rather
-  than part of the default battery. Adding a slow test to the default battery
-  is a design review item.
+The same treatment carries the measurement harnesses, whose output is a recorded
+number rather than an assertion, and the tests a sandboxed command environment
+cannot run because they spawn a process or bind a socket. Adding a slow test to
+the default battery is a design review item.

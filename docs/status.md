@@ -293,31 +293,40 @@ lane, rebuilt as a new owner:
 
 ## Compilation and test speed
 
-[Vision](vision.md#compilation-and-test-speed) ranks compilation and test speed
+[Vision](vision.md#compilation-and-test-speed) states compilation and test speed
 as a design constraint, and [Compilation and test
 speed](implementation/speed.md) states the rules that follow from it. This
 section records what has been measured against each of the three ranked clocks
-at the current revision. No statement that Marrow is fast is current.
+and what has not. Every figure names the revision and method it was taken with;
+a figure taken at one revision is not restated as current at another.
 
-- **Marrow compile time over `.mw` programs: no baseline.** The clock this
-  project ranks first has never been measured or recorded. How long the current
-  compiler takes over a `.mw` program of any size is unknown, so no statement
-  about it — including a statement that it is adequate — has evidence today.
-  Establishing a first baseline, and the workload and method that define it, is
-  outstanding work.
-- **Workspace test wall time: measured, one host, method not recorded.** At the
-  last recorded architecture-health sweep the battery counted 3,534 tests
-  across 229 suites, and its wall time measured approximately 144 seconds. That
-  figure is an internal trend reference taken on a single development host; it
-  names no platform, toolchain, or settings, and supports no comparison with
-  another machine or another project. Both numbers move as lanes land, and
-  neither is re-measured by reading this page.
-- **Rust clean and incremental build time: no recorded baseline.** Neither
-  time is recorded at the current revision.
+- **Marrow compile time over `.mw` programs: no end-to-end baseline.** No
+  measurement of a whole source-to-image compile over a `.mw` program of any
+  size is recorded, so no statement about that interval — including a statement
+  that it is adequate — has evidence. One segment of it is measured separately:
+  the editor re-parse path that answers a completion query costs under a
+  millisecond for a 64 KiB file and 54 ms for a file at the admission ceiling in
+  its densest shape, on the recorded host and in the optimized profile the
+  server ships in, pinned by budget tests ([Language server](tools/lsp.md),
+  [Bounded analysis facts](implementation/README.md#bounded-analysis-facts)).
+  Defining a whole-compile workload and taking its first baseline is outstanding
+  work.
+- **Workspace test wall time: 144.1 s serial, measured 2026-08-11 at
+  `71aa47d3`.** That sweep ran the battery serially — one test binary at a time,
+  unoptimized profile, on the recorded host — over 197 test binaries and 3,166
+  tests with none failing. Serial is the sweep's method and not a contributor's
+  cost: the ordinary parallel `cargo test --workspace` is faster, and measured
+  107 s at `4a2df7ce`, where the battery had grown to 3,439 tests. A serial
+  figure and a parallel figure are not comparable, and neither transfers to
+  another machine.
+- **Rust build time: 13 s clean at `4a2df7ce`; incremental not recorded.** A
+  clean workspace build into a fresh target directory measured 13 seconds on the
+  recorded host in the unoptimized profile. No incremental-rebuild figure is
+  recorded.
 
-A recorded figure here is a trend reference for this repository. It is neither
-a benchmark nor a performance guarantee, and a later measurement may replace it
-without notice.
+A broad gate records all three clocks. A change that materially increases one
+names the cause; an unexplained increase is a finding rather than an accepted
+new baseline.
 
 ## Future: v0.1 beta
 
