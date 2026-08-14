@@ -25,26 +25,65 @@ use source_projection::{is_ident_byte, is_test_only_file, production_code};
 /// Scope is all three crates that own a carrier this row widened: `marrow-compile`,
 /// `marrow-image` — which owns every one of them — and `marrow-verify`, the sealed
 /// domain they widen at. Spellings are the whole narrowing family, not one literal:
-/// `as u16`/`as u32` with any intervening whitespace or blanked comment, and the
-/// fallible `u16::try_from`/`u32::try_from`/`try_into` forms that narrow the same
-/// carriers by another route.
+/// `as u16`/`as u32` with any intervening whitespace or blanked comment, the fallible
+/// `u16::try_from`/`u32::try_from`/`try_into` forms that narrow the same carriers by
+/// another route, and **arithmetic over a narrow carrier** — a `+`, `-`, or `*` whose own
+/// expression names a `u16`/`u32` operand. Arithmetic is the spelling that has no
+/// conversion to find it by: `fn_base + row as u16` overflows the carrier without
+/// narrowing anything a cast scan can see, and it is a site of this census twice — once
+/// for the cast and once for the addition over it.
+///
+/// The blind spot, stated: arithmetic between two values that are *inferred* `u16` without
+/// either being spelled at the operand is invisible to a lexical scan, which has no types.
+/// Every such value in these crates reaches its carrier through one of the spellings above,
+/// so the site is censused where it is spelled; a carrier that stopped being spelled
+/// anywhere would leave this census with nothing to key on, which is why the widened
+/// carriers are newtypes rather than bare integers.
 ///
 /// Each surviving entry is either a function-family ordinal frozen for the function-slot
 /// refounding, a count bounded by its own construct's located diagnostic, or a checked
 /// conversion whose refusal is the closed builder-domain error.
+///
+/// Sites are compared by multiplicity, not by membership. Several sites of one crate share
+/// one normalized line — six `Self(index as u32)` mints do — and a membership difference
+/// cannot see one of them appear or vanish, so the census would stay green while its
+/// subject moved. Counting keys the comparison exactly without pinning line numbers, which
+/// every unrelated edit above a site would churn.
 #[test]
 fn every_narrowing_site_is_pinned_to_its_exact_census() {
-    let found = narrowing_sites();
-    let expected = sanctioned_narrowing_sites();
-    let missing: Vec<_> = expected.iter().filter(|s| !found.contains(s)).collect();
-    let added: Vec<_> = found.iter().filter(|s| !expected.contains(s)).collect();
+    let found = tallied(&narrowing_sites());
+    let expected = tallied(&sanctioned_narrowing_sites());
+    let mut added = Vec::new();
+    let mut missing = Vec::new();
+    for (site, count) in &found {
+        let sanctioned = expected.get(site).copied().unwrap_or(0);
+        if *count > sanctioned {
+            added.push((site.clone(), *count - sanctioned));
+        }
+    }
+    for (site, count) in &expected {
+        let present = found.get(site).copied().unwrap_or(0);
+        if *count > present {
+            missing.push((site.clone(), *count - present));
+        }
+    }
     assert!(
         missing.is_empty() && added.is_empty(),
         "the narrowing census moved. New sites must be adjudicated — either the value is \
          bounded by an exact located diagnostic and the census grows with that proof, or \
          it takes the wide-carrier treatment. Vanished sites must be removed from the \
-         census.\n  added: {added:#?}\n  missing: {missing:#?}",
+         census. Each entry is `(site, how many occurrences moved)`.\n  \
+         added: {added:#?}\n  missing: {missing:#?}",
     );
+}
+
+/// How many times each site occurs, so a repeated normalized line is compared by count.
+fn tallied(sites: &[NarrowingSite]) -> BTreeMap<NarrowingSite, usize> {
+    let mut tally = BTreeMap::new();
+    for site in sites {
+        *tally.entry(site.clone()).or_default() += 1;
+    }
+    tally
 }
 
 /// The census proves it is scanning something: the three crates together hold this many
@@ -87,6 +126,46 @@ fn fallible(n: usize) -> u16 {\n    u16::try_from(n).unwrap_or(0)\n}\n\
         4,
         "the plain, line-split, comment-separated, and fallible spellings all count, and \
          prose and test items do not: {hits:#?}",
+    );
+}
+
+/// The scanner reads arithmetic over a narrow carrier, and does not read an arithmetic
+/// operator whose own expression names no narrow carrier — nor a dereference, a return
+/// arrow, or a compound assignment, none of which are binary arithmetic.
+#[test]
+fn the_narrowing_census_reads_arithmetic_over_a_narrow_carrier() {
+    // The exact shape the cast scan could not see on its own account.
+    let carried = "fn probe(base: u16, row: usize) -> u16 {\n    base + row as u16\n}\n";
+    assert_eq!(
+        narrowing_hits_in(&production_code(carried)).len(),
+        2,
+        "the cast is one site and the addition over the narrowed carrier is a second",
+    );
+
+    let suffixed = "fn probe(base: u16) -> u16 {\n    base + 1u16\n}\n";
+    assert_eq!(
+        narrowing_hits_in(&production_code(suffixed)).len(),
+        1,
+        "a narrow-suffixed literal names the carrier at the operand",
+    );
+
+    let bound = "fn probe(base: usize) -> usize {\n    base + usize::from(u16::MAX)\n}\n";
+    assert_eq!(
+        narrowing_hits_in(&production_code(bound)).len(),
+        0,
+        "the addition is over a widened value: `u16::MAX` sits inside its own call window",
+    );
+
+    let wide = "fn probe(a: usize, b: usize) -> usize {\n    a + b * 2\n}\n";
+    assert!(
+        narrowing_hits_in(&production_code(wide)).is_empty(),
+        "arithmetic naming no narrow carrier is not a site",
+    );
+
+    let not_arithmetic = "fn probe(v: &u16, n: u16) -> u16 {\n    let mut t = *v;\n    t += n;\n    t\n}\n";
+    assert!(
+        narrowing_hits_in(&production_code(not_arithmetic)).is_empty(),
+        "a dereference, a return arrow, and a compound assignment are not binary arithmetic",
     );
 }
 
@@ -171,8 +250,64 @@ fn narrowing_hits_in(code: &str) -> Vec<String> {
     hits
 }
 
+/// The narrow-carrier spellings an arithmetic operand may name. A window holding one of
+/// these is arithmetic on a `u16`/`u32` carrier, whatever the surrounding types are.
+const NARROW_OPERAND_SPELLINGS: [&str; 10] = [
+    "as u16", "as u32", "u16::MAX", "u16::MIN", "u32::MAX", "u32::MIN", "u16::from", "u32::from",
+    "u16>", "u32>",
+];
+
+/// Whether an arithmetic operator opens at `at`, with `-` in `->`, `*` in a dereference or
+/// a raw pointer, and every compound-assignment or comparison form excluded.
+fn arithmetic_operator_at(bytes: &[u8], at: usize) -> Option<usize> {
+    let before = (0..at)
+        .rev()
+        .find(|index| !bytes[*index].is_ascii_whitespace())
+        .map(|index| bytes[index]);
+    let after = bytes.get(at + 1).copied();
+    // An operator directly beside another operator character is part of a compound form
+    // (`+=`, `<<`, `->`, `=*`), which is not the binary arithmetic this census reads.
+    let operand_before = before.is_some_and(|byte| {
+        is_ident_byte(byte) || byte == b')' || byte == b']' || byte == b'\'' || byte == b'"'
+    });
+    match bytes[at] {
+        b'+' | b'*' if operand_before && after != Some(b'=') => Some(at + 1),
+        b'-' if operand_before && after != Some(b'=') && after != Some(b'>') => Some(at + 1),
+        _ => None,
+    }
+}
+
+/// The expression window an arithmetic operator at `at` sits in: the text between the
+/// nearest enclosing delimiters. A window is one expression rather than a whole statement,
+/// so a narrow spelling elsewhere in the same statement does not make an unrelated
+/// operator a narrow-carrier site.
+fn operand_window(code: &str, bytes: &[u8], at: usize) -> (usize, usize) {
+    const BOUNDARY: [u8; 9] = [b';', b'{', b'}', b',', b'(', b')', b'=', b'&', b'|'];
+    let mut start = at;
+    while start > 0 && !BOUNDARY.contains(&bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = at;
+    while end < bytes.len() && !BOUNDARY.contains(&bytes[end]) {
+        end += 1;
+    }
+    let _ = code;
+    (start, end)
+}
+
 /// If a narrowing spelling starts at `at`, its end offset.
 fn narrowing_at(code: &str, bytes: &[u8], at: usize) -> Option<usize> {
+    if let Some(end) = arithmetic_operator_at(bytes, at) {
+        let (start, stop) = operand_window(code, bytes, at);
+        let window = &code[start..stop];
+        if NARROW_OPERAND_SPELLINGS
+            .iter()
+            .any(|spelling| window.contains(spelling))
+            || narrow_suffixed_literal(window)
+        {
+            return Some(end);
+        }
+    }
     let boundary = at == 0 || !is_ident_byte(bytes[at - 1]);
     if !boundary {
         return None;
@@ -208,6 +343,19 @@ fn narrowing_at(code: &str, bytes: &[u8], at: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether `window` names a narrow-suffixed integer literal — `1u16`, `0_u32` — which is
+/// a `u16`/`u32` carrier stated at the operand with no cast to find it by.
+fn narrow_suffixed_literal(window: &str) -> bool {
+    let bytes = window.as_bytes();
+    ["u16", "u32"].iter().any(|suffix| {
+        window.match_indices(suffix).any(|(at, _)| {
+            at > 0
+                && (bytes[at - 1].is_ascii_digit() || bytes[at - 1] == b'_')
+                && !bytes.get(at + 3).is_some_and(|byte| is_ident_byte(*byte))
+        })
+    })
 }
 
 /// A source line reduced to its identity: leading/trailing space removed and every
@@ -435,6 +583,13 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "types/mod.rs",
         "Self(u32::try_from(position).expect( ))",
     ),
+    (
+        "marrow-compile",
+        "types/mod.rs",
+        "let func = generics.fn_base + row as u16;",
+    ),
+    // The same line twice: the cast is one site and the addition over the narrowed
+    // carrier is a second, which is the arithmetic spelling this census had no reader for.
     (
         "marrow-compile",
         "types/mod.rs",
@@ -680,7 +835,12 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
     (
         "marrow-image",
         "value_dag.rs",
-        "let count = u32::try_from(self.nodes.len()).unwrap_or(u32::MAX);",
+        "let count = u32::try_from(self.store.len()).unwrap_or(u32::MAX);",
+    ),
+    (
+        "marrow-image",
+        "value_dag.rs",
+        "+ size_of::<u32>() as u64",
     ),
     (
         "marrow-image",
@@ -690,7 +850,7 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
     (
         "marrow-image",
         "value_dag.rs",
-        "u32::try_from(self.nodes.len()).map_err(|_| DraftStateError::CarrierDomain)?,",
+        "u32::try_from(self.store.len()).map_err(|_| DraftStateError::CarrierDomain)?,",
     ),
     (
         "marrow-verify",
