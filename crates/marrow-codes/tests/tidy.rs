@@ -1261,7 +1261,6 @@ const FILE_LINE_CAP: usize = 3_000;
 /// honest — without it the longest files in the tree would be the only ones free
 /// to grow without limit.
 const OVER_CAP_ALLOWLIST: &[(&str, usize)] = &[
-    ("crates/marrow-compile/src/analysis.rs", 3_444),
     ("crates/marrow-compile/src/compile.rs", 3_750),
     ("crates/marrow-compile/src/lower/durable.rs", 3_107),
     ("crates/marrow-compile/src/lower/exprs.rs", 3_371),
@@ -1269,7 +1268,7 @@ const OVER_CAP_ALLOWLIST: &[(&str, usize)] = &[
         "crates/marrow-compile/src/types/instantiation_state_tests.rs",
         3_731,
     ),
-    ("crates/marrow-compile/src/types/mod.rs", 4_407),
+    ("crates/marrow-compile/src/types/mod.rs", 4_215),
     ("crates/marrow-kernel/src/durable/store/tests.rs", 3_590),
     ("crates/marrow-verify/tests/hostile.rs", 5_541),
 ];

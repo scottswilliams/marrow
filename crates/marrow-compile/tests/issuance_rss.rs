@@ -348,6 +348,40 @@ fn inner_hostile_amplification_compile() {
 /// The verdicts are pinned in the direction they hold, so this gate fails if an arm comes
 /// under the ceiling (the finding is fixed and its record must be retired) as well as if
 /// one goes over. It is not a ceiling raised to fit a measurement.
+/// **The tier split, and why it is where it is.**
+///
+/// The workspace pillar puts compilation and test speed first and says a test costing
+/// minutes does not belong in the default battery: genuinely necessary hostile measurement
+/// goes behind an explicit opt-in tier. This gate is that pillar's first case, and the
+/// split is drawn from measurement rather than from taste.
+///
+/// Three of the four corpora compile in under a second, because their divergence is carried
+/// by a self-nesting field and the 256-deep mint bound stops them early. The function arm is
+/// the one that reaches the 4096-wide count ceiling, and at the code-byte envelope it lowers
+/// roughly 27 million statements: **about 500 s at the `dev` profile on this host.** It is
+/// the whole cost.
+///
+/// So the arm's *measurement* is opt-in and everything else about it stays in the default
+/// battery. `each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it` (0.03 s),
+/// `the_recorded_operation_envelope_is_exact` (0.03 s), and
+/// `the_function_arm_sits_exactly_at_the_code_byte_envelope` (0.29 s) all read or compile the
+/// arm's own generator, so a regression in how the arm is *built* still fails loudly by
+/// default. Only the resident-set figure moves behind the tier.
+///
+/// Run the opt-in tier with:
+///
+/// ```text
+/// cargo test -p marrow-compile --test issuance_rss -- --ignored
+/// ```
+///
+/// Measured wall time: default tier **about 5 s**, opt-in tier **about 500 s**.
+const FAST_CORPORA: &[&str] = &["type", "enum", "both"];
+
+/// The maximal arm, measured only in the opt-in tier. It is the hostile maximum — the
+/// figure the recorded verdict table calls 14.60x — so nothing here may quietly claim the
+/// default battery measured it.
+const MAXIMAL_CORPUS: &str = "function";
+
 const RECORDED_ARM_VERDICTS: &[(&str, bool)] = &[
     ("both", true),
     ("enum", false),
@@ -367,8 +401,22 @@ const RECORDED_ARM_VERDICTS: &[(&str, bool)] = &[
 /// to be written rather than the worst case.
 #[test]
 fn a_hostile_amplification_compile_stays_within_its_measured_rss_ceiling() {
+    measure_corpora(FAST_CORPORA);
+}
+
+/// The maximal arm's peak — the opt-in half of the tier. This is the figure the recorded
+/// table calls 14.60x the declared ceiling, and the default battery does **not** measure it.
+#[test]
+#[ignore = "the maximal amplification arm: about 500 s, run with --ignored"]
+fn the_maximal_amplification_arm_stays_within_its_measured_rss_ceiling() {
+    measure_corpora(&[MAXIMAL_CORPUS]);
+}
+
+/// Measure each named corpus in its own subprocess and hold every peak against its recorded
+/// verdict. A platform that publishes no peak fails here rather than passing unmeasured.
+fn measure_corpora(corpora: &[&str]) {
     let mut peaks = Vec::new();
-    for corpus in ["type", "enum", "function", "both"] {
+    for corpus in corpora.iter().copied() {
         let peak = measured_peak_for(corpus);
         assert!(
             peak > 0,
@@ -524,14 +572,16 @@ fn each_amplification_arm_independently_reaches_the_instantiation_bound() {
         "the generic-enum arm alone drives instantiation to the shared ceiling",
     );
     assert!(
-        reaches_the_instantiation_bound(&function_only_corpus()),
-        "the generic-function arm alone drives instantiation to the shared ceiling",
-    );
-    assert!(
         reaches_the_instantiation_bound(&hostile_corpus()),
-        "both arms together drive instantiation to the shared ceiling",
+        "every arm together drives generic minting to a bound",
     );
 }
+
+// The maximal arm's *liveness* is not asserted separately here. Compiling it costs ~500 s,
+// and `inner_hostile_amplification_compile` — the subprocess the peak measurement already
+// spawns for it — asserts the same `check.instantiation_limit` refusal on the same corpus.
+// A second compile would double the opt-in tier's wall time to prove a fact the first one
+// already proves, which is the disproportion the speed pillar names.
 
 /// Each corpus is driven at the width of the bound that governs the construct it widens.
 ///

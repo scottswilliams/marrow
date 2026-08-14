@@ -1039,6 +1039,58 @@ fn proof_clone_validates_every_ready_row_even_when_ids_are_duplicated() {
     assert_eq!(draft_snapshot(&draft), draft_before);
 }
 
+/// A fill copies exactly one template body per instantiation — the figure, counted where
+/// the copy happens rather than inferred from a process footprint.
+///
+/// The two `clone`s in the struct and enum fills are a real per-instantiation cost, and the
+/// comments beside them used to cite the issuance RSS gate as their measurement. That
+/// citation does not hold: the RSS gate measures an **aggregate resident peak**, which
+/// cannot attribute a figure to one term, and its divergent corpora stop on the 256-deep
+/// mint bound rather than the 4096-wide instantiation ceiling, so "driven to the ceiling"
+/// was not a safe proxy for the number of copies either.
+///
+/// This is the specific measurement. It pins the copy as exactly linear in the
+/// instantiation count and in the declared body width — one entry per declared field, per
+/// instantiation, and not one entry per *resolved* field or per probe.
+#[test]
+fn a_fill_copies_exactly_one_template_body_per_instantiation() {
+    const FIELDS: usize = 7;
+    let names: Vec<String> = (0..FIELDS).map(|field| format!("f{field}")).collect();
+    let fields: Vec<(&str, TypeExpr)> = names
+        .iter()
+        .map(|field| (field.as_str(), name("T")))
+        .collect();
+
+    let arguments = [
+        GArg::Scalar(ScalarType::Int),
+        GArg::Scalar(ScalarType::Bool),
+        GArg::Scalar(ScalarType::Text),
+    ];
+
+    let (_, counts) = crate::types::capture_scaling_counts(|| {
+        let mut registry = registry(vec![template("Wide", fields)]);
+        let mut draft = fresh_draft();
+        for (index, argument) in arguments.iter().enumerate() {
+            registry
+                .mint_type_instance(&mut draft, 0, &[*argument], site(index as u32 + 2))
+                .expect("each distinct argument mints its own ready row");
+        }
+        // A repeated argument is deduped by the mint, so it copies no body: the term is
+        // linear in the *instantiation* count, not in the call count.
+        registry
+            .mint_type_instance(&mut draft, 0, &[arguments[0]], site(9))
+            .expect("a repeated argument reuses the row it already minted");
+    });
+
+    assert_eq!(
+        counts.template_body_clone_entries,
+        arguments.len() * FIELDS,
+        "one copy of the declared body per instantiation, exactly — {} instantiations of a \
+         {FIELDS}-field template",
+        arguments.len(),
+    );
+}
+
 /// A failed extension returns the admitted row directory to the registry.
 ///
 /// The directory is taken out of its cell before the fallible build and extension run, so

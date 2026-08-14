@@ -2286,8 +2286,8 @@ fn lowering_call_sites(code: &str) -> Vec<(String, String)> {
 #[test]
 fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
     let analysis = production_code(
-        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis.rs"))
-            .expect("read the analysis owner"),
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis/facts.rs"))
+            .expect("read the fact ledger owner"),
     );
 
     assert!(

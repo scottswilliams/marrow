@@ -92,6 +92,17 @@ pub(crate) struct ScalingCounts {
     /// On a divergent-monomorphization program the pre-repair per-instance render made
     /// this Σ O(depth) = O(instances²); the repair holds it to the monomorphic baseline.
     pub(crate) hover_spelling_chars: usize,
+    /// Template-body declaration entries copied out per instantiation — one per declared
+    /// field for a struct fill, and one per declared variant plus one per declared payload
+    /// leaf for an enum fill.
+    ///
+    /// This counts the copy itself rather than the process footprint around it. The
+    /// issuance RSS gate measures an aggregate resident peak, which cannot attribute a
+    /// figure to this term; a corpus can also stop on the mint-depth bound long before the
+    /// instantiation ceiling, so "driven to the ceiling" is not a safe proxy for the
+    /// number of copies either. The exact figure is pinned by
+    /// `a_fill_copies_exactly_one_template_body_per_instantiation`.
+    pub(crate) template_body_clone_entries: usize,
 }
 
 thread_local! {
@@ -105,6 +116,7 @@ thread_local! {
         proof_clones: 0,
         proof_clone_rows: 0,
         hover_spelling_chars: 0,
+        template_body_clone_entries: 0,
     }) };
 }
 

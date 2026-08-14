@@ -1489,3 +1489,216 @@ impl TypeMetadataSession<'_> {
         self.remember(result)
     }
 }
+
+/// The image-identity directory of the monomorphization pass, plus the image-order
+/// watermarks it has already classified. Extended in place as rows and collections are
+/// appended; it holds identity mapping and per-walk marks, not argument keys.
+pub(super) struct RowDirectory {
+    scratch: MetadataScratch,
+    pub(super) declared: DeclaredCounts,
+    pub(super) built_type_insts: usize,
+    pub(super) built_collections: usize,
+}
+
+/// The declared-type population a directory classified. DeclarationSite records (with their
+/// groups), structs, and enums, and the groups of each record, are all fixed once
+/// monomorphization begins — the declare phase completes before the first mint — so in
+/// the production pipeline incremental extension only appends generic rows and
+/// collections, and this length triple is a complete change-detector: a differing count
+/// forces a rebuild. It is kept O(1) rather than summing group counts per probe so the
+/// reuse check adds no per-mint factor in the declared-type count. A test that mutates a
+/// committed declared type out of that append order reclassifies via
+/// `invalidate_row_directory`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct DeclaredCounts {
+    records: usize,
+    structs: usize,
+    enums: usize,
+}
+
+impl DeclaredCounts {
+    pub(super) fn of(registry: &TypeRegistry) -> Self {
+        Self {
+            records: registry.records.len(),
+            structs: registry.structs.len(),
+            enums: registry.enums.len(),
+        }
+    }
+}
+
+impl RowDirectory {
+    /// A directory classifying every currently declared and instantiated row, with its
+    /// watermarks set to the current image lengths. Used to seed the cache.
+    pub(super) fn build_full(view: &TypeMetadataView<'_>) -> Result<Self, GenericInvariant> {
+        Ok(Self {
+            scratch: MetadataScratch::try_new(view)?,
+            declared: DeclaredCounts::of(view.registry),
+            built_type_insts: view.generics.type_insts.len(),
+            built_collections: view.collections.len(),
+        })
+    }
+
+    /// Classify the type instantiations and collections appended since the last build,
+    /// extending the directory in image order. Rows below the watermark were classified
+    /// on a prior probe and are not revisited. A `(template, args)` semantic-key collision
+    /// cannot arise on an appended row (mint dedup admits only a fresh key), so extension
+    /// checks only image-identity placement; the full `try_new` semantic-key scan still
+    /// runs on every cold or invalidated build and on every unrouted projection path.
+    pub(super) fn extend(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
+        // Atomic. A placement can fail on an identity collision, and it resizes the owner
+        // before it does, so a failed extension would otherwise leave scratch rows the
+        // watermark does not account for — a directory claiming a classification it does
+        // not hold. The captured lengths are the inverse of exactly the appends below, and
+        // running it here is what lets an admitted cache survive a failed probe instead of
+        // being dropped with the classification it already paid for.
+        let placed_records = self.scratch.records.len();
+        let placed_enums = self.scratch.enums.len();
+        let prior_type_insts = self.built_type_insts;
+        let prior_collections = self.built_collections;
+        match self.extend_appended(view) {
+            Ok(()) => Ok(()),
+            Err(invariant) => {
+                self.rewind_to(
+                    placed_records,
+                    placed_enums,
+                    prior_type_insts,
+                    prior_collections,
+                );
+                Err(invariant)
+            }
+        }
+    }
+
+    /// The appending half of [`Self::extend`], which its caller makes atomic.
+    fn extend_appended(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
+        let type_insts = view.generics.type_insts.len();
+        for row in self.built_type_insts..type_insts {
+            // During an isolated template proof the reused directory already classifies the
+            // whole settled population, so extension only reaches the rows the proof body
+            // itself mints. Counting them here is the proof's per-template row cost — the
+            // owner-decoupled successor to the discarded clone's whole-population replay.
+            #[cfg(test)]
+            if view.generics.argument_domain == ArgumentDomain::TemplateProof {
+                bump_scaling(|counts| counts.proof_clone_rows += 1);
+            }
+            let id = view.generics.type_insts[row].id;
+            place_generic_row(&mut self.scratch.records, &mut self.scratch.enums, row, id)?;
+        }
+        self.built_type_insts = type_insts;
+        let collections = view.collections.len();
+        for index in self.built_collections..collections {
+            let target = collection_generic_target(
+                &self.scratch.records,
+                &self.scratch.enums,
+                &self.scratch.collection_generic_targets,
+                index,
+                view.collections[index],
+            );
+            self.scratch.collection_generic_targets.push(target);
+        }
+        self.built_collections = collections;
+        Ok(())
+    }
+
+    /// Discard the classification of every row and collection appended during a
+    /// generic-template proof pass, restoring the directory to the pre-proof image so the
+    /// cache stays reusable without a full rebuild and holds no truncated-row identity a
+    /// later real mint would collide with. The image record/enum id ceilings shrink to the
+    /// pre-proof draft counts (`records`/`enums`) — every proof row reserved an id at or
+    /// above them — and the watermarks return to the pre-proof instantiation and collection
+    /// counts. The per-walk marks are re-sized on the next probe by `reset_marks`.
+    pub(super) fn rewind_to(
+        &mut self,
+        records: usize,
+        enums: usize,
+        type_insts: usize,
+        collections: usize,
+    ) {
+        self.scratch.records.truncate(records);
+        self.scratch.enums.truncate(enums);
+        self.scratch
+            .collection_generic_targets
+            .truncate(collections);
+        self.built_type_insts = type_insts;
+        self.built_collections = collections;
+    }
+    // drop-path audit sentinel: end of RowDirectory::rewind_to
+
+    /// Reset the per-walk visitation marks to cover every current row and collection.
+    /// The directory content persists; only the traversal state is cleared for the next
+    /// probe.
+    pub(super) fn reset_marks(&mut self, view: &TypeMetadataView<'_>) {
+        let type_insts = view.generics.type_insts.len();
+        let collections = view.collections.len();
+        self.scratch.seen_rows.clear();
+        self.scratch.seen_rows.resize(type_insts, false);
+        self.scratch.seen_collections.clear();
+        self.scratch.seen_collections.resize(collections, false);
+        self.scratch.tasks.clear();
+    }
+}
+
+/// A borrowed row directory. On drop it is returned to the registry cache so the next
+/// mint probe extends it rather than rebuilding over every prior row.
+pub(super) struct RowDirectoryGuard<'r> {
+    registry: &'r TypeRegistry,
+    directory: Option<RowDirectory>,
+}
+
+impl<'r> RowDirectoryGuard<'r> {
+    /// Seat a classified directory in its guard. The fields stay private to this owner, so
+    /// the only way to hold a directory outside the registry's cell is through the guard
+    /// that puts it back.
+    pub(super) fn seat(registry: &'r TypeRegistry, directory: RowDirectory) -> Self {
+        Self {
+            registry,
+            directory: Some(directory),
+        }
+    }
+}
+
+impl RowDirectoryGuard<'_> {
+    #[expect(
+        clippy::expect_used,
+        reason = "the directory is Some from construction until Drop takes it; no other \
+                  path clears it, so this guard cannot observe None"
+    )]
+    pub(super) fn scratch(&mut self) -> &mut MetadataScratch {
+        &mut self
+            .directory
+            .as_mut()
+            .expect("directory is present until drop")
+            .scratch
+    }
+}
+
+impl std::ops::Deref for RowDirectoryGuard<'_> {
+    type Target = MetadataScratch;
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the directory is Some from construction until Drop takes it; no other \
+                  path clears it, so this guard cannot observe None"
+    )]
+    fn deref(&self) -> &MetadataScratch {
+        &self
+            .directory
+            .as_ref()
+            .expect("directory is present until drop")
+            .scratch
+    }
+}
+
+impl std::ops::DerefMut for RowDirectoryGuard<'_> {
+    fn deref_mut(&mut self) -> &mut MetadataScratch {
+        self.scratch()
+    }
+}
+
+impl Drop for RowDirectoryGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(directory) = self.directory.take() {
+            *self.registry.row_directory.borrow_mut() = Some(directory);
+        }
+    }
+}

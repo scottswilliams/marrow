@@ -517,13 +517,18 @@ fn the_wire_plan_is_closed_and_no_post_plan_path_is_image_too_large() {
     )
     .expect("read the measure core");
     let code = without_literals(&measure);
-    let constructors: Vec<usize> = symbol_positions(&code, "new")
-        .filter(|at| code[..*at].ends_with("LegacyV0WirePlan::"))
-        .collect();
+    // **Producers, not call sites.** Counting `LegacyV0WirePlan::new` call sites asks how
+    // often the constructor is *invoked*, which says nothing about how many functions can
+    // mint one: an associated `fn forge(..) -> Self` inside the plan's own impl block
+    // produces a plan and is never spelled `LegacyV0WirePlan::new` anywhere. The subject is
+    // the set of functions whose return type names the carrier, and it is asserted by name.
+    let producers = carrier_producers(&code, "LegacyV0WirePlan");
     assert_eq!(
-        constructors.len(),
-        1,
-        "the plan has exactly one constructor call (the counting run's)",
+        producers,
+        vec!["measure".to_string(), "new".to_string()],
+        "exactly two functions produce the wire plan — `PolicyClean::measure`, the counting \
+         run that earns it, and the plan's own constructor. A third is a forgeable witness \
+         that the whole image fits.",
     );
     let (_, tail) = code
         .split_once("fn emit_image")
@@ -1857,6 +1862,109 @@ fn the_durable_body_has_one_writer() {
     assert!(
         encode.contains("sink: &mut impl ImageByteSink"),
         "that writer is sink-generic, so counting and building cannot diverge",
+    );
+}
+
+/// Every function in `code` whose return type names `carrier`, sorted and deduplicated.
+///
+/// A function inside `impl ... Carrier { .. }` that returns `Self` is a producer too: `Self`
+/// names the carrier there, and an associated constructor spelled that way is exactly the
+/// shape a call-site count cannot see.
+fn carrier_producers(code: &str, carrier: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for (at, _) in code.match_indices("fn ") {
+        let rest = &code[at + "fn ".len()..];
+        let Some(open) = rest.find('(') else { continue };
+        let name = rest[..open].trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        // The parameter list is brace/paren matched rather than searched for: a parameter
+        // may itself contain `;` (an array type such as `[u32; 10]` does), and reading that
+        // as a trait item's terminator silently drops the very constructor this looks for.
+        let mut depth = 0usize;
+        let mut close = None;
+        for (offset, byte) in rest[open..].bytes().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { continue };
+        // The return clause runs from the close paren to the body brace; a trait item ends
+        // at `;` with no body and produces nothing.
+        let after = &rest[close + 1..];
+        let brace = after.find('{');
+        let semi = after.find(';');
+        let ret_end = match (brace, semi) {
+            (Some(brace), Some(semi)) if semi < brace => continue,
+            (Some(brace), _) => brace,
+            (None, _) => continue,
+        };
+        let Some((_, ret)) = after[..ret_end].split_once("->") else {
+            continue;
+        };
+        let names_carrier = ret.contains(carrier)
+            || (ret.contains("Self") && enclosing_impl(code, at).contains(carrier));
+        if names_carrier {
+            found.push(name.to_string());
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The text of the `impl` header governing the item at `at`, or an empty string.
+fn enclosing_impl(code: &str, at: usize) -> String {
+    let before = &code[..at];
+    // `impl<'d> Carrier<'d>` carries no space after `impl`, and an `impl` at offset zero has
+    // no preceding newline. Both spellings are real and a scan that missed either would
+    // report a clean result over the very block this gate reads.
+    let start = match before.rfind("\nimpl") {
+        Some(newline) => newline + 1,
+        None if before.starts_with("impl") => 0,
+        None => return String::new(),
+    };
+    let header = &code[start..];
+    header[..header.find('{').unwrap_or(0)].to_string()
+}
+
+/// The plant probe: the producer scanner sees a constructor a call-site count cannot.
+///
+/// This is the exact shape the finding named — an internal associated function returning
+/// `Self`, never spelled `Carrier::new` at any call site.
+#[test]
+fn the_carrier_producer_scanner_sees_a_planted_internal_constructor() {
+    let planted = "impl<'d> LegacyV0WirePlan<'d> {\n    \
+                   fn new(draft: &Draft) -> Self {\n        todo\n    }\n    \
+                   fn forge(bytes: usize) -> Self {\n        todo\n    }\n    \
+                   fn site_projection(&self) -> SiteWireProjection<'d> {\n        todo\n    }\n}\n";
+    let producers = carrier_producers(planted, "LegacyV0WirePlan");
+    assert_eq!(
+        producers,
+        vec!["forge".to_string(), "new".to_string()],
+        "the scanner finds the planted `forge` by its return type, and does not mistake a \
+         projection accessor for a producer",
+    );
+
+    // And the real measure core is a live subject for the same scanner.
+    let measure = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("measure.rs"),
+    )
+    .expect("read the measure core");
+    assert!(
+        !carrier_producers(&without_literals(&measure), "LegacyV0WirePlan").is_empty(),
+        "the measure core produces the plan, so the gate above has a live subject",
     );
 }
 
