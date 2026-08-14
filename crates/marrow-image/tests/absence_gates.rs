@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 #[path = "../../marrow-compile/tests/common/source_projection.rs"]
 mod source_projection;
-use source_projection::{is_ident_byte, without_cfg_test_items, without_literals};
+use source_projection::{is_ident_byte, production_code, without_cfg_test_items, without_literals};
 
 fn src_files() -> Vec<PathBuf> {
     fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -2309,3 +2309,92 @@ const PRE_PLAN_IMAGE_TOO_LARGE_SITES: &[(&str, &str)] = &[
     // runs before any plan exists.
     ("measure.rs", "return Err(ImageBuildError::ImageTooLarge);"),
 ];
+
+/// A coupled mint prepares its whole delta before it mutates anything.
+///
+/// `intern_text` appends a string row and a constant row with their two index entries and
+/// whatever policy kinds either append crosses. Deriving and mutating one row and then the
+/// other leaves the string appended if the constant's own derivation refuses — which is
+/// what the read-only preflight-accumulator law forbids. The split that makes this hold is
+/// typed: `prepare_*` takes `&self`, so it *cannot* mutate, and `commit_*` returns no
+/// `Result`, so it cannot stop partway.
+#[test]
+fn a_coupled_mint_prepares_its_whole_delta_before_it_mutates() {
+    let code = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/draft.rs"))
+            .expect("read the draft owner"),
+    );
+
+    // The preparing halves cannot mutate, and the committing halves cannot fail.
+    for prepare in ["fn prepare_string(&self", "fn prepare_const(&self"] {
+        assert!(
+            code.contains(prepare),
+            "`{prepare}...` takes the draft by shared reference, which is what makes \
+             preparation unable to touch an owner",
+        );
+    }
+    for commit in [
+        "fn commit_string(&mut self, prepared: PreparedString) -> StrId",
+        "fn commit_const(&mut self, prepared: PreparedConst) -> ConstId",
+    ] {
+        assert!(
+            code.contains(commit),
+            "`{commit}` returns no Result, so applying a prepared delta cannot stop partway",
+        );
+    }
+
+    assert!(
+        compound_prepares_before_committing(&code),
+        "`intern_text` must prepare both rows before it commits either; committing the \
+         string first leaves it appended when the constant's derivation refuses",
+    );
+}
+
+/// Whether `code`'s `intern_text` prepares both halves before committing either.
+fn compound_prepares_before_committing(code: &str) -> bool {
+    // The owner, not the transaction surface's one-line delegation to it: both are spelled
+    // `fn intern_text`, and the wrapper comes first and prepares nothing. A gate that
+    // scanned the wrapper would pass whatever the owner did.
+    let start = code.find("pub(crate) fn intern_text").unwrap_or_else(|| {
+        panic!("the `intern_text` owner is present, so this gate has a subject")
+    });
+    let body = &code[start..];
+    let end = body
+        .find("\n    }")
+        .unwrap_or_else(|| panic!("`intern_text` has a body"));
+    let body = &body[..end];
+    let last_prepare = ["prepare_string(", "prepare_const("]
+        .iter()
+        .map(|call| {
+            body.find(call)
+                .unwrap_or_else(|| panic!("`intern_text` prepares through `{call}`"))
+        })
+        .max()
+        .unwrap_or(0);
+    let first_commit = ["commit_string(", "commit_const("]
+        .iter()
+        .filter_map(|call| body.find(call))
+        .min()
+        .unwrap_or_else(|| panic!("`intern_text` commits a prepared delta"));
+    last_prepare < first_commit
+}
+
+/// The ordering scanner sees a planted inversion.
+#[test]
+fn the_coupled_mint_scanner_sees_a_planted_inversion() {
+    let ordered = "pub(crate) fn intern_text(&mut self) {\n        let a = self.prepare_string(t)?;\n        \
+                   let b = self.prepare_const(v)?;\n        self.commit_string(a);\n        \
+                   self.commit_const(b)\n    }\n";
+    assert!(
+        compound_prepares_before_committing(ordered),
+        "the scanner accepts the real ordering",
+    );
+
+    let inverted = "pub(crate) fn intern_text(&mut self) {\n        let a = self.prepare_string(t)?;\n        \
+                    self.commit_string(a);\n        let b = self.prepare_const(v)?;\n        \
+                    self.commit_const(b)\n    }\n";
+    assert!(
+        !compound_prepares_before_committing(inverted),
+        "the scanner must reject a body that commits its first row before preparing its second",
+    );
+}

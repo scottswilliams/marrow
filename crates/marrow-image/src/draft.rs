@@ -811,6 +811,29 @@ impl From<crate::site_plan::SitePlanStateError> for DraftStateError {
     }
 }
 
+/// One prepared string mint: the id the row will carry, and — when the row is new — the
+/// spelling to append and the policy observations appending it crosses.
+struct PreparedString {
+    id: StrId,
+    fresh: Option<FreshString>,
+}
+
+struct FreshString {
+    text: String,
+    observations: Vec<(TablePolicyKind, CurrentValidationOccurrence)>,
+}
+
+/// One prepared constant mint (see [`PreparedString`]).
+struct PreparedConst {
+    id: ConstId,
+    fresh: Option<FreshConst>,
+}
+
+struct FreshConst {
+    value: ConstValue,
+    crosses: bool,
+}
+
 /// The private structural image a savepoint carries and a transaction's journal
 /// restores to: every owner's append-only length, the durable graph's checkpoint,
 /// and the conflict/receipt slots. Deliberately **not** a ledger copy — the one-shot
@@ -1342,25 +1365,55 @@ impl ImageDraft {
     /// a table at the `u32` carrier boundary is the closed carrier-domain refusal
     /// before any owner mutates.
     pub(crate) fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
+        let prepared = self.prepare_string(text)?;
+        Ok(self.commit_string(prepared))
+    }
+
+    /// Derive what interning `text` would append — the row's id, the spelling to append if
+    /// it is new, and every policy kind the append would cross — without touching an owner.
+    ///
+    /// This is the read-only half of a string mint, and it is what lets a *compound*
+    /// operation prepare both of its rows before either lands. Every way the mint can fail
+    /// lives here, so the matching commit cannot stop partway.
+    fn prepare_string(&self, text: &str) -> Result<PreparedString, DraftStateError> {
         if let Some(&id) = self.string_index.get(text) {
-            return Ok(id);
+            return Ok(PreparedString { id, fresh: None });
         }
         let id = StrId(wide_ordinal(self.strings.len())?);
+        let mut observations = Vec::new();
         if text.len() > bounds::MAX_STRING_BYTES {
-            self.ledger.observe(
+            observations.push((
                 TablePolicyKind::StringBytes,
                 CurrentValidationOccurrence::at_row(id.0),
-            );
+            ));
         }
-        self.strings.push(text.to_string());
-        self.string_index.insert(text.to_string(), id);
-        if self.strings.len() > bounds::MAX_STRINGS {
-            self.ledger.observe(
+        if self.strings.len() + 1 > bounds::MAX_STRINGS {
+            observations.push((
                 TablePolicyKind::Strings,
                 CurrentValidationOccurrence::at_row(bounds::MAX_STRINGS as u32),
-            );
+            ));
         }
-        Ok(id)
+        Ok(PreparedString {
+            id,
+            fresh: Some(FreshString {
+                text: text.to_string(),
+                observations,
+            }),
+        })
+    }
+
+    /// Apply a prepared string mint. Infallible by construction.
+    fn commit_string(&mut self, prepared: PreparedString) -> StrId {
+        let PreparedString { id, fresh } = prepared;
+        let Some(FreshString { text, observations }) = fresh else {
+            return id;
+        };
+        for (kind, occurrence) in observations {
+            self.ledger.observe(kind, occurrence);
+        }
+        self.string_index.insert(text.clone(), id);
+        self.strings.push(text);
+        id
     }
 
     pub(crate) fn intern_int(&mut self, value: i64) -> Result<ConstId, DraftStateError> {
@@ -1378,23 +1431,19 @@ impl ImageDraft {
     /// complete before the first insert, so a refusal can never leave half the
     /// compound behind.
     pub(crate) fn intern_text(&mut self, text: &str) -> Result<ConstId, DraftStateError> {
-        match self.string_index.get(text).copied() {
-            Some(str_id) => {
-                if let Some(&id) = self.const_index.get(&ConstValue::Text(str_id)) {
-                    return Ok(id);
-                }
-                wide_ordinal(self.consts.len())?;
-            }
-            None => {
-                // A fresh string implies a fresh `Text` constant — its `StrId` does
-                // not exist yet, so no constant can hold it — and both mints must be
-                // inside their carrier domains before either lands.
-                wide_ordinal(self.strings.len())?;
-                wide_ordinal(self.consts.len())?;
-            }
-        }
-        let str_id = self.intern_string(text)?;
-        self.intern_const(ConstValue::Text(str_id))
+        // One read-only delta for the whole compound: the string row, the constant row,
+        // both index entries, and every policy kind either append crosses — all derived
+        // before a single owner is touched. Deriving and mutating one row and then the
+        // other would leave the string appended if the constant's own derivation refused.
+        //
+        // A fresh string implies a fresh `Text` constant: its `StrId` does not exist yet,
+        // so no constant can already hold it. The constant's ordinal does not depend on the
+        // string commit either, so both halves are derivable from the same preimage.
+        let string = self.prepare_string(text)?;
+        let konst = self.prepare_const(ConstValue::Text(string.id))?;
+        // Nothing above mutated an owner, and nothing below can fail.
+        self.commit_string(string);
+        Ok(self.commit_const(konst))
     }
 
     /// Intern a `date` constant (days since the Unix epoch).
@@ -1413,19 +1462,38 @@ impl ImageDraft {
     }
 
     fn intern_const(&mut self, value: ConstValue) -> Result<ConstId, DraftStateError> {
+        let prepared = self.prepare_const(value)?;
+        Ok(self.commit_const(prepared))
+    }
+
+    /// The read-only half of a constant mint (see [`Self::prepare_string`]).
+    fn prepare_const(&self, value: ConstValue) -> Result<PreparedConst, DraftStateError> {
         if let Some(&id) = self.const_index.get(&value) {
-            return Ok(id);
+            return Ok(PreparedConst { id, fresh: None });
         }
         let id = ConstId(wide_ordinal(self.consts.len())?);
+        let crosses = self.consts.len() + 1 > bounds::MAX_CONSTS;
+        Ok(PreparedConst {
+            id,
+            fresh: Some(FreshConst { value, crosses }),
+        })
+    }
+
+    /// Apply a prepared constant mint. Infallible by construction.
+    fn commit_const(&mut self, prepared: PreparedConst) -> ConstId {
+        let PreparedConst { id, fresh } = prepared;
+        let Some(FreshConst { value, crosses }) = fresh else {
+            return id;
+        };
         self.consts.push(value);
         self.const_index.insert(value, id);
-        if self.consts.len() > bounds::MAX_CONSTS {
+        if crosses {
             self.ledger.observe(
                 TablePolicyKind::Consts,
                 CurrentValidationOccurrence::at_row(bounds::MAX_CONSTS as u32),
             );
         }
-        Ok(id)
+        id
     }
 
     /// Add a record type with its **complete** definition: the row never spends a
