@@ -2398,3 +2398,211 @@ fn the_over_wide_visibility_enumeration_is_recorded() {
         "every enumerated item was checked against its file",
     );
 }
+
+/// Every method of the type registry that mutates through a shared reference, with the
+/// reason its receiver is `&self` rather than `&mut self`.
+///
+/// The registry holds four `RefCell` owners, so interior mutation is possible from any
+/// shared borrow. Confining it to `&mut self` wherever a caller can supply one is what
+/// keeps the remaining set small enough to reason about, and this is that remaining set —
+/// stated rather than counted, because "twelve or so `&self` mutators" is not a fact anyone
+/// can check against the tree.
+///
+/// Each entry names why the exclusive receiver is unavailable. Two families cover all of
+/// them: monomorphization is re-entrant — a resolution walk holding `&TypeRegistry` is what
+/// triggers the instantiation that must record into it — and the diagnostic transfer is
+/// reached through `LoweringScope::registry()`, which yields a shared borrow.
+///
+/// The census is of the *spelling* sites, over production code only. A `#[cfg(test)]`
+/// affordance is not part of the production confinement and is projected away before the
+/// scan. A shared-borrow method that reaches an owner through one of these — `row_directory`
+/// is reached that way by `with_metadata_session`, which is how the row directory is
+/// mutated through `&self` — is a caller of a stated site, not a twelfth site: the set below
+/// is every place in the registry where a shared borrow becomes a mutation.
+const SHARED_RECEIVER_INTERIOR_MUTATORS: &[(&str, &str)] = &[
+    (
+        "adopt_generic_diagnostics",
+        "the transfer is reached through a scope that yields a shared registry borrow",
+    ),
+    (
+        "enter_template_proof",
+        "a proof opens while the resolution that requested it holds the shared borrow",
+    ),
+    (
+        "existing_type_instance",
+        "re-entrant: the resolution walk holding the shared borrow is what looks one up",
+    ),
+    (
+        "finish_fill_stack",
+        "re-entrant: the fill it closes was entered from under the same shared borrow",
+    ),
+    (
+        "record_active_dependency",
+        "re-entrant: recorded during the walk that discovered the dependency",
+    ),
+    (
+        "record_collection_payload_rejection",
+        "re-entrant: the rejection is stated where the payload is resolved",
+    ),
+    (
+        "record_limit",
+        "re-entrant: the ceiling is reached inside a resolution, not between two",
+    ),
+    (
+        "record_semantic_dependencies",
+        "re-entrant: recorded during the walk that resolved them",
+    ),
+    (
+        "row_directory",
+        "the classification cache is consulted by projections that hold only `&self`",
+    ),
+    (
+        "settle_fill_batch",
+        "re-entrant: the batch settles inside the resolution that opened it",
+    ),
+    (
+        "take_generic_diagnostics",
+        "the transfer is reached through a scope that yields a shared registry borrow",
+    ),
+];
+
+/// The type registry's interior mutation is confined to the stated set.
+///
+/// This is the enforcement artifact for the confinement, and it is an exact census in both
+/// directions: a new `&self` mutator fails until it is stated with its reason, and one that
+/// gains an exclusive receiver fails until it is removed. Counting them would not do — the
+/// defect this replaces was a signature moving to `&mut self` while the family it belonged
+/// to stayed shared, which no total can see.
+#[test]
+fn the_type_registry_confines_its_interior_mutation_to_a_stated_set() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("types")
+            .join("mod.rs"),
+    )
+    .expect("read the type registry");
+    let code = production_code(&source);
+
+    let found = shared_receiver_mutators(&code);
+    let stated: Vec<&str> = SHARED_RECEIVER_INTERIOR_MUTATORS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(
+        found, stated,
+        "the type registry's shared-receiver interior mutators moved. A new one is a \
+         widening of the confinement and must be stated with the reason an exclusive \
+         receiver is unavailable; one that vanished has been confined and its entry goes.",
+    );
+    for (name, reason) in SHARED_RECEIVER_INTERIOR_MUTATORS {
+        assert!(
+            !reason.is_empty(),
+            "`{name}` is stated without the reason its receiver is shared",
+        );
+    }
+
+    // The scan is reading real code: the registry does hold interior-mutable owners, and a
+    // projection that blanked the file would report an empty, trivially matching census.
+    assert!(
+        code.contains("RefCell"),
+        "the registry's interior-mutable owners are still there to confine",
+    );
+    assert!(!found.is_empty(), "the scan found no mutator at all");
+}
+
+/// Every `fn` in `code` whose receiver is `&self` and whose body mutates through an
+/// interior-mutable owner, sorted by name.
+///
+/// A body is attributed to the nearest preceding declaration, and a receiver is read from
+/// the balanced parameter list rather than the declaration line, so a signature broken
+/// across lines is classified by what it says and not by where it wrapped.
+fn shared_receiver_mutators(code: &str) -> Vec<&str> {
+    const MUTATIONS: [&str; 3] = ["borrow_mut()", "try_borrow_mut(", "get_mut()"];
+    let bytes = code.as_bytes();
+    let mut found: Vec<&str> = Vec::new();
+    let mut at = 0usize;
+    while let Some(hit) = code[at..].find("fn ") {
+        let start = at + hit;
+        at = start + 3;
+        if start > 0 && is_ident_byte(bytes[start - 1]) {
+            continue;
+        }
+        let rest = &code[start + 3..];
+        let name_len = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        if name_len == 0 {
+            continue;
+        }
+        let name = &rest[..name_len];
+        let Some(open) = code[start..].find('(').map(|n| start + n) else {
+            continue;
+        };
+        let Some(params_end) = balanced(bytes, open, b'(', b')') else {
+            continue;
+        };
+        let receiver = code[open + 1..params_end]
+            .trim_start()
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if !(receiver == "&self" || receiver.starts_with("&self ")) {
+            continue;
+        }
+        let Some(body_open) = code[params_end..].find('{').map(|n| params_end + n) else {
+            continue;
+        };
+        let Some(body_end) = balanced(bytes, body_open, b'{', b'}') else {
+            continue;
+        };
+        // A nested `fn` inside this body owns its own mutations, so the body is read only
+        // up to the first nested declaration.
+        let body = &code[body_open..body_end];
+        let body = match body.find("fn ") {
+            Some(nested) => &body[..nested],
+            None => body,
+        };
+        if MUTATIONS.iter().any(|token| body.contains(token)) {
+            found.push(name);
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// The offset of the delimiter closing the one that opens at `from`.
+fn balanced(bytes: &[u8], from: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, byte) in bytes[from..].iter().enumerate() {
+        if *byte == open {
+            depth += 1;
+        } else if *byte == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(from + offset);
+            }
+        }
+    }
+    None
+}
+
+/// The receiver reader classifies by the parameter list, not by the declaration line, and
+/// attributes a mutation to the body that spells it.
+#[test]
+fn the_shared_receiver_reader_separates_a_receiver_from_a_line_break() {
+    let planted = "impl R {\n\
+    fn shared(&self) -> u8 {\n        self.cell.borrow_mut().take()\n    }\n\
+    fn exclusive(&mut self) -> u8 {\n        self.cell.get_mut().take()\n    }\n\
+    fn wrapped(\n        &self,\n        other: u8,\n    ) -> u8 {\n        self.cell.borrow_mut().set(other)\n    }\n\
+    fn reader(&self) -> u8 {\n        self.cell.borrow().get()\n    }\n\
+    fn free(cell: &Cell) -> u8 {\n        cell.borrow_mut().take()\n    }\n}\n";
+    assert_eq!(
+        shared_receiver_mutators(planted),
+        vec!["shared", "wrapped"],
+        "an exclusive receiver, a shared reader, and a free function are not this family, \
+         and a receiver on its own line is still a receiver",
+    );
+}
