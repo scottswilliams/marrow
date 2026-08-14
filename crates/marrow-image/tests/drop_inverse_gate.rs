@@ -270,10 +270,7 @@ fn the_counting_run_spells_no_allocation() {
                 // candidate would walk the audit into code this path never enters — the
                 // `encode` case below demonstrates it on this crate — so resolution by
                 // exhaustion is stated at the body and not claimed transitively.
-                if bodies
-                    .iter()
-                    .all(|(_, candidate)| count_clean(candidate))
-                {
+                if bodies.iter().all(|(_, candidate)| count_clean(candidate)) {
                     cleared_by_exhaustion += 1;
                 } else {
                     ambiguous.insert(callee.clone());
@@ -344,7 +341,9 @@ const UNRESOLVED_COUNT_PATH_NAMES: &[&str] = &[
     // `new` is the clearest case and stands for the other two: several of this crate's
     // `new` definitions build owners, so exhaustion cannot clear the name — a scan that
     // cannot say which `new` runs cannot say the call is allocation-free.
-    "members", "members_of", "new",
+    "members",
+    "members_of",
+    "new",
 ];
 
 /// The adjudicated allocations on the counting path: `(file, function, token)`.

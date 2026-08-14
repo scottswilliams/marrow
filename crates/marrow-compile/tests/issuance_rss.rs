@@ -719,5 +719,3 @@ fn the_recorded_operation_envelope_is_exact() {
         println!("operation envelope [{corpus}] {dimension}: {width}");
     }
 }
-
-

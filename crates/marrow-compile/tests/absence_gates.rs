@@ -2201,8 +2201,8 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
             "`{name}` hands a producer the live fact ledger, so a body abandoned after \
              writing facts leaves them in the ledger a snapshot is projected from",
         );
-        let staged_facts = arguments.contains("staged_facts.sink(")
-            || arguments.contains("FactSink::Discarding");
+        let staged_facts =
+            arguments.contains("staged_facts.sink(") || arguments.contains("FactSink::Discarding");
         assert!(
             staged_facts,
             "`{name}` must hand its producer a staged fact owner, or `FactSink::Discarding` \
@@ -2326,8 +2326,7 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
     // The ledger keeps no row-admission surface a producer could reach: hover and gap rows
     // exist only on the staged owner.
     assert!(
-        !analysis.contains("fn admit_hover")
-            && !analysis.contains("fn admit_gap"),
+        !analysis.contains("fn admit_hover") && !analysis.contains("fn admit_gap"),
         "the ledger admits body-produced rows only through `absorb`, against a released \
          staged body",
     );
