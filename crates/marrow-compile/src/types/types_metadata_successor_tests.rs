@@ -45,13 +45,16 @@ fn enum_template(template_name: &str, param: &str) -> TypeTemplate {
         name_span: SourceSpan::default(),
         reserved: None,
         type_params: vec![(param.to_string(), None)],
-        body: TemplateBody::Enum(vec![TemplateVariant {
-            name: "item".to_string(),
-            payload: vec![TemplatePayload {
-                name: "value".to_string(),
-                ty: name(param),
-            }],
-        }]),
+        body: TemplateBody::Enum(
+            vec![TemplateVariant {
+                name: "item".to_string(),
+                payload: vec![TemplatePayload {
+                    name: "value".to_string(),
+                    ty: name(param),
+                }],
+            }]
+            .into(),
+        ),
     }
 }
 

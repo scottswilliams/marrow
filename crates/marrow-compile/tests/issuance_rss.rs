@@ -307,7 +307,7 @@ fn inner_hostile_amplification_compile() {
 }
 
 /// **The recorded verdict per corpus: whether its measured peak is under the declared
-/// owned-heap ceiling.** Two of the four are not, and that is a finding about the
+/// owned-heap ceiling.** One of the four is not, and that is a finding about the
 /// compiler rather than a ceiling to raise.
 ///
 /// Measured on this host — aarch64 macOS 25.5, the workspace's pinned toolchain, `cargo
@@ -317,24 +317,33 @@ fn inner_hostile_amplification_compile() {
 ///
 /// ```text
 /// corpus     peak RSS         vs. 640 MiB ceiling   what it drives
-/// type         272,302,080 B   0.41x  under         MAX_RECORD_FIELDS fields per fill,
+/// type          78,610,432 B   0.12x  under         MAX_RECORD_FIELDS fields per fill,
 ///                                                   256 deep (the mint-depth bound)
-/// enum       1,075,691,520 B   1.60x  OVER          MAX_VARIANTS x MAX_PAYLOAD_FIELDS per
+/// enum         262,995,968 B   0.39x  under         MAX_VARIANTS x MAX_PAYLOAD_FIELDS per
 ///                                                   fill, 256 deep
-/// function   9,799,499,776 B  14.60x  OVER          MAX_LOCALS-2 locals AND the 64-KiB
+/// function   9,452,208,128 B  14.08x  OVER          MAX_LOCALS-2 locals AND the 64-KiB
 ///                                                   code envelope, 4096 instances
-/// both         292,864,000 B   0.44x  under         the type arm reaches its depth bound
+/// both          99,549,184 B   0.15x  under         the type arm reaches its depth bound
 ///                                                   first and stops the compile
 /// ```
 ///
-/// The function arm is the hostile maximum and it is **14.60x** the declared ceiling. Two
-/// successive corpus defects hid it. The first read `MAX_STRUCT_LEAVES` — a durable
-/// value-shape bound whose own declaration says it does not scale with the record width —
-/// as the width of a generic `struct` template, leaving every arm sixty-four times narrow
-/// with no enum arm at all. The second measured only one of a function body's two width
-/// dimensions: the arm filled the local frame and carried a fraction of the 64 KiB of code
-/// a function admits, and each instance retains a copy of the code as well as of the frame.
-/// Padding to the code envelope moved the figure from 1.42 GB to 9.80 GB.
+/// **The enum arm's overshoot is retired here, not reclassified.** It was recorded at
+/// 1,075,691,520 B (1.60x OVER) while each fill copied the template's whole declared body
+/// per instantiation — the enum body being the larger of the two, `MAX_VARIANTS` variants
+/// each of `MAX_PAYLOAD_FIELDS` leaves. The fills now read the declared entries through a
+/// shared handle and copy nothing, and the arm's peak fell 4.09x to 0.39x of the ceiling.
+/// The type and combined arms fell with it (3.46x and 2.94x) without changing verdict.
+///
+/// The function arm is the hostile maximum and it is **14.08x** the declared ceiling — the
+/// same finding at 3.5% less, since a function instance retains its own frame and code
+/// rather than a type template's body. Two successive corpus defects hid it. The first read
+/// `MAX_STRUCT_LEAVES` — a durable value-shape bound whose own declaration says it does not
+/// scale with the record width — as the width of a generic `struct` template, leaving every
+/// arm sixty-four times narrow with no enum arm at all. The second measured only one of a
+/// function body's two width dimensions: the arm filled the local frame and carried a
+/// fraction of the 64 KiB of code a function admits, and each instance retains a copy of the
+/// code as well as of the frame. Padding to the code envelope moved the figure from 1.42 GB
+/// to 9.80 GB.
 ///
 /// The combined corpus is **not** the maximum and cannot be: the type arm's divergence is
 /// carried by a self-nesting field, so it exhausts the 256-deep mint bound long before the
@@ -378,13 +387,13 @@ fn inner_hostile_amplification_compile() {
 const FAST_CORPORA: &[&str] = &["type", "enum", "both"];
 
 /// The maximal arm, measured only in the opt-in tier. It is the hostile maximum — the
-/// figure the recorded verdict table calls 14.60x — so nothing here may quietly claim the
+/// figure the recorded verdict table calls 14.08x — so nothing here may quietly claim the
 /// default battery measured it.
 const MAXIMAL_CORPUS: &str = "function";
 
 const RECORDED_ARM_VERDICTS: &[(&str, bool)] = &[
     ("both", true),
-    ("enum", false),
+    ("enum", true),
     ("function", false),
     ("type", true),
 ];
@@ -405,7 +414,7 @@ fn a_hostile_amplification_compile_stays_within_its_measured_rss_ceiling() {
 }
 
 /// The maximal arm's peak — the opt-in half of the tier. This is the figure the recorded
-/// table calls 14.60x the declared ceiling, and the default battery does **not** measure it.
+/// table calls 14.08x the declared ceiling, and the default battery does **not** measure it.
 #[test]
 #[ignore = "the maximal amplification arm: about 500 s, run with --ignored"]
 fn the_maximal_amplification_arm_stays_within_its_measured_rss_ceiling() {
@@ -443,7 +452,7 @@ fn measure_corpora(corpora: &[&str]) {
         // A runaway regression inside a recorded overshoot is still a regression: the
         // over/under classification alone would absorb a further doubling of an arm that is
         // already recorded as over. This tripwire sits above the largest recorded figure —
-        // the function arm's 14.60x — and catches a doubling of it. It is a regression
+        // the function arm's 14.08x — and catches a doubling of it. It is a regression
         // tripwire read from the recorded measurement, not a ceiling: the declared
         // owned-heap authority above is the only ceiling, and it is not moved here.
         assert!(

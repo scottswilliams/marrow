@@ -92,16 +92,16 @@ pub(crate) struct ScalingCounts {
     /// On a divergent-monomorphization program the pre-repair per-instance render made
     /// this Σ O(depth) = O(instances²); the repair holds it to the monomorphic baseline.
     pub(crate) hover_spelling_chars: usize,
-    /// Template-body declaration entries copied out per instantiation — one per declared
-    /// field for a struct fill, and one per declared variant plus one per declared payload
-    /// leaf for an enum fill.
+    /// Template-body declaration entries a fill copied out of the template — one per
+    /// declared field for a struct fill, and one per declared variant plus one per
+    /// declared payload leaf for an enum fill.
     ///
     /// This counts the copy itself rather than the process footprint around it. The
     /// issuance RSS gate measures an aggregate resident peak, which cannot attribute a
     /// figure to this term; a corpus can also stop on the mint-depth bound long before the
     /// instantiation ceiling, so "driven to the ceiling" is not a safe proxy for the
     /// number of copies either. The exact figure is pinned by
-    /// `a_fill_copies_exactly_one_template_body_per_instantiation`.
+    /// `a_fill_copies_no_template_body_entries`.
     pub(crate) template_body_clone_entries: usize,
 }
 
@@ -184,9 +184,19 @@ pub(super) fn capture_alias_cycle_counts<T>(run: impl FnOnce() -> T) -> (T, Alia
     (result, counts)
 }
 
-/// Count one template body copied out for an instantiation.
-pub(super) fn count_template_body_copy(entries: usize) {
-    bump_scaling(|counts| counts.template_body_clone_entries += entries);
+/// Count the declaration entries one fill copied out of a template body.
+///
+/// The distinction is ownership, not a claim the caller makes about itself: a fill that
+/// reads the body through a handle the template still holds copies nothing, and one
+/// holding the only handle to those entries owns a private copy of all of them. A fill
+/// that stops sharing therefore charges itself here without the counting call changing.
+pub(super) fn count_template_body_copy<T>(body: &Rc<[T]>, entries: impl FnOnce(&[T]) -> usize) {
+    let copied = if Rc::strong_count(body) == 1 {
+        entries(body)
+    } else {
+        0
+    };
+    bump_scaling(|counts| counts.template_body_clone_entries += copied);
 }
 
 /// The declaration entries an enum template body carries: one per declared variant plus

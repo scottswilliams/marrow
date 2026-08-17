@@ -59,13 +59,16 @@ fn enum_template(name: &str, payload: TypeExpr) -> TypeTemplate {
         name_span: SourceSpan::default(),
         reserved: None,
         type_params: vec![("T".to_string(), None)],
-        body: TemplateBody::Enum(vec![TemplateVariant {
-            name: "value".to_string(),
-            payload: vec![TemplatePayload {
-                name: "item".to_string(),
-                ty: payload,
-            }],
-        }]),
+        body: TemplateBody::Enum(
+            vec![TemplateVariant {
+                name: "value".to_string(),
+                payload: vec![TemplatePayload {
+                    name: "item".to_string(),
+                    ty: payload,
+                }],
+            }]
+            .into(),
+        ),
     }
 }
 
@@ -1039,21 +1042,20 @@ fn proof_clone_validates_every_ready_row_even_when_ids_are_duplicated() {
     assert_eq!(draft_snapshot(&draft), draft_before);
 }
 
-/// A fill copies exactly one template body per instantiation — the figure, counted where
-/// the copy happens rather than inferred from a process footprint.
+/// A fill copies no template-body entries, whatever the instantiation count — the figure,
+/// counted where a copy would happen rather than inferred from a process footprint.
 ///
-/// The two `clone`s in the struct and enum fills are a real per-instantiation cost, and the
-/// comments beside them used to cite the issuance RSS gate as their measurement. That
-/// citation does not hold: the RSS gate measures an **aggregate resident peak**, which
-/// cannot attribute a figure to one term, and its divergent corpora stop on the 256-deep
-/// mint bound rather than the 4096-wide instantiation ceiling, so "driven to the ceiling"
-/// was not a safe proxy for the number of copies either.
+/// A fill must read the declared entries while minting through the exclusively held
+/// registry, and it reaches them through a handle the template still holds rather than a
+/// body of its own. The counter charges a fill for the entries it owns privately, so a
+/// fill that stops sharing charges itself here without the counting call changing.
 ///
-/// This is the specific measurement. It pins the copy as exactly linear in the
-/// instantiation count and in the declared body width — one entry per declared field, per
-/// instantiation, and not one entry per *resolved* field or per probe.
+/// No aggregate stands in for this. The issuance RSS gate measures an **aggregate resident
+/// peak**, which cannot attribute a figure to one term, and its divergent corpora stop on
+/// the 256-deep mint bound rather than the 4096-wide instantiation ceiling, so "driven to
+/// the ceiling" is not a safe proxy for the number of copies either.
 #[test]
-fn a_fill_copies_exactly_one_template_body_per_instantiation() {
+fn a_fill_copies_no_template_body_entries() {
     const FIELDS: usize = 7;
     let names: Vec<String> = (0..FIELDS).map(|field| format!("f{field}")).collect();
     let fields: Vec<(&str, TypeExpr)> = names
@@ -1067,26 +1069,33 @@ fn a_fill_copies_exactly_one_template_body_per_instantiation() {
         GArg::Scalar(ScalarType::Text),
     ];
 
+    // Both fills, in one window: the struct arm and the enum arm reach their declared
+    // entries by different code, so a figure over one of them says nothing about the other.
     let (_, counts) = crate::types::capture_scaling_counts(|| {
-        let mut registry = registry(vec![template("Wide", fields)]);
+        let mut registry = registry(vec![
+            template("Wide", fields),
+            enum_template("Wrap", name("T")),
+        ]);
         let mut draft = fresh_draft();
-        for (index, argument) in arguments.iter().enumerate() {
+        for template in [0, 1] {
+            for (index, argument) in arguments.iter().enumerate() {
+                registry
+                    .mint_type_instance(&mut draft, template, &[*argument], site(index as u32 + 2))
+                    .expect("each distinct argument mints its own ready row");
+            }
+            // A repeated argument is deduped by the mint, so it reaches no body at all: the
+            // term is linear in the *instantiation* count, not in the call count.
             registry
-                .mint_type_instance(&mut draft, 0, &[*argument], site(index as u32 + 2))
-                .expect("each distinct argument mints its own ready row");
+                .mint_type_instance(&mut draft, template, &[arguments[0]], site(9))
+                .expect("a repeated argument reuses the row it already minted");
         }
-        // A repeated argument is deduped by the mint, so it copies no body: the term is
-        // linear in the *instantiation* count, not in the call count.
-        registry
-            .mint_type_instance(&mut draft, 0, &[arguments[0]], site(9))
-            .expect("a repeated argument reuses the row it already minted");
     });
 
     assert_eq!(
         counts.template_body_clone_entries,
-        arguments.len() * FIELDS,
-        "one copy of the declared body per instantiation, exactly — {} instantiations of a \
-         {FIELDS}-field template",
+        0,
+        "no declared body is copied at all — {} instantiations each of a {FIELDS}-field \
+         struct template and a one-payload enum template",
         arguments.len(),
     );
 }
@@ -2191,11 +2200,14 @@ fn reserved_readers_require_the_fixed_member_contract_not_only_template_agreemen
         .iter()
         .position(|inst| inst.id == TypeInstId::Enum(option))
         .expect("Option row exists");
-    let TemplateBody::Enum(template_variants) = &mut registry.type_templates[option_template].body
-    else {
-        panic!("Option template is enum-shaped")
+    let mut template_variants = {
+        let TemplateBody::Enum(variants) = &registry.type_templates[option_template].body else {
+            panic!("Option template is enum-shaped")
+        };
+        variants.to_vec()
     };
     template_variants[OPTION_NONE as usize].name = "nil".to_string();
+    registry.type_templates[option_template].body = TemplateBody::Enum(template_variants.into());
     let mut generics = registry.generics.borrow_mut();
     let TypeInstState::Ready(InstBody::Enum(variants)) = &mut generics.type_insts[option_row].state
     else {
@@ -2599,7 +2611,8 @@ fn missing_reserved_template_fails_without_unwinding() {
 #[test]
 fn reserved_option_wrong_kind_fails_without_unwinding() {
     let mut registry = registry(reserved_templates());
-    registry.type_templates[0].body = TemplateBody::Struct(vec![("value".to_string(), name("T"))]);
+    registry.type_templates[0].body =
+        TemplateBody::Struct(vec![("value".to_string(), name("T"))].into());
     let mut draft = fresh_draft();
     let registry_before = stable_snapshot(&registry);
     let draft_before = draft.encode().expect("empty draft encodes");
@@ -2660,7 +2673,7 @@ fn resolve_garg_reports_exact_wrong_option_and_result_template_kinds() {
             .iter()
             .position(|candidate| candidate.reserved == Some(reserved))
             .expect("reserved template exists");
-        templates[template].body = TemplateBody::Struct(Vec::new());
+        templates[template].body = TemplateBody::Struct(Vec::new().into());
         let mut registry = registry(templates);
         let args = match reserved {
             Reserved::Option => vec![name("int")],

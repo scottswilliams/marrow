@@ -182,7 +182,8 @@ fn ready_body_nested_template_contract_fails_every_selected_boundary_exactly() {
         let inner_template = registry.generics.borrow().type_insts[inner_row].template;
         let expected = match fault {
             Fault::TemplateKind => {
-                registry.type_templates[inner_template].body = TemplateBody::Enum(Vec::new());
+                registry.type_templates[inner_template].body =
+                    TemplateBody::Enum(Vec::new().into());
                 GenericInvariant::TemplateKindMismatch {
                     template: inner_template,
                     expected: TypeInstKind::Enum,
@@ -257,7 +258,8 @@ fn ready_body_matcher_visits_deep_borrowed_template_once_per_node() {
             expected = apply("List", vec![expected]);
         }
     }
-    registry.type_templates[0].body = TemplateBody::Struct(vec![("value".to_string(), expected)]);
+    registry.type_templates[0].body =
+        TemplateBody::Struct(vec![("value".to_string(), expected)].into());
     registry.generics.borrow_mut().type_insts[0].state =
         TypeInstState::Ready(InstBody::Struct(vec![("value".to_string(), actual)]));
     let owner_before = stable_snapshot(&registry);
@@ -280,12 +282,16 @@ fn ready_body_matcher_visits_deep_borrowed_template_once_per_node() {
     // recursive destructor after proving the production matcher is iterative.
     let body = std::mem::replace(
         &mut registry.type_templates[0].body,
-        TemplateBody::Struct(vec![("value".to_string(), name("T"))]),
+        TemplateBody::Struct(vec![("value".to_string(), name("T"))].into()),
     );
     let TemplateBody::Struct(mut fields) = body else {
         panic!("Deep remains struct-shaped")
     };
-    let (_, mut current) = fields.pop().expect("Deep has one field");
+    // Moved out of the shared entries rather than cloned: the replaced body holds the
+    // only handle to them, and a deep type expression is as hostile to a recursive
+    // `Clone` as it is to a recursive `Drop`.
+    let entries = Rc::get_mut(&mut fields).expect("the replaced body is the only handle");
+    let mut current = std::mem::replace(&mut entries[0].1, name("T"));
     loop {
         match current {
             TypeExpr::Apply { mut args, .. } => {
@@ -386,7 +392,7 @@ fn ready_template_id_mismatch_is_typed_after_body_id_validation() {
     let enum_id = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
         .expect("Option row mints ready");
-    registry.type_templates[0].body = TemplateBody::Struct(Vec::new());
+    registry.type_templates[0].body = TemplateBody::Struct(Vec::new().into());
     let expected = GenericInvariant::TemplateKindMismatch {
         template: 0,
         expected: TypeInstKind::Struct,

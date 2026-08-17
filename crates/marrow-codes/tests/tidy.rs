@@ -1268,7 +1268,7 @@ const OVER_CAP_ALLOWLIST: &[(&str, usize)] = &[
         "crates/marrow-compile/src/types/instantiation_state_tests.rs",
         3_731,
     ),
-    ("crates/marrow-compile/src/types/mod.rs", 4_215),
+    ("crates/marrow-compile/src/types/mod.rs", 4_214),
     ("crates/marrow-kernel/src/durable/store/tests.rs", 3_590),
     ("crates/marrow-verify/tests/hostile.rs", 5_541),
 ];

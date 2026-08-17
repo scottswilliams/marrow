@@ -27,16 +27,19 @@ pub(super) fn reserved_templates() -> Vec<TypeTemplate> {
             name_span: SourceSpan::default(),
             reserved: Some(Reserved::Option),
             type_params: vec![("T".to_string(), None)],
-            body: TemplateBody::Enum(vec![
-                TemplateVariant {
-                    name: "none".to_string(),
-                    payload: Vec::new(),
-                },
-                TemplateVariant {
-                    name: "some".to_string(),
-                    payload: vec![payload(param("T"))],
-                },
-            ]),
+            body: TemplateBody::Enum(
+                vec![
+                    TemplateVariant {
+                        name: "none".to_string(),
+                        payload: Vec::new(),
+                    },
+                    TemplateVariant {
+                        name: "some".to_string(),
+                        payload: vec![payload(param("T"))],
+                    },
+                ]
+                .into(),
+            ),
         },
         TypeTemplate {
             name: "Result".to_string(),
@@ -44,16 +47,19 @@ pub(super) fn reserved_templates() -> Vec<TypeTemplate> {
             name_span: SourceSpan::default(),
             reserved: Some(Reserved::Result),
             type_params: vec![("T".to_string(), None), ("E".to_string(), None)],
-            body: TemplateBody::Enum(vec![
-                TemplateVariant {
-                    name: "ok".to_string(),
-                    payload: vec![payload(param("T"))],
-                },
-                TemplateVariant {
-                    name: "err".to_string(),
-                    payload: vec![payload(param("E"))],
-                },
-            ]),
+            body: TemplateBody::Enum(
+                vec![
+                    TemplateVariant {
+                        name: "ok".to_string(),
+                        payload: vec![payload(param("T"))],
+                    },
+                    TemplateVariant {
+                        name: "err".to_string(),
+                        payload: vec![payload(param("E"))],
+                    },
+                ]
+                .into(),
+            ),
         },
     ]
 }
@@ -172,7 +178,7 @@ pub(super) fn register_type_templates(
             name_span: decl.name_span,
             reserved: None,
             type_params: type_param_names(&decl.type_params),
-            body: TemplateBody::Struct(fields),
+            body: TemplateBody::Struct(fields.into()),
         });
     }
     for (at, file, decl) in enums {
@@ -247,7 +253,7 @@ pub(super) fn register_type_templates(
             name_span: decl.name_span,
             reserved: None,
             type_params: type_param_names(&decl.type_params),
-            body: TemplateBody::Enum(variants),
+            body: TemplateBody::Enum(variants.into()),
         });
     }
     Ok(())

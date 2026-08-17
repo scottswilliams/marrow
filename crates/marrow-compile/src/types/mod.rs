@@ -21,6 +21,7 @@ use std::cell::Cell;
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use marrow_codes::Code;
 use marrow_image::{
@@ -661,10 +662,16 @@ pub(crate) type ResolvedEnumVariants = Vec<(String, Vec<GArg>)>;
 /// The member shape of a generic type template: a `struct`'s named fields or an
 /// `enum`'s variants, each carried as a type expression over the template's type
 /// parameters and substituted at instantiation.
+///
+/// The entries are shared rather than owned outright. A template body is fixed once the
+/// registry is built, and every fill of it must read the declared entries while minting
+/// through the exclusively held registry — a borrow the registry's own `&mut` methods
+/// cannot admit. A shared handle releases that borrow without copying the entries, so the
+/// per-instantiation cost of reaching a body is a refcount, not a body.
 #[derive(Clone)]
 enum TemplateBody {
-    Struct(Vec<(String, TypeExpr)>),
-    Enum(Vec<TemplateVariant>),
+    Struct(Rc<[(String, TypeExpr)]>),
+    Enum(Rc<[TemplateVariant]>),
 }
 
 impl TemplateBody {
@@ -1790,7 +1797,7 @@ impl TypeRegistry {
             .get(template)
             .ok_or(GenericInvariant::TypeTemplateMissing(template))?;
         match &template_info.body {
-            TemplateBody::Struct(fields) => Ok(fields.clone()),
+            TemplateBody::Struct(fields) => Ok(fields.to_vec()),
             TemplateBody::Enum(_) => Err(GenericInvariant::TemplateKindMismatch {
                 template,
                 expected: TypeInstKind::Struct,
@@ -2354,25 +2361,20 @@ impl TypeRegistry {
                 }
                 .into());
             };
-            // The declaration list is copied out rather than held: resolving a field
-            // mints through the exclusively held registry, and no read of a template may
-            // stay live across that. The copy is exact — `type_templates` is fixed after
-            // build — and costs the same order per instantiation as the resolved and
-            // definition vectors this fill already builds from it.
-            //
-            // Resource bound: one copy per instantiation of the template's declared
-            // fields, at most `MAX_INSTANTIATIONS` copies of the widest record body. The
-            // copy is counted where it happens — an aggregate resident-set figure cannot
-            // attribute one term, and the divergent struct corpus stops on the 256-deep
-            // mint bound rather than the 4096-wide count, so neither is evidence for it.
-            // `a_fill_copies_exactly_one_template_body_per_instantiation` pins it.
+            // A handle, not a borrow: resolving a field mints through the exclusively
+            // held registry, which no live read of a template may cross. Resource bound:
+            // zero declaration entries per instantiation, counted where a copy would
+            // happen, because an aggregate resident figure attributes no single term and
+            // the divergent struct corpus stops on the 256-deep mint bound rather than
+            // the 4096-wide count. `a_fill_copies_no_template_body_entries` pins it.
+            let fields = Rc::clone(fields);
             #[cfg(test)]
-            count_template_body_copy(fields.len());
-            (subst, fields.clone())
+            count_template_body_copy(&fields, <[(String, TypeExpr)]>::len);
+            (subst, fields)
         };
         let mut resolved = Vec::with_capacity(fields.len());
         let mut defs = Vec::with_capacity(fields.len());
-        for (fname, fty) in &fields {
+        for (fname, fty) in fields.iter() {
             let arg = self.resolve_garg_env(draft, fty, &subst, site)?;
             defs.push(FieldDef {
                 name: draft.intern_string(fname)?,
@@ -2421,22 +2423,19 @@ impl TypeRegistry {
                 }
                 .into());
             };
-            // Copied out for the same reason as a struct fill: a payload resolution
-            // mints through the exclusively held registry, so no template read may stay
-            // live across it.
-            //
-            // Resource bound: one copy per instantiation of `MAX_VARIANTS` variants each of
-            // `MAX_PAYLOAD_FIELDS` leaves — the larger term. Counted for the same reason as
-            // the struct copy: no aggregate or depth-bounded figure attributes this term.
+            // Shared for the same reason as a struct fill, and counted the same way. The
+            // copy avoided here is the larger of the two bodies: `MAX_VARIANTS` variants
+            // each of `MAX_PAYLOAD_FIELDS` leaves.
+            let variants = Rc::clone(variants);
             #[cfg(test)]
-            count_template_body_copy(variant_entries(variants));
-            (subst, variants.clone(), template_info.name.clone())
+            count_template_body_copy(&variants, variant_entries);
+            (subst, variants, template_info.name.clone())
         };
         let enum_name = enum_name.as_str();
         let mut reported = false;
         let mut resolved = Vec::with_capacity(variants.len());
         let mut defs = Vec::with_capacity(variants.len());
-        for variant in &variants {
+        for variant in variants.iter() {
             let mut payload = Vec::with_capacity(variant.payload.len());
             let mut leaves = Vec::with_capacity(variant.payload.len());
             for field in &variant.payload {
