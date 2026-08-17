@@ -3,22 +3,37 @@
 //! Two invariants, both enforced from the files themselves rather than from
 //! prose in the contributor rules:
 //!
-//! 1. Every relative link target resolves to a path that exists, and every
+//! 1. Every relative link target names a git-tracked path, and every
 //!    `#fragment` resolves to a heading anchor in the file it names, under
-//!    GitHub's slug rules including duplicate-heading suffixes. External
-//!    `http(s)` links are checked for syntactic sanity only: the battery is
-//!    offline and must stay offline.
+//!    GitHub's slug rules including duplicate-heading suffixes. Existence is
+//!    decided against the tracked-path set rather than against `stat`, so the
+//!    verdict is exact on a case-insensitive filesystem and identical on every
+//!    host. External `http(s)` links are checked for syntactic sanity only:
+//!    the battery is offline and must stay offline.
 //! 2. No sentence states a banned claim family. The documentation standard
 //!    bans these claims everywhere, so `docs/future/` is in scope on the same
 //!    terms as the current reference: a future page may record a goal, but it
 //!    may not assert the claim.
 //!
-//! Both scans blank every literal first — fenced code, inline code spans, and
-//! HTML comments — so a gate can never be silently disabled by a banned word
-//! or a stale link that happens to live inside an example. Blanking preserves
-//! byte offsets and line structure, which lets the sentinel below assert that
-//! each scan reached the final byte of each file rather than stopping at the
-//! first structure it failed to parse.
+//! Both scans read one blanked text, produced by the single pass in
+//! [`blank_literals`]. That pass is this workspace's only Markdown blanker —
+//! the Rust projection owner blanks a different grammar and shares nothing
+//! with it. Blanking replaces fenced code, inline code spans, and HTML
+//! comments with spaces while preserving every byte offset, so a scan over the
+//! blanked text addresses the same positions as the file.
+//!
+//! Literal blindness is the failure this gate is most exposed to, so every way
+//! a literal could swallow the rest of a file is loud rather than silent: an
+//! unterminated HTML comment or code fence panics with the file and the byte
+//! offset of the opener, and one state machine decides comment/fence
+//! precedence so a `<!--` inside a fence cannot govern blanking outside it and
+//! a fence line inside a comment cannot open a fence.
+//!
+//! Two Markdown constructs are deliberately unmodelled and fail loudly rather
+//! than passing unchecked: setext headings (`===`/`---` underlines) and
+//! explicit HTML or attribute anchors (`<a name=`, `<a id=`, `{#slug}`). Both
+//! would create anchors this gate cannot see; a file that introduces one must
+//! extend the gate.
 //!
 //! The claim patterns are spelled here, so this file is not itself a scanned
 //! subject: only `.md` files are.
@@ -27,15 +42,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // Claim families
 // ---------------------------------------------------------------------------
 
 /// One banned claim family and the literal phrases that state it. Each phrase
-/// matches case-insensitively at word boundaries, so `fast-forward` never
-/// matches a speed claim and `instant` as a Marrow type name never matches the
-/// speed family: the family spells the claim phrase, not the bare word.
+/// matches case-insensitively at word boundaries where `-` counts as a word
+/// character, so `is fast-forward` is not a speed claim and `instant` as a
+/// Marrow type name is not one either: a family spells the claim phrase, never
+/// the bare word.
 struct ClaimFamily {
     name: &'static str,
     phrases: &'static [&'static str],
@@ -49,6 +66,7 @@ const CLAIM_FAMILIES: &[ClaimFamily] = &[
             "blazingly fast",
             "lightning fast",
             "lightning-fast",
+            "screaming fast",
             "compiles fast",
             "compile fast",
             "tests fast",
@@ -59,6 +77,9 @@ const CLAIM_FAMILIES: &[ClaimFamily] = &[
             "extremely fast",
             "very fast",
             "ultra-fast",
+            "faster than",
+            "high-performance",
+            "high performance",
             "instantaneous",
             "near-instant",
             "feels instant",
@@ -126,31 +147,33 @@ const CLAIM_FAMILIES: &[ClaimFamily] = &[
     },
 ];
 
-/// Markers that make a claim phrase a mention rather than an assertion: a
-/// prohibition ("do not write that Marrow compiles fast") or a governance
-/// statement about the word itself ("what may be called production-ready").
-/// A marker counts only when it occurs *before* the phrase in the same
-/// sentence, so an ordinary claim cannot buy an exemption by mentioning a
-/// negation later on.
-const MENTION_MARKERS: &[&str] = &[
+/// Governance phrases that make a claim word a subject of discussion rather
+/// than an assertion, as in "what may be called production-ready" or "do not
+/// write that Marrow compiles fast". Each is a multi-word phrase, so a single
+/// ordinary word cannot buy an exemption, and each counts only when it occurs
+/// *before* the claim phrase in the same sentence.
+const GOVERNANCE_MARKERS: &[&str] = &[
     "do not",
     "does not",
     "must not",
     "may not",
     "cannot",
-    "never",
     "makes no",
     "no measure",
     "no current claim",
     "not a claim",
     "may be called",
     "may be described",
-    "described as",
-    "called",
+    "referred to as",
     "write that",
-    "avoid",
-    "forbidden",
-    "prohibited",
+];
+
+/// Words that negate a claim when they sit within the three words immediately
+/// before it. "Marrow is not production-ready" is the sentence the
+/// documentation standard encourages, so it must not fail the gate that bans
+/// the assertion.
+const NEGATORS: &[&str] = &[
+    "not", "isn't", "aren't", "no", "never", "nor", "neither", "without",
 ];
 
 /// Exact `(tracked path, trimmed line text)` pairs the claim gate accepts
@@ -164,7 +187,7 @@ const CLAIM_ALLOWLIST: &[(&str, &str)] = &[];
 
 #[derive(Debug, PartialEq, Eq)]
 enum ViolationKind {
-    MissingTarget {
+    UntrackedTarget {
         target: String,
     },
     MissingAnchor {
@@ -186,14 +209,16 @@ enum ViolationKind {
 impl fmt::Display for ViolationKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingTarget { target } => write!(f, "link target does not exist: {target}"),
+            Self::UntrackedTarget { target } => {
+                write!(f, "link target is not a tracked path: {target}")
+            }
             Self::MissingAnchor { target, fragment } => {
-                let where_ = if target.is_empty() {
+                let owner = if target.is_empty() {
                     "this file"
                 } else {
                     target
                 };
-                write!(f, "no heading anchor `#{fragment}` in {where_}")
+                write!(f, "no heading anchor `#{fragment}` in {owner}")
             }
             Self::MalformedExternal { target } => write!(f, "malformed external link: {target}"),
             Self::UndefinedReference { label } => {
@@ -231,39 +256,124 @@ fn report(violations: &[Violation]) -> String {
 // Literal blanking
 // ---------------------------------------------------------------------------
 
-/// Replaces every literal byte with a space while preserving byte offsets,
-/// line count, and total length. Blanked regions are fenced code blocks
-/// (including their delimiter lines), inline code spans, and HTML comments.
-///
-/// Length preservation is the sentinel's contract: a scan over the blanked
-/// text addresses the same offsets as the original file, so reaching the end
-/// of the blanked text proves the scan reached the end of the file.
-fn blank_literals(source: &str) -> String {
-    let mut bytes = source.as_bytes().to_vec();
-    blank_html_comments(&mut bytes);
+/// The literal a line is currently inside, with the byte offset that opened it
+/// so an unterminated one can name its own cause.
+enum OpenLiteral {
+    Fence { marker: u8, width: usize, at: usize },
+    Comment { at: usize },
+}
 
-    let mut fence: Option<(u8, usize)> = None;
+/// Replaces every literal byte with a space while preserving byte offsets,
+/// line count, and total length, in one pass that owns comment/fence
+/// precedence: inside a fence a `<!--` is ordinary text, and inside a comment a
+/// fence line is ordinary text.
+///
+/// Panics on an unterminated comment or fence. Silently blanking to end of file
+/// is the exact way a text gate disables itself, so the file and the opener's
+/// offset are reported instead.
+fn blank_literals(rel: &str, source: &str) -> String {
+    let mut bytes = source.as_bytes().to_vec();
+    let mut open: Option<OpenLiteral> = None;
+
     for (start, end) in line_spans(source) {
         let line = &source[start..end];
-        match fence {
-            Some((marker, width)) => {
+        match open {
+            Some(OpenLiteral::Fence { marker, width, .. }) => {
                 let closes = closing_fence(line, marker, width);
                 blank_range(&mut bytes, start, end);
                 if closes {
-                    fence = None;
+                    open = None;
                 }
             }
-            None => match opening_fence(line) {
-                Some(open) => {
-                    fence = Some(open);
-                    blank_range(&mut bytes, start, end);
+            Some(OpenLiteral::Comment { .. }) => match line.find("-->") {
+                Some(offset) => {
+                    let resume = start + offset + 3;
+                    blank_range(&mut bytes, start, resume);
+                    open = blank_prose(&mut bytes, source, resume, end);
                 }
-                None => blank_inline_code(&mut bytes, source, start, end),
+                None => blank_range(&mut bytes, start, end),
+            },
+            None => match opening_fence(line) {
+                Some((marker, width)) => {
+                    blank_range(&mut bytes, start, end);
+                    open = Some(OpenLiteral::Fence {
+                        marker,
+                        width,
+                        at: start,
+                    });
+                }
+                None => open = blank_prose(&mut bytes, source, start, end),
             },
         }
     }
 
+    match open {
+        Some(OpenLiteral::Comment { at }) => {
+            panic!("{rel}: unterminated HTML comment opened at byte {at}")
+        }
+        Some(OpenLiteral::Fence { at, .. }) => {
+            panic!("{rel}: unterminated code fence opened at byte {at}")
+        }
+        None => {}
+    }
+
     String::from_utf8(bytes).expect("blanking replaces whole ranges with ascii spaces")
+}
+
+/// Blanks inline code spans and HTML comments in one prose segment, which is
+/// the whole line or the remainder of a line after a comment closed. Returns
+/// the comment left open at `end`, if any: a comment continues across lines,
+/// an inline code span does not.
+fn blank_prose(bytes: &mut [u8], source: &str, from: usize, end: usize) -> Option<OpenLiteral> {
+    let raw = source.as_bytes();
+    let mut at = from;
+    while at < end {
+        match raw[at] {
+            b'`' => at = blank_inline_code(bytes, raw, at, end),
+            b'<' if raw[at..end].starts_with(b"<!--") => {
+                match find_bytes(raw, b"-->", at + 4, end) {
+                    Some(close) => {
+                        blank_range(bytes, at, close + 3);
+                        at = close + 3;
+                    }
+                    None => {
+                        blank_range(bytes, at, end);
+                        return Some(OpenLiteral::Comment { at });
+                    }
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    None
+}
+
+/// Blanks one backtick-delimited inline code span and returns the offset to
+/// resume from. A run of `n` backticks opens a span the next run of exactly `n`
+/// backticks closes; an unclosed run within the segment is left alone, so a
+/// stray backtick cannot blank the rest of the line.
+fn blank_inline_code(bytes: &mut [u8], raw: &[u8], at: usize, end: usize) -> usize {
+    let open_width = raw[at..end]
+        .iter()
+        .take_while(|byte| **byte == b'`')
+        .count();
+    let mut cursor = at + open_width;
+    while cursor < end {
+        if raw[cursor] == b'`' {
+            let width = raw[cursor..end]
+                .iter()
+                .take_while(|byte| **byte == b'`')
+                .count();
+            if width == open_width {
+                blank_range(bytes, at, cursor + width);
+                return cursor + width;
+            }
+            cursor += width;
+        } else {
+            cursor += 1;
+        }
+    }
+    at + open_width
 }
 
 /// Byte spans of each line, including its trailing newline.
@@ -283,6 +393,7 @@ fn line_spans(source: &str) -> Vec<(usize, usize)> {
 }
 
 fn blank_range(bytes: &mut [u8], start: usize, end: usize) {
+    let end = end.min(bytes.len());
     for byte in &mut bytes[start..end] {
         if *byte != b'\n' {
             *byte = b' ';
@@ -290,20 +401,11 @@ fn blank_range(bytes: &mut [u8], start: usize, end: usize) {
     }
 }
 
-fn blank_html_comments(bytes: &mut [u8]) {
-    let mut from = 0;
-    while let Some(open) = find_bytes(bytes, b"<!--", from) {
-        let close = find_bytes(bytes, b"-->", open + 4).map_or(bytes.len(), |at| at + 3);
-        blank_range(bytes, open, close);
-        from = close;
-    }
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if from >= haystack.len() {
+fn find_bytes(haystack: &[u8], needle: &[u8], from: usize, to: usize) -> Option<usize> {
+    if from >= to || needle.len() > to - from {
         return None;
     }
-    haystack[from..]
+    haystack[from..to]
         .windows(needle.len())
         .position(|window| window == needle)
         .map(|at| from + at)
@@ -323,48 +425,36 @@ fn opening_fence(line: &str) -> Option<(u8, usize)> {
 
 fn closing_fence(line: &str, marker: u8, width: usize) -> bool {
     let trimmed = line.trim();
-    trimmed.len() >= width
-        && trimmed.bytes().all(|byte| byte == marker)
-        && trimmed.bytes().take_while(|byte| *byte == marker).count() >= width
+    trimmed.len() >= width && trimmed.bytes().all(|byte| byte == marker)
 }
 
-/// Blanks backtick-delimited inline code spans in one line. A run of `n`
-/// backticks opens a span that the next run of exactly `n` backticks closes;
-/// an unclosed run is left alone so a stray backtick cannot blank the rest of
-/// the line.
-fn blank_inline_code(bytes: &mut [u8], source: &str, start: usize, end: usize) {
-    let line = &source.as_bytes()[start..end];
-    let mut at = 0;
-    while at < line.len() {
-        if line[at] != b'`' {
-            at += 1;
-            continue;
+// ---------------------------------------------------------------------------
+// Unmodelled constructs
+// ---------------------------------------------------------------------------
+
+/// Panics when a file uses a construct this gate cannot resolve. Passing such a
+/// file would report "no violations" about anchors it never saw.
+fn reject_unmodelled_constructs(rel: &str, raw: &str, blanked: &str) {
+    for marker in ["<a name=", "<a id=", "{#"] {
+        if let Some(at) = blanked.find(marker) {
+            panic!("{rel}: explicit anchor `{marker}` at byte {at} is not modelled by this gate");
         }
-        let open_width = line[at..].iter().take_while(|byte| **byte == b'`').count();
-        let mut cursor = at + open_width;
-        let mut closed = None;
-        while cursor < line.len() {
-            if line[cursor] == b'`' {
-                let width = line[cursor..]
-                    .iter()
-                    .take_while(|byte| **byte == b'`')
-                    .count();
-                if width == open_width {
-                    closed = Some(cursor + width);
-                    break;
-                }
-                cursor += width;
-            } else {
-                cursor += 1;
-            }
+    }
+
+    let mut previous_is_prose = false;
+    for (index, line) in blanked.lines().enumerate() {
+        let trimmed = line.trim();
+        let underline = !trimmed.is_empty()
+            && (trimmed.bytes().all(|byte| byte == b'=')
+                || (trimmed.len() >= 2 && trimmed.bytes().all(|byte| byte == b'-')));
+        if underline && previous_is_prose {
+            let text = raw.lines().nth(index).unwrap_or(trimmed);
+            panic!(
+                "{rel}:{}: setext heading `{text}` is not modelled by this gate",
+                index + 1
+            );
         }
-        match closed {
-            Some(span_end) => {
-                blank_range(bytes, start + at, start + span_end);
-                at = span_end;
-            }
-            None => at += open_width,
-        }
+        previous_is_prose = !trimmed.is_empty() && !trimmed.starts_with(['|', '#', '>']);
     }
 }
 
@@ -372,39 +462,38 @@ fn blank_inline_code(bytes: &mut [u8], source: &str, start: usize, end: usize) {
 // Documents
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct Document {
-    /// Path relative to the scan root, in reporting form.
+    /// Path relative to the repository root, in reporting form.
     rel: String,
-    path: PathBuf,
     raw: String,
     blanked: String,
     anchors: BTreeSet<String>,
 }
 
 impl Document {
-    fn load(root: &Path, path: &Path) -> Self {
-        let raw = std::fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        let blanked = blank_literals(&raw);
+    fn new(rel: String, raw: String) -> Self {
+        let blanked = blank_literals(&rel, &raw);
         assert_eq!(
             blanked.len(),
             raw.len(),
-            "blanking must preserve byte offsets in {}",
-            path.display()
+            "{rel}: blanking must preserve byte offsets"
         );
-        let anchors = heading_anchors(&raw);
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        reject_unmodelled_constructs(&rel, &raw, &blanked);
+        let anchors = heading_anchors(&raw, &blanked);
         Self {
             rel,
-            path: path.to_path_buf(),
             raw,
             blanked,
             anchors,
         }
+    }
+
+    fn read(root: &Path, rel: &str) -> Self {
+        let path = root.join(rel);
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        Self::new(rel.to_string(), raw)
     }
 
     fn line_of(&self, offset: usize) -> usize {
@@ -423,32 +512,32 @@ impl Document {
             .map_or(self.raw.len(), |at| capped + at);
         self.raw[start..end].trim()
     }
+
+    /// The directory this document's relative links resolve against.
+    fn directory(&self) -> &str {
+        self.rel.rsplit_once('/').map_or("", |(dir, _)| dir)
+    }
 }
 
 /// Every heading anchor in the file, under GitHub's slug rules: the heading
 /// text is lowercased, characters other than letters, digits, `-`, `_`, and
 /// spaces are dropped, spaces become hyphens, and a repeated slug takes the
 /// next `-1`, `-2`, … suffix.
-fn heading_anchors(raw: &str) -> BTreeSet<String> {
+///
+/// Heading *lines* are decided from the blanked text, so the one literal state
+/// machine also governs which `#` lines are headings — a `# Title` inside a
+/// fence or an HTML comment is not one. Heading *text* comes from the same line
+/// of the raw file, because GitHub slugs the text inside inline code rather
+/// than dropping it.
+fn heading_anchors(raw: &str, blanked: &str) -> BTreeSet<String> {
     let mut anchors = BTreeSet::new();
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-    let mut fence: Option<(u8, usize)> = None;
-    for line in raw.lines() {
-        match fence {
-            Some((marker, width)) => {
-                if closing_fence(line, marker, width) {
-                    fence = None;
-                }
-                continue;
-            }
-            None => {
-                if let Some(open) = opening_fence(line) {
-                    fence = Some(open);
-                    continue;
-                }
-            }
+    for ((start, end), (raw_start, raw_end)) in line_spans(blanked).into_iter().zip(line_spans(raw))
+    {
+        if heading_text(&blanked[start..end]).is_none() {
+            continue;
         }
-        let Some(text) = heading_text(line) else {
+        let Some(text) = heading_text(&raw[raw_start..raw_end]) else {
             continue;
         };
         let slug = slugify(&text);
@@ -468,14 +557,13 @@ fn heading_anchors(raw: &str) -> BTreeSet<String> {
 }
 
 fn heading_text(line: &str) -> Option<String> {
-    let trimmed = line.strip_prefix("   ").unwrap_or(line);
-    let trimmed = trimmed.trim_start_matches(' ');
+    let trimmed = line.trim_start_matches(' ');
     let level = trimmed.bytes().take_while(|byte| *byte == b'#').count();
     if !(1..=6).contains(&level) {
         return None;
     }
     let rest = &trimmed[level..];
-    if !rest.is_empty() && !rest.starts_with(' ') {
+    if !rest.is_empty() && !rest.starts_with([' ', '\n', '\r']) {
         return None;
     }
     Some(rest.trim().trim_end_matches('#').trim().to_string())
@@ -538,7 +626,7 @@ fn inline_links(blanked: &str) -> Vec<Link> {
     let bytes = blanked.as_bytes();
     let mut links = Vec::new();
     let mut at = 0;
-    while let Some(found) = find_bytes(bytes, b"](", at) {
+    while let Some(found) = find_bytes(bytes, b"](", at, bytes.len()) {
         let open = found + 2;
         let mut depth = 1usize;
         let mut cursor = open;
@@ -601,40 +689,60 @@ fn reference_definitions(blanked: &str) -> Vec<(String, usize, String)> {
     definitions
 }
 
-/// Reference usages (`[text][label]`) in blanked text. Only scanned when the
-/// file defines at least one label, so a bracket pair in ordinary prose cannot
-/// invent a violation.
+/// Reference usages (`[text][label]` and the collapsed `[text][]`) in blanked
+/// text. Only scanned when the file defines at least one label, so a bracket
+/// pair in ordinary prose cannot invent a violation. A collapsed usage reports
+/// its own text, which is the label it means.
 fn reference_usages(blanked: &str) -> Vec<(String, usize)> {
     let bytes = blanked.as_bytes();
     let mut usages = Vec::new();
     let mut at = 0;
-    while let Some(found) = find_bytes(bytes, b"][", at) {
+    while let Some(found) = find_bytes(bytes, b"][", at, bytes.len()) {
         let open = found + 2;
-        match find_bytes(bytes, b"]", open) {
-            Some(close) => {
-                usages.push((blanked[open..close].trim().to_lowercase(), open));
-                at = close + 1;
-            }
-            None => break,
-        }
+        let Some(close) = find_bytes(bytes, b"]", open, bytes.len()) else {
+            break;
+        };
+        let explicit = blanked[open..close].trim();
+        let label = if explicit.is_empty() {
+            let text_start = blanked[..found].rfind('[').map_or(found, |at| at + 1);
+            blanked[text_start..found].trim().to_lowercase()
+        } else {
+            explicit.to_lowercase()
+        };
+        usages.push((label, open));
+        at = close + 1;
     }
     usages
 }
 
-/// Normalizes `.`/`..` components without touching the filesystem, so a link
-/// is judged by the path it spells.
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
+/// Normalizes `.`/`..` components without touching the filesystem, so a link is
+/// judged by the path it spells.
+fn normalize(path: &Path) -> Option<String> {
+    let mut out: Vec<String> = Vec::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                out.pop();
+                // A link that climbs above the repository root names no tracked
+                // path, and saying so is the honest verdict.
+                out.pop()?;
             }
-            other => out.push(other.as_os_str()),
+            other => out.push(other.as_os_str().to_string_lossy().into_owned()),
         }
     }
-    out
+    Some(out.join("/"))
+}
+
+/// Whether `rel` names a tracked file or a directory containing tracked files.
+fn is_tracked(tracked: &BTreeSet<String>, rel: &str) -> bool {
+    if tracked.contains(rel) {
+        return true;
+    }
+    let prefix = format!("{rel}/");
+    tracked
+        .range(prefix.clone()..)
+        .next()
+        .is_some_and(|candidate| candidate.starts_with(&prefix))
 }
 
 fn is_external(target: &str) -> bool {
@@ -655,7 +763,7 @@ fn external_is_sane(target: &str) -> bool {
         .strip_prefix("https://")
         .or_else(|| target.strip_prefix("http://"))
     else {
-        // Any other scheme is out of the gate's contract and must be spelled
+        // Any other scheme is outside the gate's contract and must be spelled
         // deliberately rather than slipping through unchecked.
         return false;
     };
@@ -663,14 +771,26 @@ fn external_is_sane(target: &str) -> bool {
     !host.is_empty() && host.contains('.') && !target.contains(char::is_whitespace)
 }
 
-fn check_links(root: &Path, documents: &[Document]) -> Vec<Violation> {
-    let by_rel: BTreeMap<&str, &Document> = documents
+/// The anchors each tracked document publishes. A fragment is resolved against
+/// this index rather than against the subject list, so scanning one file still
+/// judges its cross-file fragments against the real corpus.
+type AnchorIndex<'a> = BTreeMap<&'a str, &'a BTreeSet<String>>;
+
+fn anchor_index(documents: &[Document]) -> AnchorIndex<'_> {
+    documents
         .iter()
-        .map(|document| (document.rel.as_str(), document))
-        .collect();
+        .map(|document| (document.rel.as_str(), &document.anchors))
+        .collect()
+}
+
+fn check_links(
+    subjects: &[Document],
+    anchors: &AnchorIndex<'_>,
+    tracked: &BTreeSet<String>,
+) -> Vec<Violation> {
     let mut violations = Vec::new();
 
-    for document in documents {
+    for document in subjects {
         let definitions = reference_definitions(&document.blanked);
         let defined: BTreeSet<&str> = definitions
             .iter()
@@ -695,7 +815,7 @@ fn check_links(root: &Path, documents: &[Document]) -> Vec<Violation> {
         );
 
         for link in links {
-            check_one_link(root, document, &by_rel, &link, &mut violations);
+            check_one_link(document, anchors, tracked, &link, &mut violations);
         }
     }
 
@@ -703,9 +823,9 @@ fn check_links(root: &Path, documents: &[Document]) -> Vec<Violation> {
 }
 
 fn check_one_link(
-    root: &Path,
     document: &Document,
-    by_rel: &BTreeMap<&str, &Document>,
+    anchors: &AnchorIndex<'_>,
+    tracked: &BTreeSet<String>,
     link: &Link,
     violations: &mut Vec<Violation>,
 ) {
@@ -714,7 +834,7 @@ fn check_one_link(
         return;
     }
     let line = document.line_of(link.offset);
-    let push = |violations: &mut Vec<Violation>, kind| {
+    let mut push = |kind| {
         violations.push(Violation {
             file: document.rel.clone(),
             line,
@@ -724,12 +844,9 @@ fn check_one_link(
 
     if is_external(target) {
         if !external_is_sane(target) {
-            push(
-                violations,
-                ViolationKind::MalformedExternal {
-                    target: target.to_string(),
-                },
-            );
+            push(ViolationKind::MalformedExternal {
+                target: target.to_string(),
+            });
         }
         return;
     }
@@ -743,46 +860,33 @@ fn check_one_link(
         if let Some(fragment) = fragment
             && !document.anchors.contains(fragment)
         {
-            push(
-                violations,
-                ViolationKind::MissingAnchor {
-                    target: String::new(),
-                    fragment: fragment.to_string(),
-                },
-            );
+            push(ViolationKind::MissingAnchor {
+                target: String::new(),
+                fragment: fragment.to_string(),
+            });
         }
         return;
     }
 
-    let parent = document.path.parent().unwrap_or(root);
-    let resolved = normalize(&parent.join(path_part));
-    if !resolved.exists() {
-        push(
-            violations,
-            ViolationKind::MissingTarget {
-                target: target.to_string(),
-            },
-        );
+    let resolved = normalize(&Path::new(document.directory()).join(path_part));
+    let Some(rel) = resolved.filter(|rel| is_tracked(tracked, rel)) else {
+        push(ViolationKind::UntrackedTarget {
+            target: target.to_string(),
+        });
         return;
-    }
+    };
 
     let Some(fragment) = fragment else {
         return;
     };
-    let rel = resolved
-        .strip_prefix(root)
-        .unwrap_or(&resolved)
-        .to_string_lossy()
-        .replace('\\', "/");
-    match by_rel.get(rel.as_str()) {
-        Some(other) if other.anchors.contains(fragment) => {}
-        Some(_) | None => push(
-            violations,
-            ViolationKind::MissingAnchor {
-                target: rel,
-                fragment: fragment.to_string(),
-            },
-        ),
+    if !anchors
+        .get(rel.as_str())
+        .is_some_and(|published| published.contains(fragment))
+    {
+        push(ViolationKind::MissingAnchor {
+            target: rel,
+            fragment: fragment.to_string(),
+        });
     }
 }
 
@@ -790,10 +894,11 @@ fn check_one_link(
 // Claim gate
 // ---------------------------------------------------------------------------
 
-/// Sentence spans of blanked text, as `(offset, lowercased sentence)`. A
-/// sentence ends at `.`, `!`, or `?` followed by whitespace, at a blank line,
-/// or at end of input, so a claim in the last bytes of a file with no trailing
-/// newline is still a subject.
+/// Sentence spans of blanked text, as `(offset, lowercased sentence)`. A span
+/// ends at `.`, `!`, or `?` followed by whitespace, at a line whose successor
+/// begins a new block (a blank line, a list item, a heading, a table row, or a
+/// block quote), or at end of input. Breaking at block starts keeps a marker in
+/// one bullet from exempting a claim in the next.
 fn sentences(blanked: &str) -> Vec<(usize, String)> {
     let bytes = blanked.as_bytes();
     let mut spans = Vec::new();
@@ -804,8 +909,8 @@ fn sentences(blanked: &str) -> Vec<(usize, String)> {
             && bytes
                 .get(at + 1)
                 .is_none_or(|byte| byte.is_ascii_whitespace());
-        let paragraph_break = bytes[at] == b'\n' && bytes.get(at + 1) == Some(&b'\n');
-        if terminator || paragraph_break {
+        let block_break = bytes[at] == b'\n' && begins_block(&blanked[at + 1..]);
+        if terminator || block_break {
             let end = at + 1;
             spans.push((start, blanked[start..end].to_lowercase()));
             start = end;
@@ -818,19 +923,41 @@ fn sentences(blanked: &str) -> Vec<(usize, String)> {
     spans
 }
 
+fn begins_block(rest: &str) -> bool {
+    let line = rest.split('\n').next().unwrap_or("");
+    let trimmed = line.trim_start();
+    let Some(first) = trimmed.chars().next() else {
+        return true;
+    };
+    if matches!(first, '-' | '*' | '+' | '#' | '|' | '>') {
+        return true;
+    }
+    first.is_ascii_digit()
+        && trimmed
+            .split_once(['.', ')'])
+            .is_some_and(|(number, _)| number.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+/// Word characters for phrase boundaries. `-` is one, so `is fast` does not
+/// match inside `is fast-forward`.
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '\''
+}
+
 fn word_boundary_match(haystack: &str, needle: &str) -> Option<usize> {
     let mut from = 0;
     while let Some(offset) = haystack[from..].find(needle) {
         let start = from + offset;
         let end = start + needle.len();
-        let before_ok = haystack[..start]
-            .chars()
-            .next_back()
-            .is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'));
+        let before_ok = haystack[..start].chars().next_back().is_none_or(|ch| {
+            // A leading `-` binds the phrase into a longer word, but a leading
+            // apostrophe does not.
+            !(ch.is_alphanumeric() || ch == '_' || ch == '-')
+        });
         let after_ok = haystack[end..]
             .chars()
             .next()
-            .is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_'));
+            .is_none_or(|ch| !is_word_char(ch));
         if before_ok && after_ok {
             return Some(start);
         }
@@ -839,10 +966,27 @@ fn word_boundary_match(haystack: &str, needle: &str) -> Option<usize> {
     None
 }
 
-fn mentioned_not_asserted(sentence: &str, phrase_at: usize) -> bool {
-    MENTION_MARKERS
+/// Whether the sentence discusses the claim word rather than asserting it, or
+/// negates it. Governance markers and a sentence-initial prohibition must
+/// precede the phrase; a negator must sit in the three words immediately
+/// before it.
+fn mentioned_or_negated(sentence: &str, phrase_at: usize) -> bool {
+    let before = &sentence[..phrase_at];
+    if GOVERNANCE_MARKERS
         .iter()
-        .any(|marker| sentence[..phrase_at].contains(marker))
+        .any(|marker| before.contains(marker))
+    {
+        return true;
+    }
+    if sentence.trim_start().starts_with("never ") {
+        return true;
+    }
+    before
+        .split_whitespace()
+        .rev()
+        .take(3)
+        .map(|word| word.trim_matches(|ch: char| !is_word_char(ch)))
+        .any(|word| NEGATORS.contains(&word))
 }
 
 fn check_claims(documents: &[Document]) -> Vec<Violation> {
@@ -854,7 +998,7 @@ fn check_claims(documents: &[Document]) -> Vec<Violation> {
                     let Some(at) = word_boundary_match(&sentence, phrase) else {
                         continue;
                     };
-                    if mentioned_not_asserted(&sentence, at) {
+                    if mentioned_or_negated(&sentence, at) {
                         continue;
                     }
                     let absolute = offset + at;
@@ -880,17 +1024,14 @@ fn check_claims(documents: &[Document]) -> Vec<Violation> {
     violations
 }
 
-/// The last byte offset the claim scan addressed. Equal to the blanked length
-/// exactly when the scan reached the end of the file.
-fn claim_scan_end(blanked: &str) -> usize {
-    sentences(blanked)
-        .last()
-        .map_or(0, |(offset, sentence)| offset + sentence.len())
-}
-
 // ---------------------------------------------------------------------------
 // Corpus
 // ---------------------------------------------------------------------------
+
+struct Corpus {
+    tracked: BTreeSet<String>,
+    documents: Vec<Document>,
+}
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<root>/crates/marrow-codes`.
@@ -901,11 +1042,11 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn tracked_markdown(root: &Path) -> Vec<PathBuf> {
+fn tracked_paths(root: &Path) -> BTreeSet<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "*.md"])
+        .arg("ls-files")
         .output()
         .unwrap_or_else(|error| panic!("run git ls-files: {error}"));
     assert!(
@@ -914,22 +1055,34 @@ fn tracked_markdown(root: &Path) -> Vec<PathBuf> {
         String::from_utf8_lossy(&output.stderr)
     );
     let listing = String::from_utf8(output.stdout).expect("git output is utf-8");
-    let files: Vec<PathBuf> = listing.lines().map(|line| root.join(line)).collect();
+    let paths: BTreeSet<String> = listing.lines().map(str::to_string).collect();
     assert!(
-        !files.is_empty(),
-        "no tracked markdown found under {}",
+        !paths.is_empty(),
+        "no tracked files under {}",
         root.display()
     );
-    files
+    paths
 }
 
-fn corpus() -> (PathBuf, Vec<Document>) {
-    let root = workspace_root();
-    let documents = tracked_markdown(&root)
-        .iter()
-        .map(|path| Document::load(&root, path))
-        .collect();
-    (root, documents)
+/// The scanned corpus, built once: the gates below and the tail sentinel all
+/// read the same parse.
+fn corpus() -> &'static Corpus {
+    static CORPUS: OnceLock<Corpus> = OnceLock::new();
+    CORPUS.get_or_init(|| {
+        let root = workspace_root();
+        let tracked = tracked_paths(&root);
+        let documents: Vec<Document> = tracked
+            .iter()
+            .filter(|rel| rel.ends_with(".md"))
+            .map(|rel| Document::read(&root, rel))
+            .collect();
+        assert!(
+            !documents.is_empty(),
+            "no tracked markdown under {}",
+            root.display()
+        );
+        Corpus { tracked, documents }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -938,8 +1091,12 @@ fn corpus() -> (PathBuf, Vec<Document>) {
 
 #[test]
 fn every_documentation_link_and_anchor_resolves() {
-    let (root, documents) = corpus();
-    let violations = check_links(&root, &documents);
+    let corpus = corpus();
+    let violations = check_links(
+        &corpus.documents,
+        &anchor_index(&corpus.documents),
+        &corpus.tracked,
+    );
     assert!(
         violations.is_empty(),
         "unresolved documentation links:\n{}",
@@ -949,8 +1106,7 @@ fn every_documentation_link_and_anchor_resolves() {
 
 #[test]
 fn no_documentation_states_a_banned_claim_family() {
-    let (_root, documents) = corpus();
-    let violations = check_claims(&documents);
+    let violations = check_claims(&corpus().documents);
     assert!(
         violations.is_empty(),
         "banned claim families in documentation:\n{}",
@@ -958,199 +1114,43 @@ fn no_documentation_states_a_banned_claim_family() {
     );
 }
 
+/// Content sentinel: a claim and a broken link appended to the final bytes of
+/// each real file, with no trailing newline, must both be reported. A scanner
+/// that stops at the last structure it understands — an unclosed literal, a
+/// table, a fence — reports nothing here and fails.
 #[test]
-fn every_scanned_file_is_read_to_its_final_byte() {
-    let (_root, documents) = corpus();
-    for document in &documents {
-        assert_eq!(
-            document.blanked.len(),
-            document.raw.len(),
-            "{}: blanking changed the file length",
-            document.rel
+fn both_gates_reach_the_final_byte_of_every_file() {
+    let corpus = corpus();
+    for document in &corpus.documents {
+        let tail = "\n\nMarrow is production-ready, see [tail](absent-tail-target.md).";
+        let probe = Document::new(
+            document.rel.clone(),
+            format!("{}{tail}", document.raw.trim_end()),
         );
+        let last_line = probe.raw.lines().count();
+
+        let claims = check_claims(std::slice::from_ref(&probe));
         assert_eq!(
-            claim_scan_end(&document.blanked),
-            document.blanked.len(),
-            "{}: the claim scan stopped before the final byte",
-            document.rel
+            claims.len(),
+            1,
+            "{}: the claim scan did not reach the appended tail:\n{}",
+            document.rel,
+            report(&claims)
         );
+        assert_eq!(claims[0].line, last_line, "{}", document.rel);
+
+        let mut anchors = anchor_index(&corpus.documents);
+        anchors.insert(probe.rel.as_str(), &probe.anchors);
+        let links = check_links(std::slice::from_ref(&probe), &anchors, &corpus.tracked);
+        assert_eq!(
+            links.len(),
+            1,
+            "{}: the link scan did not reach the appended tail:\n{}",
+            document.rel,
+            report(&links)
+        );
+        assert_eq!(links[0].line, last_line, "{}", document.rel);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Plant probes
-// ---------------------------------------------------------------------------
-
-/// A scratch corpus outside the repository, so a probe exercises the real
-/// filesystem-resolving link gate rather than a stub.
-struct Scratch {
-    root: PathBuf,
-}
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "marrow-docs-gate-{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("create scratch corpus");
-        Self { root }
-    }
-
-    fn write(&self, rel: &str, contents: &str) -> PathBuf {
-        let path = self.root.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create scratch directory");
-        }
-        std::fs::write(&path, contents).expect("write scratch document");
-        path
-    }
-
-    fn documents(&self, paths: &[PathBuf]) -> Vec<Document> {
-        paths
-            .iter()
-            .map(|path| Document::load(&self.root, path))
-            .collect()
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-#[test]
-fn the_link_gate_detects_every_failure_direction() {
-    let scratch = Scratch::new("links");
-    let target = scratch.write("target.md", "# Alpha\n\n## Alpha\n\nBody.\n");
-    let subject = scratch.write(
-        "subject.md",
-        concat!(
-            "# Subject\n\n",
-            "[gone](missing.md)\n",
-            "[bad fragment](target.md#nope)\n",
-            "[third duplicate](target.md#alpha-2)\n",
-            "[first duplicate](target.md#alpha-1)\n",
-            "[self](#subject)\n",
-            "[fenced is exempt]\n\n",
-            "```\n[ignored](also-missing.md)\n```\n\n",
-            "`[inline](never-here.md)`\n",
-            "[external](https://example.com/x)\n",
-            "[malformed](https:///)\n",
-        ),
-    );
-    let documents = scratch.documents(&[target, subject]);
-    let violations = check_links(&scratch.root, &documents);
-    let rendered = report(&violations);
-
-    assert!(
-        rendered.contains("link target does not exist: missing.md"),
-        "broken link undetected:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("no heading anchor `#nope` in target.md"),
-        "broken fragment undetected:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("no heading anchor `#alpha-2` in target.md"),
-        "duplicate-heading fragment miss undetected:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("malformed external link"),
-        "malformed external link undetected:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("alpha-1"),
-        "the duplicate-heading suffix must resolve:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("#subject"),
-        "a same-file anchor must resolve:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("also-missing.md") && !rendered.contains("never-here.md"),
-        "a link inside a literal is not a subject:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("example.com"),
-        "a well-formed external link is not fetched or faulted:\n{rendered}"
-    );
-    assert_eq!(violations.len(), 4, "unexpected violations:\n{rendered}");
-}
-
-#[test]
-fn the_claim_gate_detects_every_failure_direction() {
-    let scratch = Scratch::new("claims");
-    // The banned sentence sits in the final bytes with no trailing newline, so
-    // a scan that stops early cannot pass this probe.
-    let subject = scratch.write(
-        "subject.md",
-        concat!(
-            "# Subject\n\n",
-            "Marrow is production-ready today.\n\n",
-            "Do not write that Marrow compiles fast in public documentation.\n\n",
-            "```\nThe compiler is blazingly fast.\n```\n\n",
-            "The type `instant` names a point in time.\n\n",
-            "What may be called production-ready is governed by the status page.\n\n",
-            "The runtime is secure",
-        ),
-    );
-    let documents = scratch.documents(&[subject]);
-    let violations = check_claims(&documents);
-    let rendered = report(&violations);
-
-    assert!(
-        rendered.contains("banned readiness claim: \"production-ready\""),
-        "asserted readiness claim undetected:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("banned security claim: \"is secure\""),
-        "a claim in the final bytes undetected:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("blazing"),
-        "a claim inside a code fence is not a subject:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("speed"),
-        "a prohibition and an inline-code phrase are not claims:\n{rendered}"
-    );
-    assert_eq!(violations.len(), 2, "unexpected violations:\n{rendered}");
-
-    let lines: Vec<usize> = violations.iter().map(|violation| violation.line).collect();
-    assert_eq!(lines, vec![3, 15], "claims are reported at their line");
-}
-
-#[test]
-fn literal_blanking_preserves_offsets_and_hides_only_literals() {
-    let source = "a `code` b\n\n```rust\nlet x = 1;\n```\n\n<!-- note -->tail\n";
-    let blanked = blank_literals(source);
-    assert_eq!(blanked.len(), source.len());
-    assert!(blanked.contains("a        b"), "{blanked:?}");
-    assert!(!blanked.contains("let x"), "{blanked:?}");
-    assert!(!blanked.contains("note"), "{blanked:?}");
-    assert!(blanked.contains("tail"), "{blanked:?}");
-    assert_eq!(blanked.lines().count(), source.lines().count());
-}
-
-#[test]
-fn heading_slugs_follow_the_duplicate_suffix_rule() {
-    let anchors = heading_anchors(
-        "# Types and Values\n## The `mw` Command\n## Types and Values\n## Types and Values\n\n```\n# Not a heading\n```\n",
-    );
-    let expected: BTreeSet<String> = [
-        "types-and-values",
-        "the-mw-command",
-        "types-and-values-1",
-        "types-and-values-2",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
-    assert_eq!(anchors, expected);
 }
 
 /// Anti-vacuity floor. A parser regression that silently found no links or no
@@ -1158,7 +1158,7 @@ fn heading_slugs_follow_the_duplicate_suffix_rule() {
 /// corpus's measured shape is asserted alongside the invariant it feeds.
 #[test]
 fn the_link_gate_has_a_corpus_to_resolve() {
-    let (_root, documents) = corpus();
+    let documents = &corpus().documents;
     let links: Vec<Link> = documents
         .iter()
         .flat_map(|document| inline_links(&document.blanked))
@@ -1175,4 +1175,237 @@ fn the_link_gate_has_a_corpus_to_resolve() {
     assert!(links.len() >= 200, "links: {}", links.len());
     assert!(fragments >= 50, "fragment links: {fragments}");
     assert!(anchors >= 300, "heading anchors: {anchors}");
+}
+
+// ---------------------------------------------------------------------------
+// Plant probes
+// ---------------------------------------------------------------------------
+
+fn probe(rel: &str, raw: &str) -> Document {
+    Document::new(rel.to_string(), raw.to_string())
+}
+
+fn tracked_set(paths: &[&str]) -> BTreeSet<String> {
+    paths.iter().map(|path| (*path).to_string()).collect()
+}
+
+#[test]
+fn the_link_gate_detects_every_failure_direction() {
+    let target = probe("docs/target.md", "# Alpha\n\n## Alpha\n\nBody.\n");
+    let subject = probe(
+        "docs/subject.md",
+        concat!(
+            "# Subject\n\n",
+            "[gone](missing.md)\n\n",
+            "[bad fragment](target.md#nope)\n\n",
+            "[third duplicate](target.md#alpha-2)\n\n",
+            "[first duplicate](target.md#alpha-1)\n\n",
+            "[self](#subject)\n\n",
+            "[up and out](../../../escape.md)\n\n",
+            "```\n[ignored](also-missing.md)\n```\n\n",
+            "`[inline](never-here.md)`\n\n",
+            "[external](https://example.com/x)\n\n",
+            "[malformed](https:///)\n",
+        ),
+    );
+    let tracked = tracked_set(&["docs/target.md", "docs/subject.md"]);
+    let documents = [target, subject];
+    let violations = check_links(&documents, &anchor_index(&documents), &tracked);
+    let rendered = report(&violations);
+
+    for expected in [
+        "link target is not a tracked path: missing.md",
+        "link target is not a tracked path: ../../../escape.md",
+        "no heading anchor `#nope` in docs/target.md",
+        "no heading anchor `#alpha-2` in docs/target.md",
+        "malformed external link",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "undetected: {expected}\n{rendered}"
+        );
+    }
+    for unexpected in [
+        "alpha-1",
+        "#subject",
+        "also-missing.md",
+        "never-here.md",
+        "example.com",
+    ] {
+        assert!(
+            !rendered.contains(unexpected),
+            "false positive: {unexpected}\n{rendered}"
+        );
+    }
+    assert_eq!(violations.len(), 5, "unexpected violations:\n{rendered}");
+}
+
+#[test]
+fn the_claim_gate_detects_every_failure_direction() {
+    // The banned sentence sits in the final bytes with no trailing newline, so
+    // a scan that stops early cannot pass this probe.
+    let subject = probe(
+        "docs/subject.md",
+        concat!(
+            "# Subject\n\n",
+            "Marrow is production-ready today.\n\n",
+            "Marrow is not production-ready.\n\n",
+            "Do not write that Marrow compiles fast in public documentation.\n\n",
+            "What may be called production-ready is governed by the status page.\n\n",
+            "```\nThe compiler is blazingly fast.\n```\n\n",
+            "<!-- The runtime is production-ready. -->\n\n",
+            "The lane is fast-forwarded onto the integration line.\n\n",
+            "- A bullet that must not overstate anything.\n",
+            "- The compiler is blazingly fast.\n\n",
+            "The runtime is secure",
+        ),
+    );
+    let violations = check_claims(&[subject]);
+    let rendered = report(&violations);
+
+    for expected in [
+        "docs/subject.md:3: banned readiness claim: \"production-ready\"",
+        "docs/subject.md:20: banned speed claim: \"blazingly fast\"",
+        "docs/subject.md:22: banned security claim: \"is secure\"",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "undetected: {expected}\n{rendered}"
+        );
+    }
+    assert_eq!(
+        violations.len(),
+        3,
+        "an honest negation, a prohibition, a governance sentence, a fenced \
+         claim, a commented claim, and `fast-forwarded` are not claims:\n{rendered}"
+    );
+}
+
+#[test]
+fn an_unterminated_comment_fails_loudly_instead_of_blanking_the_file() {
+    let raw = "# Subject\n\n<!-- opened and never closed\n\nMarrow is production-ready.\n";
+    let panic = std::panic::catch_unwind(|| probe("docs/subject.md", raw))
+        .expect_err("an unterminated comment must panic");
+    let message = panic
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| "non-string panic".to_string());
+    assert!(
+        message.contains("docs/subject.md: unterminated HTML comment opened at byte 11"),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_unterminated_fence_fails_loudly_instead_of_blanking_the_file() {
+    let raw = "# Subject\n\n```rust\nlet x = 1;\n\nMarrow is production-ready.\n";
+    let panic = std::panic::catch_unwind(|| probe("docs/subject.md", raw))
+        .expect_err("an unterminated fence must panic");
+    let message = panic
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_else(|| "non-string panic".to_string());
+    assert!(
+        message.contains("docs/subject.md: unterminated code fence opened at byte 11"),
+        "{message}"
+    );
+}
+
+#[test]
+fn one_state_machine_decides_comment_and_fence_precedence() {
+    // A comment opener inside a fence is fenced text, so the prose after the
+    // fence is still scanned; a fence line inside a comment is comment text, so
+    // the prose after the comment is still scanned.
+    let subject = probe(
+        "docs/subject.md",
+        concat!(
+            "# Subject\n\n",
+            "```\n<!-- not a comment\n```\n\n",
+            "Marrow is production-ready.\n\n",
+            "<!--\n```\nstill a comment\n```\n-->\n\n",
+            "The compiler is blazingly fast.\n",
+        ),
+    );
+    let violations = check_claims(&[subject]);
+    let rendered = report(&violations);
+    assert!(
+        rendered.contains("docs/subject.md:7: banned readiness claim"),
+        "a fenced comment opener must not swallow the file:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("docs/subject.md:15: banned speed claim"),
+        "a commented fence must not swallow the file:\n{rendered}"
+    );
+    assert_eq!(violations.len(), 2, "{rendered}");
+}
+
+#[test]
+fn a_setext_heading_and_an_explicit_anchor_fail_loudly() {
+    for (raw, expected) in [
+        ("# Subject\n\nA Heading\n=========\n", "setext heading"),
+        ("# Subject\n\n<a name=\"manual\"></a>\n", "explicit anchor"),
+    ] {
+        let panic = std::panic::catch_unwind(|| probe("docs/subject.md", raw))
+            .expect_err("an unmodelled construct must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_else(|| "non-string panic".to_string());
+        assert!(message.contains(expected), "{message}");
+    }
+}
+
+#[test]
+fn literal_blanking_preserves_offsets_and_hides_only_literals() {
+    let source = "a `code` b\n\n```rust\nlet x = 1;\n```\n\n<!-- note -->tail\n";
+    let blanked = blank_literals("probe.md", source);
+    assert_eq!(blanked.len(), source.len());
+    assert!(blanked.contains("a        b"), "{blanked:?}");
+    assert!(!blanked.contains("let x"), "{blanked:?}");
+    assert!(!blanked.contains("note"), "{blanked:?}");
+    assert!(blanked.contains("tail"), "{blanked:?}");
+    assert_eq!(blanked.lines().count(), source.lines().count());
+}
+
+#[test]
+fn heading_slugs_follow_the_duplicate_suffix_rule() {
+    let raw = "# Types and Values\n## The `mw` Command\n## Types and Values\n## Types and Values\n\n```\n# Not a heading\n```\n\n<!--\n# Also not a heading\n-->\n";
+    let anchors = heading_anchors(raw, &blank_literals("probe.md", raw));
+    let expected: BTreeSet<String> = [
+        "types-and-values",
+        "the-mw-command",
+        "types-and-values-1",
+        "types-and-values-2",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(anchors, expected);
+}
+
+#[test]
+fn a_reference_link_resolves_or_reports_its_label() {
+    let subject = probe(
+        "docs/subject.md",
+        concat!(
+            "# Subject\n\n",
+            "See [the guide][guide] and [status][] and [absent][nowhere].\n\n",
+            "[guide]: target.md\n",
+            "[status]: target.md\n",
+        ),
+    );
+    let documents = [subject];
+    let violations = check_links(
+        &documents,
+        &anchor_index(&documents),
+        &tracked_set(&["docs/target.md"]),
+    );
+    let rendered = report(&violations);
+    assert!(
+        rendered.contains("undefined link reference label: [nowhere]"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("[guide]"), "{rendered}");
+    assert!(!rendered.contains("[status]"), "{rendered}");
+    assert_eq!(violations.len(), 1, "{rendered}");
 }
