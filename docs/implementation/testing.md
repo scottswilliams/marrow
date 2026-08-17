@@ -34,10 +34,19 @@ a green default battery establishes the measurement and not the budget. The
 happens. It builds `marrow-compile`'s `query_local_syntax` test target at the
 release profile and runs exactly the two tests that assert there — one query
 over a maximum admitted file and one over an ordinary-sized file — then prints
-the leg's wall time. The job gates like the ordinary Rust matrix. It runs in CI
-rather than in the default local battery because an optimized build is minutes
-long and the developer's edit-test clock does not pay it; the budgets and the
-measurements behind them live with the tests.
+the leg's wall time. Each run's summary line is checked, so a renamed or
+`#[ignore]`d budget fails the job instead of passing as a green run of no tests.
+The job is configured to gate like the ordinary Rust matrix rather than as an
+advisory one. It runs in CI rather than in the default local battery because an
+optimized build is long and the developer's edit-test clock does not pay it; the
+budgets and the measurements behind them live with the tests.
+
+The figure the first run on `main` prints is the baseline for that runner class.
+A red is triaged as a measurement finding — a regression, a runner change, or a
+budget that was never right — and is not suppressed as flake. To reproduce the
+leg locally, run the job's `cargo test --release` invocation with an out-of-tree
+`CARGO_TARGET_DIR`, which keeps the optimized artifacts out of the lane's
+unoptimized directory.
 
 ## Fixtures
 

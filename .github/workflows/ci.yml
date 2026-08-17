@@ -61,10 +61,11 @@ jobs:
     # up, so a runtime that proves flaky here is downgraded by a recorded
     # decision rather than a silent edit.
     #
-    # The optimized build is minutes long, so it is CI's cost and not the
-    # developer's default clock: the leg builds only marrow-compile's
-    # query_local_syntax target and runs exactly the two release-asserting
-    # budget tests, never the whole battery a second time.
+    # The optimized build is CI's cost and not the developer's default clock.
+    # It builds marrow-compile and everything beneath it at the release profile,
+    # but only the query_local_syntax test target above that, and it runs
+    # exactly the two release-asserting budget tests — never the whole battery a
+    # second time.
     env:
       RUSTUP_TOOLCHAIN: 1.89.0
 
@@ -77,7 +78,10 @@ jobs:
 
       # Keyed apart from every other job: this is the only cached target
       # directory in the workflow, and it holds optimized artifacts that no
-      # unoptimized job may restore.
+      # unoptimized job may restore. A lock change starts a fresh entry, and
+      # stale entries expire on GitHub's own eviction, so the cache grows across
+      # lock revisions; if its restore/save time ever rivals the build it saves,
+      # drop the target directory from the path list.
       - name: Cache optimized build
         uses: actions/cache@v4
         with:
@@ -93,14 +97,25 @@ jobs:
       - name: Build release perf target
         run: cargo test --release -p marrow-compile --test query_local_syntax --locked --no-run
 
-      # The wall time is printed for the speed baseline that tracks this leg.
+      # Each named budget is asserted to have actually run: a filter that
+      # matches nothing exits zero and reports a green run of no tests, so a
+      # rename would retire the budget silently. The summary line is the check
+      # rather than `--list`, because `--list` names an `#[ignore]`d test just
+      # as it names a running one and would miss that second way to lose the
+      # budget. The wall time covers cargo's freshness passes and both runs; it
+      # is printed for the speed baseline that tracks this leg.
       - name: Run release-only latency budgets
         run: |
+          set -o pipefail
           started=$(date +%s)
-          cargo test --release -p marrow-compile --test query_local_syntax --locked -- \
-            --exact --nocapture a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized
-          cargo test --release -p marrow-compile --test query_local_syntax --locked -- \
-            --exact --nocapture a_query_over_an_ordinary_file_stays_far_inside_the_budget_when_optimized
+          for t in \
+            a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized \
+            a_query_over_an_ordinary_file_stays_far_inside_the_budget_when_optimized
+          do
+            cargo test --release -p marrow-compile --test query_local_syntax --locked -- \
+              --exact --nocapture "$t" 2>&1 | tee "$RUNNER_TEMP/$t.log"
+            grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/$t.log"
+          done
           echo "release perf leg wall time: $(( $(date +%s) - started ))s"
 
   stable-advisory:
