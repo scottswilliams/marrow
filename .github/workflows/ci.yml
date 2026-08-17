@@ -51,6 +51,58 @@ jobs:
       - name: Clippy and unsafe check
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -F unsafe-code
 
+  release-perf:
+    name: Rust (release perf)
+    runs-on: ubuntu-latest
+    # Gating, like the matrix job above. The query-local latency budgets assert
+    # only when `debug_assertions` is off, so an unoptimized battery records the
+    # measurement and enforces nothing; without this job the budgets are never a
+    # fence anywhere. An advisory perf gate would be the same defect one level
+    # up, so a runtime that proves flaky here is downgraded by a recorded
+    # decision rather than a silent edit.
+    #
+    # The optimized build is minutes long, so it is CI's cost and not the
+    # developer's default clock: the leg builds only marrow-compile's
+    # query_local_syntax target and runs exactly the two release-asserting
+    # budget tests, never the whole battery a second time.
+    env:
+      RUSTUP_TOOLCHAIN: 1.89.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal
+
+      # Keyed apart from every other job: this is the only cached target
+      # directory in the workflow, and it holds optimized artifacts that no
+      # unoptimized job may restore.
+      - name: Cache optimized build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-perf-${{ runner.os }}-1.89.0-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-perf-${{ runner.os }}-1.89.0-
+
+      # Separated from the timed run so the reported wall time is the tests'
+      # and not the compiler's.
+      - name: Build release perf target
+        run: cargo test --release -p marrow-compile --test query_local_syntax --locked --no-run
+
+      # The wall time is printed for the speed baseline that tracks this leg.
+      - name: Run release-only latency budgets
+        run: |
+          started=$(date +%s)
+          cargo test --release -p marrow-compile --test query_local_syntax --locked -- \
+            --exact --nocapture a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized
+          cargo test --release -p marrow-compile --test query_local_syntax --locked -- \
+            --exact --nocapture a_query_over_an_ordinary_file_stays_far_inside_the_budget_when_optimized
+          echo "release perf leg wall time: $(( $(date +%s) - started ))s"
+
   stable-advisory:
     name: Rust (stable advisory)
     runs-on: ubuntu-latest

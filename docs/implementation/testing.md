@@ -25,6 +25,20 @@ test speed](speed.md) states the rules; [project
 status](../status.md#compilation-and-test-speed) records what each clock has
 measured.
 
+## Release-profile performance leg
+
+The query-local latency budgets assert only when `debug_assertions` is off: the
+unoptimized profile records its measurement and returns before comparing it, so
+a green default battery establishes the measurement and not the budget. The
+`Rust (release perf)` job in `.github/workflows/ci.yml` is where the comparison
+happens. It builds `marrow-compile`'s `query_local_syntax` test target at the
+release profile and runs exactly the two tests that assert there — one query
+over a maximum admitted file and one over an ordinary-sized file — then prints
+the leg's wall time. The job gates like the ordinary Rust matrix. It runs in CI
+rather than in the default local battery because an optimized build is minutes
+long and the developer's edit-test clock does not pay it; the budgets and the
+measurements behind them live with the tests.
+
 ## Fixtures
 
 `fixtures/v01/` is the preserved-semantics corpus extracted from the prototype:
