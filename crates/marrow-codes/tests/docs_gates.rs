@@ -48,11 +48,11 @@ use std::sync::OnceLock;
 // Claim families
 // ---------------------------------------------------------------------------
 
-/// One banned claim family and the literal phrases that state it. Each phrase
-/// matches case-insensitively at word boundaries where `-` counts as a word
-/// character, so `is fast-forward` is not a speed claim and `instant` as a
-/// Marrow type name is not one either: a family spells the claim phrase, never
-/// the bare word.
+/// One banned claim family and the literal phrases that state it. Phrases are
+/// spelled with spaces and never hyphens: a hyphen in the text is normalized to
+/// a space before matching, so `blazing-fast` and `blazing fast` are one claim
+/// and neither spelling needs its own row. A phrase spells the claim, never the
+/// bare word, so `instant` as a Marrow type name is not a speed claim.
 struct ClaimFamily {
     name: &'static str,
     phrases: &'static [&'static str],
@@ -63,9 +63,9 @@ const CLAIM_FAMILIES: &[ClaimFamily] = &[
         name: "speed",
         phrases: &[
             "blazing",
+            "blazing fast",
             "blazingly fast",
             "lightning fast",
-            "lightning-fast",
             "screaming fast",
             "compiles fast",
             "compile fast",
@@ -76,12 +76,11 @@ const CLAIM_FAMILIES: &[ClaimFamily] = &[
             "runs fast",
             "extremely fast",
             "very fast",
-            "ultra-fast",
+            "ultra fast",
             "faster than",
-            "high-performance",
             "high performance",
             "instantaneous",
-            "near-instant",
+            "near instant",
             "feels instant",
             "feel instant",
             "instant feedback",
@@ -91,15 +90,13 @@ const CLAIM_FAMILIES: &[ClaimFamily] = &[
     ClaimFamily {
         name: "readiness",
         phrases: &[
-            "production-ready",
             "production ready",
-            "battle-tested",
             "battle tested",
-            "enterprise-grade",
-            "industrial-strength",
+            "enterprise grade",
+            "industrial strength",
             "bulletproof",
-            "rock-solid",
-            "mainframe-grade",
+            "rock solid",
+            "mainframe grade",
         ],
     },
     ClaimFamily {
@@ -130,20 +127,20 @@ const CLAIM_FAMILIES: &[ClaimFamily] = &[
             "proven correct",
             "proven safe",
             "proven secure",
-            "compiler-proven",
+            "compiler proven",
         ],
     },
     ClaimFamily {
         name: "scale",
-        phrases: &["scalable", "web-scale", "web scale", "scales infinitely"],
+        phrases: &["scalable", "web scale", "scales infinitely"],
     },
     ClaimFamily {
         name: "ai-native",
-        phrases: &["ai-native", "ai native", "ai-first"],
+        phrases: &["ai native", "ai first"],
     },
     ClaimFamily {
         name: "zero-cost",
-        phrases: &["zero-cost", "zero cost"],
+        phrases: &["zero cost"],
     },
 ];
 
@@ -462,7 +459,6 @@ fn reject_unmodelled_constructs(rel: &str, raw: &str, blanked: &str) {
 // Documents
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
 struct Document {
     /// Path relative to the repository root, in reporting form.
     rel: String,
@@ -894,7 +890,10 @@ fn check_one_link(
 // Claim gate
 // ---------------------------------------------------------------------------
 
-/// Sentence spans of blanked text, as `(offset, lowercased sentence)`. A span
+/// Sentence spans of blanked text, as `(offset, sentence)` lowercased with
+/// [`str::to_ascii_lowercase`]. Unicode lowercasing can change a string's byte
+/// length and would drift every reported offset; every claim phrase and marker
+/// is ASCII, so an ASCII fold loses no subject and keeps offsets exact. A span
 /// ends at `.`, `!`, or `?` followed by whitespace, at a line whose successor
 /// begins a new block (a blank line, a list item, a heading, a table row, or a
 /// block quote), or at end of input. Breaking at block starts keeps a marker in
@@ -912,13 +911,13 @@ fn sentences(blanked: &str) -> Vec<(usize, String)> {
         let block_break = bytes[at] == b'\n' && begins_block(&blanked[at + 1..]);
         if terminator || block_break {
             let end = at + 1;
-            spans.push((start, blanked[start..end].to_lowercase()));
+            spans.push((start, blanked[start..end].to_ascii_lowercase()));
             start = end;
         }
         at += 1;
     }
     if start < bytes.len() {
-        spans.push((start, blanked[start..].to_lowercase()));
+        spans.push((start, blanked[start..].to_ascii_lowercase()));
     }
     spans
 }
@@ -938,23 +937,34 @@ fn begins_block(rest: &str) -> bool {
             .is_some_and(|(number, _)| number.chars().all(|ch| ch.is_ascii_digit()))
 }
 
-/// Word characters for phrase boundaries. `-` is one, so `is fast` does not
-/// match inside `is fast-forward`.
+/// Word characters for phrase boundaries. `-` is one, so a hyphen abutting a
+/// phrase binds it into a longer word.
 fn is_word_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '\''
 }
 
-fn word_boundary_match(haystack: &str, needle: &str) -> Option<usize> {
+/// Renders a hyphenated compound as its spaced spelling. Both characters are
+/// one ASCII byte, so the result shares every offset with its input.
+fn hyphens_to_spaces(text: &str) -> String {
+    text.replace('-', " ")
+}
+
+/// Finds `needle` in the hyphen-normalized text while testing its boundaries
+/// against the original. Searching the normalized text makes `blazing-fast` and
+/// `blazing fast` one claim; testing the original makes a hyphen that abuts the
+/// phrase a word character, so `is fast` does not match inside
+/// `is fast-forwarded`.
+fn word_boundary_match(original: &str, normalized: &str, needle: &str) -> Option<usize> {
     let mut from = 0;
-    while let Some(offset) = haystack[from..].find(needle) {
+    while let Some(offset) = normalized[from..].find(needle) {
         let start = from + offset;
         let end = start + needle.len();
-        let before_ok = haystack[..start].chars().next_back().is_none_or(|ch| {
+        let before_ok = original[..start].chars().next_back().is_none_or(|ch| {
             // A leading `-` binds the phrase into a longer word, but a leading
             // apostrophe does not.
             !(ch.is_alphanumeric() || ch == '_' || ch == '-')
         });
-        let after_ok = haystack[end..]
+        let after_ok = original[end..]
             .chars()
             .next()
             .is_none_or(|ch| !is_word_char(ch));
@@ -993,9 +1003,12 @@ fn check_claims(documents: &[Document]) -> Vec<Violation> {
     let mut violations = Vec::new();
     for document in documents {
         for (offset, sentence) in sentences(&document.blanked) {
+            let normalized = hyphens_to_spaces(&sentence);
             for family in CLAIM_FAMILIES {
+                // One sentence states a family once, however many of its
+                // phrases overlap the same words.
                 for phrase in family.phrases {
-                    let Some(at) = word_boundary_match(&sentence, phrase) else {
+                    let Some(at) = word_boundary_match(&sentence, &normalized, phrase) else {
                         continue;
                     };
                     if mentioned_or_negated(&sentence, at) {
@@ -1017,6 +1030,7 @@ fn check_claims(documents: &[Document]) -> Vec<Violation> {
                             phrase: (*phrase).to_string(),
                         },
                     });
+                    break;
                 }
             }
         }
@@ -1121,6 +1135,9 @@ fn no_documentation_states_a_banned_claim_family() {
 #[test]
 fn both_gates_reach_the_final_byte_of_every_file() {
     let corpus = corpus();
+    // Appending a paragraph publishes no new heading, so each probe's anchors
+    // are the ones the corpus already indexed.
+    let anchors = anchor_index(&corpus.documents);
     for document in &corpus.documents {
         let tail = "\n\nMarrow is production-ready, see [tail](absent-tail-target.md).";
         let probe = Document::new(
@@ -1139,8 +1156,7 @@ fn both_gates_reach_the_final_byte_of_every_file() {
         );
         assert_eq!(claims[0].line, last_line, "{}", document.rel);
 
-        let mut anchors = anchor_index(&corpus.documents);
-        anchors.insert(probe.rel.as_str(), &probe.anchors);
+        assert_eq!(probe.anchors, document.anchors, "{}", document.rel);
         let links = check_links(std::slice::from_ref(&probe), &anchors, &corpus.tracked);
         assert_eq!(
             links.len(),
@@ -1255,6 +1271,7 @@ fn the_claim_gate_detects_every_failure_direction() {
             "```\nThe compiler is blazingly fast.\n```\n\n",
             "<!-- The runtime is production-ready. -->\n\n",
             "The lane is fast-forwarded onto the integration line.\n\n",
+            "The compiler is blazing-fast.\n\n",
             "- A bullet that must not overstate anything.\n",
             "- The compiler is blazingly fast.\n\n",
             "The runtime is secure",
@@ -1264,9 +1281,10 @@ fn the_claim_gate_detects_every_failure_direction() {
     let rendered = report(&violations);
 
     for expected in [
-        "docs/subject.md:3: banned readiness claim: \"production-ready\"",
-        "docs/subject.md:20: banned speed claim: \"blazingly fast\"",
-        "docs/subject.md:22: banned security claim: \"is secure\"",
+        "docs/subject.md:3: banned readiness claim: \"production ready\"",
+        "docs/subject.md:19: banned speed claim: \"blazing fast\"",
+        "docs/subject.md:22: banned speed claim: \"blazingly fast\"",
+        "docs/subject.md:24: banned security claim: \"is secure\"",
     ] {
         assert!(
             rendered.contains(expected),
@@ -1275,7 +1293,7 @@ fn the_claim_gate_detects_every_failure_direction() {
     }
     assert_eq!(
         violations.len(),
-        3,
+        4,
         "an honest negation, a prohibition, a governance sentence, a fenced \
          claim, a commented claim, and `fast-forwarded` are not claims:\n{rendered}"
     );
@@ -1284,8 +1302,9 @@ fn the_claim_gate_detects_every_failure_direction() {
 #[test]
 fn an_unterminated_comment_fails_loudly_instead_of_blanking_the_file() {
     let raw = "# Subject\n\n<!-- opened and never closed\n\nMarrow is production-ready.\n";
-    let panic = std::panic::catch_unwind(|| probe("docs/subject.md", raw))
-        .expect_err("an unterminated comment must panic");
+    let Err(panic) = std::panic::catch_unwind(|| probe("docs/subject.md", raw)) else {
+        panic!("an unterminated comment must panic")
+    };
     let message = panic
         .downcast_ref::<String>()
         .cloned()
@@ -1299,8 +1318,9 @@ fn an_unterminated_comment_fails_loudly_instead_of_blanking_the_file() {
 #[test]
 fn an_unterminated_fence_fails_loudly_instead_of_blanking_the_file() {
     let raw = "# Subject\n\n```rust\nlet x = 1;\n\nMarrow is production-ready.\n";
-    let panic = std::panic::catch_unwind(|| probe("docs/subject.md", raw))
-        .expect_err("an unterminated fence must panic");
+    let Err(panic) = std::panic::catch_unwind(|| probe("docs/subject.md", raw)) else {
+        panic!("an unterminated fence must panic")
+    };
     let message = panic
         .downcast_ref::<String>()
         .cloned()
@@ -1345,8 +1365,9 @@ fn a_setext_heading_and_an_explicit_anchor_fail_loudly() {
         ("# Subject\n\nA Heading\n=========\n", "setext heading"),
         ("# Subject\n\n<a name=\"manual\"></a>\n", "explicit anchor"),
     ] {
-        let panic = std::panic::catch_unwind(|| probe("docs/subject.md", raw))
-            .expect_err("an unmodelled construct must panic");
+        let Err(panic) = std::panic::catch_unwind(|| probe("docs/subject.md", raw)) else {
+            panic!("an unmodelled construct must panic")
+        };
         let message = panic
             .downcast_ref::<String>()
             .cloned()
