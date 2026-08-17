@@ -509,3 +509,353 @@ mod declaration_command_bound_tests {
         );
     }
 }
+
+/// The post-staging custody seam of [`DurableRegistry::build`], driven from source.
+///
+/// Each store is built inside an armed transaction over the shared draft and a
+/// `StagedDiagnostics` whose rows settle only against the capability the consumed guard
+/// produces. Every checked refusal returns `StoreBuild::Refused`, runs the total inverse,
+/// and settles its row; an invariant instead leaves through the `?` on `build_one` with
+/// the guard unconsumed, dropping the armed transaction and the staged rows together.
+///
+/// The trigger is the construction budget, and it is the only one this compiler has:
+/// every image bound the durable build can cross — roots, sites, string bytes,
+/// declaration members — is *nonblocking* by construction, observed into the policy
+/// ledger and refused later by the encoder over a complete graph. What still refuses
+/// inside `build_one` is the budget the census froze, and it is reachable from source:
+/// the budget saturates root occurrences at [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`], so
+/// a project declaring one more admissible store than that drives the last store's
+/// `add_root_occurrence` into a refusal after that store has already staged into the
+/// draft.
+///
+/// Two consequences of that trigger shape the assertions below.
+///
+/// A graph with that many live occurrences is past [`bounds::MAX_ROOTS`], so the encoder
+/// refuses it and encoded bytes are not available as the restoration artifact here.
+/// [`marrow_image::DurableContractView::contract_id`] is: the byte-exact 32-byte identity
+/// of the canonical durable graph, written from the same rows the encoder would write and
+/// defined whatever the policy ledger holds.
+///
+/// And a last store that occurs a Product the draft already declares stages exactly one
+/// row before the refusal — its interned placement spelling — which no public read of a
+/// draft the encoder refuses can observe. That arm therefore carries the outcome and the
+/// settlement laws; the restoration law is carried by the arms whose last store declares
+/// its own Product, one member wide and many, whose staging the draft does publish.
+#[cfg(test)]
+mod post_staging_custody_tests {
+    use super::super::*;
+    use marrow_image::DurableContractId;
+    use marrow_project::IdentityLedger;
+    use marrow_syntax::{Declaration, parse_source};
+    use std::fmt::Write as _;
+
+    /// Root occurrences the corpus commits before its last store is built, so that last
+    /// store's occurrence is the first one the construction budget refuses.
+    const FILLED_OCCURRENCES: usize = bounds::MAX_ADMITTED_ROOT_OCCURRENCES;
+
+    /// A corpus small enough that every arm of it commits, for measuring what the last
+    /// store stages where the budget still admits its occurrence.
+    const ADMITTED_OCCURRENCES: usize = 2;
+
+    /// The width of the `Many` resource, against the one field `One` declares.
+    const MANY_FIELDS: usize = 32;
+
+    /// Which resource the corpus's last store occurs, and therefore how much that store
+    /// stages before its root occurrence is refused.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum LastStore {
+        /// No last store at all: the control the other arms are compared against.
+        Absent,
+        /// A further occurrence of the Product every earlier store already declared. It
+        /// stages its interned placement spelling and nothing else.
+        Held,
+        /// The sole occurrence of a Product declaring one member.
+        One,
+        /// The sole occurrence of a Product declaring [`MANY_FIELDS`] members.
+        Many,
+    }
+
+    impl LastStore {
+        /// The resource the arm's last store occurs, if it declares one.
+        fn resource(self) -> Option<&'static str> {
+            match self {
+                Self::Absent => None,
+                Self::Held => Some("Held"),
+                Self::One => Some("One"),
+                Self::Many => Some("Many"),
+            }
+        }
+    }
+
+    /// The anchor positions [`corpus_anchors`] writes the two fresh Products at, so a test
+    /// can ask the draft whether either declaration survived a refused store.
+    const ONE_PRODUCT_ANCHOR: usize = 3;
+    const MANY_PRODUCT_ANCHOR: usize = 5;
+
+    /// A distinct ledger id per anchor position, so no corpus can be answered by an
+    /// identity collision instead of the budget under test.
+    fn anchor_id(position: usize) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&(position as u64 + 1).to_be_bytes());
+        bytes
+    }
+
+    /// The corpus source: one store naming a resource that does not exist (an ordinary
+    /// refusal, which settles a row when the build completes), `roots` keyless occurrences
+    /// of `Held`, and the last store `last` selects.
+    fn corpus_source(roots: usize, last: LastStore) -> String {
+        let mut source = String::from(
+            "resource Held {\n    required value: int\n}\n\n\
+             resource One {\n    required f0: int\n}\n\n\
+             resource Many {\n",
+        );
+        for field in 0..MANY_FIELDS {
+            let _ = writeln!(source, "    required f{field}: int");
+        }
+        source.push_str("}\n\nstore ^nowhere: Missing\n");
+        for root in 0..roots {
+            let _ = writeln!(source, "store ^r{root}: Held");
+        }
+        if let Some(resource) = last.resource() {
+            let _ = writeln!(source, "store ^last: {resource}");
+        }
+        source
+    }
+
+    /// The corpus anchors, in the order [`anchor_id`] numbers them. `^nowhere` names no
+    /// resource so it anchors nothing, and a keyless root anchors no key column.
+    fn corpus_anchors(roots: usize) -> Vec<String> {
+        let mut anchors = vec![
+            "application .".to_string(),
+            "product Held".to_string(),
+            "field Held.value".to_string(),
+        ];
+        assert_eq!(anchors.len(), ONE_PRODUCT_ANCHOR);
+        anchors.push("product One".to_string());
+        anchors.push("field One.f0".to_string());
+        assert_eq!(anchors.len(), MANY_PRODUCT_ANCHOR);
+        anchors.push("product Many".to_string());
+        anchors.extend((0..MANY_FIELDS).map(|field| format!("field Many.f{field}")));
+        anchors.extend((0..roots).map(|root| format!("root r{root}")));
+        anchors.push("root last".to_string());
+        anchors
+    }
+
+    /// The committed identity ledger the corpus resolves against.
+    fn corpus_ledger(roots: usize) -> IdentityLedger {
+        let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+        for (position, anchor) in corpus_anchors(roots).iter().enumerate() {
+            let _ = write!(text, "id {anchor} ");
+            for byte in anchor_id(position) {
+                let _ = write!(text, "{byte:02x}");
+            }
+            text.push('\n');
+        }
+        text.push_str("high-water 0\nend\n");
+        IdentityLedger::parse(text.as_bytes()).expect("the corpus ledger parses")
+    }
+
+    /// Everything a store's staging can change that a draft the encoder refuses still
+    /// publishes, in one comparable value. `contract` is the canonical durable graph's
+    /// byte-exact identity; the declaration flags and arena counts cover what a Product
+    /// declaration appends outside the occurrence table, which a graph identity derived
+    /// from root occurrences alone would not observe.
+    #[derive(PartialEq, Eq, Debug)]
+    struct DraftState {
+        contract: Option<DurableContractId>,
+        semantic_nodes: usize,
+        one_declared: bool,
+        many_declared: bool,
+        value_shapes: usize,
+        records: usize,
+        enums: usize,
+        collections: usize,
+    }
+
+    fn draft_state(draft: &ImageDraft) -> DraftState {
+        let declared = |anchor: usize| {
+            draft
+                .product_members(LedgerIdBytes::from_bytes(anchor_id(anchor)))
+                .is_some()
+        };
+        let view = draft.contract_view();
+        DraftState {
+            contract: view.contract_id().ok(),
+            semantic_nodes: view.semantic_nodes().len(),
+            one_declared: declared(ONE_PRODUCT_ANCHOR),
+            many_declared: declared(MANY_PRODUCT_ANCHOR),
+            value_shapes: draft.value_shapes().len(),
+            records: draft.record_type_count(),
+            enums: draft.enum_type_count(),
+            collections: draft.collection_type_count(),
+        }
+    }
+
+    /// What one production build of the corpus produced.
+    struct Built {
+        outcome: Result<(), crate::types::BuildError>,
+        published: Vec<String>,
+        state: DraftState,
+        /// The encoded image, where the corpus is inside every image bound.
+        image: Result<Vec<u8>, marrow_image::ImageBuildError>,
+    }
+
+    /// Drive `DurableRegistry::build` over the corpus through the production entry point,
+    /// against the real type registry and the real identity ledger.
+    fn build_corpus(roots: usize, last: LastStore) -> Built {
+        let source = corpus_source(roots, last);
+        let parsed = parse_source(&source);
+        assert!(!parsed.has_errors(), "the corpus parses");
+        let file = crate::test_file_identity("src/main.mw");
+        let at = FileRef::admitted(0);
+        let mut resources = Vec::new();
+        let mut stores = Vec::new();
+        for declaration in &parsed.file.declarations {
+            match declaration {
+                Declaration::Resource(d) => resources.push((at, file.clone(), d)),
+                Declaration::Store(d) => stores.push((at, file.clone(), d)),
+                other => panic!("the corpus declares only resources and stores: {other:?}"),
+            }
+        }
+
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let mut diagnostics = DiagnosticCollector::new();
+        let records = TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &resources,
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the corpus registry stays within the ledger budget");
+        assert!(diagnostics.is_empty(), "the corpus types check clean");
+        draft.commit();
+
+        let ledger = corpus_ledger(roots);
+        let outcome = DurableRegistry::build(
+            &mut draft_owner,
+            &records,
+            &resources,
+            &stores,
+            Some(&ledger),
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        );
+        Built {
+            outcome: outcome.map(|_| ()),
+            published: diagnostics
+                .finish()
+                .expect_complete()
+                .iter()
+                .map(|row| row.message().to_string())
+                .collect(),
+            state: draft_state(&draft_owner),
+            image: draft_owner.encode().map(|encoded| encoded.bytes),
+        }
+    }
+
+    /// What each last store stages, measured where the construction budget still admits
+    /// its occurrence: what the same store contributes to a corpus that commits it.
+    /// Without this, the restoration assertions below would hold just as well over a last
+    /// store that staged nothing at all — the zero arm, which every checked refusal
+    /// already takes before staging begins.
+    #[test]
+    fn each_last_store_stages_strictly_more_than_the_one_before_it() {
+        let built = |last| {
+            let built = build_corpus(ADMITTED_OCCURRENCES, last);
+            assert!(
+                built.outcome.is_ok(),
+                "the admitted corpus builds for {last:?}: {:?}",
+                built.outcome
+            );
+            let bytes = built
+                .image
+                .expect("the admitted corpus is inside every image bound")
+                .len();
+            (built.state, bytes)
+        };
+        let (absent, _) = built(LastStore::Absent);
+        let (held, _) = built(LastStore::Held);
+        let (one, one_bytes) = built(LastStore::One);
+        let (many, many_bytes) = built(LastStore::Many);
+
+        assert!(
+            held.semantic_nodes > absent.semantic_nodes,
+            "a further occurrence of a held Product stages a graph node of its own: \
+             {held:?} against {absent:?}"
+        );
+        assert!(
+            !held.one_declared && one.one_declared,
+            "a last store over a Product no earlier store declared stages that \
+             declaration, and one over a held Product does not: {one:?}"
+        );
+        assert!(
+            many.many_declared
+                && many.semantic_nodes > one.semantic_nodes
+                && many_bytes > one_bytes,
+            "a {MANY_FIELDS}-member Product declaration stages strictly more than a \
+             one-member one: {many:?} at {many_bytes} bytes against {one:?} at \
+             {one_bytes} bytes"
+        );
+    }
+
+    /// The refused occurrence restores the draft it staged into and settles nothing —
+    /// neither its own rows nor the row an earlier store had already settled.
+    #[test]
+    fn a_refused_root_occurrence_restores_the_draft_and_settles_no_store_payload() {
+        let control = build_corpus(FILLED_OCCURRENCES, LastStore::Absent);
+        assert!(
+            control.outcome.is_ok(),
+            "the corpus at the admitted occurrence count builds: {:?}",
+            control.outcome
+        );
+        assert!(
+            control.state.contract.is_some(),
+            "the corpus has a durable graph identity to be restored to"
+        );
+        assert!(
+            !control.state.one_declared && !control.state.many_declared,
+            "no corpus declares a fresh Product until a last store occurs it"
+        );
+        let settled = control
+            .published
+            .iter()
+            .find(|row| row.contains("`Missing` is not a resource in this project"))
+            .expect("an earlier store's ordinary refusal publishes when the build completes")
+            .clone();
+
+        for last in [LastStore::Held, LastStore::One, LastStore::Many] {
+            let refused = build_corpus(FILLED_OCCURRENCES, last);
+            assert!(
+                matches!(
+                    refused.outcome,
+                    Err(crate::types::BuildError::Invariant(
+                        GenericInvariant::DurableConstructionRefused
+                    ))
+                ),
+                "the occurrence past the admitted count is refused by the durable graph, got \
+                 {:?} for {last:?}",
+                refused.outcome
+            );
+            assert_eq!(
+                refused.state, control.state,
+                "the refused store's armed transaction restores every table it staged into, \
+                 for {last:?}"
+            );
+            assert!(
+                !refused.published.contains(&settled),
+                "the aborted build settled an earlier store's row for {last:?}: {:?}",
+                refused.published
+            );
+            assert!(
+                refused.published.is_empty(),
+                "a whole-build abort settles no store's payload for {last:?}, got {:?}",
+                refused.published
+            );
+        }
+    }
+}
