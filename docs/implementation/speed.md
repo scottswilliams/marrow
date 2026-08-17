@@ -66,8 +66,8 @@ A change is reviewed against six rules.
 
 A test whose cost is out of proportion to the rest of the battery is marked
 `#[ignore]` with a reason that states that cost, and is run explicitly with
-`--ignored`, so the default battery stays fast for the contributor who runs it
-many times a day. The reason is the place the cost is justified, as in
+`--ignored`, so its cost is not paid by the contributor who runs the default
+battery many times a day. The reason is the place the cost is justified, as in
 `crates/marrow/tests/durable_transactions.rs`:
 
 ```text
