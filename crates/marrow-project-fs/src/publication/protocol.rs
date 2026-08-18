@@ -351,13 +351,25 @@ fn publish_admitted<'a>(
     let journal = match claimed {
         Ok(journal) => journal,
         Err(refusal) => {
-            // Nothing is durably claimed, so this is an ordinary refusal. The
-            // stage this call created is removed first, and its absence made
-            // durable, so the project does not keep the manual unclaimed state.
-            // A discard that itself refuses leaves that state behind and is
-            // reported by the next command, but it never replaces the
-            // durability-relevant cause with its own unlink error.
-            let _ = discard_stage(guard, &stage);
+            // Whether anything is durably claimed is not something this arm may
+            // assume. `claim` links the marker and syncs the parent before it
+            // rechecks its own work, so a refusal from that recheck returns
+            // with the claim already durable. Removing the stage there would
+            // leave a durable marker whose phase-1 map has no successor to
+            // resume from — permanently off-map, the one state recovery cannot
+            // settle. So the classifier that owns this question is asked, and
+            // the stage is removed only where it says nothing durable exists.
+            // An unreadable classification is treated as durable: retaining a
+            // recoverable stage costs a manual unclaimed state, and removing a
+            // needed one costs the publication.
+            if matches!(
+                classify(meta, guard.journal_names(), JournalKind::Ids),
+                Ok(PendingState::Absent | PendingState::Preclaim(_))
+            ) {
+                // The cause that stopped the claim outranks a refusal from the
+                // cleanup that follows it.
+                let _ = discard_stage(guard, &stage);
+            }
             return Err(refusal.into());
         }
     };
