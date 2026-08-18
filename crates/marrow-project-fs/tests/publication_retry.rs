@@ -12,88 +12,12 @@
 //! process. Nothing here drops one — the retry settles.
 
 use std::fs;
-use std::path::{Path, PathBuf};
 
-use marrow_project::{
-    DurableIdentityId, IdentityAnchor, IdentityKind, LedgerPublicationPlan, META_DIR,
-};
-use marrow_project_fs::{
-    IdsPublication, IdsPublishOutcome, IdsRefusal, OverlaySnapshot, ProjectMetadataWriteGuard,
-    capture_project,
-};
+mod common;
 
-const MANIFEST: &[u8] = b"edition = \"2026\"\n";
+use common::Project;
+use marrow_project_fs::{IdsPublication, IdsPublishOutcome, IdsRefusal, ProjectMetadataWriteGuard};
 
-/// A temporary project root removed on drop.
-struct Project {
-    root: PathBuf,
-}
-
-impl Project {
-    fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-idpub01-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(root.join("src")).expect("create temp project");
-        fs::write(root.join("marrow.toml"), MANIFEST).expect("write manifest");
-        fs::write(root.join("src/main.mw"), b"").expect("write source");
-        Self { root }
-    }
-
-    fn path(&self) -> &Path {
-        &self.root
-    }
-
-    fn meta(&self) -> PathBuf {
-        self.root.join(META_DIR)
-    }
-
-    /// One publication plan minting `anchor`, admitted against whatever the
-    /// project currently carries.
-    fn plan(&self, anchor: &str, id: u8) -> LedgerPublicationPlan {
-        let input = capture_project(self.path(), OverlaySnapshot::empty())
-            .expect("the fixture project captures");
-        input
-            .admit_identity_mints_with(
-                IdentityAnchor::new(IdentityKind::Product, anchor),
-                Vec::new(),
-                |count| {
-                    Ok::<_, std::convert::Infallible>(
-                        (0..count)
-                            .map(|index| {
-                                let mut bytes = [0u8; 16];
-                                bytes[0] = id;
-                                bytes[15] = u8::try_from(index).expect("one candidate");
-                                DurableIdentityId::from_bytes(bytes)
-                            })
-                            .collect(),
-                    )
-                },
-            )
-            .expect("the mint is admitted")
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-/// A claim this process abandons costs it the capability to publish again.
-///
-/// The retry reconciles the quarantine before it reads the artifact map.
-///
-/// A durable claim is reached the way the quarantine kat reaches one — a
-/// foreign second link makes the reading off-map after the claim — and the
-/// interrupted removal is then planted under it: the staged successor at the
-/// quarantine name with its own name absent. The retry must put that object
-/// back and settle, not read the absent stage as a cleanup already done.
 #[test]
 fn a_retried_pending_publication_reconciles_the_quarantine_before_it_classifies() {
     let project = Project::new("retry-reconciles");

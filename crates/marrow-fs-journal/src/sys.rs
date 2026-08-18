@@ -174,13 +174,13 @@ mod imp {
         // classification reads as preclaim and the protocol's retained-state
         // handling already owns.
         //
-        // The removal that used to stand here witnessed the name with a stat
-        // and then unlinked that name, so a replacement landing between the two
-        // was deleted instead — the entry would not even be one this call
-        // created. No proof available here closes that window: `unlinkat` names
-        // a path, and this layer has no private location to move the object to
-        // first. Leaving classifiable debris costs a retained manual state;
-        // removing the wrong object costs a file that was never ours.
+        // Removing it is not available at this layer. `unlinkat` names a path,
+        // so a removal here could only witness the name with a stat and then
+        // unlink that name — deleting whatever landed between the two, which
+        // need not be the entry this call created. Nothing at this layer has a
+        // private location to move an object into first. Leaving classifiable
+        // debris costs a retained manual state; removing the wrong object costs
+        // a file that was never ours.
         if let Err(errno) = rustix::fs::fchmod(&file, file_mode()) {
             return Err(map("create file", Reading::Plain, errno));
         }

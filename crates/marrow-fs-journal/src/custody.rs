@@ -489,6 +489,21 @@ pub(crate) fn refine_open_refusal(
     denied.unwrap_or(refusal)
 }
 
+/// Refuse an admitted directory whose owner bits fall short of what working in
+/// it needs. An open succeeds on read and execute alone, so this is what turns
+/// a missing owner write into the same typed repair instruction rather than a
+/// generic permission error from the first entry someone tries to create.
+fn require_dir_mode(op: &'static str, stat: &EntryStat) -> Result<(), CustodyError> {
+    if stat.mode & REQUIRED_DIR == REQUIRED_DIR {
+        return Ok(());
+    }
+    Err(CustodyError::ModeDenied {
+        op,
+        found: stat.mode,
+        required: REQUIRED_DIR,
+    })
+}
+
 /// One typed reading of a refused directory admission on every qualified
 /// platform.
 ///
@@ -513,21 +528,7 @@ pub(crate) fn refine_open_refusal(
 /// whichever call reached it first.
 ///
 /// Nothing was admitted either way; the stat only names the refusal.
-/// Refuse an admitted directory whose owner bits fall short of what working in
-/// it needs. An open succeeds on read and execute alone, so this is what turns
-/// a missing owner write into the same typed repair instruction rather than a
-/// generic permission error from the first entry someone tries to create.
-fn require_dir_mode(op: &'static str, stat: &EntryStat) -> Result<(), CustodyError> {
-    if stat.mode & REQUIRED_DIR == REQUIRED_DIR {
-        return Ok(());
-    }
-    Err(CustodyError::ModeDenied {
-        op,
-        found: stat.mode,
-        required: REQUIRED_DIR,
-    })
-}
-
+///
 fn refine_dir_refusal(refusal: CustodyError, observed: Option<EntryStat>) -> CustodyError {
     if let CustodyError::Io { op, source } = &refusal
         && source.kind() == std::io::ErrorKind::PermissionDenied

@@ -146,11 +146,10 @@ fn the_claim_witness_carries_the_parent_and_fresh_inode() {
     );
 }
 
-// A header that embeds another directory or another inode used to be a
-// producer error this call refused. It is no longer expressible: `BuiltHeader`
-// carries only the generation slot and the bytes after the common, and the
-// claim composes the common from its own witness. The kat that proved the
-// refusal is gone because the state it constructed cannot be constructed.
+// A header embedding a directory or an inode other than this claim's own is
+// unrepresentable: `BuiltHeader` carries the generation slot and the bytes
+// after the common, and the claim composes the common from its own witness.
+// There is no state here to test.
 
 /// What remains constructible, and therefore still refused: a kind whose header
 /// must be led by the claim's own witness, offered the shape that has no common
@@ -204,13 +203,11 @@ fn a_frame_law_violation_in_the_header_is_refused_before_any_link() {
     );
 }
 
-// A pre-link recheck refusal discarding its never-linked claim file was proven
-// by forcing a wrong mode onto the fresh claim file from inside the header
-// builder — the one point at which caller code ran between the create and the
-// recheck. Deleting that callback is what closed the escape it also enabled, so
-// the injection point is gone and this state is no longer reachable from
-// inside the process. Inducing it needs a fault seam engaging after
-// `create_file_excl` succeeds, which the QACRASH01 register already carries.
+// A pre-link recheck refusal discards the never-linked claim file it created.
+// No caller code runs between the create and the recheck — that is what keeps
+// a preclaim refusal from following a link — so the state cannot be induced
+// from inside the process. It needs a fault seam engaging after
+// `create_file_excl` succeeds, which the QACRASH01 register carries.
 
 #[test]
 fn a_claim_collides_with_existing_journal_names() {

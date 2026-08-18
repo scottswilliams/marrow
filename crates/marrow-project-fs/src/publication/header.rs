@@ -20,7 +20,7 @@
 //! an absent artifact displaces no generation, so the slot is zero and
 //! `base_presence` is the authority on which arm the plan takes.
 
-use marrow_fs_journal::{FsIdentity, JournalCommon};
+use marrow_fs_journal::{FsIdentity, JournalCommon, JournalWitness};
 
 use super::{LEDGER_BYTE_CEILING, stage_spelling};
 
@@ -29,6 +29,45 @@ const COMMON_LEN: usize = 48;
 /// An absent generation: a plan admitted against an absent artifact displaces
 /// no durable generation.
 const NO_GENERATION: [u8; 16] = [0; 16];
+
+/// Everything a publication's row header carries before a claim exists.
+///
+/// The two identities the header also carries — the directory the claim was
+/// taken under and the inode it was written into — are the claim's to witness,
+/// so they are not here. This is the half a plan can produce on its own, which
+/// is what lets the claim take header bytes rather than a callback it would
+/// have to run partway through its own protocol.
+pub(crate) struct PlannedHeader {
+    pub(crate) base: Option<FsIdentity>,
+    pub(crate) next_inode: FsIdentity,
+    pub(crate) base_bytes: Vec<u8>,
+    pub(crate) next_bytes: Vec<u8>,
+}
+
+impl PlannedHeader {
+    /// The generation slot: the displaced artifact's inode identity, or zero
+    /// when the plan displaces none.
+    pub(crate) fn generation(&self) -> [u8; 16] {
+        self.base.map_or(NO_GENERATION, FsIdentity::to_bytes)
+    }
+
+    /// Everything after the shared leading common.
+    pub(crate) fn encode_tail(&self) -> Vec<u8> {
+        let stage = stage_spelling().as_bytes();
+        let mut bytes = Vec::with_capacity(self.tail_len());
+        bytes.extend_from_slice(&self.next_inode.to_bytes());
+        bytes.push(u8::from(self.base.is_some()));
+        bytes.push(u8::try_from(stage.len()).expect("the fixed stage name is far below 256 bytes"));
+        bytes.extend_from_slice(stage);
+        push_run(&mut bytes, &self.base_bytes);
+        push_run(&mut bytes, &self.next_bytes);
+        bytes
+    }
+
+    fn tail_len(&self) -> usize {
+        16 + 2 + stage_spelling().len() + 8 + self.base_bytes.len() + self.next_bytes.len()
+    }
+}
 
 /// The decoded kind-1 row header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,45 +125,34 @@ impl RowHeader {
     /// The frozen encoding.
     #[cfg(test)]
     pub(crate) fn encode(&self) -> Vec<u8> {
+        let planned = PlannedHeader {
+            base: self.base,
+            next_inode: self.next_inode,
+            base_bytes: self.base_bytes.clone(),
+            next_bytes: self.next_bytes.clone(),
+        };
         let common = JournalCommon {
-            generation: self.generation(),
+            generation: planned.generation(),
             parent: self.parent,
             journal_inode: self.journal_inode,
         };
-        let mut bytes = Vec::with_capacity(COMMON_LEN + self.tail_len());
+        let mut bytes = Vec::with_capacity(COMMON_LEN + planned.tail_len());
         bytes.extend_from_slice(&common.encode());
-        bytes.extend_from_slice(&self.encode_tail());
+        bytes.extend_from_slice(&planned.encode_tail());
         bytes
     }
 
-    /// The generation slot: the displaced artifact's inode identity, or zero
-    /// when the plan displaces none.
-    pub(crate) fn generation(&self) -> [u8; 16] {
-        self.base.map_or(NO_GENERATION, FsIdentity::to_bytes)
-    }
-
-    /// Everything after the shared leading common.
-    ///
-    /// The common carries the two identities only the journal owner can know —
-    /// the directory it claims under and the inode it writes into — and this
-    /// carries everything the plan decides. Nothing here depends on the claim,
-    /// so a caller builds it before one exists and the journal owner composes
-    /// the two. That is what lets the claim take header bytes rather than a
-    /// callback it would have to run partway through its own protocol.
-    pub(crate) fn encode_tail(&self) -> Vec<u8> {
-        let stage = stage_spelling().as_bytes();
-        let mut bytes = Vec::with_capacity(self.tail_len());
-        bytes.extend_from_slice(&self.next_inode.to_bytes());
-        bytes.push(u8::from(self.base.is_some()));
-        bytes.push(u8::try_from(stage.len()).expect("the fixed stage name is far below 256 bytes"));
-        bytes.extend_from_slice(stage);
-        push_run(&mut bytes, &self.base_bytes);
-        push_run(&mut bytes, &self.next_bytes);
-        bytes
-    }
-
-    fn tail_len(&self) -> usize {
-        16 + 2 + stage_spelling().len() + 8 + self.base_bytes.len() + self.next_bytes.len()
+    /// Complete a plan with the identities the claim witnessed. This is what
+    /// the durable bytes decode to, and what the session reasons from.
+    pub(crate) fn from_planned(planned: PlannedHeader, witness: JournalWitness) -> Self {
+        Self {
+            parent: witness.parent,
+            journal_inode: witness.journal_inode,
+            base: planned.base,
+            next_inode: planned.next_inode,
+            base_bytes: planned.base_bytes,
+            next_bytes: planned.next_bytes,
+        }
     }
 
     /// Decode the frozen encoding, validating every structurally visible field.

@@ -10,12 +10,12 @@ use std::fmt;
 
 use marrow_fs_journal::{
     AdmittedDir, BuiltHeader, ClaimRefusal, CustodyError, EntryName, EntryStat, FsIdentity,
-    JournalKind, JournalWitness, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord,
-    TailState, claim, classify, encode_record,
+    JournalKind, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord, TailState, claim,
+    classify, encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
 
-use super::header::RowHeader;
+use super::header::{PlannedHeader, RowHeader};
 use super::{
     IdsPublication, IdsPublicationError, IdsPublicationPending, IdsPublishOutcome, IdsRefusal,
     LEDGER_BYTE_CEILING, ProjectMetadataWriteGuard,
@@ -263,20 +263,16 @@ pub(super) fn recover(
     // removal. The arms that read the stage without a header reconcile on their
     // own terms, where no terminal exists for a restore to contradict.
     let names = guard.journal_names();
-    let claim_witness = meta.stat_entry(names.claim())?.map(|stat| stat.identity());
-    let pending_witness = meta
-        .stat_entry(names.pending())?
-        .map(|stat| stat.identity());
-    match classify(MarkerStats::read(meta, names.markers())?).admit(
-        meta,
-        names,
-        JournalKind::Ids,
-    )? {
+    // The shape is bound rather than consumed, so the identity the header is
+    // checked against is the one this classification acted on. Statting the
+    // marker name a second time could witness a different object than the one
+    // that was classified.
+    let shape = classify(MarkerStats::read(meta, names.markers())?);
+    let marker_witness = shape.marker_identity();
+    match shape.admit(meta, names, JournalKind::Ids)? {
         PendingState::Absent => {
             reconcile_quarantine(guard, guard.stage_name())?;
-            if meta.stat_entry(guard.stage_name())?.is_some() {
-                return Err(IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete));
-            }
+            require_clear_stage(guard)?;
             Ok(None)
         }
         // A claim file that was never durably claimed is retained, not swept:
@@ -287,13 +283,13 @@ pub(super) fn recover(
         }
         PendingState::Corrupt(reason) => Err(IdsPublicationError::corrupt(reason)),
         PendingState::Claimed(claimed) => {
-            let header = admit_header(meta, claimed.frame().row_header(), claim_witness)?;
+            let header = admit_header(meta, claimed.frame().row_header(), marker_witness)?;
             let reconciled = reconcile_for(guard, &header, None)?;
             let mut session = Session::new(guard, header, claimed.adopt()?, None);
             session.drive(&reconciled).map(Some)
         }
         PendingState::Pending(mut pending) => {
-            let header = admit_header(meta, pending.frame().row_header(), pending_witness)?;
+            let header = admit_header(meta, pending.frame().row_header(), marker_witness)?;
             let terminal = terminal_of(pending.frame().records())?;
             // Before the tail derivation below, which reads the artifact map
             // itself and would otherwise read it across an interrupted removal.
@@ -342,7 +338,14 @@ fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationErro
         PendingState::Corrupt(reason) => return Err(IdsPublicationError::corrupt(reason)),
     }
     reconcile_quarantine(guard, guard.stage_name())?;
-    if meta.stat_entry(guard.stage_name())?.is_some() {
+    require_clear_stage(guard)
+}
+
+/// Refuse a stage entry left behind with no publication to own it. Reached
+/// only where the journal names say nothing is claimed, so an entry there is a
+/// manual state an operator clears rather than one recovery can settle.
+fn require_clear_stage(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationError> {
+    if guard.meta().stat_entry(guard.stage_name())?.is_some() {
         return Err(IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete));
     }
     Ok(())
@@ -422,7 +425,7 @@ fn publish_admitted<'a>(
             }
         }
     };
-    let header = planned.witnessed(journal.witness());
+    let header = RowHeader::from_planned(planned, journal.witness());
 
     // From here the marker is durable: every interruption is affine, including
     // a reconciliation that refuses before the driver ever runs.
@@ -463,49 +466,14 @@ fn interrupted<'a>(
     )))
 }
 
-/// Everything a publication's row header carries before a claim exists.
-///
-/// The two identities the header also carries — the directory the claim was
-/// taken under and the inode it was written into — are the claim's to witness,
-/// so they are not here. [`Self::build`] hands the rest to the claim as bytes,
-/// and [`Self::witnessed`] completes the header afterwards for the session that
-/// drives from it.
-struct PlannedHeader {
-    base: Option<FsIdentity>,
-    next_inode: FsIdentity,
-    base_bytes: Vec<u8>,
-    next_bytes: Vec<u8>,
-}
-
 impl PlannedHeader {
-    fn row(&self, witness: JournalWitness) -> RowHeader {
-        RowHeader {
-            parent: witness.parent,
-            journal_inode: witness.journal_inode,
-            base: self.base,
-            next_inode: self.next_inode,
-            base_bytes: self.base_bytes.clone(),
-            next_bytes: self.next_bytes.clone(),
-        }
-    }
-
     /// The header as the claim takes it: the generation slot and the bytes
     /// after the common, neither of which depends on a claim existing.
     fn build(&self) -> BuiltHeader {
-        let unwitnessed = self.row(JournalWitness {
-            parent: FsIdentity::new(0, 0),
-            journal_inode: FsIdentity::new(0, 0),
-        });
         BuiltHeader::Witnessed {
-            generation: unwitnessed.generation(),
-            tail: unwitnessed.encode_tail(),
+            generation: self.generation(),
+            tail: self.encode_tail(),
         }
-    }
-
-    /// The same header with the identities the claim witnessed filled in. This
-    /// is what the durable bytes decode to, and what the session reasons from.
-    fn witnessed(&self, witness: JournalWitness) -> RowHeader {
-        self.row(witness)
     }
 }
 
@@ -651,6 +619,22 @@ fn restore_quarantined(
 // ===== The driver ============================================================
 
 impl<'a> Session<'a> {
+    /// A session with no live journal, for the readings that run before one is
+    /// resumed — the tail derivation and the reconciliation beside it. It can
+    /// read the artifact map and reconcile; it cannot drive.
+    fn probe(
+        guard: &'a ProjectMetadataWriteGuard,
+        header: RowHeader,
+        terminal: Option<Terminal>,
+    ) -> Self {
+        Self {
+            guard,
+            header,
+            terminal,
+            journal: None,
+        }
+    }
+
     fn new(
         guard: &'a ProjectMetadataWriteGuard,
         header: RowHeader,
@@ -888,9 +872,6 @@ impl<'a> Session<'a> {
         Ok(terminal.publication())
     }
 
-    /// The run the stage name carries once the successor is installed: the
-    /// displaced generation, or the successor itself when the plan displaced
-    /// nothing and the two names are one inode.
     /// Which bound run the cleanup a recorded terminal authorizes is entitled
     /// to remove from the stage name. The settle path and the reconciliation
     /// that resumes an interrupted settle read it from here, so the object a
@@ -942,6 +923,9 @@ impl<'a> Session<'a> {
         Ok(Reconciled(()))
     }
 
+    /// The run the stage name carries once the successor is installed: the
+    /// displaced generation, or the successor itself when the plan displaced
+    /// nothing and the two names are one inode.
     fn displaced_role(&self) -> BoundRole {
         if self.header.base.is_some() {
             BoundRole::Base
@@ -999,9 +983,12 @@ impl<'a> Session<'a> {
         Ok(self.meta().stat_entry(name)?)
     }
 
-    /// The one classifier: which bound run an object of this identity carries,
+    /// The one resolver: which bound run an object of this identity carries,
     /// given a reader that answers whether it carries a candidate run.
-    fn classify(
+    ///
+    /// Named apart from the journal's `classify`, which answers an unrelated
+    /// question about the marker pair.
+    fn resolve_role(
         &self,
         identity: FsIdentity,
         carries: impl Fn(&[u8]) -> Result<bool, IdsPublicationError>,
@@ -1038,7 +1025,7 @@ impl<'a> Session<'a> {
         name: &EntryName,
         stat: &EntryStat,
     ) -> Result<BoundRole, IdsPublicationError> {
-        self.classify(stat.identity(), |run| {
+        self.resolve_role(stat.identity(), |run| {
             if stat.size() != run.len() as u64 {
                 return Ok(false);
             }
@@ -1055,7 +1042,7 @@ impl<'a> Session<'a> {
     /// the resolution a removal is entitled to act on.
     fn role_of_open(&self, file: &OpenedFile) -> Result<BoundRole, IdsPublicationError> {
         let size = file.stat()?.size();
-        self.classify(file.identity(), |run| {
+        self.resolve_role(file.identity(), |run| {
             if size != run.len() as u64 {
                 return Ok(false);
             }
@@ -1234,12 +1221,7 @@ fn pending_terminal(
     header: &RowHeader,
     reconciled: &Reconciled,
 ) -> Result<Terminal, IdsPublicationError> {
-    let probe = Session {
-        guard,
-        header: header.clone(),
-        terminal: None,
-        journal: None,
-    };
+    let probe = Session::probe(guard, header.clone(), None);
     probe.terminal_from_map(reconciled)
 }
 
@@ -1253,13 +1235,7 @@ fn reconcile_for(
     header: &RowHeader,
     terminal: Option<Terminal>,
 ) -> Result<Reconciled, IdsPublicationError> {
-    Session {
-        guard,
-        header: header.clone(),
-        terminal,
-        journal: None,
-    }
-    .reconcile()
+    Session::probe(guard, header.clone(), terminal).reconcile()
 }
 
 /// The one place a settled artifact map is turned into a terminal.
@@ -1336,6 +1312,71 @@ mod tests {
     use super::*;
     use crate::publication::IdsPublication;
 
+    /// A scratch project with a write owner, removed when the test ends.
+    ///
+    /// Teardown is a `Drop` guard rather than trailing statements, so a failing
+    /// assertion leaves no directory behind for the next run to trip over. It
+    /// removes only the fixed names this owner writes, because the owner
+    /// enumerates no directory and neither does its fixture.
+    struct Scratch {
+        root: std::path::PathBuf,
+        guard: Option<ProjectMetadataWriteGuard>,
+    }
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "marrow-idpub01-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).expect("create the scratch project");
+            let guard = ProjectMetadataWriteGuard::acquire(&root).expect("the write owner");
+            Self {
+                root,
+                guard: Some(guard),
+            }
+        }
+
+        fn guard(&self) -> &ProjectMetadataWriteGuard {
+            self.guard.as_ref().expect("the guard lives until drop")
+        }
+
+        fn meta_path(&self) -> std::path::PathBuf {
+            self.root.join(marrow_project::META_DIR)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let names: Vec<String> = {
+                let guard = self.guard();
+                [
+                    guard.ledger_name().as_str(),
+                    guard.stage_name().as_str(),
+                    guard.quarantine_name().as_str(),
+                    guard.journal_names().claim().as_str(),
+                    guard.journal_names().pending().as_str(),
+                    crate::publication::LOCK_NAME,
+                    crate::publication::ignore::IGNORE_NAME,
+                ]
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
+            };
+            let meta = self.meta_path();
+            self.guard = None;
+            for name in names {
+                std::fs::remove_file(meta.join(name)).ok();
+            }
+            std::fs::remove_dir(&meta).ok();
+            std::fs::remove_dir(&self.root).ok();
+        }
+    }
+
     /// The shape a finish leaves once it has already removed the marker.
     ///
     /// `finish` unlinks the pending name and then performs its closing checks
@@ -1348,18 +1389,10 @@ mod tests {
     /// published.
     #[test]
     fn a_finish_that_already_removed_the_marker_reports_the_terminal_it_recorded() {
-        let root = std::env::temp_dir().join(format!(
-            "marrow-idpub01-postunlink-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create the scratch project");
-        let guard = ProjectMetadataWriteGuard::acquire(&root).expect("the write owner");
+        let scratch = Scratch::new("postunlink");
+        let guard = scratch.guard();
 
-        let meta_path = root.join(marrow_project::META_DIR);
+        let meta_path = scratch.meta_path();
         let ledger_path = meta_path.join(guard.ledger_name().as_str());
         std::fs::write(&ledger_path, b"successor").expect("the installed successor");
         let next_inode = guard
@@ -1371,9 +1404,9 @@ mod tests {
 
         // Exactly what a finish leaves after its unlink: no marker anywhere,
         // and a session holding the terminal it recorded before removing it.
-        let spent = Session {
-            guard: &guard,
-            header: RowHeader {
+        let spent = Session::probe(
+            guard,
+            RowHeader {
                 parent: guard.meta().identity(),
                 journal_inode: FsIdentity::new(0, 0),
                 base: None,
@@ -1381,9 +1414,8 @@ mod tests {
                 base_bytes: Vec::new(),
                 next_bytes: b"successor".to_vec(),
             },
-            terminal: Some(Terminal::Installed),
-            journal: None,
-        };
+            Some(Terminal::Installed),
+        );
         assert!(spent.is_spent());
         assert!(
             guard
@@ -1394,11 +1426,7 @@ mod tests {
             "the fixture is the post-unlink shape",
         );
 
-        let outcome = interrupted(
-            &guard,
-            spent,
-            IdsPublicationError::bare(IdsRefusal::Custody),
-        );
+        let outcome = interrupted(guard, spent, IdsPublicationError::bare(IdsRefusal::Custody));
         let IdsPublishOutcome::Pending(pending) = outcome else {
             panic!("an interrupted publication is pending");
         };
@@ -1407,18 +1435,6 @@ mod tests {
              called unclaimed",
         );
         assert_eq!(settled, IdsPublication::Published);
-
-        std::fs::remove_file(&ledger_path).ok();
-        for entry in [
-            guard.journal_names().claim().as_str(),
-            guard.stage_name().as_str(),
-            crate::publication::LOCK_NAME,
-            crate::publication::IGNORE_NAME,
-        ] {
-            std::fs::remove_file(meta_path.join(entry)).ok();
-        }
-        std::fs::remove_dir(&meta_path).ok();
-        std::fs::remove_dir(&root).ok();
     }
 
     /// A session whose journal a refused finish already consumed must not be
@@ -1431,23 +1447,15 @@ mod tests {
     /// routes to adopts — so the retry settles instead.
     #[test]
     fn a_spent_session_is_offered_as_a_marker_to_recover_not_a_journal_to_drive() {
-        let root = std::env::temp_dir().join(format!(
-            "marrow-idpub01-spent-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create the scratch project");
-        let guard = ProjectMetadataWriteGuard::acquire(&root).expect("the write owner");
+        let scratch = Scratch::new("spent");
+        let guard = scratch.guard();
 
         // An installed successor at one link with the stage already cleaned:
         // the reading a settled terminal finishes over without mutating
         // anything, so recovery reaches the marker unlink and nothing else.
         // Every spelling comes from the owners the gates protect: this module
         // names no entry itself, in test code either.
-        let meta_path = root.join(marrow_project::META_DIR);
+        let meta_path = scratch.meta_path();
         let ledger_path = meta_path.join(guard.ledger_name().as_str());
         std::fs::write(&ledger_path, b"successor").expect("the installed successor");
         let next_inode = guard
@@ -1502,16 +1510,11 @@ mod tests {
 
         // Exactly what a finish that refused leaves behind: the journal gone
         // from the session, the marker still on disk.
-        let spent = Session {
-            guard: &guard,
-            header,
-            terminal: Some(Terminal::Installed),
-            journal: None,
-        };
+        let spent = Session::probe(guard, header, Some(Terminal::Installed));
         assert!(spent.is_spent(), "the fixture is the state under test");
 
         let outcome = interrupted(
-            &guard,
+            guard,
             spent,
             IdsPublicationError::bare(IdsRefusal::Interrupted),
         );
@@ -1523,17 +1526,5 @@ mod tests {
             .expect("the marker is adopted from disk rather than driven through a missing journal");
         assert_eq!(settled, IdsPublication::Published);
         assert!(!marker.exists(), "the publication finished");
-
-        std::fs::remove_file(&ledger_path).ok();
-        for entry in [
-            guard.journal_names().claim().as_str(),
-            guard.stage_name().as_str(),
-            crate::publication::LOCK_NAME,
-            crate::publication::IGNORE_NAME,
-        ] {
-            std::fs::remove_file(meta_path.join(entry)).ok();
-        }
-        std::fs::remove_dir(&meta_path).ok();
-        std::fs::remove_dir(&root).ok();
     }
 }

@@ -39,6 +39,15 @@ fn serialized() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Recover `project` and require it to settle as `expected`.
+///
+/// The planting stays in each kat, because the state a kat plants is its whole
+/// subject. What is shared is only the drive-and-check that follows it.
+fn assert_settled(project: &Project, expected: IdsPublication) {
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(expected));
+}
+
 /// A temporary project root removed on drop.
 struct Project {
     root: PathBuf,
@@ -384,8 +393,7 @@ fn recovery_installs_from_prepared_absent() {
     project.write_meta("ids.publish.stage", b"successor");
     Crash::new(&project, None, b"successor").plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(!project.exists("ids.publish.stage"));
     assert!(!project.exists("ids.pending"));
@@ -401,8 +409,7 @@ fn recovery_installs_from_prepared_replace() {
     project.write_meta("ids.publish.stage", b"successor");
     Crash::new(&project, Some(b"base"), b"successor").plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(!project.exists("ids.publish.stage"));
 }
@@ -418,8 +425,7 @@ fn recovery_installs_from_installing_absent_before_the_link() {
         .installing()
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(!project.exists("ids.publish.stage"));
 }
@@ -439,8 +445,7 @@ fn recovery_settles_from_installing_absent_after_the_link() {
         .installing()
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(!project.exists("ids.publish.stage"));
 }
@@ -467,8 +472,7 @@ fn recovery_settles_from_installing_replace_after_the_exchange() {
     fs::rename(meta.join("ids.swap"), meta.join("ids.publish.stage")).expect("displace the base");
     planted.plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(!project.exists("ids.publish.stage"));
 }
@@ -489,8 +493,7 @@ fn recovery_finishes_a_settled_installation() {
         .settled(0)
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert!(!project.exists("ids.publish.stage"));
     assert!(!project.exists("ids.pending"));
 }
@@ -509,8 +512,7 @@ fn recovery_finishes_a_cleaned_installation() {
     fs::rename(meta.join("ids.publish.stage"), meta.join("ids")).expect("run the exact cleanup");
     planted.plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert!(!project.exists("ids.pending"));
 }
 
@@ -527,8 +529,7 @@ fn recovery_settles_a_reverted_publication_as_a_concurrent_change() {
         .settled(1)
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"another writer's generation"[..]),
@@ -561,8 +562,7 @@ fn a_generation_a_checkout_landed_reverts_the_publication() {
     fs::remove_file(project.meta().join("ids")).expect("the checkout replaces the entry");
     project.write_meta("ids", b"another branch's generation");
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"another branch's generation"[..]),
@@ -589,8 +589,7 @@ fn a_generation_a_checkout_landed_before_the_installing_record_reverts_the_publi
     fs::remove_file(project.meta().join("ids")).expect("the checkout replaces the entry");
     project.write_meta("ids", b"another branch's generation");
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"another branch's generation"[..]),
@@ -611,8 +610,7 @@ fn a_destination_taken_before_the_installing_record_reverts_the_publication() {
     project.write_meta("ids.publish.stage", b"successor");
     Crash::new(&project, None, b"successor").plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"another writer's generation"[..])
@@ -666,8 +664,7 @@ fn recovery_reverts_when_the_destination_was_taken() {
         .installing()
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"another writer's generation"[..])
@@ -686,8 +683,7 @@ fn an_incomplete_installing_record_is_truncated_to_the_unique_next_record() {
         .partial(installing_record(), 5)
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
 }
 
@@ -706,8 +702,7 @@ fn an_incomplete_terminal_record_over_a_reverted_map_resumes_as_reverted() {
         .partial(settled_record(1), 6)
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"another writer's generation"[..]),
@@ -732,8 +727,7 @@ fn an_incomplete_terminal_record_is_truncated_against_the_artifact_map() {
         .partial(settled_record(0), 6)
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert!(!project.exists("ids.publish.stage"));
 }
 
@@ -838,8 +832,7 @@ fn a_generation_on_the_bound_generation_s_recycled_number_reverts_the_publicatio
         .witness_next("ids.publish.stage")
         .plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"kept"[..]),
@@ -870,8 +863,7 @@ fn a_reverted_terminal_over_a_drifted_target_finishes_after_its_own_cleanup() {
         .expect("the reverted cleanup already ran");
     planted.plant();
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"kept"[..]),
@@ -939,8 +931,7 @@ fn an_object_left_in_quarantine_by_an_interrupted_removal_is_finished_not_strand
         .plant();
     project.move_into_quarantine("ids.publish.stage");
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(!project.exists("ids.publish.stage"));
     assert!(!project.exists("ids.pending"));
@@ -977,8 +968,7 @@ fn a_publication_retried_over_an_occupied_quarantine_does_not_read_the_cleanup_a
     // did not get to unlink it.
     project.move_into_quarantine("ids.publish.stage");
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_settled(&project, IdsPublication::Published);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(
         !project.exists("ids.publish.stage"),
@@ -1011,8 +1001,7 @@ fn a_reverted_cleanup_interrupted_over_a_mutated_target_finishes_rather_than_wed
     // unlink, and the target still reads as the bound generation.
     project.move_into_quarantine("ids.publish.stage");
 
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(
         project.read_meta("ids").as_deref(),
         Some(&b"base"[..]),
@@ -1061,8 +1050,7 @@ fn a_publication_over_an_interrupted_removal_refuses_and_leaves_it_settleable() 
     assert!(!project.exists("ids.publish.stage"));
 
     // The state the refusal preserved is the one recovery settles.
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_settled(&project, IdsPublication::ConcurrentChange);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"base"[..]));
     assert!(!project.exists("ids.publish.stage"));
     assert!(!project.exists("ids.pending"));
@@ -1379,14 +1367,15 @@ fn the_probe_spells_the_journal_owner_s_marker_names() {
 fn the_publication_owner_enumerates_no_directory() {
     for source in [
         include_str!("publication.rs"),
+        include_str!("publication/ignore.rs"),
         include_str!("publication/protocol.rs"),
         include_str!("publication/header.rs"),
         include_str!("publication/marker.rs"),
         // The journal owner is under the same ban for its own sake: nothing in
-        // this protocol's namespace is enumerated anywhere. That
-        // classification reads only the marker pair is no longer this gate's
-        // subject — `MarkerStats` carries the whole decision by value, so a
-        // classification has no directory to enumerate in the first place.
+        // this protocol's namespace is enumerated anywhere. Classification's
+        // independence from artifacts is not this gate's subject —
+        // `MarkerStats` carries that decision by value, so a classification has
+        // no directory to enumerate in the first place.
         include_str!("../../marrow-fs-journal/src/journal.rs"),
     ] {
         for forbidden in ["read_dir", "ReadDir", "glob", "remove_dir_all"] {
@@ -1409,9 +1398,9 @@ fn the_publication_owner_enumerates_no_directory() {
 /// spell no link, and the commit is required to spell one.
 ///
 /// Scanning the body alone is not enough, because a callback invoked inside the
-/// preflight is a link the body does not spell: a caller that captured the same
-/// admitted directory could link the marker itself, and every refusal after
-/// that would still be reported as leaving no marker. The header is now a
+/// preflight would be a link the body does not spell: a caller that captured
+/// the same admitted directory could link the marker itself, and every refusal
+/// after that would still be reported as leaving no marker. The header is a
 /// value, built before the claim from what the plan already knows, so no caller
 /// code runs inside the preflight at all — that escape is unrepresentable
 /// rather than refused, and there is no runtime state left to test. What this
@@ -2258,6 +2247,7 @@ fn the_publication_names_derive_from_the_pure_owner_s_spellings() {
 
     for source in [
         include_str!("publication.rs"),
+        include_str!("publication/ignore.rs"),
         include_str!("publication/protocol.rs"),
         include_str!("publication/header.rs"),
         include_str!("publication/marker.rs"),

@@ -558,22 +558,6 @@ pub enum ClaimRefusal {
     PossiblyDurable(JournalError),
 }
 
-impl ClaimRefusal {
-    /// The refusal itself, for rendering. Reading it does not decide the
-    /// handling; the arm does.
-    pub fn error(&self) -> &JournalError {
-        match self {
-            Self::Preclaim(error) | Self::PossiblyDurable(error) => error,
-        }
-    }
-}
-
-impl fmt::Display for ClaimRefusal {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.error().fmt(formatter)
-    }
-}
-
 /// A row header as a caller can build it: the generation slot and everything
 /// after the shared leading common.
 ///
@@ -704,7 +688,6 @@ fn claim_preflight(
         kind,
         &header.compose(&witness),
         prepared_payload,
-        &witness,
     ) {
         Ok(bytes) => Ok(PreparedClaim {
             bytes_len: bytes.len(),
@@ -821,6 +804,26 @@ pub enum MarkerShape {
     },
     /// Only the pending name exists.
     Pending(EntryStat),
+}
+
+impl MarkerShape {
+    /// The identity of the marker file this shape names, if it names one.
+    ///
+    /// This is the stat the classification itself acted on, so a caller that
+    /// needs the marker's identity reads it from here rather than statting the
+    /// name again. A second read could see a different object than the one
+    /// classified; this cannot.
+    #[must_use]
+    pub fn marker_identity(&self) -> Option<FsIdentity> {
+        match self {
+            Self::Absent => None,
+            // Both names exist as one two-link inode, so either stat names it;
+            // the claim's is the one the claimed reading validated.
+            Self::Preclaim(stat) | Self::Claimed { claim: stat, .. } | Self::Pending(stat) => {
+                Some(stat.identity())
+            }
+        }
+    }
 }
 
 /// The shape of the pending-journal name pair. Reads nothing and mutates
@@ -1019,9 +1022,8 @@ fn write_claim_file(
     kind: JournalKind,
     header: &[u8],
     prepared_payload: &[u8],
-    witness: &JournalWitness,
 ) -> Result<Vec<u8>, JournalError> {
-    let bytes = claim_bytes(kind, header, prepared_payload, witness)?;
+    let bytes = claim_bytes(kind, header, prepared_payload)?;
     file.append(&bytes)?;
     file.sync()?;
     let reread = file.read_prefix(kind.ceiling() + 1)?;
@@ -1032,19 +1034,16 @@ fn write_claim_file(
     Ok(bytes)
 }
 
-/// Assemble and law-check the claim bytes: the header (with the kinds-4/5
-/// embedded witness) plus the sequence-zero Prepared record.
+/// Assemble and law-check the claim bytes: the header plus the sequence-zero
+/// Prepared record.
+///
+/// The header arrives already composed against this claim's own witness, so
+/// nothing here re-checks that it embeds one.
 fn claim_bytes(
     kind: JournalKind,
     header: &[u8],
     prepared_payload: &[u8],
-    witness: &JournalWitness,
 ) -> Result<Vec<u8>, JournalError> {
-    // A header led by the common is composed from this claim's own witness, so
-    // one embedding another directory or another inode cannot be handed in.
-    // What remains checkable is the shape: a witness-carrying kind offered the
-    // no-common shape would write a header with no witness at all.
-    let _ = witness;
     let mut bytes = encode_header(kind, header)?;
     bytes.extend_from_slice(&encode_record(kind, 0, 1, prepared_payload)?);
     if bytes.len() > kind.ceiling() {

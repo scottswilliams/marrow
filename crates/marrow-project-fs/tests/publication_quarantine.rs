@@ -10,79 +10,15 @@
 //! [`IdsPublicationPending`]: marrow_project_fs::IdsPublicationPending
 
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
-use marrow_project::{
-    DurableIdentityId, IdentityAnchor, IdentityKind, LedgerPublicationPlan, META_DIR,
-};
+mod common;
+
+use common::Project;
 use marrow_project_fs::{
     IdsPublication, IdsPublishOutcome, IdsRefusal, OverlaySnapshot, ProjectMetadataWriteGuard,
     capture_project,
 };
-
-const MANIFEST: &[u8] = b"edition = \"2026\"\n";
-
-/// A temporary project root removed on drop.
-struct Project {
-    root: PathBuf,
-}
-
-impl Project {
-    fn new(tag: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-idpub01-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(root.join("src")).expect("create temp project");
-        fs::write(root.join("marrow.toml"), MANIFEST).expect("write manifest");
-        fs::write(root.join("src/main.mw"), b"").expect("write source");
-        Self { root }
-    }
-
-    fn path(&self) -> &Path {
-        &self.root
-    }
-
-    fn meta(&self) -> PathBuf {
-        self.root.join(META_DIR)
-    }
-
-    /// One publication plan minting `anchor`, admitted against whatever the
-    /// project currently carries.
-    fn plan(&self, anchor: &str, id: u8) -> LedgerPublicationPlan {
-        let input = capture_project(self.path(), OverlaySnapshot::empty())
-            .expect("the fixture project captures");
-        input
-            .admit_identity_mints_with(
-                IdentityAnchor::new(IdentityKind::Product, anchor),
-                Vec::new(),
-                |count| {
-                    Ok::<_, std::convert::Infallible>(
-                        (0..count)
-                            .map(|index| {
-                                let mut bytes = [0u8; 16];
-                                bytes[0] = id;
-                                bytes[15] = u8::try_from(index).expect("one candidate");
-                                DurableIdentityId::from_bytes(bytes)
-                            })
-                            .collect(),
-                    )
-                },
-            )
-            .expect("the mint is admitted")
-    }
-}
-
-impl Drop for Project {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
 
 /// A claim this process abandons costs it the capability to publish again.
 ///

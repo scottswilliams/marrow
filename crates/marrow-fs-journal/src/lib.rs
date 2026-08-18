@@ -79,7 +79,7 @@ pub use frame::{
 };
 pub use journal::{
     BuiltHeader, ClaimRefusal, ClaimedJournal, CorruptionReason, JournalError, JournalWitness,
-    LiveJournal, MarkerStats, PendingJournal, PendingName, PendingState, PreclaimDebris, claim,
-    classify,
+    LiveJournal, MarkerNames, MarkerShape, MarkerStats, PendingJournal, PendingName, PendingState,
+    PreclaimDebris, claim, classify,
 };
 pub use lock::{CacheLock, LockError};
