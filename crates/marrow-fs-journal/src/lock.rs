@@ -22,6 +22,16 @@ use crate::sys;
 /// descriptor closes at `exec`. A holder that releases and immediately
 /// reacquires during that window may observe [`LockError::Held`].
 ///
+/// The same mechanism sets what this lock does *not* exclude. `flock` is held
+/// by an open file description, not by a process or a thread, so a child that
+/// inherits the descriptor across `fork` inherits the lock itself: it is
+/// already inside the exclusion and a fresh acquisition there succeeds against
+/// nothing. Threads sharing one holder are likewise not serialized by it. What
+/// the lock excludes is a *separate* acquisition — another process, or this one
+/// after a genuine release. Serializing the operations performed under a single
+/// acquisition is the holder's own job, and its callers get that from exclusive
+/// borrows rather than from this lock.
+///
 /// ```compile_fail
 /// fn duplicate(lock: marrow_fs_journal::CacheLock) {
 ///     let _second = lock.clone();

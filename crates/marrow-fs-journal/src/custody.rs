@@ -60,9 +60,16 @@ const REQUIRED_READ: u32 = 0o400;
 /// What remains is a writer that deliberately writes inside it, which is
 /// outside the cooperative contract entirely.
 ///
-/// So the guarantee to claim is that no cooperative writer's distinguishable
-/// content is ever lost. Not that no foreign object is ever removed, and not
-/// that the window is closed. Do not state anything stronger anywhere.
+/// One assumption completes that: a cooperating writer holds no descriptor
+/// opened on the object before the removal began. An open descriptor outlives
+/// every rename, and no code can revoke another process's, so a writer already
+/// inside the object is not excluded by moving the name. The publication owner
+/// documents why ordinary Git operations satisfy this by construction.
+///
+/// So the guarantee to claim is that no quiescent cooperative writer's
+/// distinguishable content is ever lost. Not that no foreign object is ever
+/// removed, not that the window is closed, and not that a writer already
+/// holding the object is excluded. Do not state anything stronger anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FsIdentity {
     dev: u64,

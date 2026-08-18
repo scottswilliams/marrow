@@ -59,7 +59,7 @@ pub(crate) fn recover_identity_publication(root: &Path) -> Result<(), CaptureFai
     if marrow_project_fs::ids_publication_marker(root).is_none() {
         return Ok(());
     }
-    let guard = ProjectMetadataWriteGuard::acquire(root).map_err(publication_projection)?;
+    let mut guard = ProjectMetadataWriteGuard::acquire(root).map_err(publication_projection)?;
     guard
         .recover_ids()
         .map(|_| ())
@@ -80,7 +80,7 @@ pub(crate) fn publish_identity_ledger(
     root: &Path,
     plan: LedgerPublicationPlan,
 ) -> Result<IdsPublication, CaptureFailure> {
-    let guard = ProjectMetadataWriteGuard::acquire(root).map_err(publication_projection)?;
+    let mut guard = ProjectMetadataWriteGuard::acquire(root).map_err(publication_projection)?;
     match guard.publish_ids(plan).map_err(publication_projection)? {
         IdsPublishOutcome::Settled(publication) => Ok(publication),
         IdsPublishOutcome::Pending(pending) => pending.recover().map_err(publication_projection),

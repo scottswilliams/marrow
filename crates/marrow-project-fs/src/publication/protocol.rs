@@ -77,6 +77,22 @@ impl BoundRole {
     }
 }
 
+/// Proof that the quarantine directory has been reconciled against a
+/// publication's own header and recorded terminal.
+///
+/// Reading the artifact map while an interrupted removal still holds an object
+/// misreads the map: the name that object came from is absent, so a state with
+/// a removal still owed looks like one already finished. The proof is produced
+/// only by [`Session::reconcile`] and consumed by [`Session::drive`], so a new
+/// path into the driver cannot reach a map reading without one. Forgetting is a
+/// compile error rather than a defect found in review.
+///
+/// The header-less callers — the arms that read the stage with no publication
+/// to judge it against — reconcile without producing one, because they read no
+/// map.
+#[must_use = "the driver consumes this proof; producing it and dropping it reconciles nothing"]
+pub(super) struct Reconciled(());
+
 /// Why a state is outside the closed publication map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MapFault {
@@ -240,12 +256,12 @@ pub(super) fn recover(
     guard: &ProjectMetadataWriteGuard,
 ) -> Result<Option<IdsPublication>, IdsPublicationError> {
     let meta = guard.meta();
-    // A removal interrupted between its move and its unlink left the object in
-    // the quarantine directory and its name absent. Putting it back before
-    // anything is classified is what keeps every crash point inside a removal
-    // out of the artifact map's state set: recovery then reads exactly the
-    // pre-removal state and runs the removal again.
-    reconcile_quarantine(guard, guard.stage_name())?;
+    // The journal classification below reads the two marker names only, so an
+    // interrupted removal cannot affect it. Reconciliation therefore happens
+    // after it, where the header and the recorded terminal are in hand and the
+    // object in quarantine can be judged by the rule that authorized its
+    // removal. The arms that read the stage without a header reconcile on their
+    // own terms, where no terminal exists for a restore to contradict.
     let names = guard.journal_names();
     let claim_witness = meta.stat_entry(names.claim())?.map(|stat| stat.identity());
     let pending_witness = meta
@@ -253,6 +269,7 @@ pub(super) fn recover(
         .map(|stat| stat.identity());
     match classify(meta, names, JournalKind::Ids)? {
         PendingState::Absent => {
+            reconcile_quarantine(guard, guard.stage_name())?;
             if meta.stat_entry(guard.stage_name())?.is_some() {
                 return Err(IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete));
             }
@@ -268,7 +285,8 @@ pub(super) fn recover(
         PendingState::Claimed(claimed) => {
             let header = admit_header(meta, claimed.frame().row_header(), claim_witness)?;
             let mut session = Session::new(guard, header, claimed.adopt()?, None);
-            session.drive().map(Some)
+            let reconciled = session.reconcile()?;
+            session.drive(reconciled).map(Some)
         }
         PendingState::Pending(mut pending) => {
             let header = admit_header(meta, pending.frame().row_header(), pending_witness)?;
@@ -279,7 +297,8 @@ pub(super) fn recover(
                 pending.truncate_tail(&expected)?;
             }
             let mut session = Session::new(guard, header, pending.resume()?, terminal);
-            session.drive().map(Some)
+            let reconciled = session.reconcile()?;
+            session.drive(reconciled).map(Some)
         }
     }
 }
@@ -386,7 +405,8 @@ fn publish_admitted<'a>(
 
     // From here the marker is durable: every interruption is affine.
     let mut session = Session::new(guard, header, journal, None);
-    match session.drive() {
+    let reconciled = session.reconcile()?;
+    match session.drive(reconciled) {
         Ok(publication) => Ok(IdsPublishOutcome::Settled(publication)),
         Err(cause) => Ok(IdsPublishOutcome::Pending(Box::new(
             IdsPublicationPending::new(session, cause),
@@ -480,7 +500,14 @@ fn remove_validated(
     let held = open_quarantine(guard)?;
     let inner = guard.quarantine_entry_name();
     match meta.rename_into(name, &held, inner) {
-        Ok(()) => {}
+        // A cross-directory rename changes two directories, and this protocol
+        // claims no atomicity a plain `fsync` envelope does not give it. Both
+        // parents are synced before the move is relied on, so the interval a
+        // crash can expose is the one the planted states model.
+        Ok(()) => {
+            meta.sync()?;
+            held.sync()?;
+        }
         // Already gone: the absence this call wanted is the absence it found.
         Err(CustodyError::NotFound { .. }) => return discard_quarantine(guard, held),
         Err(error) => {
@@ -521,7 +548,10 @@ fn open_quarantine(guard: &ProjectMetadataWriteGuard) -> Result<AdmittedDir, Ids
         Ok(dir) => Ok(dir),
         Err(CustodyError::NotFound { .. }) => {
             let dir = meta.create_child_dir(name)?;
+            // Both ends: the parent for the new entry, the directory itself so
+            // it is a durable destination before anything is moved into it.
             meta.sync()?;
+            dir.sync()?;
             Ok(dir)
         }
         Err(error) => Err(error.into()),
@@ -581,6 +611,8 @@ fn restore_quarantined(
     name: &EntryName,
 ) -> Result<(), IdsPublicationError> {
     held.rename_into(inner, meta, name)?;
+    // Both parents again: the object left one directory and entered another.
+    held.sync()?;
     meta.sync()?;
     Ok(())
 }
@@ -605,7 +637,10 @@ impl<'a> Session<'a> {
     /// Drive the publication to its terminal state from whatever phase the
     /// journal has reached. Re-entrant: every phase re-reads the artifact map,
     /// so a call after an interruption resumes rather than repeats.
-    pub(super) fn drive(&mut self) -> Result<IdsPublication, IdsPublicationError> {
+    pub(super) fn drive(
+        &mut self,
+        _reconciled: Reconciled,
+    ) -> Result<IdsPublication, IdsPublicationError> {
         loop {
             match self.phase() {
                 1 => {
@@ -780,11 +815,9 @@ impl<'a> Session<'a> {
         let terminal = self.terminal.ok_or(MapFault::MissingTerminal)?;
         let map = self.read_map(SETTLED)?;
         match (terminal, map) {
-            (Terminal::Installed, MapState::Installed) => {
-                self.clean_stage(self.displaced_role())?;
-            }
-            (Terminal::Reverted, MapState::Reverted) => {
-                self.clean_stage(BoundRole::Next)?;
+            (Terminal::Installed, MapState::Installed)
+            | (Terminal::Reverted, MapState::Reverted) => {
+                self.clean_stage(self.cleanup_role(terminal))?;
             }
             (Terminal::Installed, MapState::InstalledClean)
             | (Terminal::Reverted, MapState::RevertedClean) => {}
@@ -801,6 +834,61 @@ impl<'a> Session<'a> {
     /// The run the stage name carries once the successor is installed: the
     /// displaced generation, or the successor itself when the plan displaced
     /// nothing and the two names are one inode.
+    /// Which bound run the cleanup a recorded terminal authorizes is entitled
+    /// to remove from the stage name. The settle path and the reconciliation
+    /// that resumes an interrupted settle read it from here, so the object a
+    /// crash left mid-removal is judged by the same rule that authorized the
+    /// removal.
+    fn cleanup_role(&self, terminal: Terminal) -> BoundRole {
+        match terminal {
+            Terminal::Installed => self.displaced_role(),
+            Terminal::Reverted => BoundRole::Next,
+        }
+    }
+
+    /// Reconcile the quarantine with this publication's header and recorded
+    /// terminal in hand.
+    ///
+    /// A blind restore is wrong here. When a terminal is already recorded, the
+    /// cleanup it authorizes was running when the crash landed, and the object
+    /// in quarantine is the one that cleanup had taken. Putting it back
+    /// manufactures a pre-cleanup map the terminal record contradicts — and the
+    /// target is independently mutable, so an outside writer can make that
+    /// contradiction permanent. Finishing the removal instead is both what the
+    /// terminal already committed to and the only reading that cannot be
+    /// invalidated by what happened at the other name.
+    ///
+    /// Only an object resolving to the exact run that cleanup was entitled to
+    /// remove is removed. Anything else is put back, and an object under no
+    /// recorded terminal is put back too: no cleanup was authorized, so nothing
+    /// here may finish one.
+    pub(super) fn reconcile(&self) -> Result<Reconciled, IdsPublicationError> {
+        let meta = self.meta();
+        let name = self.guard.stage_name();
+        if meta.stat_entry(self.guard.quarantine_name())?.is_none() {
+            return Ok(Reconciled(()));
+        }
+        let held = meta.admit_child(self.guard.quarantine_name())?;
+        let inner = self.guard.quarantine_entry_name();
+        if held.stat_entry(inner)?.is_some() {
+            let entitled = match self.terminal {
+                Some(terminal) => {
+                    let file = held.open_file_readonly(inner)?;
+                    self.role_of_open(&file)? == self.cleanup_role(terminal)
+                }
+                None => false,
+            };
+            if entitled {
+                held.unlink(inner)?;
+                held.sync()?;
+            } else {
+                restore_quarantined(&held, inner, meta, name)?;
+            }
+        }
+        discard_quarantine(self.guard, held)?;
+        Ok(Reconciled(()))
+    }
+
     fn displaced_role(&self) -> BoundRole {
         if self.header.base.is_some() {
             BoundRole::Base

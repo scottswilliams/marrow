@@ -97,7 +97,8 @@ impl Drop for Project {
 fn dropping_a_durable_claim_quarantines_publication_in_this_process() {
     let project = Project::new("quarantine");
     let first = project.plan("Book", 1);
-    let guard = ProjectMetadataWriteGuard::acquire(project.path()).expect("the first write owner");
+    let mut guard =
+        ProjectMetadataWriteGuard::acquire(project.path()).expect("the first write owner");
     assert!(matches!(
         guard
             .publish_ids(first)

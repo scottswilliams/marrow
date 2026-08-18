@@ -32,6 +32,23 @@
 //! carries an entry that would make a fresh clone read a ledger this protocol
 //! calls indeterminate.
 //!
+//! # The cooperative contract's quiescence assumption
+//!
+//! A descriptor already open on an entry survives every rename of that entry,
+//! and nothing this protocol can do revokes another process's open descriptor.
+//! A cooperating writer that opened a publication transient *before* a
+//! publication began, and writes through that descriptor afterwards, can still
+//! be writing while a removal judges and unlinks the inode; the bytes it
+//! flushes after the unlink go nowhere.
+//!
+//! The contract therefore assumes cooperating writers hold no open descriptor
+//! on a publication transient across a publication. Ordinary Git operations
+//! satisfy it by construction: Git writes a temporary file and renames it into
+//! place, so the descriptor it holds is on the temporary, and by the time the
+//! tracked name resolves to that object that descriptor is closed. This is an
+//! assumption named, not a property enforced. It qualifies the removal bound in
+//! [`marrow_fs_journal::FsIdentity`], which states the rest.
+//!
 //! # Protocol
 //!
 //! Under the write guard, publication creates and syncs the stage, durably
@@ -150,8 +167,8 @@ const IGNORE_COMMENT: &str = "\
 const IGNORE_COMMENT_MARK: &str = "# Machine-written by Marrow.";
 /// How much of an existing ignore entry is read to decide whether it already
 /// names every entry this owner keeps untracked. A file this owner wrote is
-/// seven lines; anything past this bound belongs to whoever wrote it and is
-/// left exactly as found.
+/// eight lines — three of comment and five names; anything past this bound
+/// belongs to whoever wrote it and is left exactly as found.
 const IGNORE_READ_CEILING: usize = 4096;
 
 /// The fixed stage entry's spelling. The frozen row header embeds it and the
@@ -240,7 +257,14 @@ impl<'a> IdsPublicationPending<'a> {
     /// in this process exactly as a drop does: the retained handles go either
     /// way, so a fresh process is what settles the marker next.
     pub fn recover(mut self) -> Result<IdsPublication, IdsPublicationError> {
-        let settled = self.session.drive();
+        // The refusal that produced this value can be a cleanup that had
+        // already moved its object into quarantine, so this retry is a fresh
+        // classification and reconciles exactly as any other entry does. The
+        // driver takes the proof, so this cannot be skipped here or anywhere.
+        let settled = self
+            .session
+            .reconcile()
+            .and_then(|reconciled| self.session.drive(reconciled));
         self.armed = settled.is_err();
         settled
     }
@@ -534,7 +558,7 @@ impl ProjectMetadataWriteGuard {
     ///
     /// Returns a typed refusal for a retained manual state or a fresh custody
     /// or journal refusal. Every byte is retained on refusal.
-    pub fn recover_ids(&self) -> Result<Option<IdsPublication>, IdsPublicationError> {
+    pub fn recover_ids(&mut self) -> Result<Option<IdsPublication>, IdsPublicationError> {
         protocol::recover(self)
     }
 
@@ -546,7 +570,7 @@ impl ProjectMetadataWriteGuard {
     /// marker is durable, an interruption is reported as
     /// [`IdsPublishOutcome::Pending`] instead.
     pub fn publish_ids(
-        &self,
+        &mut self,
         plan: LedgerPublicationPlan,
     ) -> Result<IdsPublishOutcome<'_>, IdsPublicationError> {
         protocol::publish(self, plan)

@@ -561,19 +561,90 @@ fn the_transient_metadata_entries_are_never_committed() {
 
         // Tracked-file evidence needs a repository; a source tarball has none,
         // and the ignore entry above is the gate either way.
-        let listed = Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["ls-files", "--", &format!("*{entry}")])
-            .output();
-        if let Ok(output) = listed
-            && output.status.success()
-        {
-            let tracked = String::from_utf8_lossy(&output.stdout);
+        //
+        // Both spellings are asked for. A transient that is a directory is
+        // never itself the tracked path — Git records the files under it — so
+        // a query for the name alone answers empty however many objects are
+        // committed inside it. `tracked_under` is what the plant probe below
+        // proves catches that.
+        for pathspec in [format!("*{entry}"), format!("*{entry}/*")] {
+            let tracked = tracked_under(&root, &pathspec);
             assert!(
-                tracked.trim().is_empty(),
-                "`.marrow/{entry}` must not be tracked: {tracked}"
+                tracked.as_deref().unwrap_or_default().trim().is_empty(),
+                "`.marrow/{entry}` must not be tracked: {tracked:?}"
             );
         }
     }
+}
+
+/// The tracked paths matching one pathspec, or `None` where there is no
+/// repository to ask.
+fn tracked_under(root: &Path, pathspec: &str) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--", pathspec])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The query above is the whole gate, so a query that cannot see a committed
+/// object would retire it silently. A throwaway repository is built with
+/// exactly the object the real one must never carry — a file inside a
+/// `.marrow/ids.publish.quarantine` directory — and the pathspec pair is
+/// required to find it. The name-only spelling is asserted to miss it, which is
+/// the defect this pairing exists to close.
+#[test]
+fn the_tracked_transient_query_catches_a_committed_quarantine_object() {
+    let root = std::env::temp_dir().join(format!(
+        "marrow-quarantine-index-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let planted = root.join(".marrow/ids.publish.quarantine");
+    std::fs::create_dir_all(&planted).expect("create the planted quarantine");
+    std::fs::write(planted.join("held"), b"committed by mistake").expect("plant the object");
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+    };
+    // No repository, no probe: the same tarball tolerance the gate itself has.
+    let Some(_) = git(&["init", "-q"]) else {
+        std::fs::remove_dir_all(&root).ok();
+        return;
+    };
+    // `-f` because a developer's global ignore file may already cover it; the
+    // point of the probe is the query, not this scratch repository's ignores.
+    assert!(
+        git(&["add", "-f", ".marrow/ids.publish.quarantine/held"]).is_some(),
+        "the planted object is staged"
+    );
+
+    let by_name = tracked_under(&root, "*ids.publish.quarantine").unwrap_or_default();
+    let by_contents = tracked_under(&root, "*ids.publish.quarantine/*").unwrap_or_default();
+    std::fs::remove_dir_all(&root).ok();
+
+    assert!(
+        by_name.trim().is_empty(),
+        "the name-only pathspec is expected to miss a committed object inside the \
+         directory; if it now finds one, the gate's pairing can be simplified: {by_name}"
+    );
+    assert!(
+        by_contents.contains("held"),
+        "the contents pathspec must find a committed object inside the quarantine \
+         directory, or the repository gate proves nothing: {by_contents}"
+    );
 }

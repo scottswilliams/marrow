@@ -291,7 +291,7 @@ fn a_publication_installs_the_successor_over_an_absent_artifact() {
     let _serial = serialized();
     let project = Project::new("absent");
     let plan = project.plan("Book", 1);
-    let guard = project.guard();
+    let mut guard = project.guard();
 
     let outcome = guard.publish_ids(plan).expect("the publication runs");
     assert!(matches!(
@@ -314,7 +314,7 @@ fn a_publication_replaces_the_exact_captured_generation() {
     let _serial = serialized();
     let project = Project::new("replace");
     let first = project.plan("Book", 1);
-    let guard = project.guard();
+    let mut guard = project.guard();
     let settled = guard
         .publish_ids(first)
         .expect("the first publication runs");
@@ -322,6 +322,9 @@ fn a_publication_replaces_the_exact_captured_generation() {
         settled,
         IdsPublishOutcome::Settled(IdsPublication::Published)
     ));
+    // The outcome holds the write owner until it is dropped: a second
+    // publication cannot begin while an unsettled one is still live.
+    drop(settled);
     let base = project.read_meta("ids").expect("the first generation");
 
     let second = project.plan("Shelf", 2);
@@ -345,7 +348,7 @@ fn a_plan_admitted_against_another_generation_settles_as_a_concurrent_change() {
     project.write_meta("ids", b"marrow-ids v1\nend\n");
     let before = project.read_meta("ids").expect("the other writer's bytes");
 
-    let guard = project.guard();
+    let mut guard = project.guard();
     let outcome = guard.publish_ids(stale).expect("the publication runs");
     assert!(matches!(
         outcome,
@@ -366,7 +369,7 @@ fn a_publication_refuses_while_another_is_claimed() {
     project.write_meta("ids.publish.stage", b"next");
     Crash::new(&project, None, b"next").plant();
 
-    let guard = project.guard();
+    let mut guard = project.guard();
     let refusal = guard
         .publish_ids(plan)
         .expect_err("a claimed publication refuses a fresh one");
@@ -948,11 +951,12 @@ fn an_empty_quarantine_directory_left_before_the_move_is_reconciled() {
 }
 
 /// A crash between a removal's move and its unlink leaves the object in the
-/// quarantine directory under the stage's name absent. Reconciliation puts it
-/// back, which restores exactly the pre-removal state, and the removal runs
-/// again and completes.
+/// quarantine directory with the stage name absent. The terminal record says
+/// which run that cleanup was entitled to remove, and this object is it, so
+/// reconciliation finishes the removal rather than putting the object back to
+/// take it again.
 #[test]
-fn an_object_left_in_quarantine_by_an_interrupted_removal_is_put_back_and_removed() {
+fn an_object_left_in_quarantine_by_an_interrupted_removal_is_finished_not_stranded() {
     let _serial = serialized();
     let project = Project::new("quarantine-mid-removal");
     project.write_meta("ids.publish.stage", b"successor");
@@ -1001,6 +1005,162 @@ fn an_empty_quarantine_directory_left_after_the_unlink_is_reconciled() {
         !project.quarantine().exists(),
         "the reconciled quarantine directory is gone"
     );
+}
+
+/// The retry path reconciles too. An accepted cleanup that moved its object
+/// into quarantine and then failed to unlink it hands back a pending
+/// publication; consuming that value drives the same classification a fresh
+/// process would, so it must not read the quarantined object's absent name as
+/// a cleanup already finished. Driven here through the fixed state that retry
+/// sees, entered by the same production call the CLI makes.
+#[test]
+fn a_publication_retried_over_an_occupied_quarantine_does_not_read_the_cleanup_as_done() {
+    let _serial = serialized();
+    let project = Project::new("retry-occupied-quarantine");
+    project.write_meta("ids", b"base");
+    project.write_meta("ids.publish.stage", b"successor");
+    let planted = Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .settled(0)
+        .witness_base("ids")
+        .witness_next("ids.publish.stage");
+    let meta = project.meta();
+    fs::rename(meta.join("ids"), meta.join("ids.swap")).expect("stage the swap");
+    fs::rename(meta.join("ids.publish.stage"), meta.join("ids")).expect("install the successor");
+    fs::rename(meta.join("ids.swap"), meta.join("ids.publish.stage"))
+        .expect("displace the base to the stage name");
+    planted.plant();
+    // The accepted cleanup moved the displaced generation into quarantine and
+    // did not get to unlink it.
+    project.move_into_quarantine("ids.publish.stage");
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::Published));
+    assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
+    assert!(
+        !project.exists("ids.publish.stage"),
+        "the displaced generation the cleanup came for is gone, not stranded"
+    );
+    assert!(!project.exists("ids.pending"));
+    assert!(!project.quarantine().exists());
+}
+
+/// A terminal already decided is not re-opened by putting its cleanup's object
+/// back. After a reverted terminal and a post-move crash, an outside writer can
+/// leave the target reading as the bound generation; restoring the successor to
+/// the stage name would manufacture a `Prepared` reading the terminal record
+/// contradicts, and the publication would never settle. The object the cleanup
+/// was entitled to remove is removed instead, which is what the terminal
+/// already committed to.
+#[test]
+fn a_reverted_cleanup_interrupted_over_a_mutated_target_finishes_rather_than_wedging() {
+    let _serial = serialized();
+    let project = Project::new("reverted-cleanup-mutated-target");
+    project.write_meta("ids", b"base");
+    project.write_meta("ids.publish.stage", b"successor");
+    let planted = Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .settled(1)
+        .witness_base("ids")
+        .witness_next("ids.publish.stage");
+    planted.plant();
+    // The reverted cleanup took the successor; the crash landed before its
+    // unlink, and the target still reads as the bound generation.
+    project.move_into_quarantine("ids.publish.stage");
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(
+        project.read_meta("ids").as_deref(),
+        Some(&b"base"[..]),
+        "a reverted publication leaves the artifact exactly as it found it"
+    );
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+    assert!(!project.quarantine().exists());
+}
+
+/// A fresh publication reconciles on its own entry. The state is reached with
+/// no marker at all, so recovery's arms never run and only the publication
+/// path's own reconciliation can find the stranded object.
+#[test]
+fn a_fresh_publication_reconciles_an_orphaned_quarantine_before_it_stages() {
+    let _serial = serialized();
+    let project = Project::new("publish-orphaned-quarantine");
+    project.write_meta("ids.publish.stage", b"orphaned successor");
+    project.move_into_quarantine("ids.publish.stage");
+    let plan = project.plan("Book", 1);
+
+    let refusal = project
+        .guard()
+        .publish_ids(plan)
+        .expect_err("the restored transient is a retained manual state");
+    assert_eq!(refusal.refusal(), IdsRefusal::UnclaimedIncomplete);
+    assert_eq!(
+        project.read_meta("ids.publish.stage").as_deref(),
+        Some(&b"orphaned successor"[..]),
+        "the orphan is put back under its own name, not deleted"
+    );
+    assert!(
+        !project.quarantine().exists(),
+        "the reconciled quarantine directory is gone"
+    );
+}
+
+/// Reconciliation refuses rather than forces when the name it would restore to
+/// has been taken. Both objects survive, the refusal is typed, and repeating
+/// the command repeats it — and once the outside writer's entry is gone the
+/// very same state completes.
+#[test]
+fn a_taken_stage_name_makes_reconciliation_refuse_without_losing_either_object() {
+    let _serial = serialized();
+    let project = Project::new("reconcile-collision");
+    project.write_meta("ids", b"successor");
+    project.write_meta("ids.publish.stage", b"someone else's file");
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .settled(0)
+        .witness_next("ids")
+        .plant();
+    project.move_into_quarantine("ids.publish.stage");
+    // An outside writer takes the name the quarantined object came from.
+    project.write_meta("ids.publish.stage", b"a checkout's own entry");
+
+    for attempt in 0..2 {
+        let refusal = project
+            .guard()
+            .recover_ids()
+            .expect_err("a taken destination refuses rather than overwriting");
+        assert_eq!(
+            refusal.refusal(),
+            IdsRefusal::Custody,
+            "attempt {attempt} refused with the wrong class"
+        );
+        assert_eq!(
+            project.read_meta("ids.publish.stage").as_deref(),
+            Some(&b"a checkout's own entry"[..]),
+            "the outside writer's entry is never displaced"
+        );
+        assert_eq!(
+            fs::read(project.quarantine().join("held")).ok().as_deref(),
+            Some(&b"someone else's file"[..]),
+            "the quarantined object is never deleted to clear the way"
+        );
+    }
+
+    // The outside writer departs; the same state now completes.
+    fs::remove_file(project.meta().join("ids.publish.stage")).expect("the writer departs");
+    let refusal = project
+        .guard()
+        .recover_ids()
+        .expect_err("the restored stranger retains the publication");
+    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(
+        project.read_meta("ids.publish.stage").as_deref(),
+        Some(&b"someone else's file"[..]),
+        "the quarantined object is restored once its name is free"
+    );
+    assert!(!project.quarantine().exists());
 }
 
 /// A crash after a removal rejected an object and before it moved that object
@@ -1327,7 +1487,7 @@ fn concurrent_first_publications_serialize_on_the_write_lock() {
                 scope.spawn(|| {
                     start.wait();
                     match ProjectMetadataWriteGuard::acquire(project.path()) {
-                        Ok(guard) => {
+                        Ok(mut guard) => {
                             peak.fetch_max(
                                 live.fetch_add(1, Ordering::SeqCst) + 1,
                                 Ordering::SeqCst,
@@ -1405,7 +1565,7 @@ ids.pending\n\
 ids.pending.create\n";
 
 /// The exact entry an earlier build of this owner wrote: its header line above
-/// the lock's name alone. A project that published before the three transient
+/// the lock's name alone. A project that published before the four transient
 /// names joined the block carries this on disk.
 const PREVIOUS_FORMAT_IGNORE: &[u8] = b"\
 # Machine-written by Marrow. The cooperative project-metadata write lock is\n\
@@ -1648,7 +1808,7 @@ fn a_complete_unwritable_ignore_entry_leaves_the_owner_working() {
     let path = project.meta().join(".gitignore");
     withhold_write(&path);
 
-    let guard = ProjectMetadataWriteGuard::acquire(project.path())
+    let mut guard = ProjectMetadataWriteGuard::acquire(project.path())
         .expect("a complete ignore entry needs no write, so acquisition must not demand one");
     guard
         .recover_ids()
@@ -1720,9 +1880,10 @@ fn an_unreadable_ignore_entry_leaves_the_owner_working() {
         let path = project.meta().join(".gitignore");
         withhold_read(&path, mode);
 
-        let guard = ProjectMetadataWriteGuard::acquire(project.path()).unwrap_or_else(|error| {
-            panic!("mode {mode:04o} on the ignore entry refused the acquisition: {error:?}")
-        });
+        let mut guard =
+            ProjectMetadataWriteGuard::acquire(project.path()).unwrap_or_else(|error| {
+                panic!("mode {mode:04o} on the ignore entry refused the acquisition: {error:?}")
+            });
         guard
             .recover_ids()
             .expect("recovery takes the same guard and must reach the same conclusion");
@@ -1755,7 +1916,7 @@ fn an_incomplete_unwritable_ignore_entry_leaves_the_owner_working() {
     let path = project.meta().join(".gitignore");
     withhold_write(&path);
 
-    let guard = ProjectMetadataWriteGuard::acquire(project.path())
+    let mut guard = ProjectMetadataWriteGuard::acquire(project.path())
         .expect("an append the owner cannot make must not refuse the acquisition");
     guard
         .recover_ids()
@@ -1960,7 +2121,17 @@ fn the_settled_terminal_is_decided_in_exactly_one_place() {
 // metadata directory, so a directory whose owner bits withhold write refuses
 // all five. A removal's own `unlink` is not among them: it happens inside the
 // quarantine directory, through a handle taken before the withdrawal, and a
-// removal never reaches it because creating that directory refuses first. That is a real
+// removal never reaches it because creating that directory refuses first.
+//
+// A removal's two renames each cross a directory boundary, so each changes two
+// parents. Neither the protocol nor the platform qualification claims a
+// crash-atomic cross-directory rename, so the protocol does not rest on one:
+// both parents are `fsync`ed after each rename before the result is relied on,
+// which is the same file-and-directory-`fsync` envelope the journal owner
+// already documents and no new claim class. Within that envelope the states a
+// crash can leave are the four the quarantine kats plant. Sudden power loss
+// remains outside the envelope here exactly as it is everywhere else in this
+// protocol. That is a real
 // refusal from the production path rather than an injected one, and it needs no
 // seam: the fault is applied from outside the protocol, between two production
 // calls, and the phase the planted journal has reached selects which mutation
@@ -2060,7 +2231,7 @@ fn a_refused_stage_creation_stages_and_claims_nothing() {
     let _serial = serialized();
     let project = Project::new("fault-create");
     let plan = project.plan("Book", 1);
-    let guard = project.guard();
+    let mut guard = project.guard();
     let _fault = RefusingMeta::apply(&project);
 
     let refusal = guard
@@ -2091,7 +2262,7 @@ fn a_refused_link_retains_the_claimed_publication() {
     Crash::new(&project, None, b"successor")
         .installing()
         .plant();
-    let guard = project.guard();
+    let mut guard = project.guard();
     let _fault = RefusingMeta::apply(&project);
 
     let refusal = guard
@@ -2126,7 +2297,7 @@ fn a_refused_exchange_retains_the_bound_generation() {
     Crash::new(&project, Some(b"base"), b"successor")
         .installing()
         .plant();
-    let guard = project.guard();
+    let mut guard = project.guard();
     let _fault = RefusingMeta::apply(&project);
 
     let refusal = guard
@@ -2167,7 +2338,7 @@ fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
         .installing()
         .settled(0)
         .plant();
-    let guard = project.guard();
+    let mut guard = project.guard();
     let fault = RefusingMeta::apply(&project);
 
     let refusal = guard
