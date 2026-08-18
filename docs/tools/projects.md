@@ -30,9 +30,8 @@ source; it is the only entry a checkout carries.
 
 The zero-byte `publish.lock` the tools lock while writing metadata is
 machine-local runtime state. The four transient entries a publication passes
-through — `ids.publish.stage`, the `ids.publish.quarantine` directory a removal
-holds an object in while it validates it, `ids.pending`, and
-`ids.pending.create` — are either a publication in flight or the debris an
+through — `ids.publish.stage`, `ids.publish.quarantine`, which holds an object
+while a removal validates it, `ids.pending`, and `ids.pending.create` — are either a publication in flight or the debris an
 interrupted one left. No checkout carries any of the five, and the write owner
 keeps them untracked
 itself: when it takes the lock it writes `.marrow/.gitignore` naming every one

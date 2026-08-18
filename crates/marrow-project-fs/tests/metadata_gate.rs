@@ -593,11 +593,11 @@ fn tracked_under(root: &Path, pathspec: &str) -> Option<String> {
 }
 
 /// The query above is the whole gate, so a query that cannot see a committed
-/// object would retire it silently. A throwaway repository is built with
-/// exactly the object the real one must never carry — a file inside a
-/// `.marrow/ids.publish.quarantine` directory — and the pathspec pair is
-/// required to find it. The name-only spelling is asserted to miss it, which is
-/// the defect this pairing exists to close.
+/// object would retire it silently. A throwaway repository is built carrying
+/// exactly what the real one must never carry, in both shapes the pathspec pair
+/// exists for: the transient as the entry it is today, and an object under a
+/// same-named directory, which is what a name-only pathspec cannot see. Each
+/// spelling is required to catch its own shape.
 #[test]
 fn the_tracked_transient_query_catches_a_committed_quarantine_object() {
     let root = std::env::temp_dir().join(format!(
@@ -608,9 +608,15 @@ fn the_tracked_transient_query_catches_a_committed_quarantine_object() {
             .expect("clock after epoch")
             .as_nanos()
     ));
-    let planted = root.join(".marrow/ids.publish.quarantine");
-    std::fs::create_dir_all(&planted).expect("create the planted quarantine");
-    std::fs::write(planted.join("held"), b"committed by mistake").expect("plant the object");
+    let meta = root.join(".marrow");
+    std::fs::create_dir_all(&meta).expect("create the planted metadata directory");
+    // The transient as it is: a plain entry at the quarantine name.
+    std::fs::write(meta.join("ids.publish.quarantine"), b"committed by mistake")
+        .expect("plant the entry");
+    // And the shape only the contents pathspec can see.
+    let nested = root.join("nested/.marrow/ids.publish.quarantine");
+    std::fs::create_dir_all(&nested).expect("create the planted directory shape");
+    std::fs::write(nested.join("held"), b"committed by mistake").expect("plant the object");
 
     let git = |args: &[&str]| {
         Command::new("git")
@@ -629,7 +635,11 @@ fn the_tracked_transient_query_catches_a_committed_quarantine_object() {
     // `-f` because a developer's global ignore file may already cover it; the
     // point of the probe is the query, not this scratch repository's ignores.
     assert!(
-        git(&["add", "-f", ".marrow/ids.publish.quarantine/held"]).is_some(),
+        git(&["add", "-f", ".marrow/ids.publish.quarantine"]).is_some(),
+        "the planted entry is staged"
+    );
+    assert!(
+        git(&["add", "-f", "nested/.marrow/ids.publish.quarantine/held"]).is_some(),
         "the planted object is staged"
     );
 
@@ -638,13 +648,18 @@ fn the_tracked_transient_query_catches_a_committed_quarantine_object() {
     std::fs::remove_dir_all(&root).ok();
 
     assert!(
-        by_name.trim().is_empty(),
-        "the name-only pathspec is expected to miss a committed object inside the \
+        by_name.contains(".marrow/ids.publish.quarantine"),
+        "the name pathspec must find the transient committed as the entry it is, or the \
+         repository gate proves nothing: {by_name}"
+    );
+    assert!(
+        !by_name.contains("held"),
+        "the name-only pathspec is expected to miss an object committed inside a same-named \
          directory; if it now finds one, the gate's pairing can be simplified: {by_name}"
     );
     assert!(
         by_contents.contains("held"),
-        "the contents pathspec must find a committed object inside the quarantine \
-         directory, or the repository gate proves nothing: {by_contents}"
+        "the contents pathspec must find an object committed inside a same-named directory, \
+         or half the pairing proves nothing: {by_contents}"
     );
 }

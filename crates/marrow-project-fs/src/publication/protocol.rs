@@ -10,8 +10,8 @@ use std::cell::RefCell;
 use std::fmt;
 
 use marrow_fs_journal::{
-    AdmittedDir, ClaimPhase, CustodyError, EntryName, EntryStat, FsIdentity, JournalKind,
-    LiveJournal, MarkerView, OpenedFile, PendingState, PhaseRecord, TailState, claim, classify,
+    AdmittedDir, ClaimRefusal, CustodyError, EntryName, EntryStat, FsIdentity, JournalKind,
+    LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord, TailState, claim, classify,
     encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
@@ -78,7 +78,7 @@ impl BoundRole {
     }
 }
 
-/// Proof that the quarantine directory has been reconciled against a
+/// Proof that the quarantine name has been reconciled against a
 /// publication's own header and recorded terminal.
 ///
 /// Reading the artifact map while an interrupted removal still holds an object
@@ -268,7 +268,12 @@ pub(super) fn recover(
     let pending_witness = meta
         .stat_entry(names.pending())?
         .map(|stat| stat.identity());
-    match classify(MarkerView::new(meta, names), JournalKind::Ids)? {
+    match classify(
+        MarkerStats::read(meta, names)?,
+        meta,
+        names,
+        JournalKind::Ids,
+    )? {
         PendingState::Absent => {
             reconcile_quarantine(guard, guard.stage_name())?;
             if meta.stat_entry(guard.stage_name())?.is_some() {
@@ -325,7 +330,9 @@ pub(super) fn recover(
 fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
     match classify(
-        MarkerView::new(meta, guard.journal_names()),
+        MarkerStats::read(meta, guard.journal_names())?,
+        meta,
+        guard.journal_names(),
         JournalKind::Ids,
     )? {
         PendingState::Absent => {}
@@ -396,23 +403,28 @@ fn publish_admitted<'a>(
     let journal = match claimed {
         Ok(journal) => journal,
         Err(refusal) => {
-            // The claim says which side of its durable parent sync it refused
-            // on, so this arm no longer guesses. A preclaim refusal claimed
-            // nothing and is ordinary: the stage this call created is removed
-            // and the cause returned. A durable one left a marker, and the
-            // contract for a durable marker is the affine pending value —
-            // removing the stage there would leave a marker with no successor
-            // to resume from, and returning a bare error would drop the guard
-            // borrow and the drop glue that keeps this process honest about it.
-            if refusal.phase == ClaimPhase::Preclaim {
-                // The cause that stopped the claim outranks a refusal from the
-                // cleanup that follows it.
-                let _ = discard_stage(guard, &stage);
-                return Err(refusal.error.into());
+            // The claim names which arm it refused on, so this one does not
+            // guess. A preclaim refusal issued no link, so no marker can
+            // exist: the stage this call created is removed and the cause
+            // returned. A possibly-durable one may have left a marker, and the
+            // contract for a marker that may exist is the affine pending value
+            // — removing the stage there could leave a marker with no
+            // successor to resume from, and returning a bare error would drop
+            // the guard borrow and the drop glue that keeps this process
+            // honest about it.
+            match refusal {
+                ClaimRefusal::Preclaim(error) => {
+                    // The cause that stopped the claim outranks a refusal from
+                    // the cleanup that follows it.
+                    let _ = discard_stage(guard, &stage);
+                    return Err(error.into());
+                }
+                ClaimRefusal::PossiblyDurable(error) => {
+                    return Ok(IdsPublishOutcome::Pending(Box::new(
+                        IdsPublicationPending::unclaimed(guard, error.into()),
+                    )));
+                }
             }
-            return Ok(IdsPublishOutcome::Pending(Box::new(
-                IdsPublicationPending::unclaimed(guard, refusal.error.into()),
-            )));
         }
     };
     let header = built
@@ -424,18 +436,32 @@ fn publish_admitted<'a>(
     let mut session = Session::new(guard, header, journal, None);
     let reconciled = match session.reconcile() {
         Ok(reconciled) => reconciled,
-        Err(cause) => {
-            return Ok(IdsPublishOutcome::Pending(Box::new(
-                IdsPublicationPending::new(session, cause),
-            )));
-        }
+        Err(cause) => return Ok(interrupted(guard, session, cause)),
     };
     match session.drive(&reconciled) {
         Ok(publication) => Ok(IdsPublishOutcome::Settled(publication)),
-        Err(cause) => Ok(IdsPublishOutcome::Pending(Box::new(
-            IdsPublicationPending::new(session, cause),
-        ))),
+        Err(cause) => Ok(interrupted(guard, session, cause)),
     }
+}
+
+/// The pending outcome for a publication interrupted after its claim.
+///
+/// A session that still holds its journal is handed back to be resumed through
+/// it. One whose journal a refused finish already consumed can resume nothing,
+/// so it is dropped and the marker it was finishing is left to recovery, which
+/// adopts a marker from disk. Handing back the spent session instead would
+/// offer a retry whose first act is to read a phase from a journal that is no
+/// longer there.
+fn interrupted<'a>(
+    guard: &'a ProjectMetadataWriteGuard,
+    session: Session<'a>,
+    cause: IdsPublicationError,
+) -> IdsPublishOutcome<'a> {
+    IdsPublishOutcome::Pending(Box::new(if session.is_spent() {
+        IdsPublicationPending::unclaimed(guard, cause)
+    } else {
+        IdsPublicationPending::new(session, cause)
+    }))
 }
 
 /// Create, fill, sync, and validate the fixed stage entry, returning the
@@ -616,6 +642,17 @@ impl<'a> Session<'a> {
                 found => return Err(MapFault::UnknownPhase { found }.into()),
             }
         }
+    }
+
+    /// Whether this session's journal is gone.
+    ///
+    /// `settle` takes the journal out to consume it, so a refusal from the
+    /// finish it performs leaves a session that can drive nothing: every phase
+    /// read expects the journal it no longer has. Such a session must not be
+    /// handed back as something to retry. The marker it was finishing may still
+    /// be on disk, which is what recovery adopts.
+    pub(super) fn is_spent(&self) -> bool {
+        self.journal.is_none()
     }
 
     fn phase(&self) -> u8 {
@@ -1234,4 +1271,128 @@ fn require_entry(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_fs_journal::{encode_header, encode_record};
+
+    use super::*;
+    use crate::publication::IdsPublication;
+
+    /// A session whose journal a refused finish already consumed must not be
+    /// offered back as something to drive.
+    ///
+    /// The value this returns is what a caller consumes to try again, and the
+    /// first thing a retry does is read a phase from the journal. A spent
+    /// session has none, so handing one back offers a retry that cannot run.
+    /// The marker it was finishing is still on disk, which is what the arm this
+    /// routes to adopts — so the retry settles instead.
+    #[test]
+    fn a_spent_session_is_offered_as_a_marker_to_recover_not_a_journal_to_drive() {
+        let root = std::env::temp_dir().join(format!(
+            "marrow-idpub01-spent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create the scratch project");
+        let guard = ProjectMetadataWriteGuard::acquire(&root).expect("the write owner");
+
+        // An installed successor at one link with the stage already cleaned:
+        // the reading a settled terminal finishes over without mutating
+        // anything, so recovery reaches the marker unlink and nothing else.
+        // Every spelling comes from the owners the gates protect: this module
+        // names no entry itself, in test code either.
+        let meta_path = root.join(marrow_project::META_DIR);
+        let ledger_path = meta_path.join(guard.ledger_name().as_str());
+        std::fs::write(&ledger_path, b"successor").expect("the installed successor");
+        let next_inode = guard
+            .meta()
+            .stat_entry(guard.ledger_name())
+            .expect("stat the successor")
+            .expect("the successor exists")
+            .identity();
+
+        let marker = meta_path.join(guard.journal_names().pending().as_str());
+        std::fs::write(&marker, b"").expect("create the marker");
+        let journal_inode = guard
+            .meta()
+            .stat_entry(guard.journal_names().pending())
+            .expect("stat the marker")
+            .expect("the marker exists")
+            .identity();
+        let header = RowHeader {
+            parent: guard.meta().identity(),
+            journal_inode,
+            base: None,
+            next_inode,
+            base_bytes: Vec::new(),
+            next_bytes: b"successor".to_vec(),
+        };
+        let mut bytes =
+            encode_header(JournalKind::Ids, &header.encode()).expect("a lawful kind-1 header");
+        for (sequence, (tag, payload)) in [
+            (1u8, Vec::new()),
+            (INSTALLING, Vec::new()),
+            (SETTLED, vec![0]),
+        ]
+        .iter()
+        .enumerate()
+        {
+            bytes.extend_from_slice(
+                &encode_record(
+                    JournalKind::Ids,
+                    u32::try_from(sequence).expect("few records"),
+                    *tag,
+                    payload,
+                )
+                .expect("a lawful kind-1 record"),
+            );
+        }
+        std::fs::write(&marker, &bytes).expect("fill the marker");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600))
+                .expect("the durable claim's fixed mode");
+        }
+
+        // Exactly what a finish that refused leaves behind: the journal gone
+        // from the session, the marker still on disk.
+        let spent = Session {
+            guard: &guard,
+            header,
+            terminal: Some(Terminal::Installed),
+            journal: None,
+        };
+        assert!(spent.is_spent(), "the fixture is the state under test");
+
+        let outcome = interrupted(
+            &guard,
+            spent,
+            IdsPublicationError::bare(IdsRefusal::Interrupted),
+        );
+        let IdsPublishOutcome::Pending(pending) = outcome else {
+            panic!("an interrupted publication is pending");
+        };
+        let settled = pending
+            .recover()
+            .expect("the marker is adopted from disk rather than driven through a missing journal");
+        assert_eq!(settled, IdsPublication::Published);
+        assert!(!marker.exists(), "the publication finished");
+
+        std::fs::remove_file(&ledger_path).ok();
+        for entry in [
+            guard.journal_names().claim().as_str(),
+            guard.stage_name().as_str(),
+            crate::publication::LOCK_NAME,
+            crate::publication::IGNORE_NAME,
+        ] {
+            std::fs::remove_file(meta_path.join(entry)).ok();
+        }
+        std::fs::remove_dir(&meta_path).ok();
+        std::fs::remove_dir(&root).ok();
+    }
 }

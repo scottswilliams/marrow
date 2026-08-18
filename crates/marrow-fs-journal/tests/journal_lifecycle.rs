@@ -8,7 +8,8 @@ mod common;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use common::Scratch;
-use marrow_fs_journal::MarkerView;
+use marrow_fs_journal::ClaimRefusal;
+use marrow_fs_journal::MarkerStats;
 use marrow_fs_journal::{
     AdmittedDir, CacheLock, CorruptionReason, CustodyError, EntryName, EntryNameError,
     FrameCorruption, FsIdentity, JournalCommon, JournalError, JournalKind, NodeKind, PendingName,
@@ -54,9 +55,11 @@ fn claim_provision<'d>(
     .expect("claim a provision journal")
 }
 
-/// `claim` with its phase dropped. These tests assert which refusal a claim
-/// produces; which side of durability it fell on is asserted by the publication
-/// owner's own kats, where the two sides call for different handling.
+/// `claim` with its arm named and then dropped. These tests assert which
+/// refusal a claim produces; which arm it fell on is asserted by the
+/// publication owner's own kats, where the two arms call for different
+/// handling. The match is spelled out rather than converted, because dropping
+/// the distinction is exactly what production code must never do implicitly.
 fn claim_error<'d>(
     dir: &'d AdmittedDir,
     name: &PendingName,
@@ -64,7 +67,9 @@ fn claim_error<'d>(
     build_header: impl FnOnce(&marrow_fs_journal::JournalWitness) -> Vec<u8>,
     prepared_payload: &[u8],
 ) -> Result<marrow_fs_journal::LiveJournal<'d>, JournalError> {
-    claim(dir, name, kind, build_header, prepared_payload).map_err(JournalError::from)
+    claim(dir, name, kind, build_header, prepared_payload).map_err(|refusal| match refusal {
+        ClaimRefusal::Preclaim(error) | ClaimRefusal::PossiblyDurable(error) => error,
+    })
 }
 
 #[test]
@@ -349,19 +354,30 @@ fn finish_requires_the_terminal_phase_then_removes_both_names() {
     ));
 
     // Reopen the journal state and drive it to the terminal phase.
-    let mut live =
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
-            PendingState::Pending(pending) => pending.resume().expect("resume"),
-            other => panic!("expected a pending journal, found {other:?}"),
-        };
+    let mut live = match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
+        PendingState::Pending(pending) => pending.resume().expect("resume"),
+        other => panic!("expected a pending journal, found {other:?}"),
+    };
     live.append(3, b"cleaned").expect("append terminal");
     live.finish().expect("finish the complete journal");
 
     assert!(!scratch.path().join("store.pending").exists());
     assert!(!scratch.path().join("store.pending.create").exists());
     assert!(matches!(
-        classify(MarkerView::new(&dir, &names), JournalKind::Provision)
-            .expect("classify after finish"),
+        classify(
+            MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+            &dir,
+            &names,
+            JournalKind::Provision
+        )
+        .expect("classify after finish"),
         PendingState::Absent
     ));
 }
@@ -487,7 +503,9 @@ fn classify_reports_absence() {
     let dir = root(&scratch);
     assert!(matches!(
         classify(
-            MarkerView::new(&dir, &pending_name("store")),
+            MarkerStats::read(&dir, &pending_name("store")).expect("stat the marker pair"),
+            &dir,
+            &pending_name("store"),
             JournalKind::Provision
         )
         .expect("classify"),
@@ -507,7 +525,14 @@ fn create_only_debris_is_preclaim_and_discardable_under_witness() {
     let full = provision_claim_bytes();
     for cut in [0, 1, 15, 16, full.len()] {
         std::fs::write(&claim_path, &full[..cut]).expect("plant preclaim debris");
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
+        match classify(
+            MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+            &dir,
+            &names,
+            JournalKind::Provision,
+        )
+        .expect("classify")
+        {
             PendingState::Preclaim(debris) => {
                 debris.discard().expect("witnessed discard");
                 assert!(
@@ -519,7 +544,13 @@ fn create_only_debris_is_preclaim_and_discardable_under_witness() {
         }
     }
     assert!(matches!(
-        classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify"),
+        classify(
+            MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+            &dir,
+            &names,
+            JournalKind::Provision
+        )
+        .expect("classify"),
         PendingState::Absent
     ));
 }
@@ -537,8 +568,13 @@ fn read_only_preclaim_debris_is_classified_and_discardable() {
     std::fs::write(&claim_path, b"partial").expect("plant preclaim debris");
     set_mode(&claim_path, 0o400);
 
-    match classify(MarkerView::new(&dir, &names), JournalKind::Provision)
-        .expect("classify with read access alone")
+    match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify with read access alone")
     {
         PendingState::Preclaim(debris) => debris
             .discard()
@@ -564,7 +600,12 @@ fn write_only_preclaim_debris_names_the_operator_action() {
     std::fs::write(&claim_path, b"partial").expect("plant preclaim debris");
     set_mode(&claim_path, 0o200);
 
-    match classify(MarkerView::new(&dir, &names), JournalKind::Provision) {
+    match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    ) {
         Err(JournalError::Custody(CustodyError::ModeDenied {
             op,
             found,
@@ -579,8 +620,13 @@ fn write_only_preclaim_debris_names_the_operator_action() {
     );
 
     set_mode(&claim_path, 0o400);
-    match classify(MarkerView::new(&dir, &names), JournalKind::Provision)
-        .expect("classify after the restore")
+    match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify after the restore")
     {
         PendingState::Preclaim(debris) => debris.discard().expect("witnessed discard"),
         other => panic!("expected preclaim, found {other:?}"),
@@ -597,7 +643,14 @@ fn preclaim_debris_with_an_extra_link_is_retained_corruption() {
     std::fs::write(&claim_path, b"debris").expect("plant debris");
     std::fs::hard_link(&claim_path, scratch.path().join("elsewhere")).expect("extra link");
 
-    match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
+    match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
         PendingState::Corrupt(reason) => {
             assert_eq!(reason, CorruptionReason::ExtraLinks { found: 2 })
         }
@@ -619,14 +672,20 @@ fn the_two_link_state_is_a_claim_to_adopt() {
     set_mode(&claim_path, 0o600);
     std::fs::hard_link(&claim_path, &pending_path).expect("link to pending");
 
-    let live =
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
-            PendingState::Claimed(claimed) => {
-                assert_eq!(claimed.frame().records().len(), 1);
-                claimed.adopt().expect("adopt the claim")
-            }
-            other => panic!("expected a claimed journal, found {other:?}"),
-        };
+    let live = match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
+        PendingState::Claimed(claimed) => {
+            assert_eq!(claimed.frame().records().len(), 1);
+            claimed.adopt().expect("adopt the claim")
+        }
+        other => panic!("expected a claimed journal, found {other:?}"),
+    };
     assert!(!claim_path.exists(), "adoption unlinks the claim name");
     assert!(pending_path.exists());
 
@@ -650,7 +709,14 @@ fn a_two_link_journal_with_appended_records_is_retained_corruption() {
     set_mode(&claim_path, 0o600);
     std::fs::hard_link(&claim_path, scratch.path().join("store.pending")).expect("link");
 
-    match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
+    match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
         PendingState::Corrupt(reason) => {
             assert_eq!(reason, CorruptionReason::ClaimBeyondPrepared)
         }
@@ -666,7 +732,14 @@ fn split_inodes_under_both_names_are_retained_corruption() {
     std::fs::write(scratch.path().join("store.pending.create"), b"one").expect("claim file");
     std::fs::write(scratch.path().join("store.pending"), b"two").expect("pending file");
 
-    match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
+    match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
         PendingState::Corrupt(reason) => assert_eq!(reason, CorruptionReason::SplitInodes),
         other => panic!("expected retained corruption, found {other:?}"),
     }
@@ -686,11 +759,17 @@ fn a_pending_journal_replays_its_records_and_resumes() {
     std::fs::write(&pending_path, &bytes).expect("write pending journal");
     set_mode(&pending_path, 0o600);
 
-    let pending =
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
-            PendingState::Pending(pending) => pending,
-            other => panic!("expected a pending journal, found {other:?}"),
-        };
+    let pending = match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
+        PendingState::Pending(pending) => pending,
+        other => panic!("expected a pending journal, found {other:?}"),
+    };
     let records = pending.frame().records();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].phase_tag(), 1);
@@ -721,11 +800,17 @@ fn an_incomplete_tail_is_truncated_only_against_the_unique_next_record() {
     std::fs::write(&pending_path, &bytes).expect("write torn journal");
     set_mode(&pending_path, 0o600);
 
-    let mut pending =
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
-            PendingState::Pending(pending) => pending,
-            other => panic!("expected a pending journal, found {other:?}"),
-        };
+    let mut pending = match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
+        PendingState::Pending(pending) => pending,
+        other => panic!("expected a pending journal, found {other:?}"),
+    };
     assert_eq!(
         pending.frame().tail(),
         &TailState::IncompletePrefix {
@@ -734,11 +819,17 @@ fn an_incomplete_tail_is_truncated_only_against_the_unique_next_record() {
     );
 
     // A resume before truncation is refused.
-    let error =
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
-            PendingState::Pending(other) => other.resume().expect_err("resume refuses a torn tail"),
-            other => panic!("expected a pending journal, found {other:?}"),
-        };
+    let error = match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
+        PendingState::Pending(other) => other.resume().expect_err("resume refuses a torn tail"),
+        other => panic!("expected a pending journal, found {other:?}"),
+    };
     assert!(matches!(error, JournalError::IncompleteTail));
 
     // A candidate that is not the tail's continuation truncates nothing.
@@ -784,11 +875,17 @@ fn truncating_a_clean_journal_is_refused() {
     std::fs::write(&pending_path, provision_claim_bytes()).expect("write journal");
     set_mode(&pending_path, 0o600);
 
-    let mut pending =
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision).expect("classify") {
-            PendingState::Pending(pending) => pending,
-            other => panic!("expected a pending journal, found {other:?}"),
-        };
+    let mut pending = match classify(
+        MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+        &dir,
+        &names,
+        JournalKind::Provision,
+    )
+    .expect("classify")
+    {
+        PendingState::Pending(pending) => pending,
+        other => panic!("expected a pending journal, found {other:?}"),
+    };
     let next = encode_record(JournalKind::Provision, 1, 2, b"x").expect("record");
     assert!(matches!(
         pending.truncate_tail(&next),
@@ -882,8 +979,13 @@ fn every_per_byte_cut_of_a_provision_journal_classifies_deterministically() {
         // Create-only debris is preclaim at every cut: content and mode are
         // unconstrained before the durable claim.
         std::fs::write(&claim_path, &full[..cut]).expect("plant claim debris");
-        match classify(MarkerView::new(&dir, &names), JournalKind::Provision)
-            .expect("classify claim debris")
+        match classify(
+            MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+            &dir,
+            &names,
+            JournalKind::Provision,
+        )
+        .expect("classify claim debris")
         {
             PendingState::Preclaim(_) => {}
             other => panic!("claim cut {cut}: expected preclaim, found {other:?}"),
@@ -895,8 +997,13 @@ fn every_per_byte_cut_of_a_provision_journal_classifies_deterministically() {
         // completion, and the one complete frame.
         std::fs::write(&pending_path, &full[..cut]).expect("plant pending debris");
         set_mode(&pending_path, 0o600);
-        let state = classify(MarkerView::new(&dir, &names), JournalKind::Provision)
-            .expect("classify pending debris");
+        let state = classify(
+            MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+            &dir,
+            &names,
+            JournalKind::Provision,
+        )
+        .expect("classify pending debris");
         match state {
             PendingState::Corrupt(CorruptionReason::Frame(FrameCorruption::TooShort { found })) => {
                 assert!(cut < 16, "pending cut {cut}: TooShort past the prefix");
@@ -958,7 +1065,13 @@ fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
         journal_inode,
     });
     assert!(matches!(
-        classify(MarkerView::new(&dir, &names), JournalKind::Lineage).expect("classify"),
+        classify(
+            MarkerStats::read(&dir, &names).expect("stat the marker pair"),
+            &dir,
+            &names,
+            JournalKind::Lineage
+        )
+        .expect("classify"),
         PendingState::Pending(_)
     ));
 
@@ -1012,7 +1125,14 @@ fn require_mode_bits_bind(scratch: &Scratch) {
 }
 
 fn assert_corrupt(dir: &AdmittedDir, names: &PendingName, expected: &CorruptionReason) {
-    match classify(MarkerView::new(dir, names), names_kind(expected)).expect("classify") {
+    match classify(
+        MarkerStats::read(dir, names).expect("stat the marker pair"),
+        dir,
+        names,
+        names_kind(expected),
+    )
+    .expect("classify")
+    {
         PendingState::Corrupt(reason) => assert_eq!(&reason, expected),
         other => panic!("expected retained corruption {expected:?}, found {other:?}"),
     }

@@ -223,10 +223,17 @@ pub enum IdsPublication {
 /// A publication that is durably claimed and has not settled.
 ///
 /// The value is affine: it cannot be cloned, copied, serialized, or rebuilt
-/// from parts, it retains the guard borrow, the live journal, and the cause
-/// that interrupted it, and the only way to advance it is to consume
-/// [`recover`](Self::recover). Dropping it instead quarantines publication in
-/// this process until exit.
+/// from parts, it retains the guard borrow and the cause that interrupted it,
+/// and the only way to advance it is to consume [`recover`](Self::recover).
+/// Dropping it instead quarantines publication in this process until exit.
+///
+/// It does not always retain a live journal. A publication interrupted with its
+/// journal intact resumes through it; a claim that refused at or after its
+/// first link attempt never received one, and a journal a refused finish
+/// already consumed cannot be resumed through either. Those advance by adopting
+/// the durable marker from disk instead. What every arm has in common is a
+/// marker that may exist and a process holding it open, which is what makes the
+/// value affine rather than an ordinary error.
 ///
 /// ```compile_fail
 /// fn duplicate(pending: marrow_project_fs::IdsPublicationPending<'_>) {
@@ -265,8 +272,10 @@ impl<'a> IdsPublicationPending<'a> {
         }
     }
 
-    /// The pending value for a claim that refused after its durable parent
-    /// sync: a durable marker this call never received a journal for.
+    /// The pending value for a marker with no live journal to resume through:
+    /// a claim that refused at or after its first link attempt and never handed
+    /// one back, or a session whose journal was consumed by a finish that then
+    /// refused. Both leave a marker recovery adopts from disk.
     fn unclaimed(guard: &'a ProjectMetadataWriteGuard, cause: IdsPublicationError) -> Self {
         Self {
             work: PendingWork::Marker(guard),
@@ -359,7 +368,14 @@ pub enum IdsRefusal {
     /// byte is retained; an operator removes the named entries.
     UnclaimedIncomplete,
     /// Retained corruption: the marker, its evidence, or the artifact map is
-    /// not a state this protocol can have produced. No byte was mutated.
+    /// not a state this protocol can have produced.
+    ///
+    /// No artifact byte is replaced and nothing a cooperating writer put in
+    /// this directory is lost. That is not the same as no mutation: reaching
+    /// this reading can require reconciling an interrupted removal first, which
+    /// restores a moved object to the name it came from, and a resumed
+    /// publication can complete a removal its own durable terminal already
+    /// authorized. The state this refusal leaves is settleable, not untouched.
     Corrupt,
     /// A publication is durably claimed; recovery must settle it first.
     Interrupted,
@@ -367,6 +383,10 @@ pub enum IdsRefusal {
     Custody,
     /// The pending journal refused.
     Journal,
+    /// The entry that keeps this project's publication transients untracked
+    /// could not be established, so the contract every removal in this
+    /// protocol rests on does not hold here. Nothing was staged or claimed.
+    UntrackedContract,
 }
 
 impl IdsRefusal {
@@ -376,9 +396,11 @@ impl IdsRefusal {
             Self::UnclaimedIncomplete | Self::Corrupt | Self::Interrupted | Self::Quarantined => {
                 Code::ProjectIdsPublicationPending
             }
-            Self::UnqualifiedPlatform | Self::Contended | Self::Custody | Self::Journal => {
-                Code::IoWrite
-            }
+            Self::UnqualifiedPlatform
+            | Self::Contended
+            | Self::Custody
+            | Self::Journal
+            | Self::UntrackedContract => Code::IoWrite,
         }
     }
 }
@@ -446,10 +468,19 @@ impl fmt::Display for IdsPublicationError {
             )?,
             IdsRefusal::Corrupt => formatter.write_str(
                 "the `.marrow/ids` publication state is not one this protocol can have produced; \
-                 every byte is retained and nothing will be mutated",
+                 the committed ledger is unchanged and nothing you put in `.marrow` was \
+                 removed. Recovery will not go further on its own",
             )?,
             IdsRefusal::Interrupted => formatter.write_str(
                 "a `.marrow/ids` publication is durably claimed and must be recovered first",
+            )?,
+            IdsRefusal::UntrackedContract => formatter.write_str(
+                "`.marrow/.gitignore` cannot be read or is past the size this owner reads, so \
+                 whether it keeps the publication transients untracked is unknown. Every \
+                 removal this protocol performs relies on those entries never being tracked: \
+                 a committed transient is recreated by every checkout, and a checkout writing \
+                 one during a publication can lose it. Make the entry readable and small \
+                 enough to inspect, or remove it so the owner can write its own",
             )?,
             IdsRefusal::Custody => formatter.write_str("a `.marrow` filesystem operation refused")?,
             IdsRefusal::Journal => {
@@ -695,26 +726,32 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
             // and an open that demanded write to decide it would refuse every
             // publication and recovery of a project that needs no append.
             //
-            // A mode that withholds even that read leaves the entry as found
-            // for the same reason a withheld write does: the read exists only
-            // to decide a cosmetic append, so refusing here would refuse every
-            // publication and recovery of a project over a file this owner
-            // merely wanted to tidy.
+            // A mode that withholds even that read is refused, not tolerated.
+            // The entry is not cosmetic: the whole cooperative-writer argument
+            // is that a Git operation writes tracked paths and every transient
+            // here is untracked, and this entry is what keeps them untracked in
+            // a project this repository's own index gate cannot see. An owner
+            // that proceeded without establishing it would publish transients a
+            // later `git add -A` offers and a later checkout writes — the
+            // writer the protocol claims not to have.
             match meta.open_file_readonly(&name) {
                 Ok(opened) => (None, opened.read_prefix(IGNORE_READ_CEILING + 1)?),
-                Err(error) if access_withheld(&error) => return Ok(()),
+                Err(error) if access_withheld(&error) => {
+                    return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
+                }
                 Err(error) => return Err(error.into()),
             }
         }
         Err(error) => return Err(error.into()),
     };
-    // A file larger than the read bound is not this owner's, and the part of it
-    // that decides the question was never read, so it is left as found. The
-    // same check bounds an entry this owner's own appends pushed past the bound:
-    // past it no acquisition can see the names it already wrote, so without
-    // stopping here every acquisition would append them again forever.
+    // A file larger than the read bound has not been read to the point that
+    // decides the question, so whether it names the transients is unknown —
+    // and unknown is refused for the same reason unreadable is. The bound also
+    // catches an entry this owner's own appends pushed past it: past the bound
+    // no acquisition can see the names it already wrote, so an owner that
+    // appended anyway would append them again forever.
     if found.len() > IGNORE_READ_CEILING {
-        return Ok(());
+        return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
     }
     let missing: Vec<String> = untracked_entry_names()
         .into_iter()
@@ -740,17 +777,18 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
     }
     let mut entry = match created {
         Some(created) => created,
-        // An entry this process may not write is left as found for the same
-        // reason one past the read bound is: the append is a convenience, not
-        // a step any durable state depends on, and refusing here would refuse
-        // every publication and every recovery of a project whose ignore entry
-        // a checkout carries read-only. Only the permission-class refusals read
-        // that way — a node kind this owner never wrote is a corrupted metadata
-        // directory, an environmental write failure breaks the durable write
-        // regardless, and both stay typed refusals.
+        // Reaching here means names are missing, so the entry does not yet
+        // keep this project's transients untracked. An entry this process may
+        // not write cannot be completed, so the contract cannot be established
+        // and the acquisition refuses — the same answer an unreadable or
+        // oversized entry gets, for the same reason. An entry that already
+        // names every transient never reaches here: it returned above, and a
+        // read-only complete entry keeps working.
         None => match meta.open_file(&name) {
             Ok(opened) => opened,
-            Err(error) if access_withheld(&error) => return Ok(()),
+            Err(error) if access_withheld(&error) => {
+                return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
+            }
             Err(error) => return Err(error.into()),
         },
     };

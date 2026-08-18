@@ -880,7 +880,7 @@ fn a_reverted_terminal_over_a_drifted_target_finishes_after_its_own_cleanup() {
     assert!(!project.exists("ids.pending"), "the publication finished");
 }
 
-/// A removal never deletes what it has not proved is its own, and an
+/// A removal never deletes what the durable record does not name, and an
 /// interrupted removal's parked object is judged by that same proof rather than
 /// inheriting it. A stranger under the quarantine name is therefore left
 /// exactly where it is and the publication is retained for an operator, rather
@@ -919,7 +919,7 @@ fn a_stranger_parked_under_the_quarantine_name_is_neither_swept_nor_deleted() {
 }
 
 /// A crash between a removal's move and its unlink leaves the object in the
-/// quarantine directory with the stage name absent. The terminal record says
+/// quarantine name with the stage name absent. The terminal record says
 /// which run that cleanup was entitled to remove, and this object is it, so
 /// reconciliation finishes the removal rather than putting the object back to
 /// take it again.
@@ -1153,7 +1153,7 @@ fn a_taken_stage_name_makes_reconciliation_refuse_without_losing_either_object()
 }
 
 /// A crash after a removal rejected an object and before it moved that object
-/// back leaves a stranger in the quarantine directory. Reconciliation returns
+/// back leaves a stranger at the quarantine name. Reconciliation returns
 /// it to the name it was taken from — it is not this protocol's object to
 /// delete — and the map then reads the state that stranger creates and retains
 /// the project.
@@ -1382,10 +1382,11 @@ fn the_publication_owner_enumerates_no_directory() {
         include_str!("publication/protocol.rs"),
         include_str!("publication/header.rs"),
         include_str!("publication/marker.rs"),
-        // The journal owner is under the same ban. Classification runs before
-        // the quarantine is reconciled, so a classification that enumerated
-        // `.marrow` would read entries a removal has moved and would invalidate
-        // that ordering silently.
+        // The journal owner is under the same ban for its own sake: nothing in
+        // this protocol's namespace is enumerated anywhere. That
+        // classification reads only the marker pair is no longer this gate's
+        // subject — `MarkerStats` carries the whole decision by value, so a
+        // classification has no directory to enumerate in the first place.
         include_str!("../../marrow-fs-journal/src/journal.rs"),
     ] {
         for forbidden in ["read_dir", "ReadDir", "glob", "remove_dir_all"] {
@@ -1395,6 +1396,52 @@ fn the_publication_owner_enumerates_no_directory() {
             );
         }
     }
+}
+
+/// The claim's preclaim arm cannot contain a link attempt.
+///
+/// Which arm a claim refusal names is decided by which function the refusal
+/// came from, so the boundary is only as good as the split: a step that moves
+/// from the commit into the preflight would silently start reporting
+/// possibly-durable states as clean, and the publication owner would clean up
+/// under a marker that may exist. The preflight's body is therefore required to
+/// spell no link, and the commit is required to spell one — a moved step fails
+/// here rather than in a crash.
+#[test]
+fn the_claim_s_preclaim_arm_reaches_no_link() {
+    let source = include_str!("../../marrow-fs-journal/src/journal.rs");
+    let body = |name: &str| -> &str {
+        let start = source
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("the claim family still defines `{name}`"));
+        let rest = &source[start..];
+        let open = rest.find('{').expect("the function has a body");
+        let mut depth = 0usize;
+        for (offset, byte) in rest[open..].bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &rest[open..=open + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("`{name}` has no closing brace");
+    };
+
+    assert!(
+        !body("claim_preflight").contains(".link("),
+        "the preclaim arm attempted a link; every refusal it returns claims to leave no \
+         marker, which a link attempt makes false"
+    );
+    assert!(
+        body("claim_commit").contains(".link("),
+        "the commit arm no longer performs the link, so the boundary this gate checks is \
+         somewhere else and the arms no longer mean what they say"
+    );
 }
 
 /// An unclassifiable map under an incomplete terminal record is a typed
@@ -1856,17 +1903,20 @@ fn withhold_read(path: &Path, mode: u32) {
     );
 }
 
-/// An ignore entry this owner cannot read is left as found for the same reason
-/// one it cannot write is: the read that decides what is missing is part of the
-/// same cosmetic append, so a mode that withholds it refuses no publication and
-/// no recovery.
+/// An ignore entry this owner cannot read refuses the acquisition.
 ///
-/// A checkout can carry the entry with no access at all, or write-only, just as
-/// easily as read-only, and an owner that refused there would refuse every
-/// publication and every recovery of that project over a file it only ever
-/// wanted to tidy.
+/// Every removal this protocol performs rests on its transients never being
+/// tracked, and this entry is what establishes that in a project no index gate
+/// of ours can see. An entry whose contents cannot be read cannot be shown to
+/// name them, so the contract is not established and nothing is staged or
+/// claimed. Proceeding would publish transients an ordinary `git add -A`
+/// offers and a later checkout writes — precisely the writer the protocol
+/// claims not to have.
+///
+/// The entry is left exactly as found: the refusal is a refusal to proceed,
+/// not an attempt to repair.
 #[test]
-fn an_unreadable_ignore_entry_leaves_the_owner_working() {
+fn an_unreadable_ignore_entry_refuses_the_acquisition() {
     let _serial = serialized();
     for mode in [0o000, 0o200] {
         let project = Project::new(&format!("ignore-unreadable-{mode:04o}"));
@@ -1874,14 +1924,10 @@ fn an_unreadable_ignore_entry_leaves_the_owner_working() {
         let path = project.meta().join(".gitignore");
         withhold_read(&path, mode);
 
-        let mut guard =
-            ProjectMetadataWriteGuard::acquire(project.path()).unwrap_or_else(|error| {
-                panic!("mode {mode:04o} on the ignore entry refused the acquisition: {error:?}")
-            });
-        guard
-            .recover_ids()
-            .expect("recovery takes the same guard and must reach the same conclusion");
-        drop(guard);
+        let refusal = ProjectMetadataWriteGuard::acquire(project.path()).expect_err(
+            "an ignore entry that cannot be read leaves the untracked contract unestablished",
+        );
+        assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
 
         set_mode(&path, 0o600);
         assert_eq!(
@@ -1892,37 +1938,55 @@ fn an_unreadable_ignore_entry_leaves_the_owner_working() {
     }
 }
 
-/// An ignore entry this owner cannot write is left as found, exactly as one
-/// past the read bound is, and no publication or recovery is refused for it.
-///
-/// The entry is a convenience the owner maintains when it can — an untracked
-/// name is not what makes the protocol correct, and the entry is not part of
-/// any durable state the protocol reasons about. A project that published
-/// under an earlier name set and then had its ignore entry made read-only
-/// carries an entry this owner would complete and cannot, and gating durable
-/// publication on finishing that cosmetic append would refuse every
-/// publication and every recovery of that project outright.
+/// An ignore entry past the size this owner reads refuses the acquisition, for
+/// the same reason an unreadable one does: the part that would show it names
+/// the transients was never read, so the contract is unestablished rather than
+/// established-or-not-known.
 #[test]
-fn an_incomplete_unwritable_ignore_entry_leaves_the_owner_working() {
+fn an_oversized_ignore_entry_refuses_the_acquisition() {
+    let _serial = serialized();
+    let project = Project::new("ignore-oversized");
+    let mut oversized = b"# a developer's own very long ignore file\n".to_vec();
+    oversized.resize(64 * 1024, b'#');
+    oversized.push(b'\n');
+    project.write_meta(".gitignore", &oversized);
+
+    let refusal = ProjectMetadataWriteGuard::acquire(project.path())
+        .expect_err("an ignore entry past the read bound leaves the contract unestablished");
+    assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
+    assert_eq!(
+        project.read_meta(".gitignore").as_deref(),
+        Some(&oversized[..]),
+        "the entry the owner would not read is not the entry it left"
+    );
+}
+
+/// An incomplete ignore entry this owner cannot write refuses the acquisition.
+///
+/// The names are missing, so the entry does not keep this project's transients
+/// untracked, and an entry that cannot be written cannot be completed. That is
+/// the same unestablished contract an unreadable or oversized entry leaves, and
+/// it gets the same answer. An entry that already names every transient is a
+/// different case entirely: nothing needs writing, and a read-only complete
+/// entry keeps working.
+#[test]
+fn an_incomplete_unwritable_ignore_entry_refuses_the_acquisition() {
     let _serial = serialized();
     let project = Project::new("ignore-unwritable-incomplete");
     project.write_meta(".gitignore", PREVIOUS_FORMAT_IGNORE);
     let path = project.meta().join(".gitignore");
     withhold_write(&path);
 
-    let mut guard = ProjectMetadataWriteGuard::acquire(project.path())
-        .expect("an append the owner cannot make must not refuse the acquisition");
-    guard
-        .recover_ids()
-        .expect("recovery takes the same guard and must reach the same conclusion");
-    drop(guard);
+    let refusal = ProjectMetadataWriteGuard::acquire(project.path())
+        .expect_err("an entry that cannot be completed leaves the contract unestablished");
+    assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
 
+    set_mode(&path, 0o600);
     assert_eq!(
         project.read_meta(".gitignore").as_deref(),
         Some(PREVIOUS_FORMAT_IGNORE),
         "the entry the owner could not complete is not the entry it left"
     );
-    set_mode(&path, 0o600);
 }
 
 /// Only a withheld write is read as a convenience the owner leaves alone. A
