@@ -29,10 +29,12 @@ The identity ledger `.marrow/ids` is part of the program and travels with the
 source; it is the only entry a checkout carries.
 
 The zero-byte `publish.lock` the tools lock while writing metadata is
-machine-local runtime state. The three transient entries a publication passes
-through — `ids.publish.stage`, `ids.pending`, and `ids.pending.create` — are
-either a publication in flight or the debris an interrupted one left. No
-checkout carries any of the four, and the write owner keeps them untracked
+machine-local runtime state. The four transient entries a publication passes
+through — `ids.publish.stage`, the `ids.publish.quarantine` directory a removal
+holds an object in while it validates it, `ids.pending`, and
+`ids.pending.create` — are either a publication in flight or the debris an
+interrupted one left. No checkout carries any of the five, and the write owner
+keeps them untracked
 itself: when it takes the lock it writes `.marrow/.gitignore` naming every one
 of them, so a project adds no ignore line by hand and a clone that carries
 neither the lock nor the ignore entry is still correct — the next publication

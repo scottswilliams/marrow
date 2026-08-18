@@ -350,6 +350,7 @@ fn the_cli_holds_no_second_publication_model() {
         for entry in [
             "ids.pending",
             "ids.publish.stage",
+            "ids.publish.quarantine",
             "publish.lock",
             "META_DIR",
         ] {

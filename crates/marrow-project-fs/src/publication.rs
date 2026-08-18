@@ -15,7 +15,7 @@
 //! ```text
 //! ids                      the committed identity ledger
 //! ids.publish.stage        the successor before it is installed
-//! ids.publish.quarantine   an entry held while a removal validates it
+//! ids.publish.quarantine   a directory holding one object under judgement
 //! ids.pending              the durable publication marker
 //! ids.pending.create       the marker's pre-claim alias
 //! publish.lock             the cooperative project-metadata write lock
@@ -119,11 +119,15 @@ pub use marker::IdsPublicationMarker;
 /// adapter derives its publication names from that owner rather than repeating
 /// either one.
 const STAGE_SUFFIX: &str = ".publish.stage";
-/// The suffix the cleanup quarantine adds to the ledger's entry name. A
-/// removal moves the entry here before it validates what it is about to
-/// remove, so the object under judgement is held under a name no outside
-/// writer addresses rather than under the name one is racing for.
+/// The suffix the cleanup quarantine adds to the ledger's entry name. It names
+/// a directory, not an entry: a removal creates it, moves the object it is
+/// judging into it, and removes it again, so the object is never judged under
+/// a name an outside writer addresses.
 const QUARANTINE_SUFFIX: &str = ".publish.quarantine";
+/// The one entry a quarantine directory ever holds. Fixed, so an interrupted
+/// removal's leftover is found by stat rather than by enumerating a directory
+/// this owner never enumerates.
+const QUARANTINE_ENTRY: &str = "held";
 /// The cooperative project-metadata write lock's entry name.
 const LOCK_NAME: &str = "publish.lock";
 /// The version-control ignore entry the write owner keeps beside the entries
@@ -165,10 +169,10 @@ pub(crate) fn stage_spelling() -> &'static str {
     STAGE.get_or_init(|| format!("{IDS_ENTRY}{STAGE_SUFFIX}"))
 }
 
-/// The cleanup quarantine's entry name, derived from the same owner constant
-/// as every other publication name. Unlike the stage, no durable header
-/// encodes it: it exists only between a removal's rename and its unlink, and
-/// recovery reads it as ordinary ignored debris.
+/// The cleanup quarantine directory's name, derived from the same owner
+/// constant as every other publication name. No durable header encodes it: it
+/// exists only for the length of one removal, and a leftover is reconciled by
+/// the next command.
 pub(crate) fn quarantine_spelling() -> &'static str {
     static QUARANTINE: OnceLock<String> = OnceLock::new();
     QUARANTINE.get_or_init(|| format!("{IDS_ENTRY}{QUARANTINE_SUFFIX}"))
@@ -477,6 +481,7 @@ pub struct ProjectMetadataWriteGuard {
     ledger: EntryName,
     stage: EntryName,
     quarantine: EntryName,
+    quarantine_entry: EntryName,
     journal: PendingName,
     _lock: CacheLock,
 }
@@ -511,6 +516,7 @@ impl ProjectMetadataWriteGuard {
                 .expect("the fixed journal names are admitted spellings"),
             stage: admitted_name(stage_spelling()),
             quarantine: admitted_name(quarantine_spelling()),
+            quarantine_entry: admitted_name(QUARANTINE_ENTRY),
             ledger,
             meta,
             _lock: lock,
@@ -560,6 +566,10 @@ impl ProjectMetadataWriteGuard {
 
     fn quarantine_name(&self) -> &EntryName {
         &self.quarantine
+    }
+
+    fn quarantine_entry_name(&self) -> &EntryName {
+        &self.quarantine_entry
     }
 
     fn journal_names(&self) -> &PendingName {

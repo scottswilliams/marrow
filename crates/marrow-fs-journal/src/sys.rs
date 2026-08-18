@@ -169,36 +169,22 @@ mod imp {
         // The open-time mode is masked by the process umask; the exact 0600
         // the claim law rechecks is restored on the creating descriptor
         // before any use, so no umask can manufacture a wrong-mode claim.
+        // A refused mode restoration removes nothing. The entry this call
+        // created is left as never-linked debris, which the pending-journal
+        // classification reads as preclaim and the protocol's retained-state
+        // handling already owns.
+        //
+        // The removal that used to stand here witnessed the name with a stat
+        // and then unlinked that name, so a replacement landing between the two
+        // was deleted instead — the entry would not even be one this call
+        // created. No proof available here closes that window: `unlinkat` names
+        // a path, and this layer has no private location to move the object to
+        // first. Leaving classifiable debris costs a retained manual state;
+        // removing the wrong object costs a file that was never ours.
         if let Err(errno) = rustix::fs::fchmod(&file, file_mode()) {
-            remove_created(dir, name, &file);
             return Err(map("create file", Reading::Plain, errno));
         }
         Ok(file)
-    }
-
-    /// Best-effort removal of an entry this call created and is about to
-    /// refuse, so a refused creation returns no entry the caller was never
-    /// handed. The unlink is issued only after a stat witnesses that the name
-    /// still maps to the created inode: nothing is removed on the evidence of
-    /// the name alone. The witness and the unlink are separate calls, so a
-    /// replacement landing between them is still removed — the same
-    /// stat-then-unlink window the witnessed discard carries, and the reason
-    /// the safety claim needs an exclusive or private admitted parent. A
-    /// successful unlink is followed by a directory `fsync` whose refusal is
-    /// discarded, because the refusal that stopped the creation is what must
-    /// reach the caller; the claim path drops a failed witnessed discard whole,
-    /// sync included, for that same reason. A failed witness or unlink, or a
-    /// crash before the sync takes effect, leaves the entry as never-linked
-    /// debris, which the pending-journal classification reads as preclaim.
-    fn remove_created(dir: &DirHandle, name: &str, file: &FileHandle) {
-        let (Ok(created), Ok(Some(present))) = (fstat_file(file), stat_entry(dir, name)) else {
-            return;
-        };
-        if present.identity == created.identity
-            && rustix::fs::unlinkat(dir, name, AtFlags::empty()).is_ok()
-        {
-            let _ = sync_dir(dir);
-        }
     }
 
     pub(crate) fn open_file(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
@@ -271,6 +257,27 @@ mod imp {
     pub(crate) fn unlink(dir: &DirHandle, name: &str) -> Result<(), CustodyError> {
         rustix::fs::unlinkat(dir, name, AtFlags::empty())
             .map_err(|errno| map("unlink", Reading::Plain, errno))
+    }
+
+    /// Remove an empty directory entry. A non-empty directory refuses, which is
+    /// what keeps a removal from discarding a location still holding an object.
+    pub(crate) fn rmdir(dir: &DirHandle, name: &str) -> Result<(), CustodyError> {
+        rustix::fs::unlinkat(dir, name, AtFlags::REMOVEDIR)
+            .map_err(|errno| map("remove directory", Reading::Plain, errno))
+    }
+
+    /// `renameat` with `NOREPLACE` across two admitted directories. Same
+    /// fail-closed reading as the same-directory form: the flag is never
+    /// dropped to a plain rename, so a taken destination refuses rather than
+    /// being overwritten.
+    pub(crate) fn rename_into(
+        from_dir: &DirHandle,
+        from: &str,
+        to_dir: &DirHandle,
+        to: &str,
+    ) -> Result<(), CustodyError> {
+        rustix::fs::renameat_with(from_dir, from, to_dir, to, RenameFlags::NOREPLACE)
+            .map_err(|errno| map("rename-noreplace", Reading::RenameFlagged, errno))
     }
 
     pub(crate) fn stat_entry(
@@ -563,6 +570,19 @@ mod imp {
 
     pub(crate) fn unlink(dir: &DirHandle, _name: &str) -> Result<(), CustodyError> {
         match *dir {}
+    }
+
+    pub(crate) fn rmdir(dir: &DirHandle, _name: &str) -> Result<(), CustodyError> {
+        match *dir {}
+    }
+
+    pub(crate) fn rename_into(
+        from_dir: &DirHandle,
+        _from: &str,
+        _to_dir: &DirHandle,
+        _to: &str,
+    ) -> Result<(), CustodyError> {
+        match *from_dir {}
     }
 
     pub(crate) fn stat_entry(

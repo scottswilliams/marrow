@@ -3,12 +3,13 @@
 /.vscode/
 # Project-metadata entries no checkout may carry. The cooperative write lock is
 # machine-local runtime state every Marrow project in this tree creates on its
-# first publication; the other three are a publication in flight or the debris
+# first publication; the other four are a publication in flight or the debris
 # an interrupted one left, and committing one of them would recreate it in every
 # clone — a committed marker makes every read-only command refuse there. Only
 # `.marrow/ids` is committed.
 **/.marrow/publish.lock
 **/.marrow/ids.publish.stage
+**/.marrow/ids.publish.quarantine
 **/.marrow/ids.pending
 **/.marrow/ids.pending.create
 *.swp

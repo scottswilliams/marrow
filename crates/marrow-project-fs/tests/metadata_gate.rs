@@ -529,7 +529,7 @@ fn the_external_inventory_is_unchanged_from_the_clean_tree() {
     );
 }
 
-/// The cooperative write lock is machine-local runtime state and the three
+/// The cooperative write lock is machine-local runtime state and the four
 /// transient publication entries are a publication in flight or the debris an
 /// interrupted one left, so no checkout carries any of them. This pins the
 /// repository ignore entry and their absence from the index: a tracked lock
@@ -549,6 +549,7 @@ fn the_transient_metadata_entries_are_never_committed() {
     for entry in [
         "publish.lock",
         "ids.publish.stage",
+        "ids.publish.quarantine",
         "ids.pending",
         "ids.pending.create",
     ] {

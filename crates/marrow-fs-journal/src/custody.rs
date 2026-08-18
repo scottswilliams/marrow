@@ -39,11 +39,30 @@ const REQUIRED_READ: u32 = 0o400;
 /// establishes equivalence, not provenance: a foreign object that has been
 /// handed a recycled number *and* carries byte-identical content is not
 /// distinguishable from the original, and no comparison available after a crash
-/// can separate them. Callers must therefore bound their claims accordingly. A
-/// content-validated removal does not promise that no foreign object is ever
-/// removed; it promises that nothing distinguishable from the expected content
-/// is ever lost. Provenance beyond content is unknowable across a crash, and a
-/// caller that needs it must keep a descriptor rather than a number.
+/// can separate them. Provenance beyond content is unknowable across a crash,
+/// and a caller that needs it must keep a descriptor rather than a number.
+///
+/// # The removal bound
+///
+/// One more gap is irreducible rather than merely unmeasured. Removal names a
+/// path: neither qualified platform offers an unlink through a descriptor, so
+/// on every POSIX design some window separates the validation of an object from
+/// the unlink of the name that held it, and the name can be repointed inside
+/// it. No amount of evidence about the object closes a window about the name.
+///
+/// What a caller can do is shrink the set of writers able to reach into that
+/// window. [`AdmittedDir::rename_into`] and [`AdmittedDir::remove_dir`] exist
+/// for that: a removal moves the object into a directory it has just created at
+/// mode `0700` and does its opening, judging, and unlinking entirely within a
+/// handle on that directory. The writers the cooperative contract admits — a
+/// checkout, a `stash pop`, a pull, all of which write tracked paths — cannot
+/// reach a directory the protocol made moments earlier and is about to remove.
+/// What remains is a writer that deliberately writes inside it, which is
+/// outside the cooperative contract entirely.
+///
+/// So the guarantee to claim is that no cooperative writer's distinguishable
+/// content is ever lost. Not that no foreign object is ever removed, and not
+/// that the window is closed. Do not state anything stronger anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FsIdentity {
     dev: u64,
@@ -394,6 +413,28 @@ impl AdmittedDir {
     pub fn rename_noreplace(&self, from: &EntryName, to: &EntryName) -> Result<(), CustodyError> {
         sys::rename_noreplace(&self.handle, from.as_str(), to.as_str())
     }
+
+    /// Move `from` in this directory to `to` in `dest`, refusing an existing
+    /// destination. Both ends are admitted directory handles, so the move names
+    /// no path and crosses no directory this caller has not already admitted.
+    ///
+    /// This is what lets a caller take an object out of a location others may
+    /// write and into one only it holds, without the object ever being
+    /// addressed by a path.
+    pub fn rename_into(
+        &self,
+        from: &EntryName,
+        dest: &AdmittedDir,
+        to: &EntryName,
+    ) -> Result<(), CustodyError> {
+        sys::rename_into(&self.handle, from.as_str(), &dest.handle, to.as_str())
+    }
+
+    /// Remove one empty directory entry. A directory still holding an entry
+    /// refuses, so this can never discard a location with an object in it.
+    pub fn remove_dir(&self, name: &EntryName) -> Result<(), CustodyError> {
+        sys::rmdir(&self.handle, name.as_str())
+    }
 }
 
 /// Require an opened handle to be a regular file and witness its inode.
@@ -519,6 +560,119 @@ impl fmt::Debug for OpenedFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A disjoint scratch root, removed by the caller.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "marrow-custody-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).expect("create scratch");
+        root
+    }
+
+    fn admitted(name: &str) -> EntryName {
+        EntryName::admit(name).expect("an admitted fixture spelling")
+    }
+
+    /// A move into another admitted directory carries the object, not a copy:
+    /// the destination witnesses the same inode, the source name is gone, and
+    /// the object stays reachable through a descriptor opened before the move.
+    #[test]
+    fn a_move_into_another_directory_carries_the_same_inode() {
+        let root = scratch("rename-into");
+        let dir = AdmittedDir::admit_trusted_root(&root).expect("admit root");
+        let source = admitted("source");
+        let mut file = dir.create_file_excl(&source).expect("create the object");
+        file.append(b"payload").expect("fill the object");
+        let identity = file.identity();
+
+        let holder = admitted("holder");
+        let held = dir.create_child_dir(&holder).expect("create the holder");
+        let inner = admitted("held");
+        dir.rename_into(&source, &held, &inner)
+            .expect("the move is admitted");
+
+        assert!(
+            dir.stat_entry(&source).expect("stat source").is_none(),
+            "the source name no longer resolves"
+        );
+        let moved = held
+            .stat_entry(&inner)
+            .expect("stat the moved entry")
+            .expect("the moved entry exists");
+        assert_eq!(moved.identity(), identity, "the object moved, not a copy");
+        assert_eq!(
+            file.read_prefix(64).expect("read through the held handle"),
+            b"payload",
+            "the descriptor opened before the move still reaches the object"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The move refuses a taken destination rather than overwriting it, which
+    /// is what makes it safe to move an object into a location that may already
+    /// hold one.
+    #[test]
+    fn a_move_refuses_a_taken_destination() {
+        let root = scratch("rename-into-taken");
+        let dir = AdmittedDir::admit_trusted_root(&root).expect("admit root");
+        let source = admitted("source");
+        dir.create_file_excl(&source).expect("create the object");
+        let holder = admitted("holder");
+        let held = dir.create_child_dir(&holder).expect("create the holder");
+        let inner = admitted("held");
+        held.create_file_excl(&inner)
+            .expect("occupy the destination");
+
+        assert!(
+            matches!(
+                dir.rename_into(&source, &held, &inner),
+                Err(CustodyError::AlreadyExists { .. })
+            ),
+            "a taken destination refuses"
+        );
+        assert!(
+            dir.stat_entry(&source)
+                .expect("stat source")
+                .is_some_and(|stat| stat.kind() == NodeKind::Regular),
+            "the refused move left the source exactly where it was"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Removing a directory refuses while it still holds an entry, so a
+    /// removal can never discard a location with an object in it, and succeeds
+    /// once it is empty.
+    #[test]
+    fn a_directory_removal_refuses_until_it_is_empty() {
+        let root = scratch("rmdir");
+        let dir = AdmittedDir::admit_trusted_root(&root).expect("admit root");
+        let holder = admitted("holder");
+        let held = dir.create_child_dir(&holder).expect("create the holder");
+        let inner = admitted("held");
+        held.create_file_excl(&inner).expect("occupy the holder");
+
+        assert!(
+            dir.remove_dir(&holder).is_err(),
+            "an occupied directory is not removed"
+        );
+        held.unlink(&inner).expect("empty the holder");
+        dir.remove_dir(&holder)
+            .expect("an empty directory is removed");
+        assert!(
+            dir.stat_entry(&holder).expect("stat holder").is_none(),
+            "the holder name no longer resolves"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     fn permission_denied(op: &'static str) -> CustodyError {
         CustodyError::Io {

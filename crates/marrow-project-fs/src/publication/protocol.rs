@@ -230,6 +230,7 @@ pub(super) fn publish(
     guard: &ProjectMetadataWriteGuard,
     plan: LedgerPublicationPlan,
 ) -> Result<IdsPublishOutcome<'_>, IdsPublicationError> {
+    reconcile_quarantine(guard, guard.stage_name())?;
     preflight(guard)?;
     plan.visit(|view| publish_admitted(guard, view))
 }
@@ -239,6 +240,12 @@ pub(super) fn recover(
     guard: &ProjectMetadataWriteGuard,
 ) -> Result<Option<IdsPublication>, IdsPublicationError> {
     let meta = guard.meta();
+    // A removal interrupted between its move and its unlink left the object in
+    // the quarantine directory and its name absent. Putting it back before
+    // anything is classified is what keeps every crash point inside a removal
+    // out of the artifact map's state set: recovery then reads exactly the
+    // pre-removal state and runs the removal again.
+    reconcile_quarantine(guard, guard.stage_name())?;
     let names = guard.journal_names();
     let claim_witness = meta.stat_entry(names.claim())?.map(|stat| stat.identity());
     let pending_witness = meta
@@ -441,24 +448,24 @@ fn discard_stage(
     })
 }
 
-/// Unlink the object at `name`, and only after proving through a descriptor on
+/// Remove the object at `name`, and only after proving through a descriptor on
 /// that object that `accepts` admits it.
 ///
 /// The unlink cannot itself be the validated act. `unlinkat` names a path, and
-/// every validation before it releases the object it validated, so a writer
-/// outside the cooperative lock — the writer the destination-refusing arms
-/// exist for — can repoint the name in between and have this process delete
-/// whatever landed there. So the object is first moved to the quarantine name,
-/// which is atomic on the name and takes exactly what `name` held at that
-/// instant, and it is opened and judged there. An object `accepts` rejects is
-/// never deleted: it is renamed back, and if the original name has since been
-/// taken it stays parked under the quarantine name, which the ignore entry
-/// covers and the next command reads as debris.
+/// no POSIX platform this runs on offers an unlink through a descriptor, so
+/// between any validation and any unlink the name can be repointed and the
+/// wrong object deleted. What this owner does is take the object out of the
+/// location an outside writer addresses before judging it: a private directory
+/// is created, the object is moved into it, and it is opened, judged, and
+/// unlinked entirely within a directory handle this call holds. The directory
+/// is created by this removal at mode `0700`, so the only writer who can reach
+/// the object under judgement is one that deliberately writes inside a
+/// directory the protocol just made — outside the cooperative contract
+/// entirely. See [`marrow_fs_journal::FsIdentity`] for the resulting bound.
 ///
-/// The residual window is the quarantine name's own: it is a fixed name, so a
-/// writer that knows it and races it could still be deleted from. That name is
-/// not one an ordinary Git operation writes, and it is held only between this
-/// rename and the unlink below.
+/// An object `accepts` rejects is never deleted: it is moved back under the
+/// name it came from. A restore that cannot land leaves it in the quarantine
+/// directory, which the next command reconciles.
 fn remove_validated(
     guard: &ProjectMetadataWriteGuard,
     name: &EntryName,
@@ -466,59 +473,116 @@ fn remove_validated(
     accepts: impl Fn(&OpenedFile) -> Result<bool, IdsPublicationError>,
 ) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    let held = guard.quarantine_name();
+    // Whatever an interrupted removal left is put back before this one starts,
+    // so a removal always begins from a state the artifact map models.
+    reconcile_quarantine(guard, name)?;
 
-    // A quarantine entry that outlived its process is an interrupted removal's
-    // debris. It is judged by this removal's own proof rather than reused or
-    // swept blind: at most one live object can carry the number a bound proof
-    // names, so an accepted one is exactly the object this call came to
-    // remove, and anything else parks the project for an operator.
-    if meta.stat_entry(held)?.is_some() {
-        let parked = meta.open_file_readonly(held)?;
-        if !accepts(&parked)? {
-            return Err(CustodyError::IdentityDrift { op }.into());
-        }
-        drop(parked);
-        meta.unlink(held)?;
-        meta.sync()?;
-    }
-
-    match meta.rename_noreplace(name, held) {
+    let held = open_quarantine(guard)?;
+    let inner = guard.quarantine_entry_name();
+    match meta.rename_into(name, &held, inner) {
         Ok(()) => {}
         // Already gone: the absence this call wanted is the absence it found.
-        Err(CustodyError::NotFound { .. }) => return Ok(()),
-        Err(error) => return Err(error.into()),
+        Err(CustodyError::NotFound { .. }) => return discard_quarantine(guard, held),
+        Err(error) => {
+            let _ = discard_quarantine(guard, held);
+            return Err(error.into());
+        }
     }
 
     let verdict = (|| -> Result<bool, IdsPublicationError> {
-        let file = meta.open_file_readonly(held)?;
+        let file = held.open_file_readonly(inner)?;
         accepts(&file)
     })();
-    match verdict {
-        Ok(true) => {
-            meta.unlink(held)?;
+    let outcome = match verdict {
+        Ok(true) => held
+            .unlink(inner)
+            .and_then(|()| held.sync())
+            .map_err(IdsPublicationError::from),
+        Ok(false) => restore_quarantined(&held, inner, meta, name)
+            .and(Err(CustodyError::IdentityDrift { op }.into())),
+        Err(refusal) => restore_quarantined(&held, inner, meta, name).and(Err(refusal)),
+    };
+    // The directory goes whether the object was removed or put back; a refused
+    // removal of it leaves an empty location the next command reconciles, and
+    // never replaces the cause that got here.
+    let _ = discard_quarantine(guard, held);
+    outcome?;
+    meta.sync()?;
+    Ok(())
+}
+
+/// Admit the quarantine directory, creating it when it is absent. A
+/// pre-existing directory is admitted as it stands: it is an interrupted
+/// removal's location, already emptied by reconciliation.
+fn open_quarantine(guard: &ProjectMetadataWriteGuard) -> Result<AdmittedDir, IdsPublicationError> {
+    let meta = guard.meta();
+    let name = guard.quarantine_name();
+    match meta.admit_child(name) {
+        Ok(dir) => Ok(dir),
+        Err(CustodyError::NotFound { .. }) => {
+            let dir = meta.create_child_dir(name)?;
             meta.sync()?;
-            Ok(())
+            Ok(dir)
         }
-        Ok(false) => {
-            restore_quarantined(meta, held, name);
-            Err(CustodyError::IdentityDrift { op }.into())
-        }
-        Err(refusal) => {
-            restore_quarantined(meta, held, name);
-            Err(refusal)
-        }
+        Err(error) => Err(error.into()),
     }
 }
 
-/// Put a quarantined object back under the name it came from. It is not this
-/// protocol's object to delete, so a refused restore leaves it parked rather
-/// than removed; `NOREPLACE` keeps the restore from displacing whatever has
-/// since taken the original name.
-fn restore_quarantined(meta: &AdmittedDir, held: &EntryName, name: &EntryName) {
-    if meta.rename_noreplace(held, name).is_ok() {
-        let _ = meta.sync();
+/// Remove the quarantine directory. It refuses while it still holds an object,
+/// which is exactly the protection wanted: a location with something in it is
+/// left for reconciliation rather than discarded.
+fn discard_quarantine(
+    guard: &ProjectMetadataWriteGuard,
+    held: AdmittedDir,
+) -> Result<(), IdsPublicationError> {
+    drop(held);
+    let meta = guard.meta();
+    meta.remove_dir(guard.quarantine_name())?;
+    meta.sync()?;
+    Ok(())
+}
+
+/// Put whatever an interrupted removal left in the quarantine directory back
+/// under `name`, and remove the directory.
+///
+/// This is what makes every crash point inside a removal a state the artifact
+/// map already models, rather than a new dimension every arm would have to
+/// read. A crash after the move leaves the object in the directory and the name
+/// absent; restoring it returns the exact pre-removal state, and the removal
+/// runs again from there. A crash before the move, or after the unlink, leaves
+/// the directory empty and only the directory to remove.
+///
+/// The restore is refused, not forced, if `name` has since been taken: the
+/// object stays where it is and the refusal retains the project. Nothing here
+/// deletes anything.
+fn reconcile_quarantine(
+    guard: &ProjectMetadataWriteGuard,
+    name: &EntryName,
+) -> Result<(), IdsPublicationError> {
+    let meta = guard.meta();
+    if meta.stat_entry(guard.quarantine_name())?.is_none() {
+        return Ok(());
     }
+    let held = meta.admit_child(guard.quarantine_name())?;
+    let inner = guard.quarantine_entry_name();
+    if held.stat_entry(inner)?.is_some() {
+        restore_quarantined(&held, inner, meta, name)?;
+    }
+    discard_quarantine(guard, held)
+}
+
+/// Move a quarantined object back under the name it came from. It is not this
+/// protocol's object to delete, so a destination that has since been taken
+/// refuses rather than being overwritten, and the object is left in place.
+fn restore_quarantined(
+    held: &AdmittedDir,
+    inner: &EntryName,
+    meta: &AdmittedDir,
+    name: &EntryName,
+) -> Result<(), IdsPublicationError> {
+    held.rename_into(inner, meta, name)?;
+    meta.sync()?;
+    Ok(())
 }
 
 // ===== The driver ============================================================
