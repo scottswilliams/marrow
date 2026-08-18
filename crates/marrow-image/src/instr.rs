@@ -167,6 +167,21 @@ pub const OP_DUR_INDEX_SCAN: u8 = 0xB6;
 pub const OP_DUR_INDEX_LOOKUP: u8 = 0xB7;
 pub const OP_DUR_INDEX_EXISTS: u8 = 0xB8;
 
+/// One draft instruction's in-memory width, the per-instruction coefficient every
+/// live-byte equation over a lowered body multiplies.
+///
+/// The width is a measured property of the variant set, not a chosen one: the widest
+/// payload plus its niche-packed discriminant. Asserting it here is what keeps a new
+/// or widened variant from silently multiplying the transient body term by the
+/// instruction count instead of failing this crate's build.
+pub(crate) const INSTR_BYTES: usize = 80;
+
+const _: () = assert!(
+    size_of::<Instr>() == INSTR_BYTES,
+    "the draft instruction's measured width changed; re-derive every per-instruction \
+     live-byte term before restating it"
+);
+
 /// A draft instruction. Jump targets are instruction indices into the function's
 /// own instruction list; the encoder rewrites them to container byte offsets.
 #[derive(Debug, Clone, PartialEq, Eq)]

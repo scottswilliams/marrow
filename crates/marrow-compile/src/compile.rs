@@ -1873,16 +1873,23 @@ fn registry_phases(
     // monomorphic function and test. `base` is that boundary; the shared `Monomorph`
     // assigns each distinct instance the next index from `base` in discovery order, so
     // draining its queue in order appends them to the image in index order.
-    let test_count: u16 = if mode == TestMode::Include {
+    //
+    // Both counts and their sum are computed in the counting carrier's own width and
+    // narrowed once, where the base is consumed: a project with more monomorphic
+    // functions and tests together than the image can address refuses at the
+    // invariant boundary rather than seating an instance on a wrapped slot.
+    let test_count: usize = if mode == TestMode::Include {
         parsed
             .iter()
             .flat_map(|module| &module.ast.declarations)
             .filter(|decl| matches!(decl, Declaration::Test(_)))
-            .count() as u16
+            .count()
     } else {
         0
     };
-    records.set_fn_base(resolution.signatures.concrete_count() + test_count);
+    records
+        .set_fn_base(resolution.signatures.concrete_count() as u64 + test_count as u64)
+        .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
 
     let functions =
         lower_declared_functions(parsed, records, resolution, draft, diagnostics, facts)?;

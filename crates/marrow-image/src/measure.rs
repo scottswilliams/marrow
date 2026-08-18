@@ -267,7 +267,7 @@ impl<'d> CoherentDraft<'d> {
             return Err(ImageBuildError::TooManyTestEntries);
         }
         for function in draft.functions() {
-            if laid_out_code_len(&function.code) as usize > bounds::MAX_CODE_BYTES {
+            if laid_out_code_len(&function.code) > bounds::MAX_CODE_BYTES as u64 {
                 return Err(ImageBuildError::CodeTooLong);
             }
         }
@@ -419,7 +419,10 @@ pub(crate) fn count_functions(draft: &ImageDraft, sink: &mut CappedImageCount) {
         }
         sink.pad(function.ret.encoded_len());
         sink.pad(2 + 4);
-        sink.pad(laid_out_code_len(&function.code) as usize);
+        // The counting sink is capped, so a length no `usize` carries saturates it
+        // rather than wrapping: the cap is the only thing a count that wide can
+        // establish, and the policy walk above has already refused the draft.
+        sink.pad(usize::try_from(laid_out_code_len(&function.code)).unwrap_or(usize::MAX));
     }
 }
 // count-path audit sentinel: end of count_functions

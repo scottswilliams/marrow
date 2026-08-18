@@ -865,7 +865,9 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
     let composite_id = registry
         .mint_type_instance(&mut draft, 2, &[scalar], site(4))
         .expect("representative record seed mints");
-    registry.set_fn_base(37);
+    registry
+        .set_fn_base(37)
+        .expect("a test base fits the function index carrier");
     let reserved = registry
         .reserve_fn_instance(7, vec![scalar], site(5))
         .expect("stable function row reserves");

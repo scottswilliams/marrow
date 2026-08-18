@@ -152,7 +152,9 @@ fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unw
         }
         // The legacy function owners the proof must not disturb: a reservation that
         // occupies a real image function index, its lockstep key, and its queue entry.
-        records.set_fn_base(37);
+        records
+            .set_fn_base(37)
+            .expect("a test base fits the function index carrier");
         assert_eq!(
             records
                 .reserve_fn_instance(7, vec![scalar], site(5))
@@ -337,7 +339,9 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
                 .expect("the settled seed collection mints");
             seed.commit();
         }
-        records.set_fn_base(37);
+        records
+            .set_fn_base(37)
+            .expect("a test base fits the function index carrier");
         records
             .reserve_fn_instance(7, vec![scalar], site(5))
             .expect("the settled seed function row reserves");
@@ -388,12 +392,16 @@ fn an_abandoned_batch_restores_the_function_base_the_metadata_cache_and_the_queu
     {
         let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
         let mut owner = ImageDraft::new();
-        records.set_fn_base(37);
+        records
+            .set_fn_base(37)
+            .expect("a test base fits the function index carrier");
         {
             let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
                 .expect("a settled registry admits an ordinary batch");
             let (registry, _) = batch.parts();
-            registry.set_fn_base(99);
+            registry
+                .set_fn_base(99)
+                .expect("a test base fits the function index carrier");
             assert_eq!(
                 registry.generics.borrow().fn_base,
                 99,

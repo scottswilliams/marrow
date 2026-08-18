@@ -1474,6 +1474,7 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             18
         }
         GenericInvariant::DeclarationIndexDrift => 19,
+        GenericInvariant::FunctionIndexDomain => 21,
         GenericInvariant::DurableConstructionRefused => 20,
         GenericInvariant::ReadyBodyShapeMismatch(id) => {
             let _ = id;

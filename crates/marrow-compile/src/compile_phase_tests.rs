@@ -137,6 +137,7 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         },
         GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
         GenericInvariant::DeclarationIndexDrift => "declaration index drift",
+        GenericInvariant::FunctionIndexDomain => "function index domain",
         GenericInvariant::DurableConstructionRefused => "durable construction refused",
     }
 }

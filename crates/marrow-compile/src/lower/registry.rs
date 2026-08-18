@@ -9,7 +9,7 @@ use crate::decl::{
     DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName,
     refuse_covered, refuse_first,
 };
-use crate::types::BuildError;
+use crate::types::{BuildError, narrow_function_index};
 
 /// One declared function paired with where it was declared: the file identity its
 /// diagnostics point into, the snapshot coordinate its editor facts are retained
@@ -169,7 +169,11 @@ impl FunctionRegistry {
         // table; a generic function is a template with no single image entry (its
         // per-application instances are minted lazily), so it is skipped here and
         // resolved through the separate [`GenericRegistry`].
-        let mut index: u16 = 0;
+        // The slot ordinal accumulates in a carrier wider than the image's function
+        // index and is narrowed exactly where a signature takes its slot, so a
+        // project declaring more monomorphic functions than the image can address
+        // refuses at the invariant boundary instead of wrapping onto slot zero.
+        let mut index: u32 = 0;
         for declared in functions {
             let (file, module, function) = (&declared.file, &declared.module, declared.decl);
             if !function.type_params.is_empty() {
@@ -242,7 +246,7 @@ impl FunctionRegistry {
                     let signature = FnSignature {
                         module: module.clone(),
                         at: declared.at,
-                        index,
+                        index: narrow_function_index(u64::from(index))?,
                         params,
                         ret,
                         public: function.public,
@@ -278,8 +282,12 @@ impl FunctionRegistry {
     /// entries lowered before tests and generic instantiations. One per accepted
     /// occurrence, not per accepted name: a repeated function name is reported by
     /// its own duplicate check and both declarations still lower a body.
-    pub(crate) fn concrete_count(&self) -> u16 {
-        self.sigs.accepted_occurrences().count() as u16
+    ///
+    /// The count is the counting carrier's own width, not the image's function
+    /// index: it is summed with the test-body count and narrowed once, where the
+    /// generic base consumes it.
+    pub(crate) fn concrete_count(&self) -> usize {
+        self.sigs.accepted_occurrences().count()
     }
 
     /// The names of every function declared in `module`, accepted or refused, so an

@@ -310,7 +310,7 @@ impl ImageDraft {
         push_u16(sink, self.functions().len() as u16);
         let mut per_fn = Vec::with_capacity(self.functions().len());
         for function in self.functions() {
-            let layout = code_layout(&function.code);
+            let layout = code_layout(&function.code)?;
             if layout.total_len as usize > bounds::MAX_CODE_BYTES {
                 return Err(ImageBuildError::CodeTooLong);
             }
@@ -416,29 +416,32 @@ pub(crate) struct CodeLayout {
 /// one width owner ([`Instr::encoded_len`]) states — the same widths `code_layout`
 /// accumulates into offsets. The policy walk reads the length without materializing
 /// the offsets.
-pub(crate) fn laid_out_code_len(code: &[Instr]) -> u32 {
-    code.iter().map(|instr| instr.encoded_len() as u32).sum()
+///
+/// The sum accumulates in a carrier wider than the `u32` the container spells, so no
+/// caller can observe a wrapped length: a length is narrowed only where it is written
+/// or compared, against [`bounds::MAX_CODE_BYTES`]. The wide accumulation itself
+/// cannot overflow — a slice holds fewer than `u64::MAX / 16` instructions and each
+/// contributes at most sixteen bytes.
+pub(crate) fn laid_out_code_len(code: &[Instr]) -> u64 {
+    code.iter().map(|instr| instr.encoded_len() as u64).sum()
 }
 
 /// Lay out one function's code: each instruction's byte offset, and the total width.
 ///
-/// Offsets are `u32` because the container spells them so. The running total cannot
-/// reach that width from a draft an encode can hold: an instruction is at least one
-/// encoded byte, so reaching `u32::MAX` would need a code vector of four billion
-/// instructions — orders of magnitude past the memory the draft itself occupies, and
-/// past [`bounds::MAX_CODE_BYTES`], which `encode_functions` rechecks against
-/// `total_len` before the layout is used for anything.
-fn code_layout(code: &[Instr]) -> CodeLayout {
+/// Offsets are `u32` because the container spells them so, and the running total is
+/// accumulated in `u64` and narrowed once per consuming boundary: a total no `u32`
+/// can carry is [`ImageBuildError::CodeTooLong`], the same verdict the
+/// [`bounds::MAX_CODE_BYTES`] comparison below it reaches, rather than a debug
+/// overflow or a release wrap.
+fn code_layout(code: &[Instr]) -> Result<CodeLayout, ImageBuildError> {
     let mut offsets = Vec::with_capacity(code.len());
-    let mut offset = 0u32;
+    let mut offset: u64 = 0;
     for instr in code {
-        offsets.push(offset);
-        offset += instr.encoded_len() as u32;
+        offsets.push(u32::try_from(offset).map_err(|_| ImageBuildError::CodeTooLong)?);
+        offset += instr.encoded_len() as u64;
     }
-    CodeLayout {
-        offsets,
-        total_len: offset,
-    }
+    let total_len = u32::try_from(offset).map_err(|_| ImageBuildError::CodeTooLong)?;
+    Ok(CodeLayout { offsets, total_len })
 }
 
 fn encode_code<S: ImageByteSink>(

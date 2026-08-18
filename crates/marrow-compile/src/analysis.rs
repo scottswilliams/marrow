@@ -110,7 +110,7 @@ pub const MAX_SYMBOL_DEPTH: u16 = 16;
 /// retention at the pinned fact-count ceiling. Its *logical* charge is unchanged —
 /// [`AnalysisFactCollector`] still charges a definition target's file spelling and a
 /// document-symbol module's owner spelling exactly as before.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) struct FileRef(u16);
 
 /// The admission ceiling is inside the coordinate domain, so a position in an admitted
