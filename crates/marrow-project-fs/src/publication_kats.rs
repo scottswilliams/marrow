@@ -2020,6 +2020,14 @@ fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
         ("single-char", "!ids.pendin?\n"),
         ("char-set", "!ids.publish.[sq]*\n"),
         ("trailing-slash", "!ids.publish.stage/\n"),
+        // `**` matches zero directories, so both of these name the entry
+        // sitting directly in `.marrow`.
+        ("double-star-exact", "!**/ids.publish.stage\n"),
+        ("double-star-glob", "!**/*.stage\n"),
+        // A POSIX class inside a set: the members are not read, and any set
+        // carrying one is taken as reaching the name.
+        ("posix-class", "!ids.publish.[[:alpha:]]*\n"),
+        ("negated-posix-class", "!ids.publish.[![:digit:]]*\n"),
     ] {
         let project = Project::new(&format!("ignore-negated-{tag}"));
         let mut planted = WRITTEN_IGNORE.to_vec();
@@ -2059,6 +2067,10 @@ fn an_ignore_entry_negating_something_else_leaves_the_owner_working() {
         ("anchored-elsewhere", "!/build\n"),
         ("below-this-directory", "!ids.publish.stage/inner\n"),
         ("other-name", "!notes.txt\n"),
+        // A real component survives the `**`, so the pattern still needs a
+        // subdirectory these entries never sit in.
+        ("double-star-subdirectory", "!**/docs/notes.md\n"),
+        ("double-star-other-suffix", "!**/*.md\n"),
     ] {
         let project = Project::new(&format!("ignore-negation-elsewhere-{tag}"));
         let mut planted = WRITTEN_IGNORE.to_vec();

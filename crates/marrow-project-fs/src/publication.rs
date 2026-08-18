@@ -937,13 +937,32 @@ fn ignore_negates_entry(found: &[u8], entry: &str) -> bool {
         // A leading slash anchors to the directory holding the ignore file,
         // which is where these entries are.
         let pattern = pattern.strip_prefix(b"/").unwrap_or(pattern);
-        // Any remaining separator names a path below this directory. These
-        // entries sit directly in it, so such a pattern cannot reach them.
-        if pattern.contains(&b'/') {
-            return false;
-        }
-        wildcard_covers(pattern, entry.as_bytes())
+        pattern_reaches(pattern, entry.as_bytes())
     })
+}
+
+/// Whether an ignore pattern can match an entry lying directly in the directory
+/// its ignore file governs.
+///
+/// A `**` component matches zero or more directories, so it can vanish
+/// entirely: `**/ids.publish.stage` names the entry sitting right here, and
+/// `**/*.stage` names it too. What decides scope is therefore what remains once
+/// those components are dropped. One component can still name a directly
+/// contained entry and is matched against the name. Two or more require a
+/// subdirectory, and these entries never sit in one, so such a pattern reaches
+/// nothing here.
+fn pattern_reaches(pattern: &[u8], name: &[u8]) -> bool {
+    let mut components = pattern
+        .split(|byte| *byte == b'/')
+        .filter(|component| !component.is_empty() && *component != b"**".as_slice());
+    let Some(only) = components.next() else {
+        // Nothing but `**` components: the pattern reaches everything.
+        return true;
+    };
+    if components.next().is_some() {
+        return false;
+    }
+    wildcard_covers(only, name)
 }
 
 /// Whether one ignore-file path-component pattern matches `name` exactly.
@@ -952,6 +971,21 @@ fn ignore_negates_entry(found: &[u8], entry: &str) -> bool {
 /// run of characters, `?` for one, and `[...]` for a set, with `!` or `^`
 /// negating the set and a backslash escaping the next character. A `[` that
 /// never closes is a literal, as Git treats it.
+///
+/// # Which way this errs
+///
+/// The two mistakes are not equal, and the matcher is built around that. A
+/// pattern wrongly read as reaching one of these names costs a refusal an
+/// operator can clear by editing one line. A pattern wrongly read as reaching
+/// nothing lets a transient stay tracked, which is the state every removal
+/// bound in this protocol assumes away — a checkout then writes the entry while
+/// a publication is running, and the content it writes can be lost. So every
+/// approximation here is deliberately toward refusing: a POSIX class inside a
+/// set is treated as matching any character rather than having its members
+/// read, and a trailing `/**` — which in Git names a directory's contents
+/// rather than the directory — is read as reaching the name. Both refuse a
+/// negation that would in fact have been harmless, and neither can pass one
+/// that would not.
 ///
 /// Backtracking is bounded by construction: the only branch point is a `*`, and
 /// the greedy retry walks forward through `name` without ever revisiting an
@@ -1011,6 +1045,12 @@ fn wildcard_covers(pattern: &[u8], name: &[u8]) -> bool {
 /// Match one `[...]` set against `byte`, returning whether it matched and the
 /// pattern offset just past the set. `None` when the set never closes, which
 /// Git reads as a literal `[`.
+///
+/// A set carrying a POSIX class — `[[:alpha:]]` and its family — is answered
+/// as matching, whatever the byte and whatever the negation, rather than having
+/// the class's members read. That is the deliberate over-approximation
+/// [`wildcard_covers`] documents: it can refuse an exotic negation that would
+/// have been harmless, and it cannot pass one that would not.
 fn match_set(pattern: &[u8], byte: u8) -> Option<(bool, usize)> {
     let mut at = 1;
     let negated = matches!(pattern.get(at), Some(b'!' | b'^'));
@@ -1018,12 +1058,31 @@ fn match_set(pattern: &[u8], byte: u8) -> Option<(bool, usize)> {
         at += 1;
     }
     let mut matched = false;
+    let mut carries_class = false;
     let mut first = true;
     while at < pattern.len() {
         if pattern[at] == b']' && !first {
-            return Some((matched != negated, at + 1));
+            let verdict = if carries_class {
+                true
+            } else {
+                matched != negated
+            };
+            return Some((verdict, at + 1));
         }
         first = false;
+        if pattern[at] == b'[' && pattern.get(at + 1) == Some(&b':') {
+            let mut scan = at + 2;
+            loop {
+                let (colon, close) = (pattern.get(scan)?, pattern.get(scan + 1)?);
+                if *colon == b':' && *close == b']' {
+                    break;
+                }
+                scan += 1;
+            }
+            carries_class = true;
+            at = scan + 2;
+            continue;
+        }
         let low = if pattern[at] == b'\\' {
             at += 1;
             *pattern.get(at)?
