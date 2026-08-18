@@ -23,6 +23,7 @@ const META_IGNORE: &[u8] = b"\
 # interrupted one left. No checkout carries any of them; only `ids` is committed.\n\
 publish.lock\n\
 ids.publish.stage\n\
+ids.publish.quarantine\n\
 ids.pending\n\
 ids.pending.create\n";
 

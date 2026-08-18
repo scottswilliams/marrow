@@ -9,25 +9,26 @@
 //!
 //! # Names
 //!
-//! Inside the project's `.marrow` directory the protocol uses exactly six
+//! Inside the project's `.marrow` directory the protocol uses exactly seven
 //! fixed entry names and enumerates the directory nowhere:
 //!
 //! ```text
-//! ids                    the committed identity ledger
-//! ids.publish.stage      the successor before it is installed
-//! ids.pending            the durable publication marker
-//! ids.pending.create     the marker's pre-claim alias
-//! publish.lock           the cooperative project-metadata write lock
-//! .gitignore             keeps the other four out of version control
+//! ids                      the committed identity ledger
+//! ids.publish.stage        the successor before it is installed
+//! ids.publish.quarantine   an entry held while a removal validates it
+//! ids.pending              the durable publication marker
+//! ids.pending.create       the marker's pre-claim alias
+//! publish.lock             the cooperative project-metadata write lock
+//! .gitignore               keeps the other five out of version control
 //! ```
 //!
 //! The directory and the ledger's entry name are [`marrow_project::META_DIR`]
-//! and [`marrow_project::IDS_ENTRY`]; the four derived names are built from the
+//! and [`marrow_project::IDS_ENTRY`]; the five derived names are built from the
 //! latter here, so no spelling of the ledger's location exists twice.
 //! `ids` is the one committed artifact. The lock is machine-local runtime
-//! state, and the three transient names are a publication in flight or the
+//! state, and the four transient names are a publication in flight or the
 //! debris an interrupted one left; the write owner writes the ignore entry
-//! naming all four, so no project carries a hand-written line and no checkout
+//! naming all five, so no project carries a hand-written line and no checkout
 //! carries an entry that would make a fresh clone read a ledger this protocol
 //! calls indeterminate.
 //!
@@ -118,6 +119,11 @@ pub use marker::IdsPublicationMarker;
 /// adapter derives its publication names from that owner rather than repeating
 /// either one.
 const STAGE_SUFFIX: &str = ".publish.stage";
+/// The suffix the cleanup quarantine adds to the ledger's entry name. A
+/// removal moves the entry here before it validates what it is about to
+/// remove, so the object under judgement is held under a name no outside
+/// writer addresses rather than under the name one is racing for.
+const QUARANTINE_SUFFIX: &str = ".publish.quarantine";
 /// The cooperative project-metadata write lock's entry name.
 const LOCK_NAME: &str = "publish.lock";
 /// The version-control ignore entry the write owner keeps beside the entries
@@ -157,6 +163,15 @@ const IGNORE_READ_CEILING: usize = 4096;
 pub(crate) fn stage_spelling() -> &'static str {
     static STAGE: OnceLock<String> = OnceLock::new();
     STAGE.get_or_init(|| format!("{IDS_ENTRY}{STAGE_SUFFIX}"))
+}
+
+/// The cleanup quarantine's entry name, derived from the same owner constant
+/// as every other publication name. Unlike the stage, no durable header
+/// encodes it: it exists only between a removal's rename and its unlink, and
+/// recovery reads it as ordinary ignored debris.
+pub(crate) fn quarantine_spelling() -> &'static str {
+    static QUARANTINE: OnceLock<String> = OnceLock::new();
+    QUARANTINE.get_or_init(|| format!("{IDS_ENTRY}{QUARANTINE_SUFFIX}"))
 }
 /// The fixed bound on either byte run the header carries.
 const LEDGER_BYTE_CEILING: usize = MAX_IDS_BYTES;
@@ -461,6 +476,7 @@ pub struct ProjectMetadataWriteGuard {
     meta: AdmittedDir,
     ledger: EntryName,
     stage: EntryName,
+    quarantine: EntryName,
     journal: PendingName,
     _lock: CacheLock,
 }
@@ -494,6 +510,7 @@ impl ProjectMetadataWriteGuard {
             journal: PendingName::derive(&ledger)
                 .expect("the fixed journal names are admitted spellings"),
             stage: admitted_name(stage_spelling()),
+            quarantine: admitted_name(quarantine_spelling()),
             ledger,
             meta,
             _lock: lock,
@@ -539,6 +556,10 @@ impl ProjectMetadataWriteGuard {
 
     fn stage_name(&self) -> &EntryName {
         &self.stage
+    }
+
+    fn quarantine_name(&self) -> &EntryName {
+        &self.quarantine
     }
 
     fn journal_names(&self) -> &PendingName {
@@ -690,10 +711,11 @@ fn access_withheld(error: &CustodyError) -> bool {
 }
 
 /// Every `.marrow` entry this protocol can leave that no checkout may carry:
-/// the machine-local write lock, the successor stage, and the journal owner's
-/// two marker names. Each is derived from the same constant the protocol
-/// mutates through, so a renamed or added transient reaches the ignore entry
-/// with it rather than through a second hand-kept list.
+/// the machine-local write lock, the successor stage, the cleanup quarantine,
+/// and the journal owner's two marker names. Each is derived from the same
+/// constant the protocol mutates through, so a renamed or added transient
+/// reaches the ignore entry with it rather than through a second hand-kept
+/// list.
 fn untracked_entry_names() -> Vec<String> {
     let ledger = admitted_name(IDS_ENTRY);
     let journal =
@@ -701,6 +723,7 @@ fn untracked_entry_names() -> Vec<String> {
     vec![
         LOCK_NAME.to_owned(),
         stage_spelling().to_owned(),
+        quarantine_spelling().to_owned(),
         journal.pending().as_str().to_owned(),
         journal.claim().as_str().to_owned(),
     ]

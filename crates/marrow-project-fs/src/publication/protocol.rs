@@ -11,7 +11,7 @@ use std::fmt;
 
 use marrow_fs_journal::{
     AdmittedDir, CustodyError, EntryName, EntryStat, FsIdentity, JournalKind, LiveJournal,
-    PendingState, PhaseRecord, TailState, claim, classify, encode_record,
+    OpenedFile, PendingState, PhaseRecord, TailState, claim, classify, encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
 
@@ -28,19 +28,22 @@ const INSTALLING: u8 = 2;
 /// publication that settled without installing.
 const SETTLED: u8 = 3;
 
-/// Which retained byte run failed its exact comparison.
+/// Which of the two artifact slots a byte run failed its comparison for.
+/// Named for the slot rather than a role, because a *role* in this module is
+/// which bound run an entry carries; these are the two names it can carry it
+/// under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ArtifactRole {
+pub(super) enum ArtifactSlot {
     /// The committed `.marrow/ids`.
-    Target,
+    Ledger,
     /// The staged successor.
     Stage,
 }
 
-impl fmt::Display for ArtifactRole {
+impl fmt::Display for ArtifactSlot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Target => "the committed ledger",
+            Self::Ledger => "the committed ledger",
             Self::Stage => "the staged successor",
         })
     }
@@ -49,14 +52,10 @@ impl fmt::Display for ArtifactRole {
 /// Which run the header binds a present entry to, resolved from the bound
 /// inode number and the bound byte run together.
 ///
-/// An inode number is not an identity across the crash window. `unlink` frees
-/// the number with the last link, and ext4 and XFS hand it to the next create
-/// in the same block group, so a foreign entry can arrive wearing the number
-/// the header bound; APFS draws numbers from a counter that never repeats,
-/// which is why the number alone reads correctly there and misreads elsewhere.
-/// No open descriptor survives a crash to pin the number, so the header's own
-/// byte runs are what close the gap — and the header carries both of them,
-/// durable before the claim, for exactly this reason.
+/// [`marrow_fs_journal::FsIdentity`] carries why a number alone cannot answer
+/// this across a crash. The header is what makes the answer available here: it
+/// records both exact byte runs, durable before the claim, so a resolution has
+/// evidence that outlived every descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundRole {
     /// The staged successor: the bound number under the bound run.
@@ -69,6 +68,13 @@ enum BoundRole {
     Drifted,
     /// Neither bound number.
     Foreign,
+}
+
+impl BoundRole {
+    /// Whether this resolution names a bound run at all.
+    const fn is_bound_run(self) -> bool {
+        matches!(self, Self::Next | Self::Base)
+    }
 }
 
 /// Why a state is outside the closed publication map.
@@ -86,8 +92,8 @@ pub(super) enum MapFault {
     ThirdInode,
     /// A retained byte run is not the exact run the header binds.
     BytesDrift {
-        /// Which run failed.
-        role: ArtifactRole,
+        /// Which slot's run failed.
+        slot: ArtifactSlot,
     },
     /// The exchange did not land in a state the protocol can settle.
     ExchangeUncertain,
@@ -115,7 +121,7 @@ impl fmt::Display for MapFault {
             ),
             Self::ThirdInode => formatter
                 .write_str("a third live inode holds the stage name beside an installed successor"),
-            Self::BytesDrift { role } => write!(formatter, "{role} is not the exact bound run"),
+            Self::BytesDrift { slot } => write!(formatter, "{slot} is not the exact bound run"),
             Self::ExchangeUncertain => {
                 formatter.write_str("the exchange did not land in a settleable state")
             }
@@ -313,7 +319,12 @@ fn publish_admitted<'a>(
         _ => return Ok(IdsPublishOutcome::Settled(IdsPublication::ConcurrentChange)),
     };
 
+    // The creating descriptor is held across the claim. It keeps the staged
+    // inode number out of circulation, so the cleanup below judges the object
+    // it created rather than a number an outside writer could have been handed
+    // after an unlink.
     let stage = stage_successor(guard, next)?;
+    let stage_identity = stage.identity();
     let built: RefCell<Option<RowHeader>> = RefCell::new(None);
     let claimed = claim(
         meta,
@@ -324,7 +335,7 @@ fn publish_admitted<'a>(
                 parent: witness.parent,
                 journal_inode: witness.journal_inode,
                 base,
-                next_inode: stage,
+                next_inode: stage_identity,
                 base_bytes: observed
                     .as_ref()
                     .map(|(_, bytes)| bytes.clone())
@@ -346,7 +357,7 @@ fn publish_admitted<'a>(
             // A discard that itself refuses leaves that state behind and is
             // reported by the next command, but it never replaces the
             // durability-relevant cause with its own unlink error.
-            let _ = discard_stage(guard, stage);
+            let _ = discard_stage(guard, &stage);
             return Err(refusal.into());
         }
     };
@@ -365,11 +376,17 @@ fn publish_admitted<'a>(
 }
 
 /// Create, fill, sync, and validate the fixed stage entry, returning the
-/// staged inode's identity. Any refusal removes the stage under witness first.
+/// descriptor that created it. Any refusal removes the stage under witness
+/// first.
+///
+/// The descriptor is returned rather than dropped for its identity: it is what
+/// keeps the staged inode number out of circulation, so every later judgement
+/// about "the object this call created" is made against the object and not
+/// against a number that an unlink could have freed for reuse.
 fn stage_successor(
     guard: &ProjectMetadataWriteGuard,
     next: &[u8],
-) -> Result<FsIdentity, IdsPublicationError> {
+) -> Result<OpenedFile, IdsPublicationError> {
     let meta = guard.meta();
     let name = guard.stage_name();
     let mut file = meta.create_file_excl(name)?;
@@ -379,7 +396,7 @@ fn stage_successor(
         file.sync()?;
         if file.read_prefix(LEDGER_BYTE_CEILING + 1)? != next {
             return Err(MapFault::BytesDrift {
-                role: ArtifactRole::Stage,
+                slot: ArtifactSlot::Stage,
             }
             .into());
         }
@@ -388,34 +405,107 @@ fn stage_successor(
         Ok(())
     })();
     match filled {
-        Ok(()) => Ok(identity),
+        Ok(()) => Ok(file),
         Err(refusal) => {
             // As above: the cause that refused the stage outranks a refusal
             // from the cleanup that follows it.
-            let _ = discard_stage(guard, identity);
+            let _ = discard_stage(guard, &file);
             Err(refusal)
         }
     }
 }
 
-/// Remove the stage entry under witness and make its absence durable.
+/// Remove the stage entry this call created and make its absence durable.
+///
+/// The proof is the creating descriptor. While it lives the inode number it
+/// holds cannot be handed to anything else, so an object that matches it is
+/// this call's own object and nothing else's.
 fn discard_stage(
     guard: &ProjectMetadataWriteGuard,
-    identity: FsIdentity,
+    created: &OpenedFile,
+) -> Result<(), IdsPublicationError> {
+    remove_validated(guard, guard.stage_name(), "stage discard", |held| {
+        Ok(held.identity() == created.identity())
+    })
+}
+
+/// Unlink the object at `name`, and only after proving through a descriptor on
+/// that object that `accepts` admits it.
+///
+/// The unlink cannot itself be the validated act. `unlinkat` names a path, and
+/// every validation before it releases the object it validated, so a writer
+/// outside the cooperative lock — the writer the destination-refusing arms
+/// exist for — can repoint the name in between and have this process delete
+/// whatever landed there. So the object is first moved to the quarantine name,
+/// which is atomic on the name and takes exactly what `name` held at that
+/// instant, and it is opened and judged there. An object `accepts` rejects is
+/// never deleted: it is renamed back, and if the original name has since been
+/// taken it stays parked under the quarantine name, which the ignore entry
+/// covers and the next command reads as debris.
+///
+/// The residual window is the quarantine name's own: it is a fixed name, so a
+/// writer that knows it and races it could still be deleted from. That name is
+/// not one an ordinary Git operation writes, and it is held only between this
+/// rename and the unlink below.
+fn remove_validated(
+    guard: &ProjectMetadataWriteGuard,
+    name: &EntryName,
+    op: &'static str,
+    accepts: impl Fn(&OpenedFile) -> Result<bool, IdsPublicationError>,
 ) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    let name = guard.stage_name();
-    match meta.stat_entry(name)? {
-        Some(stat) if stat.identity() == identity => {
-            meta.unlink(name)?;
+    let held = guard.quarantine_name();
+
+    // A quarantine entry that outlived its process is an interrupted removal's
+    // debris. It is judged by this removal's own proof rather than reused or
+    // swept blind: at most one live object can carry the number a bound proof
+    // names, so an accepted one is exactly the object this call came to
+    // remove, and anything else parks the project for an operator.
+    if meta.stat_entry(held)?.is_some() {
+        let parked = meta.open_file_readonly(held)?;
+        if !accepts(&parked)? {
+            return Err(CustodyError::IdentityDrift { op }.into());
+        }
+        drop(parked);
+        meta.unlink(held)?;
+        meta.sync()?;
+    }
+
+    match meta.rename_noreplace(name, held) {
+        Ok(()) => {}
+        // Already gone: the absence this call wanted is the absence it found.
+        Err(CustodyError::NotFound { .. }) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+
+    let verdict = (|| -> Result<bool, IdsPublicationError> {
+        let file = meta.open_file_readonly(held)?;
+        accepts(&file)
+    })();
+    match verdict {
+        Ok(true) => {
+            meta.unlink(held)?;
             meta.sync()?;
             Ok(())
         }
-        None => Ok(()),
-        Some(_) => Err(CustodyError::IdentityDrift {
-            op: "stage discard",
+        Ok(false) => {
+            restore_quarantined(meta, held, name);
+            Err(CustodyError::IdentityDrift { op }.into())
         }
-        .into()),
+        Err(refusal) => {
+            restore_quarantined(meta, held, name);
+            Err(refusal)
+        }
+    }
+}
+
+/// Put a quarantined object back under the name it came from. It is not this
+/// protocol's object to delete, so a refused restore leaves it parked rather
+/// than removed; `NOREPLACE` keeps the restore from displacing whatever has
+/// since taken the original name.
+fn restore_quarantined(meta: &AdmittedDir, held: &EntryName, name: &EntryName) {
+    if meta.rename_noreplace(held, name).is_ok() {
+        let _ = meta.sync();
     }
 }
 
@@ -478,15 +568,15 @@ impl<'a> Session<'a> {
     /// Two readings are admitted. `Prepared` is the state the header binds,
     /// exact byte runs included: the map resolves every entry against the runs
     /// the header carries, so reaching this reading is already the comparison.
-    /// `Reverted` — the stage still the
-    /// exact successor at one link, the artifact neither the successor nor the
-    /// generation the header binds — cannot be this publication's own work,
-    /// because no mutation of the artifact has run. It is the outside writer
-    /// the destination-refusing arms exist for, and the same fact the pre-claim
-    /// recapture in `publish_admitted` reports as a concurrent change. The
-    /// `Installing` window reads that writer identically, so which record an
-    /// ordinary `git checkout` lands between does not decide whether the
-    /// project settles or is retained.
+    /// `Reverted` — the stage still the exact successor at one link, the
+    /// artifact neither the successor nor the generation the header binds —
+    /// cannot be this publication's own work, because no mutation of the
+    /// artifact has run. It is the outside writer the destination-refusing arms
+    /// exist for, and the same fact the pre-claim recapture in
+    /// `publish_admitted` reports as a concurrent change. The `Installing`
+    /// window reads that writer identically, so which record an ordinary
+    /// `git checkout` lands between does not decide whether the project settles
+    /// or is retained.
     ///
     /// Admitting a reading names no terminal. The driver appends `Installing`
     /// and the map is read again there, where `terminal_of_map` decides; that
@@ -643,29 +733,17 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// Unlink the stage alias, and only after the entry there resolves to the
-    /// run the terminal says it carries. The map read that chose this cleanup
-    /// is a separate call, so the name can be re-pointed in between; resolving
-    /// the run again — not the inode number, which an unlink in that window
-    /// frees for reuse — is what keeps the unlink off a stranger's entry.
+    /// Unlink the stage alias, and only after the object there proves — through
+    /// a descriptor on it — to carry the run the terminal says it carries. No
+    /// descriptor survives the crash this cleanup may be resuming after, so the
+    /// bound number and the bound run together are the whole proof available.
     fn clean_stage(&self, expected: BoundRole) -> Result<(), IdsPublicationError> {
-        let meta = self.meta();
-        let name = self.guard.stage_name();
-        let drift = || -> IdsPublicationError {
-            CustodyError::IdentityDrift {
-                op: "stage cleanup",
-            }
-            .into()
-        };
-        let Some(stat) = meta.stat_entry(name)? else {
-            return Err(drift());
-        };
-        if self.role_of(name, &stat)? != expected {
-            return Err(drift());
-        }
-        meta.unlink(name)?;
-        meta.sync()?;
-        Ok(())
+        remove_validated(
+            self.guard,
+            self.guard.stage_name(),
+            "stage cleanup",
+            |held| Ok(self.role_of_open(held)? == expected),
+        )
     }
 
     /// Prove the terminal reading before the marker goes: an installed
@@ -688,7 +766,7 @@ impl<'a> Session<'a> {
             self.require_bytes(
                 self.guard.ledger_name(),
                 &self.header.next_bytes,
-                ArtifactRole::Target,
+                ArtifactSlot::Ledger,
             )?;
         }
         Ok(())
@@ -704,34 +782,21 @@ impl<'a> Session<'a> {
         Ok(self.meta().stat_entry(name)?)
     }
 
-    /// Resolve one present entry against the runs the header bound.
-    ///
-    /// The size comes from the stat already in hand, so an entry that cannot be
-    /// a bound run is answered without an open; only a size-matching candidate
-    /// is read, and the read is bounded by the ledger ceiling the header's own
-    /// runs are bounded by.
-    fn role_of(
+    /// The one classifier: which bound run an object of this identity carries,
+    /// given a reader that answers whether it carries a candidate run.
+    fn classify(
         &self,
-        name: &EntryName,
-        stat: &EntryStat,
+        identity: FsIdentity,
+        carries: impl Fn(&[u8]) -> Result<bool, IdsPublicationError>,
     ) -> Result<BoundRole, IdsPublicationError> {
-        let carries = |run: &[u8]| -> Result<bool, IdsPublicationError> {
-            if stat.size() != run.len() as u64 {
-                return Ok(false);
-            }
-            Ok(
-                matches!(read_entry(self.meta(), name)?, Some((identity, bytes))
-                    if identity == stat.identity() && bytes == run),
-            )
-        };
-        if stat.identity() == self.header.next_inode {
+        if identity == self.header.next_inode {
             return Ok(if carries(&self.header.next_bytes)? {
                 BoundRole::Next
             } else {
                 BoundRole::Drifted
             });
         }
-        if self.header.base == Some(stat.identity()) {
+        if self.header.base == Some(identity) {
             return Ok(if carries(&self.header.base_bytes)? {
                 BoundRole::Base
             } else {
@@ -739,6 +804,46 @@ impl<'a> Session<'a> {
             });
         }
         Ok(BoundRole::Foreign)
+    }
+
+    /// Resolve a present entry named in the map.
+    ///
+    /// The size comes from the stat already in hand, so an entry that cannot be
+    /// a bound run is answered without an open; only a size-matching candidate
+    /// is read, and the read is bounded by the ledger ceiling the header's own
+    /// runs are bounded by. The read reopens by name after the stat, so this
+    /// resolution rests on the bytes it returns rather than on a descriptor
+    /// held across both — enough for a classification that authorizes no
+    /// removal, and the reason every removal resolves through
+    /// [`Self::role_of_open`] instead.
+    fn role_of(
+        &self,
+        name: &EntryName,
+        stat: &EntryStat,
+    ) -> Result<BoundRole, IdsPublicationError> {
+        self.classify(stat.identity(), |run| {
+            if stat.size() != run.len() as u64 {
+                return Ok(false);
+            }
+            Ok(
+                matches!(read_entry(self.meta(), name)?, Some((identity, bytes))
+                    if identity == stat.identity() && bytes == run),
+            )
+        })
+    }
+
+    /// Resolve an object through a descriptor already open on it. The number,
+    /// the size, and the bytes all come from that one descriptor, so nothing
+    /// can substitute the object between the question and the answer. This is
+    /// the resolution a removal is entitled to act on.
+    fn role_of_open(&self, file: &OpenedFile) -> Result<BoundRole, IdsPublicationError> {
+        let size = file.stat()?.size();
+        self.classify(file.identity(), |run| {
+            if size != run.len() as u64 {
+                return Ok(false);
+            }
+            Ok(file.read_prefix(LEDGER_BYTE_CEILING + 1)? == run)
+        })
     }
 
     /// Read the closed artifact map from name-to-entry resolutions and link
@@ -763,13 +868,12 @@ impl<'a> Session<'a> {
         };
         let target_next = target_role == Some(BoundRole::Next);
         let target_base = target_role == Some(BoundRole::Base);
-        let target_foreign = target_role == Some(BoundRole::Foreign);
         let staged_next = staged_role == Some(BoundRole::Next);
         let staged_base = staged_role == Some(BoundRole::Base);
-        // Neither bound run: a stranger, or a bound number under another run.
-        let target_neither = target_foreign || target_role == Some(BoundRole::Drifted);
-        let staged_neither =
-            staged_role == Some(BoundRole::Foreign) || staged_role == Some(BoundRole::Drifted);
+        // Present, but naming neither bound run: a stranger, or a bound number
+        // under some other run.
+        let target_neither = target_role.is_some_and(|role| !role.is_bound_run());
+        let staged_neither = staged_role.is_some_and(|role| !role.is_bound_run());
 
         match (target, staged, self.header.base) {
             // Prepared, absent arm: the artifact this plan displaces nothing of
@@ -806,11 +910,14 @@ impl<'a> Session<'a> {
             (Some(_), Some(staged), _) if staged_next && staged.nlink() == 1 && target_neither => {
                 Ok(MapState::Reverted)
             }
-            // The same reading with the stage already swept. A bound number
-            // under a drifted run is not admitted here: it cannot say whether
-            // the successor was installed, so it is retained rather than
-            // settled either way.
-            (Some(_), None, _) if target_base || target_foreign => Ok(MapState::RevertedClean),
+            // The same reading with the stage already swept — including by the
+            // cleanup this protocol runs itself, whose crash window leaves
+            // exactly this state. A target naming neither bound run is admitted
+            // here: which way the publication settled is what the terminal
+            // record says, and `settle` pairs the two, so this reading needs
+            // only to be one no mutation can still be owed. Nothing is unlinked
+            // on it.
+            (Some(_), None, _) if !target_next => Ok(MapState::RevertedClean),
             _ => Err(MapFault::OffMap { phase }.into()),
         }
     }
@@ -819,11 +926,11 @@ impl<'a> Session<'a> {
         &self,
         name: &EntryName,
         expected: &[u8],
-        role: ArtifactRole,
+        slot: ArtifactSlot,
     ) -> Result<(), IdsPublicationError> {
         match read_entry(self.meta(), name)? {
             Some((_, bytes)) if bytes == expected => Ok(()),
-            _ => Err(MapFault::BytesDrift { role }.into()),
+            _ => Err(MapFault::BytesDrift { slot }.into()),
         }
     }
 }
@@ -833,6 +940,16 @@ impl<'a> Session<'a> {
 /// Decode a durable header and require its own witnesses: the directory it was
 /// claimed under and the marker inode it was written into. A header that
 /// witnesses another directory or another inode is substituted evidence.
+///
+/// Both comparisons are numbers recorded before a crash against numbers read
+/// after it, and neither is descriptor-backed for the epoch it names: the
+/// descriptors this process holds were opened after the crash, so they pin the
+/// numbers only from that point on. The comparison is still worth making — it
+/// refuses a header carried into another project or another marker — but it
+/// establishes that the numbers agree, not that the objects are the ones the
+/// crashed process saw. What makes the header safe to act on is that the states
+/// it authorizes are resolved against its byte runs, not that these two numbers
+/// matched. See [`marrow_fs_journal::FsIdentity`] for the bound.
 fn admit_header(
     meta: &AdmittedDir,
     bytes: &[u8],
@@ -939,7 +1056,7 @@ fn read_entry(
     let bytes = file.read_prefix(LEDGER_BYTE_CEILING + 1)?;
     if bytes.len() > LEDGER_BYTE_CEILING {
         return Err(MapFault::BytesDrift {
-            role: ArtifactRole::Target,
+            slot: ArtifactSlot::Ledger,
         }
         .into());
     }

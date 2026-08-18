@@ -768,12 +768,15 @@ fn a_third_inode_beside_an_installed_successor_is_retained() {
 /// a recycling filesystem produces on its own, reproduced on any filesystem.
 /// The stage name then maps to the bound number under a run that is not the
 /// bound one, and that is not the displaced generation coming back.
+///
+/// The foreign run is the bound run's own length, so the resolution that
+/// separates them is the byte comparison and not the size it is filtered by.
 #[test]
 fn a_third_inode_on_the_bound_generation_s_recycled_number_is_retained() {
     let _serial = serialized();
     let project = Project::new("third-inode-recycled");
     project.write_meta("ids", b"successor");
-    project.write_meta("ids.publish.stage", b"third");
+    project.write_meta("ids.publish.stage", b"fake");
     Crash::new(&project, Some(b"base"), b"successor")
         .installing()
         .witness_base("ids.publish.stage")
@@ -787,7 +790,7 @@ fn a_third_inode_on_the_bound_generation_s_recycled_number_is_retained() {
     assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
-        Some(&b"third"[..]),
+        Some(&b"fake"[..]),
         "the foreign entry on the recycled number is not cleaned away",
     );
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
@@ -799,11 +802,14 @@ fn a_third_inode_on_the_bound_generation_s_recycled_number_is_retained() {
 /// the replacement can be handed the same number. The run it carries is not the
 /// bound one, so the plan's generation is gone and the publication is reverted
 /// exactly as it is when the number differs.
+///
+/// As above, the landed run is the bound run's own length, so the byte
+/// comparison is what separates them.
 #[test]
 fn a_generation_on_the_bound_generation_s_recycled_number_reverts_the_publication() {
     let _serial = serialized();
     let project = Project::new("checkout-recycled");
-    project.write_meta("ids", b"another branch's generation");
+    project.write_meta("ids", b"kept");
     project.write_meta("ids.publish.stage", b"successor");
     Crash::new(&project, Some(b"base"), b"successor")
         .installing()
@@ -815,11 +821,80 @@ fn a_generation_on_the_bound_generation_s_recycled_number_reverts_the_publicatio
     assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
     assert_eq!(
         project.read_meta("ids").as_deref(),
-        Some(&b"another branch's generation"[..]),
+        Some(&b"kept"[..]),
         "the publication left the other writer's bytes exactly as it found them"
     );
     assert!(!project.exists("ids.publish.stage"));
     assert!(!project.exists("ids.pending"));
+}
+
+/// The crash window inside the reverted cleanup. That cleanup is authorized by
+/// a target naming neither bound run, so the state it leaves behind — terminal
+/// recorded, stage swept, target still naming neither bound run — is a state
+/// the protocol produces itself. It must finish, not retain: the terminal
+/// record already says which way this publication went, and no mutation is
+/// still owed. Nothing here is unlinked but the marker.
+#[test]
+fn a_reverted_terminal_over_a_drifted_target_finishes_after_its_own_cleanup() {
+    let _serial = serialized();
+    let project = Project::new("reverted-clean-drifted");
+    project.write_meta("ids", b"kept");
+    project.write_meta("ids.publish.stage", b"successor");
+    let planted = Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .settled(1)
+        .witness_base("ids")
+        .witness_next("ids.publish.stage");
+    fs::remove_file(project.meta().join("ids.publish.stage"))
+        .expect("the reverted cleanup already ran");
+    planted.plant();
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(
+        project.read_meta("ids").as_deref(),
+        Some(&b"kept"[..]),
+        "the other writer's bytes are left exactly as they were found"
+    );
+    assert!(!project.exists("ids.pending"), "the publication finished");
+}
+
+/// A removal never deletes what it has not proved is its own, and an
+/// interrupted removal's parked object is judged by that same proof rather than
+/// inheriting it. A stranger under the quarantine name is therefore left
+/// exactly where it is and the publication is retained for an operator, rather
+/// than swept so the cleanup can proceed.
+#[test]
+fn a_stranger_parked_under_the_quarantine_name_is_neither_swept_nor_deleted() {
+    let _serial = serialized();
+    let project = Project::new("quarantine-stranger");
+    project.write_meta("ids.publish.stage", b"successor");
+    fs::hard_link(
+        project.meta().join("ids.publish.stage"),
+        project.meta().join("ids"),
+    )
+    .expect("link the staged successor into place");
+    project.write_meta("ids.publish.quarantine", b"someone else's file");
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .settled(0)
+        .plant();
+
+    let refusal = project
+        .guard()
+        .recover_ids()
+        .expect_err("a parked stranger retains the publication");
+    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(
+        project.read_meta("ids.publish.quarantine").as_deref(),
+        Some(&b"someone else's file"[..]),
+        "the parked stranger is not deleted to clear the way"
+    );
+    assert!(
+        project.exists("ids.publish.stage"),
+        "the cleanup this removal came for did not run either"
+    );
+    assert!(project.exists("ids.pending"), "the marker keeps gating");
 }
 
 #[test]
@@ -1183,6 +1258,7 @@ const WRITTEN_IGNORE: &[u8] = b"\
 # interrupted one left. No checkout carries any of them; only `ids` is committed.\n\
 publish.lock\n\
 ids.publish.stage\n\
+ids.publish.quarantine\n\
 ids.pending\n\
 ids.pending.create\n";
 
@@ -1194,7 +1270,7 @@ const PREVIOUS_FORMAT_IGNORE: &[u8] = b"\
 # machine-local runtime state that no checkout carries.\n\
 publish.lock\n";
 
-/// Exactly what the previous format becomes: the three names it lacks, appended
+/// Exactly what the previous format becomes: the four names it lacks, appended
 /// under the header already there. A second header above a stale first block
 /// would leave a developer's checkout carrying two Marrow-written comments, the
 /// first of them describing a name set the file no longer has.
@@ -1203,6 +1279,7 @@ const UPGRADED_IGNORE: &[u8] = b"\
 # machine-local runtime state that no checkout carries.\n\
 publish.lock\n\
 ids.publish.stage\n\
+ids.publish.quarantine\n\
 ids.pending\n\
 ids.pending.create\n";
 
@@ -1298,7 +1375,7 @@ fn the_ignore_entry_is_completed_rather_than_rewritten() {
 /// committed ledger, not the lock alone. The expectation is read from the
 /// module's own fixed entry-name table and cross-checked against the pure
 /// owner's ledger spelling, this adapter's stage spelling, and the journal
-/// owner's derived marker names, so a protocol that grows a seventh name fails
+/// owner's derived marker names, so a protocol that grows an eighth name fails
 /// here until the block covers it.
 ///
 /// The uncovered names are not theoretical debris: crash debris under a
@@ -1312,7 +1389,7 @@ fn the_written_ignore_names_every_transient_the_protocol_can_leave() {
     let documented = documented_entry_names();
     assert_eq!(
         documented.len(),
-        6,
+        7,
         "the module documents {documented:?}; the table is the source of this expectation"
     );
 
@@ -1321,6 +1398,7 @@ fn the_written_ignore_names_every_transient_the_protocol_can_leave() {
     for spelling in [
         ledger,
         crate::publication::stage_spelling(),
+        crate::publication::quarantine_spelling(),
         derived.pending().as_str(),
         derived.claim().as_str(),
         ".gitignore",
@@ -1925,7 +2003,10 @@ fn a_refused_exchange_retains_the_bound_generation() {
 
 /// A refused stage cleanup stops before the marker is unlinked. The successor
 /// is installed and the terminal is recorded, so the publication is finishable
-/// — but only the final marker unlink ends it, and that has not happened.
+/// — but only the final marker unlink ends it, and that has not happened. The
+/// cleanup removes nothing it has not first moved to the quarantine name, so
+/// the rename is the act a refusing directory stops, and the alias it would
+/// have removed is still under its own name.
 #[test]
 fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
     let _serial = serialized();
@@ -1945,12 +2026,13 @@ fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
 
     let refusal = guard
         .recover_ids()
-        .expect_err("a refused unlink cannot finish the publication");
+        .expect_err("a refused cleanup cannot finish the publication");
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
-        "unlink",
-        "the exact stage cleanup is the operation that refused: {refusal}"
+        "rename-noreplace",
+        "the stage cleanup's first act is the quarantine rename, and it is the \
+         operation that refused: {refusal}"
     );
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(project.exists("ids.publish.stage"), "the alias is retained");
