@@ -313,3 +313,55 @@ fn directory_sync_succeeds_on_an_admitted_directory() {
     let dir = root(&scratch);
     dir.sync().expect("sync the admitted directory");
 }
+
+/// A directory whose owner bits fall short of what admitting one needs is
+/// refused with the mode-repair reading, not a bare filesystem error.
+///
+/// The state needs no hostile actor. `mkdirat` asks for `0700` and the process
+/// umask masks it; the exact mode is restored on the admitted descriptor, so a
+/// umask withholding owner read makes the admission between those two steps
+/// fail, and a crash in the same window leaves the masked directory on disk for
+/// the next run to meet. An operator told only that an operation refused cannot
+/// act on it; one told the mode found and the mode required can.
+#[test]
+fn a_mode_masked_directory_is_refused_with_the_mode_repair_reading() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = Scratch::new("dir-mode-masked");
+    let dir = root(&scratch);
+    let child = name("masked");
+    dir.create_child_dir(&child).expect("create the child");
+
+    let path = scratch.path().join("masked");
+    // Exactly what a umask withholding owner read leaves behind.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o300))
+        .expect("mask the child's mode");
+    let binds = AdmittedDir::admit_trusted_root(&path).is_err();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .expect("restore for the assertion below");
+    assert!(
+        binds,
+        "mode 0300 on a directory did not refuse admission, so this kat never ran. Run the \
+         suite as a process the mode bits bind, on a filesystem that carries them."
+    );
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o300))
+        .expect("mask the child's mode again");
+    let refusal = dir
+        .admit_child(&child)
+        .expect_err("a directory this process cannot read is not admitted");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+        .expect("restore so the scratch root can be removed");
+
+    assert!(
+        matches!(
+            refusal,
+            CustodyError::ModeDenied {
+                found: 0o300,
+                required: 0o500,
+                ..
+            }
+        ),
+        "a mode-masked directory must name the mode found and the mode required: {refusal:?}"
+    );
+}

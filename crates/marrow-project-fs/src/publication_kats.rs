@@ -1398,15 +1398,25 @@ fn the_publication_owner_enumerates_no_directory() {
     }
 }
 
-/// The claim's preclaim arm cannot contain a link attempt.
+/// The claim's preclaim arm cannot contain a link attempt, and cannot run
+/// caller code that could contain one.
 ///
 /// Which arm a claim refusal names is decided by which function the refusal
 /// came from, so the boundary is only as good as the split: a step that moves
 /// from the commit into the preflight would silently start reporting
 /// possibly-durable states as clean, and the publication owner would clean up
 /// under a marker that may exist. The preflight's body is therefore required to
-/// spell no link, and the commit is required to spell one — a moved step fails
-/// here rather than in a crash.
+/// spell no link, and the commit is required to spell one.
+///
+/// Scanning the body alone is not enough, because a callback invoked inside the
+/// preflight is a link the body does not spell: a caller that captured the same
+/// admitted directory could link the marker itself, and every refusal after
+/// that would still be reported as leaving no marker. The header is now a
+/// value, built before the claim from what the plan already knows, so no caller
+/// code runs inside the preflight at all — that escape is unrepresentable
+/// rather than refused, and there is no runtime state left to test. What this
+/// gate keeps is the shape that makes it so: the preflight's parameters carry
+/// no callable.
 #[test]
 fn the_claim_s_preclaim_arm_reaches_no_link() {
     let source = include_str!("../../marrow-fs-journal/src/journal.rs");
@@ -1442,6 +1452,32 @@ fn the_claim_s_preclaim_arm_reaches_no_link() {
         "the commit arm no longer performs the link, so the boundary this gate checks is \
          somewhere else and the arms no longer mean what they say"
     );
+
+    // The parameter list, not the body: a callable parameter is caller code
+    // running inside the preflight, and no scan of the body can see what it
+    // does.
+    let signature = {
+        let start = source
+            .find("fn claim_preflight(")
+            .expect("the claim family still defines `claim_preflight`");
+        let rest = &source[start..];
+        &rest[..rest.find(')').expect("the parameter list closes")]
+    };
+    for callable in [
+        "impl Fn",
+        "impl FnOnce",
+        "impl FnMut",
+        "dyn Fn",
+        "fn(",
+        "F:",
+    ] {
+        assert!(
+            !signature.contains(callable),
+            "`claim_preflight` takes `{callable}`, so caller code runs between the claim \
+             file's creation and the link; a callback that links the marker itself would \
+             make every refusal below it wrongly report that none exists"
+        );
+    }
 }
 
 /// An unclassifiable map under an incomplete terminal record is a typed
@@ -1959,6 +1995,35 @@ fn an_oversized_ignore_entry_refuses_the_acquisition() {
         Some(&oversized[..]),
         "the entry the owner would not read is not the entry it left"
     );
+}
+
+/// An ignore entry that negates one of this owner's names refuses the
+/// acquisition, however complete the rest of it is.
+///
+/// Git takes the last matching line, so a `!` line re-including a transient
+/// leaves it tracked no matter how many positive lines precede it. Appending
+/// the name again would not change that, and this owner does not rewrite a
+/// developer's file to delete a line they wrote — so the contract is
+/// unestablished and nothing is staged or claimed.
+#[test]
+fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
+    let _serial = serialized();
+    for spelling in ["!ids.publish.stage\n", "!/ids.publish.quarantine\n"] {
+        let project = Project::new("ignore-negated");
+        let mut planted = WRITTEN_IGNORE.to_vec();
+        planted.extend_from_slice(spelling.as_bytes());
+        project.write_meta(".gitignore", &planted);
+
+        let refusal = ProjectMetadataWriteGuard::acquire(project.path()).expect_err(
+            "a negation re-including a transient leaves the untracked contract unestablished",
+        );
+        assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
+        assert_eq!(
+            project.read_meta(".gitignore").as_deref(),
+            Some(&planted[..]),
+            "the developer's own line is not rewritten away"
+        );
+    }
 }
 
 /// An incomplete ignore entry this owner cannot write refuses the acquisition.

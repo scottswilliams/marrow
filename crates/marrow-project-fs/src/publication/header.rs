@@ -84,17 +84,36 @@ impl std::fmt::Display for HeaderCorruption {
 
 impl RowHeader {
     /// The frozen encoding.
+    #[cfg(test)]
     pub(crate) fn encode(&self) -> Vec<u8> {
         let common = JournalCommon {
-            generation: self.base.map_or(NO_GENERATION, FsIdentity::to_bytes),
+            generation: self.generation(),
             parent: self.parent,
             journal_inode: self.journal_inode,
         };
-        let stage = stage_spelling().as_bytes();
-        let mut bytes = Vec::with_capacity(
-            COMMON_LEN + 16 + 2 + stage.len() + 8 + self.base_bytes.len() + self.next_bytes.len(),
-        );
+        let mut bytes = Vec::with_capacity(COMMON_LEN + self.tail_len());
         bytes.extend_from_slice(&common.encode());
+        bytes.extend_from_slice(&self.encode_tail());
+        bytes
+    }
+
+    /// The generation slot: the displaced artifact's inode identity, or zero
+    /// when the plan displaces none.
+    pub(crate) fn generation(&self) -> [u8; 16] {
+        self.base.map_or(NO_GENERATION, FsIdentity::to_bytes)
+    }
+
+    /// Everything after the shared leading common.
+    ///
+    /// The common carries the two identities only the journal owner can know —
+    /// the directory it claims under and the inode it writes into — and this
+    /// carries everything the plan decides. Nothing here depends on the claim,
+    /// so a caller builds it before one exists and the journal owner composes
+    /// the two. That is what lets the claim take header bytes rather than a
+    /// callback it would have to run partway through its own protocol.
+    pub(crate) fn encode_tail(&self) -> Vec<u8> {
+        let stage = stage_spelling().as_bytes();
+        let mut bytes = Vec::with_capacity(self.tail_len());
         bytes.extend_from_slice(&self.next_inode.to_bytes());
         bytes.push(u8::from(self.base.is_some()));
         bytes.push(u8::try_from(stage.len()).expect("the fixed stage name is far below 256 bytes"));
@@ -102,6 +121,10 @@ impl RowHeader {
         push_run(&mut bytes, &self.base_bytes);
         push_run(&mut bytes, &self.next_bytes);
         bytes
+    }
+
+    fn tail_len(&self) -> usize {
+        16 + 2 + stage_spelling().len() + 8 + self.base_bytes.len() + self.next_bytes.len()
     }
 
     /// Decode the frozen encoding, validating every structurally visible field.

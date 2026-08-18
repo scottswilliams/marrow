@@ -6,13 +6,12 @@
 //! journal reached. Neither enumerates a directory, and neither mutates a byte
 //! of a state outside the closed map.
 
-use std::cell::RefCell;
 use std::fmt;
 
 use marrow_fs_journal::{
-    AdmittedDir, ClaimRefusal, CustodyError, EntryName, EntryStat, FsIdentity, JournalKind,
-    LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord, TailState, claim, classify,
-    encode_record,
+    AdmittedDir, BuiltHeader, ClaimRefusal, CustodyError, EntryName, EntryStat, FsIdentity,
+    JournalKind, JournalWitness, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord,
+    TailState, claim, classify, encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
 
@@ -268,12 +267,7 @@ pub(super) fn recover(
     let pending_witness = meta
         .stat_entry(names.pending())?
         .map(|stat| stat.identity());
-    match classify(
-        MarkerStats::read(meta, names)?,
-        meta,
-        names,
-        JournalKind::Ids,
-    )? {
+    match classify(MarkerStats::read(meta, names)?).admit(meta, names, JournalKind::Ids)? {
         PendingState::Absent => {
             reconcile_quarantine(guard, guard.stage_name())?;
             if meta.stat_entry(guard.stage_name())?.is_some() {
@@ -329,8 +323,7 @@ pub(super) fn recover(
 /// exists either and a restore can contradict nothing.
 fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    match classify(
-        MarkerStats::read(meta, guard.journal_names())?,
+    match classify(MarkerStats::read(meta, guard.journal_names())?).admit(
         meta,
         guard.journal_names(),
         JournalKind::Ids,
@@ -377,27 +370,25 @@ fn publish_admitted<'a>(
     // after an unlink.
     let stage = stage_successor(guard, next)?;
     let stage_identity = stage.identity();
-    let built: RefCell<Option<RowHeader>> = RefCell::new(None);
+
+    // The plan decides every byte of the header but the two identities only
+    // the claim can witness, so the whole of it is built here, before the
+    // claim, and handed over as a value. The claim runs no code of this
+    // module's while it is establishing the marker.
+    let planned = PlannedHeader {
+        base,
+        next_inode: stage_identity,
+        base_bytes: observed
+            .as_ref()
+            .map(|(_, bytes)| bytes.clone())
+            .unwrap_or_default(),
+        next_bytes: next.to_vec(),
+    };
     let claimed = claim(
         meta,
         guard.journal_names(),
         JournalKind::Ids,
-        |witness| {
-            let header = RowHeader {
-                parent: witness.parent,
-                journal_inode: witness.journal_inode,
-                base,
-                next_inode: stage_identity,
-                base_bytes: observed
-                    .as_ref()
-                    .map(|(_, bytes)| bytes.clone())
-                    .unwrap_or_default(),
-                next_bytes: next.to_vec(),
-            };
-            let bytes = header.encode();
-            *built.borrow_mut() = Some(header);
-            bytes
-        },
+        planned.build(),
         &[],
     );
     let journal = match claimed {
@@ -421,15 +412,13 @@ fn publish_admitted<'a>(
                 }
                 ClaimRefusal::PossiblyDurable(error) => {
                     return Ok(IdsPublishOutcome::Pending(Box::new(
-                        IdsPublicationPending::unclaimed(guard, error.into()),
+                        IdsPublicationPending::unclaimed(guard, error.into(), None),
                     )));
                 }
             }
         }
     };
-    let header = built
-        .into_inner()
-        .expect("the claim builds its header before it writes");
+    let header = planned.witnessed(journal.witness());
 
     // From here the marker is durable: every interruption is affine, including
     // a reconciliation that refuses before the driver ever runs.
@@ -446,22 +435,74 @@ fn publish_admitted<'a>(
 
 /// The pending outcome for a publication interrupted after its claim.
 ///
-/// A session that still holds its journal is handed back to be resumed through
-/// it. One whose journal a refused finish already consumed can resume nothing,
-/// so it is dropped and the marker it was finishing is left to recovery, which
-/// adopts a marker from disk. Handing back the spent session instead would
-/// offer a retry whose first act is to read a phase from a journal that is no
-/// longer there.
+/// Three shapes, and the third is the one a finish leaves. A session that still
+/// holds its journal is handed back to be resumed through it. One whose journal
+/// a refused finish already consumed can resume nothing, so it is dropped and
+/// what remains on disk decides: a marker still present is recovery's to adopt,
+/// and a marker already unlinked means the finish got far enough that the
+/// publication happened — its closing checks or its final sync are what
+/// refused. Recovery reads markers, so with none present it would report a
+/// completed publication as one that was never claimed. The terminal this
+/// session recorded is carried along for exactly that case.
 fn interrupted<'a>(
     guard: &'a ProjectMetadataWriteGuard,
     session: Session<'a>,
     cause: IdsPublicationError,
 ) -> IdsPublishOutcome<'a> {
-    IdsPublishOutcome::Pending(Box::new(if session.is_spent() {
-        IdsPublicationPending::unclaimed(guard, cause)
-    } else {
-        IdsPublicationPending::new(session, cause)
-    }))
+    if !session.is_spent() {
+        return IdsPublishOutcome::Pending(Box::new(IdsPublicationPending::new(session, cause)));
+    }
+    IdsPublishOutcome::Pending(Box::new(IdsPublicationPending::unclaimed(
+        guard,
+        cause,
+        session.recorded(),
+    )))
+}
+
+/// Everything a publication's row header carries before a claim exists.
+///
+/// The two identities the header also carries — the directory the claim was
+/// taken under and the inode it was written into — are the claim's to witness,
+/// so they are not here. [`Self::build`] hands the rest to the claim as bytes,
+/// and [`Self::witnessed`] completes the header afterwards for the session that
+/// drives from it.
+struct PlannedHeader {
+    base: Option<FsIdentity>,
+    next_inode: FsIdentity,
+    base_bytes: Vec<u8>,
+    next_bytes: Vec<u8>,
+}
+
+impl PlannedHeader {
+    fn row(&self, witness: JournalWitness) -> RowHeader {
+        RowHeader {
+            parent: witness.parent,
+            journal_inode: witness.journal_inode,
+            base: self.base,
+            next_inode: self.next_inode,
+            base_bytes: self.base_bytes.clone(),
+            next_bytes: self.next_bytes.clone(),
+        }
+    }
+
+    /// The header as the claim takes it: the generation slot and the bytes
+    /// after the common, neither of which depends on a claim existing.
+    fn build(&self) -> BuiltHeader {
+        let unwitnessed = self.row(JournalWitness {
+            parent: FsIdentity::new(0, 0),
+            journal_inode: FsIdentity::new(0, 0),
+        });
+        BuiltHeader::Witnessed {
+            generation: unwitnessed.generation(),
+            tail: unwitnessed.encode_tail(),
+        }
+    }
+
+    /// The same header with the identities the claim witnessed filled in. This
+    /// is what the durable bytes decode to, and what the session reasons from.
+    fn witnessed(&self, witness: JournalWitness) -> RowHeader {
+        self.row(witness)
+    }
 }
 
 /// Create, fill, sync, and validate the fixed stage entry, returning the
@@ -649,10 +690,21 @@ impl<'a> Session<'a> {
     /// `settle` takes the journal out to consume it, so a refusal from the
     /// finish it performs leaves a session that can drive nothing: every phase
     /// read expects the journal it no longer has. Such a session must not be
-    /// handed back as something to retry. The marker it was finishing may still
-    /// be on disk, which is what recovery adopts.
+    /// handed back as something to retry.
     pub(super) fn is_spent(&self) -> bool {
         self.journal.is_none()
+    }
+
+    /// The publication this session's own recorded terminal names, if it
+    /// reached one.
+    ///
+    /// A finish removes the marker before its closing checks, so a refusal
+    /// there can leave no marker at all. Recovery reads a marker, so it has
+    /// nothing to read — but the publication it was finishing did happen, and
+    /// this is what says which one. Without it a completed publication would be
+    /// reported as a state that was never claimed.
+    pub(super) fn recorded(&self) -> Option<IdsPublication> {
+        self.terminal.map(Terminal::publication)
     }
 
     fn phase(&self) -> u8 {
@@ -1279,6 +1331,91 @@ mod tests {
 
     use super::*;
     use crate::publication::IdsPublication;
+
+    /// The shape a finish leaves once it has already removed the marker.
+    ///
+    /// `finish` unlinks the pending name and then performs its closing checks
+    /// and its final directory sync. A refusal from those leaves no journal in
+    /// the session and no marker on disk, but the publication itself happened:
+    /// the artifact is installed and the marker is gone. Recovery reads
+    /// markers, so it finds nothing and can only say that nothing was ever
+    /// claimed. The terminal this session recorded is what makes the difference
+    /// between reporting the publication and reporting a project that never
+    /// published.
+    #[test]
+    fn a_finish_that_already_removed_the_marker_reports_the_terminal_it_recorded() {
+        let root = std::env::temp_dir().join(format!(
+            "marrow-idpub01-postunlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create the scratch project");
+        let guard = ProjectMetadataWriteGuard::acquire(&root).expect("the write owner");
+
+        let meta_path = root.join(marrow_project::META_DIR);
+        let ledger_path = meta_path.join(guard.ledger_name().as_str());
+        std::fs::write(&ledger_path, b"successor").expect("the installed successor");
+        let next_inode = guard
+            .meta()
+            .stat_entry(guard.ledger_name())
+            .expect("stat the successor")
+            .expect("the successor exists")
+            .identity();
+
+        // Exactly what a finish leaves after its unlink: no marker anywhere,
+        // and a session holding the terminal it recorded before removing it.
+        let spent = Session {
+            guard: &guard,
+            header: RowHeader {
+                parent: guard.meta().identity(),
+                journal_inode: FsIdentity::new(0, 0),
+                base: None,
+                next_inode,
+                base_bytes: Vec::new(),
+                next_bytes: b"successor".to_vec(),
+            },
+            terminal: Some(Terminal::Installed),
+            journal: None,
+        };
+        assert!(spent.is_spent());
+        assert!(
+            guard
+                .meta()
+                .stat_entry(guard.journal_names().pending())
+                .expect("stat the marker name")
+                .is_none(),
+            "the fixture is the post-unlink shape",
+        );
+
+        let outcome = interrupted(
+            &guard,
+            spent,
+            IdsPublicationError::bare(IdsRefusal::Custody),
+        );
+        let IdsPublishOutcome::Pending(pending) = outcome else {
+            panic!("an interrupted publication is pending");
+        };
+        let settled = pending.recover().expect(
+            "a publication whose marker the finish already removed is reported, not \
+             called unclaimed",
+        );
+        assert_eq!(settled, IdsPublication::Published);
+
+        std::fs::remove_file(&ledger_path).ok();
+        for entry in [
+            guard.journal_names().claim().as_str(),
+            guard.stage_name().as_str(),
+            crate::publication::LOCK_NAME,
+            crate::publication::IGNORE_NAME,
+        ] {
+            std::fs::remove_file(meta_path.join(entry)).ok();
+        }
+        std::fs::remove_dir(&meta_path).ok();
+        std::fs::remove_dir(&root).ok();
+    }
 
     /// A session whose journal a refused finish already consumed must not be
     /// offered back as something to drive.

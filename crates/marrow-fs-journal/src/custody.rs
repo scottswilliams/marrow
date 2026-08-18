@@ -15,6 +15,9 @@ use crate::sys;
 pub(crate) const REQUIRED_RW: u32 = 0o600;
 /// The owner bits the read-only debris open requires.
 const REQUIRED_READ: u32 = 0o400;
+/// The owner bits admitting a directory requires: read to list it and execute
+/// to resolve names inside it.
+const REQUIRED_DIR: u32 = 0o500;
 
 /// A lossless filesystem identity: the platform's `st_dev` and `st_ino`
 /// projected injectively into `u64` each.
@@ -465,11 +468,35 @@ pub(crate) fn refine_open_refusal(
 }
 
 /// One typed reading of a refused directory admission on every qualified
-/// platform: Darwin reports a symlink under `O_DIRECTORY | O_NOFOLLOW` as
-/// `ENOTDIR` while Linux reports `ELOOP`, so a refusal from either family is
-/// refined by one no-follow stat of the refused entry. Nothing was admitted
-/// either way; the stat only names the refusal.
+/// platform.
+///
+/// Darwin reports a symlink under `O_DIRECTORY | O_NOFOLLOW` as `ENOTDIR`
+/// while Linux reports `ELOOP`, so a refusal from either family is refined by
+/// one no-follow stat of the refused entry.
+///
+/// A permission refusal over a directory whose owner bits fall short is refined
+/// the same way a regular file's is, into the mode-repair refusal that names
+/// what was found and what is required. That state is reachable without any
+/// hostile actor: `mkdirat` requests `0700` but the umask masks it, and the
+/// exact mode is restored on the admitted descriptor — so a umask withholding
+/// owner read makes the admission between those two steps fail, and a crash in
+/// the same window leaves the masked directory on disk. Without this the
+/// operator is told only that a filesystem operation refused.
+///
+/// Nothing was admitted either way; the stat only names the refusal.
 fn refine_dir_refusal(refusal: CustodyError, observed: Option<EntryStat>) -> CustodyError {
+    if let CustodyError::Io { op, source } = &refusal
+        && source.kind() == std::io::ErrorKind::PermissionDenied
+        && let Some(stat) = observed
+        && stat.kind == NodeKind::Directory
+        && stat.mode & REQUIRED_DIR != REQUIRED_DIR
+    {
+        return CustodyError::ModeDenied {
+            op,
+            found: stat.mode,
+            required: REQUIRED_DIR,
+        };
+    }
     let op = match &refusal {
         CustodyError::NotADirectory { op } | CustodyError::SymlinkRefused { op } => *op,
         _ => return refusal,

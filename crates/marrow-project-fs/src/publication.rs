@@ -227,13 +227,18 @@ pub enum IdsPublication {
 /// and the only way to advance it is to consume [`recover`](Self::recover).
 /// Dropping it instead quarantines publication in this process until exit.
 ///
-/// It does not always retain a live journal. A publication interrupted with its
-/// journal intact resumes through it; a claim that refused at or after its
-/// first link attempt never received one, and a journal a refused finish
-/// already consumed cannot be resumed through either. Those advance by adopting
-/// the durable marker from disk instead. What every arm has in common is a
-/// marker that may exist and a process holding it open, which is what makes the
-/// value affine rather than an ordinary error.
+/// It does not always retain a live journal, and it does not always name a
+/// marker that still exists. A publication interrupted with its journal intact
+/// resumes through it. A claim that refused at or after its first link attempt
+/// never received a journal, and a journal a refused finish already consumed
+/// cannot be resumed through either; those advance by adopting whatever marker
+/// is on disk. A finish that refused *after* its own unlink leaves no marker at
+/// all — the publication happened and its closing checks are what failed — and
+/// advances by reporting the terminal it had already recorded.
+///
+/// What every arm has in common is a publication this process claimed and did
+/// not conclude, which is what makes the value affine rather than an ordinary
+/// error.
 ///
 /// ```compile_fail
 /// fn duplicate(pending: marrow_project_fs::IdsPublicationPending<'_>) {
@@ -260,7 +265,14 @@ enum PendingWork<'a> {
     // Boxed: a live session is far larger than a guard reference, and this
     // value is already behind one indirection in the outcome it travels in.
     Session(Box<protocol::Session<'a>>),
-    Marker(&'a ProjectMetadataWriteGuard),
+    /// No live journal to resume through. `recovered` is what the interrupted
+    /// publication had already recorded, when it had recorded anything: a
+    /// finish removes the marker before its closing checks, so recovery can
+    /// find nothing to adopt and still owe an answer.
+    Marker {
+        guard: &'a ProjectMetadataWriteGuard,
+        recorded: Option<IdsPublication>,
+    },
 }
 
 impl<'a> IdsPublicationPending<'a> {
@@ -272,13 +284,19 @@ impl<'a> IdsPublicationPending<'a> {
         }
     }
 
-    /// The pending value for a marker with no live journal to resume through:
-    /// a claim that refused at or after its first link attempt and never handed
-    /// one back, or a session whose journal was consumed by a finish that then
-    /// refused. Both leave a marker recovery adopts from disk.
-    fn unclaimed(guard: &'a ProjectMetadataWriteGuard, cause: IdsPublicationError) -> Self {
+    /// The pending value for a publication with no live journal to resume
+    /// through: a claim that refused at or after its first link attempt and
+    /// never handed one back, or a session whose journal a refused finish
+    /// already consumed. `recorded` carries the terminal such a session had
+    /// reached, which is the only thing that distinguishes a finished
+    /// publication from one that was never claimed once the marker is gone.
+    fn unclaimed(
+        guard: &'a ProjectMetadataWriteGuard,
+        cause: IdsPublicationError,
+        recorded: Option<IdsPublication>,
+    ) -> Self {
         Self {
-            work: PendingWork::Marker(guard),
+            work: PendingWork::Marker { guard, recorded },
             cause,
             armed: true,
         }
@@ -306,9 +324,18 @@ impl<'a> IdsPublicationPending<'a> {
             PendingWork::Session(session) => session
                 .reconcile()
                 .and_then(|reconciled| session.drive(&reconciled)),
-            PendingWork::Marker(guard) => protocol::recover(guard).and_then(|settled| {
-                settled.ok_or_else(|| IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete))
-            }),
+            PendingWork::Marker { guard, recorded } => {
+                protocol::recover(guard).and_then(|settled| match (settled, *recorded) {
+                    // A marker was there to adopt, and adopting it settled it.
+                    (Some(settled), _) => Ok(settled),
+                    // No marker, but this publication had already recorded its
+                    // terminal — the finish that refused had removed the marker
+                    // first, so the publication is what that terminal says.
+                    (None, Some(recorded)) => Ok(recorded),
+                    // No marker and nothing recorded: nothing was ever settled.
+                    (None, None) => Err(IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete)),
+                })
+            }
         };
         self.armed = settled.is_err();
         settled
@@ -370,8 +397,8 @@ pub enum IdsRefusal {
     /// Retained corruption: the marker, its evidence, or the artifact map is
     /// not a state this protocol can have produced.
     ///
-    /// No artifact byte is replaced and nothing a cooperating writer put in
-    /// this directory is lost. That is not the same as no mutation: reaching
+    /// No artifact byte is replaced and no cooperating writer's distinguishable
+    /// content is lost. That is not the same as no mutation: reaching
     /// this reading can require reconciling an interrupted removal first, which
     /// restores a moved object to the name it came from, and a resumed
     /// publication can complete a removal its own durable terminal already
@@ -468,8 +495,9 @@ impl fmt::Display for IdsPublicationError {
             )?,
             IdsRefusal::Corrupt => formatter.write_str(
                 "the `.marrow/ids` publication state is not one this protocol can have produced; \
-                 the committed ledger is unchanged and nothing you put in `.marrow` was \
-                 removed. Recovery will not go further on its own",
+                 the committed ledger is unchanged and no cooperating writer's \
+                 distinguishable content was removed. Recovery will not go further on \
+                 its own",
             )?,
             IdsRefusal::Interrupted => formatter.write_str(
                 "a `.marrow/ids` publication is durably claimed and must be recovered first",
@@ -753,6 +781,17 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
     if found.len() > IGNORE_READ_CEILING {
         return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
     }
+    // A negation re-including one of these names leaves it tracked whatever
+    // else the entry says, and appending the name again would not change that:
+    // Git takes the last match. This owner will not rewrite a developer's file
+    // to remove a line they wrote, so the contract is unestablished and the
+    // acquisition refuses, exactly as it does for an entry it cannot read.
+    if untracked_entry_names()
+        .iter()
+        .any(|entry| ignore_negates_entry(&found, entry))
+    {
+        return Err(IdsPublicationError::bare(IdsRefusal::UntrackedContract));
+    }
     let missing: Vec<String> = untracked_entry_names()
         .into_iter()
         .filter(|entry| !ignore_names_entry(&found, entry))
@@ -855,6 +894,23 @@ fn ignore_lines(found: &[u8]) -> impl Iterator<Item = &[u8]> {
 /// not accumulate. The form this owner writes stays the bare name.
 fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
     ignore_lines(found).any(|line| line.strip_prefix(b"/").unwrap_or(line) == entry.as_bytes())
+}
+
+/// Whether the ignore entry re-includes one of this owner's names with a
+/// negation line.
+///
+/// A positive line naming a transient does not settle the question on its own:
+/// a later `!` line covering the same name puts it back, and Git takes the
+/// last match. An entry that both names a transient and negates it does not
+/// keep it untracked, so it does not establish the contract every removal here
+/// rests on. The check is the same shape as the positive one — the exact name,
+/// optionally anchored — because a broader pattern is a deliberate choice this
+/// owner will not silently read past.
+fn ignore_negates_entry(found: &[u8], entry: &str) -> bool {
+    ignore_lines(found).any(|line| {
+        line.strip_prefix(b"!")
+            .is_some_and(|rest| rest.strip_prefix(b"/").unwrap_or(rest) == entry.as_bytes())
+    })
 }
 
 /// Whether the bytes read from the ignore entry already carry this owner's

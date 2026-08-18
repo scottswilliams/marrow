@@ -153,12 +153,13 @@ impl fmt::Display for CorruptionReason {
 pub enum JournalError {
     /// A custody operation refused.
     Custody(CustodyError),
+    /// A kind whose header must be led by the shared common was offered a
+    /// header with no common to lead it; nothing was written.
+    WitnessNotEmbedded,
     /// The producer violated the kind's frame law; nothing was written.
     Law(FrameLawError),
     /// Corruption was found; no further mutation is authorized.
     Corrupt(CorruptionReason),
-    /// A kind-4 or kind-5 row header did not embed the offered witness.
-    WitnessNotEmbedded,
     /// The append would exceed the kind's ceiling; nothing was written.
     CeilingExceeded { total: usize, limit: usize },
     /// The terminal registry phase is already recorded.
@@ -182,11 +183,10 @@ impl fmt::Display for JournalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Custody(error) => write!(formatter, "{error}"),
+            Self::WitnessNotEmbedded => formatter
+                .write_str("this journal kind's header must be led by the claim's own witness"),
             Self::Law(error) => write!(formatter, "frame law refused: {error}"),
             Self::Corrupt(reason) => write!(formatter, "retained corruption: {reason}"),
-            Self::WitnessNotEmbedded => {
-                formatter.write_str("the row header did not embed the claim witness")
-            }
             Self::CeilingExceeded { total, limit } => write!(
                 formatter,
                 "appending would grow the journal to {total} bytes, over its {limit}-byte ceiling"
@@ -306,6 +306,10 @@ impl<'d> ClaimedJournal<'d> {
         Ok(LiveJournal {
             dir: self.dir,
             kind: self.frame.kind(),
+            witness: JournalWitness {
+                parent: self.dir.identity(),
+                journal_inode: self.file.identity(),
+            },
             name: self.name,
             file: self.file,
             total_len: total,
@@ -399,6 +403,10 @@ impl<'d> PendingJournal<'d> {
             dir: self.dir,
             kind: self.frame.kind(),
             last_tag: last.phase_tag(),
+            witness: JournalWitness {
+                parent: self.dir.identity(),
+                journal_inode: self.file.identity(),
+            },
             name: self.name,
             file: self.file,
             total_len: total,
@@ -415,6 +423,7 @@ pub struct LiveJournal<'d> {
     name: PendingName,
     kind: JournalKind,
     file: OpenedFile,
+    witness: JournalWitness,
     total_len: usize,
     next_sequence: u32,
     last_tag: u8,
@@ -424,6 +433,13 @@ impl LiveJournal<'_> {
     /// The journal's kind.
     pub fn kind(&self) -> JournalKind {
         self.kind
+    }
+
+    /// The identities this claim witnessed: the directory it was claimed under
+    /// and the inode it was written into. A caller that built the row header as
+    /// a value reads them back here rather than from inside the claim.
+    pub fn witness(&self) -> JournalWitness {
+        self.witness
     }
 
     /// The next record's sequence.
@@ -550,21 +566,68 @@ impl fmt::Display for ClaimRefusal {
     }
 }
 
-/// Claim a new pending journal in `dir` under `name`. `build_header` receives
-/// the claim witness and returns the row-specific header; kinds 4 and 5 must
-/// embed the witness as their leading `JournalCommon`. `prepared_payload` is
-/// the sequence-zero Prepared record's payload.
+/// A row header as a caller can build it: the generation slot and everything
+/// after the shared leading common.
+///
+/// The claim composes the common itself, from the directory it is claiming
+/// under and the inode it created, so a caller supplies no part of it and runs
+/// no code inside the claim. That is the point of this being a value: a
+/// callback invoked partway through the claim could reach the same directory
+/// and link the marker itself, and every refusal after that would still be
+/// reported as leaving no marker.
+#[derive(Debug, Clone)]
+pub enum BuiltHeader {
+    /// A header led by the shared common. The caller supplies the generation
+    /// slot and the bytes after it; the claim composes the common from the
+    /// directory it is claiming under and the inode it created, so the two
+    /// identities a caller cannot know are the two it does not supply.
+    Witnessed {
+        /// The row's 16-byte generation evidence.
+        generation: [u8; 16],
+        /// Everything after the common.
+        tail: Vec<u8>,
+    },
+    /// A header with no shared common: the bytes are the whole of it. Kinds
+    /// that carry a self-witness may not use this shape.
+    Plain(Vec<u8>),
+}
+
+impl BuiltHeader {
+    fn compose(&self, witness: &JournalWitness) -> Vec<u8> {
+        match self {
+            Self::Witnessed { generation, tail } => {
+                let common = JournalCommon {
+                    generation: *generation,
+                    parent: witness.parent,
+                    journal_inode: witness.journal_inode,
+                };
+                let mut bytes = Vec::with_capacity(JOURNAL_COMMON_LEN + tail.len());
+                bytes.extend_from_slice(&common.encode());
+                bytes.extend_from_slice(tail);
+                bytes
+            }
+            Self::Plain(bytes) => bytes.clone(),
+        }
+    }
+}
+
+/// Claim a new pending journal in `dir` under `name`. `header` is the
+/// row-specific header as a value; the claim composes the leading
+/// `JournalCommon` from its own witness, so kinds 4 and 5 embed it by
+/// construction. `prepared_payload` is the sequence-zero Prepared record's
+/// payload.
 ///
 /// # Errors
 ///
-/// Returns a [`ClaimRefusal`] naming the side of the durable parent sync the
-/// refusal fell on. A [`ClaimPhase::Durable`] refusal leaves a marker the
-/// caller must hand to recovery rather than clean up.
+/// Returns a [`ClaimRefusal`] naming which side of the first link attempt the
+/// refusal fell on. A [`ClaimRefusal::PossiblyDurable`] refusal may have left a
+/// marker, so the caller hands the project to recovery rather than cleaning up
+/// under it.
 pub fn claim<'d>(
     dir: &'d AdmittedDir,
     name: &PendingName,
     kind: JournalKind,
-    build_header: impl FnOnce(&JournalWitness) -> Vec<u8>,
+    header: BuiltHeader,
     prepared_payload: &[u8],
 ) -> Result<LiveJournal<'d>, ClaimRefusal> {
     // The split is the enforcement. Everything whose refusal is genuinely
@@ -573,16 +636,21 @@ pub fn claim<'d>(
     // every refusal is possibly-durable by construction. Neither arm is chosen
     // by inspecting an error or a flag, so a step that moves across the
     // boundary changes which function it is written in and nothing else.
-    let prepared = claim_preflight(dir, name, kind, build_header, prepared_payload)
+    if kind.carries_self_witness() && matches!(header, BuiltHeader::Plain(_)) {
+        return Err(ClaimRefusal::Preclaim(JournalError::WitnessNotEmbedded));
+    }
+    let prepared = claim_preflight(dir, name, kind, &header, prepared_payload)
         .map_err(ClaimRefusal::Preclaim)?;
     let total_len = prepared.bytes_len;
     let file = prepared.file;
+    let witness = prepared.witness;
     claim_commit(dir, name, &file, total_len).map_err(ClaimRefusal::PossiblyDurable)?;
     Ok(LiveJournal {
         dir,
         name: name.clone(),
         kind,
         file,
+        witness,
         total_len,
         next_sequence: 1,
         last_tag: 1,
@@ -594,6 +662,7 @@ pub fn claim<'d>(
 struct PreparedClaim {
     file: OpenedFile,
     bytes_len: usize,
+    witness: JournalWitness,
 }
 
 /// Everything strictly before the first link attempt.
@@ -607,7 +676,7 @@ fn claim_preflight(
     dir: &AdmittedDir,
     name: &PendingName,
     kind: JournalKind,
-    build_header: impl FnOnce(&JournalWitness) -> Vec<u8>,
+    header: &BuiltHeader,
     prepared_payload: &[u8],
 ) -> Result<PreparedClaim, JournalError> {
     if dir.stat_entry(name.claim())?.is_some() || dir.stat_entry(name.pending())?.is_some() {
@@ -625,13 +694,14 @@ fn claim_preflight(
         name,
         &mut file,
         kind,
-        &build_header(&witness),
+        &header.compose(&witness),
         prepared_payload,
         &witness,
     ) {
         Ok(bytes) => Ok(PreparedClaim {
-            file,
             bytes_len: bytes.len(),
+            file,
+            witness,
         }),
         Err(refusal) => {
             // The refusal the caller must see is the one that stopped the
@@ -678,21 +748,16 @@ fn claim_commit(
 
 /// The two marker stats a classification decides from, and nothing else.
 ///
-/// A caller that classifies before reconciling other state depends on this
-/// decision resting on no artifact — nothing a removal can have moved out from
-/// under it. That was previously a property of the body, re-checkable only by
-/// reading it. It is now a property of the value: this carries two stats taken
-/// by the caller and holds no directory handle and no name, so a classification
-/// cannot reach a third entry however it is later edited.
-#[derive(Debug, Clone, Copy)]
+/// Minted only by [`Self::read`], so a classification cannot be handed a shape
+/// that was never on disk.
+#[derive(Debug)]
 pub struct MarkerStats {
     claim: Option<EntryStat>,
     pending: Option<EntryStat>,
 }
 
 impl MarkerStats {
-    /// Stat the two marker names. This is the one place the pair is read, and
-    /// it is the caller's act rather than the classification's.
+    /// Stat the two marker names. This is the one place the pair is read.
     ///
     /// # Errors
     ///
@@ -705,26 +770,67 @@ impl MarkerStats {
     }
 }
 
-/// Classify the state of the pending-journal name pair without mutating
-/// anything.
+/// Which of the four marker-name shapes the pair is in.
 ///
-/// `stats` is the whole of what the decision rests on. `dir` and `name` are the
-/// surface the *classified state* acts through afterwards — a preclaim discard,
-/// a claimed adoption, a pending resume — and are not read to decide anything
-/// the stats have not already decided.
-pub fn classify<'d>(
-    stats: MarkerStats,
-    dir: &'d AdmittedDir,
-    name: &'d PendingName,
-    expected: JournalKind,
-) -> Result<PendingState<'d>, JournalError> {
+/// This is the whole of what the name pair decides, and it is decided from the
+/// stats alone: [`classify`] receives no directory and no names, so a
+/// classification cannot read an artifact however it is later edited. A caller
+/// that classifies before reconciling other state depends on exactly that, and
+/// it is now a property of the signature rather than of the body.
+///
+/// Turning a shape into a state that can act — discard, adopt, resume — reads
+/// the marker file and needs the directory, so it is a separate, named step the
+/// caller takes at the point of consumption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerShape {
+    /// Neither name exists.
+    Absent,
+    /// Only the claim name exists.
+    Preclaim(EntryStat),
+    /// Both names exist.
+    Claimed {
+        /// The claim name's stat.
+        claim: EntryStat,
+        /// The pending name's stat.
+        pending: EntryStat,
+    },
+    /// Only the pending name exists.
+    Pending(EntryStat),
+}
+
+/// The shape of the pending-journal name pair. Reads nothing and mutates
+/// nothing: the stats are the whole input.
+#[must_use]
+pub fn classify(stats: MarkerStats) -> MarkerShape {
     match (stats.claim, stats.pending) {
-        (None, None) => Ok(PendingState::Absent),
-        (Some(claim_stat), None) => classify_preclaim(dir, name, claim_stat),
-        (Some(claim_stat), Some(pending_stat)) => {
-            classify_claimed(dir, name, expected, claim_stat, pending_stat)
+        (None, None) => MarkerShape::Absent,
+        (Some(claim), None) => MarkerShape::Preclaim(claim),
+        (Some(claim), Some(pending)) => MarkerShape::Claimed { claim, pending },
+        (None, Some(pending)) => MarkerShape::Pending(pending),
+    }
+}
+
+impl MarkerShape {
+    /// Turn this shape into the state that can act on it, reading the marker
+    /// file where the shape says there is one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the journal refusal reading or validating the marker produced.
+    pub fn admit<'d>(
+        self,
+        dir: &'d AdmittedDir,
+        name: &PendingName,
+        expected: JournalKind,
+    ) -> Result<PendingState<'d>, JournalError> {
+        match self {
+            Self::Absent => Ok(PendingState::Absent),
+            Self::Preclaim(claim) => classify_preclaim(dir, name, claim),
+            Self::Claimed { claim, pending } => {
+                classify_claimed(dir, name, expected, claim, pending)
+            }
+            Self::Pending(pending) => classify_pending(dir, name, expected, pending),
         }
-        (None, Some(pending_stat)) => classify_pending(dir, name, expected, pending_stat),
     }
 }
 
@@ -902,16 +1008,12 @@ fn claim_bytes(
     prepared_payload: &[u8],
     witness: &JournalWitness,
 ) -> Result<Vec<u8>, JournalError> {
+    // A header led by the common is composed from this claim's own witness, so
+    // one embedding another directory or another inode cannot be handed in.
+    // What remains checkable is the shape: a witness-carrying kind offered the
+    // no-common shape would write a header with no witness at all.
+    let _ = witness;
     let mut bytes = encode_header(kind, header)?;
-    if kind.carries_self_witness() {
-        let common: &[u8; JOURNAL_COMMON_LEN] = header[..JOURNAL_COMMON_LEN]
-            .try_into()
-            .expect("the exact header length was just enforced");
-        let common = JournalCommon::decode(common);
-        if common.parent != witness.parent || common.journal_inode != witness.journal_inode {
-            return Err(JournalError::WitnessNotEmbedded);
-        }
-    }
     bytes.extend_from_slice(&encode_record(kind, 0, 1, prepared_payload)?);
     if bytes.len() > kind.ceiling() {
         return Err(JournalError::CeilingExceeded {

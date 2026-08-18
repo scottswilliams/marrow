@@ -41,19 +41,46 @@ writes both. A project whose ignore entry predates a name gains exactly that
 name on the next publication, appended under the comment already there rather
 than under a second one.
 
-Two cases leave an existing entry exactly as found, names and all. The write
-owner reads at most 4 KiB of an existing `.marrow/.gitignore` to decide what is
-missing, so a larger file is left alone: the part that decides the question was
-never read. An entry whose mode withholds access from the tools — one a
-checkout carries read-only, write-only, or unreadable — is left alone for the
-same reason it is written at all. The entry is a convenience, so no publication
-or recovery is refused over one that cannot be completed. That reading covers a
-permission-class condition on the entry itself, whether it withholds the
-deciding read or the append; a write that fails on the environment instead — a
-full disk, a read-only filesystem — still refuses, because it breaks the durable
-write the publication needs anyway. Committing the ignore entry alongside the
-ledger is the tidier habit, and leaving it untracked changes nothing about how
-these entries are treated.
+The entry is not a convenience. Every removal the publication protocol performs
+relies on these names never being tracked: a committed transient is recreated by
+every checkout, and a checkout writing one while a publication is running can
+lose it. So the tools refuse to acquire the project-metadata write owner — and
+therefore refuse to publish or recover — when they cannot establish that the
+entry keeps them untracked. Four states refuse, with `io.write` and a message
+naming the repair:
+
+- The entry cannot be read. Its contents decide the question and were never
+  seen.
+- The entry is larger than the 4 KiB the owner reads. Same reason: the deciding
+  part was never read.
+- The entry is missing names and cannot be written. It cannot be completed.
+- The entry negates one of these names with a `!` line. Git takes the last
+  matching line, so the name is tracked whatever else the file says, and the
+  tools do not rewrite a line a developer wrote.
+
+Make the entry readable, small enough to inspect, and free of negations
+covering these names — or remove it and let the next acquisition write its own.
+An entry that already names every one of them is fine exactly as it is, mode
+included: nothing needs writing.
+
+Three states are outside what the entry can fix, and the tools cannot detect
+them because they never run Git:
+
+- A negation line elsewhere in the repository — a parent `.gitignore`, the
+  global excludes file — re-including one of these names.
+- A transient added with `git add -f`.
+- A transient tracked before this contract existed, in a project published by
+  an older build. `.gitignore` never untracks a file already in the index.
+
+The remedy in each case is the same: `git rm --cached .marrow/<entry>`, then
+make sure a positive ignore line covers it. Until that is done the project is
+outside the cooperative contract the removal bounds assume.
+
+A write that fails on the environment — a full disk, a read-only filesystem —
+refuses as it always did, because it breaks the durable write the publication
+needs anyway. Committing the ignore entry alongside the ledger is the tidier
+habit, and leaving it untracked changes nothing about how these entries are
+treated.
 
 A lock that travelled with a checkout would be worse than absent: an ordinary
 Git operation that deletes and recreates a tracked entry replaces the inode, and
@@ -196,16 +223,18 @@ place, and the marker is removed last. While a marker exists the committed
 ledger is indeterminate, so every read-only command reports
 `project.ids_publication_pending` rather than reading a generation recovery may
 replace; `marrow run` — the one command that writes the ledger — settles the
-interrupted publication before it captures the project or draws entropy. A state
-the protocol cannot have produced, and a publication that was created but never
-durably claimed, are retained exactly as found: no command removes an entry
-unless the durable record says which run it is removing and the entry carries
-exactly that run, and there is no sweep of temporary files. Matching bytes at a
-matching inode number establish that an entry is equivalent to what the record
-bound, not that it is the same object — an inode number freed by `unlink` is
-reused, and no check after a crash can tell a byte-identical replacement from
-the original. Removing the
-named entries by hand is the documented way out.
+interrupted publication before it captures the project or draws entropy. A state the protocol cannot have produced, and a publication that was created
+but never durably claimed, leave the committed ledger unchanged and remove
+nothing a cooperating writer put in `.marrow`. That is not the same as
+byte-identical: recovery may first put back an entry an interrupted cleanup had
+moved aside, or finish a removal the durable record already authorized. No
+command removes an entry unless that record says which run it is removing and
+the entry carries exactly that run, and there is no sweep of temporary files.
+Matching bytes at a matching inode number establish that an entry is equivalent
+to what the record bound, not that it is the same object — an inode number
+freed by `unlink` is reused, and no check after a crash can tell a
+byte-identical replacement from the original. Removing the named entries by
+hand is the documented way out.
 
 The established durability is atomic publication plus process- and
 operating-system-crash recovery within a file-and-directory-`fsync` envelope.
