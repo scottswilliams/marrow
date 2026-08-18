@@ -81,19 +81,16 @@ impl Project {
         self.meta().join("ids.publish.quarantine")
     }
 
-    /// The quarantine directory a removal creates, left behind empty the way a
-    /// crash before its move — or after its unlink — leaves it.
-    fn park_empty_quarantine(&self) {
-        fs::create_dir_all(self.quarantine()).expect("create the quarantine directory");
-    }
-
-    /// The state a crash between a removal's move and its unlink leaves: the
-    /// object under the quarantine directory's one fixed entry, its own name
-    /// absent.
+    /// The one state an interrupted removal can leave: the object under the
+    /// quarantine name, its own name absent.
+    ///
+    /// A removal's only entry mutations are one rename in and either an unlink
+    /// or one rename back, all within the metadata directory. Before the first
+    /// there is nothing to find; after the last there is nothing to find; the
+    /// interval between them is this.
     fn move_into_quarantine(&self, name: &str) {
-        self.park_empty_quarantine();
-        fs::rename(self.meta().join(name), self.quarantine().join("held"))
-            .expect("move the object into quarantine");
+        fs::rename(self.meta().join(name), self.quarantine())
+            .expect("move the object to the quarantine name");
     }
 
     fn exists(&self, name: &str) -> bool {
@@ -921,35 +918,6 @@ fn a_stranger_parked_under_the_quarantine_name_is_neither_swept_nor_deleted() {
     assert!(project.exists("ids.pending"), "the marker keeps gating");
 }
 
-/// A crash before a removal's move leaves its quarantine directory empty. The
-/// object is still under its own name, so the state is exactly the pre-removal
-/// one and the removal runs again over it.
-#[test]
-fn an_empty_quarantine_directory_left_before_the_move_is_reconciled() {
-    let _serial = serialized();
-    let project = Project::new("quarantine-empty-premove");
-    project.write_meta("ids.publish.stage", b"successor");
-    fs::hard_link(
-        project.meta().join("ids.publish.stage"),
-        project.meta().join("ids"),
-    )
-    .expect("link the staged successor into place");
-    Crash::new(&project, None, b"successor")
-        .installing()
-        .settled(0)
-        .plant();
-    project.park_empty_quarantine();
-
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
-    assert!(!project.exists("ids.publish.stage"));
-    assert!(!project.exists("ids.pending"));
-    assert!(
-        !project.quarantine().exists(),
-        "the reconciled quarantine directory is gone"
-    );
-}
-
 /// A crash between a removal's move and its unlink leaves the object in the
 /// quarantine directory with the stage name absent. The terminal record says
 /// which run that cleanup was entitled to remove, and this object is it, so
@@ -978,32 +946,7 @@ fn an_object_left_in_quarantine_by_an_interrupted_removal_is_finished_not_strand
     assert!(!project.exists("ids.pending"));
     assert!(
         !project.quarantine().exists(),
-        "the reconciled quarantine directory is gone"
-    );
-}
-
-/// A crash after a removal's unlink and before it removes its directory leaves
-/// the removal already done. The stage is gone, so the terminal finishes over
-/// an installed successor at one link and only the empty directory remains to
-/// reconcile.
-#[test]
-fn an_empty_quarantine_directory_left_after_the_unlink_is_reconciled() {
-    let _serial = serialized();
-    let project = Project::new("quarantine-empty-postunlink");
-    project.write_meta("ids", b"successor");
-    Crash::new(&project, None, b"successor")
-        .installing()
-        .settled(0)
-        .witness_next("ids")
-        .plant();
-    project.park_empty_quarantine();
-
-    let settled = project.guard().recover_ids().expect("recovery runs");
-    assert_eq!(settled, Some(IdsPublication::Published));
-    assert!(!project.exists("ids.pending"));
-    assert!(
-        !project.quarantine().exists(),
-        "the reconciled quarantine directory is gone"
+        "the quarantine name is clear again"
     );
 }
 
@@ -1080,6 +1023,52 @@ fn a_reverted_cleanup_interrupted_over_a_mutated_target_finishes_rather_than_wed
     assert!(!project.quarantine().exists());
 }
 
+/// A publication attempted over an interrupted removal refuses without
+/// touching it, and the recovery that follows still settles.
+///
+/// Only recovery has the header and terminal that make the quarantined object
+/// judgeable. A publication that reconciled before classifying would put a
+/// successor the reverted cleanup had already taken back under the stage name,
+/// manufacture a reading the terminal contradicts, and leave the project in a
+/// state no later command could settle. Refusing first costs one refusal and
+/// keeps the state settleable.
+#[test]
+fn a_publication_over_an_interrupted_removal_refuses_and_leaves_it_settleable() {
+    let _serial = serialized();
+    let project = Project::new("publish-over-interrupted-removal");
+    // Captured before the marker is planted: capture refuses while one is live.
+    let plan = project.plan("Book", 1);
+    project.write_meta("ids", b"base");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .settled(1)
+        .witness_base("ids")
+        .witness_next("ids.publish.stage")
+        .plant();
+    project.move_into_quarantine("ids.publish.stage");
+
+    let refusal = project
+        .guard()
+        .publish_ids(plan)
+        .expect_err("a durably claimed project refuses a fresh publication");
+    assert_eq!(refusal.refusal(), IdsRefusal::Interrupted);
+    assert_eq!(
+        fs::read(project.quarantine()).ok().as_deref(),
+        Some(&b"successor"[..]),
+        "the refused publication put nothing back and took nothing away"
+    );
+    assert!(!project.exists("ids.publish.stage"));
+
+    // The state the refusal preserved is the one recovery settles.
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(project.read_meta("ids").as_deref(), Some(&b"base"[..]));
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+    assert!(!project.quarantine().exists());
+}
+
 /// A fresh publication reconciles on its own entry. The state is reached with
 /// no marker at all, so recovery's arms never run and only the publication
 /// path's own reconciliation can find the stranded object.
@@ -1103,7 +1092,7 @@ fn a_fresh_publication_reconciles_an_orphaned_quarantine_before_it_stages() {
     );
     assert!(
         !project.quarantine().exists(),
-        "the reconciled quarantine directory is gone"
+        "the quarantine name is clear again"
     );
 }
 
@@ -1142,7 +1131,7 @@ fn a_taken_stage_name_makes_reconciliation_refuse_without_losing_either_object()
             "the outside writer's entry is never displaced"
         );
         assert_eq!(
-            fs::read(project.quarantine().join("held")).ok().as_deref(),
+            fs::read(project.quarantine()).ok().as_deref(),
             Some(&b"someone else's file"[..]),
             "the quarantined object is never deleted to clear the way"
         );
@@ -1195,7 +1184,7 @@ fn a_stranger_left_in_quarantine_by_a_rejected_removal_is_put_back_not_deleted()
     assert!(project.exists("ids.pending"), "the marker keeps gating");
     assert!(
         !project.quarantine().exists(),
-        "the reconciled quarantine directory is gone"
+        "the quarantine name is clear again"
     );
 }
 
@@ -1393,6 +1382,11 @@ fn the_publication_owner_enumerates_no_directory() {
         include_str!("publication/protocol.rs"),
         include_str!("publication/header.rs"),
         include_str!("publication/marker.rs"),
+        // The journal owner is under the same ban. Classification runs before
+        // the quarantine is reconciled, so a classification that enumerated
+        // `.marrow` would read entries a removal has moved and would invalidate
+        // that ordering silently.
+        include_str!("../../marrow-fs-journal/src/journal.rs"),
     ] {
         for forbidden in ["read_dir", "ReadDir", "glob", "remove_dir_all"] {
             assert!(
@@ -2116,22 +2110,21 @@ fn the_settled_terminal_is_decided_in_exactly_one_place() {
 // ===== Faulted mutations =====================================================
 //
 // Every entry mutation the protocol performs — the stage's `create`, the absent
-// arm's `link`, the replace arm's `exchange`, the `create directory` that opens
+// arm's `link`, the replace arm's `exchange`, the `rename-noreplace` that opens
 // a validated removal, and the marker's `unlink` — happens in the admitted
 // metadata directory, so a directory whose owner bits withhold write refuses
-// all five. A removal's own `unlink` is not among them: it happens inside the
-// quarantine directory, through a handle taken before the withdrawal, and a
-// removal never reaches it because creating that directory refuses first.
+// all five. A removal's own `unlink` is not separately reachable here: a
+// removal never reaches it because the move to the quarantine name refuses
+// first.
 //
-// A removal's two renames each cross a directory boundary, so each changes two
-// parents. Neither the protocol nor the platform qualification claims a
-// crash-atomic cross-directory rename, so the protocol does not rest on one:
-// both parents are `fsync`ed after each rename before the result is relied on,
-// which is the same file-and-directory-`fsync` envelope the journal owner
-// already documents and no new claim class. Within that envelope the states a
-// crash can leave are the four the quarantine kats plant. Sudden power loss
-// remains outside the envelope here exactly as it is everywhere else in this
-// protocol. That is a real
+// A removal's renames are within one directory, which is the rename atomicity
+// this protocol already rests on for its exchange and its destination-refusing
+// link, so the quarantine adds no filesystem property to the documented
+// file-and-directory-`fsync` envelope. Within that envelope an interrupted
+// removal leaves exactly one state — the object at the quarantine name, its
+// own name absent — because before its first rename and after its last there
+// is nothing to find. Sudden power loss remains outside the envelope here
+// exactly as it is everywhere else in this protocol. That is a real
 // refusal from the production path rather than an injected one, and it needs no
 // seam: the fault is applied from outside the protocol, between two production
 // calls, and the phase the planted journal has reached selects which mutation
@@ -2320,10 +2313,9 @@ fn a_refused_exchange_retains_the_bound_generation() {
 /// A refused stage cleanup stops before the marker is unlinked. The successor
 /// is installed and the terminal is recorded, so the publication is finishable
 /// — but only the final marker unlink ends it, and that has not happened. The
-/// cleanup removes nothing it has not first moved into a quarantine directory
-/// of its own making, so creating that directory is the act a refusing
-/// metadata directory stops, and the alias it would have removed is still
-/// under its own name.
+/// cleanup removes nothing it has not first moved to the quarantine name, so
+/// that move is the act a refusing metadata directory stops, and the alias it
+/// would have removed is still under its own name.
 #[test]
 fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
     let _serial = serialized();
@@ -2347,9 +2339,9 @@ fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
-        "create directory",
-        "the stage cleanup's first act is creating the quarantine directory, and it \
-         is the operation that refused: {refusal}"
+        "rename-noreplace",
+        "the stage cleanup's first act is the move to the quarantine name, and it is \
+         the operation that refused: {refusal}"
     );
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(project.exists("ids.publish.stage"), "the alias is retained");

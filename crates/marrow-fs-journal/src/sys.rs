@@ -259,27 +259,6 @@ mod imp {
             .map_err(|errno| map("unlink", Reading::Plain, errno))
     }
 
-    /// Remove an empty directory entry. A non-empty directory refuses, which is
-    /// what keeps a removal from discarding a location still holding an object.
-    pub(crate) fn rmdir(dir: &DirHandle, name: &str) -> Result<(), CustodyError> {
-        rustix::fs::unlinkat(dir, name, AtFlags::REMOVEDIR)
-            .map_err(|errno| map("remove directory", Reading::Plain, errno))
-    }
-
-    /// `renameat` with `NOREPLACE` across two admitted directories. Same
-    /// fail-closed reading as the same-directory form: the flag is never
-    /// dropped to a plain rename, so a taken destination refuses rather than
-    /// being overwritten.
-    pub(crate) fn rename_into(
-        from_dir: &DirHandle,
-        from: &str,
-        to_dir: &DirHandle,
-        to: &str,
-    ) -> Result<(), CustodyError> {
-        rustix::fs::renameat_with(from_dir, from, to_dir, to, RenameFlags::NOREPLACE)
-            .map_err(|errno| map("rename-noreplace", Reading::RenameFlagged, errno))
-    }
-
     pub(crate) fn stat_entry(
         dir: &DirHandle,
         name: &str,
@@ -570,19 +549,6 @@ mod imp {
 
     pub(crate) fn unlink(dir: &DirHandle, _name: &str) -> Result<(), CustodyError> {
         match *dir {}
-    }
-
-    pub(crate) fn rmdir(dir: &DirHandle, _name: &str) -> Result<(), CustodyError> {
-        match *dir {}
-    }
-
-    pub(crate) fn rename_into(
-        from_dir: &DirHandle,
-        _from: &str,
-        _to_dir: &DirHandle,
-        _to: &str,
-    ) -> Result<(), CustodyError> {
-        match *from_dir {}
     }
 
     pub(crate) fn stat_entry(

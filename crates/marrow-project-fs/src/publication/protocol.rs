@@ -10,8 +10,9 @@ use std::cell::RefCell;
 use std::fmt;
 
 use marrow_fs_journal::{
-    AdmittedDir, CustodyError, EntryName, EntryStat, FsIdentity, JournalKind, LiveJournal,
-    OpenedFile, PendingState, PhaseRecord, TailState, claim, classify, encode_record,
+    AdmittedDir, ClaimPhase, CustodyError, EntryName, EntryStat, FsIdentity, JournalKind,
+    LiveJournal, MarkerView, OpenedFile, PendingState, PhaseRecord, TailState, claim, classify,
+    encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
 
@@ -83,9 +84,10 @@ impl BoundRole {
 /// Reading the artifact map while an interrupted removal still holds an object
 /// misreads the map: the name that object came from is absent, so a state with
 /// a removal still owed looks like one already finished. The proof is produced
-/// only by [`Session::reconcile`] and consumed by [`Session::drive`], so a new
-/// path into the driver cannot reach a map reading without one. Forgetting is a
-/// compile error rather than a defect found in review.
+/// only by [`Session::reconcile`] and required by [`Session::read_map`] — every
+/// map reading in this module, not the driver alone — so no path can reach one
+/// without having reconciled first. Forgetting is a compile error rather than a
+/// defect found in review.
 ///
 /// The header-less callers — the arms that read the stage with no publication
 /// to judge it against — reconcile without producing one, because they read no
@@ -246,7 +248,6 @@ pub(super) fn publish(
     guard: &ProjectMetadataWriteGuard,
     plan: LedgerPublicationPlan,
 ) -> Result<IdsPublishOutcome<'_>, IdsPublicationError> {
-    reconcile_quarantine(guard, guard.stage_name())?;
     preflight(guard)?;
     plan.visit(|view| publish_admitted(guard, view))
 }
@@ -267,7 +268,7 @@ pub(super) fn recover(
     let pending_witness = meta
         .stat_entry(names.pending())?
         .map(|stat| stat.identity());
-    match classify(meta, names, JournalKind::Ids)? {
+    match classify(MarkerView::new(meta, names), JournalKind::Ids)? {
         PendingState::Absent => {
             reconcile_quarantine(guard, guard.stage_name())?;
             if meta.stat_entry(guard.stage_name())?.is_some() {
@@ -284,21 +285,23 @@ pub(super) fn recover(
         PendingState::Corrupt(reason) => Err(IdsPublicationError::corrupt(reason)),
         PendingState::Claimed(claimed) => {
             let header = admit_header(meta, claimed.frame().row_header(), claim_witness)?;
+            let reconciled = reconcile_for(guard, &header, None)?;
             let mut session = Session::new(guard, header, claimed.adopt()?, None);
-            let reconciled = session.reconcile()?;
-            session.drive(reconciled).map(Some)
+            session.drive(&reconciled).map(Some)
         }
         PendingState::Pending(mut pending) => {
             let header = admit_header(meta, pending.frame().row_header(), pending_witness)?;
             let terminal = terminal_of(pending.frame().records())?;
+            // Before the tail derivation below, which reads the artifact map
+            // itself and would otherwise read it across an interrupted removal.
+            let reconciled = reconcile_for(guard, &header, terminal)?;
             if let TailState::IncompletePrefix { .. } = pending.frame().tail() {
                 let last = last_tag(pending.frame().records());
-                let expected = expected_next_record(guard, &header, last)?;
+                let expected = expected_next_record(guard, &header, last, &reconciled)?;
                 pending.truncate_tail(&expected)?;
             }
             let mut session = Session::new(guard, header, pending.resume()?, terminal);
-            let reconciled = session.reconcile()?;
-            session.drive(reconciled).map(Some)
+            session.drive(&reconciled).map(Some)
         }
     }
 }
@@ -307,9 +310,24 @@ pub(super) fn recover(
 
 /// Refuse before anything is staged when the project already carries a
 /// publication state. A fresh publication starts only from a clear one.
+///
+/// The journal is classified first, and a project carrying a durable claim is
+/// refused before anything is reconciled. That ordering is the point: a
+/// recorded terminal is the only thing that makes an object at the quarantine
+/// name judgeable, and only recovery has the header to judge it with. A
+/// publication that reconciled first would put that object back under the stage
+/// name, manufacturing a map the terminal record contradicts and leaving a
+/// state the later recovery could no longer settle. Refusing touches nothing
+/// and leaves the judgement to the owner that can make it.
+///
+/// Reconciliation therefore happens only where no marker exists, so no terminal
+/// exists either and a restore can contradict nothing.
 fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    match classify(meta, guard.journal_names(), JournalKind::Ids)? {
+    match classify(
+        MarkerView::new(meta, guard.journal_names()),
+        JournalKind::Ids,
+    )? {
         PendingState::Absent => {}
         PendingState::Preclaim(_) => {
             return Err(IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete));
@@ -319,6 +337,7 @@ fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationErro
         }
         PendingState::Corrupt(reason) => return Err(IdsPublicationError::corrupt(reason)),
     }
+    reconcile_quarantine(guard, guard.stage_name())?;
     if meta.stat_entry(guard.stage_name())?.is_some() {
         return Err(IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete));
     }
@@ -377,36 +396,41 @@ fn publish_admitted<'a>(
     let journal = match claimed {
         Ok(journal) => journal,
         Err(refusal) => {
-            // Whether anything is durably claimed is not something this arm may
-            // assume. `claim` links the marker and syncs the parent before it
-            // rechecks its own work, so a refusal from that recheck returns
-            // with the claim already durable. Removing the stage there would
-            // leave a durable marker whose phase-1 map has no successor to
-            // resume from — permanently off-map, the one state recovery cannot
-            // settle. So the classifier that owns this question is asked, and
-            // the stage is removed only where it says nothing durable exists.
-            // An unreadable classification is treated as durable: retaining a
-            // recoverable stage costs a manual unclaimed state, and removing a
-            // needed one costs the publication.
-            if matches!(
-                classify(meta, guard.journal_names(), JournalKind::Ids),
-                Ok(PendingState::Absent | PendingState::Preclaim(_))
-            ) {
+            // The claim says which side of its durable parent sync it refused
+            // on, so this arm no longer guesses. A preclaim refusal claimed
+            // nothing and is ordinary: the stage this call created is removed
+            // and the cause returned. A durable one left a marker, and the
+            // contract for a durable marker is the affine pending value —
+            // removing the stage there would leave a marker with no successor
+            // to resume from, and returning a bare error would drop the guard
+            // borrow and the drop glue that keeps this process honest about it.
+            if refusal.phase == ClaimPhase::Preclaim {
                 // The cause that stopped the claim outranks a refusal from the
                 // cleanup that follows it.
                 let _ = discard_stage(guard, &stage);
+                return Err(refusal.error.into());
             }
-            return Err(refusal.into());
+            return Ok(IdsPublishOutcome::Pending(Box::new(
+                IdsPublicationPending::unclaimed(guard, refusal.error.into()),
+            )));
         }
     };
     let header = built
         .into_inner()
         .expect("the claim builds its header before it writes");
 
-    // From here the marker is durable: every interruption is affine.
+    // From here the marker is durable: every interruption is affine, including
+    // a reconciliation that refuses before the driver ever runs.
     let mut session = Session::new(guard, header, journal, None);
-    let reconciled = session.reconcile()?;
-    match session.drive(reconciled) {
+    let reconciled = match session.reconcile() {
+        Ok(reconciled) => reconciled,
+        Err(cause) => {
+            return Ok(IdsPublishOutcome::Pending(Box::new(
+                IdsPublicationPending::new(session, cause),
+            )));
+        }
+    };
+    match session.drive(&reconciled) {
         Ok(publication) => Ok(IdsPublishOutcome::Settled(publication)),
         Err(cause) => Ok(IdsPublishOutcome::Pending(Box::new(
             IdsPublicationPending::new(session, cause),
@@ -457,8 +481,10 @@ fn stage_successor(
 /// Remove the stage entry this call created and make its absence durable.
 ///
 /// The proof is the creating descriptor. While it lives the inode number it
-/// holds cannot be handed to anything else, so an object that matches it is
-/// this call's own object and nothing else's.
+/// holds cannot be handed to anything else, so within this call's own lifetime
+/// an object carrying that number is the object this call created. That is the
+/// one place in this protocol where a number alone is conclusive, and it is
+/// conclusive only because the descriptor is still open.
 fn discard_stage(
     guard: &ProjectMetadataWriteGuard,
     created: &OpenedFile,
@@ -472,20 +498,23 @@ fn discard_stage(
 /// that object that `accepts` admits it.
 ///
 /// The unlink cannot itself be the validated act. `unlinkat` names a path, and
-/// no POSIX platform this runs on offers an unlink through a descriptor, so
-/// between any validation and any unlink the name can be repointed and the
-/// wrong object deleted. What this owner does is take the object out of the
-/// location an outside writer addresses before judging it: a private directory
-/// is created, the object is moved into it, and it is opened, judged, and
-/// unlinked entirely within a directory handle this call holds. The directory
-/// is created by this removal at mode `0700`, so the only writer who can reach
-/// the object under judgement is one that deliberately writes inside a
-/// directory the protocol just made — outside the cooperative contract
-/// entirely. See [`marrow_fs_journal::FsIdentity`] for the resulting bound.
+/// neither qualified platform offers an unlink through a descriptor, so between
+/// any validation and any unlink the name can be repointed and the wrong object
+/// deleted. What this owner does is move the object to a name no cooperating
+/// writer ever touches before judging it: every name here but the ledger is a
+/// protocol transient, gate-enforced never-tracked, and a cooperating Git
+/// operation writes tracked paths only. A writer that reaches the quarantine
+/// name is one deliberately writing untracked protocol names, which is outside
+/// the cooperative contract. See [`marrow_fs_journal::FsIdentity`] for the
+/// bound that leaves.
+///
+/// The move is a rename within one directory, which is the atomicity this
+/// platform qualification already rests on everywhere else in the protocol, so
+/// it adds no filesystem property to the envelope.
 ///
 /// An object `accepts` rejects is never deleted: it is moved back under the
-/// name it came from. A restore that cannot land leaves it in the quarantine
-/// directory, which the next command reconciles.
+/// name it came from. A restore that cannot land leaves it at the quarantine
+/// name, which the next command reconciles.
 fn remove_validated(
     guard: &ProjectMetadataWriteGuard,
     name: &EntryName,
@@ -493,126 +522,57 @@ fn remove_validated(
     accepts: impl Fn(&OpenedFile) -> Result<bool, IdsPublicationError>,
 ) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    // Whatever an interrupted removal left is put back before this one starts,
-    // so a removal always begins from a state the artifact map models.
-    reconcile_quarantine(guard, name)?;
-
-    let held = open_quarantine(guard)?;
-    let inner = guard.quarantine_entry_name();
-    match meta.rename_into(name, &held, inner) {
-        // A cross-directory rename changes two directories, and this protocol
-        // claims no atomicity a plain `fsync` envelope does not give it. Both
-        // parents are synced before the move is relied on, so the interval a
-        // crash can expose is the one the planted states model.
-        Ok(()) => {
-            meta.sync()?;
-            held.sync()?;
-        }
+    let held = guard.quarantine_name();
+    match meta.rename_noreplace(name, held) {
+        Ok(()) => meta.sync()?,
         // Already gone: the absence this call wanted is the absence it found.
-        Err(CustodyError::NotFound { .. }) => return discard_quarantine(guard, held),
-        Err(error) => {
-            let _ = discard_quarantine(guard, held);
-            return Err(error.into());
-        }
+        Err(CustodyError::NotFound { .. }) => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
 
     let verdict = (|| -> Result<bool, IdsPublicationError> {
-        let file = held.open_file_readonly(inner)?;
+        let file = meta.open_file_readonly(held)?;
         accepts(&file)
     })();
-    let outcome = match verdict {
-        Ok(true) => held
-            .unlink(inner)
-            .and_then(|()| held.sync())
-            .map_err(IdsPublicationError::from),
-        Ok(false) => restore_quarantined(&held, inner, meta, name)
-            .and(Err(CustodyError::IdentityDrift { op }.into())),
-        Err(refusal) => restore_quarantined(&held, inner, meta, name).and(Err(refusal)),
-    };
-    // The directory goes whether the object was removed or put back; a refused
-    // removal of it leaves an empty location the next command reconciles, and
-    // never replaces the cause that got here.
-    let _ = discard_quarantine(guard, held);
-    outcome?;
-    meta.sync()?;
-    Ok(())
-}
-
-/// Admit the quarantine directory, creating it when it is absent. A
-/// pre-existing directory is admitted as it stands: it is an interrupted
-/// removal's location, already emptied by reconciliation.
-fn open_quarantine(guard: &ProjectMetadataWriteGuard) -> Result<AdmittedDir, IdsPublicationError> {
-    let meta = guard.meta();
-    let name = guard.quarantine_name();
-    match meta.admit_child(name) {
-        Ok(dir) => Ok(dir),
-        Err(CustodyError::NotFound { .. }) => {
-            let dir = meta.create_child_dir(name)?;
-            // Both ends: the parent for the new entry, the directory itself so
-            // it is a durable destination before anything is moved into it.
+    match verdict {
+        Ok(true) => {
+            meta.unlink(held)?;
             meta.sync()?;
-            dir.sync()?;
-            Ok(dir)
+            Ok(())
         }
-        Err(error) => Err(error.into()),
+        Ok(false) => restore_quarantined(meta, held, name)
+            .and(Err(CustodyError::IdentityDrift { op }.into())),
+        Err(refusal) => restore_quarantined(meta, held, name).and(Err(refusal)),
     }
 }
 
-/// Remove the quarantine directory. It refuses while it still holds an object,
-/// which is exactly the protection wanted: a location with something in it is
-/// left for reconciliation rather than discarded.
-fn discard_quarantine(
-    guard: &ProjectMetadataWriteGuard,
-    held: AdmittedDir,
-) -> Result<(), IdsPublicationError> {
-    drop(held);
-    let meta = guard.meta();
-    meta.remove_dir(guard.quarantine_name())?;
-    meta.sync()?;
-    Ok(())
-}
-
-/// Put whatever an interrupted removal left in the quarantine directory back
-/// under `name`, and remove the directory.
+/// Put whatever an interrupted removal left at the quarantine name back under
+/// `name`, with no publication to judge it against.
 ///
-/// This is what makes every crash point inside a removal a state the artifact
-/// map already models, rather than a new dimension every arm would have to
-/// read. A crash after the move leaves the object in the directory and the name
-/// absent; restoring it returns the exact pre-removal state, and the removal
-/// runs again from there. A crash before the move, or after the unlink, leaves
-/// the directory empty and only the directory to remove.
-///
-/// The restore is refused, not forced, if `name` has since been taken: the
-/// object stays where it is and the refusal retains the project. Nothing here
-/// deletes anything.
+/// This is the header-less reconciliation: the callers that reach it have no
+/// recorded terminal, so no cleanup was authorized and nothing here may finish
+/// one. [`Session::reconcile`] is the form that runs with a terminal in hand.
 fn reconcile_quarantine(
     guard: &ProjectMetadataWriteGuard,
     name: &EntryName,
 ) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    if meta.stat_entry(guard.quarantine_name())?.is_none() {
+    let held = guard.quarantine_name();
+    if meta.stat_entry(held)?.is_none() {
         return Ok(());
     }
-    let held = meta.admit_child(guard.quarantine_name())?;
-    let inner = guard.quarantine_entry_name();
-    if held.stat_entry(inner)?.is_some() {
-        restore_quarantined(&held, inner, meta, name)?;
-    }
-    discard_quarantine(guard, held)
+    restore_quarantined(meta, held, name)
 }
 
 /// Move a quarantined object back under the name it came from. It is not this
 /// protocol's object to delete, so a destination that has since been taken
-/// refuses rather than being overwritten, and the object is left in place.
+/// refuses rather than being overwritten, and the object is left where it is.
 fn restore_quarantined(
-    held: &AdmittedDir,
-    inner: &EntryName,
     meta: &AdmittedDir,
+    held: &EntryName,
     name: &EntryName,
 ) -> Result<(), IdsPublicationError> {
-    held.rename_into(inner, meta, name)?;
-    // Both parents again: the object left one directory and entered another.
-    held.sync()?;
+    meta.rename_noreplace(held, name)?;
     meta.sync()?;
     Ok(())
 }
@@ -639,20 +599,20 @@ impl<'a> Session<'a> {
     /// so a call after an interruption resumes rather than repeats.
     pub(super) fn drive(
         &mut self,
-        _reconciled: Reconciled,
+        reconciled: &Reconciled,
     ) -> Result<IdsPublication, IdsPublicationError> {
         loop {
             match self.phase() {
                 1 => {
-                    self.require_pre_mutation_map()?;
+                    self.require_pre_mutation_map(reconciled)?;
                     self.append(INSTALLING, &[])?;
                 }
                 INSTALLING => {
-                    let terminal = self.install()?;
+                    let terminal = self.install(reconciled)?;
                     self.append(SETTLED, &[terminal.payload()])?;
                     self.terminal = Some(terminal);
                 }
-                SETTLED => return self.settle(),
+                SETTLED => return self.settle(reconciled),
                 found => return Err(MapFault::UnknownPhase { found }.into()),
             }
         }
@@ -698,8 +658,8 @@ impl<'a> Session<'a> {
     /// that has not run. An absent stage — which an outside writer sweeping the
     /// ignored transient can also produce — leaves nothing this publication may
     /// settle on or clean, and the `Installing` window refuses it too.
-    fn require_pre_mutation_map(&self) -> Result<(), IdsPublicationError> {
-        match self.read_map(1)? {
+    fn require_pre_mutation_map(&self, reconciled: &Reconciled) -> Result<(), IdsPublicationError> {
+        match self.read_map(1, reconciled)? {
             MapState::Prepared | MapState::Reverted => Ok(()),
             _ => Err(MapFault::OffMap { phase: 1 }.into()),
         }
@@ -710,11 +670,11 @@ impl<'a> Session<'a> {
     /// `Prepared` reading, and a crash after it leaves the installed reading.
     /// The two readings that reach here unmutated are the ones
     /// [`Self::require_pre_mutation_map`] admits, classified the same way.
-    fn install(&self) -> Result<Terminal, IdsPublicationError> {
-        match self.read_map(INSTALLING)? {
+    fn install(&self, reconciled: &Reconciled) -> Result<Terminal, IdsPublicationError> {
+        match self.read_map(INSTALLING, reconciled)? {
             MapState::Prepared => match self.header.base {
-                None => self.link_absent(),
-                Some(base) => self.exchange_replace(base),
+                None => self.link_absent(reconciled),
+                Some(base) => self.exchange_replace(base, reconciled),
             },
             settled => terminal_of_map(settled),
         }
@@ -725,14 +685,14 @@ impl<'a> Session<'a> {
     /// The mutations call this instead of deciding a terminal from their own
     /// outcome: a refused destination and a returned exchange each leave a map,
     /// and the map is what recovery would read after a crash at the same point.
-    fn terminal_from_map(&self) -> Result<Terminal, IdsPublicationError> {
-        terminal_of_map(self.read_map(INSTALLING)?)
+    fn terminal_from_map(&self, reconciled: &Reconciled) -> Result<Terminal, IdsPublicationError> {
+        terminal_of_map(self.read_map(INSTALLING, reconciled)?)
     }
 
     /// The absent arm: one destination-refusing hard link. A refused
     /// destination means the artifact this plan was admitted against as absent
     /// now exists, so the publication settles without installing.
-    fn link_absent(&self) -> Result<Terminal, IdsPublicationError> {
+    fn link_absent(&self, reconciled: &Reconciled) -> Result<Terminal, IdsPublicationError> {
         let meta = self.meta();
         match meta.link(self.guard.stage_name(), self.guard.ledger_name()) {
             Ok(()) => {
@@ -752,7 +712,7 @@ impl<'a> Session<'a> {
                     self.header.next_bytes.len(),
                 )?;
                 meta.sync()?;
-                self.terminal_from_map()
+                self.terminal_from_map(reconciled)
             }
             // The artifact this plan was admitted against as absent now
             // exists, so the map — not this refusal — names the terminal. The
@@ -761,7 +721,7 @@ impl<'a> Session<'a> {
             // time. `.marrow/ids` is a committed file, so an ordinary `git
             // checkout`, `stash pop`, or `pull` landing between the map read
             // and this link is what reaches here.
-            Err(CustodyError::AlreadyExists { .. }) => self.terminal_from_map(),
+            Err(CustodyError::AlreadyExists { .. }) => self.terminal_from_map(reconciled),
             Err(error) => Err(error.into()),
         }
     }
@@ -778,7 +738,11 @@ impl<'a> Session<'a> {
     /// `git add .` there tracks it. Reaching the exchange-back arm takes a
     /// writer editing the metadata directory outside the lock between this
     /// exchange and the stat below.
-    fn exchange_replace(&self, base: FsIdentity) -> Result<Terminal, IdsPublicationError> {
+    fn exchange_replace(
+        &self,
+        base: FsIdentity,
+        reconciled: &Reconciled,
+    ) -> Result<Terminal, IdsPublicationError> {
         let meta = self.meta();
         let next = self.header.next_inode;
         meta.exchange(self.guard.ledger_name(), self.guard.stage_name())?;
@@ -792,7 +756,7 @@ impl<'a> Session<'a> {
         }
         if staged.identity() == base {
             meta.sync()?;
-            return self.terminal_from_map();
+            return self.terminal_from_map(reconciled);
         }
         let third = staged.identity();
         meta.exchange(self.guard.ledger_name(), self.guard.stage_name())?;
@@ -803,7 +767,7 @@ impl<'a> Session<'a> {
                 if restored.identity() == third && returned.identity() == next =>
             {
                 meta.sync()?;
-                self.terminal_from_map()
+                self.terminal_from_map(reconciled)
             }
             _ => Err(MapFault::ExchangeUncertain.into()),
         }
@@ -811,9 +775,9 @@ impl<'a> Session<'a> {
 
     /// Clean the exact stage alias, prove the terminal reading, then unlink the
     /// marker and sync. Only that final directory sync ends the publication.
-    fn settle(&mut self) -> Result<IdsPublication, IdsPublicationError> {
+    fn settle(&mut self, reconciled: &Reconciled) -> Result<IdsPublication, IdsPublicationError> {
         let terminal = self.terminal.ok_or(MapFault::MissingTerminal)?;
-        let map = self.read_map(SETTLED)?;
+        let map = self.read_map(SETTLED, reconciled)?;
         match (terminal, map) {
             (Terminal::Installed, MapState::Installed)
             | (Terminal::Reverted, MapState::Reverted) => {
@@ -851,11 +815,11 @@ impl<'a> Session<'a> {
     ///
     /// A blind restore is wrong here. When a terminal is already recorded, the
     /// cleanup it authorizes was running when the crash landed, and the object
-    /// in quarantine is the one that cleanup had taken. Putting it back
-    /// manufactures a pre-cleanup map the terminal record contradicts — and the
-    /// target is independently mutable, so an outside writer can make that
-    /// contradiction permanent. Finishing the removal instead is both what the
-    /// terminal already committed to and the only reading that cannot be
+    /// at the quarantine name is the one that cleanup had taken. Putting it
+    /// back manufactures a pre-cleanup map the terminal record contradicts —
+    /// and the target is independently mutable, so an outside writer can make
+    /// that contradiction permanent. Finishing the removal instead is both what
+    /// the terminal already committed to and the only reading that cannot be
     /// invalidated by what happened at the other name.
     ///
     /// Only an object resolving to the exact run that cleanup was entitled to
@@ -864,28 +828,24 @@ impl<'a> Session<'a> {
     /// here may finish one.
     pub(super) fn reconcile(&self) -> Result<Reconciled, IdsPublicationError> {
         let meta = self.meta();
+        let held = self.guard.quarantine_name();
         let name = self.guard.stage_name();
-        if meta.stat_entry(self.guard.quarantine_name())?.is_none() {
+        if meta.stat_entry(held)?.is_none() {
             return Ok(Reconciled(()));
         }
-        let held = meta.admit_child(self.guard.quarantine_name())?;
-        let inner = self.guard.quarantine_entry_name();
-        if held.stat_entry(inner)?.is_some() {
-            let entitled = match self.terminal {
-                Some(terminal) => {
-                    let file = held.open_file_readonly(inner)?;
-                    self.role_of_open(&file)? == self.cleanup_role(terminal)
-                }
-                None => false,
-            };
-            if entitled {
-                held.unlink(inner)?;
-                held.sync()?;
-            } else {
-                restore_quarantined(&held, inner, meta, name)?;
+        let entitled = match self.terminal {
+            Some(terminal) => {
+                let file = meta.open_file_readonly(held)?;
+                self.role_of_open(&file)? == self.cleanup_role(terminal)
             }
+            None => false,
+        };
+        if entitled {
+            meta.unlink(held)?;
+            meta.sync()?;
+        } else {
+            restore_quarantined(meta, held, name)?;
         }
-        discard_quarantine(self.guard, held)?;
         Ok(Reconciled(()))
     }
 
@@ -1017,7 +977,11 @@ impl<'a> Session<'a> {
     /// names the reader for an off-map refusal and is supplied rather than read
     /// from the journal, because the tail-derivation probe reads the map with
     /// no live journal.
-    fn read_map(&self, phase: u8) -> Result<MapState, IdsPublicationError> {
+    fn read_map(
+        &self,
+        phase: u8,
+        _reconciled: &Reconciled,
+    ) -> Result<MapState, IdsPublicationError> {
         let ledger = self.guard.ledger_name();
         let stage = self.guard.stage_name();
         let target = self.stat(ledger)?;
@@ -1153,10 +1117,11 @@ fn expected_next_record(
     guard: &ProjectMetadataWriteGuard,
     header: &RowHeader,
     last: u8,
+    reconciled: &Reconciled,
 ) -> Result<Vec<u8>, IdsPublicationError> {
     let terminal = match last {
         1 => return Ok(record(1, INSTALLING, &[])),
-        INSTALLING => pending_terminal(guard, header)?,
+        INSTALLING => pending_terminal(guard, header, reconciled)?,
         found => return Err(MapFault::UnknownPhase { found }.into()),
     };
     Ok(record(2, SETTLED, &[terminal.payload()]))
@@ -1174,6 +1139,7 @@ fn record(sequence: u32, tag: u8, payload: &[u8]) -> Vec<u8> {
 fn pending_terminal(
     guard: &ProjectMetadataWriteGuard,
     header: &RowHeader,
+    reconciled: &Reconciled,
 ) -> Result<Terminal, IdsPublicationError> {
     let probe = Session {
         guard,
@@ -1181,7 +1147,26 @@ fn pending_terminal(
         terminal: None,
         journal: None,
     };
-    probe.terminal_from_map()
+    probe.terminal_from_map(reconciled)
+}
+
+/// Reconcile with a header and recorded terminal but no live journal.
+///
+/// Tail derivation reads the artifact map before the journal is resumed, so it
+/// needs the same proof the driver does and the same judgement behind it. The
+/// probe carries no journal, exactly as [`pending_terminal`]'s does.
+fn reconcile_for(
+    guard: &ProjectMetadataWriteGuard,
+    header: &RowHeader,
+    terminal: Option<Terminal>,
+) -> Result<Reconciled, IdsPublicationError> {
+    Session {
+        guard,
+        header: header.clone(),
+        terminal,
+        journal: None,
+    }
+    .reconcile()
 }
 
 /// The one place a settled artifact map is turned into a terminal.

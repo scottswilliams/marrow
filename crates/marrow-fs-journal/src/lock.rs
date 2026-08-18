@@ -23,14 +23,20 @@ use crate::sys;
 /// reacquires during that window may observe [`LockError::Held`].
 ///
 /// The same mechanism sets what this lock does *not* exclude. `flock` is held
-/// by an open file description, not by a process or a thread, so a child that
-/// inherits the descriptor across `fork` inherits the lock itself: it is
-/// already inside the exclusion and a fresh acquisition there succeeds against
-/// nothing. Threads sharing one holder are likewise not serialized by it. What
-/// the lock excludes is a *separate* acquisition — another process, or this one
-/// after a genuine release. Serializing the operations performed under a single
-/// acquisition is the holder's own job, and its callers get that from exclusive
-/// borrows rather than from this lock.
+/// by an open file description, not by a process or a thread. A child that
+/// inherits the descriptor across `fork` therefore shares the *same* hold: it
+/// is inside the exclusion rather than contending with it, and parent and child
+/// can each operate under it concurrently. A genuinely fresh open in that child
+/// does contend, exactly as any other process's would — inheriting the hold and
+/// taking a new one are different acts, and only the first escapes exclusion.
+/// Threads sharing one holder are likewise not serialized by it.
+///
+/// What the lock excludes is a *separate* acquisition. Serializing the
+/// operations performed under a single acquisition is the holder's own job; its
+/// callers get that from exclusive borrows, which cover threads sharing one
+/// value but not two address spaces holding copies of it after a `fork`. A
+/// consumer that forks while holding this lock is outside what either mechanism
+/// provides.
 ///
 /// ```compile_fail
 /// fn duplicate(lock: marrow_fs_journal::CacheLock) {

@@ -78,7 +78,8 @@ pub use frame::{
     TailState, decode_frame, encode_header, encode_record,
 };
 pub use journal::{
-    ClaimedJournal, CorruptionReason, JournalError, JournalWitness, LiveJournal, PendingJournal,
-    PendingName, PendingState, PreclaimDebris, claim, classify,
+    ClaimPhase, ClaimRefusal, ClaimedJournal, CorruptionReason, JournalError, JournalWitness,
+    LiveJournal, MarkerView, PendingJournal, PendingName, PendingState, PreclaimDebris, claim,
+    classify,
 };
 pub use lock::{CacheLock, LockError};

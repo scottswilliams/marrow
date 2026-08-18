@@ -15,7 +15,7 @@
 //! ```text
 //! ids                      the committed identity ledger
 //! ids.publish.stage        the successor before it is installed
-//! ids.publish.quarantine   a directory holding one object under judgement
+//! ids.publish.quarantine   holds one object while a removal judges it
 //! ids.pending              the durable publication marker
 //! ids.pending.create       the marker's pre-claim alias
 //! publish.lock             the cooperative project-metadata write lock
@@ -32,22 +32,32 @@
 //! carries an entry that would make a fresh clone read a ledger this protocol
 //! calls indeterminate.
 //!
-//! # The cooperative contract's quiescence assumption
+//! # Which writers the contract admits, and what that bounds
 //!
-//! A descriptor already open on an entry survives every rename of that entry,
-//! and nothing this protocol can do revokes another process's open descriptor.
-//! A cooperating writer that opened a publication transient *before* a
-//! publication began, and writes through that descriptor afterwards, can still
-//! be writing while a removal judges and unlinks the inode; the bytes it
-//! flushes after the unlink go nowhere.
+//! The writers this protocol is designed against are ordinary Git operations —
+//! a checkout, a `stash pop`, a pull — landing in `.marrow` while a publication
+//! runs. What makes them safe here is not how they write but *what* they write:
+//! a Git operation writes tracked paths, and every name in this directory
+//! except `ids` is a protocol transient that is never tracked. The write owner
+//! writes the ignore entry naming all five, the repository gate asserts none of
+//! them is in the index — by name and by contents, so a directory-shaped one
+//! cannot hide — and a tracked transient is therefore a caught defect rather
+//! than a state to design around. A cooperating Git operation does not touch a
+//! transient at all.
 //!
-//! The contract therefore assumes cooperating writers hold no open descriptor
-//! on a publication transient across a publication. Ordinary Git operations
-//! satisfy it by construction: Git writes a temporary file and renames it into
-//! place, so the descriptor it holds is on the temporary, and by the time the
-//! tracked name resolves to that object that descriptor is closed. This is an
-//! assumption named, not a property enforced. It qualifies the removal bound in
-//! [`marrow_fs_journal::FsIdentity`], which states the rest.
+//! That is the whole argument, and it needs no assumption about descriptors:
+//! the stage, the quarantine, and the two marker names are outside what a
+//! cooperating writer addresses.
+//!
+//! Two writers are outside the contract, and the protocol says so rather than
+//! claiming to handle them. One holds a descriptor opened on a transient before
+//! a publication began: a descriptor survives every rename, and no process can
+//! revoke another's, so writes through it can still land while a removal judges
+//! and unlinks the object. The other deliberately writes the untracked protocol
+//! names. Against either, the interval between validating an object and
+//! unlinking the name that held it is irreducible on POSIX — `unlinkat` names a
+//! path and neither qualified platform offers an unlink through a descriptor.
+//! [`marrow_fs_journal::FsIdentity`] states the resulting bound.
 //!
 //! # Protocol
 //!
@@ -136,15 +146,11 @@ pub use marker::IdsPublicationMarker;
 /// adapter derives its publication names from that owner rather than repeating
 /// either one.
 const STAGE_SUFFIX: &str = ".publish.stage";
-/// The suffix the cleanup quarantine adds to the ledger's entry name. It names
-/// a directory, not an entry: a removal creates it, moves the object it is
-/// judging into it, and removes it again, so the object is never judged under
-/// a name an outside writer addresses.
+/// The suffix the cleanup quarantine adds to the ledger's entry name. A removal
+/// moves the object it is judging here before it opens it, so the object is
+/// judged and unlinked under a name no cooperating writer ever touches rather
+/// than under the name one may be writing.
 const QUARANTINE_SUFFIX: &str = ".publish.quarantine";
-/// The one entry a quarantine directory ever holds. Fixed, so an interrupted
-/// removal's leftover is found by stat rather than by enumerating a directory
-/// this owner never enumerates.
-const QUARANTINE_ENTRY: &str = "held";
 /// The cooperative project-metadata write lock's entry name.
 const LOCK_NAME: &str = "publish.lock";
 /// The version-control ignore entry the write owner keeps beside the entries
@@ -186,9 +192,9 @@ pub(crate) fn stage_spelling() -> &'static str {
     STAGE.get_or_init(|| format!("{IDS_ENTRY}{STAGE_SUFFIX}"))
 }
 
-/// The cleanup quarantine directory's name, derived from the same owner
-/// constant as every other publication name. No durable header encodes it: it
-/// exists only for the length of one removal, and a leftover is reconciled by
+/// The cleanup quarantine's entry name, derived from the same owner constant as
+/// every other publication name. No durable header encodes it: it holds an
+/// object only for the length of one removal, and a leftover is reconciled by
 /// the next command.
 pub(crate) fn quarantine_spelling() -> &'static str {
     static QUARANTINE: OnceLock<String> = OnceLock::new();
@@ -229,15 +235,41 @@ pub enum IdsPublication {
 /// ```
 #[must_use = "a durably claimed publication advances only by consuming `recover`"]
 pub struct IdsPublicationPending<'a> {
-    session: protocol::Session<'a>,
+    work: PendingWork<'a>,
     cause: IdsPublicationError,
     armed: bool,
+}
+
+/// What advancing a pending publication has to work with.
+///
+/// A publication interrupted after its claim went durable keeps its live
+/// journal and resumes through it. A claim that refused *after* its own durable
+/// parent sync left a marker with no live journal at all — nothing was handed
+/// back to resume — so the only way forward is the recovery that adopts a
+/// durable marker from disk. Both are durable markers this process is holding
+/// open, which is why both are this one affine value rather than an ordinary
+/// error.
+enum PendingWork<'a> {
+    // Boxed: a live session is far larger than a guard reference, and this
+    // value is already behind one indirection in the outcome it travels in.
+    Session(Box<protocol::Session<'a>>),
+    Marker(&'a ProjectMetadataWriteGuard),
 }
 
 impl<'a> IdsPublicationPending<'a> {
     fn new(session: protocol::Session<'a>, cause: IdsPublicationError) -> Self {
         Self {
-            session,
+            work: PendingWork::Session(Box::new(session)),
+            cause,
+            armed: true,
+        }
+    }
+
+    /// The pending value for a claim that refused after its durable parent
+    /// sync: a durable marker this call never received a journal for.
+    fn unclaimed(guard: &'a ProjectMetadataWriteGuard, cause: IdsPublicationError) -> Self {
+        Self {
+            work: PendingWork::Marker(guard),
             cause,
             armed: true,
         }
@@ -261,10 +293,14 @@ impl<'a> IdsPublicationPending<'a> {
         // already moved its object into quarantine, so this retry is a fresh
         // classification and reconciles exactly as any other entry does. The
         // driver takes the proof, so this cannot be skipped here or anywhere.
-        let settled = self
-            .session
-            .reconcile()
-            .and_then(|reconciled| self.session.drive(reconciled));
+        let settled = match &mut self.work {
+            PendingWork::Session(session) => session
+                .reconcile()
+                .and_then(|reconciled| session.drive(&reconciled)),
+            PendingWork::Marker(guard) => protocol::recover(guard).and_then(|settled| {
+                settled.ok_or_else(|| IdsPublicationError::bare(IdsRefusal::UnclaimedIncomplete))
+            }),
+        };
         self.armed = settled.is_err();
         settled
     }
@@ -505,7 +541,6 @@ pub struct ProjectMetadataWriteGuard {
     ledger: EntryName,
     stage: EntryName,
     quarantine: EntryName,
-    quarantine_entry: EntryName,
     journal: PendingName,
     _lock: CacheLock,
 }
@@ -540,7 +575,6 @@ impl ProjectMetadataWriteGuard {
                 .expect("the fixed journal names are admitted spellings"),
             stage: admitted_name(stage_spelling()),
             quarantine: admitted_name(quarantine_spelling()),
-            quarantine_entry: admitted_name(QUARANTINE_ENTRY),
             ledger,
             meta,
             _lock: lock,
@@ -557,7 +591,14 @@ impl ProjectMetadataWriteGuard {
     /// # Errors
     ///
     /// Returns a typed refusal for a retained manual state or a fresh custody
-    /// or journal refusal. Every byte is retained on refusal.
+    /// or journal refusal.
+    ///
+    /// A refusal retains every byte the protocol had not already been committed
+    /// to removing. Recovery resumes an interrupted publication, so a removal
+    /// the durable record already authorized can complete before a later step
+    /// refuses — the stage a settled terminal names, or the object an
+    /// interrupted removal of it left behind. Nothing else is touched, and no
+    /// artifact byte is replaced by a refusing recovery.
     pub fn recover_ids(&mut self) -> Result<Option<IdsPublication>, IdsPublicationError> {
         protocol::recover(self)
     }
@@ -590,10 +631,6 @@ impl ProjectMetadataWriteGuard {
 
     fn quarantine_name(&self) -> &EntryName {
         &self.quarantine
-    }
-
-    fn quarantine_entry_name(&self) -> &EntryName {
-        &self.quarantine_entry
     }
 
     fn journal_names(&self) -> &PendingName {

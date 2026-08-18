@@ -199,8 +199,13 @@ ledger is indeterminate, so every read-only command reports
 replace; `marrow run` — the one command that writes the ledger — settles the
 interrupted publication before it captures the project or draws entropy. A state
 the protocol cannot have produced, and a publication that was created but never
-durably claimed, are retained exactly as found: no command removes an entry it
-cannot prove is its own, and there is no sweep of temporary files. Removing the
+durably claimed, are retained exactly as found: no command removes an entry
+unless the durable record says which run it is removing and the entry carries
+exactly that run, and there is no sweep of temporary files. Matching bytes at a
+matching inode number establish that an entry is equivalent to what the record
+bound, not that it is the same object — an inode number freed by `unlink` is
+reused, and no check after a crash can tell a byte-identical replacement from
+the original. Removing the
 named entries by hand is the documented way out.
 
 The established durability is atomic publication plus process- and

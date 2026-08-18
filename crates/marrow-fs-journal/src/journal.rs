@@ -505,16 +505,84 @@ impl LiveJournal<'_> {
     }
 }
 
+/// Which side of the durable claim a refusal fell on.
+///
+/// The claim links the marker and syncs the parent partway through, and the
+/// steps after that sync can still refuse. A caller cannot tell those two
+/// refusals apart from the error alone, and they call for opposite handling:
+/// before the sync nothing is claimed and the refusal is ordinary, after it a
+/// durable marker exists that only recovery may settle. This call knows which
+/// side it was on, so it says so rather than leaving the caller to guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimPhase {
+    /// The parent sync that makes the claim durable had not run. Nothing is
+    /// claimed; the project carries at most preclaim debris.
+    Preclaim,
+    /// The parent sync had run. The marker is durable whatever else refused.
+    Durable,
+}
+
+/// A claim that refused, and which side of durability it refused on.
+#[derive(Debug)]
+pub struct ClaimRefusal {
+    /// Where the refusal fell relative to the durable parent sync.
+    pub phase: ClaimPhase,
+    /// The refusal itself.
+    pub error: JournalError,
+}
+
+impl From<ClaimRefusal> for JournalError {
+    fn from(refusal: ClaimRefusal) -> Self {
+        refusal.error
+    }
+}
+
 /// Claim a new pending journal in `dir` under `name`. `build_header` receives
 /// the claim witness and returns the row-specific header; kinds 4 and 5 must
 /// embed the witness as their leading `JournalCommon`. `prepared_payload` is
 /// the sequence-zero Prepared record's payload.
+///
+/// # Errors
+///
+/// Returns a [`ClaimRefusal`] naming the side of the durable parent sync the
+/// refusal fell on. A [`ClaimPhase::Durable`] refusal leaves a marker the
+/// caller must hand to recovery rather than clean up.
 pub fn claim<'d>(
     dir: &'d AdmittedDir,
     name: &PendingName,
     kind: JournalKind,
     build_header: impl FnOnce(&JournalWitness) -> Vec<u8>,
     prepared_payload: &[u8],
+) -> Result<LiveJournal<'d>, ClaimRefusal> {
+    // The flag is set by the one statement that makes the claim durable, so
+    // the phase a refusal reports is read from the code path itself rather
+    // than inferred from the error afterwards.
+    let mut durable = false;
+    claim_phased(
+        dir,
+        name,
+        kind,
+        build_header,
+        prepared_payload,
+        &mut durable,
+    )
+    .map_err(|error| ClaimRefusal {
+        phase: if durable {
+            ClaimPhase::Durable
+        } else {
+            ClaimPhase::Preclaim
+        },
+        error,
+    })
+}
+
+fn claim_phased<'d>(
+    dir: &'d AdmittedDir,
+    name: &PendingName,
+    kind: JournalKind,
+    build_header: impl FnOnce(&JournalWitness) -> Vec<u8>,
+    prepared_payload: &[u8],
+    durable: &mut bool,
 ) -> Result<LiveJournal<'d>, JournalError> {
     if dir.stat_entry(name.claim())?.is_some() || dir.stat_entry(name.pending())?.is_some() {
         return Err(JournalError::Custody(CustodyError::AlreadyExists {
@@ -563,6 +631,7 @@ pub fn claim<'d>(
     }
     // This parent sync is the durable claim.
     dir.sync()?;
+    *durable = true;
     recheck(dir, name.pending(), &file, 2, bytes.len())?;
     recheck(dir, name.claim(), &file, 2, bytes.len())?;
     dir.unlink(name.claim())?;
@@ -584,15 +653,57 @@ pub fn claim<'d>(
     })
 }
 
+/// The only entries a classification may reach: the two marker names, and the
+/// directory that holds them.
+///
+/// A caller that classifies before reconciling other state depends on this
+/// call reading no artifact — nothing a removal can have moved out from under
+/// it. Handing classification the whole admitted directory made that a property
+/// to re-check by reading the body; handing it this makes it a property of the
+/// signature. [`Self::claim_stat`] and [`Self::pending_stat`] are the only
+/// reads it offers, and neither names an artifact.
+///
+/// [`Self::owner`] does hand back the directory, because the state this returns
+/// acts through it afterwards — a preclaim discard, a claimed adoption, a
+/// pending resume. That is the classified state's own later work, not a read
+/// this classification performs.
+pub struct MarkerView<'d> {
+    dir: &'d AdmittedDir,
+    name: &'d PendingName,
+}
+
+impl<'d> MarkerView<'d> {
+    /// View `dir` through the marker pair `name` alone.
+    pub fn new(dir: &'d AdmittedDir, name: &'d PendingName) -> Self {
+        Self { dir, name }
+    }
+
+    fn claim_stat(&self) -> Result<Option<EntryStat>, CustodyError> {
+        self.dir.stat_entry(self.name.claim())
+    }
+
+    fn pending_stat(&self) -> Result<Option<EntryStat>, CustodyError> {
+        self.dir.stat_entry(self.name.pending())
+    }
+
+    fn owner(&self) -> &'d AdmittedDir {
+        self.dir
+    }
+
+    fn names(&self) -> &'d PendingName {
+        self.name
+    }
+}
+
 /// Classify the state of the pending-journal name pair without mutating
 /// anything.
 pub fn classify<'d>(
-    dir: &'d AdmittedDir,
-    name: &PendingName,
+    view: MarkerView<'d>,
     expected: JournalKind,
 ) -> Result<PendingState<'d>, JournalError> {
-    let claim_stat = dir.stat_entry(name.claim())?;
-    let pending_stat = dir.stat_entry(name.pending())?;
+    let claim_stat = view.claim_stat()?;
+    let pending_stat = view.pending_stat()?;
+    let (dir, name) = (view.owner(), view.names());
     match (claim_stat, pending_stat) {
         (None, None) => Ok(PendingState::Absent),
         (Some(claim_stat), None) => classify_preclaim(dir, name, claim_stat),
