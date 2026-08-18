@@ -114,6 +114,10 @@ mod imp {
             _ => NodeKind::Other,
         };
         let (dev, ino) = dev_ino(stat);
+        // `st_nlink` and `st_mode` are `u16` on Darwin and wider on Linux, so
+        // each widening is required on one qualified target and an identity on
+        // the other. The lint sees only the target it runs on.
+        #[allow(clippy::useless_conversion)]
         EntryStat {
             identity: FsIdentity::new(dev, ino),
             kind,
