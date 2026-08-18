@@ -46,6 +46,31 @@ impl fmt::Display for ArtifactRole {
     }
 }
 
+/// Which run the header binds a present entry to, resolved from the bound
+/// inode number and the bound byte run together.
+///
+/// An inode number is not an identity across the crash window. `unlink` frees
+/// the number with the last link, and ext4 and XFS hand it to the next create
+/// in the same block group, so a foreign entry can arrive wearing the number
+/// the header bound; APFS draws numbers from a counter that never repeats,
+/// which is why the number alone reads correctly there and misreads elsewhere.
+/// No open descriptor survives a crash to pin the number, so the header's own
+/// byte runs are what close the gap — and the header carries both of them,
+/// durable before the claim, for exactly this reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundRole {
+    /// The staged successor: the bound number under the bound run.
+    Next,
+    /// The displaced generation: the bound number under the bound run.
+    Base,
+    /// A bound number under some other run — a recycled number, or an entry
+    /// rewritten in place. It is neither bound run, and it is not a stranger
+    /// either, so no arm may read it as one.
+    Drifted,
+    /// Neither bound number.
+    Foreign,
+}
+
 /// Why a state is outside the closed publication map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MapFault {
@@ -161,9 +186,11 @@ impl Terminal {
     }
 }
 
-/// The closed artifact map, read from name-to-inode mappings, link counts, and
-/// exact sizes. Each phase admits its own subset; every other reading is
-/// retained corruption.
+/// The closed artifact map, read from name-to-entry resolutions and link
+/// counts. Each present entry resolves against the runs the header bound —
+/// inode number and exact bytes together — so no state here rests on a number
+/// a crash may have left recycled. Each phase admits its own subset; every
+/// other reading is retained corruption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MapState {
     /// `target=base` (or absent) and `stage=next`, each at one link.
@@ -448,8 +475,10 @@ impl<'a> Session<'a> {
     /// The window before any artifact mutation: this publication has created
     /// its own stage and touched nothing else.
     ///
-    /// Two readings are admitted. `Prepared` is the state the header binds, and
-    /// its exact byte runs are compared here. `Reverted` — the stage still the
+    /// Two readings are admitted. `Prepared` is the state the header binds,
+    /// exact byte runs included: the map resolves every entry against the runs
+    /// the header carries, so reaching this reading is already the comparison.
+    /// `Reverted` — the stage still the
     /// exact successor at one link, the artifact neither the successor nor the
     /// generation the header binds — cannot be this publication's own work,
     /// because no mutation of the artifact has run. It is the outside writer
@@ -470,8 +499,7 @@ impl<'a> Session<'a> {
     /// settle on or clean, and the `Installing` window refuses it too.
     fn require_pre_mutation_map(&self) -> Result<(), IdsPublicationError> {
         match self.read_map(1)? {
-            MapState::Prepared => self.require_prepared_bytes(),
-            MapState::Reverted => Ok(()),
+            MapState::Prepared | MapState::Reverted => Ok(()),
             _ => Err(MapFault::OffMap { phase: 1 }.into()),
         }
     }
@@ -483,13 +511,10 @@ impl<'a> Session<'a> {
     /// [`Self::require_pre_mutation_map`] admits, classified the same way.
     fn install(&self) -> Result<Terminal, IdsPublicationError> {
         match self.read_map(INSTALLING)? {
-            MapState::Prepared => {
-                self.require_prepared_bytes()?;
-                match self.header.base {
-                    None => self.link_absent(),
-                    Some(base) => self.exchange_replace(base),
-                }
-            }
+            MapState::Prepared => match self.header.base {
+                None => self.link_absent(),
+                Some(base) => self.exchange_replace(base),
+            },
             settled => terminal_of_map(settled),
         }
     }
@@ -590,10 +615,10 @@ impl<'a> Session<'a> {
         let map = self.read_map(SETTLED)?;
         match (terminal, map) {
             (Terminal::Installed, MapState::Installed) => {
-                self.clean_stage(self.displaced_identity())?;
+                self.clean_stage(self.displaced_role())?;
             }
             (Terminal::Reverted, MapState::Reverted) => {
-                self.clean_stage(self.header.next_inode)?;
+                self.clean_stage(BoundRole::Next)?;
             }
             (Terminal::Installed, MapState::InstalledClean)
             | (Terminal::Reverted, MapState::RevertedClean) => {}
@@ -607,27 +632,40 @@ impl<'a> Session<'a> {
         Ok(terminal.publication())
     }
 
-    /// The identity the stage name carries once the successor is installed: the
+    /// The run the stage name carries once the successor is installed: the
     /// displaced generation, or the successor itself when the plan displaced
     /// nothing and the two names are one inode.
-    fn displaced_identity(&self) -> FsIdentity {
-        self.header.base.unwrap_or(self.header.next_inode)
+    fn displaced_role(&self) -> BoundRole {
+        if self.header.base.is_some() {
+            BoundRole::Base
+        } else {
+            BoundRole::Next
+        }
     }
 
-    fn clean_stage(&self, expected: FsIdentity) -> Result<(), IdsPublicationError> {
+    /// Unlink the stage alias, and only after the entry there resolves to the
+    /// run the terminal says it carries. The map read that chose this cleanup
+    /// is a separate call, so the name can be re-pointed in between; resolving
+    /// the run again — not the inode number, which an unlink in that window
+    /// frees for reuse — is what keeps the unlink off a stranger's entry.
+    fn clean_stage(&self, expected: BoundRole) -> Result<(), IdsPublicationError> {
         let meta = self.meta();
         let name = self.guard.stage_name();
-        match meta.stat_entry(name)? {
-            Some(stat) if stat.identity() == expected => {
-                meta.unlink(name)?;
-                meta.sync()?;
-                Ok(())
-            }
-            _ => Err(CustodyError::IdentityDrift {
+        let drift = || -> IdsPublicationError {
+            CustodyError::IdentityDrift {
                 op: "stage cleanup",
             }
-            .into()),
+            .into()
+        };
+        let Some(stat) = meta.stat_entry(name)? else {
+            return Err(drift());
+        };
+        if self.role_of(name, &stat)? != expected {
+            return Err(drift());
         }
+        meta.unlink(name)?;
+        meta.sync()?;
+        Ok(())
     }
 
     /// Prove the terminal reading before the marker goes: an installed
@@ -666,93 +704,115 @@ impl<'a> Session<'a> {
         Ok(self.meta().stat_entry(name)?)
     }
 
-    /// Read the closed artifact map from name-to-inode mappings, link counts,
-    /// and exact sizes. Byte runs are compared separately, at the points where
-    /// an exact comparison decides a mutation. `phase` names the reader for an
-    /// off-map refusal and is supplied rather than read from the journal,
-    /// because the tail-derivation probe reads the map with no live journal.
+    /// Resolve one present entry against the runs the header bound.
+    ///
+    /// The size comes from the stat already in hand, so an entry that cannot be
+    /// a bound run is answered without an open; only a size-matching candidate
+    /// is read, and the read is bounded by the ledger ceiling the header's own
+    /// runs are bounded by.
+    fn role_of(
+        &self,
+        name: &EntryName,
+        stat: &EntryStat,
+    ) -> Result<BoundRole, IdsPublicationError> {
+        let carries = |run: &[u8]| -> Result<bool, IdsPublicationError> {
+            if stat.size() != run.len() as u64 {
+                return Ok(false);
+            }
+            Ok(
+                matches!(read_entry(self.meta(), name)?, Some((identity, bytes))
+                    if identity == stat.identity() && bytes == run),
+            )
+        };
+        if stat.identity() == self.header.next_inode {
+            return Ok(if carries(&self.header.next_bytes)? {
+                BoundRole::Next
+            } else {
+                BoundRole::Drifted
+            });
+        }
+        if self.header.base == Some(stat.identity()) {
+            return Ok(if carries(&self.header.base_bytes)? {
+                BoundRole::Base
+            } else {
+                BoundRole::Drifted
+            });
+        }
+        Ok(BoundRole::Foreign)
+    }
+
+    /// Read the closed artifact map from name-to-entry resolutions and link
+    /// counts. Each present entry is resolved to the run the header bound it
+    /// to — inode number and exact bytes together, never the number alone —
+    /// because a number is not an identity across the crash window. `phase`
+    /// names the reader for an off-map refusal and is supplied rather than read
+    /// from the journal, because the tail-derivation probe reads the map with
+    /// no live journal.
     fn read_map(&self, phase: u8) -> Result<MapState, IdsPublicationError> {
-        let target = self.stat(self.guard.ledger_name())?;
-        let staged = self.stat(self.guard.stage_name())?;
-        let next = self.header.next_inode;
-        let next_len = self.header.next_bytes.len();
-        let staged_is_next =
-            |stat: &EntryStat| stat.identity() == next && stat.size() == next_len as u64;
+        let ledger = self.guard.ledger_name();
+        let stage = self.guard.stage_name();
+        let target = self.stat(ledger)?;
+        let staged = self.stat(stage)?;
+        let target_role = match &target {
+            Some(stat) => Some(self.role_of(ledger, stat)?),
+            None => None,
+        };
+        let staged_role = match &staged {
+            Some(stat) => Some(self.role_of(stage, stat)?),
+            None => None,
+        };
+        let target_next = target_role == Some(BoundRole::Next);
+        let target_base = target_role == Some(BoundRole::Base);
+        let target_foreign = target_role == Some(BoundRole::Foreign);
+        let staged_next = staged_role == Some(BoundRole::Next);
+        let staged_base = staged_role == Some(BoundRole::Base);
+        // Neither bound run: a stranger, or a bound number under another run.
+        let target_neither = target_foreign || target_role == Some(BoundRole::Drifted);
+        let staged_neither =
+            staged_role == Some(BoundRole::Foreign) || staged_role == Some(BoundRole::Drifted);
 
         match (target, staged, self.header.base) {
             // Prepared, absent arm: the artifact this plan displaces nothing of
             // is still absent and the successor is staged.
-            (None, Some(staged), None) if staged_is_next(&staged) && staged.nlink() == 1 => {
+            (None, Some(staged), None) if staged_next && staged.nlink() == 1 => {
                 Ok(MapState::Prepared)
             }
             // Prepared, replace arm: the bound generation is still committed.
-            (Some(target), Some(staged), Some(base))
-                if target.identity() == base
-                    && target.nlink() == 1
-                    && staged_is_next(&staged)
-                    && staged.nlink() == 1 =>
+            (Some(target), Some(staged), Some(_))
+                if target_base && target.nlink() == 1 && staged_next && staged.nlink() == 1 =>
             {
                 Ok(MapState::Prepared)
             }
             // Installed, absent arm: one inode under both names.
-            (Some(target), Some(staged), None)
-                if target.identity() == next
-                    && staged.identity() == next
-                    && target.nlink() == 2 =>
-            {
+            (Some(target), Some(_), None) if target_next && staged_next && target.nlink() == 2 => {
                 Ok(MapState::Installed)
             }
             // Installed, replace arm: the displaced generation sits at the
             // stage name.
-            (Some(target), Some(staged), Some(base))
-                if target.identity() == next && staged.identity() == base =>
-            {
-                Ok(MapState::Installed)
-            }
+            (Some(_), Some(_), Some(_)) if target_next && staged_base => Ok(MapState::Installed),
             // The one state a dead process cannot be given the benefit of: the
             // successor is installed and the stage holds neither the displaced
             // generation nor the successor itself, so a third inode is live.
             // Any other unexpected reading beside an installed successor is
             // off-map rather than a third inode.
-            (Some(target), Some(staged), base)
-                if target.identity() == next
-                    && staged.identity() != next
-                    && Some(staged.identity()) != base =>
-            {
+            (Some(_), Some(_), _) if target_next && staged_neither => {
                 Err(MapFault::ThirdInode.into())
             }
-            (Some(target), None, _) if target.identity() == next && target.nlink() == 1 => {
+            (Some(target), None, _) if target_next && target.nlink() == 1 => {
                 Ok(MapState::InstalledClean)
             }
             // Reverted: the successor is still only staged and the artifact is
             // neither it nor the generation the plan bound.
-            (Some(target), Some(staged), base)
-                if staged_is_next(&staged)
-                    && staged.nlink() == 1
-                    && target.identity() != next
-                    && Some(target.identity()) != base =>
-            {
+            (Some(_), Some(staged), _) if staged_next && staged.nlink() == 1 && target_neither => {
                 Ok(MapState::Reverted)
             }
-            (Some(target), None, _) if target.identity() != next => Ok(MapState::RevertedClean),
+            // The same reading with the stage already swept. A bound number
+            // under a drifted run is not admitted here: it cannot say whether
+            // the successor was installed, so it is retained rather than
+            // settled either way.
+            (Some(_), None, _) if target_base || target_foreign => Ok(MapState::RevertedClean),
             _ => Err(MapFault::OffMap { phase }.into()),
         }
-    }
-
-    fn require_prepared_bytes(&self) -> Result<(), IdsPublicationError> {
-        self.require_bytes(
-            self.guard.stage_name(),
-            &self.header.next_bytes,
-            ArtifactRole::Stage,
-        )?;
-        if self.header.base.is_some() {
-            self.require_bytes(
-                self.guard.ledger_name(),
-                &self.header.base_bytes,
-                ArtifactRole::Target,
-            )?;
-        }
-        Ok(())
     }
 
     fn require_bytes(

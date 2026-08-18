@@ -758,6 +758,70 @@ fn a_third_inode_beside_an_installed_successor_is_retained() {
     );
 }
 
+/// The same third inode, arriving on the inode number the header bound.
+///
+/// An inode number is free for reuse the moment its last link goes, and ext4
+/// and XFS hand it straight back to the next create in the same block group;
+/// APFS draws from a counter that never repeats. The bound generation here is
+/// unlinked and the third entry lands on its number, which the fixture spells
+/// directly by witnessing the number off the entry that carries it — the state
+/// a recycling filesystem produces on its own, reproduced on any filesystem.
+/// The stage name then maps to the bound number under a run that is not the
+/// bound one, and that is not the displaced generation coming back.
+#[test]
+fn a_third_inode_on_the_bound_generation_s_recycled_number_is_retained() {
+    let _serial = serialized();
+    let project = Project::new("third-inode-recycled");
+    project.write_meta("ids", b"successor");
+    project.write_meta("ids.publish.stage", b"third");
+    Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .witness_base("ids.publish.stage")
+        .witness_next("ids")
+        .plant();
+
+    let refusal = project
+        .guard()
+        .recover_ids()
+        .expect_err("a recycled number under a foreign run is retained corruption");
+    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(
+        project.read_meta("ids.publish.stage").as_deref(),
+        Some(&b"third"[..]),
+        "the foreign entry on the recycled number is not cleaned away",
+    );
+    assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
+    assert!(project.exists("ids.pending"), "the marker keeps gating");
+}
+
+/// The checkout writer, arriving on the inode number the header bound. The
+/// ledger is a committed file, so the entry a checkout replaces is unlinked and
+/// the replacement can be handed the same number. The run it carries is not the
+/// bound one, so the plan's generation is gone and the publication is reverted
+/// exactly as it is when the number differs.
+#[test]
+fn a_generation_on_the_bound_generation_s_recycled_number_reverts_the_publication() {
+    let _serial = serialized();
+    let project = Project::new("checkout-recycled");
+    project.write_meta("ids", b"another branch's generation");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .witness_base("ids")
+        .witness_next("ids.publish.stage")
+        .plant();
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(
+        project.read_meta("ids").as_deref(),
+        Some(&b"another branch's generation"[..]),
+        "the publication left the other writer's bytes exactly as it found them"
+    );
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+}
+
 #[test]
 fn a_substituted_journal_inode_is_retained() {
     let _serial = serialized();

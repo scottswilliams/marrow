@@ -18,6 +18,16 @@ const REQUIRED_READ: u32 = 0o400;
 
 /// A lossless filesystem identity: the platform's `st_dev` and `st_ino`
 /// projected injectively into `u64` each.
+///
+/// The projection loses nothing, but the value it projects distinguishes two
+/// entries only while both are live. `unlink` frees an inode number with the
+/// last link, and ext4 and XFS hand it to the next create in the same block
+/// group; APFS draws from a counter that never repeats. An open descriptor
+/// holds a number out of circulation, so a comparison inside one process that
+/// retains the handle is exact. A comparison against a value that outlived the
+/// handle — one decoded from a durable record after a crash — is not: the
+/// number may have been recycled to a foreign entry. Such a comparison needs
+/// evidence beyond the number, and the durable record must carry it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FsIdentity {
     dev: u64,
