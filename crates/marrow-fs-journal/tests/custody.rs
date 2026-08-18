@@ -314,54 +314,54 @@ fn directory_sync_succeeds_on_an_admitted_directory() {
     dir.sync().expect("sync the admitted directory");
 }
 
-/// A directory whose owner bits fall short of what admitting one needs is
-/// refused with the mode-repair reading, not a bare filesystem error.
+/// A directory whose owner bits fall short of what working in one needs is
+/// refused with the mode-repair reading, whichever bit is missing.
 ///
 /// The state needs no hostile actor. `mkdirat` asks for `0700` and the process
-/// umask masks it; the exact mode is restored on the admitted descriptor, so a
-/// umask withholding owner read makes the admission between those two steps
-/// fail, and a crash in the same window leaves the masked directory on disk for
-/// the next run to meet. An operator told only that an operation refused cannot
-/// act on it; one told the mode found and the mode required can.
+/// umask masks it; the exact mode is restored only on the admitted descriptor,
+/// so a umask withholding an owner bit makes the admission between those two
+/// steps fail, and a crash in the same window leaves the masked directory on
+/// disk. An operator told only that an operation refused cannot act on it; one
+/// told the mode found and the mode required can.
+///
+/// Every short mode is covered, not only the ones that stop the open. `0500`
+/// opens fine and then refuses the first entry this owner creates, which
+/// without this reading would surface as a generic permission error from the
+/// lock creation rather than as the directory's own mode.
 #[test]
-fn a_mode_masked_directory_is_refused_with_the_mode_repair_reading() {
+fn a_mode_short_directory_is_refused_with_the_mode_repair_reading() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let scratch = Scratch::new("dir-mode-masked");
+    let scratch = Scratch::new("dir-mode-short");
     let dir = root(&scratch);
-    let child = name("masked");
-    dir.create_child_dir(&child).expect("create the child");
+    for mode in [0o000, 0o300, 0o500, 0o600] {
+        let child = name("masked");
+        dir.create_child_dir(&child).expect("create the child");
+        let path = scratch.path().join("masked");
 
-    let path = scratch.path().join("masked");
-    // Exactly what a umask withholding owner read leaves behind.
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o300))
-        .expect("mask the child's mode");
-    let binds = AdmittedDir::admit_trusted_root(&path).is_err();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-        .expect("restore for the assertion below");
-    assert!(
-        binds,
-        "mode 0300 on a directory did not refuse admission, so this kat never ran. Run the \
-         suite as a process the mode bits bind, on a filesystem that carries them."
-    );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .expect("mask the child's mode");
+        let refusal = dir.admit_child(&child).err();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("restore so the next arm and the cleanup can run");
+        let refusal = refusal.unwrap_or_else(|| {
+            panic!(
+                "mode {mode:04o} on a directory was admitted, so this arm never ran. Run the \
+                 suite as a process the mode bits bind, on a filesystem that carries them."
+            )
+        });
 
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o300))
-        .expect("mask the child's mode again");
-    let refusal = dir
-        .admit_child(&child)
-        .expect_err("a directory this process cannot read is not admitted");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-        .expect("restore so the scratch root can be removed");
-
-    assert!(
-        matches!(
-            refusal,
-            CustodyError::ModeDenied {
-                found: 0o300,
-                required: 0o500,
-                ..
-            }
-        ),
-        "a mode-masked directory must name the mode found and the mode required: {refusal:?}"
-    );
+        assert!(
+            matches!(
+                refusal,
+                CustodyError::ModeDenied {
+                    found,
+                    required: 0o700,
+                    ..
+                } if found == mode
+            ),
+            "mode {mode:04o} must name the mode found and the mode required: {refusal:?}"
+        );
+        std::fs::remove_dir(&path).expect("clear the child for the next arm");
+    }
 }

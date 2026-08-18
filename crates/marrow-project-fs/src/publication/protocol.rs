@@ -267,7 +267,11 @@ pub(super) fn recover(
     let pending_witness = meta
         .stat_entry(names.pending())?
         .map(|stat| stat.identity());
-    match classify(MarkerStats::read(meta, names)?).admit(meta, names, JournalKind::Ids)? {
+    match classify(MarkerStats::read(meta, names.markers())?).admit(
+        meta,
+        names,
+        JournalKind::Ids,
+    )? {
         PendingState::Absent => {
             reconcile_quarantine(guard, guard.stage_name())?;
             if meta.stat_entry(guard.stage_name())?.is_some() {
@@ -323,7 +327,7 @@ pub(super) fn recover(
 /// exists either and a restore can contradict nothing.
 fn preflight(guard: &ProjectMetadataWriteGuard) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
-    match classify(MarkerStats::read(meta, guard.journal_names())?).admit(
+    match classify(MarkerStats::read(meta, guard.journal_names().markers())?).admit(
         meta,
         guard.journal_names(),
         JournalKind::Ids,
@@ -820,13 +824,13 @@ impl<'a> Session<'a> {
     /// process — and only this process, which has just proven the pre-exchange
     /// reading — may exchange back. Unlike the ledger, the stage name is one of
     /// the transients the write owner's ignore entry covers, so an ordinary Git
-    /// operation neither tracks nor recreates it — in a repository that does not
-    /// track it already, and whose ignore entry the owner was able to complete.
-    /// An entry left exactly as found, because it is unwritable, unreadable, or
-    /// past the read bound, gains the name in no name set, and an ordinary
-    /// `git add .` there tracks it. Reaching the exchange-back arm takes a
-    /// writer editing the metadata directory outside the lock between this
-    /// exchange and the stat below.
+    /// operation neither tracks nor recreates it. The owner refuses to acquire
+    /// a project whose ignore entry it cannot establish that for, so the only
+    /// remaining way the name is tracked is one no library check can see: it
+    /// was already in the index before this contract existed, or was added with
+    /// `git add -f`. Reaching the exchange-back arm takes a writer editing the
+    /// metadata directory outside the lock between this exchange and the stat
+    /// below.
     fn exchange_replace(
         &self,
         base: FsIdentity,

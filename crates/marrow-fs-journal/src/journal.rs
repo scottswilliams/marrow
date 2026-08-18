@@ -63,6 +63,14 @@ impl PendingName {
         &self.claim
     }
 
+    /// The two marker names alone, for a reader that may touch nothing else.
+    pub fn markers(&self) -> MarkerNames<'_> {
+        MarkerNames {
+            claim: &self.claim,
+            pending: &self.pending,
+        }
+    }
+
     /// The pending entry name (`<base>.pending`).
     pub fn pending(&self) -> &EntryName {
         &self.pending
@@ -757,17 +765,34 @@ pub struct MarkerStats {
 }
 
 impl MarkerStats {
-    /// Stat the two marker names. This is the one place the pair is read.
+    /// Stat the two marker names, and only those two.
+    ///
+    /// This is the pre-reconciliation read: a caller that classifies before
+    /// reconciling other state depends on it touching no artifact. It receives
+    /// the two names it may stat rather than the pair they came from, so the
+    /// base name a `PendingName` also carries is not in scope here and an
+    /// artifact read does not compile.
     ///
     /// # Errors
     ///
     /// Returns the custody refusal either stat produced.
-    pub fn read(dir: &AdmittedDir, name: &PendingName) -> Result<Self, CustodyError> {
+    pub fn read(dir: &AdmittedDir, marker: MarkerNames<'_>) -> Result<Self, CustodyError> {
         Ok(Self {
-            claim: dir.stat_entry(name.claim())?,
-            pending: dir.stat_entry(name.pending())?,
+            claim: dir.stat_entry(marker.claim)?,
+            pending: dir.stat_entry(marker.pending)?,
         })
     }
+}
+
+/// The two marker names, separated from the pair that also carries the base.
+///
+/// Minted only by [`PendingName::markers`], so the pair is still the one owner
+/// of the spellings; what this removes is the reach back to the base name at
+/// the point where reaching it would be a defect.
+#[derive(Debug, Clone, Copy)]
+pub struct MarkerNames<'n> {
+    claim: &'n EntryName,
+    pending: &'n EntryName,
 }
 
 /// Which of the four marker-name shapes the pair is in.
@@ -813,6 +838,13 @@ pub fn classify(stats: MarkerStats) -> MarkerShape {
 impl MarkerShape {
     /// Turn this shape into the state that can act on it, reading the marker
     /// file where the shape says there is one.
+    ///
+    /// This runs after the shape is decided, so it is not the reader the
+    /// classify-before-reconcile ordering depends on — that one is
+    /// [`MarkerStats::read`], which is narrowed to the two names. Admission
+    /// takes the full pair and directory deliberately: the states it returns
+    /// act through both afterwards, a preclaim discard and a pending resume
+    /// among them, and the base name is what a `PendingName` is for.
     ///
     /// # Errors
     ///

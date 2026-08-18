@@ -63,18 +63,21 @@ covering these names — or remove it and let the next acquisition write its own
 An entry that already names every one of them is fine exactly as it is, mode
 included: nothing needs writing.
 
-Three states are outside what the entry can fix, and the tools cannot detect
-them because they never run Git:
+One state is outside what the entry can fix, and the tools cannot detect it
+because they never run Git: a transient that is **already in the index**. That
+happens two ways — it was tracked before this contract existed, in a project
+published by an older build, or it was added with `git add -f`. `.gitignore`
+never untracks a file already in the index, so no ignore line repairs it.
 
-- A negation line elsewhere in the repository — a parent `.gitignore`, the
-  global excludes file — re-including one of these names.
-- A transient added with `git add -f`.
-- A transient tracked before this contract existed, in a project published by
-  an older build. `.gitignore` never untracks a file already in the index.
+An ignore file elsewhere is not such a state. Git gives the rule in the lower
+directory higher precedence, so a negation in a parent `.gitignore` or in the
+global excludes file cannot re-include a name that `.marrow/.gitignore` covers.
+Only a negation in `.marrow/.gitignore` itself can, and acquisition refuses on
+that.
 
-The remedy in each case is the same: `git rm --cached .marrow/<entry>`, then
-make sure a positive ignore line covers it. Until that is done the project is
-outside the cooperative contract the removal bounds assume.
+The remedy for an indexed transient is `git rm --cached -- .marrow/<entry>`,
+then confirm a positive ignore line covers it. Until that is done the project
+is outside the cooperative contract the removal bounds assume.
 
 A write that fails on the environment — a full disk, a read-only filesystem —
 refuses as it always did, because it breaks the durable write the publication
@@ -224,8 +227,8 @@ ledger is indeterminate, so every read-only command reports
 `project.ids_publication_pending` rather than reading a generation recovery may
 replace; `marrow run` — the one command that writes the ledger — settles the
 interrupted publication before it captures the project or draws entropy. A state the protocol cannot have produced, and a publication that was created
-but never durably claimed, leave the committed ledger unchanged and remove
-nothing a cooperating writer put in `.marrow`. That is not the same as
+but never durably claimed, leave the committed ledger unchanged and remove no
+cooperating writer's distinguishable content from `.marrow`. That is not the same as
 byte-identical: recovery may first put back an entry an interrupted cleanup had
 moved aside, or finish a removal the durable record already authorized. No
 command removes an entry unless that record says which run it is removing and

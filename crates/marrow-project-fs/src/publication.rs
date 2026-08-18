@@ -203,10 +203,15 @@ pub(crate) fn quarantine_spelling() -> &'static str {
 /// The fixed bound on either byte run the header carries.
 const LEDGER_BYTE_CEILING: usize = MAX_IDS_BYTES;
 
-/// Whether this process dropped an unrecovered publication. A dropped pending
-/// publication leaves a durable marker whose live handles are gone, so this
-/// process publishes nothing further; the marker keeps gating capture until a
-/// fresh process recovers it.
+/// Whether this process dropped an unrecovered publication.
+///
+/// A dropped pending publication is one this process claimed and did not
+/// conclude, so it publishes nothing further. Usually it leaves a marker whose
+/// live handles are gone, and that marker keeps gating capture until a fresh
+/// process recovers it. One arm leaves no marker at all — a finish that removed
+/// it and then refused its closing checks — and dropping that one abandons the
+/// answer rather than the marker: the publication happened, and no later
+/// command will say which one it was.
 static QUARANTINED: AtomicBool = AtomicBool::new(false);
 
 /// How one identity publication settled.
@@ -254,9 +259,9 @@ pub struct IdsPublicationPending<'a> {
 
 /// What advancing a pending publication has to work with.
 ///
-/// A publication interrupted after its claim went durable keeps its live
-/// journal and resumes through it. A claim that refused *after* its own durable
-/// parent sync left a marker with no live journal at all — nothing was handed
+/// A publication interrupted with its journal intact resumes through it. A
+/// claim that refused at or after its first link attempt left no journal at
+/// all — nothing was handed
 /// back to resume — so the only way forward is the recovery that adopts a
 /// durable marker from disk. Both are durable markers this process is holding
 /// open, which is why both are this one affine value rather than an ordinary
@@ -311,10 +316,15 @@ impl<'a> IdsPublicationPending<'a> {
     ///
     /// # Errors
     ///
-    /// Returns the fresh refusal when the publication still cannot settle. The
-    /// marker is retained, and a recovery that refuses quarantines publication
-    /// in this process exactly as a drop does: the retained handles go either
-    /// way, so a fresh process is what settles the marker next.
+    /// Returns the fresh refusal when the publication still cannot settle, and
+    /// quarantines publication in this process exactly as a drop does: the
+    /// retained handles go either way, so a fresh process is what settles the
+    /// project next.
+    ///
+    /// A refusing recovery is not a no-op. It reconciles first, which puts back
+    /// an entry an interrupted removal had moved aside, and it may finish a
+    /// removal the durable record already authorized before a later step
+    /// refuses. What it leaves is a settleable state, not the state it found.
     pub fn recover(mut self) -> Result<IdsPublication, IdsPublicationError> {
         // The refusal that produced this value can be a cleanup that had
         // already moved its object into quarantine, so this retry is a fresh
@@ -364,9 +374,11 @@ impl fmt::Debug for IdsPublicationPending<'_> {
 pub enum IdsPublishOutcome<'a> {
     /// The publication reached a terminal state and the marker is gone.
     Settled(IdsPublication),
-    /// The publication is durably claimed and did not settle. The retained
-    /// guard borrow, live journal, and cause are boxed so an ordinary settled
-    /// publication does not carry them by value.
+    /// The publication was claimed and did not settle. The retained guard
+    /// borrow and cause are boxed so an ordinary settled publication does not
+    /// carry them by value; whether a live journal or a marker is retained with
+    /// them depends on where the interruption fell, and
+    /// [`IdsPublicationPending`] says which arms exist.
     Pending(Box<IdsPublicationPending<'a>>),
 }
 
@@ -734,16 +746,19 @@ fn admit_created_meta(
 /// stale first block. It runs under the write lock, so one process at a time is
 /// inside it and two first publications cannot both append.
 ///
-/// The block is a convenience the owner maintains when it can, so an entry it
-/// cannot reach is left exactly as found — like one past the read bound — and
-/// no publication or recovery is refused over it. The boundary that reading
-/// draws is exact. A permission-class condition on the entry itself is left as
-/// found, whether it withholds the deciding read or the append. An
-/// environmental failure of the write — no space left, a read-only filesystem —
-/// still refuses, because it breaks the durable write this publication depends
-/// on anyway rather than merely denying this owner one cosmetic file. Every
-/// other custody refusal here is a metadata directory this owner did not
-/// produce, and stays a typed refusal.
+/// The block is not a convenience. Every removal this protocol performs rests
+/// on these names never being tracked, so an entry that cannot be shown to keep
+/// them untracked refuses the acquisition with
+/// [`IdsRefusal::UntrackedContract`]. Four states do: an entry that cannot be
+/// read, one past the read bound, one missing names that cannot be written, and
+/// one whose `!` line covers a name this owner would otherwise have kept
+/// ignored. An entry that already names every transient is left exactly as
+/// found and refuses nothing, whatever its mode — nothing needs writing.
+///
+/// An environmental failure of the write — no space left, a read-only
+/// filesystem — refuses as it always did, because it breaks the durable write
+/// this publication depends on anyway. Every other custody refusal here is a
+/// metadata directory this owner did not produce, and stays a typed refusal.
 fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
     let (created, found) = match meta.create_file_excl(&name) {
@@ -900,17 +915,132 @@ fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
 /// negation line.
 ///
 /// A positive line naming a transient does not settle the question on its own:
-/// a later `!` line covering the same name puts it back, and Git takes the
-/// last match. An entry that both names a transient and negates it does not
-/// keep it untracked, so it does not establish the contract every removal here
-/// rests on. The check is the same shape as the positive one — the exact name,
-/// optionally anchored — because a broader pattern is a deliberate choice this
-/// owner will not silently read past.
+/// a later `!` line covering the same name puts it back, and Git takes the last
+/// match. An entry that both names a transient and negates it does not keep it
+/// untracked, so it does not establish the contract every removal here rests
+/// on.
+///
+/// A negation need not spell the name to cover it — `!*`, `!*.stage`, and
+/// `!ids.publish.*` each re-include one. So the pattern is matched rather than
+/// compared, over the gitignore syntax that can reach a name in this directory:
+/// `*`, `?`, and `[...]`, with an optional leading or trailing `/`. A pattern
+/// naming a path below this directory cannot reach these entries, which sit
+/// directly in `.marrow`, so it does not refuse.
 fn ignore_negates_entry(found: &[u8], entry: &str) -> bool {
     ignore_lines(found).any(|line| {
-        line.strip_prefix(b"!")
-            .is_some_and(|rest| rest.strip_prefix(b"/").unwrap_or(rest) == entry.as_bytes())
+        let Some(pattern) = line.strip_prefix(b"!") else {
+            return false;
+        };
+        // A trailing slash names a directory; these entries are not one, and
+        // the slash is not part of the pattern either way.
+        let pattern = pattern.strip_suffix(b"/").unwrap_or(pattern);
+        // A leading slash anchors to the directory holding the ignore file,
+        // which is where these entries are.
+        let pattern = pattern.strip_prefix(b"/").unwrap_or(pattern);
+        // Any remaining separator names a path below this directory. These
+        // entries sit directly in it, so such a pattern cannot reach them.
+        if pattern.contains(&b'/') {
+            return false;
+        }
+        wildcard_covers(pattern, entry.as_bytes())
     })
+}
+
+/// Whether one ignore-file path-component pattern matches `name` exactly.
+///
+/// The supported syntax is what can appear in a single component: `*` for any
+/// run of characters, `?` for one, and `[...]` for a set, with `!` or `^`
+/// negating the set and a backslash escaping the next character. A `[` that
+/// never closes is a literal, as Git treats it.
+///
+/// Backtracking is bounded by construction: the only branch point is a `*`, and
+/// the greedy retry walks forward through `name` without ever revisiting an
+/// earlier star. Both inputs are bounded already — a name from this module's
+/// fixed set, and a line from a file read under a 4 KiB ceiling.
+fn wildcard_covers(pattern: &[u8], name: &[u8]) -> bool {
+    let (mut pattern_at, mut name_at) = (0usize, 0usize);
+    // Where to resume if the current `*` turns out to have matched too little.
+    let (mut star_at, mut retry_at) = (None, 0usize);
+    while name_at < name.len() {
+        let advanced = match pattern.get(pattern_at) {
+            Some(b'*') => {
+                star_at = Some(pattern_at);
+                pattern_at += 1;
+                retry_at = name_at;
+                continue;
+            }
+            Some(b'?') => {
+                pattern_at += 1;
+                name_at += 1;
+                continue;
+            }
+            Some(b'[') => match match_set(&pattern[pattern_at..], name[name_at]) {
+                Some((true, next)) => {
+                    pattern_at += next;
+                    name_at += 1;
+                    continue;
+                }
+                Some((false, _)) => false,
+                // An unclosed set is a literal `[`.
+                None => name[name_at] == b'[',
+            },
+            Some(b'\\') => pattern.get(pattern_at + 1) == Some(&name[name_at]),
+            Some(byte) => *byte == name[name_at],
+            None => false,
+        };
+        if advanced {
+            pattern_at += if pattern.get(pattern_at) == Some(&b'\\') {
+                2
+            } else {
+                1
+            };
+            name_at += 1;
+            continue;
+        }
+        // No match here: give the last `*` one more byte, or fail.
+        let Some(star) = star_at else {
+            return false;
+        };
+        pattern_at = star + 1;
+        retry_at += 1;
+        name_at = retry_at;
+    }
+    pattern[pattern_at..].iter().all(|byte| *byte == b'*')
+}
+
+/// Match one `[...]` set against `byte`, returning whether it matched and the
+/// pattern offset just past the set. `None` when the set never closes, which
+/// Git reads as a literal `[`.
+fn match_set(pattern: &[u8], byte: u8) -> Option<(bool, usize)> {
+    let mut at = 1;
+    let negated = matches!(pattern.get(at), Some(b'!' | b'^'));
+    if negated {
+        at += 1;
+    }
+    let mut matched = false;
+    let mut first = true;
+    while at < pattern.len() {
+        if pattern[at] == b']' && !first {
+            return Some((matched != negated, at + 1));
+        }
+        first = false;
+        let low = if pattern[at] == b'\\' {
+            at += 1;
+            *pattern.get(at)?
+        } else {
+            pattern[at]
+        };
+        // A range, unless the `-` is the set's last character.
+        if pattern.get(at + 1) == Some(&b'-') && pattern.get(at + 2).is_some_and(|end| *end != b']')
+        {
+            matched |= (low..=pattern[at + 2]).contains(&byte);
+            at += 3;
+        } else {
+            matched |= low == byte;
+            at += 1;
+        }
+    }
+    None
 }
 
 /// Whether the bytes read from the ignore entry already carry this owner's

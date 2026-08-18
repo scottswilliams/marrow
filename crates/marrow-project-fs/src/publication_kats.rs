@@ -1998,30 +1998,85 @@ fn an_oversized_ignore_entry_refuses_the_acquisition() {
 }
 
 /// An ignore entry that negates one of this owner's names refuses the
-/// acquisition, however complete the rest of it is.
+/// acquisition, however complete the rest of it is and however the negation is
+/// spelled.
 ///
 /// Git takes the last matching line, so a `!` line re-including a transient
-/// leaves it tracked no matter how many positive lines precede it. Appending
-/// the name again would not change that, and this owner does not rewrite a
-/// developer's file to delete a line they wrote — so the contract is
-/// unestablished and nothing is staged or claimed.
+/// leaves it tracked no matter how many positive lines precede it. A negation
+/// need not spell the name to reach it, so each shape that can is refused:
+/// the exact name, the anchored name, a suffix wildcard, a prefix wildcard,
+/// bare `*`, a single-character wildcard, and a character set. Appending the
+/// name again would change nothing, and this owner does not rewrite a line a
+/// developer wrote.
 #[test]
 fn an_ignore_entry_negating_a_transient_refuses_the_acquisition() {
     let _serial = serialized();
-    for spelling in ["!ids.publish.stage\n", "!/ids.publish.quarantine\n"] {
-        let project = Project::new("ignore-negated");
+    for (tag, spelling) in [
+        ("exact", "!ids.publish.stage\n"),
+        ("anchored", "!/ids.publish.quarantine\n"),
+        ("prefix-glob", "!ids.publish.*\n"),
+        ("suffix-glob", "!*.stage\n"),
+        ("everything", "!*\n"),
+        ("single-char", "!ids.pendin?\n"),
+        ("char-set", "!ids.publish.[sq]*\n"),
+        ("trailing-slash", "!ids.publish.stage/\n"),
+    ] {
+        let project = Project::new(&format!("ignore-negated-{tag}"));
         let mut planted = WRITTEN_IGNORE.to_vec();
         planted.extend_from_slice(spelling.as_bytes());
         project.write_meta(".gitignore", &planted);
 
-        let refusal = ProjectMetadataWriteGuard::acquire(project.path()).expect_err(
-            "a negation re-including a transient leaves the untracked contract unestablished",
+        let refusal = ProjectMetadataWriteGuard::acquire(project.path())
+            .err()
+            .unwrap_or_else(|| {
+                panic!("the {tag} negation re-includes a transient and must refuse")
+            });
+        assert_eq!(
+            refusal.refusal(),
+            IdsRefusal::UntrackedContract,
+            "the {tag} negation refused with the wrong class"
         );
-        assert_eq!(refusal.refusal(), IdsRefusal::UntrackedContract);
         assert_eq!(
             project.read_meta(".gitignore").as_deref(),
             Some(&planted[..]),
             "the developer's own line is not rewritten away"
+        );
+    }
+}
+
+/// A negation that cannot reach one of this owner's names does not refuse.
+///
+/// The check exists to catch a transient being re-included, not to make any
+/// developer's ignore file unusable. A pattern naming another suffix, another
+/// directory, or a path below this one reaches nothing here, and a project
+/// carrying one publishes exactly as it did before.
+#[test]
+fn an_ignore_entry_negating_something_else_leaves_the_owner_working() {
+    let _serial = serialized();
+    for (tag, spelling) in [
+        ("other-suffix", "!*.md\n"),
+        ("subdirectory", "!docs/*.md\n"),
+        ("anchored-elsewhere", "!/build\n"),
+        ("below-this-directory", "!ids.publish.stage/inner\n"),
+        ("other-name", "!notes.txt\n"),
+    ] {
+        let project = Project::new(&format!("ignore-negation-elsewhere-{tag}"));
+        let mut planted = WRITTEN_IGNORE.to_vec();
+        planted.extend_from_slice(spelling.as_bytes());
+        project.write_meta(".gitignore", &planted);
+
+        let mut guard =
+            ProjectMetadataWriteGuard::acquire(project.path()).unwrap_or_else(|error| {
+                panic!("the {tag} negation reaches no transient and must not refuse: {error:?}")
+            });
+        guard
+            .recover_ids()
+            .expect("recovery takes the same guard and reaches the same conclusion");
+        drop(guard);
+        assert_eq!(
+            project.read_meta(".gitignore").as_deref(),
+            Some(&planted[..]),
+            "the {tag} entry already names every transient, so nothing is appended"
         );
     }
 }

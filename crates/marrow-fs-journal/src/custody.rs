@@ -15,9 +15,14 @@ use crate::sys;
 pub(crate) const REQUIRED_RW: u32 = 0o600;
 /// The owner bits the read-only debris open requires.
 const REQUIRED_READ: u32 = 0o400;
-/// The owner bits admitting a directory requires: read to list it and execute
-/// to resolve names inside it.
-const REQUIRED_DIR: u32 = 0o500;
+/// The owner bits a directory this owner works in requires: read to list it,
+/// write to create and remove entries in it, execute to resolve names inside
+/// it. Admission itself needs only read and execute, but every use this owner
+/// admits a directory for needs write too, and a mode short of the full set is
+/// one operator repair either way — so admission names the whole requirement
+/// rather than letting the missing-write half surface later as a generic
+/// permission error from whichever call happens to reach it first.
+const REQUIRED_DIR: u32 = 0o700;
 
 /// A lossless filesystem identity: the platform's `st_dev` and `st_ino`
 /// projected injectively into `u64` each.
@@ -307,6 +312,7 @@ impl AdmittedDir {
             }
         };
         let stat = sys::fstat_dir(&handle)?;
+        require_dir_mode("admit directory", &stat)?;
         Ok(Self {
             handle,
             identity: stat.identity,
@@ -315,6 +321,19 @@ impl AdmittedDir {
 
     /// Admit one child directory of this directory.
     pub fn admit_child(&self, name: &EntryName) -> Result<Self, CustodyError> {
+        let child = self.open_child(name)?;
+        require_dir_mode("admit directory", &sys::fstat_dir(&child.handle)?)?;
+        Ok(child)
+    }
+
+    /// Open a child directory without judging its mode.
+    ///
+    /// Only [`Self::create_child_dir`] uses this, and only because it restores
+    /// the exact mode on the descriptor it opens: the umask may have masked the
+    /// requested `0700` a moment earlier, so the mode at this instant is not
+    /// the mode the caller will be left with. Every other admission goes
+    /// through [`Self::admit_child`], which judges it.
+    fn open_child(&self, name: &EntryName) -> Result<Self, CustodyError> {
         let handle = match sys::open_dir_child(&self.handle, name.as_str()) {
             Ok(handle) => handle,
             Err(refusal) => {
@@ -333,7 +352,10 @@ impl AdmittedDir {
     /// and admit it.
     pub fn create_child_dir(&self, name: &EntryName) -> Result<Self, CustodyError> {
         sys::mkdir_child(&self.handle, name.as_str())?;
-        let child = self.admit_child(name)?;
+        // Not `admit_child`: the umask may have masked the mode `mkdirat` asked
+        // for, and the next line is what restores it. Judging the mode here
+        // would refuse a directory this call is about to make correct.
+        let child = self.open_child(name)?;
         sys::restore_dir_mode(&child.handle)?;
         Ok(child)
     }
@@ -474,16 +496,38 @@ pub(crate) fn refine_open_refusal(
 /// while Linux reports `ELOOP`, so a refusal from either family is refined by
 /// one no-follow stat of the refused entry.
 ///
-/// A permission refusal over a directory whose owner bits fall short is refined
-/// the same way a regular file's is, into the mode-repair refusal that names
-/// what was found and what is required. That state is reachable without any
-/// hostile actor: `mkdirat` requests `0700` but the umask masks it, and the
-/// exact mode is restored on the admitted descriptor — so a umask withholding
-/// owner read makes the admission between those two steps fail, and a crash in
-/// the same window leaves the masked directory on disk. Without this the
-/// operator is told only that a filesystem operation refused.
+/// A directory whose owner bits fall short is refined the same way a regular
+/// file's is, into the mode-repair refusal naming what was found and what is
+/// required. That state is reachable without any hostile actor: `mkdirat`
+/// requests `0700` but the umask masks it, and the exact mode is restored only
+/// on the admitted descriptor — so a umask withholding an owner bit makes the
+/// admission between those two steps fail, and a crash in the same window
+/// leaves the masked directory on disk for the next run to meet.
+///
+/// The refinement covers the whole requirement, not the half that stops the
+/// open. A mode missing owner read or execute refuses the admission itself and
+/// is refined here from the permission error. A mode missing only owner write
+/// admits fine and then refuses the first entry this owner creates — so the
+/// mode is checked on the admitted directory's own stat as well, and named the
+/// same way, rather than surfacing later as a generic permission error from
+/// whichever call reached it first.
 ///
 /// Nothing was admitted either way; the stat only names the refusal.
+/// Refuse an admitted directory whose owner bits fall short of what working in
+/// it needs. An open succeeds on read and execute alone, so this is what turns
+/// a missing owner write into the same typed repair instruction rather than a
+/// generic permission error from the first entry someone tries to create.
+fn require_dir_mode(op: &'static str, stat: &EntryStat) -> Result<(), CustodyError> {
+    if stat.mode & REQUIRED_DIR == REQUIRED_DIR {
+        return Ok(());
+    }
+    Err(CustodyError::ModeDenied {
+        op,
+        found: stat.mode,
+        required: REQUIRED_DIR,
+    })
+}
+
 fn refine_dir_refusal(refusal: CustodyError, observed: Option<EntryStat>) -> CustodyError {
     if let CustodyError::Io { op, source } = &refusal
         && source.kind() == std::io::ErrorKind::PermissionDenied
