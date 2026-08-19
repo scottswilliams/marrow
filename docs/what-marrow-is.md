@@ -49,6 +49,10 @@ flow — the same way it works with local state.
 - It is **not a relational or document system in disguise.** There are no rows,
   columns, joins, or `SELECT`-shaped operations, even as analogies. The model is a
   typed hierarchy of durable places.
+- It is **not an object database revival.** Transparent persistence hid the
+  commit, the disk walk, and the data format. Marrow spells out all three:
+  `transaction` marks the commit, a bounded `for` marks the traversal, and typed
+  backup moves the data.
 - It is **not a UI, service, or identity framework.** HTTP, TLS, identity
   providers, native and Electron UI frameworks, messaging, search, and analytics
   integrate through typed host boundaries when a program needs them; the core

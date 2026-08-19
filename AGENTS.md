@@ -100,6 +100,9 @@ second production path to keep old docs or tests green.
   physical key remain distinct typed concepts.
 - Storage engines are private transactional byte substrates. Marrow competes on
   language/compiler integration, not engine choice or database benchmarks.
+- Durable data round-trips with repository tooling alone: a logical backup
+  carries a store's full contents and restore reads it back. Format and
+  representation decisions keep that round trip working.
 - MUMPS is product evidence and inspiration, not a syntax, compatibility, or
   implementation constitution.
 - Local terminal and desktop applications come before served execution. Public

@@ -46,6 +46,11 @@ and path kernel as a value a program writes itself, and it is created under the
 same authority the store admits. Raw-byte validity is never sufficient to claim
 that stored data is valid Marrow data.
 
+Data leaves a store as plainly as it arrives. A logical backup carries the
+store's full contents, and this repository alone writes one and reads it back
+into a fresh store. Every durable-format, identity, and index decision keeps
+that round trip whole.
+
 ## Evidence target
 
 The standing evidence for this direction is the dogfood port's import step: a real
@@ -62,8 +67,8 @@ show up as a failure rather than as a silent narrowing.
 
 The following are not current and are not specified here:
 
-- exchanging durable data outward — export, backup interchange, or handing data to
-  another system in a negotiated shape;
+- handing durable data to another system in a negotiated shape beyond the
+  logical-backup round trip;
 - living continuously beside an external system of record, including incremental
   synchronization, reconciliation, or change capture;
 - ingestion of shapes beyond a bounded flat external source, including nested or

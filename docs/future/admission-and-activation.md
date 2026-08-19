@@ -101,8 +101,11 @@ whose durable contract and binding facts are exactly unchanged rebinds
 automatically through the same lifecycle actor and just runs; any other change
 is one explicit action that reviews, renders a report in source vocabulary
 (places, presence, effects, authority, stored work), takes acceptance, and
-activates atomically. Witnesses, contract hashes, generations, and ceiling
-identifiers never appear in ordinary guidance or require human transcription.
+activates atomically. The report prices the stored work: a metadata-only
+transition leaves every stored value in place, and the add-index build names the
+root it reads and the bound on that read. Witnesses, contract hashes,
+generations, and ceiling identifiers never appear in ordinary guidance or
+require human transcription.
 
 ## Limits of admission
 
