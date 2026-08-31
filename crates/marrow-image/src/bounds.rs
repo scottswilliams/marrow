@@ -507,7 +507,7 @@ pub const DURABLE_GRAPH_FIXED_BYTES: u64 =
 /// | root occurrence | 232 | 34 — a name, a placement id, and a Product id | 7 |
 /// | managed index | 48 | 19 — a ledger id, a unique flag, and a component count | 3 |
 /// | index component | 17 | 17 — a kind byte and a ledger id | 1 |
-/// | value shape node | 108 | 2 — a shape tag and a scalar tag | 54 |
+/// | value shape node | 80 | 2 — a shape tag and a scalar tag | 40 |
 /// | value shape reference | 40 | 2 — a leaf's own spelling | 20 |
 ///
 /// The value-shape node is the widest and therefore the rate: a decoder that met a section
@@ -677,13 +677,13 @@ mod tests {
             DURABLE_INDEX_BYTES, 1_272,
             "one managed index at the widest leaf projection"
         );
-        assert_eq!(DURABLE_VALUE_NODE_BYTES, 108, "one interned value shape");
+        assert_eq!(DURABLE_VALUE_NODE_BYTES, 80, "one interned value shape");
         assert_eq!(
             DURABLE_VALUE_REFERENCE_BYTES, 40,
             "one reference inside a value shape"
         );
         assert_eq!(
-            DURABLE_GRAPH_FIXED_BYTES, 256,
+            DURABLE_GRAPH_FIXED_BYTES, 280,
             "the empty graph and its plan"
         );
     }

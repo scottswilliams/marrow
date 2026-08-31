@@ -72,11 +72,13 @@ const _: () = {
         MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES <= H_VERIFIED_DURABLE_GRAPH_BYTES,
         "a container-admitted image can drive the verifier past its declared live ceiling",
     );
-    // And not trivially under by charging almost nothing: an accounting that had stopped
-    // charging its dominant term would satisfy the ceiling for the wrong reason.
+    // Pin the dominant decoder rate to the sole-node representation. The exact maximum
+    // below catches every byte of drift; this structural check prevents a future equation
+    // from satisfying the ceiling by silently omitting the arena's node charge.
     assert!(
-        MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES > H_VERIFIED_DURABLE_GRAPH_BYTES / 4,
-        "the verifier accounting no longer charges a meaningful fraction of its ceiling",
+        marrow_image::bounds::DURABLE_LIVE_BYTES_PER_WIRE_BYTE
+            >= marrow_image::bounds::DURABLE_VALUE_NODE_BYTES.div_ceil(2),
+        "the verifier accounting no longer charges the value arena's node representation",
     );
 };
 
@@ -1914,7 +1916,7 @@ mod capacity_tests {
     #[test]
     fn the_verifier_side_maximum_live_graph_holds_its_accounted_figure() {
         assert_eq!(
-            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 85_459_200,
+            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 63_439_128,
             "the accounted verifier-side live graph moved; re-derive the exported term and \
              update the implementation map with this pin"
         );

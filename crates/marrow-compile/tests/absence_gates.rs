@@ -133,7 +133,7 @@ fn compiler_capacity_evidence_does_not_import_the_application_owned_heap_ceiling
     let implementation = fs::read_to_string(crate_root.join("../../docs/implementation/README.md"))
         .expect("read implementation map");
     assert!(
-        !implementation.contains("8,213,004,288 B  (> 640 MiB declared)")
+        !implementation.contains("8,212,316,160 B  (> 640 MiB declared)")
             && !implementation.contains("measured against the declared 640 MiB"),
         "the durable-arena map must record the compiler term without comparing it to the \
          application ceiling",

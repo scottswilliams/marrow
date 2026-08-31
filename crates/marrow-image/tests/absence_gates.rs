@@ -50,6 +50,25 @@ fn occurrences(needle: &str) -> Vec<(PathBuf, usize)> {
     found
 }
 
+/// The value-shape interning index retains only fingerprints and node ids. Retaining a
+/// `ValueShapeNode` as the map key deep-clones every composite's reference buffer beside
+/// the canonical node store.
+#[test]
+fn value_shape_interning_retains_no_second_node_or_reference_buffer() {
+    let code = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/value_dag.rs"))
+            .expect("read the value-shape owner"),
+    );
+    assert!(
+        !code.contains("HashMap<ValueShapeNode, ValueShapeNodeId>"),
+        "the interning index must not retain a second complete value-shape node",
+    );
+    assert!(
+        !code.contains("interned.insert(node.clone(), id)"),
+        "interning must move the sole node into its store rather than clone its buffers",
+    );
+}
+
 /// The root count and the record-type count are independent bounds, and neither may
 /// be derived from the other again.
 ///

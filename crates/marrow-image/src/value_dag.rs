@@ -58,6 +58,7 @@
 //! one identity — and never decided by aborting the caller.
 
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::draft::DraftStateError;
@@ -85,14 +86,39 @@ pub struct ValueShapeNodeId {
 struct ValueShapeNodeStamp(u64);
 
 impl ValueShapeNodeStamp {
-    fn mint() -> Self {
+    fn mint() -> Result<Self, DraftStateError> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let stamp = NEXT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                next.checked_add(1)
-            })
-            .expect("the process exhausted the value-shape node stamp domain");
-        Self(stamp)
+        Self::mint_from(&NEXT)
+    }
+
+    fn mint_from(next: &AtomicU64) -> Result<Self, DraftStateError> {
+        next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .map(Self)
+        .map_err(|_| DraftStateError::CarrierDomain)
+    }
+}
+
+/// The randomized structural hash used only to narrow an interning lookup. Equality is
+/// always rechecked against the sole stored node, so a collision cannot merge shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ValueShapeFingerprint(u64);
+
+/// One collision-chain link stored beside a canonical node. `u32::MAX` is the empty
+/// sentinel: minting refuses before that ordinal, so no live node can be hidden by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ValueShapeFingerprintPredecessor(u32);
+
+impl ValueShapeFingerprintPredecessor {
+    const NONE: u32 = u32::MAX;
+
+    fn from_id(id: Option<ValueShapeNodeId>) -> Self {
+        Self(id.map_or(Self::NONE, |id| id.ordinal))
+    }
+
+    fn ordinal(self) -> Option<u32> {
+        (self.0 != Self::NONE).then_some(self.0)
     }
 }
 
@@ -107,7 +133,8 @@ impl ValueShapeNodeStamp {
 pub(crate) const VALUE_SHAPE_NODE_BYTES: u64 = size_of::<ValueShapeNode>() as u64
     + size_of::<u32>() as u64
     + size_of::<ValueShapeNodeStamp>() as u64
-    + size_of::<(ValueShapeNode, ValueShapeNodeId)>() as u64;
+    + size_of::<ValueShapeFingerprintPredecessor>() as u64
+    + size_of::<(ValueShapeFingerprint, ValueShapeNodeId)>() as u64;
 
 /// The live bytes one reference inside a value shape occupies, at the widest of the three
 /// kinds: a dense composite's leaf id, an enum's member (its ledger identity and the
@@ -168,7 +195,7 @@ pub enum ValueShapeView<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct CanonicalValueShapeDag {
     store: ValueShapeNodeStore,
-    interned: HashMap<ValueShapeNode, ValueShapeNodeId>,
+    interned: HashMap<ValueShapeFingerprint, ValueShapeNodeId>,
 }
 
 impl PartialEq for CanonicalValueShapeDag {
@@ -281,7 +308,16 @@ impl CanonicalValueShapeDag {
         if len >= self.store.len() {
             return;
         }
-        self.interned.retain(|_, id| id.index() < len);
+        let store = &self.store;
+        self.interned.retain(|_, head| {
+            while head.index() >= len {
+                let Some(predecessor) = store.fingerprint_predecessor(*head) else {
+                    return false;
+                };
+                *head = predecessor;
+            }
+            true
+        });
         self.store.truncate(len);
     }
     // drop-path audit sentinel: end of CanonicalValueShapeDag::truncate
@@ -296,8 +332,24 @@ impl CanonicalValueShapeDag {
     /// arena and an arena at its carrier ceiling are the closed builder-domain refusals,
     /// and neither mutates a single owner.
     fn intern(&mut self, node: ValueShapeNode) -> Result<ValueShapeNodeId, DraftStateError> {
-        if let Some(existing) = self.interned.get(&node) {
-            return Ok(*existing);
+        let fingerprint = ValueShapeFingerprint(self.interned.hasher().hash_one(&node));
+        self.intern_with_fingerprint(node, fingerprint)
+    }
+
+    /// Intern using the already-computed randomized fingerprint. Hashing is split from
+    /// insertion so the collision law can be forced by a unit test without a test-only
+    /// production constructor.
+    fn intern_with_fingerprint(
+        &mut self,
+        node: ValueShapeNode,
+        fingerprint: ValueShapeFingerprint,
+    ) -> Result<ValueShapeNodeId, DraftStateError> {
+        let mut candidate = self.interned.get(&fingerprint).copied();
+        while let Some(id) = candidate {
+            if self.store.get(id) == Some(&node) {
+                return Ok(id);
+            }
+            candidate = self.store.fingerprint_predecessor(id);
         }
         let depth = 1 + self.max_reference_depth(&node)?;
         // Refuse at `u32::MAX` rather than past it: the id minted here is the pre-push
@@ -308,10 +360,15 @@ impl CanonicalValueShapeDag {
         }
         let id = ValueShapeNodeId {
             ordinal: u32::try_from(self.store.len()).map_err(|_| DraftStateError::CarrierDomain)?,
-            stamp: ValueShapeNodeStamp::mint(),
+            stamp: ValueShapeNodeStamp::mint()?,
         };
-        self.interned.insert(node.clone(), id);
-        self.store.push(node, depth, id.stamp);
+        let predecessor = self.interned.insert(fingerprint, id);
+        self.store.push(
+            node,
+            depth,
+            id.stamp,
+            ValueShapeFingerprintPredecessor::from_id(predecessor),
+        );
         Ok(id)
     }
 
@@ -355,7 +412,9 @@ use node_store::ValueShapeNodeStore;
 /// elsewhere or invalidated by truncation is `None` rather than a wrong-node binding or an
 /// out-of-range abort reachable through the safe public surface.
 mod node_store {
-    use super::{ValueShapeNode, ValueShapeNodeId, ValueShapeNodeStamp};
+    use super::{
+        ValueShapeFingerprintPredecessor, ValueShapeNode, ValueShapeNodeId, ValueShapeNodeStamp,
+    };
 
     #[derive(Debug, Clone, Default)]
     pub(super) struct ValueShapeNodeStore {
@@ -367,6 +426,9 @@ mod node_store {
         /// The exact-node stamp at the same ordinal. Truncation drops it and a later node
         /// at that ordinal receives a fresh stamp.
         stamps: Vec<ValueShapeNodeStamp>,
+        /// The preceding node with the same randomized fingerprint, or the carrier's
+        /// unmintable sentinel. This flat chain makes hash collisions allocation-free.
+        fingerprint_predecessors: Vec<ValueShapeFingerprintPredecessor>,
     }
 
     impl ValueShapeNodeStore {
@@ -399,28 +461,45 @@ mod node_store {
                 .and_then(|index| self.depth.get(index).copied())
         }
 
-        /// Append one minted node with its final depth and stamp. The three vectors move
-        /// together, so an authenticated ordinal names exactly one node and its depth.
+        /// Append one minted node with its final depth, stamp, and collision predecessor.
+        /// The four vectors move together, so an authenticated ordinal names one row.
         pub(super) fn push(
             &mut self,
             node: ValueShapeNode,
             depth: u32,
             stamp: ValueShapeNodeStamp,
+            predecessor: ValueShapeFingerprintPredecessor,
         ) {
             self.nodes.push(node);
             self.depth.push(depth);
             self.stamps.push(stamp);
+            self.fingerprint_predecessors.push(predecessor);
         }
 
         pub(super) fn truncate(&mut self, len: usize) {
             self.nodes.truncate(len);
             self.depth.truncate(len);
             self.stamps.truncate(len);
+            self.fingerprint_predecessors.truncate(len);
         }
         // drop-path audit sentinel: end of ValueShapeNodeStore::truncate
 
         pub(super) fn stamps(&self) -> impl Iterator<Item = ValueShapeNodeStamp> + '_ {
             self.stamps.iter().copied()
+        }
+
+        pub(super) fn fingerprint_predecessor(
+            &self,
+            node: ValueShapeNodeId,
+        ) -> Option<ValueShapeNodeId> {
+            let index = self.authenticate(node)?;
+            let ordinal = self
+                .fingerprint_predecessors
+                .get(index)
+                .copied()?
+                .ordinal()?;
+            let stamp = self.stamps.get(ordinal as usize).copied()?;
+            Some(ValueShapeNodeId { ordinal, stamp })
         }
 
         fn authenticate(&self, node: ValueShapeNodeId) -> Option<usize> {
@@ -479,8 +558,9 @@ mod node_store {
                     nodes,
                     depth,
                     stamps,
+                    fingerprint_predecessors,
                 } = value;
-                let _ = (nodes, depth, stamps);
+                let _ = (nodes, depth, stamps, fingerprint_predecessors);
             };
         }
     }
@@ -653,6 +733,62 @@ mod tests {
 
     fn ledger_id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
+    }
+
+    #[test]
+    fn stamp_domain_exhaustion_is_the_typed_carrier_refusal() {
+        let next = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(
+            ValueShapeNodeStamp::mint_from(&next),
+            Ok(ValueShapeNodeStamp(u64::MAX - 1)),
+        );
+        assert_eq!(next.load(Ordering::Relaxed), u64::MAX);
+        assert_eq!(
+            ValueShapeNodeStamp::mint_from(&next),
+            Err(DraftStateError::CarrierDomain),
+        );
+        assert_eq!(
+            next.load(Ordering::Relaxed),
+            u64::MAX,
+            "a refusal leaves the exhausted counter unchanged",
+        );
+    }
+
+    #[test]
+    fn fingerprint_collisions_retain_distinct_nodes_and_rewind_on_truncate() {
+        let collision = ValueShapeFingerprint(7);
+        let mut dag = CanonicalValueShapeDag::new();
+        let int = dag
+            .intern_with_fingerprint(ValueShapeNode::Scalar(Scalar::Int), collision)
+            .expect("the first colliding node mints");
+        let stale_text = dag
+            .intern_with_fingerprint(ValueShapeNode::Scalar(Scalar::Text), collision)
+            .expect("the second colliding node mints");
+
+        assert_eq!(
+            dag.intern_with_fingerprint(ValueShapeNode::Scalar(Scalar::Int), collision),
+            Ok(int),
+        );
+        assert_eq!(
+            dag.intern_with_fingerprint(ValueShapeNode::Scalar(Scalar::Text), collision),
+            Ok(stale_text),
+        );
+        assert_eq!(dag.len(), 2, "a collision does not merge unequal nodes");
+
+        dag.truncate(1);
+        assert_eq!(
+            dag.intern_with_fingerprint(ValueShapeNode::Scalar(Scalar::Int), collision),
+            Ok(int),
+            "truncation rewinds the bucket head to its retained predecessor",
+        );
+        let replacement_text = dag
+            .intern_with_fingerprint(ValueShapeNode::Scalar(Scalar::Text), collision)
+            .expect("the truncated collision can be minted again");
+        assert_ne!(
+            replacement_text, stale_text,
+            "the remint receives a fresh stamp"
+        );
+        assert_eq!(replacement_text.index(), stale_text.index());
     }
 
     /// **The enforcement artifact for [`VALUE_SHAPE_NODE_BYTES`].** The arena and its node

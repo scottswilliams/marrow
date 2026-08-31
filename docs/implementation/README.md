@@ -404,9 +404,9 @@ row, one occurrence row, one managed index, one value node, one value reference 
 admission owner derives its own maximum from those charges rather than sampling a fixture.
 
 ```text
-compiler-side, at the identity ledger's admitted anchors    =  43,243,456 B  (<= 64 MiB declared)
-verifier-side, at the whole-image ceiling                   =  85,459,200 B  (<= 256 MiB declared)
-durable value arena, product of independent type maxima     = 8,213,004,288 B
+compiler-side, at the identity ledger's admitted anchors    =  43,243,480 B  (<= 64 MiB declared)
+verifier-side, at the whole-image ceiling                   =  63,439,128 B  (<= 256 MiB declared)
+durable value arena, product of independent type maxima     = 8,212,316,160 B
 ```
 
 The first two are asserted in a `const` context, so a representation change that breached
@@ -417,6 +417,17 @@ dominating population multiplies three independent admissions — `MAX_ENUMS` en
 bound currently constrains them. A constrained reachable maximum remains future work. A
 negative control holds the first figure honest — the superseded representation, which
 expanded a member tree per root occurrence, does not close under the same ceiling.
+
+The coarse value-reference charge remains 40 bytes because it prices the widest reference
+row; it does not expose the cost of the identity stored inside every ID-bearing leaf. At the
+independent-maxima population of 67,371,008 such leaves, the `f8fed75e` representation's
+4-byte identity in two retained node buffers cost 538,968,064 bytes. Widening that identity
+to 16 bytes while retaining the duplicated interning key would have cost 2,155,872,256 bytes,
+a 1,616,904,192-byte regression. The interning index now retains only a fingerprint and node
+id and moves the sole node into the arena, so the final 16-byte identities cost
+1,077,936,128 bytes: 1,077,936,128 bytes less than the rejected two-copy candidate, while
+still 538,968,064 bytes more than the base representation. These identity-buffer figures
+make the widening visible; they are not additional terms to add to the coarse arena bound.
 
 A declaration's branch entry records are materialized once for the Product, at its
 first executable occurrence. `marrow-verify` reconstructs the declaration and its
