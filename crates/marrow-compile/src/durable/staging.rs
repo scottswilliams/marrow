@@ -31,17 +31,21 @@ impl<'d> StagedStoreTxn<'d> {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_one(
-        &mut self,
+        self,
         plan: &AdmittedGraphInputPlan,
         type_metadata: &mut DurableTypeMetadata<'_, '_>,
         resources: &[(FileRef, FileIdentity, &ResourceDecl)],
         declared: DeclarationSite<'_>,
         store: StoreOccurrence<'_>,
         identity_build: &mut IdentityBuildState<'_, '_>,
-    ) -> Result<StoreBuild, GenericInvariant> {
-        build_one(
+    ) -> Result<(StoreBuild, BoundedDiagnostics), GenericInvariant> {
+        let Self {
+            mut owner,
+            mut staged_diagnostics,
+        } = self;
+        let built = build_one(
             AdmittedDraft {
-                draft: &mut self.owner,
+                draft: &mut owner,
                 plan,
             },
             type_metadata,
@@ -49,25 +53,16 @@ impl<'d> StagedStoreTxn<'d> {
             declared,
             store,
             identity_build,
-            &mut self.staged_diagnostics,
-        )
-    }
-
-    pub(super) fn commit(self) -> BoundedDiagnostics {
-        let Self {
-            owner,
-            staged_diagnostics,
-        } = self;
-        owner.commit();
-        staged_diagnostics.finish()
-    }
-
-    pub(super) fn rollback(self) -> BoundedDiagnostics {
-        let Self {
-            owner,
-            staged_diagnostics,
-        } = self;
-        owner.rollback();
-        staged_diagnostics.finish()
+            &mut staged_diagnostics,
+        )?;
+        match &built {
+            StoreBuild::Admitted(_) => {
+                owner.commit();
+            }
+            StoreBuild::Refused(_) => {
+                owner.rollback();
+            }
+        }
+        Ok((built, staged_diagnostics.finish()))
     }
 }

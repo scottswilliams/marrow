@@ -76,6 +76,27 @@ fn staged_settlement_exposes_no_detached_owner_or_payload_surface() {
         }
     }
 
+    for producer in ["lower_function", "lower_instance", "lower_test", "prove_template"] {
+        assert!(
+            body.contains(&format!("fn {producer}<'a>(\n        self,")),
+            "transaction-derived `{producer}` output must consume its producer before it returns"
+        );
+    }
+    for forbidden in [
+        "pub(crate) fn commit(",
+        "pub(crate) fn commit_export(",
+        "pub(crate) fn commit_test(",
+        "pub(crate) fn erase_proof(",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "body custody exposes settlement separately from production through `{forbidden}`"
+        );
+    }
+    assert!(durable.contains("pub(super) fn build_one(\n        self,"));
+    assert!(!durable.contains("pub(super) fn commit("));
+    assert!(!durable.contains("pub(super) fn rollback("));
+
     let facts = include_str!("analysis/facts.rs");
     assert!(facts.contains("pub(crate) struct FactSink<'a>"));
     assert!(facts.contains("state: FactSinkState<'a>"));

@@ -1866,29 +1866,29 @@ fn registry_phases(
         while let Some((template_index, args, reserved)) = records.peek_fn_pending() {
             let template = &resolution.generics.templates()[template_index];
             // One admitted generic-owner batch per drained instance body.
-            let mut batch = StagedBodyTxn::begin(records, draft)
+            let batch = StagedBodyTxn::begin(records, draft)
                 .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
             // This instance's refusal rows are staged outside the caller's collector while
             // the batch is armed, exactly as a declared body's are: an invariant leaves
             // through `?` below while the producer-owning aggregate drops both owners.
             // The instance's editor facts were collected once at its template's proof, so
             // its staged fact payload stays empty.
-            let lowered_body = match batch.lower_instance(
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
-                template,
-                &args,
-            ) {
-                Ok(BodyOutcome::Lowered(result)) => Some(result),
-                // An ordinary refusal keeps the batch, aligned with the registry.
-                Ok(BodyOutcome::Refused) => None,
-                Err(invariant) => {
-                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
-                }
+            let (released, outcome) = batch
+                .lower_instance(
+                    resolution.durable,
+                    resolution.signatures,
+                    resolution.generics,
+                    resolution.constants,
+                    template,
+                    &args,
+                )
+                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+            released.absorb(diagnostics, facts);
+            let lowered_body = match outcome {
+                BodyOutcome::Lowered(result) => Some(result),
+                // An ordinary refusal committed with the registry and draft aligned.
+                BodyOutcome::Refused => None,
             };
-            batch.commit().absorb(diagnostics, facts);
             records.consume_fn_pending();
             let Some(result) = lowered_body else {
                 drain_lowered_every_instance = false;
@@ -1989,34 +1989,32 @@ fn lower_declared_functions(
             // site requests, function append, export row, and every registry row its
             // mints appended land as one unit; the guard mutates immediately and in
             // place, so mint order is call order.
-            let mut batch = StagedBodyTxn::begin(records, draft)
+            let batch = StagedBodyTxn::begin(records, draft)
                 .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
             // This body's refusal rows are staged outside the caller's collector while the
             // batch is armed. An invariant leaves through `?` below and drops producer,
             // diagnostics, and facts as one aggregate.
-            let lowered_body = match batch.lower_function(
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
-                facts,
-                module.at,
-                &module.file,
-                &module.name,
-                function,
-            ) {
-                Ok(BodyOutcome::Lowered(result)) => Some(result),
-                // An ordinary refusal commits the batch rather than rolling it back:
-                // the interns and registry rows a refused body already minted are
-                // referenced by rows outside it, so discarding them would leave the
-                // registry and the draft describing different populations.
-                Ok(BodyOutcome::Refused) => None,
-                Err(invariant) => {
-                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
-                }
+            let (released, outcome, export) = batch
+                .lower_function(
+                    resolution.durable,
+                    resolution.signatures,
+                    resolution.generics,
+                    resolution.constants,
+                    facts,
+                    module.at,
+                    &module.file,
+                    &module.name,
+                    function,
+                )
+                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+            released.absorb(diagnostics, facts);
+            let lowered_body = match outcome {
+                BodyOutcome::Lowered(result) => Some(result),
+                // An ordinary refusal commits rather than rolling back: the interns and
+                // registry rows it already minted can be referenced by rows outside it.
+                BodyOutcome::Refused => None,
             };
             let Some(result) = lowered_body else {
-                batch.commit().absorb(diagnostics, facts);
                 if records.has_instantiation_limit() {
                     return Ok(LoweredFunctions {
                         lowered,
@@ -2043,17 +2041,9 @@ fn lower_declared_functions(
                 code_spans: result.code_spans,
             });
             let export = if function.public {
-                // Export validation and minting stay inside the producer-owning wrapper:
-                // the driver receives only the settled body and the accepted id.
-                let (released, id) = batch.commit_export(
-                    &module.file,
-                    function.span,
-                    &module.name,
-                    &function.name,
-                    result.func,
-                );
-                released.absorb(diagnostics, facts);
-                let Some(id) = id else {
+                // Export validation and minting ran before the lowering transaction
+                // committed; the driver sees the accepted id only after settlement.
+                let Some(id) = export else {
                     continue;
                 };
                 Some(ExportEntry {
@@ -2062,7 +2052,6 @@ fn lower_declared_functions(
                     id,
                 })
             } else {
-                batch.commit().absorb(diagnostics, facts);
                 None
             };
             exports.extend(export);
@@ -2131,33 +2120,30 @@ fn lower_declared_tests(
             }
             // One admitted generic-owner batch per lowered test body, its test-entry
             // append included.
-            let mut batch = StagedBodyTxn::begin(records, draft)
+            let batch = StagedBodyTxn::begin(records, draft)
                 .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
             // Staged inside the producer-owning guard exactly as a declared body's rows are.
-            let lowered_body = match batch.lower_test(
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
-                facts,
-                module.at,
-                &module.file,
-                &module.name,
-                &test.name,
-                &test.body,
-            ) {
-                Ok(BodyOutcome::Lowered(result)) => Some(result),
-                // An ordinary refusal commits the batch rather than rolling it back:
-                // the interns and registry rows a refused body already minted are
-                // referenced by rows outside it, so discarding them would leave the
-                // registry and the draft describing different populations.
-                Ok(BodyOutcome::Refused) => None,
-                Err(invariant) => {
-                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
-                }
+            let (released, outcome) = batch
+                .lower_test(
+                    resolution.durable,
+                    resolution.signatures,
+                    resolution.generics,
+                    resolution.constants,
+                    facts,
+                    module.at,
+                    &module.file,
+                    &module.name,
+                    &test.name,
+                    &test.body,
+                )
+                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+            released.absorb(diagnostics, facts);
+            let lowered_body = match outcome {
+                BodyOutcome::Lowered(result) => Some(result),
+                // An ordinary refusal committed with the registry and draft aligned.
+                BodyOutcome::Refused => None,
             };
             let Some(result) = lowered_body else {
-                batch.commit().absorb(diagnostics, facts);
                 if records.has_instantiation_limit() {
                     return Ok(LoweredTests {
                         lowered,
@@ -2183,10 +2169,6 @@ fn lower_declared_tests(
                 code: result.code,
                 code_spans: result.code_spans,
             });
-            batch
-                .commit_test(&test.name, result.func)
-                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?
-                .absorb(diagnostics, facts);
             entries.push(TestEntry {
                 name: test.name.clone(),
                 module: module.name.clone(),

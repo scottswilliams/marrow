@@ -689,17 +689,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // lowering invariant, or an unwind — registry inverse first, then the armed draft
         // guard, exactly once. The producer-owning scope also owns both payloads, so a
         // failure drops its diagnostics and editor facts with the still-armed producer.
-        let mut scope = StagedBodyTxn::enter_proof(records, draft)?;
+        let scope = StagedBodyTxn::enter_proof(records, draft)?;
         // The template body is checked exactly once (never per instance), so its editor
         // facts are collected here: a template-parameter use renders by its declared
         // spelling and no divergent-monomorphization O(N²) rendering occurs. The sink
         // charges them live but retains them only in this producer-owning scope. Only the
         // throwaway image function this pass emits is discarded with the scope.
-        scope.lower_template(durable, functions, generics, consts, facts, template)?;
-        // Erase rather than drop so neither the generic-owner transfer nor the body
-        // payload is released until both producer inverses have run. The `?` above drops
-        // producer and payload together.
-        let (generic, body) = scope.erase_proof();
+        // Proof and erasure are one consuming operation: no throwaway function identity
+        // or staged payload can leave while its producer remains armed. An invariant
+        // drops producer and payload together.
+        let (generic, body) =
+            scope.prove_template(durable, functions, generics, consts, facts, template)?;
         Ok(TemplateProofOutcome { generic, body })
     }
 

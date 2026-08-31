@@ -760,8 +760,8 @@ impl DurableRegistry {
                 // The diagnostic custody seam: this aggregate owns the armed transaction
                 // and its private rows together. An invariant abort drops both; a checked
                 // outcome consumes this exact producer before releasing its rows.
-                let mut staged = StagedStoreTxn::new(draft);
-                let built = staged.build_one(
+                let staged = StagedStoreTxn::new(draft);
+                let (built, released) = staged.build_one(
                     &plan,
                     &mut type_metadata,
                     resources,
@@ -772,22 +772,19 @@ impl DurableRegistry {
                     },
                     &mut identity_build,
                 )?;
-                let (occurrence, released) = match built {
+                let occurrence = match built {
                     StoreBuild::Admitted(built) => {
                         registry.naming.extend(built.naming);
                         let executable = built.executable.map(|root| {
                             registry.roots.push(root);
                             registry.roots.len() - 1
                         });
-                        (
-                            DeclarationOccurrence::Accepted(DeclaredRoot { executable }),
-                            staged.commit(),
-                        )
+                        DeclarationOccurrence::Accepted(DeclaredRoot { executable })
                     }
                     StoreBuild::Refused(refusal) => {
-                        // The ordinary refusal path runs the total inverse before releasing
-                        // this store's diagnostics.
-                        (DeclarationOccurrence::Refused(refusal), staged.rollback())
+                        // The consuming build ran the total inverse before returning this
+                        // store's refusal and diagnostics.
+                        DeclarationOccurrence::Refused(refusal)
                     }
                 };
                 settled.absorb(released);

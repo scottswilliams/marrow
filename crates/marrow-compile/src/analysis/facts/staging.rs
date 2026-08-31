@@ -6,9 +6,9 @@
 //! release consumes that aggregate after its producer has committed or erased.
 
 use marrow_codes::Code;
-use marrow_image::{ExportId, FuncId, ImageDraft};
+use marrow_image::{ExportId, ImageDraft};
 use marrow_project::FileIdentity;
-use marrow_syntax::{Block, FunctionDecl, SourceSpan};
+use marrow_syntax::{Block, FunctionDecl};
 
 use super::{
     AnalysisFactCollector, DiagnosticCollector, FactSink, FileRef, ReleasedBody, StagedFacts,
@@ -17,7 +17,7 @@ use crate::compile::valid_export_path;
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
-use crate::lower::{FnLowerer, FunctionRegistry, GenericRegistry, GenericTemplate, LowerResult};
+use crate::lower::{BodyOutcome, FnLowerer, FunctionRegistry, GenericRegistry, GenericTemplate};
 use crate::types::{GArg, GenericDiagnostics, GenericInvariant, GenericOwnerTxn, TypeRegistry};
 
 /// One generic-owner producer and both payloads it may publish.
@@ -55,7 +55,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_function<'a>(
-        &'a mut self,
+        self,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -65,61 +65,95 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         file: &'a FileIdentity,
         module: &'a str,
         function: &'a FunctionDecl,
-    ) -> LowerResult {
+    ) -> Result<(ReleasedBody, BodyOutcome, Option<ExportId>), GenericInvariant> {
         let Self {
-            owner,
-            staged_diagnostics,
-            staged_facts,
+            mut owner,
+            mut staged_diagnostics,
+            mut staged_facts,
         } = self;
-        let (registry, draft) = owner.parts();
-        FnLowerer::lower(
-            draft,
-            registry,
-            durable,
-            functions,
-            generics,
-            consts,
-            staged_diagnostics,
-            staged_facts.sink(settled_facts, at),
-            file,
-            module,
-            function,
-        )
+        let outcome = {
+            let (registry, draft) = owner.parts();
+            FnLowerer::lower(
+                draft,
+                registry,
+                durable,
+                functions,
+                generics,
+                consts,
+                &mut staged_diagnostics,
+                staged_facts.sink(settled_facts, at),
+                file,
+                module,
+                function,
+            )?
+        };
+        let export = match &outcome {
+            BodyOutcome::Lowered(lowered) if function.public => {
+                if valid_export_path(module, &function.name) {
+                    let id = ExportId::of_local(module, &function.name);
+                    owner.parts().1.add_export(id, lowered.func);
+                    Some(id)
+                } else {
+                    staged_diagnostics.push(SourceDiagnostic::at(
+                        Code::CheckModulePath.as_str(),
+                        file,
+                        function.span,
+                        format!(
+                            "export `{}` in module `{module}` is not an ASCII identifier path, \
+                             so it cannot be exported",
+                            function.name
+                        ),
+                    ));
+                    None
+                }
+            }
+            BodyOutcome::Lowered(_) | BodyOutcome::Refused => None,
+        };
+        owner.commit();
+        Ok((
+            Self::release(staged_diagnostics, staged_facts),
+            outcome,
+            export,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_instance<'a>(
-        &'a mut self,
+        self,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
-    ) -> LowerResult {
+    ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
         let Self {
-            owner,
-            staged_diagnostics,
-            staged_facts: _,
+            mut owner,
+            mut staged_diagnostics,
+            staged_facts,
         } = self;
-        let (registry, draft) = owner.parts();
-        FnLowerer::lower_instance(
-            draft,
-            registry,
-            durable,
-            functions,
-            generics,
-            consts,
-            staged_diagnostics,
-            FactSink::discarding(),
-            template,
-            args,
-        )
+        let outcome = {
+            let (registry, draft) = owner.parts();
+            FnLowerer::lower_instance(
+                draft,
+                registry,
+                durable,
+                functions,
+                generics,
+                consts,
+                &mut staged_diagnostics,
+                FactSink::discarding(),
+                template,
+                args,
+            )?
+        };
+        owner.commit();
+        Ok((Self::release(staged_diagnostics, staged_facts), outcome))
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_test<'a>(
-        &'a mut self,
+        self,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
@@ -130,136 +164,72 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         module: &'a str,
         name: &'a str,
         body: &'a Block,
-    ) -> LowerResult {
+    ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
         let Self {
-            owner,
-            staged_diagnostics,
-            staged_facts,
+            mut owner,
+            mut staged_diagnostics,
+            mut staged_facts,
         } = self;
-        let (registry, draft) = owner.parts();
-        FnLowerer::lower_test(
-            draft,
-            registry,
-            durable,
-            functions,
-            generics,
-            consts,
-            staged_diagnostics,
-            staged_facts.sink(settled_facts, at),
-            file,
-            module,
-            name,
-            body,
-        )
+        let outcome = {
+            let (registry, draft) = owner.parts();
+            FnLowerer::lower_test(
+                draft,
+                registry,
+                durable,
+                functions,
+                generics,
+                consts,
+                &mut staged_diagnostics,
+                staged_facts.sink(settled_facts, at),
+                file,
+                module,
+                name,
+                body,
+            )?
+        };
+        if let BodyOutcome::Lowered(lowered) = &outcome {
+            let draft = owner.parts().1;
+            let name = draft
+                .intern_string(name)
+                .map_err(GenericInvariant::BuilderDomain)?;
+            draft.add_test_entry(name, lowered.func);
+        }
+        owner.commit();
+        Ok((Self::release(staged_diagnostics, staged_facts), outcome))
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn lower_template<'a>(
-        &'a mut self,
+    pub(crate) fn prove_template<'a>(
+        self,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         settled_facts: &'a AnalysisFactCollector,
         template: &'a GenericTemplate<'a>,
-    ) -> LowerResult {
-        let Self {
-            owner,
-            staged_diagnostics,
-            staged_facts,
-        } = self;
-        let (registry, draft) = owner.parts();
-        FnLowerer::lower_template(
-            draft,
-            registry,
-            durable,
-            functions,
-            generics,
-            consts,
-            staged_diagnostics,
-            staged_facts.sink(settled_facts, template.at()),
-            template,
-        )
-    }
-
-    pub(crate) fn commit(self) -> ReleasedBody {
-        let Self {
-            owner,
-            staged_diagnostics,
-            staged_facts,
-        } = self;
-        owner.commit();
-        Self::release(staged_diagnostics, staged_facts)
-    }
-
-    /// Validate and mint one public export inside the same custody boundary that owns
-    /// the function body's diagnostics. An invalid path becomes this body's own row;
-    /// neither branch exposes the staged collector or armed draft to the driver.
-    pub(crate) fn commit_export(
-        self,
-        file: &FileIdentity,
-        span: SourceSpan,
-        module: &str,
-        item: &str,
-        func: FuncId,
-    ) -> (ReleasedBody, Option<ExportId>) {
+    ) -> Result<(GenericDiagnostics, ReleasedBody), GenericInvariant> {
         let Self {
             mut owner,
             mut staged_diagnostics,
-            staged_facts,
+            mut staged_facts,
         } = self;
-        let export = if valid_export_path(module, item) {
-            let id = ExportId::of_local(module, item);
-            owner.parts().1.add_export(id, func);
-            Some(id)
-        } else {
-            staged_diagnostics.push(SourceDiagnostic::at(
-                Code::CheckModulePath.as_str(),
-                file,
-                span,
-                format!(
-                    "export `{item}` in module `{module}` is not an ASCII identifier path, \
-                     so it cannot be exported"
-                ),
-            ));
-            None
-        };
-        owner.commit();
-        (Self::release(staged_diagnostics, staged_facts), export)
-    }
-
-    /// Bind one lowered test title before committing the exact producer that emitted
-    /// the function. A carrier-domain refusal abandons the aggregate as one unit.
-    pub(crate) fn commit_test(
-        self,
-        name: &str,
-        func: FuncId,
-    ) -> Result<ReleasedBody, GenericInvariant> {
-        let Self {
-            mut owner,
-            staged_diagnostics,
-            staged_facts,
-        } = self;
-        let draft = owner.parts().1;
-        let name = draft
-            .intern_string(name)
-            .map_err(GenericInvariant::BuilderDomain)?;
-        draft.add_test_entry(name, func);
-        owner.commit();
-        Ok(Self::release(staged_diagnostics, staged_facts))
-    }
-
-    /// Erase a template proof's throwaway producer, then release its generic-owner
-    /// transfer and body payload together. Nothing can escape while the guard is armed.
-    pub(crate) fn erase_proof(self) -> (GenericDiagnostics, ReleasedBody) {
-        let Self {
-            owner,
-            staged_diagnostics,
-            staged_facts,
-        } = self;
+        {
+            let (registry, draft) = owner.parts();
+            FnLowerer::lower_template(
+                draft,
+                registry,
+                durable,
+                functions,
+                generics,
+                consts,
+                &mut staged_diagnostics,
+                staged_facts.sink(settled_facts, template.at()),
+                template,
+            )?;
+        }
         let generic = owner.registry().take_generic_diagnostics();
         owner.erase();
-        (generic, Self::release(staged_diagnostics, staged_facts))
+        Ok((generic, Self::release(staged_diagnostics, staged_facts)))
     }
 
     fn release(diagnostics: DiagnosticCollector, facts: StagedFacts) -> ReleasedBody {

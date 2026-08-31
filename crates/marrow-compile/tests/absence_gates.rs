@@ -2272,10 +2272,9 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
     );
     assert!(
         lower.contains("StagedBodyTxn::enter_proof(records, draft)?")
-            && lower.contains("scope.lower_template(")
-            && lower.contains("scope.erase_proof()"),
-        "the template proof reaches lowering and release only through its producer-bound \
-         custody operations",
+            && lower.contains("scope.prove_template("),
+        "the template proof reaches lowering and erasure only through one consuming \
+         producer-bound custody operation",
     );
 }
 
