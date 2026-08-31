@@ -12,7 +12,7 @@
 //! (`nested_type_mint_directory_is_linear_in_instantiation_count`). The per-template proof
 //! pass likewise reads that shared directory inside a savepoint rather than replaying the
 //! population into a clone, so its row cost is the template body's own mint count, constant
-//! as the population grows (`proof_clone_cost_is_independent_of_instantiation_population`).
+//! as the population grows (`template_proof_cost_is_independent_of_instantiation_population`).
 //! The per-field-projection presentation path (exercised by the `.value.value` accesses on
 //! the type axis) now reuses that same pass directory, so its row work is linear in the
 //! instantiation count as well (`type_axis_scan_and_field_projection_rebuild_are_linear`).
@@ -112,23 +112,28 @@ fn proof_cost_fixture(v: usize) -> String {
 /// savepoint, reading the shared already-built metadata directory instead of replaying the
 /// settled instantiation population into a per-template clone. So its row cost is the number
 /// of rows the template body itself mints — constant as the pre-existing population doubles.
-/// Before this repair the proof cloned the whole registry and replayed every settled row, so
-/// `proof_clone_rows` was the population size (`16 -> 32 -> 64` on this fixture); after it the
-/// count is the template's own mint (`1`) at every width. The entry count stays one proof per
-/// template (`proof_clones`), independent of instantiation count.
+/// Before this repair the proof cloned the whole registry and replayed every settled row,
+/// so the classified-row count was the population size (`16 -> 32 -> 64` on this fixture);
+/// after it `template_proof_rows` is the template's own mint (`1`) at every width. The
+/// entry count stays one proof per template (`template_proofs`), independent of
+/// instantiation count.
 #[test]
-fn proof_clone_cost_is_independent_of_instantiation_population() {
+fn template_proof_cost_is_independent_of_instantiation_population() {
     let a = counts_for(proof_cost_fixture(16));
     let b = counts_for(proof_cost_fixture(32));
     let c = counts_for(proof_cost_fixture(64));
 
     assert_eq!(
-        (a.proof_clones, b.proof_clones, c.proof_clones),
+        (a.template_proofs, b.template_proofs, c.template_proofs),
         (1, 1, 1),
         "one generic template proves once, regardless of instantiation population"
     );
     assert_eq!(
-        (a.proof_clone_rows, b.proof_clone_rows, c.proof_clone_rows),
+        (
+            a.template_proof_rows,
+            b.template_proof_rows,
+            c.template_proof_rows
+        ),
         (1, 1, 1),
         "the proof classifies only the rows its own body mints, not the settled population; \
          a per-template replay would grow this to the population size (16 / 32 / 64)"
@@ -393,27 +398,27 @@ fn generic_scaling_report() {
         );
         println!(
             "  half (v={:>2}): builds={:>4} row_visits={:>6} ty_scan={:>6} fn_scan={:>6} \
-             cycle_steps={:>6} proof_clones={} proof_rows={}",
+             cycle_steps={:>6} template_proofs={} template_proof_rows={}",
             ceiling / 2,
             half.directory_builds,
             half.directory_row_visits,
             half.type_inst_scan_steps,
             half.fn_inst_scan_steps,
             half.cycle_walk_steps,
-            half.proof_clones,
-            half.proof_clone_rows,
+            half.template_proofs,
+            half.template_proof_rows,
         );
         println!(
             "  full (v={:>2}): builds={:>4} row_visits={:>6} ty_scan={:>6} fn_scan={:>6} \
-             cycle_steps={:>6} proof_clones={} proof_rows={}",
+             cycle_steps={:>6} template_proofs={} template_proof_rows={}",
             ceiling,
             top.directory_builds,
             top.directory_row_visits,
             top.type_inst_scan_steps,
             top.fn_inst_scan_steps,
             top.cycle_walk_steps,
-            top.proof_clones,
-            top.proof_clone_rows,
+            top.template_proofs,
+            top.template_proof_rows,
         );
     }
 }
@@ -484,18 +489,18 @@ fn proof_fork_entry_is_per_template_not_per_instantiation() {
     let (ty_ceiling, ty_top) = reachable_ceiling(type_axis_fixture, 64);
     let ty_half = counts_for(type_axis_fixture(ty_ceiling / 2));
     assert_eq!(
-        ty_half.proof_clones, ty_top.proof_clones,
+        ty_half.template_proofs, ty_top.template_proofs,
         "type-only fixture proof-fork entry is constant (0) across instantiation count"
     );
 
     let (fn_ceiling, fn_top) = reachable_ceiling(fn_axis_fixture, 64);
     let fn_half = counts_for(fn_axis_fixture(fn_ceiling / 2));
     assert_eq!(
-        fn_top.proof_clones, 1,
+        fn_top.template_proofs, 1,
         "one generic function template proves once"
     );
     assert_eq!(
-        fn_half.proof_clones, fn_top.proof_clones,
+        fn_half.template_proofs, fn_top.template_proofs,
         "proof-fork entry is constant per template across instantiation counts"
     );
 }

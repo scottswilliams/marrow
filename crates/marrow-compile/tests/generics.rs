@@ -738,9 +738,9 @@ pub fn driver(): int {
     assert_one_located_limit(&diagnostics, 8, 16);
 }
 
-/// The `if const` annotation path currently ignores a failed `resolve_type`. A
-/// shared limit must instead reject the body, without binding the optional's bare
-/// type as though the requested annotation had resolved.
+/// The `if const` annotation path preserves a failed `resolve_type`: a shared limit
+/// rejects the body without binding the optional's bare type as though the requested
+/// annotation had resolved.
 #[test]
 fn depth_limit_in_an_if_const_annotation_is_not_ignored() {
     let diagnostics = compile_err(
@@ -1085,12 +1085,13 @@ pub fn driver(): int {
     assert_diagnostic_sites(&diagnostics, &[("check.unsupported", 8, 18)]);
 }
 
-/// An unused generic template is checked against an isolated registry clone. Its
-/// clone-local type limit and collection-payload refusal must both transfer to the
-/// real diagnostic coordinator in canonical limit-before-payload order. The later
-/// safe export only keeps the fixture free of an unrelated body diagnostic.
+/// An unused generic template is checked inside an isolated savepoint over the live
+/// registry and draft. Its proof-local type limit and collection-payload refusal must
+/// both transfer to the real diagnostic coordinator in canonical limit-before-payload
+/// order. The later safe export only keeps the fixture free of an unrelated body
+/// diagnostic.
 #[test]
-fn proof_clone_transfers_its_limit_before_its_payload_diagnostic() {
+fn template_proof_transfers_its_limit_before_its_payload_diagnostic() {
     let diagnostics = compile_err(
         r#"module main
 

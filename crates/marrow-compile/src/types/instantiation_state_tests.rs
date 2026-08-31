@@ -823,8 +823,8 @@ fn rejected_rows_are_displayable_but_not_semantic_or_anchor_ready() {
     assert!(registry.enum_anchor_spelling(enum_id).unwrap().is_none());
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
 }
@@ -998,7 +998,7 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
 }
 
 #[test]
-fn proof_clone_validates_every_ready_row_even_when_ids_are_duplicated() {
+fn template_proof_validates_every_ready_row_even_when_ids_are_duplicated() {
     let mut registry = registry(vec![template("Box", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     registry
@@ -1954,7 +1954,7 @@ fn collection_predecessor_validation_preserves_source_order_on_first_visit_and_r
 }
 
 #[test]
-fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
+fn template_proof_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let mut registry = registry(vec![template("Good", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     registry
@@ -1966,8 +1966,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let before = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -1977,8 +1977,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let before = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -1989,8 +1989,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let before = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -2000,8 +2000,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let before = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -2015,8 +2015,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let before = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -2028,8 +2028,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let before = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -2041,8 +2041,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let pending = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::LimitOwnerNotOpen
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::LimitOwnerNotOpen
         ))
     ));
     assert_eq!(stable_snapshot(&registry), pending);
@@ -2050,8 +2050,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let reported = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::LimitOwnerNotOpen
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::LimitOwnerNotOpen
         ))
     ));
     assert!(matches!(pending.limit, StableLimit::PendingRow(_)));
@@ -2075,8 +2075,8 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
     let before = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -2085,7 +2085,7 @@ fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
 /// An active mutable borrow of the generic owner is a private
 /// coherence failure, not a RefCell unwind.
 #[test]
-fn proof_clone_generics_borrow_conflict_fails_without_unwinding() {
+fn template_proof_generics_borrow_conflict_fails_without_unwinding() {
     let registry = registry(Vec::new());
     let before = stable_snapshot(&registry);
     let guard = registry.generics.borrow_mut();
@@ -2094,8 +2094,8 @@ fn proof_clone_generics_borrow_conflict_fails_without_unwinding() {
 
     assert!(matches!(
         result,
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);
@@ -2104,7 +2104,7 @@ fn proof_clone_generics_borrow_conflict_fails_without_unwinding() {
 /// Collection-owner contention is classified independently from
 /// the generic owner and cannot unwind through RefCell.
 #[test]
-fn proof_clone_collections_borrow_conflict_fails_without_unwinding() {
+fn template_proof_collections_borrow_conflict_fails_without_unwinding() {
     let registry = registry(Vec::new());
     let before = stable_snapshot(&registry);
     let guard = registry.collections.borrow_mut();
@@ -2113,8 +2113,8 @@ fn proof_clone_collections_borrow_conflict_fails_without_unwinding() {
 
     assert!(matches!(
         result,
-        Err(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        Err(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(stable_snapshot(&registry), before);

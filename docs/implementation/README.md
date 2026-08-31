@@ -471,7 +471,8 @@ described host-neutrally by a function descriptor that both real callers — the
 terminal and the generated TypeScript client — consume without reparsing source.
 `marrow-image` owns the interface vocabulary: a `TransferType` (the closed set of
 value types a signature may carry — `unit`, the seven scalars, a `Product`
-record, and a `Sum` enum, the last also covering `Option`/`Result`), a
+record, a `Sum` enum (also covering `Option`/`Result`), a finite `List`, a finite
+ordered `Map`, and an entry identity `Id(^root)`), a
 `FunctionDescriptor` pairing an export's `ExportId` with its transfer-projected
 parameters and return and its `DemandSetId`, an `Interface` (the descriptor set
 sorted by export id), and the `InterfaceId` interface identity — a
@@ -486,11 +487,10 @@ reconstructed `DemandSetId` — is already present in a `VerifiedImage`, so the
 summary. A body edit that changes no signature and no demand leaves the
 `InterfaceId` fixed while the image id moves; any signature change (a parameter or
 return type, a record field name, an enum variant) or demand change moves it.
-Finite collections (`List`/`Map`) are deliberately outside the transfer graph at
-this stage: a signature that reaches one — directly or through a record field or
-enum payload — is rejected with a typed exclusion rather than surfaced on the
-wire, and collections join the transfer graph only when the client earns them.
-Because a record field or enum payload may itself be a record or enum, each
-signature is expanded structurally under a fixed node budget, so a
+Finite `List` and ordered `Map` values cross as arrays, with maps represented by
+ordered `[key, value]` pairs so non-string keys and entry order survive. An
+`Id(^root)` crosses as its ordered key-column tuple. Because a record field, enum
+payload, collection element, map key/value, or identity may reach another composite,
+each signature is expanded structurally under a fixed node budget, so a
 verified-but-adversarial diamond of many-fielded records cannot drive an
 exponential expansion.

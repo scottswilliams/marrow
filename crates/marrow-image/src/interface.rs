@@ -25,9 +25,10 @@
 //! extension, G00b). The graph is closed over every [`ImageType`], so a verified
 //! signature always projects. Because a record field, enum payload, list element, or
 //! map key/value may itself be a composite type, a signature is expanded structurally
-//! under a node budget ([`bounds::MAX_INTERFACE_TRANSFER_NODES`](crate::bounds::MAX_INTERFACE_TRANSFER_NODES)),
-//! so a verified-but-adversarial diamond of many-fielded records cannot drive an
-//! exponential expansion.
+//! under a node budget ([`bounds::MAX_INTERFACE_TRANSFER_NODES`](crate::bounds::MAX_INTERFACE_TRANSFER_NODES)).
+//! The type-kind graph is closed, but even a verified acyclic signature can exceed that
+//! expansion budget; reconstruction then returns [`InterfaceError::SignatureTooComplex`]
+//! before materializing an exponential tree.
 //!
 //! ```text
 //! InterfaceId = SHA-256( KIND ‖ u64_be(len(payload)) ‖ payload )
@@ -74,8 +75,8 @@ const LOCAL_ROOT_LINEAGE: &[u8] = &[0x00];
 
 /// A resolved transfer type: the structural shape of one value that may cross the
 /// wire, expanded from an [`ImageType`] against the record, enum, collection, and
-/// root tables. The set is closed over every `ImageType`, so a verified signature
-/// always projects.
+/// root tables. The set covers every `ImageType` kind; projection may still refuse a
+/// verified acyclic signature whose structural expansion exceeds the node budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferType {
     Unit,
@@ -300,9 +301,10 @@ pub struct Interface {
 }
 
 /// Why an interface could not be reconstructed from a signature set. Each is a typed
-/// fact about one export, not rendered prose. The transfer graph is closed over every
-/// [`ImageType`], so neither variant is reachable from a verified image; both defend a
-/// caller-assembled signature set.
+/// fact about one export, not rendered prose. A verified acyclic signature can exceed the
+/// expansion budget and reach [`InterfaceError::SignatureTooComplex`]. Verified table
+/// references make [`InterfaceError::TypeIndexOutOfRange`] defensive for caller-assembled
+/// signature sets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceError {
     /// An export signature expands to more transfer nodes than the budget admits.
@@ -328,13 +330,13 @@ impl std::fmt::Display for InterfaceError {
 impl std::error::Error for InterfaceError {}
 
 impl Interface {
-    /// Reconstruct the interface from the export signatures and the record/enum
-    /// tables. Each signature is projected into the transfer graph (rejecting a
-    /// collection or an over-budget expansion), then descriptors are sorted ascending
-    /// by [`ExportId`].
+    /// Reconstruct the interface from the export signatures and the record, enum,
+    /// collection, and root tables. Each signature is projected into the closed transfer
+    /// type-kind graph, rejecting an over-budget expansion or an out-of-range table
+    /// reference, then descriptors are sorted ascending by [`ExportId`].
     ///
-    /// `records[i]` and `enums[i]` are the shapes at image record/enum index `i`,
-    /// exactly the tables a `VerifiedImage` exposes.
+    /// Each table slice is ordered by its corresponding image ordinal, exactly as a
+    /// `VerifiedImage` exposes it.
     pub fn build(
         exports: impl IntoIterator<Item = ExportSignature>,
         records: &[RecordShape],
@@ -403,9 +405,9 @@ struct Tables<'a> {
 /// Project one [`ImageType`] into the transfer graph, resolving record/enum/
 /// collection/root references against the tables and rejecting an over-budget
 /// expansion or an out-of-range reference. `budget` is decremented once per produced
-/// [`TransferType`] node. The graph is closed over every [`ImageType`], so a
-/// verified signature always projects; the errors are defenses for a
-/// caller-assembled signature set.
+/// [`TransferType`] node. The graph covers every [`ImageType`] kind, but a verified
+/// signature can still exceed the expansion budget. An out-of-range reference is a
+/// defense for a caller-assembled signature set.
 fn resolve(
     ty: ImageType,
     tables: &Tables<'_>,

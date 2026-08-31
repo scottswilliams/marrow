@@ -713,8 +713,8 @@ pub struct ImageDraft {
     /// The first divergent repeat of an already-declared Product, if one was appended.
     /// Two occurrences of one Product identity that claim different graphs are two
     /// declarations wearing one identity: the draft cannot represent that, and
-    /// [`Self::check_bounds`] refuses to encode rather than silently canonicalizing one
-    /// of them away.
+    /// the measurement/coherence pass refuses to encode rather than silently
+    /// canonicalizing one of them away.
     product_conflict: Option<ProductClaimConflict>,
     /// The sticky application-identity divergence latch (the set-once-or-same law).
     application_conflict: Option<ApplicationIdentityConflict>,

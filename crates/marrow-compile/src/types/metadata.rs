@@ -1579,7 +1579,7 @@ impl RowDirectory {
             // owner-decoupled successor to the discarded clone's whole-population replay.
             #[cfg(test)]
             if view.generics.argument_domain == ArgumentDomain::TemplateProof {
-                bump_scaling(|counts| counts.proof_clone_rows += 1);
+                bump_scaling(|counts| counts.template_proof_rows += 1);
             }
             let id = view.generics.type_insts[row].id;
             place_generic_row(&mut self.scratch.records, &mut self.scratch.enums, row, id)?;

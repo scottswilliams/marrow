@@ -442,9 +442,9 @@ pub(crate) enum CollectionKind {
     Map,
 }
 
-/// Why a proof-clone boundary could not produce an isolated coherent owner.
+/// Why a template-proof savepoint could not admit a coherent isolated pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProofCloneError {
+pub(crate) enum TemplateProofError {
     UnstableFillState,
     LimitOwnerNotOpen,
 }
@@ -482,7 +482,7 @@ pub(crate) enum GenericCacheInvariant {
 /// redacted public `CompileInvariant` wrapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GenericInvariant {
-    ProofClone(ProofCloneError),
+    TemplateProof(TemplateProofError),
     CacheState(GenericCacheInvariant),
     ReservedTemplateMissing(Reserved),
     TypeTemplateMissing(usize),
@@ -3528,7 +3528,7 @@ impl TypeRegistry {
         let mut generics = self
             .generics
             .try_borrow_mut()
-            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?;
+            .map_err(|_| GenericInvariant::TemplateProof(TemplateProofError::UnstableFillState))?;
         let has_unstable_row = generics.type_insts.iter().any(|inst| {
             matches!(inst.state, TypeInstState::Filling { .. }) || !inst.dependents.is_empty()
         });
@@ -3544,13 +3544,13 @@ impl TypeRegistry {
             || generics.build_invariant.is_some()
             || !matches!(generics.argument_domain, ArgumentDomain::Concrete)
         {
-            return Err(GenericInvariant::ProofClone(
-                ProofCloneError::UnstableFillState,
+            return Err(GenericInvariant::TemplateProof(
+                TemplateProofError::UnstableFillState,
             ));
         }
         if !matches!(generics.limit, LimitState::Open) {
-            return Err(GenericInvariant::ProofClone(
-                ProofCloneError::LimitOwnerNotOpen,
+            return Err(GenericInvariant::TemplateProof(
+                TemplateProofError::LimitOwnerNotOpen,
             ));
         }
         // Contention on the collection owner is a coherence failure, not a RefCell unwind;
@@ -3558,10 +3558,10 @@ impl TypeRegistry {
         let collections = self
             .collections
             .try_borrow()
-            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?
+            .map_err(|_| GenericInvariant::TemplateProof(TemplateProofError::UnstableFillState))?
             .len();
         #[cfg(test)]
-        bump_scaling(|counts| counts.proof_clones += 1);
+        bump_scaling(|counts| counts.template_proofs += 1);
         let savepoint = RegistryInverse {
             type_insts: generics.type_insts.len(),
             collections,
@@ -3606,14 +3606,14 @@ impl TypeRegistry {
         let generics = self
             .generics
             .try_borrow()
-            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?;
+            .map_err(|_| GenericInvariant::TemplateProof(TemplateProofError::UnstableFillState))?;
         if generics.fill_batch_start.is_some()
             || !generics.fill_rows.is_empty()
             || !generics.fill_stack.is_empty()
             || !generics.fill_failures.is_empty()
         {
-            return Err(GenericInvariant::ProofClone(
-                ProofCloneError::UnstableFillState,
+            return Err(GenericInvariant::TemplateProof(
+                TemplateProofError::UnstableFillState,
             ));
         }
         // Read before any mutation, so contention on the collection owner refuses with
@@ -3621,7 +3621,7 @@ impl TypeRegistry {
         let collections = self
             .collections
             .try_borrow()
-            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?
+            .map_err(|_| GenericInvariant::TemplateProof(TemplateProofError::UnstableFillState))?
             .len();
         // Destructured exhaustively: a new generic owner stops this compiling until it is
         // captured here or deliberately excluded beside the two the inverse names in

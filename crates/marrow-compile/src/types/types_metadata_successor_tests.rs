@@ -1389,7 +1389,7 @@ fn take_reader_invariant<T>(result: Result<T, GenericInvariant>) -> GenericInvar
 
 fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
     match invariant {
-        GenericInvariant::ProofClone(error) => {
+        GenericInvariant::TemplateProof(error) => {
             let _ = error;
             0
         }

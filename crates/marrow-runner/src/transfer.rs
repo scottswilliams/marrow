@@ -232,8 +232,9 @@ fn decode_key(scalar: Scalar, json: &Json) -> Option<KeyScalar> {
     })
 }
 
-/// Encode a returned value into its wire JSON, or `None` for a value outside the
-/// transfer graph (a collection — unreachable for a served export).
+/// Encode a returned value into its wire JSON, or `None` if a value fails to match the
+/// verified transfer graph. Finite lists, ordered maps, and entry identities are members
+/// of that graph and are encoded below.
 pub(crate) fn encode_value(image: &VerifiedImage, value: &Value) -> Option<Json> {
     Some(match value {
         Value::Int(n) => Json::Int(*n),

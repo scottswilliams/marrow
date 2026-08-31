@@ -525,7 +525,7 @@ pub(crate) fn expand(
 ///
 /// Every arity a durable program states is bounded far below the wire's width —
 /// [`crate::bounds::MAX_STRUCT_LEAVES`], [`crate::bounds::MAX_VARIANTS`], and
-/// [`crate::bounds::MAX_PAYLOAD_FIELDS`] are all under 256, and the whole arena is
+/// [`crate::bounds::MAX_PAYLOAD_FIELDS`] are all at most 256, and the whole arena is
 /// rechecked against them before anything is encoded. An arena is public, though, so a
 /// caller can state a wider shape and ask the identity owner for its identity directly. A
 /// wrapping cast would then give that shape the arity of a narrower one, so two distinct

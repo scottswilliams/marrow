@@ -148,8 +148,63 @@ fn a_self_recursive_call_rejects_as_a_cycle() {
     );
 }
 
-// The dynamic call-depth guard (64) is defensive: with at most 64 functions and no
-// recursion (rejected as a cycle), an acyclic call chain is at most 63 deep, so the
-// guard is unreachable at this subset. It is retained in the VM to match the design
-// and to bound a future subset with more functions; there is no reachable test for
-// it here.
+#[test]
+fn an_acyclic_call_chain_past_the_dynamic_depth_bound_refuses() {
+    const FIRST_OVER_LIMIT_CALLS: usize = 65;
+
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let src = draft
+        .intern_string("src/main.mw")
+        .expect("a within-domain mint");
+    let zero = draft.intern_int(0).expect("a within-domain mint");
+
+    let leaf_name = draft.intern_string("leaf").expect("a within-domain mint");
+    let leaf_code = vec![Instr::ConstLoad(zero), Instr::Return];
+    let mut callee = draft
+        .add_function(FunctionDef {
+            name: leaf_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&leaf_code),
+            code: leaf_code,
+        })
+        .expect("every site operand is live");
+
+    for depth in 1..=FIRST_OVER_LIMIT_CALLS {
+        let name = draft
+            .intern_string(&format!("depth_{depth}"))
+            .expect("a within-domain mint");
+        let code = vec![Instr::Call(callee.index()), Instr::Return];
+        callee = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::scalar(Scalar::Int),
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
+    }
+
+    draft.add_export(ExportId::of_local("", "deepest"), callee);
+    let bytes = draft.encode().expect("encode").bytes;
+    let image = verify(&bytes).expect("the acyclic chain verifies");
+    let index = image
+        .export_by_id(ExportId::of_local("", "deepest"))
+        .expect("export")
+        .function();
+
+    // The image admits up to 4,096 functions, so an acyclic chain can cross the VM's
+    // 64-call dynamic bound even though the verifier rejects recursive cycles.
+    assert_eq!(
+        run(&image, index, Vec::new())
+            .err()
+            .map(|fault| fault.code().to_string()),
+        Some("run.call_depth".to_string()),
+    );
+}

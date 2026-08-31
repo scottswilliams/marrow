@@ -79,12 +79,12 @@ pub(crate) struct ScalingCounts {
     /// Value-graph edges traversed across every `cycle_through` start.
     pub(crate) cycle_walk_steps: usize,
     /// `enter_template_proof` admissions (one isolated proof pass per generic template).
-    pub(crate) proof_clones: usize,
+    pub(crate) template_proofs: usize,
     /// Type-inst rows the proof pass classifies into the shared metadata directory — the
     /// rows its own body mints, extended onto the already-built population directory rather
     /// than replayed over the whole settled population. Constant per template, decoupled from
     /// the instantiation count.
-    pub(crate) proof_clone_rows: usize,
+    pub(crate) template_proof_rows: usize,
     /// Characters rendered into editor hover displays across the whole compile
     /// (`ty.spelling`/signature displays). A monomorphized instance body's facts are
     /// discarded — an instance's use-site spans duplicate its template's — so its
@@ -113,8 +113,8 @@ thread_local! {
         fn_inst_scan_steps: 0,
         coll_inst_probe_steps: 0,
         cycle_walk_steps: 0,
-        proof_clones: 0,
-        proof_clone_rows: 0,
+        template_proofs: 0,
+        template_proof_rows: 0,
         hover_spelling_chars: 0,
         template_body_clone_entries: 0,
     }) };

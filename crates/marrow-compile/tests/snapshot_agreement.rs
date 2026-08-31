@@ -129,7 +129,7 @@ fn a_semantic_stop_agrees() {
 #[test]
 fn a_driven_resource_limit_agrees() {
     // Each body returns a distinct literal, so this project crosses MAX_CONSTS (1024)
-    // before any other aggregate bound — `check_bounds` consults the constant table
+    // before any other aggregate bound — the measure-core invariant pass consults the constant table
     // first. The fixture states the kind that actually fires rather than the function
     // bound it once claimed.
     let mut source = String::new();

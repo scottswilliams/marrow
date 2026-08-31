@@ -1,28 +1,29 @@
-//! The issuance gate's memory half: a hostile maximum-amplification corpus is driven
-//! through the production `compile` path in a subprocess and that subprocess's peak
+//! The issuance gate's memory half: four hostile amplification corpora are driven through
+//! the production `compile` path in separate subprocesses and each subprocess's peak
 //! resident set size is measured, so the wide carriers' width derivation
 //! (`marrow-image::issuance`) is joined by a measured memory-feasibility figure rather
 //! than an unmeasured assumption.
 //!
 //! Four corpora are measured, each a divergent generic at the widest body its own bound
 //! admits: a `MAX_RECORD_FIELDS` generic struct, a `MAX_VARIANTS` x `MAX_PAYLOAD_FIELDS`
-//! generic enum, a generic function filling its local frame, and all three together. Each
-//! of the 4,096 instantiations the shared bound admits carries that body, and every
-//! monomorphic body stays simultaneously retained because a public image-policy crossing
-//! does not stop provisional construction, so the measured figures charge draft rows,
-//! lookup indexes, the journal and policy ledger, and the live compiler diagnostic and
-//! analysis-fact transients together.
+//! generic enum, a generic function filling its local frame, and all three together. The
+//! function arm reaches all 4,096 instantiations the shared count bound admits; the
+//! self-nesting type and enum arms stop at the separate 256-deep mint bound, and the
+//! combined arm stops there with them. Every materialized body stays simultaneously
+//! retained because a public image-policy crossing does not stop provisional construction,
+//! so the measured figures charge draft rows, lookup indexes, the journal and policy
+//! ledger, and the live compiler diagnostic and analysis-fact transients together.
 //!
 //! Each width is read from the bound that governs the construct it widens. The gate
 //! previously read `MAX_STRUCT_LEAVES` for all of them — a durable value-shape bound whose
 //! own declaration says it does not scale with the record width — and so measured bodies
-//! sixty-four times narrower than the compiler admits. At the correct widths two of the
-//! four corpora peak above the declared owned-heap ceiling; the verdicts are recorded
+//! sixty-four times narrower than the compiler admits. At the correct widths one of the
+//! four corpora peaks above the declared owned-heap ceiling; the verdicts are recorded
 //! below.
 //!
 //! Measurement uses only what the platform already publishes about a process:
-//! `/proc/self/status`'s `VmHWM` where it exists, and the base-system `/usr/bin/time`
-//! reporter otherwise. Neither adds a dependency and neither needs `unsafe`. A
+//! `/proc/self/status`'s `VmHWM` where it exists, and the base-system zsh `time`
+//! reporter on macOS. Neither adds a dependency and neither needs `unsafe`. A
 //! platform whose peak is not obtainable fails the gate loudly rather than passing
 //! without a figure.
 
@@ -63,8 +64,8 @@ const ADMITTED_LOCALS: usize = marrow_image::bounds::MAX_LOCALS - 2;
 ///
 /// The frame width and the code width are independent — a body can fill all 256 local slots
 /// and still carry a small fraction of the 64 KiB of code a function admits — and each
-/// generic instance retains a copy of both. Measuring only the frame therefore measured one
-/// of the two dimensions.
+/// generic instance retains its own frame and code. Measuring only the frame therefore
+/// measured one of the two dimensions.
 ///
 /// The number is **observed, not computed**: it is the largest padding whose body still
 /// encodes, and one more statement is refused with the typed `CodeBytes` limit.
@@ -73,7 +74,7 @@ const ADMITTED_LOCALS: usize = marrow_image::bounds::MAX_LOCALS - 2;
 /// bound it claims to sit at.
 const ADMITTED_CODE_PADDING: usize = 6145;
 
-/// The ceiling a hostile maximum-amplification compile is held under: the repository's
+/// The ceiling each hostile amplification compile is compared against: the repository's
 /// declared owned-heap authority, read from its owner.
 ///
 /// It is deliberately **not** derived from this corpus's own measured peak. A gate that
@@ -109,13 +110,13 @@ const ADMITTED_PAYLOAD_FIELDS: usize = marrow_image::bounds::MAX_PAYLOAD_FIELDS;
 /// The enum-amplification arm: a divergent generic enum at the widest admissible variant
 /// and payload width.
 ///
-/// This arm exists because the struct arm does not reach the enum template copy. A fill
-/// copies its template body out before resolving it, and the two bodies are separate code
-/// paths over separately bounded populations: a struct fill copies `MAX_RECORD_FIELDS`
-/// declared fields, an enum fill copies `MAX_VARIANTS` variants each of
-/// `MAX_PAYLOAD_FIELDS` leaves. The enum copy is the larger of the two per instantiation
-/// and had no corpus at all, so its cost was asserted by the comment beside it rather than
-/// measured.
+/// This arm exists because the struct arm does not exercise enum-template materialization.
+/// A fill now reads its declared shape through a shared handle and materializes only the
+/// distinct per-instance rows, but the two shapes still take separate paths over separately
+/// bounded populations: a struct fill materializes `MAX_RECORD_FIELDS` declared fields,
+/// while an enum fill materializes `MAX_VARIANTS` variants each of `MAX_PAYLOAD_FIELDS`
+/// leaves. The enum shape is the larger of the two per instantiation and previously had no
+/// corpus at all, so its cost was asserted by the comment beside it rather than measured.
 fn enum_amplification_arm() -> String {
     let mut source = String::from("struct Wrap<T> {\n    inner: T\n}\n\n");
     source.push_str("enum Grown<T> {\n");
@@ -156,7 +157,7 @@ fn function_amplification_arm() -> String {
     }
     // The frame width and the code width are independent dimensions: a body may fill the
     // local frame and still carry a fraction of the code a function admits, and each
-    // instance retains a copy of the code as well as of the frame. Padding to the
+    // instance retains its own code as well as its frame. Padding to the
     // code-byte envelope is what drives the second dimension.
     for _ in 0..ADMITTED_CODE_PADDING {
         source.push_str("    xs = append(xs, x)\n");
@@ -207,16 +208,15 @@ fn function_only_corpus() -> String {
     )
 }
 
-/// The hostile maximum-amplification project: every arm in one project, so the measured
-/// figure charges generic type rows, generic enum rows, and generic function rows
-/// together, along with the
-/// draft rows, lookup indexes, journal, policy ledger, and the live compiler diagnostic
-/// and analysis-fact transients.
+/// The combined hostile project contains every arm. It charges their admitted source and
+/// declarations together, but lowering stops at the type arm's first depth refusal before
+/// the enum and function calls instantiate their bodies.
 ///
-/// Type and function instances share **one** ceiling
-/// (`type_insts.len() + fn_insts.len() >= MAX_INSTANTIATIONS`), so the two arms do not
-/// each reach it — together they saturate it. That is the maximum this compiler admits,
-/// and claiming two independent 4,096-row populations would overstate it.
+/// This is an early-stop interaction corpus, not the maximum. Type and function instances
+/// do share one count ceiling (`type_insts.len() + fn_insts.len() >= MAX_INSTANTIATIONS`),
+/// but the self-nesting type arm reaches the separate 256-deep mint bound first. Compilation
+/// refuses before the function arm can amplify to the shared count ceiling; the
+/// function-only corpus is the admitted maximum measured by this gate.
 fn hostile_corpus() -> String {
     format!(
         "module main\n\n{}{}{}pub fn driver(): int {{\n    const ignored = deepen(1)\n             const grown = sprout(1)\n    return grow(1)\n}}\n",
@@ -248,12 +248,19 @@ fn self_peak_rss_bytes() -> Option<u64> {
     None
 }
 
-/// The peak reported by the base-system `/usr/bin/time` reporter, in bytes.
+/// The peak reported by a base-system process-time reporter, in bytes.
 ///
-/// The two reporters disagree on unit: the BSD reporter prints bytes and the GNU one
-/// prints kilobytes, and each says so in its own line, so the unit is read from the
-/// line rather than assumed from the platform.
+/// The reporters disagree on unit: BSD `/usr/bin/time` prints bytes, GNU time labels
+/// kilobytes, and the zsh format below emits an explicit KiB marker. The unit is read
+/// from the line rather than assumed from the platform.
 fn reported_peak_rss_bytes(report: &str) -> Option<u64> {
+    if let Some(kibibytes) = report
+        .lines()
+        .find_map(|line| line.strip_prefix("PEAK_RSS_KIB="))
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        return Some(kibibytes * 1024);
+    }
     let line = report.lines().find(|line| {
         line.to_ascii_lowercase()
             .contains("maximum resident set size")
@@ -267,7 +274,7 @@ fn reported_peak_rss_bytes(report: &str) -> Option<u64> {
 /// The corpus the subprocess compiles, named by the outer half through the environment.
 const CORPUS_SELECTOR: &str = "MARROW_ISSUANCE_RSS_CORPUS";
 
-/// The three corpora the gate measures, each named so the subprocess can be told which
+/// The four corpora the gate can measure, each named so the subprocess can be told which
 /// one to build.
 fn corpus_by_name(name: &str) -> String {
     match name {
@@ -288,16 +295,16 @@ fn inner_hostile_amplification_compile() {
     let name = std::env::var(CORPUS_SELECTOR).unwrap_or_else(|_| "both".to_string());
     let source = corpus_by_name(&name);
     let outcome = compile(&project(&source));
-    // The corpus is hostile, not malformed: it exhausts the shared instantiation bound
-    // and that exhaustion is a source diagnostic, so the whole provisional population
-    // really was constructed before the refusal — which is the population being
-    // measured.
+    // The corpus is hostile, not malformed: it reaches its governing generic-mint bound
+    // and that exhaustion is a source diagnostic. The provisional population through that
+    // refusal is therefore the population being measured. The shared diagnostic does not
+    // distinguish the 4,096-wide count bound from the 256-deep bound.
     match outcome {
         Err(CompileFailure::Diagnostics(diagnostics)) => assert!(
             diagnostics
                 .iter()
                 .any(|row| row.code() == "check.instantiation_limit"),
-            "the hostile corpus exhausts the shared instantiation bound: {diagnostics:#?}",
+            "the hostile corpus reaches a generic-mint bound: {diagnostics:#?}",
         ),
         other => panic!("the hostile corpus must refuse as a source diagnostic: {other:?}"),
     }
@@ -341,14 +348,13 @@ fn inner_hostile_amplification_compile() {
 /// scale with the record width — as the width of a generic `struct` template, leaving every
 /// arm sixty-four times narrow with no enum arm at all. The second measured only one of a
 /// function body's two width dimensions: the arm filled the local frame and carried a
-/// fraction of the 64 KiB of code a function admits, and each instance retains a copy of the
-/// code as well as of the frame. Padding to the code envelope moved the figure from 1.42 GB
-/// to 9.80 GB.
+/// fraction of the 64 KiB of code a function admits, and each instance retains its own code
+/// and frame. Padding to the code envelope moved the figure from 1.42 GB to 9.80 GB.
 ///
 /// The combined corpus is **not** the maximum and cannot be: the type arm's divergence is
 /// carried by a self-nesting field, so it exhausts the 256-deep mint bound long before the
 /// 4096-wide count ceiling, and stops the compile before the function arm amplifies. See
-/// `reaches_the_instantiation_bound` for the two bounds and why one diagnostic covers both.
+/// `reaches_a_generic_mint_bound` for the two bounds and why one diagnostic covers both.
 ///
 /// Cost, recorded honestly: the function arm takes about 500 seconds on this host at the
 /// `dev` profile, because it lowers roughly 27 million statements. That is a real charge
@@ -391,25 +397,24 @@ const FAST_CORPORA: &[&str] = &["type", "enum", "both"];
 /// default battery measured it.
 const MAXIMAL_CORPUS: &str = "function";
 
-const RECORDED_ARM_VERDICTS: &[(&str, bool)] = &[
+const RECORDED_CORPUS_VERDICTS: &[(&str, bool)] = &[
     ("both", true),
     ("enum", true),
     ("function", false),
     ("type", true),
 ];
 
-/// The gate: compile each corpus in its own subprocess, measure every peak, and hold the
-/// **largest** under the declared owned-heap ceiling. A platform that publishes no peak
-/// fails here rather than passing unmeasured.
+/// The default measurement tier: compile each fast corpus in its own subprocess, measure
+/// every peak, and require its current under/over classification to match the recorded
+/// verdict. A platform that publishes no peak fails here rather than passing unmeasured.
 ///
-/// All three are measured because generic type and generic function instances share one
-/// ceiling: whichever arm reaches it first stops the compile, so a project holding both
-/// does not retain more than a project holding the heavier one. The maximum admitted
-/// amplification is therefore the maximum over the corpora, not the combined corpus, and
-/// measuring only one arm — as this gate previously did — reports whichever arm happened
-/// to be written rather than the worst case.
+/// The three fast corpora preserve quick evidence for the type and enum shapes and for their
+/// combined early-stop interaction. They do not establish the maximum: the function-only
+/// corpus is the admitted maximum and is measured separately in the opt-in tier. Measuring
+/// only one shape — as this gate previously did — would report whichever amplification arm
+/// happened to be written rather than the live set the compiler can admit.
 #[test]
-fn a_hostile_amplification_compile_stays_within_its_measured_rss_ceiling() {
+fn the_fast_amplification_corpora_match_their_recorded_rss_verdicts() {
     measure_corpora(FAST_CORPORA);
 }
 
@@ -417,7 +422,7 @@ fn a_hostile_amplification_compile_stays_within_its_measured_rss_ceiling() {
 /// table calls 14.08x the declared ceiling, and the default battery does **not** measure it.
 #[test]
 #[ignore = "the maximal amplification arm: about 500 s, run with --ignored"]
-fn the_maximal_amplification_arm_stays_within_its_measured_rss_ceiling() {
+fn the_maximal_amplification_arm_matches_its_recorded_rss_overshoot() {
     measure_corpora(&[MAXIMAL_CORPUS]);
 }
 
@@ -436,7 +441,7 @@ fn measure_corpora(corpora: &[&str]) {
     }
     for (corpus, peak) in &peaks {
         let under = *peak <= MAX_HOSTILE_COMPILE_RSS_BYTES;
-        let recorded = RECORDED_ARM_VERDICTS
+        let recorded = RECORDED_CORPUS_VERDICTS
             .iter()
             .find(|(name, _)| name == corpus)
             .map(|(_, under)| *under)
@@ -445,7 +450,7 @@ fn measure_corpora(corpora: &[&str]) {
             under, recorded,
             "the `{corpus}` corpus peaked at {peak} bytes against the declared owned-heap \
              ceiling of {MAX_HOSTILE_COMPILE_RSS_BYTES} bytes, which is not the recorded \
-             verdict. If an arm came under the ceiling, the finding is fixed and its record \
+             verdict. If a corpus came under the ceiling, the finding is fixed and its record \
              is retired; if one went over, that is a new finding. Either way it is \
              adjudicated here — the ceiling is not raised.",
         );
@@ -487,8 +492,20 @@ fn measured_peak_for(corpus: &str) -> u64 {
             .expect("spawn the hostile-compile subprocess");
         (output, None)
     } else {
-        let output = Command::new("/usr/bin/time")
-            .arg("-l")
+        // macOS `/usr/bin/time -l` consults `kern.clockrate` before it prints rusage;
+        // restricted build hosts can deny that unrelated sysctl even though the zsh
+        // builtin reads the same child rusage directly. Pass the binary and arguments as
+        // positional parameters, never as shell text.
+        let mut reporter = if cfg!(target_os = "macos") {
+            let mut command = Command::new("/bin/zsh");
+            command.args(["-fc", "TIMEFMT='PEAK_RSS_KIB=%M'; time \"$@\"", "--"]);
+            command
+        } else {
+            let mut command = Command::new("/usr/bin/time");
+            command.arg("-l");
+            command
+        };
+        let output = reporter
             .arg(&binary)
             .args(args)
             .env(CORPUS_SELECTOR, corpus)
@@ -530,6 +547,10 @@ fn the_peak_reporter_parser_reads_each_reporters_unit() {
         reported_peak_rss_bytes("\tMaximum resident set size (kbytes): 2048\n"),
         Some(2_048 * 1024),
     );
+    assert_eq!(
+        reported_peak_rss_bytes("PEAK_RSS_KIB=4096\n"),
+        Some(4_096 * 1024),
+    );
     assert_eq!(reported_peak_rss_bytes("no such line\n"), None);
 }
 
@@ -554,7 +575,7 @@ fn the_peak_reporter_parser_reads_each_reporters_unit() {
 /// carried by the generic *function* while a wide, non-self-nesting generic type is
 /// resolved once per instance — which is a corpus this lane records as a finding rather
 /// than one it invents a fourth unverified premise about.
-fn reaches_the_instantiation_bound(source: &str) -> bool {
+fn reaches_a_generic_mint_bound(source: &str) -> bool {
     match compile(&project(source)) {
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics
             .iter()
@@ -563,26 +584,27 @@ fn reaches_the_instantiation_bound(source: &str) -> bool {
     }
 }
 
-/// Both amplification arms are live: each one, alone, drives generic instantiation to the
-/// shared ceiling.
+/// Each fast type-amplification corpus is live: alone or combined, it drives generic
+/// instantiation to a governing mint bound.
 ///
 /// This is the assertion the previous corpus could not make. It declared `Grow<T>` and
 /// never used it, so the generic-type arm built no row at all and the measured figure
-/// described a function-only workload while claiming combined amplification. An arm that
-/// is dead cannot reach the bound, so reaching it is what shows the arm is populated.
+/// described a function-only workload while claiming combined amplification. A shape that
+/// is dead cannot reach either mint bound, so the shared refusal shows it is populated; it
+/// does not claim which of the two bounds fired.
 #[test]
-fn each_amplification_arm_independently_reaches_the_instantiation_bound() {
+fn each_fast_type_amplification_corpus_reaches_a_generic_mint_bound() {
     assert!(
-        reaches_the_instantiation_bound(&type_only_corpus()),
-        "the generic-type arm alone drives instantiation to the shared ceiling",
+        reaches_a_generic_mint_bound(&type_only_corpus()),
+        "the generic-type arm alone reaches a generic-mint bound",
     );
     assert!(
-        reaches_the_instantiation_bound(&enum_only_corpus()),
-        "the generic-enum arm alone drives instantiation to the shared ceiling",
+        reaches_a_generic_mint_bound(&enum_only_corpus()),
+        "the generic-enum arm alone reaches a generic-mint bound",
     );
     assert!(
-        reaches_the_instantiation_bound(&hostile_corpus()),
-        "every arm together drives generic minting to a bound",
+        reaches_a_generic_mint_bound(&hostile_corpus()),
+        "the combined corpus reaches a generic-mint bound",
     );
 }
 
@@ -597,7 +619,7 @@ fn each_amplification_arm_independently_reaches_the_instantiation_bound() {
 /// **This is the assertion the gate did without, and it is the one that catches the defect
 /// the corpus actually had.** Reading a value-shape bound as a record's declared width left
 /// every arm sixty-four times narrow while every other assertion here stayed green: a
-/// narrow corpus still reaches the instantiation ceiling, still refuses as a source
+/// narrow corpus still reaches a generic-mint bound, still refuses as a source
 /// diagnostic, and still classifies under the owned-heap ceiling. Nothing measured how wide
 /// the bodies were, so nothing noticed that they were not the widest the compiler admits.
 ///

@@ -15,7 +15,7 @@ use crate::compile::Declaration;
 use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
 use crate::lower::FunctionRegistry;
 use crate::types::{
-    CollectionKind, GenericCacheInvariant, GenericInvariant, ProofCloneError, Reserved,
+    CollectionKind, GenericCacheInvariant, GenericInvariant, Reserved, TemplateProofError,
     TypeInstKind,
 };
 use marrow_codes::Code;
@@ -64,9 +64,9 @@ fn diagnostic(code: &'static str, line: u32) -> SourceDiagnostic {
     )
 }
 
-fn proof_clone_cause() -> InvariantCause {
-    InvariantCause::Generic(GenericInvariant::ProofClone(
-        ProofCloneError::UnstableFillState,
+fn template_proof_cause() -> InvariantCause {
+    InvariantCause::Generic(GenericInvariant::TemplateProof(
+        TemplateProofError::UnstableFillState,
     ))
 }
 
@@ -81,9 +81,9 @@ fn stage_label(stage: CompileStage) -> &'static str {
 
 fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
     match cause {
-        GenericInvariant::ProofClone(cause) => match cause {
-            ProofCloneError::UnstableFillState => "unstable proof clone",
-            ProofCloneError::LimitOwnerNotOpen => "closed limit owner",
+        GenericInvariant::TemplateProof(cause) => match cause {
+            TemplateProofError::UnstableFillState => "unstable template proof",
+            TemplateProofError::LimitOwnerNotOpen => "closed limit owner",
         },
         GenericInvariant::CacheState(cause) => match cause {
             GenericCacheInvariant::ActiveBatchMissing => "active batch missing",
@@ -145,10 +145,10 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
 #[test]
 fn private_generic_cause_classification_has_no_wildcard() {
     assert_eq!(
-        private_generic_cause_label(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        private_generic_cause_label(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         )),
-        "unstable proof clone"
+        "unstable template proof"
     );
 }
 
@@ -190,7 +190,7 @@ fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
     let outcome: Result<Built, CompileFailure> = driven(
         empty_terminal(),
         empty_terminal(),
-        SemanticOutcome::Invariant(proof_clone_cause()),
+        SemanticOutcome::Invariant(template_proof_cause()),
     )
     .into_built();
     let Err(failure) = outcome else {
@@ -204,8 +204,8 @@ fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
     };
     assert!(matches!(
         invariant.0,
-        InvariantCause::Generic(GenericInvariant::ProofClone(
-            ProofCloneError::UnstableFillState
+        InvariantCause::Generic(GenericInvariant::TemplateProof(
+            TemplateProofError::UnstableFillState
         ))
     ));
     assert_eq!(format!("{invariant:?}"), "CompileInvariant");
@@ -222,7 +222,7 @@ fn an_earlier_stage_dominates_a_later_semantic_failure() {
     let failure = driven(
         finished(vec![parse_row.clone()]),
         empty_terminal(),
-        SemanticOutcome::Invariant(proof_clone_cause()),
+        SemanticOutcome::Invariant(template_proof_cause()),
     )
     .into_built()
     .map(|_| ())
@@ -251,7 +251,7 @@ fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
     let failure = driven(
         terminal,
         empty_terminal(),
-        SemanticOutcome::Invariant(proof_clone_cause()),
+        SemanticOutcome::Invariant(template_proof_cause()),
     )
     .into_built()
     .map(|_| ())
@@ -500,7 +500,7 @@ fn the_analysis_union_follows_the_stage_table() {
         analyze_outcome(
             empty_terminal(),
             empty_terminal(),
-            SemanticOutcome::Invariant(proof_clone_cause()),
+            SemanticOutcome::Invariant(template_proof_cause()),
         ),
         Analyzed::Invariant(_)
     ));
@@ -509,7 +509,7 @@ fn the_analysis_union_follows_the_stage_table() {
     let Analyzed::Diagnostics(rows) = analyze_outcome(
         finished(vec![row(3)]),
         empty_terminal(),
-        SemanticOutcome::Invariant(proof_clone_cause()),
+        SemanticOutcome::Invariant(template_proof_cause()),
     ) else {
         panic!("prechecks suppress the semantic failure")
     };
@@ -603,7 +603,7 @@ fn a_limited_stage_terminal_is_the_displacing_resource_limit() {
     let failure = driven(
         collector.finish(),
         empty_terminal(),
-        SemanticOutcome::Invariant(proof_clone_cause()),
+        SemanticOutcome::Invariant(template_proof_cause()),
     )
     .into_built()
     .map(|_| ())

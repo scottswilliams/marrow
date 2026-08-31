@@ -503,7 +503,7 @@ pub const DURABLE_GRAPH_FIXED_BYTES: u64 =
 ///
 /// | element | live | fewest wire bytes | rate |
 /// |---|---|---|---|
-/// | member row | 56 | 17 — a tag byte and a ledger id | 4 |
+/// | member row | 64 | 17 — a tag byte and a ledger id | 4 |
 /// | root occurrence | 232 | 34 — a name, a placement id, and a Product id | 7 |
 /// | managed index | 48 | 19 — a ledger id, a unique flag, and a component count | 3 |
 /// | index component | 17 | 17 — a kind byte and a ledger id | 1 |

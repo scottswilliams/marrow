@@ -2,7 +2,7 @@
 //! with the record field width still bite at exactly their chosen value. The dense
 //! inline-composite leaf count admits `MAX_STRUCT_LEAVES` and refuses one more; the
 //! index projection width admits `MAX_INDEX_COMPONENTS` and refuses one more. These
-//! exercise the encoder's `check_bounds` recheck (the same constants the independent
+//! exercise the encoder's measure-core invariant pass (the same constants the independent
 //! verifier rechecks), so a future re-coupling to the widened record width is
 //! conspicuous, not silent.
 

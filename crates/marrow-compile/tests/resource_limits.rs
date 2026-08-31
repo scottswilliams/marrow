@@ -222,13 +222,12 @@ fn sixty_five_thousand_local_requests_are_total_and_fail_stop() {
     );
 }
 
-// ---- Defect 1: a finite acyclic over-deep durable value silently drops its root.
+// ---- Invariant 1: a finite acyclic over-deep durable value has a located refusal.
 
 /// A durable field whose stored value nests structs past `MAX_DURABLE_VALUE_DEPTH`
-/// (32) is finite and acyclic, so the value-cycle pass never fires. Today the
-/// builder marks the graph incomplete and drops the root with no diagnostic, so the
-/// program compiles with the durable graph silently absent. It must instead report a
-/// `check.resource_limit` at the offending field.
+/// (32) is finite and acyclic, so the value-cycle pass never fires. The builder must
+/// report `check.resource_limit` at the offending field rather than mark the graph
+/// incomplete and silently drop the root.
 #[test]
 fn over_deep_durable_value_reports_resource_limit_not_a_silent_drop() {
     let mut source = String::from("module main\n\n");
@@ -468,11 +467,10 @@ fn a_scalar_leaf_at_the_bound_still_compiles() {
     compile(&struct_chain_to_leaf(31, "int")).expect("a leaf at the depth bound is admitted");
 }
 
-// ---- Defect 2: a root key tuple over the bound must not be `check.unsupported`.
+// ---- Invariant 2: a root key tuple over the bound is a resource refusal.
 
-/// A store root with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked
-/// today, but under the displaced `check.unsupported` code. The migration reports it
-/// as `check.resource_limit` at the store root.
+/// A store root with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked as
+/// `check.resource_limit` at the store root, not as `check.unsupported`.
 #[test]
 fn over_wide_root_key_reports_resource_limit_not_unsupported() {
     let cols: Vec<String> = (0..9).map(|i| format!("k{i}: int")).collect();
@@ -492,12 +490,11 @@ fn over_wide_root_key_reports_resource_limit_not_unsupported() {
     assert_source_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
 }
 
-// ---- Defect 3: an unprechecked branch key tuple reaches the synthetic diagnostic.
+// ---- Invariant 3: a branch key tuple over the bound has a located refusal.
 
-/// A keyed `branch` with more than `MAX_KEY_COLUMNS` (8) key columns is caught only
-/// at encode today, producing the synthetic empty-filename image-bound diagnostic.
-/// It must be prechecked at the branch, reporting `check.resource_limit` at a real
-/// span.
+/// A keyed `branch` with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked at
+/// the branch and reports `check.resource_limit` at a real span, rather than reaching
+/// the encoder's synthetic empty-filename image-bound diagnostic.
 #[test]
 fn over_wide_branch_key_reports_resource_limit() {
     let cols: Vec<String> = (0..9).map(|i| format!("k{i}: int")).collect();

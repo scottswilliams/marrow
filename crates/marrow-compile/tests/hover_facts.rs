@@ -155,9 +155,9 @@ pub fn f(x: int): int {
 /// The template half of the same law. A generic function's body is proved once, against
 /// its type parameters' constraints, before any instantiation; that pass admits its
 /// facts through the same sink at the push that produced each one, and then rewinds its
-/// throwaway draft rows and registry clone. The rewind restores the draft and the
-/// registry and nothing else, so the facts the proof already admitted survive its
-/// failure and reach the published snapshot.
+/// proof-appended draft and registry suffixes. The rewind restores those owners and
+/// nothing else, so the facts the proof already admitted survive its failure and reach
+/// the published snapshot.
 ///
 /// The fixture's `==` over an unconstrained parameter is a constraint violation the
 /// proof reports without ever instantiating the template, so the hover asserted here is

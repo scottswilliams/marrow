@@ -18,7 +18,7 @@ use marrow_verify::{FunctionIndex, RetShape, SealedCollectionType, VerifiedImage
 /// Reconstruct the wire interface from a verified image using only its public
 /// accessors. The identity, transfer-graph law, and canonical encoding live in
 /// `marrow-image`; this is the thin projection that feeds it the image's export,
-/// record, and enum facts.
+/// record, enum, collection, and root facts.
 pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
     let records: Vec<RecordShape> = image
         .record_types()
@@ -116,9 +116,8 @@ pub(crate) struct ServedExport {
 }
 
 /// The program a runner serves: a verified image, its wire [`Id32`] interface
-/// identity, and the export dispatch table. Built once at launch; an image whose
-/// interface cannot be reconstructed (a signature reaches a collection, excluded
-/// until G00b) is not servable.
+/// identity, and the export dispatch table. Built once at launch from the closed
+/// transfer graph, including finite lists, ordered maps, and entry identities.
 pub struct Service {
     pub(crate) image: VerifiedImage,
     interface_id: Id32,

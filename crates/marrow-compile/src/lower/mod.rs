@@ -616,12 +616,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Run the once-checked template pass over a generic function: lower its body
-    /// against abstract type parameters (each admitting only its declared
-    /// constraint) into a throwaway draft paired with an isolated registry clone, so
-    /// the body is type-checked once — including rejecting `==`/`<` on an
-    /// unconstrained parameter — independently of whether or how it is instantiated.
-    /// Only its diagnostics are kept; the emitted code and throwaway image are
-    /// discarded.
+    /// against abstract type parameters (each admitting only its declared constraint)
+    /// inside a composite savepoint over the in-progress registry and draft. The body
+    /// is checked once — including rejecting `==`/`<` on an unconstrained parameter —
+    /// independently of whether or how it is instantiated. Its diagnostics and derived
+    /// editor facts survive; the emitted code and proof-appended owner suffixes are erased.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_template(
         draft: &mut ImageDraft,

@@ -140,8 +140,8 @@ const FORGED_TEST_ENTRY_NAME: u16 = 60002;
 const FORGED_ENUM_NAME: u16 = 60003;
 const FORGED_BRANCH_NAME: u16 = 61000;
 
-/// A type reference naming a TYPES row no fixture declares: the raw table ordinal is
-/// written to the wire unchecked today.
+/// A type reference naming a TYPES row no fixture declares: the coherence pass must
+/// refuse the raw table ordinal before emission.
 const FORGED_TYPE: ImageType = ImageType::Record {
     idx: TypeId::from_index(u16::MAX),
     optional: false,
@@ -176,10 +176,11 @@ enum Code {
 enum Frame {
     /// No params, no locals.
     Fits,
-    /// One local slot past `MAX_LOCALS`: refused near the end of `check_bounds`.
+    /// One local slot past `MAX_LOCALS`: refused near the end of the fixed-width
+    /// coherence subsequence.
     OverLocals,
     /// One `int` param but zero local slots, so the frame cannot hold its own params:
-    /// refused as the last `check_bounds` result.
+    /// refused as the last fixed-width coherence result.
     LocalsBelowParams,
 }
 
@@ -308,8 +309,8 @@ impl Fixture {
         self
     }
 
-    /// A key tuple one column past `MAX_KEY_COLUMNS`: an occurrence-level fault
-    /// `check_bounds` reports after the declaration graph and before CodeBytes.
+    /// A key tuple one column past `MAX_KEY_COLUMNS`: an occurrence-level fault the
+    /// coherence pass reports after the declaration graph and before CodeBytes.
     fn over_wide_key(mut self) -> Self {
         self.keys = MAX_KEY_COLUMNS + 1;
         self
@@ -322,7 +323,7 @@ impl Fixture {
     }
 
     /// A record type one field past `MAX_RECORD_FIELDS`: the per-record width fault,
-    /// reported early in `check_bounds`.
+    /// reported early in the coherence pass.
     fn over_wide_record(mut self) -> Self {
         self.wide_record = true;
         self
@@ -330,7 +331,7 @@ impl Fixture {
 
     /// Declare the base Product identity a second time with a different member graph:
     /// two declarations wearing one identity, recorded at declaration and refused by
-    /// `check_bounds` as the Product claim conflict.
+    /// the coherence pass as the Product claim conflict.
     fn with_conflicting_product(mut self) -> Self {
         self.conflicting_product = true;
         self
@@ -441,8 +442,8 @@ impl Fixture {
     }
 
     /// `main` carries a bounded traversal over a live whole-payload site whose
-    /// `list_ty` names no COLLTYPES row: the operand is a public raw ordinal written
-    /// unchecked today.
+    /// `list_ty` names no COLLTYPES row: the coherence pass must refuse the public raw
+    /// ordinal before emission.
     fn with_dangling_traversal(mut self) -> Self {
         self.dangling_traversal = true;
         self
@@ -461,8 +462,8 @@ impl Fixture {
         self
     }
 
-    /// A second export naming `main`'s function index: a duplicate export target, a
-    /// relation the encoder accepts unchecked today.
+    /// A second export naming `main`'s function index: a duplicate export target the
+    /// coherence pass refuses before emission.
     fn with_duplicate_export(mut self) -> Self {
         self.duplicate_export = true;
         self
@@ -2360,7 +2361,7 @@ fn a_bad_jump_in_the_earlier_function_draws_its_reference_before_the_later_code_
 /// once-unchecked `Call` ordinal is now a hoisted coherence check, so it
 /// decides before the later function's CodeBytes.
 #[test]
-fn an_unchecked_call_in_the_earlier_function_draws_the_call_target_reference() {
+fn a_dangling_call_in_the_earlier_function_draws_the_call_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::Call(u16::MAX)])
