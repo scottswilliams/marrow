@@ -878,10 +878,13 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "value_dag.rs",
         "u16::try_from(count).map_err(|_| DurableGraphTooLarge)",
     ),
+    // A value-shape node ordinal narrows only after exact-node authentication has
+    // validated every child. Exhausting the u32 carrier is bounded by the exact
+    // `DraftStateError::CarrierDomain` builder refusal at this mint.
     (
         "marrow-image",
         "value_dag.rs",
-        "u32::try_from(self.store.len()).map_err(|_| DraftStateError::CarrierDomain)?,",
+        "ordinal: u32::try_from(self.store.len()).map_err(|_| DraftStateError::CarrierDomain)?,",
     ),
     (
         "marrow-verify",
