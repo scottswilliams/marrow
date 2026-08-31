@@ -2209,12 +2209,17 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
             "`{name}` hands a producer the live fact ledger, so a body abandoned after \
              writing facts leaves them in the ledger a snapshot is projected from",
         );
-        let staged_facts =
-            arguments.contains("staged_facts.sink(") || arguments.contains("FactSink::Discarding");
+        let staged_facts = if *name == "FnLowerer::check_template" {
+            arguments.contains("facts,")
+        } else {
+            arguments.contains("staged_facts.sink(") || arguments.contains("FactSink::Discarding")
+        };
         assert!(
             staged_facts,
             "`{name}` must hand its producer a staged fact owner, or `FactSink::Discarding` \
-             where the facts were collected once at the template proof",
+             where the facts were collected once at the template proof; `check_template` \
+             receives the shared ledger and constructs its branded staged owner inside \
+             the proof scope",
         );
         // `check_template` owns its diagnostics in a local collector that its own failure
         // drops, so it takes no collector argument at all; every other call takes one and
@@ -2231,6 +2236,17 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
             );
         }
     }
+
+    let lower = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lower/mod.rs"))
+            .expect("read the lowering owner"),
+    );
+    assert!(
+        lower.contains("StagedFacts::new(scope.settlement_staging())")
+            && lower.contains("staged_facts.sink(facts, template.at())"),
+        "the template proof constructs its fact staging from the exact armed scope and \
+         hands only that staged sink to body lowering",
+    );
 }
 
 /// Whether `arguments` names the live fact ledger's sink as a whole token, rather than a
@@ -2309,9 +2325,20 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
         "an exclusive ledger borrow in the fact sink restores the write-through",
     );
     assert!(
-        analysis.contains("fn release(self, _authority: &SettlementAuthority) -> ReleasedFacts"),
-        "a staged body's facts reach the ledger only against a settlement capability, \
-         which only a committed or explicitly erased guard produces",
+        analysis.contains("staging: SettlementStaging,")
+            && analysis.contains("authority.release(staging)?;"),
+        "a staged body's facts carry the exact transaction brand and consume it against \
+         the matching settlement authority before constructing released facts",
+    );
+
+    let diagnostics = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/diag.rs"))
+            .expect("read the diagnostic custody owner"),
+    );
+    assert!(
+        diagnostics.contains("staging: SettlementStaging,")
+            && diagnostics.contains("authority.release(staging)?;"),
+        "staged diagnostics carry and authenticate the same exact transaction brand",
     );
 
     // The released value is the sole path from a staged body into the ledger, so a second
@@ -2327,8 +2354,8 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
         .count();
     assert_eq!(
         constructions, 1,
-        "`ReleasedFacts` is constructed exactly once — in `release`, against the \
-         capability — so no path settles a body's facts without one",
+        "`ReleasedFacts` is constructed exactly once — after the exact staging brand is \
+         authenticated — so no path settles a body's facts without its own transaction",
     );
 
     // The ledger keeps no row-admission surface a producer could reach: hover and gap rows

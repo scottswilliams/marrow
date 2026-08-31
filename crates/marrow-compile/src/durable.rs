@@ -759,8 +759,8 @@ impl DurableRegistry {
                 // against the capability the consumed guard produces — so the local
                 // restore or commit precedes settlement as a type fact. An invariant
                 // abort leaves through `?` without that capability and settles nothing.
-                let mut staged = StagedDiagnostics::new();
                 let mut txn = admitted(draft);
+                let mut staged = StagedDiagnostics::new(txn.settlement_staging());
                 let (occurrence, authority) = match build_one(
                     AdmittedDraft {
                         draft: &mut txn,
@@ -795,7 +795,10 @@ impl DurableRegistry {
                         (DeclarationOccurrence::Refused(refusal), authority)
                     }
                 };
-                settled.absorb(staged.settle(&authority));
+                let staged = staged
+                    .settle(&authority)
+                    .map_err(GenericInvariant::SettlementMismatch)?;
+                settled.absorb(staged);
                 // The resource projection is appended in the same statement as the
                 // ledger entry, so a store cannot be declared without being reachable
                 // by the resource it binds.

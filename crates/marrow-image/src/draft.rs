@@ -784,7 +784,7 @@ struct FillRevision;
 pub enum DraftStateError {
     /// The token (savepoint, id, or reference) was minted by another draft.
     ForeignDraft,
-    /// The savepoint's one-shot epoch was already consumed by a sibling admission.
+    /// The transaction token's one-shot epoch belongs to another admission.
     StaleEpoch,
     /// The token is internally incoherent: its snapshot or authenticated fill state
     /// disagrees with the state it claims to describe, or the id it names no longer
@@ -800,7 +800,7 @@ impl std::fmt::Display for DraftStateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             DraftStateError::ForeignDraft => "the token was minted by another draft",
-            DraftStateError::StaleEpoch => "the savepoint's epoch was already consumed",
+            DraftStateError::StaleEpoch => "the transaction token belongs to another epoch",
             DraftStateError::IncoherentToken => "the token is internally incoherent",
             DraftStateError::CarrierDomain => {
                 "the argument exceeds the proved carrier domain of the builder surface"
@@ -966,8 +966,21 @@ struct DraftJournal {
     fills: Vec<FillInverse>,
 }
 
-/// The capability that authorizes exactly one predecessor diagnostic/fact custody
-/// settlement.
+/// The transaction brand embedded in one predecessor-owned staged payload.
+///
+/// Only an armed [`DraftTxn`] can mint it, and its draft identity plus one-shot epoch
+/// authenticate the exact transaction whose work the payload accompanies. It is affine:
+/// a staged owner consumes the token when it attempts release, so the same custody cannot
+/// be published twice.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct SettlementStaging {
+    identity: Rc<DraftIdentityCell>,
+    epoch: Rc<TransactionEpoch>,
+}
+
+/// The capability that authorizes predecessor diagnostic/fact custody settlement for
+/// one exact transaction.
 ///
 /// It is constructible only by consuming an armed [`DraftTxn`] — [`DraftTxn::commit`],
 /// which retains the mutations, or [`DraftTxn::rollback`], which has already run the
@@ -977,16 +990,31 @@ struct DraftJournal {
 /// armed `Drop`, which restores every owner and yields no capability, so none of them
 /// can settle anything.
 ///
-/// It is affine — neither `Clone` nor `Copy` — so one consumed guard authorizes one
-/// settlement, and it carries no payload: it authorizes a settlement, it does not
-/// describe, own, or transport one. Diagnostics, gaps, and hover rows stay entirely
+/// It is non-forgeable and neither `Clone` nor `Copy`, and it carries the consumed
+/// transaction's strong draft identity and epoch. A single transaction may have several
+/// staged owners, so they borrow this authority repeatedly, but each must consume its own
+/// matching affine [`SettlementStaging`]. Diagnostics, gaps, and hover rows stay entirely
 /// inside the predecessor substrate's custody.
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct SettlementAuthority {
-    /// Private and empty on purpose: the value's whole content is that it exists, and
-    /// only a consumed guard can establish that.
-    _consumed: (),
+    identity: Rc<DraftIdentityCell>,
+    epoch: Rc<TransactionEpoch>,
+}
+
+impl SettlementAuthority {
+    /// Consume one staging token only when it belongs to this authority's exact
+    /// transaction. A different draft is foreign; another epoch of the same draft is
+    /// stale. Either refusal leaves the staged payload outside every published owner.
+    pub fn release(&self, staging: SettlementStaging) -> Result<(), DraftStateError> {
+        if !Rc::ptr_eq(&self.identity, &staging.identity) {
+            return Err(DraftStateError::ForeignDraft);
+        }
+        if !Rc::ptr_eq(&self.epoch, &staging.epoch) {
+            return Err(DraftStateError::StaleEpoch);
+        }
+        Ok(())
+    }
 }
 
 /// The sole cross-crate mutation surface over one [`ImageDraft`]: an armed guard
@@ -1018,8 +1046,12 @@ impl<'d> DraftTxn<'d> {
     /// Disarm the guard, retaining every mutation and accepted policy observation, and
     /// yield the capability that authorizes the matching predecessor settlement.
     pub fn commit(mut self) -> SettlementAuthority {
+        let authority = SettlementAuthority {
+            identity: Rc::clone(&self.draft.identity_cell),
+            epoch: Rc::clone(&self.draft.epoch),
+        };
         self.armed = false;
-        SettlementAuthority { _consumed: () }
+        authority
     }
 
     /// Run the total admitted inverse now, then yield the capability that authorizes the
@@ -1029,9 +1061,22 @@ impl<'d> DraftTxn<'d> {
     /// instead restores exactly the same owners but produces no capability, which is what
     /// leaves an unwind and an early `?` return unable to settle anything.
     pub fn rollback(mut self) -> SettlementAuthority {
+        let authority = SettlementAuthority {
+            identity: Rc::clone(&self.draft.identity_cell),
+            epoch: Rc::clone(&self.draft.epoch),
+        };
         self.rollback_armed();
         self.armed = false;
-        SettlementAuthority { _consumed: () }
+        authority
+    }
+
+    /// Brand one predecessor-owned staged payload with this exact transaction. The
+    /// payload owner retains this affine token privately until settlement.
+    pub fn settlement_staging(&self) -> SettlementStaging {
+        SettlementStaging {
+            identity: Rc::clone(&self.draft.identity_cell),
+            epoch: Rc::clone(&self.draft.epoch),
+        }
     }
 
     /// A savepoint of the transaction's in-progress state — the deliberate shadow of

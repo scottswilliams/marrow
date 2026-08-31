@@ -6,7 +6,7 @@
 //! reads it, the queries that answer from it, and the fact shapes it holds stay with
 //! their own owners.
 
-use marrow_image::SettlementAuthority;
+use marrow_image::{DraftStateError, SettlementAuthority, SettlementStaging};
 use marrow_syntax::SourceSpan;
 
 use super::{
@@ -284,6 +284,8 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
 /// total — a crossing discards the ledger's whole retained payload, and no subtraction
 /// re-materializes it.
 pub(crate) struct StagedFacts {
+    /// The exact transaction whose work these facts accompany.
+    staging: SettlementStaging,
     /// This body's own contribution, over and above the ledger's settled totals.
     count: u64,
     bytes: u64,
@@ -303,8 +305,9 @@ pub(crate) struct ReleasedFacts {
 }
 
 impl StagedFacts {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(staging: SettlementStaging) -> Self {
         Self {
+            staging,
             count: 0,
             bytes: 0,
             limit: None,
@@ -332,12 +335,23 @@ impl StagedFacts {
     /// The crossing verdict is not carried across: `absorb` re-composes exactly this
     /// charge over exactly the totals it was composed over, and the composition is
     /// monotone, so the ledger reaches the same verdict this body already observed.
-    pub(crate) fn release(self, _authority: &SettlementAuthority) -> ReleasedFacts {
-        ReleasedFacts {
-            count: self.count,
-            bytes: self.bytes,
-            facts: self.facts,
-        }
+    pub(crate) fn release(
+        self,
+        authority: &SettlementAuthority,
+    ) -> Result<ReleasedFacts, DraftStateError> {
+        let Self {
+            staging,
+            count,
+            bytes,
+            limit: _,
+            facts,
+        } = self;
+        authority.release(staging)?;
+        Ok(ReleasedFacts {
+            count,
+            bytes,
+            facts,
+        })
     }
 
     /// Whether a fact staged here would still be retained at settlement.
@@ -706,30 +720,44 @@ mod fact_ledger_tests {
         }
     }
 
-    /// The capability a committed transaction produces, minted the one way production
-    /// mints one. It carries no payload, so the capability a fixture's committed
-    /// transaction establishes is the same fact a lowered body's batch establishes.
-    fn settlement() -> SettlementAuthority {
-        let mut draft = marrow_image::ImageDraft::new();
-        crate::compile::admitted(&mut draft).commit()
-    }
-
     /// One staged body over `facts`, settled — the production shape. A body writes
-    /// through a sink into its own staged owner, and that owner reaches the ledger only
-    /// against a settlement capability, so these fixtures exercise the same path a
-    /// lowered body takes rather than a ledger-poking replica of it.
+    /// through a sink into an owner branded by its still-armed transaction, and that owner
+    /// reaches the ledger only against the matching authority after commit.
+    #[expect(
+        clippy::expect_used,
+        reason = "fixture law: one transaction brands and commits this staged body"
+    )]
     fn settled_body(
         facts: &mut AnalysisFactCollector,
-        authority: &SettlementAuthority,
         file: FileRef,
         body: impl FnOnce(&mut FactSink<'_>),
     ) {
-        let mut staged = StagedFacts::new();
+        let mut draft = marrow_image::ImageDraft::new();
+        let txn = crate::compile::admitted(&mut draft);
+        let mut staged = StagedFacts::new(txn.settlement_staging());
         {
             let mut sink = staged.sink(facts, file);
             body(&mut sink);
         }
-        facts.absorb(staged.release(authority));
+        let authority = txn.commit();
+        let released = staged
+            .release(&authority)
+            .expect("the committed fixture transaction owns its staged facts");
+        facts.absorb(released);
+    }
+
+    /// One branded staged body whose transaction and payload both drop without an
+    /// authority, exercising the production abandonment path.
+    fn abandoned_body(
+        facts: &AnalysisFactCollector,
+        file: FileRef,
+        body: impl FnOnce(&mut FactSink<'_>),
+    ) {
+        let mut draft = marrow_image::ImageDraft::new();
+        let txn = crate::compile::admitted(&mut draft);
+        let mut staged = StagedFacts::new(txn.settlement_staging());
+        let mut sink = staged.sink(facts, file);
+        body(&mut sink);
     }
 
     fn ledger(input: &ProjectInput) -> AnalysisFactCollector {
@@ -767,16 +795,14 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let spelling = input.modules()[0].identity().as_str().len() as u64;
 
-        let authority = settlement();
-
         let mut plain = ledger(&input);
-        settled_body(&mut plain, &authority, first(), |sink| {
+        settled_body(&mut plain, first(), |sink| {
             sink.hover(span(0, 1), "int".into(), None);
         });
         assert_eq!(charged_bytes(&plain), 3);
 
         let mut targeted = ledger(&input);
-        settled_body(&mut targeted, &authority, first(), |sink| {
+        settled_body(&mut targeted, first(), |sink| {
             sink.hover(
                 span(0, 1),
                 "int".into(),
@@ -792,7 +818,7 @@ mod fact_ledger_tests {
     fn a_dependency_gap_charges_only_the_count() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
-        settled_body(&mut facts, &settlement(), first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             sink.gap(span(0, 4));
         });
         assert_eq!(charged(&facts), (1, 0));
@@ -830,7 +856,7 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
         let target = DefinitionTarget::new(first(), span(4, 8), span(0, 20));
-        settled_body(&mut facts, &settlement(), first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             for start in 0..16 {
                 sink.hover(span(start, start + 1), "int".into(), Some(target));
             }
@@ -861,17 +887,16 @@ mod fact_ledger_tests {
     fn crossing_the_count_discards_the_admitted_prefix() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
-        let authority = settlement();
-        settled_body(&mut facts, &authority, first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             for index in 0..MAX_SNAPSHOT_FACT_COUNT {
                 sink.gap(span(index as usize, index as usize + 1));
             }
         });
         assert!(!facts.is_limited(), "the ceiling itself is admitted");
-        settled_body(&mut facts, &authority, first(), |sink| sink.gap(span(0, 1)));
+        settled_body(&mut facts, first(), |sink| sink.gap(span(0, 1)));
         assert!(facts.is_limited());
         // A later admission composes into the limited state; nothing re-materializes.
-        settled_body(&mut facts, &authority, first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             sink.hover(span(0, 1), "int".into(), None);
         });
         assert!(matches!(
@@ -889,7 +914,7 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
         let chunk = MAX_SNAPSHOT_FACT_BYTES as usize / 8;
-        settled_body(&mut facts, &settlement(), first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             for _ in 0..9 {
                 sink.hover(span(0, 1), "x".repeat(chunk).into(), None);
             }
@@ -908,7 +933,7 @@ mod fact_ledger_tests {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
         let display = "x".repeat(MAX_SNAPSHOT_FACT_BYTES as usize + 1);
-        settled_body(&mut facts, &settlement(), first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             for _ in 0..MAX_SNAPSHOT_FACT_COUNT {
                 sink.gap(span(0, 1));
             }
@@ -928,8 +953,7 @@ mod fact_ledger_tests {
     fn bytes_strengthens_to_count_and_count_never_weakens() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
-        let authority = settlement();
-        settled_body(&mut facts, &authority, first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             sink.hover(
                 span(0, 1),
                 "x".repeat(MAX_SNAPSHOT_FACT_BYTES as usize + 1).into(),
@@ -937,7 +961,7 @@ mod fact_ledger_tests {
             );
         });
         assert!(facts.is_limited());
-        settled_body(&mut facts, &authority, first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
                 sink.gap(span(index as usize, index as usize + 1));
             }
@@ -950,7 +974,7 @@ mod fact_ledger_tests {
         ));
 
         let mut reverse = ledger(&input);
-        settled_body(&mut reverse, &authority, first(), |sink| {
+        settled_body(&mut reverse, first(), |sink| {
             for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
                 sink.gap(span(index as usize, index as usize + 1));
             }
@@ -1042,13 +1066,12 @@ mod fact_ledger_tests {
     #[test]
     fn an_abandoned_body_leaves_the_ledger_exactly_as_it_found_it() {
         let input = project(&[("src/main.mw", "")]);
-        let authority = settlement();
         let target = DefinitionTarget::new(first(), span(4, 8), span(0, 20));
 
         let mut abandoned = ledger(&input);
         let mut untouched = ledger(&input);
         for facts in [&mut abandoned, &mut untouched] {
-            settled_body(facts, &authority, first(), |sink| {
+            settled_body(facts, first(), |sink| {
                 sink.hover(span(0, 1), "int".into(), Some(target));
                 sink.gap(span(2, 3));
             });
@@ -1056,14 +1079,12 @@ mod fact_ledger_tests {
 
         // One body writes a wide fact population and is then abandoned: the staged owner
         // is dropped without ever being released.
-        {
-            let mut staged = StagedFacts::new();
-            let mut sink = staged.sink(&abandoned, first());
+        abandoned_body(&abandoned, first(), |sink| {
             for index in 0..512 {
                 sink.hover(span(index, index + 1), "x".repeat(64).into(), Some(target));
                 sink.gap(span(index, index + 1));
             }
-        }
+        });
 
         assert_eq!(
             charged(&abandoned),
@@ -1099,13 +1120,11 @@ mod fact_ledger_tests {
     fn a_body_that_crossed_the_ceiling_and_was_abandoned_limits_nothing() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
-        settled_body(&mut facts, &settlement(), first(), |sink| {
+        settled_body(&mut facts, first(), |sink| {
             sink.hover(span(0, 1), "int".into(), None);
         });
 
-        {
-            let mut staged = StagedFacts::new();
-            let mut sink = staged.sink(&facts, first());
+        abandoned_body(&facts, first(), |sink| {
             for index in 0..=MAX_SNAPSHOT_FACT_COUNT {
                 sink.gap(span(index as usize, index as usize + 1));
             }
@@ -1113,7 +1132,7 @@ mod fact_ledger_tests {
                 !sink.renders_facts(),
                 "the staged body observed its own crossing live, inside itself",
             );
-        }
+        });
 
         assert!(
             !facts.is_limited(),

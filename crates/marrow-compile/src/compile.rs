@@ -348,35 +348,42 @@ impl std::error::Error for CompileResourceLimit {}
 /// The capability is what orders them: it exists only after the batch committed, so a
 /// path that leaves while the batch is still armed cannot reach this at all, and both
 /// staged owners drop with that path instead — which for the facts is their whole
-/// inverse. `None` is unreachable for a live batch, and settling nothing is the safe
-/// reading of it.
+/// inverse. Each owner also carries the batch's exact staging brand, so an authority from
+/// another transaction cannot release either payload.
 ///
 /// Both owners settle here rather than at two call sites, so one body cannot release its
 /// diagnostics and retain its facts, or the reverse.
 fn settle_body(
-    authority: Option<SettlementAuthority>,
+    authority: SettlementAuthority,
     staged: StagedDiagnostics,
     staged_facts: StagedFacts,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
-) {
-    if let Some(authority) = authority {
-        diagnostics.absorb(staged.settle(&authority));
-        facts.absorb(staged_facts.release(&authority));
-    }
+) -> Result<(), GenericInvariant> {
+    let staged = staged
+        .settle(&authority)
+        .map_err(GenericInvariant::SettlementMismatch)?;
+    let staged_facts = staged_facts
+        .release(&authority)
+        .map_err(GenericInvariant::SettlementMismatch)?;
+    diagnostics.absorb(staged);
+    facts.absorb(staged_facts);
+    Ok(())
 }
 
 /// Release one drained generic instance's staged rows, against the capability the
 /// consumed batch produced. The instance stages no editor facts: its template's were
 /// collected once at the template proof and every instance renders the same displays.
 fn settle_instance(
-    authority: Option<SettlementAuthority>,
+    authority: SettlementAuthority,
     staged: StagedDiagnostics,
     diagnostics: &mut DiagnosticCollector,
-) {
-    if let Some(authority) = authority {
-        diagnostics.absorb(staged.settle(&authority));
-    }
+) -> Result<(), GenericInvariant> {
+    let staged = staged
+        .settle(&authority)
+        .map_err(GenericInvariant::SettlementMismatch)?;
+    diagnostics.absorb(staged);
+    Ok(())
 }
 
 fn diagnostic_limit_failure(limit: CompileDiagnosticLimit) -> CompileResourceLimit {
@@ -1753,6 +1760,12 @@ enum PhaseStop {
     Invariant(InvariantCause),
 }
 
+impl From<GenericInvariant> for PhaseStop {
+    fn from(invariant: GenericInvariant) -> Self {
+        Self::Invariant(InvariantCause::Generic(invariant))
+    }
+}
+
 /// What the phases that resolve through the function registry produced: their artifacts,
 /// the image content they minted, and the export and test-entry tables they filled.
 struct RegistryPhases {
@@ -1824,21 +1837,16 @@ fn template_proof_phase(
         // thrown away — so they are staged against the scope the proof erases, exactly as
         // a lowered body's are staged against the batch it commits. A lowering invariant
         // leaves without the capability and settles none of them.
-        let mut staged_facts = StagedFacts::new();
         let outcome = FnLowerer::check_template(
-            draft,
-            records,
-            durable,
-            signatures,
-            generics,
-            constants,
-            staged_facts.sink(facts, template.at()),
-            template,
+            draft, records, durable, signatures, generics, constants, facts, template,
         )
         .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-        if let Some(authority) = &outcome.settlement {
-            facts.absorb(staged_facts.release(authority));
-        }
+        let staged_facts = outcome
+            .facts
+            .release(&outcome.settlement)
+            .map_err(GenericInvariant::SettlementMismatch)
+            .map_err(PhaseStop::from)?;
+        facts.absorb(staged_facts);
         diagnostics.absorb(outcome.diagnostics);
         records.adopt_generic_diagnostics(outcome.generic);
         if records.has_instantiation_limit() {
@@ -1925,7 +1933,7 @@ fn registry_phases(
             // through `?` below without the capability, so it settles nothing. The
             // instance's editor facts were collected once at its template's proof, so it
             // stages none.
-            let mut staged = StagedDiagnostics::new();
+            let mut staged = StagedDiagnostics::new(batch.settlement_staging());
             let lowered_body = {
                 let (records, txn) = batch.parts();
                 match FnLowerer::lower_instance(
@@ -1948,7 +1956,7 @@ fn registry_phases(
                     }
                 }
             };
-            settle_instance(batch.commit(), staged, diagnostics);
+            settle_instance(batch.commit(), staged, diagnostics).map_err(PhaseStop::from)?;
             records.consume_fn_pending();
             let Some(result) = lowered_body else {
                 drain_lowered_every_instance = false;
@@ -2056,8 +2064,8 @@ fn lower_declared_functions(
             // produces. An invariant leaves through `?` below without that capability, so
             // it settles nothing — the same restore-before-settlement ordering the durable
             // store build takes, made a type fact rather than a call-order convention.
-            let mut staged = StagedDiagnostics::new();
-            let mut staged_facts = StagedFacts::new();
+            let mut staged = StagedDiagnostics::new(batch.settlement_staging());
+            let mut staged_facts = StagedFacts::new(batch.settlement_staging());
             let lowered_body = {
                 let (records, txn) = batch.parts();
                 match FnLowerer::lower(
@@ -2085,7 +2093,8 @@ fn lower_declared_functions(
                 }
             };
             let Some(result) = lowered_body else {
-                settle_body(batch.commit(), staged, staged_facts, diagnostics, facts);
+                settle_body(batch.commit(), staged, staged_facts, diagnostics, facts)
+                    .map_err(PhaseStop::from)?;
                 if records.has_instantiation_limit() {
                     return Ok(LoweredFunctions {
                         lowered,
@@ -2137,13 +2146,15 @@ fn lower_declared_functions(
                             function.name, module.name
                         ),
                     ));
-                    settle_body(batch.commit(), staged, staged_facts, diagnostics, facts);
+                    settle_body(batch.commit(), staged, staged_facts, diagnostics, facts)
+                        .map_err(PhaseStop::from)?;
                     continue;
                 }
             } else {
                 None
             };
-            settle_body(batch.commit(), staged, staged_facts, diagnostics, facts);
+            settle_body(batch.commit(), staged, staged_facts, diagnostics, facts)
+                .map_err(PhaseStop::from)?;
             exports.extend(export);
             if records.has_instantiation_limit() {
                 return Ok(LoweredFunctions {
@@ -2213,8 +2224,8 @@ fn lower_declared_tests(
             let mut batch = GenericOwnerTxn::begin(records, draft)
                 .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
             // Staged behind the guard exactly as a declared body's rows are.
-            let mut staged = StagedDiagnostics::new();
-            let mut staged_facts = StagedFacts::new();
+            let mut staged = StagedDiagnostics::new(batch.settlement_staging());
+            let mut staged_facts = StagedFacts::new(batch.settlement_staging());
             let lowered_body = {
                 let (records, txn) = batch.parts();
                 match FnLowerer::lower_test(
@@ -2243,7 +2254,8 @@ fn lower_declared_tests(
                 }
             };
             let Some(result) = lowered_body else {
-                settle_body(batch.commit(), staged, staged_facts, diagnostics, facts);
+                settle_body(batch.commit(), staged, staged_facts, diagnostics, facts)
+                    .map_err(PhaseStop::from)?;
                 if records.has_instantiation_limit() {
                     return Ok(LoweredTests {
                         lowered,
@@ -2278,7 +2290,8 @@ fn lower_declared_tests(
                 })?;
                 txn.add_test_entry(name_id, result.func);
             }
-            settle_body(batch.commit(), staged, staged_facts, diagnostics, facts);
+            settle_body(batch.commit(), staged, staged_facts, diagnostics, facts)
+                .map_err(PhaseStop::from)?;
             entries.push(TestEntry {
                 name: test.name.clone(),
                 module: module.name.clone(),

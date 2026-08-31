@@ -1,7 +1,7 @@
 //! The generic-owner composite guard: one admitted batch over the compiler's type
 //! registry and the image draft, and the inverse that restores both.
 
-use marrow_image::{DraftTxn, ImageDraft, SettlementAuthority};
+use marrow_image::{DraftTxn, ImageDraft, SettlementAuthority, SettlementStaging};
 
 use super::{ArgumentDomain, DiagnosticCollector, GenericInvariant, TypeRegistry};
 
@@ -155,17 +155,34 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
         &*self.registry
     }
 
+    /// One affine staging brand for a predecessor-owned payload produced by this exact
+    /// batch. The payload owner keeps the token private until the consumed guard yields
+    /// the matching authority.
+    pub(crate) fn settlement_staging(&self) -> SettlementStaging {
+        #[expect(
+            clippy::expect_used,
+            reason = "guard law: every live batch holds its armed draft transaction"
+        )]
+        self.draft
+            .as_ref()
+            .expect("a live batch holds its armed draft transaction")
+            .settlement_staging()
+    }
+
     /// Keep this batch: the draft transaction commits first, then the registry inverse
     /// is disarmed, so no path can retain draft rows whose registry rows were erased.
     /// Commit the batch, yielding the capability that authorizes the matching
     /// predecessor custody settlement.
-    ///
-    /// `None` is unreachable for a live batch — admission always installs the guard — but
-    /// the guard is held in an `Option` so `Drop` can take it, and a capability cannot be
-    /// fabricated outside the image crate that mints it. The caller therefore settles
-    /// against what the consumed guard actually produced rather than against an assumption.
-    pub(crate) fn commit(mut self) -> Option<SettlementAuthority> {
-        let authority = self.draft.take().map(DraftTxn::commit);
+    pub(crate) fn commit(mut self) -> SettlementAuthority {
+        #[expect(
+            clippy::expect_used,
+            reason = "guard law: commit consumes the one armed draft transaction"
+        )]
+        let authority = self
+            .draft
+            .take()
+            .expect("a live batch holds its armed draft transaction")
+            .commit();
         self.inverse = None;
         authority
     }
@@ -180,11 +197,18 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
     /// capability, which is what leaves an early lowering invariant unable to settle
     /// anything. The order matches `Drop`'s: a path may not retain draft rows whose
     /// registry rows were erased.
-    pub(crate) fn erase(mut self) -> Option<SettlementAuthority> {
+    pub(crate) fn erase(mut self) -> SettlementAuthority {
         if let Some(inverse) = self.inverse.take() {
             self.registry.restore_generic_owners(inverse);
         }
-        self.draft.take().map(DraftTxn::rollback)
+        #[expect(
+            clippy::expect_used,
+            reason = "guard law: erase consumes the one armed draft transaction"
+        )]
+        self.draft
+            .take()
+            .expect("a live batch holds its armed draft transaction")
+            .rollback()
     }
 }
 

@@ -4,6 +4,7 @@ use super::*;
 
 use marrow_image::SettlementAuthority;
 
+use crate::analysis::StagedFacts;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
     DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName,
@@ -113,10 +114,12 @@ pub(crate) struct TemplateProofOutcome {
     /// collector's one `finish` for the outer stage owner to absorb.
     pub(crate) diagnostics: BoundedDiagnostics,
     pub(crate) generic: GenericDiagnostics,
+    /// The proof's editor facts, branded by the exact scope that produced them.
+    pub(crate) facts: StagedFacts,
     /// The capability the proof's erased scope produced. The proof's editor facts are
     /// staged while that scope is armed and settle only against this, so a proof that
     /// left through a lowering invariant — which never reaches this value — settles none.
-    pub(crate) settlement: Option<SettlementAuthority>,
+    pub(crate) settlement: SettlementAuthority,
 }
 
 impl FunctionRegistry {

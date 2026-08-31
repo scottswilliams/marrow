@@ -49,7 +49,7 @@ use marrow_image::{
 };
 use marrow_project::FileIdentity;
 
-use crate::analysis::{DefinitionTarget, FactSink, FileRef};
+use crate::analysis::{AnalysisFactCollector, DefinitionTarget, FactSink, FileRef, StagedFacts};
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
     InterpolationPart, LiteralKind, MatchArm, NameSegment, RangeExpr, SourceSpan, Statement,
@@ -629,7 +629,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         functions: &FunctionRegistry,
         generics: &GenericRegistry,
         consts: &ConstRegistry,
-        facts: FactSink<'_>,
+        facts: &AnalysisFactCollector,
         template: &GenericTemplate,
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
         let file = &template.file;
@@ -642,9 +642,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // transaction, and restores both owners on every path — a normal return, an early
         // lowering invariant, or an unwind — registry inverse first, then the armed draft
         // guard, exactly once. Its diagnostics live in a local collector that a failure
-        // drops, while its editor facts are admitted where they are derived (see
-        // `FactSink`).
+        // drops, while its editor facts are charged against the shared ledger but retained
+        // in transaction-branded staging (see `FactSink`).
         let mut scope = GenericOwnerTxn::enter_proof(records, draft)?;
+        let mut staged_facts = StagedFacts::new(scope.settlement_staging());
         // The proof's local collector: success seals it into the outcome's
         // terminal for the outer stage owner to absorb; an invariant failure
         // drops it with the scope.
@@ -661,9 +662,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .collect::<Vec<_>>();
         // The template body is checked exactly once (never per instance), so its editor
         // facts are collected here: a template-parameter use renders by its declared
-        // spelling and no divergent-monomorphization O(N²) rendering occurs. They reach
-        // the ledger through the sink as they are derived; only the throwaway image
-        // function this pass emits is discarded with the scope.
+        // spelling and no divergent-monomorphization O(N²) rendering occurs. The sink
+        // charges them live but retains them only in this scope's branded staging; they
+        // reach the ledger after the erased scope authenticates settlement. Only the
+        // throwaway image function this pass emits is discarded with the scope.
         {
             let (registry, txn) = scope.parts();
             FnLowerer::lower_with_env(
@@ -674,7 +676,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 generics,
                 consts,
                 &mut diagnostics,
-                facts,
+                staged_facts.sink(facts, template.at()),
                 file,
                 module,
                 template.decl,
@@ -693,6 +695,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(TemplateProofOutcome {
             diagnostics: diagnostics.finish(),
             generic,
+            facts: staged_facts,
             settlement,
         })
     }
