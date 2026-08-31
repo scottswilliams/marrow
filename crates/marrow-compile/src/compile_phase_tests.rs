@@ -9,10 +9,10 @@ use super::{
     BoundedDiagnostics, Built, CompileFailure, CompileStage, CompleteDeclaredFunctionBodies,
     CompleteDeclaredTestBodies, CompleteFunctionRegistry, CompleteLoweredFunctionSet,
     CompleteTypeRegistry, DeclarationExit, Driven, InvariantCause, SemanticOutcome,
-    SignaturesComplete, analyze_outcome, settle_instance,
+    SignaturesComplete, analyze_outcome,
 };
 use crate::compile::Declaration;
-use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic, StagedDiagnostics};
+use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
 use crate::lower::FunctionRegistry;
 use crate::types::{
     CollectionKind, GenericCacheInvariant, GenericInvariant, Reserved, TemplateProofError,
@@ -21,29 +21,6 @@ use crate::types::{
 use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 use std::collections::BTreeMap;
-
-/// A settlement-brand mismatch is an opaque compiler invariant and publishes no staged
-/// row; it never becomes a panic or a source diagnostic.
-#[test]
-fn settlement_mismatch_routes_to_the_typed_invariant_before_publication() {
-    let mut draft = marrow_image::ImageDraft::new();
-    let authority_a = admitted(&mut draft).commit();
-    let txn_b = admitted(&mut draft);
-    let mut staged_b = StagedDiagnostics::new(txn_b.settlement_staging());
-    staged_b
-        .sink()
-        .push(diagnostic(Code::CheckType.as_str(), 1));
-    let mut published = DiagnosticCollector::new();
-
-    assert_eq!(
-        settle_instance(authority_a, staged_b, &mut published),
-        Err(GenericInvariant::SettlementMismatch(
-            marrow_image::DraftStateError::StaleEpoch,
-        )),
-    );
-    assert!(published.is_empty(), "authentication precedes publication",);
-    drop(txn_b);
-}
 
 /// The minting guard rejects every input class whose dotted join would break
 /// the ExportId payload's injectivity, even though the current capture path
@@ -154,7 +131,6 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         GenericInvariant::TypeArgumentTargetMissing(_) => "type argument target missing",
         GenericInvariant::TypeArgumentParameter(_) => "concrete type argument is a parameter",
         GenericInvariant::BuilderDomain(_) => "value shape outside the builder domain",
-        GenericInvariant::SettlementMismatch(_) => "settlement transaction mismatch",
         GenericInvariant::CollectionIndexMismatch { kind, .. } => match kind {
             CollectionKind::List => "List owner mismatch",
             CollectionKind::Map => "Map owner mismatch",

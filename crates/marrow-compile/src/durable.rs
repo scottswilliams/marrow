@@ -50,7 +50,7 @@ use crate::decl::{
     RefusalReport, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
-use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic, StagedDiagnostics};
+use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic, StagedDiagnosticTxn};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
@@ -754,30 +754,30 @@ impl DurableRegistry {
                 // and an ordinary checked refusal runs the guard's total inverse, so a
                 // refused store leaves no orphan row behind.
                 //
-                // The diagnostic custody seam: rows this store's build refuses are staged
-                // outside every collector the caller can read, and are released only
-                // against the capability the consumed guard produces — so the local
-                // restore or commit precedes settlement as a type fact. An invariant
-                // abort leaves through `?` without that capability and settles nothing.
-                let mut txn = admitted(draft);
-                let mut staged = StagedDiagnostics::new(txn.settlement_staging());
-                let (occurrence, authority) = match build_one(
-                    AdmittedDraft {
-                        draft: &mut txn,
-                        plan: &plan,
-                    },
-                    &mut type_metadata,
-                    resources,
-                    declared,
-                    StoreOccurrence {
-                        decl: store,
-                        multiplicity: census.multiplicity(&store.resource),
-                    },
-                    &mut identity_build,
-                    staged.sink(),
-                )? {
+                // The diagnostic custody seam: this aggregate owns the armed transaction
+                // and its private rows together. An invariant abort drops both; a checked
+                // outcome consumes this exact producer before releasing its rows.
+                let mut staged = StagedDiagnosticTxn::new(admitted(draft));
+                let built = {
+                    let (txn, staged_diagnostics) = staged.parts();
+                    build_one(
+                        AdmittedDraft {
+                            draft: txn,
+                            plan: &plan,
+                        },
+                        &mut type_metadata,
+                        resources,
+                        declared,
+                        StoreOccurrence {
+                            decl: store,
+                            multiplicity: census.multiplicity(&store.resource),
+                        },
+                        &mut identity_build,
+                        staged_diagnostics,
+                    )?
+                };
+                let (occurrence, released) = match built {
                     StoreBuild::Admitted(built) => {
-                        let authority = txn.commit();
                         registry.naming.extend(built.naming);
                         let executable = built.executable.map(|root| {
                             registry.roots.push(root);
@@ -785,20 +785,16 @@ impl DurableRegistry {
                         });
                         (
                             DeclarationOccurrence::Accepted(DeclaredRoot { executable }),
-                            authority,
+                            staged.commit(),
                         )
                     }
                     StoreBuild::Refused(refusal) => {
-                        // The ordinary refusal path, spelled: the total inverse runs and
-                        // hands back the capability that authorizes this store's rows.
-                        let authority = txn.rollback();
-                        (DeclarationOccurrence::Refused(refusal), authority)
+                        // The ordinary refusal path runs the total inverse before releasing
+                        // this store's diagnostics.
+                        (DeclarationOccurrence::Refused(refusal), staged.rollback())
                     }
                 };
-                let staged = staged
-                    .settle(&authority)
-                    .map_err(GenericInvariant::SettlementMismatch)?;
-                settled.absorb(staged);
+                settled.absorb(released);
                 // The resource projection is appended in the same statement as the
                 // ledger entry, so a store cannot be declared without being reachable
                 // by the resource it binds.

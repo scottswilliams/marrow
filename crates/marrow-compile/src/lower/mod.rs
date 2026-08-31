@@ -49,7 +49,7 @@ use marrow_image::{
 };
 use marrow_project::FileIdentity;
 
-use crate::analysis::{AnalysisFactCollector, DefinitionTarget, FactSink, FileRef, StagedFacts};
+use crate::analysis::{AnalysisFactCollector, DefinitionTarget, FactSink, FileRef, StagedBodyTxn};
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
     InterpolationPart, LiteralKind, MatchArm, NameSegment, RangeExpr, SourceSpan, Statement,
@@ -61,16 +61,15 @@ use crate::decl::{
     Binding, DeclarationIndexDrift, DeclarationNamespace, DeclarationRefusalId,
     DeclarationRefusalSummary, declaration_refused,
 };
-use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
+use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::durable::{DurableRegistry, ProductBinding, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
     CollSpec, EnumVariantSelection, GArg, GenericDiagnostics, GenericInvariant as LowerInvariant,
-    GenericOwnerTxn, MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection,
-    RESULT_ERR, RESULT_OK, ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType,
-    StructFieldProjection, SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession,
-    TypeParamIndex, TypeRegistry,
+    MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection, RESULT_ERR, RESULT_OK,
+    ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType, StructFieldProjection,
+    SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession, TypeParamIndex, TypeRegistry,
 };
 
 /// Whether control continues past a statement or block, leaves it (via `return`,
@@ -649,15 +648,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // The guard takes the registry by exclusive `&mut` and the draft through an armed
         // transaction, and restores both owners on every path — a normal return, an early
         // lowering invariant, or an unwind — registry inverse first, then the armed draft
-        // guard, exactly once. Its diagnostics live in a local collector that a failure
-        // drops, while its editor facts are charged against the shared ledger but retained
-        // in transaction-branded staging (see `FactSink`).
-        let mut scope = GenericOwnerTxn::enter_proof(records, draft)?;
-        let mut staged_facts = StagedFacts::new(scope.settlement_staging());
-        // The proof's local collector: success seals it into the outcome's
-        // terminal for the outer stage owner to absorb; an invariant failure
-        // drops it with the scope.
-        let mut diagnostics = DiagnosticCollector::new();
+        // guard, exactly once. The producer-owning scope also owns both payloads, so a
+        // failure drops its diagnostics and editor facts with the still-armed producer.
+        let mut scope = StagedBodyTxn::enter_proof(records, draft)?;
         // Each parameter's position in this vector is its abstract `LTy::Param`
         // index, and its constraint is read back from here by `constraint_at`.
         let type_env = template
@@ -671,11 +664,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // The template body is checked exactly once (never per instance), so its editor
         // facts are collected here: a template-parameter use renders by its declared
         // spelling and no divergent-monomorphization O(N²) rendering occurs. The sink
-        // charges them live but retains them only in this scope's branded staging; they
-        // reach the ledger after the erased scope authenticates settlement. Only the
+        // charges them live but retains them only in this producer-owning scope. Only the
         // throwaway image function this pass emits is discarded with the scope.
         {
-            let (registry, txn) = scope.parts();
+            let (registry, txn, diagnostics, staged_facts) = scope.parts();
             FnLowerer::lower_with_env(
                 txn,
                 registry,
@@ -683,7 +675,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 functions,
                 generics,
                 consts,
-                &mut diagnostics,
+                diagnostics,
                 staged_facts.sink(facts, template.at()),
                 file,
                 module,
@@ -696,16 +688,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // `take_generic_diagnostics` drains the swapped-in buffer and limit owner that the
         // guard then re-seats.
         let generic = scope.registry().take_generic_diagnostics();
-        // Erase rather than drop, so the proof's own exit produces the capability its
-        // staged facts settle against. The `?` above leaves without reaching this, which
-        // is exactly the path whose facts must not survive.
-        let settlement = scope.erase();
-        Ok(TemplateProofOutcome {
-            diagnostics: diagnostics.finish(),
-            generic,
-            facts: staged_facts,
-            settlement,
-        })
+        // Erase rather than drop so the proof releases its payload only after both owner
+        // inverses have run. The `?` above drops producer and payload together.
+        let body = scope.erase();
+        Ok(TemplateProofOutcome { generic, body })
     }
 
     /// The shared driver for an ordinary function, a generic instance, and the
@@ -1021,12 +1007,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     fn patch(&mut self, at: usize, target: usize) {
-        let Some(instr) = self.code.get_mut(at) else {
-            if self.code_limit_reached {
-                return;
-            }
-            panic!("lowering patch index {at} is outside the instruction tape");
-        };
+        if self.code_limit_reached && at == self.code.len() {
+            return;
+        }
+        let instr = &mut self.code[at];
         match instr {
             Instr::Jump(t)
             | Instr::JumpIfFalse(t)

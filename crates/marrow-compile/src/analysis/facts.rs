@@ -6,7 +6,7 @@
 //! reads it, the queries that answer from it, and the fact shapes it holds stay with
 //! their own owners.
 
-use marrow_image::{DraftStateError, SettlementAuthority, SettlementStaging};
+use marrow_image::{DraftTxn, ImageDraft};
 use marrow_syntax::SourceSpan;
 
 use super::{
@@ -15,6 +15,9 @@ use super::{
     symbol_count,
 };
 use marrow_project::ProjectInput;
+
+use crate::diag::{BoundedDiagnostics, DiagnosticCollector};
+use crate::types::{GenericInvariant, GenericOwnerTxn, TypeRegistry};
 
 /// The one live private analysis-fact owner.
 ///
@@ -272,10 +275,11 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
 /// *inside itself* rather than after it, and no fact population larger than a snapshot
 /// admits is ever materialized. The ledger cannot move underneath a running body: this
 /// value borrows it shared for the body's whole extent, so the totals a push composes
-/// over are the totals settlement will compose over.
+/// over are the totals release will compose over.
 ///
 /// The **retain** is body-local. The rows and the charge they made live here, not in the
-/// ledger, and [`Self::release`] is the only path from here into it.
+/// ledger, and the private [`Self::finish`] is reachable only through the producer-owning
+/// aggregate that releases it.
 ///
 /// The **inverse** is this value's drop, and it is total because it is structural rather
 /// than arithmetic: the ledger was never touched, so there is no state in which undoing
@@ -284,30 +288,127 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
 /// total — a crossing discards the ledger's whole retained payload, and no subtraction
 /// re-materializes it.
 pub(crate) struct StagedFacts {
-    /// The exact transaction whose work these facts accompany.
-    staging: SettlementStaging,
     /// This body's own contribution, over and above the ledger's settled totals.
     count: u64,
     bytes: u64,
     /// The ceiling this body's own facts crossed, if any. A crossing discards this body's
     /// staged rows at once — the same whole-payload discard the ledger performs — and
-    /// stops further rendering, while latching nothing on the ledger until settlement.
+    /// stops further rendering, while latching nothing on the ledger until release.
     limit: Option<AnalysisFactLimit>,
     facts: RetainingFacts,
 }
 
-/// One settled body's facts on their way into the ledger. Produced only by
-/// [`StagedFacts::release`], so it cannot exist for a body that did not settle.
+/// One settled body's facts on their way into the ledger. Produced only by the private
+/// [`StagedFacts::finish`] after the producer-owning aggregate consumes its guard.
 pub(crate) struct ReleasedFacts {
     count: u64,
     bytes: u64,
     facts: RetainingFacts,
 }
 
-impl StagedFacts {
-    pub(crate) fn new(staging: SettlementStaging) -> Self {
+/// One generic-owner producer and both payloads it may publish. The fields never detach:
+/// every successful exit consumes this exact producer before sealing its diagnostics and
+/// facts, while an invariant or unwind drops the armed producer and both private payloads
+/// together.
+pub(crate) struct StagedBodyTxn<'r, 'd> {
+    owner: GenericOwnerTxn<'r, 'd>,
+    diagnostics: DiagnosticCollector,
+    facts: StagedFacts,
+}
+
+/// The immutable product of one settled body. Its private fields can only be absorbed
+/// together, so diagnostics cannot publish without the facts from the same producer or
+/// vice versa.
+pub(crate) struct ReleasedBody {
+    diagnostics: BoundedDiagnostics,
+    facts: ReleasedFacts,
+}
+
+impl<'r, 'd> StagedBodyTxn<'r, 'd> {
+    pub(crate) fn begin(
+        registry: &'r mut TypeRegistry,
+        draft: &'d mut ImageDraft,
+    ) -> Result<Self, GenericInvariant> {
+        Ok(Self::new(GenericOwnerTxn::begin(registry, draft)?))
+    }
+
+    pub(crate) fn enter_proof(
+        registry: &'r mut TypeRegistry,
+        draft: &'d mut ImageDraft,
+    ) -> Result<Self, GenericInvariant> {
+        Ok(Self::new(GenericOwnerTxn::enter_proof(registry, draft)?))
+    }
+
+    fn new(owner: GenericOwnerTxn<'r, 'd>) -> Self {
         Self {
-            staging,
+            owner,
+            diagnostics: DiagnosticCollector::new(),
+            facts: StagedFacts::new(),
+        }
+    }
+
+    pub(crate) fn parts(
+        &mut self,
+    ) -> (
+        &mut TypeRegistry,
+        &mut DraftTxn<'d>,
+        &mut DiagnosticCollector,
+        &mut StagedFacts,
+    ) {
+        let Self {
+            owner,
+            diagnostics,
+            facts,
+        } = self;
+        let (registry, draft) = owner.parts();
+        (registry, draft, diagnostics, facts)
+    }
+
+    pub(crate) fn registry(&self) -> &TypeRegistry {
+        self.owner.registry()
+    }
+
+    pub(crate) fn commit(self) -> ReleasedBody {
+        let Self {
+            owner,
+            diagnostics,
+            facts,
+        } = self;
+        owner.commit();
+        ReleasedBody {
+            diagnostics: diagnostics.finish(),
+            facts: facts.finish(),
+        }
+    }
+
+    pub(crate) fn erase(self) -> ReleasedBody {
+        let Self {
+            owner,
+            diagnostics,
+            facts,
+        } = self;
+        owner.erase();
+        ReleasedBody {
+            diagnostics: diagnostics.finish(),
+            facts: facts.finish(),
+        }
+    }
+}
+
+impl ReleasedBody {
+    pub(crate) fn absorb(
+        self,
+        diagnostics: &mut DiagnosticCollector,
+        facts: &mut AnalysisFactCollector,
+    ) {
+        diagnostics.absorb(self.diagnostics);
+        facts.absorb(self.facts);
+    }
+}
+
+impl StagedFacts {
+    fn new() -> Self {
+        Self {
             count: 0,
             bytes: 0,
             limit: None,
@@ -330,28 +431,20 @@ impl StagedFacts {
         }
     }
 
-    /// Release this body's facts against the capability the consumed guard produced.
-    ///
-    /// The crossing verdict is not carried across: `absorb` re-composes exactly this
-    /// charge over exactly the totals it was composed over, and the composition is
-    /// monotone, so the ledger reaches the same verdict this body already observed.
-    pub(crate) fn release(
-        self,
-        authority: &SettlementAuthority,
-    ) -> Result<ReleasedFacts, DraftStateError> {
+    /// Finish this body's facts after its producer has settled. Private so the
+    /// producer-owning aggregate below is the only caller that can release them.
+    fn finish(self) -> ReleasedFacts {
         let Self {
-            staging,
             count,
             bytes,
             limit: _,
             facts,
         } = self;
-        authority.release(staging)?;
-        Ok(ReleasedFacts {
+        ReleasedFacts {
             count,
             bytes,
             facts,
-        })
+        }
     }
 
     /// Whether a fact staged here would still be retained at settlement.
@@ -720,42 +813,28 @@ mod fact_ledger_tests {
         }
     }
 
-    /// One staged body over `facts`, settled — the production shape. A body writes
-    /// through a sink into an owner branded by its still-armed transaction, and that owner
-    /// reaches the ledger only against the matching authority after commit.
-    #[expect(
-        clippy::expect_used,
-        reason = "fixture law: one transaction brands and commits this staged body"
-    )]
+    /// One staged fact payload settled into the ledger. The production wrapper is the
+    /// only non-test owner allowed to construct or finish this private payload.
     fn settled_body(
         facts: &mut AnalysisFactCollector,
         file: FileRef,
         body: impl FnOnce(&mut FactSink<'_>),
     ) {
-        let mut draft = marrow_image::ImageDraft::new();
-        let txn = crate::compile::admitted(&mut draft);
-        let mut staged = StagedFacts::new(txn.settlement_staging());
+        let mut staged = StagedFacts::new();
         {
             let mut sink = staged.sink(facts, file);
             body(&mut sink);
         }
-        let authority = txn.commit();
-        let released = staged
-            .release(&authority)
-            .expect("the committed fixture transaction owns its staged facts");
-        facts.absorb(released);
+        facts.absorb(staged.finish());
     }
 
-    /// One branded staged body whose transaction and payload both drop without an
-    /// authority, exercising the production abandonment path.
+    /// One private staged payload dropped without settlement.
     fn abandoned_body(
         facts: &AnalysisFactCollector,
         file: FileRef,
         body: impl FnOnce(&mut FactSink<'_>),
     ) {
-        let mut draft = marrow_image::ImageDraft::new();
-        let txn = crate::compile::admitted(&mut draft);
-        let mut staged = StagedFacts::new(txn.settlement_staging());
+        let mut staged = StagedFacts::new();
         let mut sink = staged.sink(facts, file);
         body(&mut sink);
     }

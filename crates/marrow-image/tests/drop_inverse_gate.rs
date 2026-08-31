@@ -708,10 +708,14 @@ const RESOLVED_CALL_PATHS: &[&str] = &[
     "generics.fn_insts.len",
     "generics.type_insts.len",
     "self.store.len",
-    // Identity and index readers on a value the inverse already owns: field projections
-    // that allocate nothing.
+    // Identity, index, and predecessor readers on values the inverse already owns. The
+    // predecessor lookup authenticates through checked `Vec::get` calls and returns
+    // `None` on any missing row; these field projections allocate nothing and cannot
+    // panic.
     "discarded.claim.identity",
+    "head.index",
     "id.index",
+    "store.fingerprint_predecessor",
     // In-place shrink. `pop` on an empty owner answers `None`, and every `pop` here is
     // guarded by the matching length read above; none of them can allocate.
     "colls.pop",

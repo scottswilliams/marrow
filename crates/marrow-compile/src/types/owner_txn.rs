@@ -1,7 +1,7 @@
 //! The generic-owner composite guard: one admitted batch over the compiler's type
 //! registry and the image draft, and the inverse that restores both.
 
-use marrow_image::{DraftTxn, ImageDraft, SettlementAuthority, SettlementStaging};
+use marrow_image::{DraftTxn, ImageDraft};
 
 use super::{ArgumentDomain, DiagnosticCollector, GenericInvariant, TypeRegistry};
 
@@ -47,13 +47,11 @@ pub(super) struct RegistryInverse {
 /// owns, copies, journals, or exposes it, and this inverse mirrors that boundary rather
 /// than opening a second custody for the same rows.
 ///
-/// That exclusion is only sound because something else decides visibility, and it now
-/// does: a guarded body reports into a staged collector, and those rows are released only
-/// against the [`marrow_image::SettlementAuthority`] a committed or rolled-back guard
-/// produces. So a batch that ends in an invariant publishes nothing regardless of what
-/// these two owners hold — the capability, not a registry rollback, is what makes the
-/// diagnostic effects of an abandoned batch invisible. Journaling them here as well would
-/// be a second custody over rows this inverse is not entitled to own.
+/// That exclusion is only sound because something else decides visibility: the staged-body
+/// guard owns this guard and its still-private diagnostic and fact payloads together. A
+/// batch that ends in an invariant drops that aggregate and publishes nothing regardless
+/// of what these two owners hold. Journaling them here as well would be a second custody
+/// over rows this inverse is not entitled to own.
 ///
 /// An isolated template proof is the one exception, and it is not a restoration of
 /// these owners either: it *swaps them out* at admission so the throwaway pass cannot
@@ -121,11 +119,11 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
         draft: &'d mut ImageDraft,
         inverse: RegistryInverse,
     ) -> Self {
+        let savepoint = draft.savepoint();
         #[expect(
             clippy::expect_used,
-            reason = "admission law: a savepoint minted and consumed in one expression is fresh"
+            reason = "admission law: the savepoint was just minted from this unarmed owner"
         )]
-        let savepoint = draft.savepoint();
         let txn = draft
             .begin_transaction(savepoint)
             .expect("a fresh savepoint admits the batch");
@@ -156,49 +154,29 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
         &*self.registry
     }
 
-    /// One affine staging brand for a predecessor-owned payload produced by this exact
-    /// batch. The payload owner keeps the token private until the consumed guard yields
-    /// the matching authority.
-    pub(crate) fn settlement_staging(&self) -> SettlementStaging {
-        #[expect(
-            clippy::expect_used,
-            reason = "guard law: every live batch holds its armed draft transaction"
-        )]
-        self.draft
-            .as_ref()
-            .expect("a live batch holds its armed draft transaction")
-            .settlement_staging()
-    }
-
     /// Keep this batch: the draft transaction commits first, then the registry inverse
     /// is disarmed, so no path can retain draft rows whose registry rows were erased.
-    /// Commit the batch, yielding the capability that authorizes the matching
-    /// predecessor custody settlement.
-    pub(crate) fn commit(mut self) -> SettlementAuthority {
+    pub(crate) fn commit(mut self) {
         #[expect(
             clippy::expect_used,
             reason = "guard law: commit consumes the one armed draft transaction"
         )]
-        let authority = self
-            .draft
+        self.draft
             .take()
             .expect("a live batch holds its armed draft transaction")
             .commit();
         self.inverse = None;
-        authority
     }
 
     /// Erase this batch now — registry inverse first, then the armed draft guard's own
-    /// inverse — and yield the capability that authorizes settling what the erased pass
-    /// staged.
+    /// inverse.
     ///
     /// This is the explicit spelling of the isolated template proof's exit, whose product
     /// is its diagnostics and its editor facts rather than the throwaway image work it
-    /// emits. Dropping the guard instead restores exactly the same owners but produces no
-    /// capability, which is what leaves an early lowering invariant unable to settle
-    /// anything. The order matches `Drop`'s: a path may not retain draft rows whose
-    /// registry rows were erased.
-    pub(crate) fn erase(mut self) -> SettlementAuthority {
+    /// emits. Dropping the producer-owning aggregate restores exactly the same owners and
+    /// drops its still-private payloads. The order matches `Drop`'s: a path may not retain
+    /// draft rows whose registry rows were erased.
+    pub(crate) fn erase(mut self) {
         if let Some(inverse) = self.inverse.take() {
             self.registry.restore_generic_owners(inverse);
         }
@@ -209,7 +187,7 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
         self.draft
             .take()
             .expect("a live batch holds its armed draft transaction")
-            .rollback()
+            .rollback();
     }
 }
 

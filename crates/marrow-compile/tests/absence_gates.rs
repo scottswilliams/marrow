@@ -2191,12 +2191,12 @@ fn function_bodies(code: &str) -> Vec<(String, String)> {
 /// Every producer a lowering call drives reports into staged owners, never into the
 /// caller's.
 ///
-/// The custody law is that a body's rows and its editor facts settle only after its batch
-/// has committed or run its inverse. Handing a lowering call the caller's own collector
+/// The custody law is that a body's rows and its editor facts are owned with the batch
+/// until it has committed or run its inverse. Handing a lowering call the caller's own collector
 /// publishes its rows the moment they are pushed — while the batch is still armed — so an
-/// invariant that aborts the batch afterwards leaves them behind. The capability types
-/// make *settlement* unreachable without a consumed guard; this gate pins the other half,
-/// that nothing is written where settlement is not needed to make it visible.
+/// invariant that aborts the batch afterwards leaves them behind. The producer-owning
+/// aggregate makes release unreachable without consuming that exact guard; this gate pins
+/// the other half, that nothing is written where release is not needed to make it visible.
 ///
 /// It enumerates the call sites rather than a list of enclosing function names. Naming the
 /// enclosing functions is what let the generic-instance drain keep the live collector: the
@@ -2244,7 +2244,7 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
             staged_facts,
             "`{name}` must hand its producer a staged fact owner, or `FactSink::Discarding` \
              where the facts were collected once at the template proof; `check_template` \
-             receives the shared ledger and constructs its branded staged owner inside \
+             receives the shared ledger and constructs its staged owner inside \
              the proof scope",
         );
         // `check_template` owns its diagnostics in a local collector that its own failure
@@ -2252,7 +2252,7 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
         // it must be the staged one.
         if *name != "FnLowerer::check_template" {
             assert!(
-                arguments.contains("staged.sink()"),
+                arguments.contains("staged_diagnostics,"),
                 "`{name}` hands the lowerer a staged diagnostic collector",
             );
             assert!(
@@ -2268,10 +2268,11 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
             .expect("read the lowering owner"),
     );
     assert!(
-        lower.contains("StagedFacts::new(scope.settlement_staging())")
+        lower.contains("StagedBodyTxn::enter_proof(records, draft)?")
+            && lower.contains("let (registry, txn, diagnostics, staged_facts) = scope.parts();")
             && lower.contains("staged_facts.sink(facts, template.at())"),
-        "the template proof constructs its fact staging from the exact armed scope and \
-         hands only that staged sink to body lowering",
+        "the template proof owns its producer and both payloads in one scope and hands \
+         only those staged sinks to body lowering",
     );
 }
 
@@ -2351,10 +2352,11 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
         "an exclusive ledger borrow in the fact sink restores the write-through",
     );
     assert!(
-        analysis.contains("staging: SettlementStaging,")
-            && analysis.contains("authority.release(staging)?;"),
-        "a staged body's facts carry the exact transaction brand and consume it against \
-         the matching settlement authority before constructing released facts",
+        analysis.contains("owner: GenericOwnerTxn<'r, 'd>,")
+            && analysis.contains("owner.commit();")
+            && analysis.contains("owner.erase();"),
+        "the staged body owns its generic producer and consumes it before constructing \
+         released facts",
     );
 
     let diagnostics = production_code(
@@ -2362,14 +2364,15 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
             .expect("read the diagnostic custody owner"),
     );
     assert!(
-        diagnostics.contains("staging: SettlementStaging,")
-            && diagnostics.contains("authority.release(staging)?;"),
-        "staged diagnostics carry and authenticate the same exact transaction brand",
+        diagnostics.contains("owner: DraftTxn<'d>,")
+            && diagnostics.contains("owner.commit();")
+            && diagnostics.contains("owner.rollback();"),
+        "durable staged diagnostics own and consume their exact producer",
     );
 
     // The released value is the sole path from a staged body into the ledger, so a second
-    // construction of it would be a settlement with no capability behind it. Its
-    // declaration, the destructuring binding in `absorb`, and the return type of `release`
+    // construction of it would be a release with no producer behind it. Its
+    // declaration, the destructuring binding in `absorb`, and the return type of `finish`
     // are excluded by the token that precedes each, so what is counted is construction.
     let constructions = analysis
         .match_indices("ReleasedFacts {")
@@ -2380,9 +2383,36 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
         .count();
     assert_eq!(
         constructions, 1,
-        "`ReleasedFacts` is constructed exactly once — after the exact staging brand is \
-         authenticated — so no path settles a body's facts without its own transaction",
+        "`ReleasedFacts` is constructed exactly once — after the exact producer is \
+         consumed — so no path releases a body's facts without its own transaction",
     );
+
+    let image = production_code(
+        &fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../marrow-image/src/draft.rs"),
+        )
+        .expect("read the draft transaction owner"),
+    );
+    let compile = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compile.rs"))
+            .expect("read the compile coordinator"),
+    );
+    for forbidden in [
+        "SettlementStaging",
+        "SettlementAuthority",
+        "settlement_staging",
+        "SettlementMismatch",
+        "settle_body",
+        "settle_instance",
+    ] {
+        assert!(
+            !image.contains(forbidden)
+                && !analysis.contains(forbidden)
+                && !diagnostics.contains(forbidden)
+                && !compile.contains(forbidden),
+            "detached settlement seam `{forbidden}` must remain absent",
+        );
+    }
 
     // The ledger keeps no row-admission surface a producer could reach: hover and gap rows
     // exist only on the staged owner.

@@ -2,9 +2,7 @@
 
 use super::*;
 
-use marrow_image::SettlementAuthority;
-
-use crate::analysis::StagedFacts;
+use crate::analysis::ReleasedBody;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
     DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName,
@@ -110,16 +108,10 @@ impl SignatureWalk<'_> {
 }
 
 pub(crate) struct TemplateProofOutcome {
-    /// The proof's finished local diagnostic terminal, sealed by the local
-    /// collector's one `finish` for the outer stage owner to absorb.
-    pub(crate) diagnostics: BoundedDiagnostics,
     pub(crate) generic: GenericDiagnostics,
-    /// The proof's editor facts, branded by the exact scope that produced them.
-    pub(crate) facts: StagedFacts,
-    /// The capability the proof's erased scope produced. The proof's editor facts are
-    /// staged while that scope is armed and settle only against this, so a proof that
-    /// left through a lowering invariant — which never reaches this value — settles none.
-    pub(crate) settlement: SettlementAuthority,
+    /// Diagnostics and facts released together only after the proof's exact producer was
+    /// erased.
+    pub(crate) body: ReleasedBody,
 }
 
 impl FunctionRegistry {

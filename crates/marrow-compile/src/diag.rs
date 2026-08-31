@@ -17,7 +17,7 @@
 
 use crate::decl::{DeclarationNamespace, RefusalReport};
 use marrow_codes::Code;
-use marrow_image::{DraftStateError, SettlementAuthority, SettlementStaging};
+use marrow_image::DraftTxn;
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind};
 use marrow_syntax::{
     Diagnostic, DiagnosticReason, Severity, SourceSpan, SyntaxDiagnosticLimit, SyntaxDiagnostics,
@@ -436,46 +436,37 @@ pub(crate) enum BoundedDiagnostics {
     },
 }
 
-/// Rows held outside every collector a reader can reach until the transaction that
-/// produced them has committed or run its inverse.
-///
-/// The private [`SettlementStaging`] authenticates the exact transaction that owns these
-/// rows. [`Self::settle`] consumes that staging against a [`SettlementAuthority`], which
-/// only the matching consumed guard can produce, so "the local restore or commit precedes
-/// settlement" is a property of the types rather than of statement order. A path that
-/// leaves while a guard is still armed — an invariant through `?`, or an unwind — drops the
-/// staged rows with it because it never obtained the matching authority.
-pub(crate) struct StagedDiagnostics {
-    staging: SettlementStaging,
-    rows: DiagnosticCollector,
+/// One durable-build producer and its still-private diagnostics. No caller can detach the
+/// payload from this guard or pair it with another transaction: consuming the aggregate
+/// commits or rolls back its exact producer before releasing the finished rows.
+pub(crate) struct StagedDiagnosticTxn<'d> {
+    owner: DraftTxn<'d>,
+    diagnostics: DiagnosticCollector,
 }
 
-impl StagedDiagnostics {
-    pub(crate) fn new(staging: SettlementStaging) -> Self {
+impl<'d> StagedDiagnosticTxn<'d> {
+    pub(crate) fn new(owner: DraftTxn<'d>) -> Self {
         Self {
-            staging,
-            rows: DiagnosticCollector::new(),
+            owner,
+            diagnostics: DiagnosticCollector::new(),
         }
     }
 
-    /// Where the guarded work reports, in place of any collector the caller owns.
-    pub(crate) fn sink(&mut self) -> &mut DiagnosticCollector {
-        &mut self.rows
+    /// The producer and its diagnostic sink, reborrowed from the same aggregate.
+    pub(crate) fn parts(&mut self) -> (&mut DraftTxn<'d>, &mut DiagnosticCollector) {
+        (&mut self.owner, &mut self.diagnostics)
     }
 
-    /// Release the staged rows against the capability the consumed guard produced.
-    ///
-    /// The capability is borrowed rather than consumed: one committed guard settles every
-    /// owner that guard's work staged — this crate's bodies stage diagnostics and editor
-    /// facts against a single commit — and double release is already impossible because
-    /// this consumes `self`.
-    pub(crate) fn settle(
-        self,
-        authority: &SettlementAuthority,
-    ) -> Result<BoundedDiagnostics, DraftStateError> {
-        let Self { staging, rows } = self;
-        authority.release(staging)?;
-        Ok(rows.finish())
+    pub(crate) fn commit(self) -> BoundedDiagnostics {
+        let Self { owner, diagnostics } = self;
+        owner.commit();
+        diagnostics.finish()
+    }
+
+    pub(crate) fn rollback(self) -> BoundedDiagnostics {
+        let Self { owner, diagnostics } = self;
+        owner.rollback();
+        diagnostics.finish()
     }
 }
 
@@ -802,85 +793,58 @@ mod tests {
         )
     }
 
-    /// An authority is transaction-specific: committing transaction A cannot release
-    /// rows staged while transaction B is still armed, only for B to roll its image rows
-    /// back after those diagnostics became visible.
+    /// Commit consumes the exact producer before releasing its own rows.
     #[test]
-    fn an_earlier_transaction_authority_cannot_release_later_staging() {
+    fn a_staged_diagnostic_transaction_commits_its_producer_before_release() {
         let mut draft = marrow_image::ImageDraft::new();
-        let authority_a = crate::compile::admitted(&mut draft).commit();
-
-        let mut txn_b = crate::compile::admitted(&mut draft);
-        let name = txn_b
-            .intern_string("rolled-back-b")
+        let mut staged = StagedDiagnosticTxn::new(crate::compile::admitted(&mut draft));
+        let (txn, diagnostics) = staged.parts();
+        let name = txn
+            .intern_string("committed")
             .expect("a within-domain mint");
-        txn_b
-            .reserve_record_type(name)
-            .expect("a within-domain mint");
-        let mut staged_b = StagedDiagnostics::new(txn_b.settlement_staging());
-        staged_b.sink().push(row_with_message_len(1));
+        txn.reserve_record_type(name).expect("a within-domain mint");
+        diagnostics.push(row_with_message_len(1));
 
-        assert_eq!(
-            staged_b.settle(&authority_a),
-            Err(DraftStateError::StaleEpoch),
-            "transaction A cannot release transaction B's staged row",
-        );
-        assert_eq!(txn_b.record_type_count(), 1, "transaction B remains armed");
-        drop(txn_b);
+        let released = staged.commit().expect_complete();
+        assert_eq!(released.len(), 1);
+        assert_eq!(draft.record_type_count(), 1, "the producer committed");
+    }
+
+    /// Rollback runs the exact producer's inverse before releasing its refusal rows.
+    #[test]
+    fn a_staged_diagnostic_transaction_rolls_back_before_release() {
+        let mut draft = marrow_image::ImageDraft::new();
+        let mut staged = StagedDiagnosticTxn::new(crate::compile::admitted(&mut draft));
+        let (txn, diagnostics) = staged.parts();
+        let name = txn
+            .intern_string("rolled-back")
+            .expect("a within-domain mint");
+        txn.reserve_record_type(name).expect("a within-domain mint");
+        diagnostics.push(row_with_message_len(1));
+
+        let released = staged.rollback().expect_complete();
+        assert_eq!(released.len(), 1);
+        assert_eq!(draft.record_type_count(), 0, "the producer rolled back");
+    }
+
+    /// Abandoning the aggregate drops both its payload and its armed producer.
+    #[test]
+    fn abandoning_a_staged_diagnostic_transaction_rolls_back_its_producer() {
+        let mut draft = marrow_image::ImageDraft::new();
+        {
+            let mut staged = StagedDiagnosticTxn::new(crate::compile::admitted(&mut draft));
+            let (txn, diagnostics) = staged.parts();
+            let name = txn
+                .intern_string("abandoned")
+                .expect("a within-domain mint");
+            txn.reserve_record_type(name).expect("a within-domain mint");
+            diagnostics.push(row_with_message_len(1));
+        }
         assert_eq!(
             draft.record_type_count(),
             0,
-            "transaction B rolls back its image row",
+            "drop ran the producer inverse"
         );
-    }
-
-    /// Draft identity is part of the brand: even the same transaction position in an
-    /// independent draft cannot release staged rows or make its rolled-back image visible.
-    #[test]
-    fn a_foreign_draft_authority_cannot_release_staging() {
-        let mut draft_a = marrow_image::ImageDraft::new();
-        let authority_a = crate::compile::admitted(&mut draft_a).commit();
-
-        let mut draft_b = marrow_image::ImageDraft::new();
-        let mut txn_b = crate::compile::admitted(&mut draft_b);
-        let name = txn_b
-            .intern_string("rolled-back-foreign")
-            .expect("a within-domain mint");
-        txn_b
-            .reserve_record_type(name)
-            .expect("a within-domain mint");
-        let mut staged_b = StagedDiagnostics::new(txn_b.settlement_staging());
-        staged_b.sink().push(row_with_message_len(1));
-
-        assert_eq!(
-            staged_b.settle(&authority_a),
-            Err(DraftStateError::ForeignDraft),
-            "another draft cannot publish this draft's staged row",
-        );
-        assert_eq!(txn_b.record_type_count(), 1, "transaction B remains armed");
-        drop(txn_b);
-        assert_eq!(
-            draft_b.record_type_count(),
-            0,
-            "transaction B rolls back its image row",
-        );
-        assert_eq!(draft_a.record_type_count(), 0);
-    }
-
-    /// The matching authority still releases the exact staged owner after commit.
-    #[test]
-    fn a_transaction_authority_releases_its_own_staging() {
-        let mut draft = marrow_image::ImageDraft::new();
-        let txn = crate::compile::admitted(&mut draft);
-        let mut staged = StagedDiagnostics::new(txn.settlement_staging());
-        staged.sink().push(row_with_message_len(1));
-        let authority = txn.commit();
-
-        let released = staged
-            .settle(&authority)
-            .expect("the matching transaction owns its staged rows")
-            .expect_complete();
-        assert_eq!(released.len(), 1);
     }
 
     /// The byte-charge law, per payload variant: file spelling plus owned

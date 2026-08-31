@@ -954,55 +954,6 @@ struct DraftJournal {
     fills: Vec<FillInverse>,
 }
 
-/// The transaction brand embedded in one predecessor-owned staged payload.
-///
-/// Only an armed [`DraftTxn`] can mint it, and its draft identity plus one-shot epoch
-/// authenticate the exact transaction whose work the payload accompanies. It is affine:
-/// a staged owner consumes the token when it attempts release, so the same custody cannot
-/// be published twice.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct SettlementStaging {
-    epoch: Rc<TransactionEpoch>,
-}
-
-/// The capability that authorizes predecessor diagnostic/fact custody settlement for
-/// one exact transaction.
-///
-/// It is constructible only by consuming an armed [`DraftTxn`] — [`DraftTxn::commit`],
-/// which retains the mutations, or [`DraftTxn::rollback`], which has already run the
-/// total inverse. "The local restore or commit precedes settlement" is therefore a
-/// property of the type rather than of the order two statements happen to appear in.
-/// An unwind, an error return, or any other early exit drops the guard through its
-/// armed `Drop`, which restores every owner and yields no capability, so none of them
-/// can settle anything.
-///
-/// It is non-forgeable and neither `Clone` nor `Copy`, and it carries the consumed
-/// transaction's strong draft identity and epoch. A single transaction may have several
-/// staged owners, so they borrow this authority repeatedly, but each must consume its own
-/// matching affine [`SettlementStaging`]. Diagnostics, gaps, and hover rows stay entirely
-/// inside the predecessor substrate's custody.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct SettlementAuthority {
-    epoch: Rc<TransactionEpoch>,
-}
-
-impl SettlementAuthority {
-    /// Consume one staging token only when it belongs to this authority's exact
-    /// transaction. A different draft is foreign; another epoch of the same draft is
-    /// stale. Either refusal leaves the staged payload outside every published owner.
-    pub fn release(&self, staging: SettlementStaging) -> Result<(), DraftStateError> {
-        if !Rc::ptr_eq(&self.epoch.draft, &staging.epoch.draft) {
-            return Err(DraftStateError::ForeignDraft);
-        }
-        if !Rc::ptr_eq(&self.epoch, &staging.epoch) {
-            return Err(DraftStateError::StaleEpoch);
-        }
-        Ok(())
-    }
-}
-
 /// The sole cross-crate mutation surface over one [`ImageDraft`]: an armed guard
 /// admitted by [`ImageDraft::begin_transaction`] that mutates the borrowed draft
 /// immediately and in place — it never batches, defers, schedules, or reorders a
@@ -1038,37 +989,19 @@ impl std::ops::Deref for DraftTxn<'_> {
 }
 
 impl<'d> DraftTxn<'d> {
-    /// Disarm the guard, retaining every mutation and accepted policy observation, and
-    /// yield the capability that authorizes the matching predecessor settlement.
-    pub fn commit(mut self) -> SettlementAuthority {
-        let authority = SettlementAuthority {
-            epoch: Rc::clone(&self.draft.epoch),
-        };
+    /// Disarm the guard, retaining every mutation and accepted policy observation.
+    pub fn commit(mut self) {
         self.armed = false;
-        authority
     }
 
-    /// Run the total admitted inverse now, then yield the capability that authorizes the
-    /// matching ordinary-refusal settlement.
+    /// Run the total admitted inverse now.
     ///
     /// This is the explicit spelling of the ordinary-refusal path. Dropping the guard
-    /// instead restores exactly the same owners but produces no capability, which is what
-    /// leaves an unwind and an early `?` return unable to settle anything.
-    pub fn rollback(mut self) -> SettlementAuthority {
-        let authority = SettlementAuthority {
-            epoch: Rc::clone(&self.draft.epoch),
-        };
+    /// restores exactly the same owners; a producer-owning aggregate then drops its
+    /// still-private payload with this armed guard on an unwind or early `?` return.
+    pub fn rollback(mut self) {
         self.rollback_armed();
         self.armed = false;
-        authority
-    }
-
-    /// Brand one predecessor-owned staged payload with this exact transaction. The
-    /// payload owner retains this affine token privately until settlement.
-    pub fn settlement_staging(&self) -> SettlementStaging {
-        SettlementStaging {
-            epoch: Rc::clone(&self.draft.epoch),
-        }
     }
 
     pub fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {

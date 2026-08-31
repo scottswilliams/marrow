@@ -41,8 +41,8 @@ pub use digest::{
 pub use draft::{
     AdmittedGraphInputPlan, AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, DraftSavepoint,
     DraftStateError, DraftTxn, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError,
-    ImageDraft, KeyColumn, RecordTypeDef, RootId, RootOccurrenceDef, SettlementAuthority,
-    SettlementStaging, SpanEntry, StrId, TypeId, VariantDef,
+    ImageDraft, KeyColumn, RecordTypeDef, RootId, RootOccurrenceDef, SpanEntry, StrId, TypeId,
+    VariantDef,
 };
 pub use durable_id::{
     BranchPlacementIdentity, DURABLE_CONTRACT_KIND, DurableBranchView, DurableContractId,

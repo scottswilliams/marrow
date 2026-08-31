@@ -523,11 +523,6 @@ pub(crate) enum GenericInvariant {
     /// unreachable, so an occurrence is a compiler coherence failure, never a
     /// source refusal.
     BuilderDomain(marrow_image::DraftStateError),
-    /// A staged diagnostic or fact owner carried a transaction brand different from the
-    /// authority asked to release it. Production creates both from one guard, so a
-    /// mismatch is compiler custody drift, never a source refusal or builder-domain
-    /// refusal.
-    SettlementMismatch(marrow_image::DraftStateError),
     CollectionIndexMismatch {
         kind: CollectionKind,
         cache_index: usize,

@@ -1461,10 +1461,6 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             let _ = refusal;
             22
         }
-        GenericInvariant::SettlementMismatch(refusal) => {
-            let _ = refusal;
-            23
-        }
         GenericInvariant::CollectionIndexMismatch {
             kind,
             cache_index,

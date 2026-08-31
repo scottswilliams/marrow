@@ -512,11 +512,10 @@ mod declaration_command_bound_tests {
 
 /// The post-staging custody seam of [`DurableRegistry::build`], driven from source.
 ///
-/// Each store is built inside an armed transaction over the shared draft and a
-/// `StagedDiagnostics` whose rows settle only against the capability the consumed guard
-/// produces. Every checked refusal returns `StoreBuild::Refused`, runs the total inverse,
-/// and settles its row; an invariant instead leaves through the `?` on `build_one` with
-/// the guard unconsumed, dropping the armed transaction and the staged rows together.
+/// Each store is built inside an aggregate that owns the armed transaction and its private
+/// diagnostics together. Every checked refusal returns `StoreBuild::Refused`, runs the
+/// total inverse, and then releases its row; an invariant instead leaves through the `?`
+/// on `build_one`, dropping the armed transaction and the staged rows together.
 ///
 /// The trigger is the construction budget, and it is the only one this compiler has:
 /// every image bound the durable build can cross — roots, sites, string bytes,

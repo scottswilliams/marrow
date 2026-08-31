@@ -24,7 +24,7 @@ use crate::compile::{Analyzed, analyze_project};
 mod facts;
 
 use crate::{CompileInvariant, CompileResourceLimit, SourceDiagnostic};
-pub(crate) use facts::{AnalysisFactCollector, FactSink, StagedFacts};
+pub(crate) use facts::{AnalysisFactCollector, FactSink, ReleasedBody, StagedBodyTxn};
 
 /// A caller-assigned revision echoed by every analysis outcome. It labels which input a
 /// result belongs to; the floor never treats it as content identity, a cache key, or an
