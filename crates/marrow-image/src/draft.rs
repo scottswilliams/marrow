@@ -728,6 +728,9 @@ pub struct ImageDraft {
     identity_cell: Rc<DraftIdentityCell>,
     /// The current one-shot transaction epoch (see [`TransactionEpoch`]).
     epoch: Rc<TransactionEpoch>,
+    /// Strong authentication for the current one-time-fill state. A successful fill
+    /// rotates this allocation; rollback restores the admission-time allocation.
+    fill_revision: Rc<FillRevision>,
     /// The eight-slot policy-crossing observer the one mutation surface maintains.
     ledger: TablePolicyLedger,
 }
@@ -767,6 +770,12 @@ struct DraftIdentityCell;
 #[derive(Debug)]
 struct TransactionEpoch;
 
+/// Strong authentication for in-place one-time fills. A retained allocation, rather
+/// than a wrapping counter or a table scan, makes a savepoint's observed fill state an
+/// O(1), ABA-free admission fact.
+#[derive(Debug)]
+struct FillRevision;
+
 /// A hostile-state refusal of the transaction surface: the closed set the mutation
 /// entry points return before any owner changes. Never a policy maximum — crossing a
 /// public image policy is not a returned error anywhere on this surface.
@@ -777,8 +786,9 @@ pub enum DraftStateError {
     ForeignDraft,
     /// The savepoint's one-shot epoch was already consumed by a sibling admission.
     StaleEpoch,
-    /// The token is internally incoherent: its snapshot disagrees with the state it
-    /// claims to describe, or the id it names no longer admits the operation.
+    /// The token is internally incoherent: its snapshot or authenticated fill state
+    /// disagrees with the state it claims to describe, or the id it names no longer
+    /// admits the operation.
     IncoherentToken,
     /// The argument exceeds the proved carrier/layout domain of the builder surface.
     /// The production compiler's envelope proof makes this unreachable, so it maps
@@ -836,9 +846,11 @@ struct FreshConst {
 
 /// The private structural image a savepoint carries and a transaction's journal
 /// restores to: every owner's append-only length, the durable graph's checkpoint,
-/// and the conflict/receipt slots. Deliberately **not** a ledger copy — the one-shot
-/// epoch proves the ledger is still the state the savepoint observed; the armed
-/// inverse takes its own fixed ledger copy at admission.
+/// and the conflict/receipt slots. Deliberately **not** a ledger copy or fill-state
+/// scan: the one-shot epoch proves the ledger is still the state the savepoint
+/// observed, while [`DraftSavepoint::fill_revision`] authenticates fills in O(1).
+/// The armed inverse takes its own fixed ledger copy and retained fill revision at
+/// admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DraftSnapshot {
     strings: usize,
@@ -857,8 +869,8 @@ struct DraftSnapshot {
 }
 
 /// A pre-admission, affine draft savepoint: it strongly retains the draft's
-/// allocation-identity anchor and current one-shot epoch and carries the exact
-/// private restore snapshot. Sibling-mintable; consumed whole by
+/// allocation-identity anchor, current one-shot epoch, and authenticated fill
+/// revision, and carries the exact private restore snapshot. Sibling-mintable; consumed whole by
 /// [`ImageDraft::begin_transaction`], which validates it by allocation identity
 /// before any mutation. Deliberately neither `Clone` nor `Copy`: a savepoint is an
 /// affine admission token, and copying one is how a consumed epoch gets re-presented.
@@ -912,6 +924,7 @@ struct DraftSnapshot {
 pub struct DraftSavepoint {
     identity: Rc<DraftIdentityCell>,
     epoch: Rc<TransactionEpoch>,
+    fill_revision: Rc<FillRevision>,
     snapshot: DraftSnapshot,
 }
 
@@ -947,6 +960,9 @@ enum FillInverse {
 struct DraftJournal {
     at: DraftSnapshot,
     ledger: TablePolicyLedger,
+    /// Admission-time fill authentication, moved back on rollback so the inverse
+    /// remains allocation-free. `Option` permits that move from a dropping guard.
+    fill_revision: Option<Rc<FillRevision>>,
     fills: Vec<FillInverse>,
 }
 
@@ -1021,10 +1037,10 @@ impl<'d> DraftTxn<'d> {
     /// A savepoint of the transaction's in-progress state — the deliberate shadow of
     /// the read surface's [`ImageDraft::savepoint`], so a mid-transaction mint is an
     /// explicit choice rather than a `Deref` accident. It captures the current
-    /// (already rotated) epoch and the guard's live snapshot: after this guard
-    /// commits it admits exactly like a fresh post-commit savepoint, and after a
-    /// rollback it is the incoherent-token refusal, because the state it observed
-    /// was restored away.
+    /// (already rotated) epoch, live structural snapshot, and authenticated fill
+    /// state. Commit admits the token only when no later mutation changed the state
+    /// it observed. Rollback admits a token whose observed state is exactly what the
+    /// inverse restored, but refuses one that observed a fill the inverse removed.
     pub fn savepoint(&self) -> DraftSavepoint {
         self.draft.savepoint()
     }
@@ -1099,6 +1115,7 @@ impl<'d> DraftTxn<'d> {
         if state == FillState::Filled {
             return Err(DraftStateError::IncoherentToken);
         }
+        let next_fill_revision = Rc::new(FillRevision);
         if row < self.journal.at.types {
             self.journal.fills.reserve(1);
             let Some(slot) = self.draft.types.get_mut(row) else {
@@ -1117,6 +1134,7 @@ impl<'d> DraftTxn<'d> {
         if let Some(state) = self.draft.types_fill.get_mut(row) {
             *state = FillState::Filled;
         }
+        self.draft.fill_revision = next_fill_revision;
         Ok(())
     }
 
@@ -1134,6 +1152,7 @@ impl<'d> DraftTxn<'d> {
         if state == FillState::Filled {
             return Err(DraftStateError::IncoherentToken);
         }
+        let next_fill_revision = Rc::new(FillRevision);
         if row < self.journal.at.enums {
             self.journal.fills.reserve(1);
             let Some(slot) = self.draft.enums.get_mut(row) else {
@@ -1153,6 +1172,7 @@ impl<'d> DraftTxn<'d> {
         if let Some(state) = self.draft.enums_fill.get_mut(row) {
             *state = FillState::Filled;
         }
+        self.draft.fill_revision = next_fill_revision;
         Ok(())
     }
 
@@ -1283,6 +1303,9 @@ impl<'d> DraftTxn<'d> {
                 }
             }
         }
+        if let Some(fill_revision) = self.journal.fill_revision.take() {
+            draft.fill_revision = fill_revision;
+        }
         // 6/7. Table suffixes, with each interned owner's index key removed while the
         //      popped row is still live.
         draft.colls.truncate(at.colls);
@@ -1350,6 +1373,7 @@ impl ImageDraft {
             test_entries: Vec::new(),
             identity_cell: Rc::new(DraftIdentityCell),
             epoch: Rc::new(TransactionEpoch),
+            fill_revision: Rc::new(FillRevision),
             ledger: TablePolicyLedger::vacant(),
         }
     }
@@ -1906,6 +1930,7 @@ impl ImageDraft {
         DraftSavepoint {
             identity: Rc::clone(&self.identity_cell),
             epoch: Rc::clone(&self.epoch),
+            fill_revision: Rc::clone(&self.fill_revision),
             snapshot: self.snapshot(),
         }
     }
@@ -1929,6 +1954,9 @@ impl ImageDraft {
         if !Rc::ptr_eq(&self.epoch, &savepoint.epoch) {
             return Err(DraftStateError::StaleEpoch);
         }
+        if !Rc::ptr_eq(&self.fill_revision, &savepoint.fill_revision) {
+            return Err(DraftStateError::IncoherentToken);
+        }
         if self.snapshot() != savepoint.snapshot {
             return Err(DraftStateError::IncoherentToken);
         }
@@ -1938,6 +1966,7 @@ impl ImageDraft {
             journal: DraftJournal {
                 at: savepoint.snapshot,
                 ledger,
+                fill_revision: Some(Rc::clone(&self.fill_revision)),
                 fills: Vec::new(),
             },
             draft: self,
@@ -1969,6 +1998,7 @@ impl ImageDraft {
             test_entries,
             identity_cell: _,
             epoch: _,
+            fill_revision: _,
             ledger: _,
         } = self;
         DraftSnapshot {

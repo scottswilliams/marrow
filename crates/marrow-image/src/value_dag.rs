@@ -417,6 +417,7 @@ mod node_store {
             self.depth.truncate(len);
             self.stamps.truncate(len);
         }
+        // drop-path audit sentinel: end of ValueShapeNodeStore::truncate
 
         pub(super) fn stamps(&self) -> impl Iterator<Item = ValueShapeNodeStamp> + '_ {
             self.stamps.iter().copied()
@@ -426,7 +427,6 @@ mod node_store {
             let index = node.index();
             (self.stamps.get(index).copied() == Some(node.stamp)).then_some(index)
         }
-        // drop-path audit sentinel: end of ValueShapeNodeStore::truncate
     }
 
     /// Arena equality is semantic: independently built equal arenas carry different

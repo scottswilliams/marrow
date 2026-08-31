@@ -1183,9 +1183,10 @@ fn the_interior_mutability_scan_detects_a_planted_field() {
 /// The prototype's `DraftSavepoint` was a `Clone` value a caller held: it could be
 /// copied, stored, and offered to a draft other than the one it was taken on. Its
 /// sanctioned successor keeps the name but not the capability: it strongly retains
-/// the draft's allocation-identity anchor and one-shot epoch, is consumed whole by
-/// `begin_transaction`, and derives neither `Clone` nor `Copy` — so a consumed epoch
-/// cannot be re-presented and no mark can be transplanted. The old raw
+/// the draft's allocation-identity anchor, one-shot epoch, and authenticated fill
+/// revision, is consumed whole by `begin_transaction`, and derives neither `Clone` nor
+/// `Copy` — so a consumed epoch cannot be re-presented, a reverted fill cannot be
+/// mistaken for the state a token observed, and no mark can be transplanted. The old raw
 /// `TemplateProofDraftGuard` and `rewind_to` faces stay absent: the armed
 /// transaction is the one rollback owner.
 #[test]

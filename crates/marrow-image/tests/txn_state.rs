@@ -1,7 +1,7 @@
-//! The transaction surface's state battery: savepoint identity and epoch laws, the
-//! armed rollback's byte-exact total inverse, and the per-kind nonblocking N+1
-//! ledger deltas observed through the public fence — commit retains the crossing,
-//! rollback restores the exact pre-transaction verdict and bytes.
+//! The transaction surface's state battery: savepoint identity, epoch, and fill-state
+//! authentication laws; the armed rollback's byte-exact total inverse; and the per-kind
+//! nonblocking N+1 ledger deltas observed through the public fence — commit retains the
+//! crossing, while rollback restores the exact pre-transaction verdict and bytes.
 
 use marrow_image::bounds::{
     MAX_COLLECTIONS, MAX_CONSTS, MAX_ENUMS, MAX_ROOTS, MAX_STRING_BYTES, MAX_STRINGS, MAX_TYPES,
@@ -209,6 +209,134 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
         owner.encode().is_ok(),
         "the explicit empty fill is a valid filled-empty definition, distinct from vacant",
     );
+}
+
+/// A savepoint minted after filling a preexisting reserved row observes that filled
+/// definition. Rolling the transaction back removes the definition, so the token must not
+/// authenticate the restored vacant state even though the row counts and transaction epoch
+/// still match.
+#[test]
+fn a_savepoint_after_a_preexisting_fill_is_incoherent_after_rollback() {
+    let mut owner = ImageDraft::new();
+    let mut setup = admitted(&mut owner);
+    let name = setup.intern_string("R").expect("a within-domain mint");
+    let field = setup.intern_string("f").expect("a within-domain mint");
+    let record = setup
+        .reserve_record_type(name)
+        .expect("a within-domain mint");
+    setup.commit();
+
+    let after_fill = {
+        let mut txn = admitted(&mut owner);
+        txn.set_record_fields(
+            record,
+            vec![FieldDef {
+                name: field,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        )
+        .expect("the preexisting reservation fills once");
+        let after_fill = txn.savepoint();
+        drop(txn.rollback());
+        after_fill
+    };
+
+    assert_eq!(
+        owner.begin_transaction(after_fill).err(),
+        Some(DraftStateError::IncoherentToken),
+    );
+}
+
+/// Enum fills spend the same authenticated one-time state as record fills; the
+/// rollback law is symmetric rather than an accident of the record table.
+#[test]
+fn a_savepoint_after_a_preexisting_enum_fill_is_incoherent_after_rollback() {
+    let mut owner = ImageDraft::new();
+    let mut setup = admitted(&mut owner);
+    let name = setup.intern_string("E").expect("a within-domain mint");
+    let enum_id = setup.reserve_enum_type(name).expect("a within-domain mint");
+    setup.commit();
+
+    let after_fill = {
+        let mut txn = admitted(&mut owner);
+        txn.set_enum_variants(
+            enum_id,
+            vec![VariantDef {
+                name,
+                category: false,
+                payload: Vec::new(),
+            }],
+        )
+        .expect("the preexisting reservation fills once");
+        let after_fill = txn.savepoint();
+        drop(txn.rollback());
+        after_fill
+    };
+
+    assert_eq!(
+        owner.begin_transaction(after_fill).err(),
+        Some(DraftStateError::IncoherentToken),
+    );
+}
+
+/// A committed fill retains its new authentication revision: a token from before the
+/// fill is incoherent, while one that observed the filled definition admits.
+#[test]
+fn committed_fill_savepoints_authenticate_the_state_they_observed() {
+    let mut owner = ImageDraft::new();
+    let mut setup = admitted(&mut owner);
+    let name = setup.intern_string("R").expect("a within-domain mint");
+    let record = setup
+        .reserve_record_type(name)
+        .expect("a within-domain mint");
+    setup.commit();
+
+    let (before_fill, after_fill) = {
+        let mut txn = admitted(&mut owner);
+        let before_fill = txn.savepoint();
+        txn.set_record_fields(record, Vec::new())
+            .expect("the preexisting reservation fills once");
+        let after_fill = txn.savepoint();
+        txn.commit();
+        (before_fill, after_fill)
+    };
+
+    assert_eq!(
+        owner.begin_transaction(before_fill).err(),
+        Some(DraftStateError::IncoherentToken),
+    );
+    owner
+        .begin_transaction(after_fill)
+        .expect("the post-fill token observes the committed state")
+        .commit();
+}
+
+/// Rollback restores the authentication revision as well as the definition. A token
+/// minted before the reverted fill therefore still describes the restored state.
+#[test]
+fn a_savepoint_before_a_rolled_back_fill_admits_the_restored_state() {
+    let mut owner = ImageDraft::new();
+    let mut setup = admitted(&mut owner);
+    let name = setup.intern_string("R").expect("a within-domain mint");
+    let record = setup
+        .reserve_record_type(name)
+        .expect("a within-domain mint");
+    setup.commit();
+
+    let before_fill = {
+        let mut txn = admitted(&mut owner);
+        let before_fill = txn.savepoint();
+        txn.set_record_fields(record, Vec::new())
+            .expect("the preexisting reservation fills once");
+        drop(txn.rollback());
+        before_fill
+    };
+
+    owner
+        .begin_transaction(before_fill)
+        .expect("the inverse restored exactly the state this token observed")
+        .commit();
 }
 
 // ---- Per-kind nonblocking N+1 ledger deltas, observed through the public fence.
