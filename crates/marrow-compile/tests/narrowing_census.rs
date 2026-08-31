@@ -565,22 +565,22 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
     (
         "marrow-compile",
         "lower/stmts.rs",
-        "self.push(Instr::Jump(advance as u32), body.span);",
+        "self.push(Instr::Jump(advance as u32), body.span)?;",
     ),
     (
         "marrow-compile",
         "lower/stmts.rs",
-        "self.push(Instr::Jump(target as u32), span);",
+        "self.push(Instr::Jump(target as u32), span)?;",
     ),
     (
         "marrow-compile",
         "lower/stmts.rs",
-        "self.push(Instr::Jump(top as u32), body.span);",
+        "self.push(Instr::Jump(top as u32), body.span)?;",
     ),
     (
         "marrow-compile",
         "lower/stmts.rs",
-        "self.push(Instr::Jump(top as u32), body.span);",
+        "self.push(Instr::Jump(top as u32), body.span)?;",
     ),
     (
         "marrow-compile",
