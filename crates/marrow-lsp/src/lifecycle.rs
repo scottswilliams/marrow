@@ -44,6 +44,19 @@ pub enum RequestGate {
     InvalidInPhase,
 }
 
+/// Whether the driver may dequeue another inbound frame.
+///
+/// The initialized-followup ingress contract closes the gate after `initialized` is
+/// latched behind an undelivered initialize response. The writer receipt reopens it, so
+/// every later frame remains in the bounded ingress queue until the lifecycle is Running.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum IngressGate {
+    /// Dequeue and route the next inbound frame, if one is available.
+    Receive,
+    /// Leave the next frame queued until the initialize response delivery is observed.
+    AwaitInitializeDelivery,
+}
+
 /// `-32002`: a request arrived before the server was initialized.
 pub const SERVER_NOT_INITIALIZED: i32 = -32002;
 /// `-32600`: the request is structurally invalid or invalid in the current phase.
@@ -91,6 +104,16 @@ impl Lifecycle {
             | Phase::InitializeReplyPending { .. }
             | Phase::AwaitInitialized => RequestGate::NotInitialized,
             Phase::ShutdownReplyPending | Phase::AwaitExit => RequestGate::InvalidInPhase,
+        }
+    }
+
+    /// Gate the driver's next inbound dequeue under initialized-followup ordering.
+    pub(crate) fn ingress_gate(&self) -> IngressGate {
+        match self.phase {
+            Phase::InitializeReplyPending {
+                initialized_latched: true,
+            } => IngressGate::AwaitInitializeDelivery,
+            _ => IngressGate::Receive,
         }
     }
 

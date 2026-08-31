@@ -20,6 +20,46 @@ struct Connection {
     stdout: BufReader<ChildStdout>,
 }
 
+/// The source revision a diagnostic publication must identify.
+#[derive(Clone, Copy)]
+enum DiagnosticPublication {
+    /// A whole-project scan for a file outside the open-document ledger.
+    ProjectScan,
+    /// An analysis that includes this exact client-owned document version.
+    OpenDocument(i64),
+}
+
+/// One bounded inbound wait. Diagnostic waits must select a publication source revision;
+/// waiting for an arbitrary publication by URI is deliberately not representable.
+enum ExpectedMessage<'a> {
+    Response(i64),
+    Diagnostics {
+        uri: &'a str,
+        publication: DiagnosticPublication,
+    },
+}
+
+impl ExpectedMessage<'_> {
+    fn matches(&self, message: &Value) -> bool {
+        match self {
+            Self::Response(id) => message.get("id").and_then(Value::as_i64) == Some(*id),
+            Self::Diagnostics { uri, publication } => {
+                message.get("method").and_then(Value::as_str)
+                    == Some("textDocument/publishDiagnostics")
+                    && message["params"]["uri"].as_str() == Some(*uri)
+                    && match publication {
+                        DiagnosticPublication::ProjectScan => {
+                            message["params"].get("version").is_none()
+                        }
+                        DiagnosticPublication::OpenDocument(version) => {
+                            message["params"]["version"].as_i64() == Some(*version)
+                        }
+                    }
+            }
+        }
+    }
+}
+
 impl Connection {
     fn spawn(root: &Path) -> Self {
         let _ = root;
@@ -86,15 +126,23 @@ impl Connection {
         serde_json::from_slice(&body).ok()
     }
 
-    /// Read messages until one matching `predicate` arrives, up to a bound.
-    fn recv_until(&mut self, mut predicate: impl FnMut(&Value) -> bool) -> Value {
+    /// Read messages until the expected typed boundary arrives, up to a bound.
+    fn recv_until(&mut self, expected: ExpectedMessage<'_>) -> Value {
         for _ in 0..64 {
             let message = self.recv().expect("a framed message");
-            if predicate(&message) {
+            if expected.matches(&message) {
                 return message;
             }
         }
         panic!("no matching message within bound");
+    }
+
+    fn recv_response(&mut self, id: i64) -> Value {
+        self.recv_until(ExpectedMessage::Response(id))
+    }
+
+    fn recv_diagnostics(&mut self, uri: &str, publication: DiagnosticPublication) -> Value {
+        self.recv_until(ExpectedMessage::Diagnostics { uri, publication })
     }
 
     fn wait(mut self) -> i32 {
@@ -176,7 +224,7 @@ fn initialize(conn: &mut Connection, dir: &Path) {
             "capabilities": {},
         }),
     );
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(1));
+    let reply = conn.recv_response(1);
     assert!(reply.get("result").is_some(), "initialize returns a result");
     assert!(
         reply["result"]["capabilities"]["hoverProvider"]
@@ -210,7 +258,7 @@ fn handshake_and_clean_shutdown() {
     let mut conn = Connection::spawn(&dir);
     initialize(&mut conn, &dir);
     conn.request(9, "shutdown", Value::Null);
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    let reply = conn.recv_response(9);
     assert!(reply.get("result").is_some());
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0, "clean shutdown then exit is zero");
@@ -233,14 +281,13 @@ fn open_invalid_document_publishes_diagnostics() {
         1,
     );
     let target = document_uri(&dir);
-    let publish = conn.recv_until(|m| {
-        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-            && m["params"]["uri"].as_str() == Some(target.as_str())
-            && m["params"]["diagnostics"]
-                .as_array()
-                .map(|d| !d.is_empty())
-                .unwrap_or(false)
-    });
+    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
+    assert!(
+        publish["params"]["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| !diagnostics.is_empty()),
+        "the invalid overlay publishes diagnostics"
+    );
     let diagnostic = &publish["params"]["diagnostics"][0];
     assert!(
         diagnostic.get("range").is_some(),
@@ -248,7 +295,7 @@ fn open_invalid_document_publishes_diagnostics() {
     );
     assert!(diagnostic["code"].is_string(), "diagnostic carries a code");
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -269,17 +316,64 @@ fn clean_project_publishes_empty_diagnostics() {
         1,
     );
     let target = document_uri(&dir);
-    let publish = conn.recv_until(|m| {
-        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-            && m["params"]["uri"].as_str() == Some(target.as_str())
-    });
+    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
     assert_eq!(
         publish["params"]["diagnostics"].as_array().unwrap().len(),
         0,
         "a clean file publishes an empty diagnostic list"
     );
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn project_scan_publishes_unversioned_diagnostics_for_unopened_document() {
+    let dir = temp_project(
+        "unopened",
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+    );
+    let mut conn = Connection::spawn(&dir);
+    initialize(&mut conn, &dir);
+    let target = document_uri(&dir);
+    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::ProjectScan);
+    assert!(
+        publish["params"]["diagnostics"].is_array(),
+        "the unopened project file receives a diagnostic list"
+    );
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_response(9);
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn opened_publication_wait_skips_queued_project_scan() {
+    let dir = temp_project(
+        "publication-order",
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+    );
+    std::fs::write(
+        dir.join("src/a.mw"),
+        "module a\n\npub fn before_main(): int {\n    return 0\n}\n",
+    )
+    .unwrap();
+    let mut conn = Connection::spawn(&dir);
+    initialize(&mut conn, &dir);
+    let preceding = format!("{}/src/a.mw", root_uri(&dir));
+    conn.recv_diagnostics(&preceding, DiagnosticPublication::ProjectScan);
+    let unformatted = "module main\n\npub fn f():int{\n return 1\n}\n";
+    did_open(&mut conn, &dir, unformatted, 1);
+    // The unversioned main-file publication is already queued behind `preceding`.
+    // Waiting for version 1 must skip it and observe the overlay analysis.
+    let target = document_uri(&dir);
+    let publish = conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
+    assert_eq!(publish["params"]["version"].as_i64(), Some(1));
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -290,14 +384,13 @@ fn formatting_returns_edits() {
     let dir = temp_project("fmt", "module main\n\npub fn f(): int {\n    return 1\n}\n");
     let mut conn = Connection::spawn(&dir);
     initialize(&mut conn, &dir);
+    let target = document_uri(&dir);
+    // Make a disk snapshot ready, then issue `didOpen` and the query with no publication
+    // barrier between them. Initialized-followup ingress ordering admits the open first;
+    // exact-revision query gating refuses the stale disk snapshot.
+    conn.recv_diagnostics(&target, DiagnosticPublication::ProjectScan);
     let unformatted = "module main\n\npub fn f():int{\n return 1\n}\n";
     did_open(&mut conn, &dir, unformatted, 1);
-    // Drain the initial diagnostic publication.
-    let target = document_uri(&dir);
-    conn.recv_until(|m| {
-        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-            && m["params"]["uri"].as_str() == Some(target.as_str())
-    });
     conn.request(
         5,
         "textDocument/formatting",
@@ -306,13 +399,13 @@ fn formatting_returns_edits() {
             "options": { "tabSize": 4, "insertSpaces": true },
         }),
     );
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(5));
+    let reply = conn.recv_response(5);
     let edits = reply["result"]
         .as_array()
         .expect("formatting returns edits");
     assert_eq!(edits.len(), 1, "one whole-document edit");
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -347,10 +440,7 @@ fn measure_edit_to_diagnostic_latency() {
         1,
     );
     let target = document_uri(&dir);
-    conn.recv_until(|m| {
-        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-            && m["params"]["uri"].as_str() == Some(target.as_str())
-    });
+    conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
     let mut samples = Vec::new();
     for version in 2..22 {
         let body = format!("module main\n\npub fn f(): int {{\n    return {version}\n}}\n");
@@ -362,10 +452,7 @@ fn measure_edit_to_diagnostic_latency() {
                 "contentChanges": [ { "text": body } ],
             }),
         );
-        conn.recv_until(|m| {
-            m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-                && m["params"]["uri"].as_str() == Some(target.as_str())
-        });
+        conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(version));
         samples.push(start.elapsed());
     }
     samples.sort();
@@ -380,7 +467,7 @@ fn measure_edit_to_diagnostic_latency() {
         "median edit-to-diagnostic under 200ms"
     );
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -391,10 +478,7 @@ fn measure_edit_to_diagnostic_latency() {
 fn open_graph_report(conn: &mut Connection, dir: &Path) {
     did_open(conn, dir, GRAPH_REPORT, 1);
     let target = document_uri(dir);
-    conn.recv_until(|m| {
-        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-            && m["params"]["uri"].as_str() == Some(target.as_str())
-    });
+    conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
 }
 
 #[test]
@@ -408,10 +492,7 @@ fn completion_at_enum_path_returns_members() {
     initialize(&mut conn, &dir);
     did_open(&mut conn, &dir, &editing, 1);
     let target = document_uri(&dir);
-    conn.recv_until(|m| {
-        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-            && m["params"]["uri"].as_str() == Some(target.as_str())
-    });
+    conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
     // Just past the typed `Role::` — an enum-path position whose namespace is the enum's
     // members.
     let (line, character) = lsp_position(&editing, after(&editing, "return Role::"));
@@ -423,7 +504,7 @@ fn completion_at_enum_path_returns_members() {
             "position": { "line": line, "character": character },
         }),
     );
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(30));
+    let reply = conn.recv_response(30);
     // A `CompletionList` object or a bare items array; normalize to the items array.
     let items = reply["result"]
         .get("items")
@@ -438,7 +519,7 @@ fn completion_at_enum_path_returns_members() {
         assert!(labels.contains(&member), "enum member {member} offered");
     }
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -460,7 +541,7 @@ fn signature_help_inside_call_marks_active_parameter() {
             "position": { "line": line, "character": character },
         }),
     );
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(31));
+    let reply = conn.recv_response(31);
     let signatures = reply["result"]["signatures"]
         .as_array()
         .expect("signature help returns signatures");
@@ -478,7 +559,7 @@ fn signature_help_inside_call_marks_active_parameter() {
         "the cursor sits at the second parameter"
     );
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -497,7 +578,7 @@ fn document_symbol_returns_declaration_outline() {
             "textDocument": { "uri": document_uri(&dir) },
         }),
     );
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(32));
+    let reply = conn.recv_response(32);
     let symbols = reply["result"].as_array().expect("a symbol array");
     let names: Vec<&str> = symbols
         .iter()
@@ -524,7 +605,7 @@ fn document_symbol_returns_declaration_outline() {
         assert!(members.contains(&member), "enum member {member} nested");
     }
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -543,7 +624,7 @@ fn advertises_completion_signature_and_symbol() {
             "capabilities": {},
         }),
     );
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(1));
+    let reply = conn.recv_response(1);
     let caps = &reply["result"]["capabilities"];
     assert!(
         caps["completionProvider"].is_object(),
@@ -567,7 +648,7 @@ fn advertises_completion_signature_and_symbol() {
     );
     conn.notify("initialized", serde_json::json!({}));
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -587,10 +668,7 @@ fn measure_earned_facts_latency() {
     initialize(&mut conn, &dir);
     did_open(&mut conn, &dir, &editing, 1);
     let target = document_uri(&dir);
-    conn.recv_until(|m| {
-        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-            && m["params"]["uri"].as_str() == Some(target.as_str())
-    });
+    conn.recv_diagnostics(&target, DiagnosticPublication::OpenDocument(1));
 
     let (comp_line, comp_char) = lsp_position(&editing, after(&editing, "return Role::"));
     let (sig_line, sig_char) = lsp_position(&editing, after(&editing, "getOr(reached, "));
@@ -625,7 +703,7 @@ fn measure_earned_facts_latency() {
             let id = 1000 + iteration;
             let start = std::time::Instant::now();
             conn.request(id, method, params.clone());
-            conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(id));
+            conn.recv_response(id);
             samples.push(start.elapsed());
         }
         samples.sort();
@@ -646,7 +724,7 @@ fn measure_earned_facts_latency() {
     }
 
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -664,12 +742,12 @@ fn request_before_initialize_is_server_not_initialized() {
             "options": { "tabSize": 4, "insertSpaces": true },
         }),
     );
-    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(2));
+    let reply = conn.recv_response(2);
     assert_eq!(reply["error"]["code"].as_i64(), Some(-32002));
     // Now initialize and exit cleanly.
     initialize(&mut conn, &dir);
     conn.request(9, "shutdown", Value::Null);
-    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.recv_response(9);
     conn.notify("exit", Value::Null);
     assert_eq!(conn.wait(), 0);
     std::fs::remove_dir_all(&dir).ok();

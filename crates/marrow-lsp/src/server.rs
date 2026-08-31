@@ -43,8 +43,8 @@ use crate::credit::{CreditPool, OutboundCredit, PublicationPlanCredit};
 use crate::document::{DocumentLedger, DocumentState, RevisionCounter, UnavailableEvidence};
 use crate::facts;
 use crate::lifecycle::{
-    CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, Lifecycle, METHOD_NOT_FOUND,
-    PARSE_ERROR, Phase, REQUEST_FAILED, RequestGate, SERVER_NOT_INITIALIZED,
+    CONTENT_MODIFIED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, IngressGate, Lifecycle,
+    METHOD_NOT_FOUND, PARSE_ERROR, Phase, REQUEST_FAILED, RequestGate, SERVER_NOT_INITIALIZED,
 };
 use crate::outbound::{MessageType, Outbound, encode};
 use crate::protocol::{Inbound, InvalidReason, Reject, RequestId, decode};
@@ -134,11 +134,7 @@ fn drive(
             coordinator.on_worker_result(result);
             progressed = true;
         }
-        if let Ok(event) = ingress.try_recv() {
-            match event {
-                ReaderEvent::Frame(body) => coordinator.on_frame(&body),
-                ReaderEvent::Terminal => coordinator.on_terminal(),
-            }
+        if receive_ingress(coordinator, ingress) {
             progressed = true;
         }
         // Move coordinator outputs downstream without blocking on a full channel.
@@ -164,6 +160,21 @@ fn drive(
         }
     }
     coordinator.exit_code
+}
+
+/// Receive at most one inbound event and apply it to the coordinator.
+fn receive_ingress(coordinator: &mut Coordinator, ingress: &Receiver<ReaderEvent>) -> bool {
+    if coordinator.lifecycle.ingress_gate() == IngressGate::AwaitInitializeDelivery {
+        return false;
+    }
+    let Ok(event) = ingress.try_recv() else {
+        return false;
+    };
+    match event {
+        ReaderEvent::Frame(body) => coordinator.on_frame(&body),
+        ReaderEvent::Terminal => coordinator.on_terminal(),
+    }
+    true
 }
 
 /// What the reader hands the coordinator.
@@ -1167,7 +1178,11 @@ impl Coordinator {
             self.reset_episode_if_observed(state.observed_episode);
             // A newer result that waited may now build its plan and derive tombstones from
             // the final ledger.
-            if let Some(snapshot) = self.pending_publication.take() {
+            if let Some(snapshot) = self
+                .pending_publication
+                .take()
+                .filter(|snapshot| snapshot.revision() == self.current_revision)
+            {
                 self.begin_publication(snapshot);
             }
         }
@@ -1709,6 +1724,47 @@ mod tests {
         cleanup(&dir);
     }
 
+    #[test]
+    fn latched_initialized_holds_followup_ingress_until_delivery() {
+        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_project("init-ingress", main);
+        let mut coordinator = Coordinator::new();
+        coordinator.on_frame(initialize_body(&root_uri(&dir)).as_bytes());
+        let (ingress_tx, ingress_rx) = sync_channel(1);
+
+        ingress_tx
+            .send(ReaderEvent::Frame(
+                br#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#.to_vec(),
+            ))
+            .unwrap();
+        assert!(receive_ingress(&mut coordinator, &ingress_rx));
+        assert_eq!(
+            coordinator.lifecycle.phase(),
+            Phase::InitializeReplyPending {
+                initialized_latched: true
+            }
+        );
+
+        ingress_tx
+            .send(ReaderEvent::Frame(open_body(&dir, 1, main).into_bytes()))
+            .unwrap();
+        assert!(
+            !receive_ingress(&mut coordinator, &ingress_rx),
+            "follow-up ingress waits for initialize delivery"
+        );
+        assert!(coordinator.ledger.is_empty(), "didOpen remains queued");
+
+        coordinator.on_receipt();
+        assert_eq!(coordinator.lifecycle.phase(), Phase::Running);
+        assert!(receive_ingress(&mut coordinator, &ingress_rx));
+        assert_eq!(
+            coordinator.ledger.len(),
+            1,
+            "didOpen is admitted after delivery"
+        );
+        cleanup(&dir);
+    }
+
     // ---- Law: shared live-entry budget and IngressOverload N/N+1 ----
 
     #[test]
@@ -2208,6 +2264,48 @@ mod tests {
         assert!(
             coordinator.publication.is_some(),
             "B builds after A's final receipt"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn pending_publication_is_dropped_after_a_newer_document_revision() {
+        let main1 = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let main2 = "module main\n\npub fn f(): int {\n    return 2\n}\n";
+        let main3 = "module main\n\npub fn f(): int {\n    return 3\n}\n";
+        let dir = temp_project("pub-stale", main1);
+        let mut coordinator = running(&dir);
+        coordinator.job_out = None;
+        coordinator.on_frame(open_body(&dir, 1, main1).as_bytes());
+        coordinator.job_out = None;
+
+        let snapshot1 = snapshot_at(&dir, main1, coordinator.current_revision);
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot1));
+        assert!(coordinator.publication.is_some());
+        let first_plan_frames = coordinator.outbox.len();
+
+        coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
+        coordinator.job_out = None;
+        let snapshot2 = snapshot_at(&dir, main2, coordinator.current_revision);
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot2));
+        assert!(coordinator.pending_publication.is_some());
+
+        // Version 3 advances while version 2 is waiting behind version 1. Publishing the
+        // waiting snapshot now would stamp version-2 facts with the version-3 ledger value.
+        coordinator.on_frame(change_body(&dir, 3, main3).as_bytes());
+        coordinator.job_out = None;
+        while coordinator.pending_publication.is_some() {
+            coordinator.on_receipt();
+        }
+
+        assert!(
+            coordinator.publication.is_none(),
+            "a pending snapshot from an older revision is not published"
+        );
+        assert_eq!(
+            coordinator.outbox.len(),
+            first_plan_frames,
+            "no stale publication frame is encoded"
         );
         cleanup(&dir);
     }
