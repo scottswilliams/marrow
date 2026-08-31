@@ -6,17 +6,21 @@ use super::*;
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Emit a folded module constant as a constant load of its scalar value.
-    pub(super) fn lower_const_value(&mut self, value: &ConstScalar, span: SourceSpan) -> LTy {
+    pub(super) fn lower_const_value(
+        &mut self,
+        value: &ConstScalar,
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let (scalar, minted) = match value {
             ConstScalar::Int(value) => (ScalarType::Int, self.draft.intern_int(*value)),
             ConstScalar::Bool(value) => (ScalarType::Bool, self.draft.intern_bool(*value)),
             ConstScalar::Text(text) => (ScalarType::Text, self.draft.intern_text(text)),
         };
         let Some(const_id) = self.checked_mint(|_| minted) else {
-            return LTy::bare_scalar(scalar);
+            return Ok(LTy::bare_scalar(scalar));
         };
-        self.push(Instr::ConstLoad(const_id), span);
-        LTy::bare_scalar(scalar)
+        self.push(Instr::ConstLoad(const_id), span)?;
+        Ok(LTy::bare_scalar(scalar))
     }
 
     pub(super) fn lower_literal(
@@ -24,7 +28,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         kind: LiteralKind,
         text: &str,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let (scalar, minted) = match kind {
             LiteralKind::Integer => {
                 let Some(value) = parse_int(text) else {
@@ -34,7 +38,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         span,
                         "integer literal is out of the 64-bit range".to_string(),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 };
                 (ScalarType::Int, self.draft.intern_int(value))
             }
@@ -42,7 +46,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             LiteralKind::String => {
                 let Ok(decoded) = decode_string_literal(text) else {
                     self.fail(unsupported(self.file, span, "this string literal"));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 };
                 if decoded.len() > marrow_image::bounds::MAX_STRING_BYTES {
                     self.fail(SourceDiagnostic::at(
@@ -55,7 +59,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             marrow_image::bounds::MAX_STRING_BYTES
                         ),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
                 (ScalarType::Text, self.draft.intern_text(&decoded))
             }
@@ -71,7 +75,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                      from canonical text, e.g. `duration(\"PT1S\")`"
                         .to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             // A duration word literal (`3 days`) folds at compile time to the canonical
             // temporal encoding: count times the unit's whole seconds times a second in
@@ -84,18 +88,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         span,
                         "duration literal is out of the representable range".to_string(),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 };
                 (ScalarType::Duration, self.draft.intern_duration(nanos))
             }
             _ => {
                 self.fail(unsupported(self.file, span, "this literal"));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
-        let const_id = self.checked_mint(|_| minted)?;
-        self.push(Instr::ConstLoad(const_id), span);
-        Some(LTy::bare_scalar(scalar))
+        let Some(const_id) = self.checked_mint(|_| minted) else {
+            return Err(LoweringFailure::Recoverable);
+        };
+        self.push(Instr::ConstLoad(const_id), span)?;
+        Ok(LTy::bare_scalar(scalar))
     }
 
     /// Lower an interpolated string `$"...{expr}..."` to a left-folded
@@ -108,55 +114,61 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         &mut self,
         parts: &[InterpolationPart],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if self.terminal_rejection() {
-            return None;
+            return Err(self.terminal_lowering_failure());
         }
         let mut pushed = false;
         let mut ok = true;
         for part in parts {
-            let part_ok = self.lower_interpolation_part(part);
+            let part_ok = match self.lower_interpolation_part(part) {
+                Ok(part_ok) => part_ok,
+                Err(LoweringFailure::Recoverable) => false,
+                Err(LoweringFailure::CodeLimitReached) => {
+                    return Err(LoweringFailure::CodeLimitReached);
+                }
+            };
             if self.terminal_rejection() {
-                return None;
+                return Err(self.terminal_lowering_failure());
             }
             ok &= part_ok;
             if part_ok {
                 if pushed {
-                    self.push(Instr::TextConcat, span);
+                    self.push(Instr::TextConcat, span)?;
                 } else {
                     pushed = true;
                 }
             }
         }
         if !ok {
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         if !pushed {
-            let empty = self.checked_mint(|draft| draft.intern_text(""))?;
-            self.push(Instr::ConstLoad(empty), span);
+            let Some(empty) = self.checked_mint(|draft| draft.intern_text("")) else {
+                return Err(LoweringFailure::Recoverable);
+            };
+            self.push(Instr::ConstLoad(empty), span)?;
         }
-        Some(LTy::bare_scalar(ScalarType::Text))
+        Ok(LTy::bare_scalar(ScalarType::Text))
     }
 
     /// Push one interpolation part as a `string` value; return whether it lowered
     /// cleanly (a failed part has already reported its diagnostic).
-    fn lower_interpolation_part(&mut self, part: &InterpolationPart) -> bool {
+    fn lower_interpolation_part(&mut self, part: &InterpolationPart) -> ConstructResult<bool> {
         match part {
             InterpolationPart::Text { text, span } => {
                 let Ok(decoded) = decode_interpolation_text(text) else {
                     self.fail(unsupported(self.file, *span, "this interpolation text"));
-                    return false;
+                    return Ok(false);
                 };
                 let Some(const_id) = self.checked_mint(|draft| draft.intern_text(&decoded)) else {
-                    return false;
+                    return Ok(false);
                 };
-                self.push(Instr::ConstLoad(const_id), *span);
-                true
+                self.push(Instr::ConstLoad(const_id), *span)?;
+                Ok(true)
             }
             InterpolationPart::Expr(expr) => {
-                let Some(ty) = self.lower_expr(expr) else {
-                    return false;
-                };
+                let ty = self.lower_expr(expr)?;
                 // A `string` hole is already text and needs no conversion; every other
                 // interpolable value renders to canonical text through the one owner.
                 if let LTy::Scalar {
@@ -164,17 +176,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     optional: false,
                 } = ty
                 {
-                    true
+                    Ok(true)
                 } else if is_interpolable(ty) {
-                    self.push(Instr::ConvString, expr.span());
-                    true
+                    self.push(Instr::ConvString, expr.span())?;
+                    Ok(true)
                 } else {
                     self.fail(unsupported(
                         self.file,
                         expr.span(),
                         &format!("interpolating a {} value", ty.spelling(self.records)),
                     ));
-                    false
+                    Ok(false)
                 }
             }
         }

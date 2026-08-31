@@ -7,8 +7,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower `expr`, emitting code that pushes its value, then coerce that value to
     /// exactly `expected` (bare-to-optional via `SomeWrap`; `absent` becomes a vacant
-    /// optional). Reports a diagnostic and returns `None` on mismatch.
-    pub(super) fn lower_as(&mut self, expr: &Expression, expected: LTy) -> Option<()> {
+    /// optional). Reports a diagnostic and returns a recoverable failure on mismatch.
+    pub(super) fn lower_as(&mut self, expr: &Expression, expected: LTy) -> ConstructResult<()> {
         // A built-in constructor is directed by the expected type: it supplies the
         // exact `Option`/`Result` instantiation, so `none`/`some`/`ok`/`err` need no
         // annotation of their own here.
@@ -34,18 +34,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         expected.spelling(self.records)
                     ),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
-            self.push(Instr::VacantLoad(expected.image()), *span);
-            return Some(());
+            self.push(Instr::VacantLoad(expected.image()), *span)?;
+            return Ok(());
         }
         let got = self.lower_expr(expr)?;
         if got == expected {
-            return Some(());
+            return Ok(());
         }
         if !got.is_optional() && expected.is_optional() && got.to_optional() == expected {
-            self.push(Instr::SomeWrap, expr.span());
-            return Some(());
+            self.push(Instr::SomeWrap, expr.span())?;
+            return Ok(());
         }
         self.fail(type_mismatch(
             self.records,
@@ -54,7 +54,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             got,
             expected,
         ));
-        None
+        Err(LoweringFailure::Recoverable)
     }
 
     /// Lower `expr`, emitting code that pushes its value and returning its type.
@@ -68,13 +68,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// defect has no shape here. That is a property of the syntax tree, not a promise:
     /// `no_expression_variant_carries_a_block` fails the moment one does, and the arms
     /// must then name their fields as the statement walker's do.
-    pub(super) fn lower_expr(&mut self, expr: &Expression) -> Option<LTy> {
+    pub(super) fn lower_expr(&mut self, expr: &Expression) -> ConstructResult<LTy> {
         // A read through a managed index `^root.index[keys]`: a unique index is an exact
         // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read
         // by scanning it with a `for` head, so naming one in value position is rejected.
         let index_read = match self.resolve_index_read(expr) {
             Ok(read) => read,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         if let Some(read) = index_read {
             if read.index.unique {
@@ -90,7 +93,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     read.index.name
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         // Inline `^root(key)` addresses read here. A place-rooted composed read — a field,
         // group, group leaf, or whole branch entry off a named `place`/pin — reads the same
@@ -98,16 +101,24 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // designation, not a value, and falls through to its own diagnostic below.
         let durable_here = match self.durable_shape_here(expr) {
             Ok(shape) => shape,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         let durable_composed = match self.durable_access(expr) {
             Ok(shape) => shape,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         if durable_here.is_some()
             || (!matches!(expr, Expression::Name { .. }) && durable_composed.is_some())
         {
-            let place = self.resolve_durable(expr)?;
+            let place = self
+                .resolve_durable(expr)
+                .ok_or(LoweringFailure::Recoverable)?;
             return self.lower_durable_read(place);
         }
         match expr {
@@ -123,7 +134,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *span,
                         "the Option type of `none` cannot be inferred here; use it where an Option is expected".to_string(),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
                 [name] => {
                     let name = name.text();
@@ -132,9 +143,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // constant can shadow it; resolving it first keeps a bare use of the
                     // bound unambiguous.
                     if let Some(value) = builtin_const_int(name) {
-                        let const_id = self.checked_mint(|draft| draft.intern_int(value))?;
-                        self.push(Instr::ConstLoad(const_id), *span);
-                        return Some(LTy::bare_scalar(ScalarType::Int));
+                        let const_id = self
+                            .checked_mint(|draft| draft.intern_int(value))
+                            .ok_or(LoweringFailure::Recoverable)?;
+                        self.push(Instr::ConstLoad(const_id), *span)?;
+                        return Ok(LTy::bare_scalar(ScalarType::Int));
                     }
                     if let Some(local) = self.lookup(name) {
                         let (slot, ty) = (local.slot, local.ty);
@@ -148,8 +161,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             let display = self.hover_type_display(ty);
                             self.record_hover(*span, display.into(), None);
                         }
-                        self.push(Instr::LocalGet(slot), *span);
-                        return Some(ty);
+                        self.push(Instr::LocalGet(slot), *span)?;
+                        return Ok(ty);
                     }
                     // A place is a durable designation, not a first-class value:
                     // its bare name cannot be read, passed, or returned.
@@ -164,7 +177,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                  or test it with `exists({name})`"
                             ),
                         ));
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                     // A module-private constant, folded to a constant load. Locals
                     // and parameters shadow it (checked first). A constant the
@@ -173,16 +186,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     let consts = self.consts;
                     let constant = match consts.lookup(self.module, name) {
                         Ok(binding) => binding,
-                        Err(drift) => return self.ledger_drift(drift),
+                        Err(drift) => {
+                            self.ledger_drift::<()>(drift);
+                            return Err(LoweringFailure::Recoverable);
+                        }
                     };
                     match constant {
                         Binding::Accepted(value) => {
                             let value = value.clone();
-                            return Some(self.lower_const_value(&value, *span));
+                            return self.lower_const_value(&value, *span);
                         }
                         Binding::Refused(_, refusal) => {
                             self.steer_refusal(refusal, *span);
-                            return None;
+                            return Err(LoweringFailure::Recoverable);
                         }
                         Binding::Absent => {}
                     }
@@ -190,7 +206,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // initializer already reported the cause, so a later use is silent.
                     if self.poisoned_bindings.contains(name) {
                         self.failed = true;
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                     let candidates = self
                         .locals
@@ -206,7 +222,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         suggestion.as_deref(),
                         NameKind::Value,
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
                 // `Enum::member` for a payloadless member is an enum value.
                 [enum_name, variant] if self.records.enum_by_name(enum_name.text()).is_some() => {
@@ -214,10 +230,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 // A qualified name whose head is a refused enum is that enum's
                 // refusal, not an unsupported spelling.
-                [head, _] if self.steer_refused_type(head.text(), *span) => None,
+                [head, _] if self.steer_refused_type(head.text(), *span) => {
+                    Err(LoweringFailure::Recoverable)
+                }
                 _ => {
                     self.fail(unsupported(self.file, *span, "a qualified name"));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
             },
             Expression::Absent { span } => {
@@ -227,7 +245,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     *span,
                     "the type of `absent` cannot be inferred here".to_string(),
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
             Expression::Unary { op, operand, span } => self.lower_unary(*op, operand, *span),
             Expression::Binary {
@@ -242,7 +260,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Expression::Call {
                 callee, args, span, ..
             } => match self.lower_call_core(callee, args, *span)? {
-                CallResult::Value(ty) => Some(ty),
+                CallResult::Value(ty) => Ok(ty),
                 CallResult::Unit => {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
@@ -250,7 +268,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *span,
                         "this call returns nothing and has no value here".to_string(),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
                 CallResult::Diverges => {
                     // A diverging builtin (`unreachable`/`todo`) is a statement, not a
@@ -267,7 +285,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *span,
                         format!("`{name}` is a statement and cannot be used as a value"),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
             },
             Expression::Field {
@@ -285,12 +303,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } => self.lower_local_bracket_read(base, keys, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this expression"));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
 
-    fn lower_unary(&mut self, op: UnaryOp, operand: &Expression, span: SourceSpan) -> Option<LTy> {
+    fn lower_unary(
+        &mut self,
+        op: UnaryOp,
+        operand: &Expression,
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let ty = self.lower_expr(operand)?;
         match op {
             UnaryOp::Neg => {
@@ -303,10 +326,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         ty,
                         LTy::bare_scalar(ScalarType::Int),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
-                self.push(Instr::IntNeg, span);
-                Some(LTy::bare_scalar(ScalarType::Int))
+                self.push(Instr::IntNeg, span)?;
+                Ok(LTy::bare_scalar(ScalarType::Int))
             }
             UnaryOp::Not => {
                 if ty != LTy::bare_scalar(ScalarType::Bool) {
@@ -318,15 +341,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         ty,
                         LTy::bare_scalar(ScalarType::Bool),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
-                self.push(Instr::BoolNot, span);
-                Some(LTy::bare_scalar(ScalarType::Bool))
+                self.push(Instr::BoolNot, span)?;
+                Ok(LTy::bare_scalar(ScalarType::Bool))
             }
         }
     }
 
-    fn lower_binary(&mut self, op: BinaryOp, left: &Expression, right: &Expression) -> Option<LTy> {
+    fn lower_binary(
+        &mut self,
+        op: BinaryOp,
+        left: &Expression,
+        right: &Expression,
+    ) -> ConstructResult<LTy> {
         match op {
             BinaryOp::And | BinaryOp::Or => self.lower_short_circuit(op, left, right),
             BinaryOp::Coalesce => self.lower_coalesce(left, right),
@@ -340,12 +368,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
                     if let Expression::Absent { span } = left {
                         self.fail(absent_not_operand(self.file, *span, op));
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                     let left_ty = self.lower_expr(left)?;
                     if let Expression::Absent { span } = right {
                         self.fail(absent_not_operand(self.file, *span, op));
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                     return self.lower_binary_op(op, left_ty, right);
                 }
@@ -363,7 +391,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         op: BinaryOp,
         left_ty: LTy,
         right: &Expression,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         // The `step` capability admits only the literal `1`, so the right operand's
         // shape is read before it is lowered.
         let right_is_one = matches!(
@@ -403,7 +431,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 left_ty,
                 right_ty,
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         use ScalarType::{Bool, Bytes, Date, Duration, Instant, Int, Text};
         let (instr, result): (Instr, ScalarType) = match (op, left, right_scalar) {
@@ -459,9 +487,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             (BinaryOp::Subtract, Instant, Duration) => (Instr::InstantSubDuration, Instant),
             (BinaryOp::Equal, a, b) if a == b => (eq_instr(a), Bool),
             (BinaryOp::NotEqual, a, b) if a == b => {
-                self.push(eq_instr(a), span);
-                self.push(Instr::BoolNot, span);
-                return Some(LTy::bare_scalar(Bool));
+                self.push(eq_instr(a), span)?;
+                self.push(Instr::BoolNot, span)?;
+                return Ok(LTy::bare_scalar(Bool));
             }
             _ => {
                 self.fail(binary_error(
@@ -472,11 +500,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     left_ty,
                     right_ty,
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
-        self.push(instr, span);
-        Some(LTy::bare_scalar(result))
+        self.push(instr, span)?;
+        Ok(LTy::bare_scalar(result))
     }
 
     /// Lower a binary operator with a bare nominal operand. The capability table
@@ -500,32 +528,32 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         right_ty: LTy,
         right_is_one: bool,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let int_ty = LTy::bare_scalar(ScalarType::Int);
         let same_nominal = left_ty.bare_nominal().is_some() && left_ty == right_ty;
         if same_nominal {
             if let Some(instr) = int_comparison(op) {
-                self.push(instr, span);
-                return Some(bool_ty);
+                self.push(instr, span)?;
+                return Ok(bool_ty);
             }
             match op {
                 BinaryOp::Equal => {
-                    self.push(eq_instr(ScalarType::Int), span);
-                    return Some(bool_ty);
+                    self.push(eq_instr(ScalarType::Int), span)?;
+                    return Ok(bool_ty);
                 }
                 BinaryOp::NotEqual => {
-                    self.push(eq_instr(ScalarType::Int), span);
-                    self.push(Instr::BoolNot, span);
-                    return Some(bool_ty);
+                    self.push(eq_instr(ScalarType::Int), span)?;
+                    self.push(Instr::BoolNot, span)?;
+                    return Ok(bool_ty);
                 }
                 BinaryOp::Subtract => {
                     return if self.nominal_supports(left_ty).subtract {
-                        self.push(Instr::IntSub, span);
-                        Some(int_ty)
+                        self.push(Instr::IntSub, span)?;
+                        Ok(int_ty)
                     } else {
                         self.fail_missing_capability(left_ty, "subtract", op, span);
-                        None
+                        Err(LoweringFailure::Recoverable)
                     };
                 }
                 _ => {
@@ -537,7 +565,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         left_ty,
                         right_ty,
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
             }
         }
@@ -554,7 +582,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     left_ty,
                     right_ty,
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
         let supports = self.nominal_supports(nominal);
@@ -567,15 +595,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             BinaryOp::Multiply if supports.scale => Instr::IntMul,
             BinaryOp::Add => {
                 self.fail_missing_capability(nominal, "add", op, span);
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             BinaryOp::Subtract if nominal_on_left => {
                 self.fail_missing_capability(nominal, "subtract", op, span);
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             BinaryOp::Multiply => {
                 self.fail_missing_capability(nominal, "scale", op, span);
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             _ => {
                 self.fail(binary_error(
@@ -586,10 +614,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     left_ty,
                     right_ty,
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
-        self.push(instr, span);
+        self.push(instr, span)?;
         #[expect(
             clippy::expect_used,
             reason = "checker-classified type: this path runs only after the checker classified the receiver as a bare nominal type"
@@ -602,8 +630,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 hi: info.hi,
             },
             span,
-        );
-        Some(nominal)
+        )?;
+        Ok(nominal)
     }
 
     /// Lower `==`/`!=` on two values of the same enum to `EqEnum` (exact variant
@@ -615,19 +643,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         left_ty: LTy,
         right_ty: LTy,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let same_enum =
             left_ty.bare_enum().is_some() && left_ty.bare_enum() == right_ty.bare_enum();
         match op {
             BinaryOp::Equal if same_enum => {
-                self.push(Instr::EqEnum, span);
-                Some(bool_ty)
+                self.push(Instr::EqEnum, span)?;
+                Ok(bool_ty)
             }
             BinaryOp::NotEqual if same_enum => {
-                self.push(Instr::EqEnum, span);
-                self.push(Instr::BoolNot, span);
-                Some(bool_ty)
+                self.push(Instr::EqEnum, span)?;
+                self.push(Instr::BoolNot, span)?;
+                Ok(bool_ty)
             }
             _ => {
                 self.fail(binary_error(
@@ -638,7 +666,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     left_ty,
                     right_ty,
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -653,19 +681,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         left_ty: LTy,
         right_ty: LTy,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let same_root = left_ty.bare_identity().is_some()
             && left_ty.bare_identity() == right_ty.bare_identity();
         match op {
             BinaryOp::Equal if same_root => {
-                self.push(Instr::EqId, span);
-                Some(bool_ty)
+                self.push(Instr::EqId, span)?;
+                Ok(bool_ty)
             }
             BinaryOp::NotEqual if same_root => {
-                self.push(Instr::EqId, span);
-                self.push(Instr::BoolNot, span);
-                Some(bool_ty)
+                self.push(Instr::EqId, span)?;
+                self.push(Instr::BoolNot, span)?;
+                Ok(bool_ty)
             }
             _ => {
                 self.fail(binary_error(
@@ -676,7 +704,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     left_ty,
                     right_ty,
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -696,7 +724,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         left_ty: LTy,
         right_ty: LTy,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let same_param = left_ty.bare_param().is_some() && left_ty == right_ty;
         let constraint = left_ty
@@ -714,8 +742,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if same_param && admitted {
             // Placeholder with the right stack shape (pop two, push one bool); the
             // code is discarded by the template pass.
-            self.push(Instr::EqInt, span);
-            return Some(bool_ty);
+            self.push(Instr::EqInt, span)?;
+            return Ok(bool_ty);
         }
         if same_param {
             let want = match op {
@@ -734,7 +762,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     operator_symbol(op)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         self.fail(binary_error(
             self.records,
@@ -744,7 +772,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             left_ty,
             right_ty,
         ));
-        None
+        Err(LoweringFailure::Recoverable)
     }
 
     /// The constraint on the abstract type parameter at `index`, in the template
@@ -786,7 +814,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// `left ?? right`: yield the present value of the optional `left`, else `right`.
     /// Lowered to the atomic present-branch (design §D), so no unchecked unwrap.
-    fn lower_coalesce(&mut self, left: &Expression, right: &Expression) -> Option<LTy> {
+    fn lower_coalesce(&mut self, left: &Expression, right: &Expression) -> ConstructResult<LTy> {
         let left_ty = self.lower_expr(left)?;
         if !left_ty.is_optional() {
             self.fail(SourceDiagnostic::at(
@@ -798,17 +826,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     left_ty.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let bare = left_ty.to_bare();
-        let bp = self.push_branch_present(left.span());
-        let to_end = self.push_jump(left.span());
+        let bp = self.push_branch_present(left.span())?;
+        let to_end = self.push_jump(left.span())?;
         let absent = self.here();
         self.patch(bp, absent);
         self.lower_as(right, bare)?;
         let end = self.here();
         self.patch(to_end, end);
-        Some(bare)
+        Ok(bare)
     }
 
     fn lower_short_circuit(
@@ -816,7 +844,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         op: BinaryOp,
         left: &Expression,
         right: &Expression,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let left_ty = self.lower_expr(left)?;
         if left_ty != bool_ty {
@@ -827,11 +855,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 op,
                 left_ty,
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         match op {
             BinaryOp::And => {
-                let jif = self.push_jif(left.span());
+                let jif = self.push_jif(left.span())?;
                 let right_ty = self.lower_expr(right)?;
                 if right_ty != bool_ty {
                     self.fail(logic_operand(
@@ -841,21 +869,25 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         op,
                         right_ty,
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
-                let to_end = self.push_jump(right.span());
+                let to_end = self.push_jump(right.span())?;
                 let false_at = self.here();
                 self.patch(jif, false_at);
-                let konst = self.checked_mint(|draft| draft.intern_bool(false))?;
-                self.push(Instr::ConstLoad(konst), left.span());
+                let konst = self
+                    .checked_mint(|draft| draft.intern_bool(false))
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::ConstLoad(konst), left.span())?;
                 let end = self.here();
                 self.patch(to_end, end);
             }
             BinaryOp::Or => {
-                let jif = self.push_jif(left.span());
-                let konst = self.checked_mint(|draft| draft.intern_bool(true))?;
-                self.push(Instr::ConstLoad(konst), left.span());
-                let to_end = self.push_jump(left.span());
+                let jif = self.push_jif(left.span())?;
+                let konst = self
+                    .checked_mint(|draft| draft.intern_bool(true))
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::ConstLoad(konst), left.span())?;
+                let to_end = self.push_jump(left.span())?;
                 let rhs_at = self.here();
                 self.patch(jif, rhs_at);
                 let right_ty = self.lower_expr(right)?;
@@ -867,7 +899,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         op,
                         right_ty,
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
                 let end = self.here();
                 self.patch(to_end, end);
@@ -878,7 +910,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             )]
             _ => unreachable!("only and/or reach short-circuit lowering"),
         }
-        Some(bool_ty)
+        Ok(bool_ty)
     }
 
     /// Lower interval membership `value in lo..hi` / `value not in lo..=hi` to a bool.
@@ -892,7 +924,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         range: &Expression,
         negated: bool,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let Some(range) = range_expr(range) else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -902,7 +934,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  range on the right. Write `value in lo..hi`."
                     .to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if range.step.is_some() {
             self.fail(SourceDiagnostic::at(
@@ -911,7 +943,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 range.span,
                 "an interval-membership range takes no `by` step".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let (Some(lo), Some(hi)) = (range.start, range.end) else {
             self.fail(SourceDiagnostic::at(
@@ -921,22 +953,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 "interval membership tests a range with both bounds; write `value in lo..hi`"
                     .to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let int = LTy::bare_scalar(ScalarType::Int);
         // The value is evaluated once; both bound tests read it from the slot.
         self.lower_as(value, int)?;
-        let value_slot = self.alloc_slot(span)?;
-        self.push(Instr::LocalSet(value_slot), span);
+        let value_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalSet(value_slot), span)?;
 
         // lo <= value
         self.lower_as(lo, int)?;
-        self.push(Instr::LocalGet(value_slot), span);
-        self.push(Instr::IntLe, span);
-        let jif = self.push_jif(span);
+        self.push(Instr::LocalGet(value_slot), span)?;
+        self.push(Instr::IntLe, span)?;
+        let jif = self.push_jif(span)?;
 
         // value <op> hi
-        self.push(Instr::LocalGet(value_slot), span);
+        self.push(Instr::LocalGet(value_slot), span)?;
         self.lower_as(hi, int)?;
         self.push(
             if range.inclusive_end {
@@ -945,19 +977,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Instr::IntLt
             },
             span,
-        );
-        let to_end = self.push_jump(span);
+        )?;
+        let to_end = self.push_jump(span)?;
         let false_at = self.here();
         self.patch(jif, false_at);
-        let konst = self.checked_mint(|draft| draft.intern_bool(false))?;
-        self.push(Instr::ConstLoad(konst), span);
+        let konst = self
+            .checked_mint(|draft| draft.intern_bool(false))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ConstLoad(konst), span)?;
         let end = self.here();
         self.patch(to_end, end);
 
         if negated {
-            self.push(Instr::BoolNot, span);
+            self.push(Instr::BoolNot, span)?;
         }
-        Some(LTy::bare_scalar(ScalarType::Bool))
+        Ok(LTy::bare_scalar(ScalarType::Bool))
     }
 
     /// A parenthesized application is a record constructor (`Note(title: t, ...)`)
@@ -967,7 +1001,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         callee: &Expression,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<CallResult> {
+    ) -> ConstructResult<CallResult> {
         let Expression::Name { segments, .. } = callee else {
             // `Age.checked(n)`: the nominal range test, the one member call the
             // subset admits. Any other field-shaped callee stays unsupported.
@@ -1016,11 +1050,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // reported defect.
                     let backing = match self.durable.product(resource) {
                         Ok(binding) => binding,
-                        Err(drift) => return self.ledger_drift(drift),
+                        Err(drift) => {
+                            self.ledger_drift::<()>(drift);
+                            return Err(LoweringFailure::Recoverable);
+                        }
                     };
                     if let ProductBinding::Refused(summary) = backing {
                         self.steer_refusal(summary, span);
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                 }
                 // A method-shaped call on a value: `s.trim()`. Member syntax reaches
@@ -1038,10 +1075,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         receiver = marrow_syntax::format_expression(base)
                     ),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             self.fail(unsupported(self.file, span, "this call"));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let generic_enum_template = match &segments[..] {
             [enum_name, _] => self
@@ -1068,13 +1105,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // on a refused enum would fall through to the qualified-call report and
             // call the member out of scope. Its bare `Enum::member` sibling steers;
             // both spellings are one use of one refused declaration.
-            ([head, _], _) if self.steer_refused_type(head.text(), span) => None,
+            ([head, _], _) if self.steer_refused_type(head.text(), span) => {
+                Err(LoweringFailure::Recoverable)
+            }
             ([prefix @ .., item], _) => {
                 self.lower_qualified_call(prefix, item.text(), args, span, callee_span)
             }
             ([], _) => {
                 self.fail(unsupported(self.file, span, "this call"));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -1087,7 +1126,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         args: &[Argument],
         span: SourceSpan,
         callee_span: SourceSpan,
-    ) -> Option<CallResult> {
+    ) -> ConstructResult<CallResult> {
         // The reserved built-ins are intercepted before any user resolution, so a
         // colliding declaration (rejected at its declaration site) can never reach
         // here. Dispatching on the shared classifier keeps interception and
@@ -1110,7 +1149,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             "the Result type of `{name}` cannot be inferred here; use it where a Result is expected"
                         ),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
                 // `isEmpty` accepts a string or a collection; the other two are
                 // text-only.
@@ -1141,7 +1180,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                          a map literal is not yet available"
                             .to_string(),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
                 Builtin::List | Builtin::Map => {
                     self.fail(SourceDiagnostic::at(
@@ -1152,7 +1191,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             "the type of `{name}()` cannot be inferred here; use it where a {name} type is expected"
                         ),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
                 Builtin::Id => self.lower_identity_ctor(args, span).map(CallResult::Value),
                 // `none` is the payloadless Option constructor; it carries no
@@ -1165,7 +1204,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         "`none` takes no arguments; write `none` where an Option is expected"
                             .to_string(),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
                 // The integer bounds are argument-free values; a call form has no meaning.
                 Builtin::MaxInt | Builtin::MinInt => {
@@ -1175,7 +1214,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         span,
                         format!("`{name}` takes no arguments; write `{name}` for the int bound"),
                     ));
-                    None
+                    Err(LoweringFailure::Recoverable)
                 }
             };
         }
@@ -1218,7 +1257,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         let same_module = match self.functions.same_module(self.module, name) {
             Ok(binding) => binding,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         match same_module {
             Binding::Accepted(sig) => {
@@ -1239,7 +1281,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // the call reuses the declaration's own cause.
             Binding::Refused(_, summary) => {
                 self.steer_refusal(summary, span);
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             Binding::Absent => {}
         }
@@ -1252,14 +1294,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         // The procedural collection operations resolve last, so a same-module
         // function of the same common name shadows them.
-        if let Some(result) = self.lower_collection_fallback(name, args, span) {
-            return result;
+        if let Some(result) = self.lower_collection_fallback(name, args, span)? {
+            return Ok(result);
         }
         // A construction of a type this project declared and refused is not an
         // unknown callable: the declaration reported the cause, and this site is
         // steered to it rather than told the name does not exist.
         if self.steer_refused_type(name, span) {
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let suggestion = nearest_name(name, self.functions.module_function_names(self.module));
         self.fail(name_not_in_scope(
@@ -1269,7 +1311,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             suggestion.as_deref(),
             NameKind::Function,
         ));
-        None
+        Err(LoweringFailure::Recoverable)
     }
 
     /// Resolve `append`/`length` as collection operations, or `None` when `name` is not
@@ -1282,13 +1324,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<Option<CallResult>> {
+    ) -> ConstructResult<Option<CallResult>> {
         let value = match name {
             "append" => self.lower_append(args, span),
             "length" => self.lower_length(args, span),
-            _ => return None,
+            _ => return Ok(None),
         };
-        Some(value.map(CallResult::Value))
+        Ok(Some(CallResult::Value(value?)))
     }
 
     /// A `::`-qualified call `prefix::item`: resolved against the calling module's
@@ -1300,10 +1342,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         args: &[Argument],
         span: SourceSpan,
         callee_span: SourceSpan,
-    ) -> Option<CallResult> {
+    ) -> ConstructResult<CallResult> {
         let resolved = match self.functions.resolve_qualified(self.module, prefix, item) {
             Ok(resolution) => resolution,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         match resolved {
             CallResolution::Found(sig) => {
@@ -1326,11 +1371,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     format!("`{item}` is not `pub`, so it cannot be called from another module"),
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
             CallResolution::SignatureRefused(summary) => {
                 self.steer_refusal(summary, span);
-                None
+                Err(LoweringFailure::Recoverable)
             }
             CallResolution::ModuleRefused(summary) => {
                 // A qualified call into a module this project refused is a dependency
@@ -1340,14 +1385,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // cause rather than reporting a callee of a module that has no scope.
                 self.facts.gap(callee_span);
                 self.steer_refusal(summary, span);
-                None
+                Err(LoweringFailure::Recoverable)
             }
             CallResolution::NotFound => {
                 // A qualified generic function is resolved through the same module
                 // scope and monomorphized, after the monomorphic table misses.
                 let resolved_module = match self.functions.resolved_module(self.module, prefix) {
                     Ok(module) => module,
-                    Err(drift) => return self.ledger_drift(drift),
+                    Err(drift) => {
+                        self.ledger_drift::<()>(drift);
+                        return Err(LoweringFailure::Recoverable);
+                    }
                 };
                 if let Some(module) = resolved_module.clone()
                     && let Some((template, public)) = self.generics.in_module(&module, item)
@@ -1361,7 +1409,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                 "`{item}` is not `pub`, so it cannot be called from another module"
                             ),
                         ));
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                     self.record_generic_call(template, callee_span);
                     return self.lower_generic_call(template, args, span);
@@ -1384,7 +1432,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     suggestion.as_deref(),
                     NameKind::Function,
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -1398,7 +1446,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         ret: RetType,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<CallResult> {
+    ) -> ConstructResult<CallResult> {
         if args.len() != params.len() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1406,7 +1454,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("expected {} arguments, found {}", params.len(), args.len()),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         for (argument, param) in args.iter().zip(params) {
             if argument.name.is_some() {
@@ -1416,13 +1464,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "function arguments are positional".to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             self.lower_as(&argument.value, *param)?;
         }
-        self.push(Instr::Call(index), span);
+        self.push(Instr::Call(index), span)?;
         self.calls.push(index);
-        Some(match ret {
+        Ok(match ret {
             RetType::Unit => CallResult::Unit,
             RetType::Value(ty) => CallResult::Value(ty),
         })
@@ -1459,7 +1507,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         template_index: usize,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<CallResult> {
+    ) -> ConstructResult<CallResult> {
         let template: &'a GenericTemplate<'a> = &self.generics.templates[template_index];
         let params = &template.decl.params;
         if args.len() != params.len() {
@@ -1469,7 +1517,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("expected {} arguments, found {}", params.len(), args.len()),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let mut subst: Vec<Option<GArg>> = vec![None; template.type_params.len()];
         for (argument, param) in args.iter().zip(params) {
@@ -1480,7 +1528,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "function arguments are positional".to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             let got = self.lower_expr(&argument.value)?;
             let expanded = self.records.expand(&param.ty);
@@ -1496,7 +1544,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "this generic call inference",
                 );
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
         // Every type parameter must be determined by an argument: there is no
@@ -1517,7 +1565,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             template.decl.name
                         ),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
             }
         }
@@ -1552,7 +1600,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         constraint.spelling(),
                     ),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
         // Resolve the return type against the concrete substitution, minting any
@@ -1562,7 +1610,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Ok(ret) => ret,
             Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
                 self.failed = true;
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             Err(
                 error @ ResolveError::Refusal(
@@ -1577,7 +1625,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     .unwrap_or(template.decl.span);
                 let file = template.file.clone();
                 self.reject_at(error, &file, span, "this return type");
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             Err(ResolveError::Invariant(invariant)) => {
                 self.reject_resolution(
@@ -1585,7 +1633,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "this return type",
                 );
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
         match self.mode {
@@ -1594,10 +1642,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // monomorphize an abstract instantiation; a placeholder keeps the
                 // discarded stream value-shaped.
                 if let RetType::Value(_) = ret {
-                    let zero = self.checked_mint(|draft| draft.intern_int(0))?;
-                    self.push(Instr::ConstLoad(zero), span);
+                    let zero = self
+                        .checked_mint(|draft| draft.intern_int(0))
+                        .ok_or(LoweringFailure::Recoverable)?;
+                    self.push(Instr::ConstLoad(zero), span)?;
                 }
-                Some(match ret {
+                Ok(match ret {
                     RetType::Unit => CallResult::Unit,
                     RetType::Value(ty) => CallResult::Value(ty),
                 })
@@ -1614,12 +1664,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     Ok(func) => func,
                     Err(error) => {
                         self.reject_resolution(error, span, "this generic function call");
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                 };
-                self.push(Instr::Call(func), span);
+                self.push(Instr::Call(func), span)?;
                 self.calls.push(func);
-                Some(match ret {
+                Ok(match ret {
                     RetType::Unit => CallResult::Unit,
                     RetType::Value(ty) => CallResult::Value(ty),
                 })
@@ -1670,8 +1720,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         id: NominalId,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
-        let value = self.single_nominal_arg(id, args, span)?;
+    ) -> ConstructResult<LTy> {
+        let value = self
+            .single_nominal_arg(id, args, span)
+            .ok_or(LoweringFailure::Recoverable)?;
         self.lower_as(value, LTy::bare_scalar(ScalarType::Int))?;
         let info = self.records.nominal(id);
         self.push(
@@ -1680,8 +1732,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 hi: info.hi,
             },
             span,
-        );
-        Some(LTy::Nominal {
+        )?;
+        Ok(LTy::Nominal {
             id,
             optional: false,
         })
@@ -1695,40 +1747,46 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         id: NominalId,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
-        let value = self.single_nominal_arg(id, args, span)?;
+    ) -> ConstructResult<LTy> {
+        let value = self
+            .single_nominal_arg(id, args, span)
+            .ok_or(LoweringFailure::Recoverable)?;
         self.lower_as(value, LTy::bare_scalar(ScalarType::Int))?;
-        let slot = self.alloc_slot(span)?;
-        self.push(Instr::LocalSet(slot), span);
+        let slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalSet(slot), span)?;
         let (lo, hi) = {
             let info = self.records.nominal(id);
             (info.lo, info.hi)
         };
         // lo <= n && n <= hi, with each failed test jumping to the vacant edge.
-        let lo_const = self.checked_mint(|draft| draft.intern_int(lo))?;
-        self.push(Instr::LocalGet(slot), span);
-        self.push(Instr::ConstLoad(lo_const), span);
+        let lo_const = self
+            .checked_mint(|draft| draft.intern_int(lo))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalGet(slot), span)?;
+        self.push(Instr::ConstLoad(lo_const), span)?;
         let below = {
-            self.push(Instr::IntGe, span);
-            self.push_jif(span)
+            self.push(Instr::IntGe, span)?;
+            self.push_jif(span)?
         };
-        let hi_const = self.checked_mint(|draft| draft.intern_int(hi))?;
-        self.push(Instr::LocalGet(slot), span);
-        self.push(Instr::ConstLoad(hi_const), span);
+        let hi_const = self
+            .checked_mint(|draft| draft.intern_int(hi))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalGet(slot), span)?;
+        self.push(Instr::ConstLoad(hi_const), span)?;
         let above = {
-            self.push(Instr::IntLe, span);
-            self.push_jif(span)
+            self.push(Instr::IntLe, span)?;
+            self.push_jif(span)?
         };
-        self.push(Instr::LocalGet(slot), span);
-        self.push(Instr::SomeWrap, span);
-        let to_end = self.push_jump(span);
+        self.push(Instr::LocalGet(slot), span)?;
+        self.push(Instr::SomeWrap, span)?;
+        let to_end = self.push_jump(span)?;
         let vacant = self.here();
         self.patch(below, vacant);
         self.patch(above, vacant);
-        self.push(Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)), span);
+        self.push(Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)), span)?;
         let end = self.here();
         self.patch(to_end, end);
-        Some(LTy::Nominal { id, optional: true })
+        Ok(LTy::Nominal { id, optional: true })
     }
 
     /// The one positional argument of a nominal construction or range test.
@@ -1759,14 +1817,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
-        let record = self.accept_resolution(
-            self.records
-                .static_record_projection(name)
-                .map_err(ResolveError::Invariant),
-            span,
-            "this record construction",
-        )??;
+    ) -> ConstructResult<LTy> {
+        let record = self
+            .accept_resolution(
+                self.records
+                    .static_record_projection(name)
+                    .map_err(ResolveError::Invariant),
+                span,
+                "this record construction",
+            )
+            .flatten()
+            .ok_or(LoweringFailure::Recoverable)?;
         let record_type_id = record.type_id;
 
         // Resolve each named argument against a top-level field or a group before
@@ -1781,7 +1842,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "constructor arguments must be named".to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             };
             let arg_name = arg_name.text();
             if record.field(arg_name).is_none() && record.group(arg_name).is_none() {
@@ -1796,7 +1857,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         format!("`{name}` has no field `{arg_name}`"),
                     ));
                 }
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
 
@@ -1822,12 +1883,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         span,
                         format!("missing required field `{field_name}`"),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
                 None => {
                     // A sparse field defaults to vacant: a typed vacant optional of
                     // the field's value type.
-                    self.push(Instr::VacantLoad(bare.to_optional().image()), span);
+                    self.push(Instr::VacantLoad(bare.to_optional().image()), span)?;
                 }
             }
         }
@@ -1873,18 +1934,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     format!("missing required field `{group_name}`"),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             for (_leaf_name, leaf_ty, _required) in leaves {
                 self.push(
                     Instr::VacantLoad(garg_to_lty(leaf_ty).to_optional().image()),
                     span,
-                );
+                )?;
             }
-            self.push(Instr::RecordNew(group_type), span);
+            self.push(Instr::RecordNew(group_type), span)?;
         }
-        self.push(Instr::RecordNew(record_type_id), span);
-        Some(LTy::Record {
+        self.push(Instr::RecordNew(record_type_id), span)?;
+        Ok(LTy::Record {
             ty: record_type_id,
             optional: false,
         })
@@ -1918,7 +1979,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         head_span: SourceSpan,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1929,7 +1990,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                      `{display}(…)`); a value binding may not shadow it"
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let record = branch.record();
 
@@ -1943,7 +2004,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "constructor arguments must be named".to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             };
             let arg_name = arg_name.text();
             if branch.field(arg_name).is_none() {
@@ -1953,7 +2014,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     format!("`{display}` has no field `{arg_name}`"),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
 
@@ -1980,16 +2041,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         span,
                         format!("missing required field `{}`", field.name),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
                 None => {
                     // A sparse field defaults to a typed vacant optional.
-                    self.push(Instr::VacantLoad(bare.to_optional().image()), span);
+                    self.push(Instr::VacantLoad(bare.to_optional().image()), span)?;
                 }
             }
         }
-        self.push(Instr::RecordNew(record), span);
-        Some(LTy::Record {
+        self.push(Instr::RecordNew(record), span)?;
+        Ok(LTy::Record {
             ty: record,
             optional: false,
         })
@@ -2008,7 +2069,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         head_span: SourceSpan,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -2019,16 +2080,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                      `{resource}.{group_name}(…)`); a value binding may not shadow it"
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let display = format!("{resource}.{group_name}");
-        let group = self.accept_resolution(
-            self.records
-                .static_group_projection(resource, group_name)
-                .map_err(ResolveError::Invariant),
-            span,
-            "this resource-group construction",
-        )??;
+        let group = self
+            .accept_resolution(
+                self.records
+                    .static_group_projection(resource, group_name)
+                    .map_err(ResolveError::Invariant),
+                span,
+                "this resource-group construction",
+            )
+            .flatten()
+            .ok_or(LoweringFailure::Recoverable)?;
         let group_type_id = group.type_id;
         let leaf_plan: Vec<MemberPlan> = group
             .fields
@@ -2044,7 +2108,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "constructor arguments must be named".to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             };
             let arg_name = arg_name.text();
             if !leaf_plan.iter().any(|(name, _, _)| name == arg_name) {
@@ -2058,7 +2122,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         format!("`{display}` has no field `{arg_name}`"),
                     ));
                 }
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
 
@@ -2079,15 +2143,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         span,
                         format!("missing required field `{leaf_name}`"),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
                 None => {
-                    self.push(Instr::VacantLoad(bare.to_optional().image()), span);
+                    self.push(Instr::VacantLoad(bare.to_optional().image()), span)?;
                 }
             }
         }
-        self.push(Instr::RecordNew(group_type_id), span);
-        Some(LTy::Record {
+        self.push(Instr::RecordNew(group_type_id), span)?;
+        Ok(LTy::Record {
             ty: group_type_id,
             optional: false,
         })
@@ -2103,14 +2167,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
-        let info = self.accept_resolution(
-            self.records
-                .static_struct_projection(name)
-                .map_err(ResolveError::Invariant),
-            span,
-            "this struct construction",
-        )??;
+    ) -> ConstructResult<LTy> {
+        let info = self
+            .accept_resolution(
+                self.records
+                    .static_struct_projection(name)
+                    .map_err(ResolveError::Invariant),
+                span,
+                "this struct construction",
+            )
+            .flatten()
+            .ok_or(LoweringFailure::Recoverable)?;
         let type_id = info.type_id;
 
         let mut ok = true;
@@ -2148,7 +2215,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
         if !ok {
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
 
         let field_plan: Vec<(String, GArg)> = info
@@ -2171,12 +2238,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         span,
                         format!("missing field `{field_name}`"),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
             }
         }
-        self.push(Instr::RecordNew(type_id), span);
-        Some(LTy::Struct {
+        self.push(Instr::RecordNew(type_id), span)?;
+        Ok(LTy::Struct {
             ty: type_id,
             optional: false,
         })
@@ -2191,9 +2258,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         template: usize,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if self.terminal_rejection() {
-            return None;
+            return Err(self.terminal_lowering_failure());
         }
         let name = self.records.template_name(template).to_string();
         let fields = match self.records.template_struct_fields(template) {
@@ -2204,7 +2271,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "this generic struct construction",
                 );
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
         if !self.check_named_args(
@@ -2213,7 +2280,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             &fields.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
             span,
         ) {
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let params = self.records.template_type_params(template).to_vec();
         let mut subst: Vec<Option<GArg>> = vec![None; params.len()];
@@ -2228,7 +2295,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     format!("missing field `{field_name}`"),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             };
             let got = self.lower_expr(&argument.value)?;
             let expanded = self.records.expand(field_ty);
@@ -2239,12 +2306,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "this generic struct inference",
                 );
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
-        let concrete = self.determined_args(&name, &params, &subst, span)?;
+        let concrete = self
+            .determined_args(&name, &params, &subst, span)
+            .ok_or(LoweringFailure::Recoverable)?;
         if !self.constraints_satisfied(template, &name, &concrete, span) {
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let site = MintSite {
             file: self.file,
@@ -2257,11 +2326,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Ok(type_id) => type_id,
             Err(error) => {
                 self.reject_resolution(error, span, "this generic struct construction");
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
-        self.push(Instr::RecordNew(type_id), span);
-        Some(LTy::Struct {
+        self.push(Instr::RecordNew(type_id), span)?;
+        Ok(LTy::Struct {
             ty: type_id,
             optional: false,
         })
@@ -2277,9 +2346,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         variant_name: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if self.terminal_rejection() {
-            return None;
+            return Err(self.terminal_lowering_failure());
         }
         let name = self.records.template_name(template).to_string();
         let (template_variant, payload) = match self
@@ -2294,7 +2363,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     format!("enum `{name}` has no member `{variant_name}`"),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             Err(invariant) => {
                 self.reject_resolution(
@@ -2302,7 +2371,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "this generic enum construction",
                 );
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
         if !self.check_named_args(
@@ -2311,7 +2380,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             &payload.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
             span,
         ) {
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let params = self.records.template_type_params(template).to_vec();
         let mut subst: Vec<Option<GArg>> = vec![None; params.len()];
@@ -2326,7 +2395,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     format!("missing payload field `{field_name}`"),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             };
             let got = self.lower_expr(&argument.value)?;
             let expanded = self.records.expand(field_ty);
@@ -2337,12 +2406,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     argument.value.span(),
                     "this generic enum inference",
                 );
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
-        let concrete = self.determined_args(&name, &params, &subst, span)?;
+        let concrete = self
+            .determined_args(&name, &params, &subst, span)
+            .ok_or(LoweringFailure::Recoverable)?;
         if !self.constraints_satisfied(template, &name, &concrete, span) {
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let site = MintSite {
             file: self.file,
@@ -2361,7 +2432,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Ok(witness) => witness,
             Err(error) => {
                 self.reject_resolution(error, span, "this generic enum construction");
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
         self.push(
@@ -2370,8 +2441,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 variant: witness.variant,
             },
             span,
-        );
-        Some(LTy::Enum {
+        )?;
+        Ok(LTy::Enum {
             ty: witness.enum_id,
             optional: false,
         })
@@ -2500,14 +2571,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         variant_name: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
-        let info = self.accept_resolution(
-            self.records
-                .static_enum_projection(enum_name)
-                .map_err(ResolveError::Invariant),
-            span,
-            "this enum construction",
-        )??;
+    ) -> ConstructResult<LTy> {
+        let info = self
+            .accept_resolution(
+                self.records
+                    .static_enum_projection(enum_name)
+                    .map_err(ResolveError::Invariant),
+                span,
+                "this enum construction",
+            )
+            .flatten()
+            .ok_or(LoweringFailure::Recoverable)?;
         let (enum_id, variant_index) = {
             let Some((index, _)) = info.variant(variant_name) else {
                 self.fail(SourceDiagnostic::at(
@@ -2516,14 +2590,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     format!("enum `{enum_name}` has no member `{variant_name}`"),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             };
             (info.enum_id, index)
         };
         // The payload plan, resolved before emission so evaluation order is the
         // payload declaration order.
         let plan: Vec<(String, ScalarType)> = info
-            .variant(variant_name)?
+            .variant(variant_name)
+            .ok_or(LoweringFailure::Recoverable)?
             .1
             .payload
             .iter()
@@ -2538,7 +2613,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     format!("`{enum_name}::{variant_name}` carries no payload"),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         } else {
             let mut ok = true;
@@ -2579,7 +2654,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
             }
             if !ok {
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             for (field_name, scalar) in &plan {
                 let arg = args
@@ -2596,7 +2671,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             span,
                             format!("missing payload field `{field_name}`"),
                         ));
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                 }
             }
@@ -2607,8 +2682,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 variant: variant_index,
             },
             span,
-        );
-        Some(LTy::Enum {
+        )?;
+        Ok(LTy::Enum {
             ty: enum_id,
             optional: false,
         })
@@ -2643,9 +2718,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         kind: CtorKind,
         expr: &Expression,
         expected: LTy,
-    ) -> Option<()> {
+    ) -> ConstructResult<()> {
         if self.terminal_rejection() {
-            return None;
+            return Err(self.terminal_lowering_failure());
         }
         let span = expr.span();
         // A sparse optional enum target (`Option<T>?`/`Result<T, E>?`) takes a bare
@@ -2661,8 +2736,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     optional: false,
                 },
             )?;
-            self.push(Instr::SomeWrap, span);
-            return Some(());
+            self.push(Instr::SomeWrap, span)?;
+            return Ok(());
         }
         let LTy::Enum {
             ty: enum_id,
@@ -2679,15 +2754,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     expected.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
-        let reserved = self.accept_resolution(
-            self.records
-                .reserved_enum_args(enum_id)
-                .map_err(ResolveError::Invariant),
-            span,
-            "this reserved constructor",
-        )?;
+        let reserved = self
+            .accept_resolution(
+                self.records
+                    .reserved_enum_args(enum_id)
+                    .map_err(ResolveError::Invariant),
+                span,
+                "this reserved constructor",
+            )
+            .ok_or(LoweringFailure::Recoverable)?;
         match (kind, reserved) {
             (CtorKind::None, Some(ReservedEnumArgs::Option(_))) => {
                 self.push(
@@ -2696,11 +2773,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         variant: OPTION_NONE,
                     },
                     span,
-                );
-                Some(())
+                )?;
+                Ok(())
             }
             (CtorKind::Some, Some(ReservedEnumArgs::Option(inner))) => {
-                let arg = self.single_ctor_arg(expr, "some")?;
+                let arg = self
+                    .single_ctor_arg(expr, "some")
+                    .ok_or(LoweringFailure::Recoverable)?;
                 self.lower_as(arg, garg_to_lty(inner))?;
                 self.push(
                     Instr::EnumConstruct {
@@ -2708,11 +2787,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         variant: OPTION_SOME,
                     },
                     span,
-                );
-                Some(())
+                )?;
+                Ok(())
             }
             (CtorKind::Ok, Some(ReservedEnumArgs::Result(ok, _))) => {
-                let arg = self.single_ctor_arg(expr, "ok")?;
+                let arg = self
+                    .single_ctor_arg(expr, "ok")
+                    .ok_or(LoweringFailure::Recoverable)?;
                 self.lower_as(arg, garg_to_lty(ok))?;
                 self.push(
                     Instr::EnumConstruct {
@@ -2720,11 +2801,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         variant: RESULT_OK,
                     },
                     span,
-                );
-                Some(())
+                )?;
+                Ok(())
             }
             (CtorKind::Err, Some(ReservedEnumArgs::Result(_, err))) => {
-                let arg = self.single_ctor_arg(expr, "err")?;
+                let arg = self
+                    .single_ctor_arg(expr, "err")
+                    .ok_or(LoweringFailure::Recoverable)?;
                 self.lower_as(arg, garg_to_lty(err))?;
                 self.push(
                     Instr::EnumConstruct {
@@ -2732,8 +2815,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         variant: RESULT_ERR,
                     },
                     span,
-                );
-                Some(())
+                )?;
+                Ok(())
             }
             _ => {
                 self.fail(SourceDiagnostic::at(
@@ -2746,7 +2829,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         expected.spelling(self.records)
                     ),
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -2754,7 +2837,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower a bare `some(v)` whose Option type is inferred from `v`. `none`, `ok`,
     /// and `err` cannot infer their full type argument set, so they require an
     /// expected type and are rejected here.
-    fn lower_some_infer(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    fn lower_some_infer(&mut self, args: &[Argument], span: SourceSpan) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -2762,7 +2845,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`some` takes exactly one value, as `some(value)`".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
@@ -2771,7 +2854,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 "`some` takes a positional value".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let inner_ty = self.lower_expr(&arg.value)?;
         let Some(inner) = inner_ty.as_garg() else {
@@ -2784,17 +2867,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     inner_ty.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
-        let id = self.opt_enum(inner, arg.value.span())?;
+        let id = self
+            .opt_enum(inner, arg.value.span())
+            .ok_or(LoweringFailure::Recoverable)?;
         self.push(
             Instr::EnumConstruct {
                 enum_idx: id,
                 variant: OPTION_SOME,
             },
             span,
-        );
-        Some(LTy::Enum {
+        )?;
+        Ok(LTy::Enum {
             ty: id,
             optional: false,
         })
@@ -2823,9 +2908,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// enclosing `Result[U, E]`-returning function (same `E`, no conversion),
     /// yielding the `ok` value `T`. Dispatches on the tag: on `err` it rebuilds the
     /// error in the return `Result` and returns; on `ok` it extracts the value.
-    pub(super) fn lower_try(&mut self, inner: &Expression, span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_try(
+        &mut self,
+        inner: &Expression,
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         if self.terminal_rejection() {
-            return None;
+            return Err(self.terminal_lowering_failure());
         }
         let inner_ty = self.lower_expr(inner)?;
         let Some(src_id) = inner_ty.bare_enum() else {
@@ -2838,7 +2927,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     inner_ty.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let ret_id = match self.ret {
             RetType::Value(ty) => ty.bare_enum(),
@@ -2854,11 +2943,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             };
             Ok::<_, LowerInvariant>((source, ret))
         });
-        let (source, ret_result) = self.accept_resolution(
-            classified.map_err(ResolveError::Invariant),
-            inner.span(),
-            "this try operand",
-        )?;
+        let (source, ret_result) = self
+            .accept_resolution(
+                classified.map_err(ResolveError::Invariant),
+                inner.span(),
+                "this try operand",
+            )
+            .ok_or(LoweringFailure::Recoverable)?;
         let Some(ReservedEnumArgs::Result(t_arg, e_arg)) = source else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -2869,7 +2960,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     inner_ty.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let Some((ret_id, ReservedEnumArgs::Result(_, ret_err))) = ret_result else {
             self.fail(SourceDiagnostic::at(
@@ -2878,7 +2969,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`try` is only valid in a function that returns a Result".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if ret_err != e_arg {
             self.fail(SourceDiagnostic::at(
@@ -2891,54 +2982,62 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     garg_spelling(ret_err, self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
-        let slot = self.alloc_slot(span)?;
-        self.push(Instr::LocalSet(slot), span);
-        self.push(Instr::LocalGet(slot), span);
-        self.push(Instr::EnumTag, span);
-        let err_tag = self.checked_mint(|draft| draft.intern_int(i64::from(RESULT_ERR)))?;
-        self.push(Instr::ConstLoad(err_tag), span);
-        self.push(Instr::EqInt, span);
+        let slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalSet(slot), span)?;
+        self.push(Instr::LocalGet(slot), span)?;
+        self.push(Instr::EnumTag, span)?;
+        let err_tag = self
+            .checked_mint(|draft| draft.intern_int(i64::from(RESULT_ERR)))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ConstLoad(err_tag), span)?;
+        self.push(Instr::EqInt, span)?;
         // False (not err, i.e. ok) jumps to the ok extraction; true (err) falls
         // through to rebuild the error in the return Result and return it.
-        let to_ok = self.push_jif(span);
-        self.push(Instr::LocalGet(slot), span);
+        let to_ok = self.push_jif(span)?;
+        self.push(Instr::LocalGet(slot), span)?;
         self.push(
             Instr::EnumPayloadGet {
                 variant: RESULT_ERR,
                 field: 0,
             },
             span,
-        );
+        )?;
         self.push(
             Instr::EnumConstruct {
                 enum_idx: ret_id,
                 variant: RESULT_ERR,
             },
             span,
-        );
-        self.push(Instr::Return, span);
+        )?;
+        self.push(Instr::Return, span)?;
         let ok_here = self.here();
         self.patch(to_ok, ok_here);
-        self.push(Instr::LocalGet(slot), span);
+        self.push(Instr::LocalGet(slot), span)?;
         self.push(
             Instr::EnumPayloadGet {
                 variant: RESULT_OK,
                 field: 0,
             },
             span,
-        );
-        Some(garg_to_lty(t_arg))
+        )?;
+        Ok(garg_to_lty(t_arg))
     }
 
-    fn lower_field(&mut self, base: &Expression, name: &str, span: SourceSpan) -> Option<LTy> {
+    fn lower_field(
+        &mut self,
+        base: &Expression,
+        name: &str,
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let base_ty = self.lower_expr(base)?;
-        let (index, field_ty, required) =
-            self.resolve_product_field(base_ty, name, base.span(), span)?;
-        self.push(Instr::FieldGet(index), span);
+        let (index, field_ty, required) = self
+            .resolve_product_field(base_ty, name, base.span(), span)
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::FieldGet(index), span)?;
         let bare = garg_to_lty(field_ty);
-        Some(if required { bare } else { bare.to_optional() })
+        Ok(if required { bare } else { bare.to_optional() })
     }
 
     /// Lower `base?.name`: a member read through an *optional composite value*. The
@@ -2953,7 +3052,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         base: &Expression,
         name: &str,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let base_ty = self.lower_expr(base)?;
         if !base_ty.is_optional() {
             self.fail(SourceDiagnostic::at(
@@ -2966,28 +3065,29 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     base_ty.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
-        let (index, field_ty, required) =
-            self.resolve_product_field(base_ty.to_bare(), name, base.span(), span)?;
+        let (index, field_ty, required) = self
+            .resolve_product_field(base_ty.to_bare(), name, base.span(), span)
+            .ok_or(LoweringFailure::Recoverable)?;
         let result = garg_to_lty(field_ty).to_optional();
 
         // Present: unwrap the optional composite to its bare record and read the
         // field; a required field is wrapped present, a sparse field already reads
         // optional. Absent: short-circuit to a vacant of the result type. Both paths
         // join at `result`.
-        let to_absent = self.push_branch_present(base.span());
-        self.push(Instr::FieldGet(index), span);
+        let to_absent = self.push_branch_present(base.span())?;
+        self.push(Instr::FieldGet(index), span)?;
         if required {
-            self.push(Instr::SomeWrap, span);
+            self.push(Instr::SomeWrap, span)?;
         }
-        let to_end = self.push_jump(span);
+        let to_end = self.push_jump(span)?;
         let absent = self.here();
         self.patch(to_absent, absent);
-        self.push(Instr::VacantLoad(result.image()), span);
+        self.push(Instr::VacantLoad(result.image()), span)?;
         let end = self.here();
         self.patch(to_end, end);
-        Some(result)
+        Ok(result)
     }
 
     /// Resolve `name` against a bare product (`record` or `struct`) value type to

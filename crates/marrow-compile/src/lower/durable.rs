@@ -657,7 +657,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         index: &'a crate::durable::DurableIndex,
         keys: &[Expression],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if keys.len() != index.projection.len() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -669,17 +669,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     index.projection.len()
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
-        let site = self.bind_index_site(root, index)?;
+        let site = self
+            .bind_index_site(root, index)
+            .ok_or(LoweringFailure::Recoverable)?;
         // The projection scalar types are copied out first so the operand lowering (a
         // mutable borrow of `self`) does not overlap the index borrow.
         let projection: Vec<ScalarType> = index.projection.clone();
         for (key, key_ty) in keys.iter().zip(&projection) {
             self.lower_as(key, LTy::bare_scalar(*key_ty))?;
         }
-        self.push(Instr::DurIndexLookup(site), span);
-        Some(LTy::Identity {
+        self.push(Instr::DurIndexLookup(site), span)?;
+        Ok(LTy::Identity {
             root: root.root_id,
             optional: true,
         })
@@ -695,7 +697,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         index: &'a crate::durable::DurableIndex,
         keys: &[Expression],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if keys.len() != index.projection.len() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -707,17 +709,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     index.projection.len()
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
-        let site = self.bind_index_site(root, index)?;
+        let site = self
+            .bind_index_site(root, index)
+            .ok_or(LoweringFailure::Recoverable)?;
         // The projection scalar types are copied out first so the operand lowering (a
         // mutable borrow of `self`) does not overlap the index borrow.
         let projection: Vec<ScalarType> = index.projection.clone();
         for (key, key_ty) in keys.iter().zip(&projection) {
             self.lower_as(key, LTy::bare_scalar(*key_ty))?;
         }
-        self.push(Instr::DurIndexExists(site), span);
-        Some(LTy::bare_scalar(ScalarType::Bool))
+        self.push(Instr::DurIndexExists(site), span)?;
+        Ok(LTy::bare_scalar(ScalarType::Bool))
     }
 
     pub(super) fn durable_access(
@@ -1082,12 +1086,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Emit one key column of a durable operation: lower the inline key expression
     /// (evaluating it here) or read the `place`'s pre-evaluated key slot.
-    fn emit_key(&mut self, key: PlaceKey, key_ty: ScalarType, span: SourceSpan) -> Option<()> {
+    fn emit_key(
+        &mut self,
+        key: PlaceKey,
+        key_ty: ScalarType,
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
         match key {
             PlaceKey::Expr(expr) => self.lower_as(expr, LTy::bare_scalar(key_ty)),
             PlaceKey::Bound(slot) => {
-                self.push(Instr::LocalGet(slot), span);
-                Some(())
+                self.push(Instr::LocalGet(slot), span)?;
+                Ok(())
             }
             // Lower the identity against the addressed root's identity type, then spread it
             // into that root's key columns. The one `Identity` key supplies the whole root
@@ -1101,8 +1110,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         optional: false,
                     },
                 )?;
-                self.push(Instr::IdentityKeyPath(cols), span);
-                Some(())
+                self.push(Instr::IdentityKeyPath(cols), span)?;
+                Ok(())
             }
         }
     }
@@ -1112,11 +1121,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// root-first path. Path length does not name the node kind: a single-key root is
     /// one column and a single-level branch two, but a composite-key root is itself
     /// multi-column.
-    pub(super) fn emit_key_path(&mut self, keys: &[DurKey], span: SourceSpan) -> Option<()> {
+    pub(super) fn emit_key_path(
+        &mut self,
+        keys: &[DurKey],
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
         for column in keys {
             self.emit_key(column.key, column.key_ty, span)?;
         }
-        Some(())
+        Ok(())
     }
 
     /// Capture the root key-path an entry identity supplies into one pre-evaluated
@@ -1131,7 +1144,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         root: RootId,
         cols: u16,
         span: SourceSpan,
-    ) -> Option<Vec<u16>> {
+    ) -> ConstructResult<Vec<u16>> {
         self.lower_as(
             expr,
             LTy::Identity {
@@ -1139,17 +1152,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 optional: false,
             },
         )?;
-        self.push(Instr::IdentityKeyPath(cols), span);
+        self.push(Instr::IdentityKeyPath(cols), span)?;
         let cols = cols as usize;
         // `IdentityKeyPath` leaves the columns root-first, so the last column is on top;
         // pop into slots from the last column back so each slot holds its own column.
         let mut slots = vec![0u16; cols];
         for column in (0..cols).rev() {
-            let slot = self.alloc_slot(expr.span())?;
-            self.push(Instr::LocalSet(slot), span);
+            let slot = self
+                .alloc_slot(expr.span())
+                .ok_or(LoweringFailure::Recoverable)?;
+            self.push(Instr::LocalSet(slot), span)?;
             slots[column] = slot;
         }
-        Some(slots)
+        Ok(slots)
     }
 
     /// Capture an entry identity into one pre-evaluated `(slot, scalar)` column per root key
@@ -1163,7 +1178,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         root: RootId,
         cols: u16,
         span: SourceSpan,
-    ) -> Option<Vec<(u16, ScalarType)>> {
+    ) -> ConstructResult<Vec<(u16, ScalarType)>> {
         let slots = self.capture_identity_key_slots(expr, root, cols, span)?;
         // The RootId was resolved from a root in this registry when the identity column was
         // built, so it is present here.
@@ -1177,7 +1192,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .expect("an identity operand's root is registered")
             .key
             .clone();
-        Some(slots.into_iter().zip(scalars).collect())
+        Ok(slots.into_iter().zip(scalars).collect())
     }
 
     /// Materialize a durable operation's whole key-path into one pre-evaluated slot per
@@ -1187,15 +1202,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// entry-identity column spreads into the addressed root's columns through
     /// [`capture_identity_key_slots`], so a single identity operand yields one slot per
     /// root key column. The returned slots are the physical key-path in column order.
-    fn capture_key_slots(&mut self, keys: &[DurKey], span: SourceSpan) -> Option<Vec<u16>> {
+    fn capture_key_slots(
+        &mut self,
+        keys: &[DurKey],
+        span: SourceSpan,
+    ) -> ConstructResult<Vec<u16>> {
         let mut slots = Vec::with_capacity(keys.len());
         for column in keys {
             match column.key {
                 PlaceKey::Bound(slot) => slots.push(slot),
                 PlaceKey::Expr(expr) => {
-                    let slot = self.alloc_slot(expr.span())?;
+                    let slot = self
+                        .alloc_slot(expr.span())
+                        .ok_or(LoweringFailure::Recoverable)?;
                     self.emit_key(column.key, column.key_ty, span)?;
-                    self.push(Instr::LocalSet(slot), span);
+                    self.push(Instr::LocalSet(slot), span)?;
                     slots.push(slot);
                 }
                 PlaceKey::Identity { expr, root, cols } => {
@@ -1203,7 +1224,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
             }
         }
-        Some(slots)
+        Ok(slots)
     }
 
     /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple
@@ -1217,10 +1238,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name: &str,
         name_span: SourceSpan,
         place_expr: &Expression,
-    ) {
+    ) -> ConstructResult<()> {
         if is_reserved_builtin_name(name) {
             self.fail(reserved_builtin_name(self.file, name_span, name));
-            return;
+            return Ok(());
         }
         if self.lookup(name).is_some() || self.lookup_place(name).is_some() {
             self.fail(SourceDiagnostic::at(
@@ -1229,23 +1250,33 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 name_span,
                 format!("`{name}` is already bound in this scope"),
             ));
-            return;
+            return Ok(());
         }
-        if self.bind_place_address(name, place_expr).is_none() {
-            // The address did not resolve (a dropped root, a bad key, a non-entry
-            // target); its own diagnostic already fired. Poison the name so its later
-            // uses do not each re-report an unbound place on top of that cause.
-            self.poisoned_bindings.insert(name.to_string());
+        match self.bind_place_address(name, place_expr) {
+            Ok(()) => {}
+            Err(LoweringFailure::Recoverable) => {
+                // The address did not resolve (a dropped root, a bad key, a non-entry
+                // target); its own diagnostic already fired. Poison the name so its later
+                // uses do not each re-report an unbound place on top of that cause.
+                self.poisoned_bindings.insert(name.to_string());
+            }
+            Err(LoweringFailure::CodeLimitReached) => {
+                return Err(LoweringFailure::CodeLimitReached);
+            }
         }
+        Ok(())
     }
 
     /// Bind a validated `place` name to its durable entry address, pushing the
-    /// [`PlaceLocal`] on success. Returns `None` when the address does not resolve — the
-    /// resolver has already reported why — so the caller can poison the name.
-    fn bind_place_address(&mut self, name: &str, place_expr: &Expression) -> Option<()> {
+    /// [`PlaceLocal`] on success. Returns a recoverable failure when the address does not
+    /// resolve — the resolver has already reported why — so the caller can poison the name.
+    fn bind_place_address(&mut self, name: &str, place_expr: &Expression) -> ConstructResult<()> {
         let access = match self.durable_access(place_expr) {
             Ok(shape) => shape,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         if !matches!(access, Some(DurShape::Entry)) {
             self.fail(SourceDiagnostic::at(
@@ -1254,9 +1285,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 place_expr.span(),
                 "a `place` names a whole durable entry address such as `^root(key)`".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
-        let place = self.resolve_durable(place_expr)?;
+        let place = self
+            .resolve_durable(place_expr)
+            .ok_or(LoweringFailure::Recoverable)?;
         let span = place.span;
         let DurTarget::Entry { node, .. } = place.target else {
             self.fail(SourceDiagnostic::at(
@@ -1266,7 +1299,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 "a `place` names a whole durable entry address such as `^root(key)`, not a field"
                     .to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         // Evaluate each key column of the address exactly once into a fresh slot, root
         // column first, so every later operation through the place reads the slots rather
@@ -1277,9 +1310,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for column in place.keys {
             match column.key {
                 PlaceKey::Expr(key_expr) => {
-                    let key_slot = self.alloc_slot(key_expr.span())?;
+                    let key_slot = self
+                        .alloc_slot(key_expr.span())
+                        .ok_or(LoweringFailure::Recoverable)?;
                     self.lower_as(key_expr, LTy::bare_scalar(column.key_ty))?;
-                    self.push(Instr::LocalSet(key_slot), span);
+                    self.push(Instr::LocalSet(key_slot), span)?;
                     key_slots.push((key_slot, column.key_ty));
                 }
                 PlaceKey::Identity { expr, root, cols } => {
@@ -1296,7 +1331,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         "a `place` names a store address `^root(key)`, not another place"
                             .to_string(),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
             }
         }
@@ -1305,7 +1340,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             key_slots,
             node,
         });
-        Some(())
+        Ok(())
     }
 
     /// Resolve a durable place against the store root, reporting a diagnostic on a
@@ -1573,27 +1608,33 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower a durable read (`^r(k)` entry, `^r(k).branch(bk)` branch entry, `^r(k).f`
     /// field, or the place forms).
-    pub(super) fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
+    pub(super) fn lower_durable_read(&mut self, place: DurablePlace) -> ConstructResult<LTy> {
         self.emit_key_path(&place.keys, place.span)?;
-        Some(match place.target {
+        Ok(match place.target {
             DurTarget::Entry { node, handle } => {
-                let site = self.site_operand(&handle)?;
-                self.push(Instr::DurReadEntry(site), place.span);
+                let site = self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::DurReadEntry(site), place.span)?;
                 LTy::Record {
                     ty: node.record(),
                     optional: true,
                 }
             }
             DurTarget::Field { handle, ty, .. } => {
-                let site = self.site_operand(&handle)?;
-                self.push(Instr::DurReadField(site), place.span);
+                let site = self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::DurReadField(site), place.span)?;
                 garg_to_lty(ty).to_optional()
             }
             // A whole root-level group materializes as one optional group record: the
             // group's own leaves, present exactly when the entry is present.
             DurTarget::Group { handle, record } => {
-                let site = self.site_operand(&handle)?;
-                self.push(Instr::DurReadGroup(site), place.span);
+                let site = self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::DurReadGroup(site), place.span)?;
                 LTy::Record {
                     ty: record,
                     optional: true,
@@ -1610,18 +1651,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 required,
                 ..
             } => {
-                let site = self.site_operand(&handle)?;
-                self.push(Instr::DurReadGroup(site), place.span);
+                let site = self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::DurReadGroup(site), place.span)?;
                 let result = garg_to_lty(ty).to_optional();
-                let to_absent = self.push_branch_present(place.span);
-                self.push(Instr::FieldGet(slot), place.span);
+                let to_absent = self.push_branch_present(place.span)?;
+                self.push(Instr::FieldGet(slot), place.span)?;
                 if required {
-                    self.push(Instr::SomeWrap, place.span);
+                    self.push(Instr::SomeWrap, place.span)?;
                 }
-                let to_end = self.push_jump(place.span);
+                let to_end = self.push_jump(place.span)?;
                 let absent = self.here();
                 self.patch(to_absent, absent);
-                self.push(Instr::VacantLoad(result.image()), place.span);
+                self.push(Instr::VacantLoad(result.image()), place.span)?;
                 let end = self.here();
                 self.patch(to_end, end);
                 result
@@ -1635,7 +1678,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// field address (`^root(key)`, `^root(key).field`, a named `place`) is a keyed
     /// presence probe; a store root (`^root`) or a keyed branch family (`^root(key).notes`)
     /// is the family-populated probe.
-    pub(super) fn lower_exists(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_exists(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1643,14 +1690,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`exists` takes one store place".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         // A managed-index read completes the presence family over an index: a unique index
         // is a complete-key probe (the presence half of the `if const` lookup), a nonunique
         // index is scan-only and has no keyed presence probe.
         let index_read = match self.resolve_index_read(&arg.value) {
             Ok(read) => read,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         if let Some(read) = index_read {
             if read.index.unique {
@@ -1666,7 +1716,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     read.index.name
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         // A family argument (a store root, or a keyed branch family whose tail names a
         // declared branch) is the family-populated probe: it names no immediate child key,
@@ -1674,27 +1724,39 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // A scalar-field tail is not a family — it falls through to the keyed cell probe.
         let is_family = match self.arg_is_family(&arg.value) {
             Ok(family) => family,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         if is_family {
-            let target = self.resolve_traversal_place(&arg.value)?;
-            let site = self.entry_site_operand(target.node)?;
+            let target = self
+                .resolve_traversal_place(&arg.value)
+                .ok_or(LoweringFailure::Recoverable)?;
+            let site = self
+                .entry_site_operand(target.node)
+                .ok_or(LoweringFailure::Recoverable)?;
             self.emit_key_path(&target.ancestor_keys, target.span)?;
-            self.push(Instr::DurFamilyExists(site), span);
-            return Some(LTy::bare_scalar(ScalarType::Bool));
+            self.push(Instr::DurFamilyExists(site), span)?;
+            return Ok(LTy::bare_scalar(ScalarType::Bool));
         }
         // A specific addressed cell (an entry or a field) probes that one cell's presence.
         let access = match self.durable_access(&arg.value) {
             Ok(shape) => shape,
-            Err(drift) => return self.ledger_drift(drift),
+            Err(drift) => {
+                self.ledger_drift::<()>(drift);
+                return Err(LoweringFailure::Recoverable);
+            }
         };
         if access.is_some() {
-            let place = self.resolve_durable(&arg.value)?;
+            let place = self
+                .resolve_durable(&arg.value)
+                .ok_or(LoweringFailure::Recoverable)?;
             self.emit_key_path(&place.keys, place.span)?;
             let site = match place.target {
-                DurTarget::Entry { handle, .. } | DurTarget::Field { handle, .. } => {
-                    self.site_operand(&handle)?
-                }
+                DurTarget::Entry { handle, .. } | DurTarget::Field { handle, .. } => self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?,
                 // A group is markerless — its presence is the entry's presence — so a
                 // group-cell presence probe has no distinct meaning yet; a group leaf has no
                 // site of its own. Probe the containing entry instead.
@@ -1707,11 +1769,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                          containing entry `^root(key)`"
                             .to_string(),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
             };
-            self.push(Instr::DurExists(site), place.span);
-            return Some(LTy::bare_scalar(ScalarType::Bool));
+            self.push(Instr::DurExists(site), place.span)?;
+            return Ok(LTy::bare_scalar(ScalarType::Bool));
         }
         // A bare name whose binding failed to resolve (a poisoned `const`/`place`) is
         // already reported at the binding; its `exists` use is a consequence, not a
@@ -1721,7 +1783,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             && self.poisoned_bindings.contains(name.text())
         {
             self.failed = true;
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         self.fail(SourceDiagnostic::at(
             Code::CheckType.as_str(),
@@ -1731,7 +1793,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
              keyed branch family"
                 .to_string(),
         ));
-        None
+        Err(LoweringFailure::Recoverable)
     }
 
     /// Lower `Id(^root, keys…)`: construct the entry identity of the declared store
@@ -1744,7 +1806,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         &mut self,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         if args.iter().any(|arg| arg.name.is_some()) {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1753,7 +1815,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 "`Id` takes positional arguments: a store root then one value per key column"
                     .to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let Some((root_arg, key_args)) = args.split_first() else {
             self.fail(SourceDiagnostic::at(
@@ -1762,7 +1824,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`Id` takes a store root `^root` then one value per key column".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let Expression::SavedRoot {
             name: root_name,
@@ -1775,9 +1837,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 root_arg.value.span(),
                 "`Id`'s first argument is the store root `^root`".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
-        let root = self.resolve_root(root_name, *root_span)?;
+        let root = self
+            .resolve_root(root_name, *root_span)
+            .ok_or(LoweringFailure::Recoverable)?;
         let key_columns = root.key.clone();
         if key_args.len() != key_columns.len() {
             self.fail(SourceDiagnostic::at(
@@ -1789,7 +1853,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     key_columns.len()
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         // Push each key column root-first in declaration order, coerced to the column's
         // scalar type, so `MakeIdentity` pops them into the tuple in column order.
@@ -1802,8 +1866,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 cols: key_columns.len() as u16,
             },
             span,
-        );
-        Some(LTy::Identity {
+        )?;
+        Ok(LTy::Identity {
             root: root.root_id,
             optional: false,
         })
@@ -1817,7 +1881,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let text = LTy::bare_scalar(ScalarType::Text);
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let (arity, instr, result): (usize, Instr, LTy) = match name {
@@ -1837,13 +1901,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("`{name}` takes {arity} positional string argument(s)"),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         for arg in args {
             self.lower_as(&arg.value, text)?;
         }
-        self.push(instr, span);
-        Some(result)
+        self.push(instr, span)?;
+        Ok(result)
     }
 
     /// Lower a collection-returning text-floor call: `split(text, sep): List[string]`
@@ -1855,7 +1919,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         name: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let text = LTy::bare_scalar(ScalarType::Text);
         let arity = if name == "split" { 2 } else { 1 };
         if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
@@ -1865,7 +1929,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("`{name}` takes {arity} positional string argument(s)"),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         for arg in args {
             self.lower_as(&arg.value, text)?;
@@ -1873,14 +1937,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let result = self
             .records
             .instantiate_list(self.draft, GArg::Scalar(ScalarType::Text));
-        let idx = self.accept_resolution(result, span, "this text collection result")?;
+        let idx = self
+            .accept_resolution(result, span, "this text collection result")
+            .ok_or(LoweringFailure::Recoverable)?;
         let instr = if name == "split" {
             Instr::TextSplit(idx)
         } else {
             Instr::TextLines(idx)
         };
-        self.push(instr, span);
-        Some(LTy::Collection {
+        self.push(instr, span)?;
+        Ok(LTy::Collection {
             idx,
             optional: false,
         })
@@ -1890,7 +1956,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// text elements with a separator. A first argument that is not a `List[string]`
     /// is a typed diagnostic; the VM bounds the result by the `run.text_limit`
     /// concatenation ceiling.
-    pub(super) fn lower_text_join(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_text_join(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let text = LTy::bare_scalar(ScalarType::Text);
         if args.len() != 2 || args.iter().any(|arg| arg.name.is_some()) {
             self.fail(SourceDiagnostic::at(
@@ -1900,7 +1970,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 "`join` takes 2 positional argument(s): a list of string and a separator"
                     .to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let idx = self.collection_arg(&args[0].value)?;
         match self.records.collection_spec(idx) {
@@ -1913,12 +1983,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     args[0].value.span(),
                     "`join` on this type (it joins a list of string)",
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         }
         self.lower_as(&args[1].value, text)?;
-        self.push(Instr::TextJoin, span);
-        Some(text)
+        self.push(Instr::TextJoin, span)?;
+        Ok(text)
     }
 
     /// Lower an empty-collection constructor `List()`/`Map()` against the expected
@@ -1936,7 +2006,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         args: &[Argument],
         span: SourceSpan,
         expected: LTy,
-    ) -> Option<()> {
+    ) -> ConstructResult<()> {
         let LTy::Collection {
             idx,
             optional: false,
@@ -1951,11 +2021,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     expected.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         match (head, self.records.collection_spec(idx)) {
             ("List", CollSpec::List { elem }) => {
-                self.push(Instr::ListNew(idx), span);
+                self.push(Instr::ListNew(idx), span)?;
                 let elem = garg_to_lty(elem);
                 self.append_list_elements(args, elem, span)
             }
@@ -1969,10 +2039,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                          a map literal is not yet available"
                             .to_string(),
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
-                self.push(Instr::MapNew(idx), span);
-                Some(())
+                self.push(Instr::MapNew(idx), span)?;
+                Ok(())
             }
             _ => {
                 self.fail(SourceDiagnostic::at(
@@ -1984,7 +2054,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         self.records.collection_spelling(idx)
                     ),
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -1998,7 +2068,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         args: &[Argument],
         elem: LTy,
         span: SourceSpan,
-    ) -> Option<()> {
+    ) -> ConstructResult<()> {
         for arg in args {
             if arg.name.is_some() {
                 self.fail(SourceDiagnostic::at(
@@ -2007,12 +2077,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "`List(...)` takes positional element values, not named arguments".to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             self.lower_as(&arg.value, elem)?;
-            self.push(Instr::ListAppend, span);
+            self.push(Instr::ListAppend, span)?;
         }
-        Some(())
+        Ok(())
     }
 
     /// Lower a variadic `List(a, b, c)` with no expected type: the element type is
@@ -2023,7 +2093,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         &mut self,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         #[allow(
             clippy::unreachable,
             reason = "match-arm narrowing: the caller dispatches here only for a builtin whose non-empty argument list it already established"
@@ -2038,7 +2108,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`List(...)` takes positional element values, not named arguments".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let elem = self.lower_expr(&first.value)?;
         let Some(elem_garg) = elem.as_garg() else {
@@ -2051,11 +2121,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     elem.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let mut slots = Vec::with_capacity(args.len());
-        let first_slot = self.alloc_slot(first.value.span())?;
-        self.push(Instr::LocalSet(first_slot), span);
+        let first_slot = self
+            .alloc_slot(first.value.span())
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalSet(first_slot), span)?;
         slots.push(first_slot);
         for arg in rest {
             if arg.name.is_some() {
@@ -2065,21 +2137,25 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "`List(...)` takes positional element values, not named arguments".to_string(),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             self.lower_as(&arg.value, elem)?;
-            let slot = self.alloc_slot(arg.value.span())?;
-            self.push(Instr::LocalSet(slot), span);
+            let slot = self
+                .alloc_slot(arg.value.span())
+                .ok_or(LoweringFailure::Recoverable)?;
+            self.push(Instr::LocalSet(slot), span)?;
             slots.push(slot);
         }
         let result = self.records.instantiate_list(self.draft, elem_garg);
-        let idx = self.accept_resolution(result, span, "this list literal")?;
-        self.push(Instr::ListNew(idx), span);
+        let idx = self
+            .accept_resolution(result, span, "this list literal")
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ListNew(idx), span)?;
         for slot in slots {
-            self.push(Instr::LocalGet(slot), span);
-            self.push(Instr::ListAppend, span);
+            self.push(Instr::LocalGet(slot), span)?;
+            self.push(Instr::ListAppend, span)?;
         }
-        Some(LTy::Collection {
+        Ok(LTy::Collection {
             idx,
             optional: false,
         })
@@ -2087,14 +2163,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower `isEmpty(x)` over a string or a finite collection. A string routes to
     /// the text floor; a `List`/`Map` lowers to `length(x) == 0`.
-    pub(super) fn lower_is_empty(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_is_empty(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(builtin_arity(self.file, span, "isEmpty", 1));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if arg.name.is_some() {
             self.fail(builtin_arity(self.file, span, "isEmpty", 1));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let ty = self.lower_expr(&arg.value)?;
         match ty {
@@ -2102,8 +2182,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 scalar: ScalarType::Text,
                 optional: false,
             } => {
-                self.push(Instr::TextIsEmpty, span);
-                Some(LTy::bare_scalar(ScalarType::Bool))
+                self.push(Instr::TextIsEmpty, span)?;
+                Ok(LTy::bare_scalar(ScalarType::Bool))
             }
             LTy::Collection {
                 idx,
@@ -2113,11 +2193,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     CollSpec::List { .. } => Instr::ListLen,
                     CollSpec::Map { .. } => Instr::MapLen,
                 };
-                self.push(len, span);
-                let zero = self.checked_mint(|draft| draft.intern_int(0))?;
-                self.push(Instr::ConstLoad(zero), span);
-                self.push(Instr::EqInt, span);
-                Some(LTy::bare_scalar(ScalarType::Bool))
+                self.push(len, span)?;
+                let zero = self
+                    .checked_mint(|draft| draft.intern_int(0))
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::ConstLoad(zero), span)?;
+                self.push(Instr::EqInt, span)?;
+                Ok(LTy::bare_scalar(ScalarType::Bool))
             }
             _ => {
                 self.fail(unsupported(
@@ -2125,7 +2207,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     arg.value.span(),
                     "`isEmpty` on this type (it accepts a string, list, or map)",
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -2143,7 +2225,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         base: &Expression,
         keys: &[Expression],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let base_ty = self.lower_expr(base)?;
         let LTy::Collection {
             idx,
@@ -2159,7 +2241,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     base_ty.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let [key] = keys else {
             self.fail(SourceDiagnostic::at(
@@ -2168,7 +2250,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "a local bracket lookup takes exactly one key".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         match self.records.collection_spec(idx) {
             CollSpec::List { elem } => {
@@ -2190,16 +2272,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         key.span(),
                         message,
                     ));
-                    return None;
+                    return Err(LoweringFailure::Recoverable);
                 }
                 self.lower_as(key, LTy::bare_scalar(ScalarType::Int))?;
-                self.push(Instr::ListIndex, span);
-                Some(garg_to_lty(elem).to_optional())
+                self.push(Instr::ListIndex, span)?;
+                Ok(garg_to_lty(elem).to_optional())
             }
             CollSpec::Map { key: key_ty, value } => {
                 self.lower_as(key, garg_to_lty(key_ty))?;
-                self.push(Instr::MapGet, span);
-                Some(garg_to_lty(value).to_optional())
+                self.push(Instr::MapGet, span)?;
+                Ok(garg_to_lty(value).to_optional())
             }
         }
     }
@@ -2217,7 +2299,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         keys: &[Expression],
         span: SourceSpan,
         value: &Expression,
-    ) {
+    ) -> ConstructResult<()> {
         let Expression::Name {
             segments,
             span: base_span,
@@ -2229,16 +2311,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 base.span(),
                 "this assignment target",
             ));
-            return;
+            return Ok(());
         };
         let [name] = &segments[..] else {
             self.fail(unsupported(self.file, *base_span, "this assignment target"));
-            return;
+            return Ok(());
         };
         let name = name.text();
         let Some(local) = self.lookup(name) else {
             self.fail(name_error(self.file, *base_span, name));
-            return;
+            return Ok(());
         };
         let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);
         let LTy::Collection {
@@ -2255,7 +2337,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ty.spelling(self.records)
                 ),
             ));
-            return;
+            return Ok(());
         };
         let [key] = keys else {
             self.fail(SourceDiagnostic::at(
@@ -2264,7 +2346,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "a local bracket assignment takes exactly one key".to_string(),
             ));
-            return;
+            return Ok(());
         };
         match self.records.collection_spec(idx) {
             CollSpec::Map {
@@ -2278,17 +2360,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *base_span,
                         format!("`{name}` is a `const` and cannot be reassigned"),
                     ));
-                    return;
+                    return Ok(());
                 }
-                self.push(Instr::LocalGet(slot), span);
-                if self.lower_as(key, garg_to_lty(key_ty)).is_none() {
-                    return;
-                }
-                if self.lower_as(value, garg_to_lty(value_ty)).is_none() {
-                    return;
-                }
-                self.push(Instr::MapInsert, span);
-                self.push(Instr::LocalSet(slot), span);
+                self.push(Instr::LocalGet(slot), span)?;
+                self.lower_as(key, garg_to_lty(key_ty))?;
+                self.lower_as(value, garg_to_lty(value_ty))?;
+                self.push(Instr::MapInsert, span)?;
+                self.push(Instr::LocalSet(slot), span)?;
             }
             CollSpec::List { elem } => {
                 let rhs = simple_value_spelling(value).unwrap_or_else(|| "_".to_string());
@@ -2305,6 +2383,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 ));
             }
         }
+        Ok(())
     }
 
     /// Lower `unset m[k]`: remove a key from a local map, idempotent on an absent key.
@@ -2316,7 +2395,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         base: &Expression,
         keys: &[Expression],
         span: SourceSpan,
-    ) {
+    ) -> ConstructResult<()> {
         let Expression::Name {
             segments,
             span: base_span,
@@ -2324,16 +2403,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = base
         else {
             self.fail(unsupported(self.file, base.span(), "this `unset` target"));
-            return;
+            return Ok(());
         };
         let [name] = &segments[..] else {
             self.fail(unsupported(self.file, *base_span, "this `unset` target"));
-            return;
+            return Ok(());
         };
         let name = name.text();
         let Some(local) = self.lookup(name) else {
             self.fail(name_error(self.file, *base_span, name));
-            return;
+            return Ok(());
         };
         let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);
         let LTy::Collection {
@@ -2350,7 +2429,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ty.spelling(self.records)
                 ),
             ));
-            return;
+            return Ok(());
         };
         let [key] = keys else {
             self.fail(SourceDiagnostic::at(
@@ -2359,7 +2438,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "a local bracket removal takes exactly one key".to_string(),
             ));
-            return;
+            return Ok(());
         };
         match self.records.collection_spec(idx) {
             CollSpec::Map { key: key_ty, .. } => {
@@ -2370,14 +2449,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *base_span,
                         format!("`{name}` is a `const` and cannot be modified"),
                     ));
-                    return;
+                    return Ok(());
                 }
-                self.push(Instr::LocalGet(slot), span);
-                if self.lower_as(key, garg_to_lty(key_ty)).is_none() {
-                    return;
-                }
-                self.push(Instr::MapRemove, span);
-                self.push(Instr::LocalSet(slot), span);
+                self.push(Instr::LocalGet(slot), span)?;
+                self.lower_as(key, garg_to_lty(key_ty))?;
+                self.push(Instr::MapRemove, span)?;
+                self.push(Instr::LocalSet(slot), span)?;
             }
             CollSpec::List { elem } => {
                 self.fail(SourceDiagnostic::at(
@@ -2392,37 +2469,46 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 ));
             }
         }
+        Ok(())
     }
 
-    pub(super) fn lower_length(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_length(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(builtin_arity(self.file, span, "length", 1));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if arg.name.is_some() {
             self.fail(builtin_arity(self.file, span, "length", 1));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let idx = self.collection_arg(&arg.value)?;
         let len = match self.records.collection_spec(idx) {
             CollSpec::List { .. } => Instr::ListLen,
             CollSpec::Map { .. } => Instr::MapLen,
         };
-        self.push(len, span);
-        Some(LTy::bare_scalar(ScalarType::Int))
+        self.push(len, span)?;
+        Ok(LTy::bare_scalar(ScalarType::Int))
     }
 
     /// Lower `append(list, value): List<T>`: append `value` after the last element,
     /// yielding the grown list (collections are values). A non-list first argument,
     /// or a `value` not of the element type, is a typed diagnostic.
-    pub(super) fn lower_append(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_append(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
         let [list_arg, value_arg] = args else {
             self.fail(builtin_arity(self.file, span, "append", 2));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if args.iter().any(|arg| arg.name.is_some()) {
             self.fail(builtin_arity(self.file, span, "append", 2));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let idx = self.collection_arg(&list_arg.value)?;
         let CollSpec::List { elem } = self.records.collection_spec(idx) else {
@@ -2431,11 +2517,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 list_arg.value.span(),
                 "`append` on a map (a map is updated with `insert`)",
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         self.lower_as(&value_arg.value, garg_to_lty(elem))?;
-        self.push(Instr::ListAppend, span);
-        Some(LTy::Collection {
+        self.push(Instr::ListAppend, span)?;
+        Ok(LTy::Collection {
             idx,
             optional: false,
         })
@@ -2443,13 +2529,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower an expression that must be a bare collection, returning its COLLTYPES
     /// index. A non-collection value is a typed diagnostic.
-    fn collection_arg(&mut self, expr: &Expression) -> Option<CollTypeId> {
+    fn collection_arg(&mut self, expr: &Expression) -> ConstructResult<CollTypeId> {
         let ty = self.lower_expr(expr)?;
         match ty {
             LTy::Collection {
                 idx,
                 optional: false,
-            } => Some(idx),
+            } => Ok(idx),
             other => {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -2460,7 +2546,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         other.spelling(self.records)
                     ),
                 ));
-                None
+                Err(LoweringFailure::Recoverable)
             }
         }
     }
@@ -2476,7 +2562,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         scalar: ScalarType,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let spelling = scalar.spelling();
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
@@ -2485,7 +2571,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("`{spelling}` takes one string-literal argument"),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
@@ -2494,7 +2580,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 format!("the `{spelling}` argument is positional"),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         // A temporal value is constructed only from a static string literal, so its
         // canonical form is validated once at compile time rather than parsed at
@@ -2510,11 +2596,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 &format!("constructing a `{spelling}` from a non-literal value"),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let Ok(decoded) = decode_string_literal(text) else {
             self.fail(unsupported(self.file, *arg_span, "this string literal"));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let bytes = decoded.as_bytes();
         let minted = match scalar {
@@ -2536,18 +2622,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             )]
             _ => unreachable!("caller passes only a temporal scalar"),
         };
-        let const_id = self.checked_mint(|_| minted)?;
-        self.push(Instr::ConstLoad(const_id), span);
-        Some(LTy::bare_scalar(scalar))
+        let const_id = self
+            .checked_mint(|_| minted)
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ConstLoad(const_id), span)?;
+        Ok(LTy::bare_scalar(scalar))
     }
 
-    /// Report a malformed or out-of-range temporal literal and return `None`.
+    /// Report a malformed or out-of-range temporal literal.
     fn fail_temporal_literal(
         &mut self,
         scalar: ScalarType,
         value: &str,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let form = match scalar {
             ScalarType::Date => "a canonical date `YYYY-MM-DD` in years 0001-9999",
             ScalarType::Instant => {
@@ -2569,7 +2657,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 scalar.spelling()
             ),
         ));
-        None
+        Err(LoweringFailure::Recoverable)
     }
 
     /// Lower `addDays(date, int): date` or `daysBetween(date, date): int`,
@@ -2579,7 +2667,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         builtin: Builtin,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let (name, second, instr, result) = match builtin {
             Builtin::DateAddDays => (
                 "addDays",
@@ -2601,7 +2689,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let [first_arg, second_arg] = args else {
             self.fail(builtin_arity(self.file, span, name, 2));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if first_arg.name.is_some() || second_arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
@@ -2610,12 +2698,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("`{name}` arguments are positional"),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         self.expect_bare_scalar(&first_arg.value, ScalarType::Date, name)?;
         self.expect_bare_scalar(&second_arg.value, second, name)?;
-        self.push(instr, span);
-        Some(LTy::bare_scalar(result))
+        self.push(instr, span)?;
+        Ok(LTy::bare_scalar(result))
     }
 
     /// Lower `expr` and require it to be exactly the bare scalar `expected`, failing
@@ -2625,10 +2713,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         expr: &Expression,
         expected: ScalarType,
         builtin: &str,
-    ) -> Option<()> {
+    ) -> ConstructResult<()> {
         let ty = self.lower_expr(expr)?;
         if ty == LTy::bare_scalar(expected) {
-            return Some(());
+            return Ok(());
         }
         self.fail(SourceDiagnostic::at(
             Code::CheckType.as_str(),
@@ -2640,7 +2728,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 ty.spelling(self.records)
             ),
         ));
-        None
+        Err(LoweringFailure::Recoverable)
     }
 
     pub(super) fn lower_conversion(
@@ -2648,7 +2736,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         target: &str,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -2656,7 +2744,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("`{target}` conversion takes one value"),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
@@ -2665,15 +2753,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 "a conversion argument is positional".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let source = self.lower_expr(&arg.value)?;
         // `string(value)` renders any interpolable value — a scalar, an enum, or an
         // entry identity — to its canonical text, the same rendering interpolation and
         // program output use.
         if target == "string" && is_interpolable(source) {
-            self.push(Instr::ConvString, span);
-            return Some(LTy::bare_scalar(ScalarType::Text));
+            self.push(Instr::ConvString, span)?;
+            return Ok(LTy::bare_scalar(ScalarType::Text));
         }
         use ScalarType::{Bytes, Text};
         let (instr, result) = match (target, source.bare_scalar_type()) {
@@ -2684,11 +2772,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     &format!("converting {} to {target}", source.spelling(self.records)),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
-        self.push(instr, span);
-        Some(LTy::bare_scalar(result))
+        self.push(instr, span)?;
+        Ok(LTy::bare_scalar(result))
     }
 
     /// Lower `unreachable("static text")`: the sole application-invariant fault. It
@@ -2698,7 +2786,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         &mut self,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<CallResult> {
+    ) -> ConstructResult<CallResult> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -2706,7 +2794,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`unreachable` takes one static string literal".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
@@ -2715,7 +2803,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 "`unreachable` takes one positional static string literal".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let Expression::Literal {
             kind: LiteralKind::String,
@@ -2729,21 +2817,27 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 "`unreachable` requires a static string literal, not a computed value".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let Ok(decoded) = decode_string_literal(text) else {
             self.fail(unsupported(self.file, *lit_span, "this string literal"));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
-        let const_id = self.checked_mint(|draft| draft.intern_text(&decoded))?;
-        self.push(Instr::Unreachable(const_id), span);
-        Some(CallResult::Diverges)
+        let const_id = self
+            .checked_mint(|draft| draft.intern_text(&decoded))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::Unreachable(const_id), span)?;
+        Ok(CallResult::Diverges)
     }
 
     /// Lower `todo("static text")`: a deferred path the author has not implemented. It
     /// mirrors `unreachable` exactly — one static string literal, a fault instruction
     /// carrying that text, and divergence — but raises `run.todo` when reached.
-    pub(super) fn lower_todo(&mut self, args: &[Argument], span: SourceSpan) -> Option<CallResult> {
+    pub(super) fn lower_todo(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<CallResult> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -2751,7 +2845,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`todo` takes one static string literal".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
@@ -2760,7 +2854,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 "`todo` takes one positional static string literal".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
         let Expression::Literal {
             kind: LiteralKind::String,
@@ -2774,29 +2868,32 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 arg.value.span(),
                 "`todo` requires a static string literal, not a computed value".to_string(),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
         let Ok(decoded) = decode_string_literal(text) else {
             self.fail(unsupported(self.file, *lit_span, "this string literal"));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         };
-        let const_id = self.checked_mint(|draft| draft.intern_text(&decoded))?;
-        self.push(Instr::Todo(const_id), span);
-        Some(CallResult::Diverges)
+        let const_id = self
+            .checked_mint(|draft| draft.intern_text(&decoded))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::Todo(const_id), span)?;
+        Ok(CallResult::Diverges)
     }
 
     /// Lower a durable assignment: a whole-entry upsert (root or branch) or a root
     /// field set.
-    pub(super) fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
+    pub(super) fn lower_durable_assign(
+        &mut self,
+        place: DurablePlace,
+        value: &Expression,
+    ) -> ConstructResult<()> {
         match &place.target {
             DurTarget::Entry { node, handle } => {
                 let root_slot = place.root_bound_slot();
                 let (handle, record) = (handle.clone(), node.record());
-                if self
-                    .lower_upsert(&place.keys, &handle, record, value, place.span)
-                    .is_some()
-                    && let Some(slot) = root_slot
-                {
+                self.lower_upsert(&place.keys, &handle, record, value, place.span)?;
+                if let Some(slot) = root_slot {
                     // A root upsert leaves the root entry present on every path from
                     // here, so subsequent sparse sets through the root place lower to the
                     // strict form. A key-path with more than one bound key slot — whether a
@@ -2812,9 +2909,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 required,
             } => {
                 let (ty, required) = (*ty, *required);
-                let Some(site) = self.site_operand(handle) else {
-                    return;
-                };
+                let site = self
+                    .site_operand(handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
                 // A sparse set through a `place` a presence fact dominates lowers to the
                 // strict present-entry form: it reads the containing entry's whole
                 // key-path from the place's pre-evaluated slots and asserts the entry is
@@ -2827,25 +2924,19 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     && self.is_present_path(&key_slots)
                 {
                     let expected = bare.to_optional();
-                    if self.lower_as(value, expected).is_none() {
-                        return;
-                    }
-                    self.push(Instr::DurSetSparsePresent { site, key_slots }, place.span);
-                    return;
+                    self.lower_as(value, expected)?;
+                    self.push(Instr::DurSetSparsePresent { site, key_slots }, place.span)?;
+                    return Ok(());
                 }
-                if self.emit_key_path(&place.keys, place.span).is_none() {
-                    return;
-                }
+                self.emit_key_path(&place.keys, place.span)?;
                 let expected = if required { bare } else { bare.to_optional() };
-                if self.lower_as(value, expected).is_none() {
-                    return;
-                }
+                self.lower_as(value, expected)?;
                 let instr = if required {
                     Instr::DurSetRequired(site)
                 } else {
                     Instr::DurSetSparse(site)
                 };
-                self.push(instr, place.span);
+                self.push(instr, place.span)?;
             }
             // `^root(k).group = R.group(…)`: an exact whole-group replacement, group-scoped
             // (the entry's other groups, top-level fields, and branches are untouched). The
@@ -2854,25 +2945,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // is a value unit of an existing entry, never created on its own.
             DurTarget::Group { handle, record } => {
                 let record = *record;
-                let Some(site) = self.site_operand(handle) else {
-                    return;
-                };
-                if self.emit_key_path(&place.keys, place.span).is_none() {
-                    return;
-                }
-                if self
-                    .lower_as(
-                        value,
-                        LTy::Record {
-                            ty: record,
-                            optional: false,
-                        },
-                    )
-                    .is_none()
-                {
-                    return;
-                }
-                self.push(Instr::DurReplaceGroup(site), place.span);
+                let site = self
+                    .site_operand(handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.emit_key_path(&place.keys, place.span)?;
+                self.lower_as(
+                    value,
+                    LTy::Record {
+                        ty: record,
+                        optional: false,
+                    },
+                )?;
+                self.push(Instr::DurReplaceGroup(site), place.span)?;
             }
             // `^root(k).group.leaf = value`: a whole-group read-modify-write.
             DurTarget::GroupLeaf {
@@ -2885,9 +2969,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     slot,
                     GroupLeafEdit::Set { value, ty },
                     place.span,
-                );
+                )?;
             }
         }
+        Ok(())
     }
 
     /// Lower a group-leaf read-modify-write `^root(k).group.leaf = value` or
@@ -2904,8 +2989,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         slot: u16,
         edit: GroupLeafEdit,
         span: SourceSpan,
-    ) -> Option<()> {
-        let entry_site = self.site_operand(handle)?;
+    ) -> ConstructResult<()> {
+        let entry_site = self
+            .site_operand(handle)
+            .ok_or(LoweringFailure::Recoverable)?;
         // Evaluate each key column once into a fresh slot (root-first) so the read and the
         // replace key off the same evaluated columns. A group is a root-level value unit, so
         // its key-path is the root's — an identity operand spreads into the root's columns.
@@ -2914,9 +3001,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // record is on top of the stack when the leaf op runs.
         let value_slot = match &edit {
             GroupLeafEdit::Set { value, ty } => {
-                let value_slot = self.alloc_slot(span)?;
+                let value_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
                 self.lower_as(value, garg_to_lty(*ty))?;
-                self.push(Instr::LocalSet(value_slot), span);
+                self.push(Instr::LocalSet(value_slot), span)?;
                 Some(value_slot)
             }
             GroupLeafEdit::Unset => None,
@@ -2924,9 +3011,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // Read the group; present -> its materialized record is on the stack and the write
         // back runs; absent -> jump past the write back, a clean no-op (the group was never
         // there to modify).
-        self.emit_slots(&key_slots, span);
-        self.push(Instr::DurReadGroup(entry_site.clone()), span);
-        let to_end = self.push_branch_present(span);
+        self.emit_slots(&key_slots, span)?;
+        self.push(Instr::DurReadGroup(entry_site.clone()), span)?;
+        let to_end = self.push_branch_present(span)?;
         // Present: rewrite the leaf slot on the materialized record, then replace the group.
         match edit {
             GroupLeafEdit::Set { .. } => {
@@ -2937,21 +3024,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.push(
                     Instr::LocalGet(value_slot.expect("a set evaluates its value")),
                     span,
-                );
-                self.push(Instr::FieldSet(slot), span);
+                )?;
+                self.push(Instr::FieldSet(slot), span)?;
             }
             GroupLeafEdit::Unset => {
-                self.push(Instr::FieldUnset(slot), span);
+                self.push(Instr::FieldUnset(slot), span)?;
             }
         }
-        let rec_slot = self.alloc_slot(span)?;
-        self.push(Instr::LocalSet(rec_slot), span);
-        self.emit_slots(&key_slots, span);
-        self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurReplaceGroup(entry_site), span);
+        let rec_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalSet(rec_slot), span)?;
+        self.emit_slots(&key_slots, span)?;
+        self.push(Instr::LocalGet(rec_slot), span)?;
+        self.push(Instr::DurReplaceGroup(entry_site), span)?;
         let end = self.here();
         self.patch(to_end, end);
-        Some(())
+        Ok(())
     }
 
     /// Lower `^r(k) = record` or `^r(k).branch(bk) = Resource.branch(...)` to the
@@ -2966,8 +3053,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         record: TypeId,
         value: &Expression,
         span: SourceSpan,
-    ) -> Option<()> {
-        let entry_site = self.site_operand(handle)?;
+    ) -> ConstructResult<()> {
+        let entry_site = self
+            .site_operand(handle)
+            .ok_or(LoweringFailure::Recoverable)?;
         // A bound (place) column already holds its key in a pre-evaluated slot; reuse it
         // so the create/replace ops key off it (the verifier's presence lattice
         // recognizes a root create as establishing that slot's entry). An inline column
@@ -2976,7 +3065,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // evaluation whether the whole-entry address is a root (identity or per-column) or
         // a branch below an identity-keyed root.
         let key_slots: Vec<u16> = self.capture_key_slots(keys, span)?;
-        let rec_slot = self.alloc_slot(span)?;
+        let rec_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
         self.lower_as(
             value,
             LTy::Record {
@@ -2984,51 +3073,56 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 optional: false,
             },
         )?;
-        self.push(Instr::LocalSet(rec_slot), span);
+        self.push(Instr::LocalSet(rec_slot), span)?;
 
-        self.emit_slots(&key_slots, span);
-        self.push(Instr::DurExists(entry_site.clone()), span);
-        let to_create = self.push_jif(span);
+        self.emit_slots(&key_slots, span)?;
+        self.push(Instr::DurExists(entry_site.clone()), span)?;
+        let to_create = self.push_jif(span)?;
         // Present: replace.
-        self.emit_slots(&key_slots, span);
-        self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurReplaceEntry(entry_site.clone()), span);
-        let to_end = self.push_jump(span);
+        self.emit_slots(&key_slots, span)?;
+        self.push(Instr::LocalGet(rec_slot), span)?;
+        self.push(Instr::DurReplaceEntry(entry_site.clone()), span)?;
+        let to_end = self.push_jump(span)?;
         // Absent: create.
         let create_at = self.here();
         self.patch(to_create, create_at);
-        self.emit_slots(&key_slots, span);
-        self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurCreateEntry(entry_site), span);
+        self.emit_slots(&key_slots, span)?;
+        self.push(Instr::LocalGet(rec_slot), span)?;
+        self.push(Instr::DurCreateEntry(entry_site), span)?;
         let end = self.here();
         self.patch(to_end, end);
-        Some(())
+        Ok(())
     }
 
     /// Push a durable operation's key-path from pre-evaluated slots, root column first,
     /// so the innermost key lands on top — the order the kernel's `pop_key_path` reads.
-    fn emit_slots(&mut self, slots: &[u16], span: SourceSpan) {
+    fn emit_slots(&mut self, slots: &[u16], span: SourceSpan) -> ConstructResult<()> {
         for slot in slots {
-            self.push(Instr::LocalGet(*slot), span);
+            self.push(Instr::LocalGet(*slot), span)?;
         }
+        Ok(())
     }
 
     /// Lower `delete ^r(k)` / `delete ^r(k).branch(bk)` (entry payload erase) or
     /// `delete ^r(k).f` (sparse-field erase).
-    pub(super) fn lower_durable_delete(&mut self, path: &Expression, span: SourceSpan) {
+    pub(super) fn lower_durable_delete(
+        &mut self,
+        path: &Expression,
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
         let access = match self.durable_access(path) {
             Ok(shape) => shape,
             Err(drift) => {
                 self.record_invariant(LowerInvariant::from(drift));
-                return;
+                return Ok(());
             }
         };
         if access.is_none() {
             self.fail(unsupported(self.file, span, "this delete target"));
-            return;
+            return Ok(());
         }
         let Some(place) = self.resolve_durable(path) else {
-            return;
+            return Ok(());
         };
         // A group-leaf clear is a whole-group read-modify-write (its key-path is evaluated
         // inside the helper), so it is handled before the shared single key-path emission.
@@ -3046,22 +3140,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     place.span,
                     "a required group leaf cannot be deleted".to_string(),
                 ));
-                return;
+                return Ok(());
             }
             let (handle, slot, span) = (handle.clone(), *slot, place.span);
-            self.lower_group_leaf_rmw(&place.keys, &handle, slot, GroupLeafEdit::Unset, span);
-            return;
+            self.lower_group_leaf_rmw(&place.keys, &handle, slot, GroupLeafEdit::Unset, span)?;
+            return Ok(());
         }
         let key_path = place.bound_key_path();
-        if self.emit_key_path(&place.keys, place.span).is_none() {
-            return;
-        }
+        self.emit_key_path(&place.keys, place.span)?;
         match place.target {
             DurTarget::Entry { handle, .. } => {
-                let Some(site) = self.site_operand(&handle) else {
-                    return;
-                };
-                self.push(Instr::DurEraseEntry(site), place.span);
+                let site = self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::DurEraseEntry(site), place.span)?;
                 // The entry's payload is gone; a later sparse set through the same place
                 // must not assume presence.
                 if let Some(path) = &key_path {
@@ -3078,20 +3170,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         place.span,
                         "a required field cannot be deleted".to_string(),
                     ));
-                    return;
+                    return Ok(());
                 }
-                let Some(site) = self.site_operand(&handle) else {
-                    return;
-                };
-                self.push(Instr::DurEraseField(site), place.span);
+                let site = self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::DurEraseField(site), place.span)?;
             }
             // `delete ^root(k).group`: erase only that group's leaves; the entry's other
             // groups, top-level fields, and branches are untouched.
             DurTarget::Group { handle, .. } => {
-                let Some(site) = self.site_operand(&handle) else {
-                    return;
-                };
-                self.push(Instr::DurEraseGroup(site), place.span);
+                let site = self
+                    .site_operand(&handle)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::DurEraseGroup(site), place.span)?;
             }
             #[allow(
                 clippy::unreachable,
@@ -3101,5 +3193,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 unreachable!("a group-leaf delete is handled before the shared key-path emit")
             }
         }
+        Ok(())
     }
 }

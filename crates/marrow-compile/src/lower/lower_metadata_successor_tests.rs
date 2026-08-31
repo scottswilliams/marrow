@@ -109,7 +109,7 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let local_count = lowerer.locals.len();
     let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
-    assert!(result.is_none());
+    assert_eq!(result, Err(LoweringFailure::Recoverable));
     assert!(diagnostics.is_empty());
     assert_eq!(local_count, 0);
     assert!(matches!(
@@ -158,7 +158,7 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let slot_count = lowerer.slot_count;
     let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
-    assert_eq!(flow, Flow::Rejected);
+    assert_eq!(flow, Ok(Flow::Rejected));
     assert!(diagnostics.is_empty());
     assert_eq!(local_count, 0);
     assert_eq!(slot_count, 2);
@@ -224,7 +224,7 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     let code = lowerer.code.clone();
     let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
-    assert_eq!(flow, Flow::Rejected);
+    assert_eq!(flow, Err(LoweringFailure::Recoverable));
     assert!(diagnostics.is_empty());
     assert!(matches!(
         outcome,
@@ -283,7 +283,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let code = lowerer.code.clone();
     let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
-    assert_eq!(flow, Flow::Rejected);
+    assert_eq!(flow, Ok(Flow::Rejected));
     assert!(diagnostics.is_empty());
     assert!(matches!(
         outcome,
@@ -388,9 +388,8 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
     );
 
     assert!(
-        lowerer
-            .lower_generic_struct_literal(template, &[], SourceSpan::default())
-            .is_none()
+        lowerer.lower_generic_struct_literal(template, &[], SourceSpan::default())
+            == Err(LoweringFailure::Recoverable)
     );
     let code = lowerer.code.clone();
     let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
@@ -429,9 +428,8 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
     );
 
     assert!(
-        lowerer
-            .lower_generic_enum_construct(template, "item", &[], SourceSpan::default())
-            .is_none()
+        lowerer.lower_generic_enum_construct(template, "item", &[], SourceSpan::default())
+            == Err(LoweringFailure::Recoverable)
     );
     let code = lowerer.code.clone();
     let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);

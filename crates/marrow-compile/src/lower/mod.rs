@@ -11,8 +11,9 @@
 //! ## Panic surface (never reachable from a source shape)
 //!
 //! Every source-level problem lowering can encounter is reported by pushing a typed
-//! [`SourceDiagnostic`] onto `diagnostics` and returning `None`; lowering never aborts
-//! on ill-typed or unsupported source. The remaining `expect`/`unreachable!`/`panic!`
+//! [`SourceDiagnostic`] onto `diagnostics` and returning a private lowering failure;
+//! lowering never aborts on ill-typed or unsupported source. The remaining
+//! `expect`/`unreachable!`/`panic!`
 //! sites assert invariants established *before* the panicking line, so a source shape
 //! cannot reach one — only a compiler bug could. Each falls into one class, and each
 //! carries a message naming its guarantor:
@@ -82,6 +83,17 @@ enum Flow {
     Terminates,
     Rejected,
 }
+
+/// Why a lowering operation produced no value. Ordinary source failures remain
+/// recoverable at the statement boundary; the first instruction that would cross a
+/// function's code-byte bound instead propagates out of the entire body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoweringFailure {
+    Recoverable,
+    CodeLimitReached,
+}
+
+type ConstructResult<T> = Result<T, LoweringFailure>;
 
 /// The only two outcomes of a finite positional walk: completed lowering with its
 /// deferred `break` jumps, or terminal rejection by a lowering owner.
@@ -348,7 +360,8 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// instruction-width owner before each append.
     code_bytes: usize,
     /// The first instruction that would cross the per-function code-byte bound is a
-    /// source-located terminal refusal. Later emission in the same construct is a no-op.
+    /// source-located terminal refusal. Its error propagates out of the whole body before
+    /// any later lowering work can run.
     code_limit_reached: bool,
     spans: Vec<SpanEntry>,
     /// Full UTF-8 source span of each emitted instruction, parallel to `code`. The
@@ -818,9 +831,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             if let Some(id) = ty.bare_nominal() {
                 let info = lowerer.records.nominal(id);
                 let (lo, hi) = (info.lo, info.hi);
-                lowerer.push(Instr::LocalGet(slot), function.span);
-                lowerer.push(Instr::RangeGuard { lo, hi }, function.span);
-                lowerer.push(Instr::Pop, function.span);
+                if lowerer
+                    .push(Instr::LocalGet(slot), function.span)
+                    .and_then(|()| lowerer.push(Instr::RangeGuard { lo, hi }, function.span))
+                    .and_then(|()| lowerer.push(Instr::Pop, function.span))
+                    .is_err()
+                {
+                    return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
+                }
             }
         }
 
@@ -828,11 +846,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
         }
 
-        let body_flow = lowerer.lower_block(&function.body);
+        let body_flow = match lowerer.lower_block(&function.body) {
+            Ok(flow) => flow,
+            Err(LoweringFailure::Recoverable | LoweringFailure::CodeLimitReached) => {
+                return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
+            }
+        };
         match (body_flow, lowerer.ret) {
             (Flow::Terminates, _) => {}
             (Flow::Fallthrough, RetType::Unit) => {
-                lowerer.push(Instr::Return, function.body.span);
+                if lowerer.push(Instr::Return, function.body.span).is_err() {
+                    return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
+                }
             }
             (Flow::Fallthrough, RetType::Value(_)) => {
                 lowerer.fail(SourceDiagnostic::at(
@@ -905,9 +930,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // A test body is a unit-returning block: control that falls through ends with
         // an implicit return, exactly like a unit function.
         match lowerer.lower_block(body) {
-            Flow::Fallthrough => lowerer.push(Instr::Return, body.span),
-            Flow::Terminates => {}
-            Flow::Rejected => return lowerer.finish(name, Vec::new(), ImageType::Unit),
+            Ok(Flow::Fallthrough) => {
+                if lowerer.push(Instr::Return, body.span).is_err() {
+                    return lowerer.finish(name, Vec::new(), ImageType::Unit);
+                }
+            }
+            Ok(Flow::Terminates) => {}
+            Ok(Flow::Rejected)
+            | Err(LoweringFailure::Recoverable | LoweringFailure::CodeLimitReached) => {
+                return lowerer.finish(name, Vec::new(), ImageType::Unit);
+            }
         }
         lowerer.finish(name, Vec::new(), ImageType::Unit)
     }
@@ -956,9 +988,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.code.len()
     }
 
-    fn push(&mut self, instr: Instr, span: SourceSpan) {
+    fn push(&mut self, instr: Instr, span: SourceSpan) -> ConstructResult<()> {
         if self.code_limit_reached {
-            return;
+            return Err(LoweringFailure::CodeLimitReached);
         }
         let next_code_bytes = self
             .code_bytes
@@ -977,7 +1009,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     marrow_image::bounds::MAX_CODE_BYTES
                 ),
             ));
-            return;
+            return Err(LoweringFailure::CodeLimitReached);
         };
         if self.txn_depth == 0 {
             match &instr {
@@ -995,30 +1027,28 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             column: span.column.max(1),
         });
         self.full_spans.push(span);
+        Ok(())
     }
 
-    fn push_jump(&mut self, span: SourceSpan) -> usize {
+    fn push_jump(&mut self, span: SourceSpan) -> ConstructResult<usize> {
         let at = self.here();
-        self.push(Instr::Jump(0), span);
-        at
+        self.push(Instr::Jump(0), span)?;
+        Ok(at)
     }
 
-    fn push_jif(&mut self, span: SourceSpan) -> usize {
+    fn push_jif(&mut self, span: SourceSpan) -> ConstructResult<usize> {
         let at = self.here();
-        self.push(Instr::JumpIfFalse(0), span);
-        at
+        self.push(Instr::JumpIfFalse(0), span)?;
+        Ok(at)
     }
 
-    fn push_branch_present(&mut self, span: SourceSpan) -> usize {
+    fn push_branch_present(&mut self, span: SourceSpan) -> ConstructResult<usize> {
         let at = self.here();
-        self.push(Instr::BranchPresent(0), span);
-        at
+        self.push(Instr::BranchPresent(0), span)?;
+        Ok(at)
     }
 
     fn patch(&mut self, at: usize, target: usize) {
-        if self.code_limit_reached && at == self.code.len() {
-            return;
-        }
         let instr = &mut self.code[at];
         match instr {
             Instr::Jump(t)
@@ -1292,6 +1322,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             || self.local_limit_reached
             || self.code_limit_reached
             || self.invariant.is_some()
+    }
+
+    /// Preserve the code-byte refusal's structural carrier when a shared terminal
+    /// check runs inside expression lowering; every other terminal owner uses the
+    /// ordinary construct-refusal path and is classified at the statement boundary.
+    fn terminal_lowering_failure(&self) -> LoweringFailure {
+        debug_assert!(self.terminal_rejection());
+        if self.code_limit_reached {
+            LoweringFailure::CodeLimitReached
+        } else {
+            LoweringFailure::Recoverable
+        }
     }
 
     fn accept_resolution<T>(
@@ -1832,15 +1874,21 @@ mod generic_cache_boundary_tests {
 
         assert_eq!(Instr::Pop.encoded_len(), 1);
         for _ in 0..marrow_image::bounds::MAX_CODE_BYTES {
-            lowerer.push(Instr::Pop, request_span);
+            assert_eq!(lowerer.push(Instr::Pop, request_span), Ok(()));
         }
         assert_eq!(lowerer.code_bytes, marrow_image::bounds::MAX_CODE_BYTES);
         assert_eq!(lowerer.code.len(), marrow_image::bounds::MAX_CODE_BYTES);
         assert_eq!(lowerer.spans.len(), lowerer.code.len());
         assert_eq!(lowerer.full_spans.len(), lowerer.code.len());
 
-        lowerer.push(Instr::Pop, request_span);
-        lowerer.push(Instr::Pop, request_span);
+        assert_eq!(
+            lowerer.push(Instr::Pop, request_span),
+            Err(LoweringFailure::CodeLimitReached)
+        );
+        assert_eq!(
+            lowerer.push(Instr::Pop, request_span),
+            Err(LoweringFailure::CodeLimitReached)
+        );
         assert_eq!(lowerer.code_bytes, marrow_image::bounds::MAX_CODE_BYTES);
         assert_eq!(lowerer.code.len(), marrow_image::bounds::MAX_CODE_BYTES);
         assert_eq!(lowerer.spans.len(), lowerer.code.len());
@@ -1988,12 +2036,11 @@ mod generic_cache_boundary_tests {
 
         assert!(matches!(
             lowerer.lower_match(&name("value"), &[], span()),
-            Flow::Rejected
+            Ok(Flow::Rejected)
         ));
         assert!(
-            lowerer
-                .lower_generic_struct_literal(0, &[], span())
-                .is_none(),
+            lowerer.lower_generic_struct_literal(0, &[], span())
+                == Err(LoweringFailure::Recoverable),
             "a later template-kind invariant also rejects lowering"
         );
         let result = lowerer.finish("broken", Vec::new(), ImageType::Unit);
@@ -2040,9 +2087,8 @@ mod generic_cache_boundary_tests {
         );
 
         assert!(
-            lowerer
-                .lower_generic_struct_literal(0, &[], span())
-                .is_none()
+            lowerer.lower_generic_struct_literal(0, &[], span())
+                == Err(LoweringFailure::Recoverable)
         );
         assert!(
             lowerer
@@ -2119,9 +2165,8 @@ mod generic_cache_boundary_tests {
                 .is_none()
         );
         assert!(
-            lowerer
-                .lower_generic_struct_literal(0, &[], span())
-                .is_none(),
+            lowerer.lower_generic_struct_literal(0, &[], span())
+                == Err(LoweringFailure::Recoverable),
             "a later template-kind invariant also rejects lowering"
         );
         let result = lowerer.finish("broken", Vec::new(), ImageType::Unit);
@@ -2202,9 +2247,8 @@ mod generic_cache_boundary_tests {
         }];
 
         assert!(
-            lowerer
-                .lower_generic_struct_literal(template, &args, span())
-                .is_none()
+            lowerer.lower_generic_struct_literal(template, &args, span())
+                == Err(LoweringFailure::Recoverable)
         );
         let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
             panic!("wrong minted ID kind rejects finish")
@@ -2275,9 +2319,8 @@ mod generic_cache_boundary_tests {
         }];
 
         assert!(
-            lowerer
-                .lower_generic_enum_construct(template, "some", &args, span())
-                .is_none()
+            lowerer.lower_generic_enum_construct(template, "some", &args, span())
+                == Err(LoweringFailure::Recoverable)
         );
         let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
             panic!("wrong minted ID kind rejects finish")
@@ -2348,7 +2391,7 @@ mod generic_cache_boundary_tests {
 
         assert_eq!(
             lowerer.lower_match(&name("value"), &[], span()),
-            Flow::Rejected
+            Ok(Flow::Rejected)
         );
         let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
             panic!("wrong Ready body rejects finish")
@@ -2423,9 +2466,8 @@ mod generic_cache_boundary_tests {
         }];
 
         assert!(
-            lowerer
-                .lower_generic_enum_construct(template, "some", &args, span())
-                .is_none()
+            lowerer.lower_generic_enum_construct(template, "some", &args, span())
+                == Err(LoweringFailure::Recoverable)
         );
         let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
             panic!("missing Ready variant rejects finish")
@@ -2516,7 +2558,10 @@ mod generic_cache_boundary_tests {
             },
         ];
 
-        assert!(lowerer.lower_interpolation(&parts, span()).is_none());
+        assert_eq!(
+            lowerer.lower_interpolation(&parts, span()),
+            Err(LoweringFailure::Recoverable)
+        );
         assert!(lowerer.code.is_empty());
         let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
             panic!("interpolation invariant rejects finish")
@@ -2577,21 +2622,22 @@ mod generic_cache_boundary_tests {
         );
 
         assert!(
-            lowerer
-                .lower_ctor_as(
-                    CtorKind::None,
-                    &Expression::Name {
-                        segments: Box::new([NameSegment::new("none", span())]),
-                        span: span(),
-                    },
-                    LTy::Enum {
-                        ty: option,
-                        optional: false,
-                    },
-                )
-                .is_none()
+            lowerer.lower_ctor_as(
+                CtorKind::None,
+                &Expression::Name {
+                    segments: Box::new([NameSegment::new("none", span())]),
+                    span: span(),
+                },
+                LTy::Enum {
+                    ty: option,
+                    optional: false,
+                },
+            ) == Err(LoweringFailure::Recoverable)
         );
-        assert!(lowerer.lower_try(&name("value"), span()).is_none());
+        assert_eq!(
+            lowerer.lower_try(&name("value"), span()),
+            Err(LoweringFailure::Recoverable)
+        );
         assert!(lowerer.code.is_empty());
         assert!(matches!(
             lowerer.finish("broken", Vec::new(), ImageType::Unit),
@@ -2685,7 +2731,7 @@ mod generic_cache_boundary_tests {
                 None,
                 span(),
             ),
-            Flow::Rejected
+            Ok(Flow::Rejected)
         );
         assert!(lowerer.code.is_empty());
         let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
@@ -2750,11 +2796,11 @@ mod generic_cache_boundary_tests {
         assert_eq!(
             lowerer
                 .lower_if_const_bindings(&[], Some(&condition), &empty, &else_ifs, Some(&empty),),
-            Flow::Rejected
+            Ok(Flow::Rejected)
         );
         assert_eq!(
             lowerer.lower_cond_chain(&[(&condition, &empty)], Some(&empty)),
-            Flow::Rejected
+            Ok(Flow::Rejected)
         );
         assert!(lowerer.code.is_empty());
         assert!(matches!(
@@ -2863,7 +2909,7 @@ mod generic_cache_boundary_tests {
             span: span(),
         };
 
-        assert_eq!(lowerer.lower_block(&block), Flow::Rejected);
+        assert_eq!(lowerer.lower_block(&block), Ok(Flow::Rejected));
         assert!(lowerer.code.is_empty());
         assert_eq!(lowerer.locals.len(), 1);
         assert_eq!(lowerer.locals[0].name, "value");

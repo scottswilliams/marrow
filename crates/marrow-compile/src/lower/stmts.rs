@@ -5,9 +5,12 @@ use super::*;
 impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- statements ---
 
-    pub(super) fn lower_block(&mut self, block: &Block) -> Flow {
+    pub(super) fn lower_block(&mut self, block: &Block) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         let mark = self.locals.len();
         let place_mark = self.places.len();
@@ -26,7 +29,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 ));
                 break;
             }
-            flow = self.lower_statement(statement);
+            flow = match self.lower_statement(statement) {
+                Ok(flow) => flow,
+                Err(LoweringFailure::Recoverable) => Flow::Fallthrough,
+                Err(LoweringFailure::CodeLimitReached) => {
+                    return Err(LoweringFailure::CodeLimitReached);
+                }
+            };
             if flow == Flow::Rejected || self.terminal_rejection() {
                 flow = Flow::Rejected;
                 break;
@@ -35,7 +44,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.locals.truncate(mark);
         self.places.truncate(place_mark);
         self.present_places.truncate(present_mark);
-        flow
+        Ok(flow)
     }
 
     /// Lower one statement.
@@ -47,7 +56,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// carries the typed `check.unsupported` outcome, but a new block-bearing field on
     /// `if`, `while`, `for`, or `match` would leave its statements never lowered and
     /// never diagnosed — code the compiler accepted and did not compile.
-    pub(super) fn lower_statement(&mut self, statement: &Statement) -> Flow {
+    pub(super) fn lower_statement(&mut self, statement: &Statement) -> ConstructResult<Flow> {
         match statement {
             Statement::Const {
                 name,
@@ -56,8 +65,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 value,
                 span: _,
             } => {
-                self.lower_binding(name, ty.as_deref(), value, false);
-                Flow::Fallthrough
+                self.lower_binding(name, ty.as_deref(), value, false)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::Var {
                 name,
@@ -69,7 +78,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } => {
                 if !keys.is_empty() {
                     self.fail(unsupported(self.file, *span, "a keyed local"));
-                    return Flow::Fallthrough;
+                    return Ok(Flow::Fallthrough);
                 }
                 let Some(value) = value else {
                     self.fail(unsupported(
@@ -77,18 +86,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         *span,
                         "a `var` without an initializer",
                     ));
-                    return Flow::Fallthrough;
+                    return Ok(Flow::Fallthrough);
                 };
-                self.lower_binding(name, ty.as_deref(), value, true);
-                Flow::Fallthrough
+                self.lower_binding(name, ty.as_deref(), value, true)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::Assign {
                 target,
                 value,
                 span: _,
             } => {
-                self.lower_assign(target, value);
-                Flow::Fallthrough
+                self.lower_assign(target, value)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::CompoundAssign {
                 target,
@@ -97,8 +106,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 value,
                 span: _,
             } => {
-                self.lower_compound_assign(target, op.binary(), value);
-                Flow::Fallthrough
+                self.lower_compound_assign(target, op.binary(), value)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::Return { value, span } => self.lower_return(value.as_ref(), *span),
             Statement::Break { span } => self.lower_break(*span),
@@ -111,14 +120,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 } = value
                 {
                     match self.lower_call_core(callee, args, *span) {
-                        Some(CallResult::Value(_)) => self.push(Instr::Pop, value.span()),
-                        Some(CallResult::Diverges) => return Flow::Terminates,
-                        Some(CallResult::Unit) | None => {}
+                        Ok(CallResult::Value(_)) => self.push(Instr::Pop, value.span())?,
+                        Ok(CallResult::Diverges) => return Ok(Flow::Terminates),
+                        Ok(CallResult::Unit) => {}
+                        Err(failure) => return Err(failure),
                     }
-                } else if self.lower_expr(value).is_some() {
-                    self.push(Instr::Pop, value.span());
+                } else {
+                    self.lower_expr(value)?;
+                    self.push(Instr::Pop, value.span())?;
                 }
-                Flow::Fallthrough
+                Ok(Flow::Fallthrough)
             }
             Statement::If {
                 condition,
@@ -220,12 +231,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 *span,
             ),
             Statement::Transaction { body, span: _ } => {
-                self.push(Instr::TxnBegin, body.span);
+                self.push(Instr::TxnBegin, body.span)?;
                 self.txn_depth += 1;
-                let body_flow = self.lower_block(body);
+                let body_flow = self.lower_block(body)?;
                 self.txn_depth -= 1;
                 if body_flow == Flow::Rejected {
-                    return Flow::Rejected;
+                    return Ok(Flow::Rejected);
                 }
                 // The closing brace is a commit site only for a path that falls out of
                 // the region. When every path returns from inside (each in-region
@@ -234,13 +245,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // divergence propagates so the checker sees the function return on every
                 // path.
                 if body_flow == Flow::Fallthrough {
-                    self.push(Instr::TxnCommit, body.span);
+                    self.push(Instr::TxnCommit, body.span)?;
                 }
-                body_flow
+                Ok(body_flow)
             }
             Statement::Delete { path, span } => {
-                self.lower_durable_delete(path, *span);
-                Flow::Fallthrough
+                self.lower_durable_delete(path, *span)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::PlaceBinding {
                 name,
@@ -248,16 +259,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 place,
                 span: _,
             } => {
-                self.lower_place_binding(name, *name_span, place);
-                Flow::Fallthrough
+                self.lower_place_binding(name, *name_span, place)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::Unset { place, span } => {
-                self.lower_unset(place, *span);
-                Flow::Fallthrough
+                self.lower_unset(place, *span)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::Assert { value, span } => {
-                self.lower_assert(value, *span);
-                Flow::Fallthrough
+                self.lower_assert(value, *span)?;
+                Ok(Flow::Fallthrough)
             }
             Statement::Match {
                 scrutinee,
@@ -266,7 +277,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } => self.lower_match(scrutinee, arms, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this statement"));
-                Flow::Fallthrough
+                Ok(Flow::Fallthrough)
             }
         }
     }
@@ -274,7 +285,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower `assert <expr>`. The condition must be bool; on false the emitted
     /// `Assert` op faults the running test with `run.assert`. Legal only in a test
     /// body — in an ordinary function it is `check.assert_outside_test`.
-    fn lower_assert(&mut self, value: &Expression, span: SourceSpan) {
+    fn lower_assert(&mut self, value: &Expression, span: SourceSpan) -> ConstructResult<()> {
         if self.body_kind != BodyKind::Test {
             self.fail(SourceDiagnostic::at(
                 Code::CheckAssertOutsideTest.as_str(),
@@ -282,11 +293,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`assert` is legal only inside a `test` declaration".to_string(),
             ));
-            return;
+            return Ok(());
         }
-        if self.lower_condition(value).is_some() {
-            self.push(Instr::Assert, span);
-        }
+        self.lower_condition(value)?;
+        self.push(Instr::Assert, span)?;
+        Ok(())
     }
 
     fn lower_binding(
@@ -295,10 +306,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         annotation: Option<&TypeExpr>,
         value: &Expression,
         mutable: bool,
-    ) {
+    ) -> ConstructResult<()> {
         if is_reserved_builtin_name(name) {
             self.fail(reserved_builtin_name(self.file, value.span(), name));
-            return;
+            return Ok(());
         }
         // A `const`/`var` never reuses an in-scope `place` name: the place and its
         // designation stay distinct, so a name resolves to exactly one of them.
@@ -309,7 +320,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 value.span(),
                 format!("`{name}` is already bound as a place in this scope"),
             ));
-            return;
+            return Ok(());
         }
         let ty = if let Some(annotation) = annotation {
             let expected = match self.resolve(annotation) {
@@ -320,46 +331,58 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // cause, so a later use reuses it and fails silently — the
                     // record its two siblings below already keep.
                     self.poisoned_bindings.insert(name.to_string());
-                    return;
+                    return Ok(());
                 }
             };
-            if self.lower_as(value, expected).is_none() {
-                self.poisoned_bindings.insert(name.to_string());
-                return;
+            match self.lower_as(value, expected) {
+                Ok(()) => {}
+                Err(LoweringFailure::Recoverable) => {
+                    self.poisoned_bindings.insert(name.to_string());
+                    return Err(LoweringFailure::Recoverable);
+                }
+                Err(LoweringFailure::CodeLimitReached) => {
+                    return Err(LoweringFailure::CodeLimitReached);
+                }
             }
             expected
         } else {
-            let Some(ty) = self.lower_expr(value) else {
-                self.poisoned_bindings.insert(name.to_string());
-                return;
-            };
-            ty
+            match self.lower_expr(value) {
+                Ok(ty) => ty,
+                Err(LoweringFailure::Recoverable) => {
+                    self.poisoned_bindings.insert(name.to_string());
+                    return Err(LoweringFailure::Recoverable);
+                }
+                Err(LoweringFailure::CodeLimitReached) => {
+                    return Err(LoweringFailure::CodeLimitReached);
+                }
+            }
         };
         let Some(slot) = self.alloc_slot(value.span()) else {
-            return;
+            return Ok(());
         };
-        self.push(Instr::LocalSet(slot), value.span());
+        self.push(Instr::LocalSet(slot), value.span())?;
         self.locals.push(Local {
             name: name.to_string(),
             ty,
             mutable,
             slot,
         });
+        Ok(())
     }
 
-    fn lower_assign(&mut self, target: &Expression, value: &Expression) {
+    fn lower_assign(&mut self, target: &Expression, value: &Expression) -> ConstructResult<()> {
         let access = match self.durable_access(target) {
             Ok(shape) => shape,
             Err(drift) => {
                 self.record_invariant(LowerInvariant::from(drift));
-                return;
+                return Ok(());
             }
         };
         if access.is_some() {
             if let Some(place) = self.resolve_durable(target) {
-                self.lower_durable_assign(place, value);
+                self.lower_durable_assign(place, value)?;
             }
-            return;
+            return Ok(());
         }
         // `local.field = value`: a local product mutation. The base names a mutable
         // local record/struct; the assignment sets the field slot present.
@@ -367,8 +390,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             base, name, span, ..
         } = target
         {
-            self.lower_local_field_assign(base, name, *span, value);
-            return;
+            self.lower_local_field_assign(base, name, *span, value)?;
+            return Ok(());
         }
         // `m[k] = value`: a keyed write on a local map, create-or-replace at the key
         // (the same sentence as a durable keyed write, differing only by the `^`). A
@@ -377,11 +400,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             base, keys, span, ..
         } = target
         {
-            self.lower_local_bracket_write(base, keys, *span, value);
-            return;
+            self.lower_local_bracket_write(base, keys, *span, value)?;
+            return Ok(());
         }
         let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
-            return;
+            return Ok(());
         };
         if !mutable {
             self.fail(SourceDiagnostic::at(
@@ -390,12 +413,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("`{name}` is a `const` and cannot be reassigned"),
             ));
-            return;
+            return Ok(());
         }
-        if self.lower_as(value, ty).is_none() {
-            return;
-        }
-        self.push(Instr::LocalSet(slot), value.span());
+        self.lower_as(value, ty)?;
+        self.push(Instr::LocalSet(slot), value.span())?;
+        Ok(())
     }
 
     /// Lower `local.…field = value`: read-modify-write a field, possibly nested one
@@ -410,9 +432,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         field_name: &str,
         span: SourceSpan,
         value: &Expression,
-    ) {
+    ) -> ConstructResult<()> {
         let Some(chain) = self.resolve_place_chain(base) else {
-            return;
+            return Ok(());
         };
         if !chain.mutable {
             self.fail(SourceDiagnostic::at(
@@ -424,19 +446,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     chain.root_name
                 ),
             ));
-            return;
+            return Ok(());
         }
         let Some((leaf_index, leaf_ty, _required)) =
             self.resolve_product_field(chain.ty, field_name, base.span(), span)
         else {
-            return;
+            return Ok(());
         };
-        self.push_place_containers(chain.slot, &chain.indices, span);
-        if self.lower_as(value, garg_to_lty(leaf_ty)).is_none() {
-            return;
-        }
-        self.push(Instr::FieldSet(leaf_index), span);
-        self.writeback_place_containers(chain.slot, &chain.indices, span);
+        self.push_place_containers(chain.slot, &chain.indices, span)?;
+        self.lower_as(value, garg_to_lty(leaf_ty))?;
+        self.push(Instr::FieldSet(leaf_index), span)?;
+        self.writeback_place_containers(chain.slot, &chain.indices, span)
     }
 
     /// Push the container stack for a nested field mutation: the local at `slot` and
@@ -445,30 +465,41 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// descended field is present (a required group slot), so each `FieldGet` yields a
     /// bare record. Leaves the containers on the stack for the leaf `FieldSet`/
     /// `FieldUnset` and a matching [`Self::writeback_place_containers`].
-    fn push_place_containers(&mut self, slot: u16, indices: &[u16], span: SourceSpan) {
+    fn push_place_containers(
+        &mut self,
+        slot: u16,
+        indices: &[u16],
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
         for depth in 0..=indices.len() {
-            self.push(Instr::LocalGet(slot), span);
+            self.push(Instr::LocalGet(slot), span)?;
             for index in &indices[..depth] {
-                self.push(Instr::FieldGet(*index), span);
+                self.push(Instr::FieldGet(*index), span)?;
             }
         }
+        Ok(())
     }
 
     /// Write each mutated container back into its parent (innermost first) and store
     /// the updated local. Pairs with [`Self::push_place_containers`] after the leaf op
     /// has left the innermost container's new value on the stack.
-    fn writeback_place_containers(&mut self, slot: u16, indices: &[u16], span: SourceSpan) {
+    fn writeback_place_containers(
+        &mut self,
+        slot: u16,
+        indices: &[u16],
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
         for index in indices.iter().rev() {
-            self.push(Instr::FieldSet(*index), span);
+            self.push(Instr::FieldSet(*index), span)?;
         }
-        self.push(Instr::LocalSet(slot), span);
+        self.push(Instr::LocalSet(slot), span)
     }
 
     /// Lower `unset local.field` or `unset m[k]`: clear a sparse field of a local
     /// product to absent, or remove a key from a local map. A required field cannot be
     /// unset (`check.type`); a durable place uses `delete`, not `unset`; a list has no
     /// keyed removal; any other place is unsupported.
-    fn lower_unset(&mut self, place: &Expression, span: SourceSpan) {
+    fn lower_unset(&mut self, place: &Expression, span: SourceSpan) -> ConstructResult<()> {
         if Self::durable_shape(place).is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -476,14 +507,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`unset` clears a local field; use `delete` for a durable place".to_string(),
             ));
-            return;
+            return Ok(());
         }
         if let Expression::Keyed {
             base, keys, span, ..
         } = place
         {
-            self.lower_local_bracket_unset(base, keys, *span);
-            return;
+            self.lower_local_bracket_unset(base, keys, *span)?;
+            return Ok(());
         }
         let Expression::Field {
             base,
@@ -493,10 +524,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = place
         else {
             self.fail(unsupported(self.file, span, "this `unset` target"));
-            return;
+            return Ok(());
         };
         let Some(chain) = self.resolve_place_chain(base) else {
-            return;
+            return Ok(());
         };
         if !chain.mutable {
             self.fail(SourceDiagnostic::at(
@@ -505,12 +536,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 chain.root_span,
                 format!("`{}` is a `const` and cannot be modified", chain.root_name),
             ));
-            return;
+            return Ok(());
         }
         let Some((leaf_index, _field_ty, required)) =
             self.resolve_product_field(chain.ty, name, base.span(), *field_span)
         else {
-            return;
+            return Ok(());
         };
         if required {
             self.fail(SourceDiagnostic::at(
@@ -519,16 +550,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 *field_span,
                 format!("`{name}` is a required field and cannot be unset"),
             ));
-            return;
+            return Ok(());
         }
-        self.push_place_containers(chain.slot, &chain.indices, span);
-        self.push(Instr::FieldUnset(leaf_index), span);
-        self.writeback_place_containers(chain.slot, &chain.indices, span);
+        self.push_place_containers(chain.slot, &chain.indices, span)?;
+        self.push(Instr::FieldUnset(leaf_index), span)?;
+        self.writeback_place_containers(chain.slot, &chain.indices, span)
     }
 
-    fn lower_compound_assign(&mut self, target: &Expression, op: BinaryOp, value: &Expression) {
+    fn lower_compound_assign(
+        &mut self,
+        target: &Expression,
+        op: BinaryOp,
+        value: &Expression,
+    ) -> ConstructResult<()> {
         let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
-            return;
+            return Ok(());
         };
         if !mutable {
             self.fail(SourceDiagnostic::at(
@@ -537,7 +573,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 format!("`{name}` is a `const` and cannot be reassigned"),
             ));
-            return;
+            return Ok(());
         }
         if ty.bare_scalar_type().is_none() && ty.bare_nominal().is_none() {
             self.fail(SourceDiagnostic::at(
@@ -549,12 +585,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ty.spelling(self.records)
                 ),
             ));
-            return;
+            return Ok(());
         }
-        self.push(Instr::LocalGet(slot), span);
-        let Some(result) = self.lower_binary_op(op, ty, value) else {
-            return;
-        };
+        self.push(Instr::LocalGet(slot), span)?;
+        let result = self.lower_binary_op(op, ty, value)?;
         if result != ty {
             self.fail(type_mismatch(
                 self.records,
@@ -563,9 +597,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 result,
                 ty,
             ));
-            return;
+            return Ok(());
         }
-        self.push(Instr::LocalSet(slot), value.span());
+        self.push(Instr::LocalSet(slot), value.span())?;
+        Ok(())
     }
 
     /// Resolve an assignment target to a mutable-checked local place.
@@ -672,11 +707,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// `err` exit is emitted separately and never routes here, so it stays barred from
     /// crossing a region. The verifier independently proves a `TxnCommit` precedes the
     /// `Return` on every in-region path.
-    fn emit_region_return(&mut self, span: SourceSpan) {
+    fn emit_region_return(&mut self, span: SourceSpan) -> ConstructResult<()> {
         if self.txn_depth > 0 {
-            self.push(Instr::TxnCommit, span);
+            self.push(Instr::TxnCommit, span)?;
         }
-        self.push(Instr::Return, span);
+        self.push(Instr::Return, span)
     }
 
     /// Lower `require <condition> else <value>`: pure sugar for
@@ -696,19 +731,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         condition: &Expression,
         value: &Expression,
         span: SourceSpan,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
-        if self.lower_condition(condition).is_none() {
-            return if self.terminal_rejection() {
-                Flow::Rejected
-            } else {
-                Flow::Fallthrough
-            };
-        }
-        self.push(Instr::BoolNot, condition.span());
-        let jif = self.push_jif(condition.span());
+        self.lower_condition(condition)?;
+        self.push(Instr::BoolNot, condition.span())?;
+        let jif = self.push_jif(condition.span())?;
         let ret_id = match self.ret {
             RetType::Value(ty) => ty.bare_enum(),
             RetType::Unit => None,
@@ -724,7 +756,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             span,
             "this require guard",
         ) else {
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         let Some((ret_id, ReservedEnumArgs::Result(_, ret_err))) = resolved else {
             self.fail(SourceDiagnostic::at(
@@ -733,32 +765,30 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "`require` is only valid in a function that returns a Result".to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
-        if self.lower_as(value, garg_to_lty(ret_err)).is_none() {
-            return if self.terminal_rejection() {
-                Flow::Rejected
-            } else {
-                Flow::Fallthrough
-            };
-        }
+        self.lower_as(value, garg_to_lty(ret_err))?;
         self.push(
             Instr::EnumConstruct {
                 enum_idx: ret_id,
                 variant: RESULT_ERR,
             },
             span,
-        );
-        self.push(Instr::Return, span);
+        )?;
+        self.push(Instr::Return, span)?;
         let next = self.here();
         self.patch(jif, next);
-        Flow::Fallthrough
+        Ok(Flow::Fallthrough)
     }
 
-    fn lower_return(&mut self, value: Option<&Expression>, span: SourceSpan) -> Flow {
+    fn lower_return(
+        &mut self,
+        value: Option<&Expression>,
+        span: SourceSpan,
+    ) -> ConstructResult<Flow> {
         match (value, self.ret) {
             (None, RetType::Unit) => {
-                self.emit_region_return(span);
+                self.emit_region_return(span)?;
             }
             (None, RetType::Value(_)) => {
                 self.fail(SourceDiagnostic::at(
@@ -776,21 +806,23 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     "this function returns nothing".to_string(),
                 ));
             }
-            (Some(expr), RetType::Value(want)) => {
-                if self.lower_as(expr, want).is_some() {
-                    self.emit_region_return(span);
+            (Some(expr), RetType::Value(want)) => match self.lower_as(expr, want) {
+                Ok(_) => self.emit_region_return(span)?,
+                Err(LoweringFailure::Recoverable) => {}
+                Err(LoweringFailure::CodeLimitReached) => {
+                    return Err(LoweringFailure::CodeLimitReached);
                 }
-            }
+            },
         }
-        Flow::Terminates
+        Ok(Flow::Terminates)
     }
 
-    fn lower_break(&mut self, span: SourceSpan) -> Flow {
+    fn lower_break(&mut self, span: SourceSpan) -> ConstructResult<Flow> {
         if self.loops.is_empty() {
             self.fail(loop_error(self.file, span, "break"));
-            return Flow::Terminates;
+            return Ok(Flow::Terminates);
         }
-        let at = self.push_jump(span);
+        let at = self.push_jump(span)?;
         #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: the empty-loop-stack case returned above, so a loop context is present here"
@@ -800,17 +832,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .expect("loop present")
             .break_jumps
             .push(at);
-        Flow::Terminates
+        Ok(Flow::Terminates)
     }
 
-    fn lower_continue(&mut self, span: SourceSpan) -> Flow {
+    fn lower_continue(&mut self, span: SourceSpan) -> ConstructResult<Flow> {
         let Some(ctx) = self.loops.last() else {
             self.fail(loop_error(self.file, span, "continue"));
-            return Flow::Terminates;
+            return Ok(Flow::Terminates);
         };
         let target = ctx.continue_target;
-        self.push(Instr::Jump(target as u32), span);
-        Flow::Terminates
+        self.push(Instr::Jump(target as u32), span)?;
+        Ok(Flow::Terminates)
     }
 
     /// Lower a chain of conditional branches followed by an optional `else`. Used for
@@ -819,9 +851,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         &mut self,
         branches: &[(&Expression, &Block)],
         else_block: Option<&Block>,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         let mut end_jumps: Vec<usize> = Vec::new();
         let mut all_terminate = else_block.is_some();
@@ -830,35 +865,29 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // `exists(p)` over a named place proves the entry present in the guarded
             // block: a sparse-field set through `p` there lowers to the strict form.
             let guard_path = self.exists_guard_path(cond);
-            if self.lower_condition(cond).is_none() {
-                return if self.terminal_rejection() {
-                    Flow::Rejected
-                } else {
-                    Flow::Fallthrough
-                };
-            }
-            let jif = self.push_jif(cond.span());
+            self.lower_condition(cond)?;
+            let jif = self.push_jif(cond.span())?;
             let present_mark = self.present_places.len();
             if let Some(path) = guard_path {
                 self.mark_present(path);
             }
-            let flow = self.lower_block(block);
+            let flow = self.lower_block(block)?;
             self.present_places.truncate(present_mark);
             if flow == Flow::Rejected {
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             }
             all_terminate &= flow == Flow::Terminates;
             if flow == Flow::Fallthrough {
-                end_jumps.push(self.push_jump(block.span));
+                end_jumps.push(self.push_jump(block.span)?);
             }
             let next = self.here();
             self.patch(jif, next);
         }
 
         if let Some(else_block) = else_block {
-            let flow = self.lower_block(else_block);
+            let flow = self.lower_block(else_block)?;
             if flow == Flow::Rejected {
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             }
             all_terminate &= flow == Flow::Terminates;
         }
@@ -866,9 +895,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let end = self.here();
         self.patch_all(end_jumps, end);
         if all_terminate {
-            Flow::Terminates
+            Ok(Flow::Terminates)
         } else {
-            Flow::Fallthrough
+            Ok(Flow::Fallthrough)
         }
     }
 
@@ -880,7 +909,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         then_block: &Block,
         else_ifs: &[ElseIf],
         else_block: Option<&Block>,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
         // The single `if const a = e` is the one-binding, no-condition case of the
         // general chained form.
         self.lower_if_const_bindings(
@@ -906,9 +935,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         then_block: &Block,
         else_ifs: &[ElseIf],
         else_block: Option<&Block>,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         let mark = self.locals.len();
         let present_mark = self.present_places.len();
@@ -917,26 +949,28 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // then block; every failure edge (an absent binding or a false condition)
         // jumps to the shared absent tail. Each `BranchPresent`/`JumpIfFalse` pops its
         // own operand, so all failure edges reach the tail with a balanced stack.
-        let Some(fail_jumps) = self.lower_if_const_head(bindings, condition) else {
-            self.present_places.truncate(present_mark);
-            self.locals.truncate(mark);
-            return if self.terminal_rejection() {
-                Flow::Rejected
-            } else {
-                Flow::Fallthrough
-            };
+        let fail_jumps = match self.lower_if_const_head(bindings, condition) {
+            Ok(jumps) => jumps,
+            Err(LoweringFailure::Recoverable) => {
+                self.present_places.truncate(present_mark);
+                self.locals.truncate(mark);
+                return Err(LoweringFailure::Recoverable);
+            }
+            Err(LoweringFailure::CodeLimitReached) => {
+                return Err(LoweringFailure::CodeLimitReached);
+            }
         };
 
-        let then_flow = self.lower_block(then_block);
+        let then_flow = self.lower_block(then_block)?;
         self.present_places.truncate(present_mark);
         self.locals.truncate(mark);
         if then_flow == Flow::Rejected {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
 
         let mut end_jumps = Vec::new();
         if then_flow == Flow::Fallthrough {
-            end_jumps.push(self.push_jump(then_block.span));
+            end_jumps.push(self.push_jump(then_block.span)?);
         }
 
         // Absent/false tail: the `else if`/`else` chain.
@@ -946,18 +980,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .iter()
             .map(|else_if| (&else_if.condition, &else_if.block))
             .collect();
-        let else_flow = self.lower_cond_chain(&branches, else_block);
+        let else_flow = self.lower_cond_chain(&branches, else_block)?;
         if else_flow == Flow::Rejected {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
 
         let end = self.here();
         self.patch_all(end_jumps, end);
 
         if then_flow == Flow::Terminates && else_flow == Flow::Terminates {
-            Flow::Terminates
+            Ok(Flow::Terminates)
         } else {
-            Flow::Fallthrough
+            Ok(Flow::Fallthrough)
         }
     }
 
@@ -965,17 +999,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// prove its value present and bind it to a fresh local scoped rightward; then
     /// evaluate the optional trailing condition. Returns the failure jumps to patch
     /// to the absent tail, leaving the bindings' locals in scope for the then block;
-    /// `None` on a hard type error (the caller restores the local stack).
+    /// A recoverable error reports a hard type failure; the caller restores the local stack.
     fn lower_if_const_head(
         &mut self,
         bindings: &[(&str, Option<&TypeExpr>, &Expression)],
         condition: Option<&Expression>,
-    ) -> Option<Vec<usize>> {
+    ) -> ConstructResult<Vec<usize>> {
         let mut fail_jumps: Vec<usize> = Vec::new();
         for (name, annotation, value) in bindings.iter().copied() {
             if is_reserved_builtin_name(name) {
                 self.fail(reserved_builtin_name(self.file, value.span(), name));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             // A whole durable entry address (`if const book = ^books(id)` or the named
             // `place` form) reads the entry here and proves it present on the guarded
@@ -984,10 +1018,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let mut guard_path: Option<Vec<u16>> = None;
             let access = match self.durable_access(value) {
                 Ok(shape) => shape,
-                Err(drift) => return self.ledger_drift(drift),
+                Err(drift) => {
+                    self.ledger_drift::<()>(drift);
+                    return Err(LoweringFailure::Recoverable);
+                }
             };
             let optional = if matches!(access, Some(DurShape::Entry)) {
-                let place = self.resolve_durable(value)?;
+                let place = self
+                    .resolve_durable(value)
+                    .ok_or(LoweringFailure::Recoverable)?;
                 guard_path = place.bound_key_path();
                 self.lower_durable_read(place)?
             } else {
@@ -1003,7 +1042,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         optional.spelling(self.records)
                     ),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             let bound = optional.to_bare();
             if let Some(annotation) = annotation {
@@ -1016,21 +1055,23 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             bound,
                             declared,
                         ));
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                     Ok(_) => {}
                     Err(refusal) => {
                         self.reject_resolution(refusal, annotation.span(), "this type annotation");
-                        return None;
+                        return Err(LoweringFailure::Recoverable);
                     }
                 }
             }
 
             // Present edge falls through with the unwrapped bare value; absent edge
             // jumps to the shared tail.
-            fail_jumps.push(self.push_branch_present(value.span()));
-            let slot = self.alloc_slot(value.span())?;
-            self.push(Instr::LocalSet(slot), value.span());
+            fail_jumps.push(self.push_branch_present(value.span())?);
+            let slot = self
+                .alloc_slot(value.span())
+                .ok_or(LoweringFailure::Recoverable)?;
+            self.push(Instr::LocalSet(slot), value.span())?;
             self.locals.push(Local {
                 name: name.to_string(),
                 ty: bound,
@@ -1054,12 +1095,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         cond_ty.spelling(self.records)
                     ),
                 ));
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
-            fail_jumps.push(self.push_jif(cond.span()));
+            fail_jumps.push(self.push_jif(cond.span())?);
         }
 
-        Some(fail_jumps)
+        Ok(fail_jumps)
     }
 
     /// Lower `const x = e else { … }` / `var x = e else { … }` (B6, let-else): bind
@@ -1075,23 +1116,28 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         annotation: Option<&TypeExpr>,
         value: &Expression,
         else_block: &Block,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         let mark = self.locals.len();
         let present_mark = self.present_places.len();
-        let Some(fail_jumps) = self.lower_if_const_head(&[(name, annotation, value)], None) else {
-            self.locals.truncate(mark);
-            self.present_places.truncate(present_mark);
-            // The head's read did not resolve (for example a dropped durable root); its
-            // own diagnostic already fired. Poison the name so its later uses are silent.
-            self.poisoned_bindings.insert(name.to_string());
-            return if self.terminal_rejection() {
-                Flow::Rejected
-            } else {
-                Flow::Fallthrough
-            };
+        let fail_jumps = match self.lower_if_const_head(&[(name, annotation, value)], None) {
+            Ok(jumps) => jumps,
+            Err(LoweringFailure::Recoverable) => {
+                self.locals.truncate(mark);
+                self.present_places.truncate(present_mark);
+                // The head's read did not resolve (for example a dropped durable root); its
+                // own diagnostic already fired. Poison the name so its later uses are silent.
+                self.poisoned_bindings.insert(name.to_string());
+                return Err(LoweringFailure::Recoverable);
+            }
+            Err(LoweringFailure::CodeLimitReached) => {
+                return Err(LoweringFailure::CodeLimitReached);
+            }
         };
         // The head bound `x` (and, for a durable entry read, a presence fact) on the
         // present edge. They belong to the continuation after the statement, not to
@@ -1110,12 +1156,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // The present path continues past the `else`; the absent edge runs the
         // diverging `else` block, so control only reaches past the statement with `x`
         // bound.
-        let to_after = self.push_jump(value.span());
+        let to_after = self.push_jump(value.span())?;
         let absent = self.here();
         self.patch_all(fail_jumps, absent);
-        let else_flow = self.lower_block(else_block);
+        let else_flow = self.lower_block(else_block)?;
         if else_flow == Flow::Rejected {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         if else_flow != Flow::Terminates {
             self.fail(SourceDiagnostic::at(
@@ -1134,7 +1180,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // statement `x` is always present, because the absent edge diverged.
         self.locals.extend(bound_locals);
         self.present_places.extend(bound_present);
-        Flow::Fallthrough
+        Ok(Flow::Fallthrough)
     }
 
     /// Lower a `match` over a flat enum scrutinee (design §B). The scrutinee is
@@ -1151,17 +1197,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         scrutinee: &Expression,
         arms: &[MatchArm],
         span: SourceSpan,
-    ) -> Flow {
-        if self.terminal_rejection() {
-            return Flow::Rejected;
+    ) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
         }
-        let Some(scrut_ty) = self.lower_expr(scrutinee) else {
-            return if self.terminal_rejection() {
-                Flow::Rejected
-            } else {
-                Flow::Fallthrough
-            };
-        };
+        if self.terminal_rejection() {
+            return Ok(Flow::Rejected);
+        }
+        let scrut_ty = self.lower_expr(scrutinee)?;
         let Some(enum_id) = scrut_ty.bare_enum() else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckMatchArm.as_str(),
@@ -1172,7 +1215,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     scrut_ty.spelling(self.records)
                 ),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         // The scrutinee's variants: member name plus payload type list, owned so the
         // arm loop can borrow `self` mutably while resolving each arm. A concrete
@@ -1189,7 +1232,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     scrutinee.span(),
                     "this enum match",
                 );
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             }
             Err(invariant) => {
                 self.reject_resolution(
@@ -1197,7 +1240,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     scrutinee.span(),
                     "this enum match",
                 );
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             }
         };
         let enum_name = scrut_ty.spelling(self.records);
@@ -1207,9 +1250,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .collect();
 
         let Some(scrut_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(scrut_slot), span);
+        self.push(Instr::LocalSet(scrut_slot), span)?;
 
         let mut covered = vec![false; variants.len()];
         let mut end_jumps: Vec<usize> = Vec::new();
@@ -1268,32 +1311,32 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let to_next = if is_last {
                 None
             } else {
-                self.push(Instr::LocalGet(scrut_slot), arm.span);
-                self.push(Instr::EnumTag, arm.span);
+                self.push(Instr::LocalGet(scrut_slot), arm.span)?;
+                self.push(Instr::EnumTag, arm.span)?;
                 let Some(konst) = self.checked_mint(|draft| draft.intern_int(variant_index as i64))
                 else {
-                    return Flow::Rejected;
+                    return Ok(Flow::Rejected);
                 };
-                self.push(Instr::ConstLoad(konst), arm.span);
-                self.push(Instr::EqInt, arm.span);
-                Some(self.push_jif(arm.span))
+                self.push(Instr::ConstLoad(konst), arm.span)?;
+                self.push(Instr::EqInt, arm.span)?;
+                Some(self.push_jif(arm.span)?)
             };
 
             // Bind the payload positionally into fresh locals scoped to the arm.
             let mark = self.locals.len();
             for (field, (binding, leaf_ty)) in arm.bindings.iter().zip(&payload).enumerate() {
                 let Some(slot) = self.alloc_slot(binding.span) else {
-                    return Flow::Rejected;
+                    return Ok(Flow::Rejected);
                 };
-                self.push(Instr::LocalGet(scrut_slot), binding.span);
+                self.push(Instr::LocalGet(scrut_slot), binding.span)?;
                 self.push(
                     Instr::EnumPayloadGet {
                         variant: variant_index as u16,
                         field: field as u16,
                     },
                     binding.span,
-                );
-                self.push(Instr::LocalSet(slot), binding.span);
+                )?;
+                self.push(Instr::LocalSet(slot), binding.span)?;
                 self.locals.push(Local {
                     name: binding.name.clone(),
                     ty: *leaf_ty,
@@ -1301,14 +1344,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     slot,
                 });
             }
-            let flow = self.lower_block(&arm.block);
+            let flow = self.lower_block(&arm.block)?;
             self.locals.truncate(mark);
             if flow == Flow::Rejected {
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             }
             all_terminate &= flow == Flow::Terminates;
             if flow == Flow::Fallthrough && !is_last {
-                end_jumps.push(self.push_jump(arm.block.span));
+                end_jumps.push(self.push_jump(arm.block.span)?);
             }
             if let Some(to_next) = to_next {
                 let next = self.here();
@@ -1358,9 +1401,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // The match terminates only when it is exhaustive (so the unconditional last
         // arm is reached) and every arm diverges.
         if any_arm && missing.is_empty() && all_terminate {
-            Flow::Terminates
+            Ok(Flow::Terminates)
         } else {
-            Flow::Fallthrough
+            Ok(Flow::Fallthrough)
         }
     }
 
@@ -1378,13 +1421,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         bound: Option<&TraversalBound>,
         body: &Block,
         span: SourceSpan,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
         // An integer range iterates its counter directly onto a pure counter loop; it
         // takes neither a durable `at most` bound nor a reversed walk in the first ring.
         if let Some(range) = range_expr(iterable) {
             if order != marrow_syntax::LoopOrder::Forward {
                 self.fail(unsupported(self.file, span, "a reversed range"));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
             if bound.is_some() {
                 self.fail(SourceDiagnostic::at(
@@ -1395,7 +1438,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                      traversal (`for k in ^root at most N`), not to a range"
                         .to_string(),
                 ));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
             return self.lower_for_range(binding, range, step, body, span);
         }
@@ -1405,7 +1448,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Ok(read) => read,
             Err(drift) => {
                 self.record_invariant(LowerInvariant::from(drift));
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             }
         };
         if let Some(read) = index_read {
@@ -1420,11 +1463,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         read.index.name, read.index.name
                     ),
                 ));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
             if order != marrow_syntax::LoopOrder::Forward {
                 self.fail(unsupported(self.file, span, "reversed index scan"));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
             return self.lower_index_scan(binding, read, bound, body, span);
         }
@@ -1432,10 +1475,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if self.is_traversal_place(iterable) {
             if order != marrow_syntax::LoopOrder::Forward {
                 self.fail(unsupported(self.file, span, "reversed durable traversal"));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
             let Some(target) = self.resolve_traversal_place(iterable) else {
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             };
             return self.lower_bounded_traversal(binding, target, bound, body, span);
         }
@@ -1452,7 +1495,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  iterate the store root directly (`for k in ^root at most N`)."
                     .to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         // A range or local collection takes no `at most N` / `on more` clause.
         if bound.is_some() {
@@ -1464,15 +1507,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  traversal (`for k in ^root at most N`)"
                     .to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         if order != marrow_syntax::LoopOrder::Forward {
             self.fail(unsupported(self.file, span, "reversed iteration"));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         if step.is_some() {
             self.fail(unsupported(self.file, span, "a loop step"));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         self.lower_for_collection(binding, iterable, body, span)
     }
@@ -1491,7 +1534,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         step: Option<&Expression>,
         body: &Block,
         span: SourceSpan,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
         let [name] = binding.names.as_slice() else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1502,7 +1545,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     binding.names.len()
                 ),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         let (Some(lo), Some(hi)) = (range.start, range.end) else {
             self.fail(SourceDiagnostic::at(
@@ -1513,47 +1556,43 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  open. Write `for i in lo..hi` with both endpoints."
                     .to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         let Some(stride) = self.range_step(step) else {
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         let int = LTy::bare_scalar(ScalarType::Int);
 
         // counter = lo
-        if self.lower_as(lo, int).is_none() {
-            return Flow::Fallthrough;
-        }
+        self.lower_as(lo, int)?;
         let Some(counter_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(counter_slot), span);
+        self.push(Instr::LocalSet(counter_slot), span)?;
         // hi is evaluated once and held for the guard.
-        if self.lower_as(hi, int).is_none() {
-            return Flow::Fallthrough;
-        }
+        self.lower_as(hi, int)?;
         let Some(hi_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(hi_slot), span);
+        self.push(Instr::LocalSet(hi_slot), span)?;
         let Some(step_const) = self.checked_mint(|draft| draft.intern_int(stride)) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
 
         // The advance sits at the loop top and the first entry skips it, so `continue`
         // jumps to the advance and always makes progress toward the bound.
-        let skip = self.push_jump(span);
+        let skip = self.push_jump(span)?;
         let advance = self.here();
-        self.push(Instr::LocalGet(counter_slot), span);
-        self.push(Instr::ConstLoad(step_const), span);
+        self.push(Instr::LocalGet(counter_slot), span)?;
+        self.push(Instr::ConstLoad(step_const), span)?;
         let advance_at = self.here();
-        self.push(Instr::IntAddChecked(0), span);
-        self.push(Instr::LocalSet(counter_slot), span);
+        self.push(Instr::IntAddChecked(0), span)?;
+        self.push(Instr::LocalSet(counter_slot), span)?;
 
         let guard = self.here();
         self.patch(skip, guard);
-        self.push(Instr::LocalGet(counter_slot), span);
-        self.push(Instr::LocalGet(hi_slot), span);
+        self.push(Instr::LocalGet(counter_slot), span)?;
+        self.push(Instr::LocalGet(hi_slot), span)?;
         self.push(
             if range.inclusive_end {
                 Instr::IntLe
@@ -1561,8 +1600,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Instr::IntLt
             },
             span,
-        );
-        let exit_jif = self.push_jif(span);
+        )?;
+        let exit_jif = self.push_jif(span)?;
 
         // The loop variable reads the counter slot directly; it is immutable to the body,
         // and the advance between iterations updates it.
@@ -1578,7 +1617,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             continue_target: advance,
             break_jumps: Vec::new(),
         });
-        let body_flow = self.lower_block(body);
+        let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
@@ -1587,10 +1626,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.locals.truncate(mark);
         self.places.truncate(place_mark);
         if body_flow == Flow::Rejected {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         if body_flow == Flow::Fallthrough {
-            self.push(Instr::Jump(advance as u32), body.span);
+            self.push(Instr::Jump(advance as u32), body.span)?;
         }
 
         let after_loop = self.here();
@@ -1598,7 +1637,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // Reaching the integer domain boundary ends the loop at the same exit.
         self.patch(advance_at, after_loop);
         self.patch_all(ctx.break_jumps, after_loop);
-        Flow::Fallthrough
+        Ok(Flow::Fallthrough)
     }
 
     /// Evaluate a range `by step`: a positive compile-time integer literal, defaulting to
@@ -1864,7 +1903,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         bound: Option<&TraversalBound>,
         body: &Block,
         span: SourceSpan,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
         let Some(bound) = bound else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1875,7 +1914,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  and an `on more { … }` block."
                     .to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         // A durable traversal binds the immediate key, and optionally a second name: a
         // per-iteration address pin (`place` semantics) over the entry at that key. More
@@ -1889,7 +1928,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "binding more than a key and a per-iteration address in a traversal",
                 ));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
         };
         let Some(on_more) = &bound.on_more else {
@@ -1901,10 +1940,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  overflow behavior in a trailing `on more` block. Add an `on more { … }` block."
                     .to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         let Some(limit) = self.traversal_limit(&bound.limit) else {
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         let key_ty = target.key_ty;
         // The frozen keys materialize as one `List[K]`; mint (deduplicated) that row.
@@ -1913,7 +1952,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .instantiate_list(self.draft, GArg::Scalar(key_ty));
         let Some(list_ty) = self.accept_resolution(result, span, "this bounded traversal result")
         else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
 
         // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
@@ -1934,15 +1973,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // into a fresh slot, so the pin and the opcode read one evaluation.
                     PlaceKey::Expr(key_expr) => {
                         let Some(slot) = self.alloc_slot(key_expr.span()) else {
-                            return Flow::Rejected;
+                            return Ok(Flow::Rejected);
                         };
-                        if self
-                            .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
-                            .is_none()
-                        {
-                            return Flow::Fallthrough;
-                        }
-                        self.push(Instr::LocalSet(slot), target.span);
+                        self.lower_as(key_expr, LTy::bare_scalar(column.key_ty))?;
+                        self.push(Instr::LocalSet(slot), target.span)?;
                         slots.push((slot, column.key_ty));
                     }
                     // An inline `^root[Id(…)].branch` base spreads the one identity operand
@@ -1951,36 +1985,26 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // column the traversal ancestor pop re-proves, exactly as the single-emit
                     // forms do.
                     PlaceKey::Identity { expr, root, cols } => {
-                        let Some(columns) =
-                            self.capture_identity_key_columns(expr, root, cols, target.span)
-                        else {
-                            return Flow::Fallthrough;
-                        };
+                        let columns =
+                            self.capture_identity_key_columns(expr, root, cols, target.span)?;
                         slots.extend(columns);
                     }
                 }
             }
             for (slot, _) in &slots {
-                self.push(Instr::LocalGet(*slot), target.span);
+                self.push(Instr::LocalGet(*slot), target.span)?;
             }
             slots
         } else {
-            if self
-                .emit_key_path(&target.ancestor_keys, target.span)
-                .is_none()
-            {
-                return Flow::Fallthrough;
-            }
+            self.emit_key_path(&target.ancestor_keys, target.span)?;
             Vec::new()
         };
         let Some(site) = self.entry_site_operand(target.node) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
         let has_from = bound.from.is_some();
-        if let Some(from_expr) = &bound.from
-            && self.lower_as(from_expr, LTy::bare_scalar(key_ty)).is_none()
-        {
-            return Flow::Fallthrough;
+        if let Some(from_expr) = &bound.from {
+            self.lower_as(from_expr, LTy::bare_scalar(key_ty))?;
         }
         self.push(
             Instr::DurIterateBounded {
@@ -1990,16 +2014,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 list_ty,
             },
             span,
-        );
+        )?;
         // Bind the on-more bit and the frozen list into fresh slots.
         let Some(more_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(more_slot), span);
+        self.push(Instr::LocalSet(more_slot), span)?;
         let Some(coll_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(coll_slot), span);
+        self.push(Instr::LocalSet(coll_slot), span)?;
 
         // A positional walk over the frozen `List[K]` binds `k` per position.
         // `continue` advances to the loop top; a body `break`/`return` skips past
@@ -2013,15 +2037,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             body,
             span,
             move |lower, index_slot| {
-                let key_slot = lower.alloc_slot(var.span)?;
-                lower.push(Instr::LocalGet(coll_slot), span);
-                lower.push(Instr::LocalGet(index_slot), span);
-                lower.push(Instr::ListGet, span);
+                let key_slot = lower
+                    .alloc_slot(var.span)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                lower.push(Instr::LocalGet(coll_slot), span)?;
+                lower.push(Instr::LocalGet(index_slot), span)?;
+                lower.push(Instr::ListGet, span)?;
                 // Rebinding the key slot each iteration kills, through the verifier's
                 // LocalSet presence-lattice rule, any presence fact an earlier iteration
                 // established on this key: a fact proven in iteration N cannot survive into
                 // N+1.
-                lower.push(Instr::LocalSet(key_slot), span);
+                lower.push(Instr::LocalSet(key_slot), span)?;
                 // Traversal establishes no presence fact for the body: `k` names a
                 // frozen key whose entry an earlier body iteration may already have
                 // erased.
@@ -2045,25 +2071,25 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         node,
                     });
                 }
-                Some(())
+                Ok(())
             },
-        ) {
+        )? {
             PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
-            PositionalWalkOutcome::Rejected => return Flow::Rejected,
+            PositionalWalkOutcome::Rejected => return Ok(Flow::Rejected),
         };
 
         // Normal exhaustion falls through to here: run `on more` iff a further key
         // existed.
-        self.push(Instr::LocalGet(more_slot), span);
-        let skip_on_more = self.push_jif(span);
-        if self.lower_block(on_more) == Flow::Rejected {
-            return Flow::Rejected;
+        self.push(Instr::LocalGet(more_slot), span)?;
+        let skip_on_more = self.push_jif(span)?;
+        if self.lower_block(on_more)? == Flow::Rejected {
+            return Ok(Flow::Rejected);
         }
         let end = self.here();
         self.patch(skip_on_more, end);
         // A body break jumps past the whole loop, skipping the `on more` decision.
         self.patch_all(break_jumps, end);
-        Flow::Fallthrough
+        Ok(Flow::Fallthrough)
     }
 
     /// Lower a bounded scan of a nonunique managed index `^root.index[prefix…]`. The scan
@@ -2080,7 +2106,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         bound: Option<&TraversalBound>,
         body: &Block,
         span: SourceSpan,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
         let index = read.index;
         let keys = read.keys;
         let var = match binding.names.as_slice() {
@@ -2091,7 +2117,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "binding a per-iteration address in an index scan",
                 ));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
         };
         let Some(bound) = bound else {
@@ -2104,7 +2130,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  `on more { … }` block."
                     .to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         let Some(on_more) = &bound.on_more else {
             self.fail(SourceDiagnostic::at(
@@ -2115,7 +2141,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                  overflow behavior in a trailing `on more` block. Add an `on more { … }` block."
                     .to_string(),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         if bound.from.is_some() {
             self.fail(unsupported(
@@ -2123,7 +2149,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "a `from` cursor on an index scan",
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         // The scan yields a whole source identity, so the root's identity is a single key
         // column; the scanned (trailing) projection component is that key. The scanned
@@ -2135,17 +2161,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "an index scan over a composite-identity root",
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         let id_scalar = root.key[0];
         let Some(site) = self.bind_index_site(root, index) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
         // The held prefix is every projection component except the trailing identity key.
         let projection: Vec<ScalarType> = index.projection.clone();
         let Some((scanned, prefix_types)) = projection.split_last() else {
             self.fail(unsupported(self.file, span, "a scan over an empty index"));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         if *scanned != id_scalar {
             self.fail(unsupported(
@@ -2153,7 +2179,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "an index scan whose trailing component is not the source identity",
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         if keys.len() != prefix_types.len() {
             self.fail(SourceDiagnostic::at(
@@ -2166,23 +2192,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     prefix_types.len()
                 ),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         let Some(limit) = self.traversal_limit(&bound.limit) else {
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         // The frozen keys are the raw identity scalars; they materialize as `List[K]`.
         let result = self
             .records
             .instantiate_list(self.draft, GArg::Scalar(id_scalar));
         let Some(list_ty) = self.accept_resolution(result, span, "this index scan result") else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
         // Emit the held prefix (leading field components, in projection order), then scan.
         for (key, key_ty) in keys.iter().zip(prefix_types) {
-            if self.lower_as(key, LTy::bare_scalar(*key_ty)).is_none() {
-                return Flow::Fallthrough;
-            }
+            self.lower_as(key, LTy::bare_scalar(*key_ty))?;
         }
         self.push(
             Instr::DurIndexScan {
@@ -2192,15 +2216,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 list_ty,
             },
             span,
-        );
+        )?;
         let Some(more_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(more_slot), span);
+        self.push(Instr::LocalSet(more_slot), span)?;
         let Some(coll_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(coll_slot), span);
+        self.push(Instr::LocalSet(coll_slot), span)?;
 
         // A positional walk over the frozen `List[K]`: each raw identity key is wrapped
         // into the source `Id(^root)` the loop variable binds — the scanned root's identity.
@@ -2212,18 +2236,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             body,
             span,
             move |lower, index_slot| {
-                let id_slot = lower.alloc_slot(var.span)?;
-                lower.push(Instr::LocalGet(coll_slot), span);
-                lower.push(Instr::LocalGet(index_slot), span);
-                lower.push(Instr::ListGet, span);
+                let id_slot = lower
+                    .alloc_slot(var.span)
+                    .ok_or(LoweringFailure::Recoverable)?;
+                lower.push(Instr::LocalGet(coll_slot), span)?;
+                lower.push(Instr::LocalGet(index_slot), span)?;
+                lower.push(Instr::ListGet, span)?;
                 lower.push(
                     Instr::MakeIdentity {
                         root: scan_root_id,
                         cols: 1,
                     },
                     span,
-                );
-                lower.push(Instr::LocalSet(id_slot), span);
+                )?;
+                lower.push(Instr::LocalSet(id_slot), span)?;
                 lower.locals.push(Local {
                     name: key_name,
                     ty: LTy::Identity {
@@ -2233,22 +2259,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     mutable: false,
                     slot: id_slot,
                 });
-                Some(())
+                Ok(())
             },
-        ) {
+        )? {
             PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
-            PositionalWalkOutcome::Rejected => return Flow::Rejected,
+            PositionalWalkOutcome::Rejected => return Ok(Flow::Rejected),
         };
 
-        self.push(Instr::LocalGet(more_slot), span);
-        let skip_on_more = self.push_jif(span);
-        if self.lower_block(on_more) == Flow::Rejected {
-            return Flow::Rejected;
+        self.push(Instr::LocalGet(more_slot), span)?;
+        let skip_on_more = self.push_jif(span)?;
+        if self.lower_block(on_more)? == Flow::Rejected {
+            return Ok(Flow::Rejected);
         }
         let end = self.here();
         self.patch(skip_on_more, end);
         self.patch_all(break_jumps, end);
-        Flow::Fallthrough
+        Ok(Flow::Fallthrough)
     }
 
     /// Evaluate an `at most N` bound: a positive compile-time integer literal within
@@ -2305,10 +2331,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         iterable: &Expression,
         body: &Block,
         span: SourceSpan,
-    ) -> Flow {
-        let Some(coll_ty) = self.lower_expr(iterable) else {
-            return Flow::Fallthrough;
-        };
+    ) -> ConstructResult<Flow> {
+        let coll_ty = self.lower_expr(iterable)?;
         let LTy::Collection {
             idx,
             optional: false,
@@ -2323,7 +2347,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     coll_ty.spelling(self.records)
                 ),
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
 
         // The loop variables and the per-position bind instructions, resolved from
@@ -2350,7 +2374,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "a list `for` binds exactly one element name",
                 ));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
             (CollSpec::Map { .. }, _) => {
                 self.fail(unsupported(
@@ -2358,15 +2382,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     span,
                     "a map `for` binds a key or a key and a value (`for k, v`)",
                 ));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
         };
 
         // The collection value is on the stack; keep it in a local to index it.
         let Some(coll_slot) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
-        self.push(Instr::LocalSet(coll_slot), span);
+        self.push(Instr::LocalSet(coll_slot), span)?;
         let len_instr = match self.records.collection_spec(idx) {
             CollSpec::List { .. } => Instr::ListLen,
             CollSpec::Map { .. } => Instr::MapLen,
@@ -2384,19 +2408,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                                 name_span: SourceSpan,
                                 ty: LTy,
                                 at: Instr|
-                 -> Option<()> {
-                    let slot = lower.alloc_slot(name_span)?;
-                    lower.push(Instr::LocalGet(coll_slot), span);
-                    lower.push(Instr::LocalGet(index_slot), span);
-                    lower.push(at, span);
-                    lower.push(Instr::LocalSet(slot), span);
+                 -> ConstructResult<()> {
+                    let slot = lower
+                        .alloc_slot(name_span)
+                        .ok_or(LoweringFailure::Recoverable)?;
+                    lower.push(Instr::LocalGet(coll_slot), span)?;
+                    lower.push(Instr::LocalGet(index_slot), span)?;
+                    lower.push(at, span)?;
+                    lower.push(Instr::LocalSet(slot), span)?;
                     lower.locals.push(Local {
                         name: name.to_string(),
                         ty,
                         mutable: false,
                         slot,
                     });
-                    Some(())
+                    Ok(())
                 };
                 match bind {
                     Bind::List { elem } => {
@@ -2434,14 +2460,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         )?;
                     }
                 }
-                Some(())
+                Ok(())
             },
-        ) {
+        )? {
             PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
-            PositionalWalkOutcome::Rejected => return Flow::Rejected,
+            PositionalWalkOutcome::Rejected => return Ok(Flow::Rejected),
         };
         self.patch_all(break_jumps, self.here());
-        Flow::Fallthrough
+        Ok(Flow::Fallthrough)
     }
 
     /// Lower a forward positional walk over a finite collection already resident in
@@ -2463,50 +2489,59 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         len_instr: Instr,
         body: &Block,
         span: SourceSpan,
-        bind: impl FnOnce(&mut Self, u16) -> Option<()>,
-    ) -> PositionalWalkOutcome {
+        bind: impl FnOnce(&mut Self, u16) -> ConstructResult<()>,
+    ) -> ConstructResult<PositionalWalkOutcome> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return PositionalWalkOutcome::Rejected;
+            return Ok(PositionalWalkOutcome::Rejected);
         }
         // The cursor starts at -1 so the increment at the loop top reaches 0 first,
         // which lets `continue` jump to that increment and always make progress.
         let Some(index_slot) = self.alloc_slot(span) else {
-            return PositionalWalkOutcome::Rejected;
+            return Ok(PositionalWalkOutcome::Rejected);
         };
         let Some(neg_one) = self.checked_mint(|draft| draft.intern_int(-1)) else {
-            return PositionalWalkOutcome::Rejected;
+            return Ok(PositionalWalkOutcome::Rejected);
         };
-        self.push(Instr::ConstLoad(neg_one), span);
-        self.push(Instr::LocalSet(index_slot), span);
+        self.push(Instr::ConstLoad(neg_one), span)?;
+        self.push(Instr::LocalSet(index_slot), span)?;
         let Some(one) = self.checked_mint(|draft| draft.intern_int(1)) else {
-            return PositionalWalkOutcome::Rejected;
+            return Ok(PositionalWalkOutcome::Rejected);
         };
 
         let top = self.here();
         // index += 1
-        self.push(Instr::LocalGet(index_slot), span);
-        self.push(Instr::ConstLoad(one), span);
-        self.push(Instr::IntAdd, span);
-        self.push(Instr::LocalSet(index_slot), span);
+        self.push(Instr::LocalGet(index_slot), span)?;
+        self.push(Instr::ConstLoad(one), span)?;
+        self.push(Instr::IntAdd, span)?;
+        self.push(Instr::LocalSet(index_slot), span)?;
         // index < length
-        self.push(Instr::LocalGet(index_slot), span);
-        self.push(Instr::LocalGet(coll_slot), span);
-        self.push(len_instr, span);
-        self.push(Instr::IntLt, span);
-        let exit = self.push_jif(span);
+        self.push(Instr::LocalGet(index_slot), span)?;
+        self.push(Instr::LocalGet(coll_slot), span)?;
+        self.push(len_instr, span)?;
+        self.push(Instr::IntLt, span)?;
+        let exit = self.push_jif(span)?;
 
         let mark = self.locals.len();
         let place_mark = self.places.len();
-        if bind(self, index_slot).is_none() {
-            self.locals.truncate(mark);
-            self.places.truncate(place_mark);
-            return PositionalWalkOutcome::Rejected;
+        match bind(self, index_slot) {
+            Ok(()) => {}
+            Err(LoweringFailure::Recoverable) => {
+                self.locals.truncate(mark);
+                self.places.truncate(place_mark);
+                return Err(LoweringFailure::Recoverable);
+            }
+            Err(LoweringFailure::CodeLimitReached) => {
+                return Err(LoweringFailure::CodeLimitReached);
+            }
         }
         self.loops.push(LoopCtx {
             continue_target: top,
             break_jumps: Vec::new(),
         });
-        let body_flow = self.lower_block(body);
+        let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
@@ -2517,50 +2552,47 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // drop it with the loop-variable locals so it does not escape the body.
         self.places.truncate(place_mark);
         if body_flow == Flow::Rejected {
-            return PositionalWalkOutcome::Rejected;
+            return Ok(PositionalWalkOutcome::Rejected);
         }
         if body_flow == Flow::Fallthrough {
-            self.push(Instr::Jump(top as u32), body.span);
+            self.push(Instr::Jump(top as u32), body.span)?;
         }
 
         let after_loop = self.here();
         self.patch(exit, after_loop);
-        PositionalWalkOutcome::Complete(ctx.break_jumps)
+        Ok(PositionalWalkOutcome::Complete(ctx.break_jumps))
     }
 
-    fn lower_while(&mut self, condition: &Expression, body: &Block) -> Flow {
+    fn lower_while(&mut self, condition: &Expression, body: &Block) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         let top = self.here();
-        if self.lower_condition(condition).is_none() {
-            return if self.terminal_rejection() {
-                Flow::Rejected
-            } else {
-                Flow::Fallthrough
-            };
-        }
-        let exit = self.push_jif(condition.span());
+        self.lower_condition(condition)?;
+        let exit = self.push_jif(condition.span())?;
         self.loops.push(LoopCtx {
             continue_target: top,
             break_jumps: Vec::new(),
         });
-        let body_flow = self.lower_block(body);
+        let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
         )]
         let ctx = self.loops.pop().expect("loop was pushed");
         if body_flow == Flow::Rejected {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         if body_flow == Flow::Fallthrough {
-            self.push(Instr::Jump(top as u32), body.span);
+            self.push(Instr::Jump(top as u32), body.span)?;
         }
         let end = self.here();
         self.patch(exit, end);
         self.patch_all(ctx.break_jumps, end);
-        Flow::Fallthrough
+        Ok(Flow::Fallthrough)
     }
 
     /// Lower the adjacent single-operation checked-arithmetic form. It wraps one int
@@ -2577,9 +2609,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         out_of_range: Option<&Block>,
         zero_divisor: Option<&Block>,
         span: SourceSpan,
-    ) -> Flow {
+    ) -> ConstructResult<Flow> {
+        if self.code_limit_reached {
+            return Err(LoweringFailure::CodeLimitReached);
+        }
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         // The wrapped operation: a single int `+`/`-`/`*`/`/`/`%` or negation.
         enum Wrapped<'e> {
@@ -2609,7 +2644,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     op.span(),
                     "a checked form wrapping anything but one int `+`, `-`, `*`, `/`, `%`, or negation",
                 ));
-                return Flow::Fallthrough;
+                return Ok(Flow::Fallthrough);
             }
         };
         let is_div = matches!(
@@ -2634,7 +2669,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "requires an `on out_of_range` arm",
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         };
         if can_zero_fault && zero_divisor.is_none() {
             self.fail(checked_arm_error(
@@ -2642,7 +2677,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 span,
                 "a checked `/` or `%` requires an `on zero_divisor` arm",
             ));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
         if !can_zero_fault && zero_divisor.is_some() {
             let reason = if is_div {
@@ -2651,35 +2686,23 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 "this checked operation cannot fault with a zero divisor, so it takes no `on zero_divisor` arm"
             };
             self.fail(checked_arm_error(self.file, span, reason));
-            return Flow::Fallthrough;
+            return Ok(Flow::Fallthrough);
         }
 
         let int = LTy::bare_scalar(ScalarType::Int);
         // Evaluate the operands into fresh locals.
         let Some(la) = self.alloc_slot(span) else {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         };
         let (checked, lb) = match wrapped {
             Wrapped::Binary(bop, left, right) => {
-                if self.lower_as(left, int).is_none() {
-                    return if self.terminal_rejection() {
-                        Flow::Rejected
-                    } else {
-                        Flow::Fallthrough
-                    };
-                }
-                self.push(Instr::LocalSet(la), span);
+                self.lower_as(left, int)?;
+                self.push(Instr::LocalSet(la), span)?;
                 let Some(lb) = self.alloc_slot(span) else {
-                    return Flow::Rejected;
+                    return Ok(Flow::Rejected);
                 };
-                if self.lower_as(right, int).is_none() {
-                    return if self.terminal_rejection() {
-                        Flow::Rejected
-                    } else {
-                        Flow::Fallthrough
-                    };
-                }
-                self.push(Instr::LocalSet(lb), span);
+                self.lower_as(right, int)?;
+                self.push(Instr::LocalSet(lb), span)?;
                 let checked = match bop {
                     BinaryOp::Add => Instr::IntAddChecked(0),
                     BinaryOp::Subtract => Instr::IntSubChecked(0),
@@ -2695,14 +2718,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 (checked, Some(lb))
             }
             Wrapped::Neg(operand) => {
-                if self.lower_as(operand, int).is_none() {
-                    return if self.terminal_rejection() {
-                        Flow::Rejected
-                    } else {
-                        Flow::Fallthrough
-                    };
-                }
-                self.push(Instr::LocalSet(la), span);
+                self.lower_as(operand, int)?;
+                self.push(Instr::LocalSet(la), span)?;
                 (Instr::IntNegChecked(0), None)
             }
         };
@@ -2716,16 +2733,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 reason = "parser-guaranteed shape: a division parses with a right operand, so its lowered slot is bound whenever a zero-divisor arm is present"
             )]
             let lb = lb.expect("division has a right operand");
-            self.push(Instr::LocalGet(lb), span);
+            self.push(Instr::LocalGet(lb), span)?;
             let Some(zero) = self.checked_mint(|draft| draft.intern_int(0)) else {
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             };
-            self.push(Instr::ConstLoad(zero), span);
-            self.push(Instr::EqInt, span);
-            let to_nonzero = self.push_jif(span);
-            let zero_flow = self.lower_block(zero_block);
+            self.push(Instr::ConstLoad(zero), span)?;
+            self.push(Instr::EqInt, span)?;
+            let to_nonzero = self.push_jif(span)?;
+            let zero_flow = self.lower_block(zero_block)?;
             if zero_flow == Flow::Rejected {
-                return Flow::Rejected;
+                return Ok(Flow::Rejected);
             }
             if zero_flow != Flow::Terminates {
                 self.fail(checked_arm_error(
@@ -2741,28 +2758,38 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // The checked operation. On the fault edge it transfers to the handler with
         // the operands already popped (the statement-boundary stack); on success it
         // pushes the int result.
-        self.push(Instr::LocalGet(la), span);
+        self.push(Instr::LocalGet(la), span)?;
         if let Some(lb) = lb {
-            self.push(Instr::LocalGet(lb), span);
+            self.push(Instr::LocalGet(lb), span)?;
         }
         let checked_at = self.here();
-        self.push(checked, span);
+        self.push(checked, span)?;
 
         // Success path: coerce the int result to the binding and store it. A
         // `const`/`var` binding (`pending` is `Some`) falls through and jumps over the
         // handler; a `return` binding leaves the frame, so no skip jump is needed.
-        let pending = self.store_checked_result(bind, span);
+        let pending = match self.store_checked_result(bind, span) {
+            Ok(pending) => pending,
+            Err(LoweringFailure::Recoverable) if self.terminal_rejection() => {
+                return Ok(Flow::Rejected);
+            }
+            Err(failure) => return Err(failure),
+        };
         if self.terminal_rejection() {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
-        let end_jump = pending.is_some().then(|| self.push_jump(span));
+        let end_jump = if pending.is_some() {
+            Some(self.push_jump(span)?)
+        } else {
+            None
+        };
 
         // The out-of-range handler.
         let handler = self.here();
         self.patch(checked_at, handler);
-        let out_of_range_flow = self.lower_block(out_of_range);
+        let out_of_range_flow = self.lower_block(out_of_range)?;
         if out_of_range_flow == Flow::Rejected {
-            return Flow::Rejected;
+            return Ok(Flow::Rejected);
         }
         if out_of_range_flow != Flow::Terminates {
             self.fail(checked_arm_error(
@@ -2779,11 +2806,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         if let Some(local) = pending {
             self.locals.push(local);
-            Flow::Fallthrough
+            Ok(Flow::Fallthrough)
         } else {
             // A `return` binding leaves the frame on the success path; the arms
             // diverge, so the whole form terminates.
-            Flow::Terminates
+            Ok(Flow::Terminates)
         }
     }
 
@@ -2791,26 +2818,30 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// path. Returns the local to bring into scope *after* the handler (for
     /// `const`/`var`, so the name is not visible inside the arms), or `None` for a
     /// `return` binding (which stores by returning).
-    fn store_checked_result(&mut self, bind: &CheckedBind, span: SourceSpan) -> Option<Local> {
+    fn store_checked_result(
+        &mut self,
+        bind: &CheckedBind,
+        span: SourceSpan,
+    ) -> ConstructResult<Option<Local>> {
         let int = LTy::bare_scalar(ScalarType::Int);
         match bind {
             CheckedBind::Const { name, ty, .. } | CheckedBind::Var { name, ty, .. } => {
                 let mutable = matches!(bind, CheckedBind::Var { .. });
                 let target = self.coerce_int_result(ty.as_deref(), int, span)?;
-                let slot = self.alloc_slot(span)?;
-                self.push(Instr::LocalSet(slot), span);
-                Some(Local {
+                let slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+                self.push(Instr::LocalSet(slot), span)?;
+                Ok(Some(Local {
                     name: name.clone(),
                     ty: target,
                     mutable,
                     slot,
-                })
+                }))
             }
             CheckedBind::Return => {
                 match self.ret {
                     RetType::Value(want) => {
-                        self.coerce_bare_int_to(want, span, span);
-                        self.emit_region_return(span);
+                        self.coerce_bare_int_to(want, span, span)?;
+                        self.emit_region_return(span)?;
                     }
                     RetType::Unit => {
                         self.fail(SourceDiagnostic::at(
@@ -2822,7 +2853,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         ));
                     }
                 }
-                None
+                Ok(None)
             }
         }
     }
@@ -2835,15 +2866,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         annotation: Option<&TypeExpr>,
         int: LTy,
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> ConstructResult<LTy> {
         let Some(annotation) = annotation else {
-            return Some(int);
+            return Ok(int);
         };
         let declared = match self.resolve(annotation) {
             Ok(declared) => declared,
             Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
                 self.failed = true;
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
             Err(
                 error @ ResolveError::Refusal(
@@ -2851,7 +2882,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 ),
             ) => {
                 self.reject_resolution(error, annotation.span(), "this type annotation");
-                return Some(int);
+                return Ok(int);
             }
             Err(ResolveError::Invariant(invariant)) => {
                 self.reject_resolution(
@@ -2859,21 +2890,26 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     annotation.span(),
                     "this type annotation",
                 );
-                return None;
+                return Err(LoweringFailure::Recoverable);
             }
         };
-        self.coerce_bare_int_to(declared, annotation.span(), span);
-        Some(declared)
+        self.coerce_bare_int_to(declared, annotation.span(), span)?;
+        Ok(declared)
     }
 
     /// Coerce the bare-int result already on the stack to `target` (`int` or `int?`),
     /// emitting a `SomeWrap` for the optional case. A `target` that is not
     /// int-compatible is a type error reported at `err_span`. One owner for the two
     /// checked-result binding sites (`const`/`var` annotation and `return`).
-    fn coerce_bare_int_to(&mut self, target: LTy, err_span: SourceSpan, wrap_span: SourceSpan) {
+    fn coerce_bare_int_to(
+        &mut self,
+        target: LTy,
+        err_span: SourceSpan,
+        wrap_span: SourceSpan,
+    ) -> ConstructResult<()> {
         let int = LTy::bare_scalar(ScalarType::Int);
         if target == int.to_optional() {
-            self.push(Instr::SomeWrap, wrap_span);
+            self.push(Instr::SomeWrap, wrap_span)?;
         } else if target != int {
             self.fail(type_mismatch(
                 self.records,
@@ -2883,9 +2919,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 target,
             ));
         }
+        Ok(())
     }
 
-    fn lower_condition(&mut self, expr: &Expression) -> Option<()> {
+    fn lower_condition(&mut self, expr: &Expression) -> ConstructResult<()> {
         let ty = self.lower_expr(expr)?;
         if ty != LTy::bare_scalar(ScalarType::Bool) {
             self.fail(SourceDiagnostic::at(
@@ -2897,8 +2934,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     ty.spelling(self.records)
                 ),
             ));
-            return None;
+            return Err(LoweringFailure::Recoverable);
         }
-        Some(())
+        Ok(())
     }
 }
