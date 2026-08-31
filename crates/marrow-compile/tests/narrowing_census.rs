@@ -515,7 +515,6 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "analysis.rs",
         "u16::try_from(index).ok().map(Self)",
     ),
-    ("marrow-compile", "compile.rs", ".count() as u16"),
     (
         "marrow-compile",
         "compile.rs",
@@ -560,11 +559,6 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "marrow-compile",
         "lower/mod.rs",
         "| Instr::IntRemChecked(t) => *t = target as u32,",
-    ),
-    (
-        "marrow-compile",
-        "lower/registry.rs",
-        "self.sigs.accepted_occurrences().count() as u16",
     ),
     ("marrow-compile", "lower/stmts.rs", "Some(value as u32)"),
     ("marrow-compile", "lower/stmts.rs", "field: field as u16,"),
@@ -618,22 +612,19 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "types/mod.rs",
         ".map(|index| (NominalId(index as u32), &self.nominals[index]))",
     ),
+    // All five image-function-index producers accumulate wide and narrow only here.
+    // An out-of-domain value is bounded by the exact typed refusal
+    // `GenericInvariant::FunctionIndexDomain`; it is deliberately locationless because
+    // the aggregate function count has no single offending source span.
+    (
+        "marrow-compile",
+        "types/function_index.rs",
+        "u16::try_from(wide).map_err(|_| GenericInvariant::FunctionIndexDomain)",
+    ),
     (
         "marrow-compile",
         "types/mod.rs",
         "Self(u32::try_from(position).expect( ))",
-    ),
-    (
-        "marrow-compile",
-        "types/mod.rs",
-        "let func = generics.fn_base + row as u16;",
-    ),
-    // The same line twice: the cast is one site and the addition over the narrowed
-    // carrier is a second, which is the arithmetic spelling this census had no reader for.
-    (
-        "marrow-compile",
-        "types/mod.rs",
-        "let func = generics.fn_base + row as u16;",
     ),
     (
         "marrow-compile",
@@ -711,27 +702,19 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "durable_id.rs",
         "u16::try_from(count).map_err(|_| DurableGraphTooLarge)",
     ),
+    // Code layout accumulates wide and narrows at the two consuming boundaries. Both
+    // sites are bounded by the exact `ImageBuildError::CodeTooLong` refusal, projected
+    // by the compiler as `cli.compiler_resource_limit` for `CodeBytes`; the per-function
+    // total has no narrower source span than the function-level resource subject.
     (
         "marrow-image",
         "encode.rs",
-        "code.iter().map(|instr| instr.encoded_len() as u32).sum()",
-    ),
-    // Twice: the cast to the narrow carrier, and the compound addition that folds it into
-    // the running total. The addition is a `u32` accumulation with no conversion to find it
-    // by, and it was invisible to this census until the compound forms were read as the
-    // arithmetic they are. Both occurrences are bounded by the same located check —
-    // `encode_functions` rechecks `total_len` against `MAX_CODE_BYTES` before the layout is
-    // used, and an instruction is at least one encoded byte, so reaching the carrier's
-    // domain would need a code vector orders of magnitude past the draft's own footprint.
-    (
-        "marrow-image",
-        "encode.rs",
-        "offset += instr.encoded_len() as u32;",
+        "offsets.push(u32::try_from(offset).map_err(|_| ImageBuildError::CodeTooLong)?);",
     ),
     (
         "marrow-image",
         "encode.rs",
-        "offset += instr.encoded_len() as u32;",
+        "let total_len = u32::try_from(offset).map_err(|_| ImageBuildError::CodeTooLong)?;",
     ),
     (
         "marrow-image",
