@@ -870,7 +870,7 @@ struct DraftSnapshot {
 ///
 /// ```compile_fail,E0599
 /// // A savepoint is affine: it cannot be cloned.
-/// let draft = marrow_image::ImageDraft::new();
+/// let mut draft = marrow_image::ImageDraft::new();
 /// let sp = draft.savepoint();
 /// let _copy = sp.clone();
 /// ```
@@ -969,7 +969,7 @@ struct DraftJournal {
 /// // mid-transaction savepoint whose meaning would depend on later rollback.
 /// let mut draft = marrow_image::ImageDraft::new();
 /// let savepoint = draft.savepoint();
-/// let txn = draft.begin_transaction(savepoint).unwrap();
+/// let mut txn = draft.begin_transaction(savepoint).unwrap();
 /// let _ = txn.savepoint();
 /// ```
 #[doc(hidden)]
