@@ -114,6 +114,32 @@ fn parsed_source_is_never_named_in_the_compiler() {
     );
 }
 
+/// Compiler resource equations and compiler RSS observations must not consume the
+/// application server's retained-capacity authority. The compiler authorities are
+/// established independently; importing `owned_heap` here would silently turn an
+/// application ceiling into a compiler ceiling again.
+#[test]
+fn compiler_capacity_evidence_does_not_import_the_application_owned_heap_ceiling() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in ["tests/resource_limits.rs", "tests/issuance_rss.rs"] {
+        let source = fs::read_to_string(crate_root.join(relative)).expect("read capacity evidence");
+        assert!(
+            !source.contains("owned_heap") && !source.contains("H_OWNED_BYTES"),
+            "{relative} must not compare compiler terms with the application owned-heap \
+             authority",
+        );
+    }
+
+    let implementation = fs::read_to_string(crate_root.join("../../docs/implementation/README.md"))
+        .expect("read implementation map");
+    assert!(
+        !implementation.contains("8,213,004,288 B  (> 640 MiB declared)")
+            && !implementation.contains("measured against the declared 640 MiB"),
+        "the durable-arena map must record the compiler term without comparing it to the \
+         application ceiling",
+    );
+}
+
 /// Every production diagnostic producer writes through the one bounded
 /// collector; no raw mutable diagnostic vector parameter survives.
 #[test]

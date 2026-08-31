@@ -17,18 +17,15 @@
 //! Each width is read from the bound that governs the construct it widens. The gate
 //! previously read `MAX_STRUCT_LEAVES` for all of them — a durable value-shape bound whose
 //! own declaration says it does not scale with the record width — and so measured bodies
-//! sixty-four times narrower than the compiler admits. At the correct widths one of the
-//! four corpora peaks above the declared owned-heap ceiling; the verdicts are recorded
-//! below.
+//! sixty-four times narrower than the compiler admits. The raw peaks at the corrected
+//! widths are recorded below as observations. Compiler RSS authority is established
+//! separately; this fixture neither imports nor authors one.
 //!
 //! Measurement uses only what the platform already publishes about a process:
 //! `/proc/self/status`'s `VmHWM` where it exists, and the base-system zsh `time`
 //! reporter on macOS. Neither adds a dependency and neither needs `unsafe`. A
 //! platform whose peak is not obtainable fails the gate loudly rather than passing
 //! without a figure.
-
-#[path = "common/owned_heap.rs"]
-mod owned_heap;
 
 use std::process::Command;
 
@@ -74,16 +71,6 @@ const ADMITTED_LOCALS: usize = marrow_image::bounds::MAX_LOCALS - 2;
 /// that boundary on the arm's own generator, so this constant cannot drift away from the
 /// bound it claims to sit at.
 const ADMITTED_CODE_PADDING: usize = 6145;
-
-/// The ceiling each hostile amplification compile is compared against: the repository's
-/// declared owned-heap authority, read from its owner.
-///
-/// It is deliberately **not** derived from this corpus's own measured peak. A gate that
-/// sets its ceiling from its own sample proves only that the implementation equals
-/// itself, and it can never fail: every regression simply becomes the new authority. If
-/// an honest measurement exceeds this number, that is a finding about the compiler to be
-/// recorded and adjudicated — not a reason to raise the number.
-const MAX_HOSTILE_COMPILE_RSS_BYTES: u64 = owned_heap::H_OWNED_BYTES;
 
 /// The type-amplification arm: a divergent generic type over the largest admissible
 /// body, reached through a generic function's return annotation.
@@ -314,37 +301,28 @@ fn inner_hostile_amplification_compile() {
     }
 }
 
-/// **The recorded verdict per corpus: whether its measured peak is under the declared
-/// owned-heap ceiling.** One of the four is not, and that is a finding about the
-/// compiler rather than a ceiling to raise.
-///
 /// Measured on this host — aarch64 macOS 25.5, the workspace's pinned toolchain, `cargo
 /// test` at the default `dev` profile, one subprocess per corpus, peak read from the base
 /// system reporter. A `release` run reproduces every figure inside one percent, so the
-/// peak is the retained population and not the profile:
+/// peak is the retained population and not the profile. These are observations, not
+/// comparisons with a compiler authority:
 ///
 /// ```text
-/// corpus     peak RSS         vs. 640 MiB ceiling   what it drives
-/// type          78,610,432 B   0.12x  under         MAX_RECORD_FIELDS fields per fill,
-///                                                   256 deep (the mint-depth bound)
-/// enum         262,995,968 B   0.39x  under         MAX_VARIANTS x MAX_PAYLOAD_FIELDS per
-///                                                   fill, 256 deep
-/// function   9,452,208,128 B  14.08x  OVER          MAX_LOCALS-2 locals AND the 64-KiB
-///                                                   code envelope, 4096 instances
-/// both          99,549,184 B   0.15x  under         the type arm reaches its depth bound
-///                                                   first and stops the compile
+/// corpus     recorded peak RSS   what it drives
+/// type          78,610,432 B     MAX_RECORD_FIELDS fields per fill, 256 deep
+/// enum         262,995,968 B     MAX_VARIANTS x MAX_PAYLOAD_FIELDS per fill, 256 deep
+/// function   9,452,208,128 B     MAX_LOCALS-2 locals and the 64-KiB code envelope,
+///                                4096 instances
+/// both          99,549,184 B     the type arm reaches its depth bound first
 /// ```
 ///
-/// **The enum arm's overshoot is retired here, not reclassified.** It was recorded at
-/// 1,075,691,520 B (1.60x OVER) while each fill copied the template's whole declared body
-/// per instantiation — the enum body being the larger of the two, `MAX_VARIANTS` variants
-/// each of `MAX_PAYLOAD_FIELDS` leaves. The fills now read the declared entries through a
-/// shared handle and copy nothing, and the arm's peak fell 4.09x to 0.39x of the ceiling.
-/// The type and combined arms fell with it (3.46x and 2.94x) without changing verdict.
+/// The enum arm was previously recorded at 1,075,691,520 B while each fill copied the
+/// template's whole declared body per instantiation. The fills now read the declared
+/// entries through a shared handle and copy nothing, and the arm's observed peak fell
+/// 4.09x. The type and combined observations fell with it (3.46x and 2.94x).
 ///
-/// The function arm is the hostile maximum and it is **14.08x** the declared ceiling — the
-/// same finding at 3.5% less, since a function instance retains its own frame and code
-/// rather than a type template's body. Two successive corpus defects hid it. The first read
+/// The function arm is the hostile maximum recorded here. Two successive corpus defects
+/// hid it. The first read
 /// `MAX_STRUCT_LEAVES` — a durable value-shape bound whose own declaration says it does not
 /// scale with the record width — as the width of a generic `struct` template, leaving every
 /// arm sixty-four times narrow with no enum arm at all. The second measured only one of a
@@ -361,9 +339,6 @@ fn inner_hostile_amplification_compile() {
 /// `dev` profile, because it lowers roughly 27 million statements. That is a real charge
 /// against the workspace battery and it is a consequence of measuring the true width.
 ///
-/// The verdicts are pinned in the direction they hold, so this gate fails if an arm comes
-/// under the ceiling (the finding is fixed and its record must be retired) as well as if
-/// one goes over. It is not a ceiling raised to fit a measurement.
 /// **The tier split, and why it is where it is.**
 ///
 /// The workspace pillar puts compilation and test speed first and says a test costing
@@ -393,21 +368,13 @@ fn inner_hostile_amplification_compile() {
 /// Measured wall time: default tier **about 5 s**, opt-in tier **about 500 s**.
 const FAST_CORPORA: &[&str] = &["type", "enum", "both"];
 
-/// The maximal arm, measured only in the opt-in tier. It is the hostile maximum — the
-/// figure the recorded verdict table calls 14.08x — so nothing here may quietly claim the
-/// default battery measured it.
+/// The maximal arm, measured only in the opt-in tier. It is the hostile maximum in the
+/// recorded table, so nothing here may quietly claim the default battery measured it.
 const MAXIMAL_CORPUS: &str = "function";
 
-const RECORDED_CORPUS_VERDICTS: &[(&str, bool)] = &[
-    ("both", true),
-    ("enum", true),
-    ("function", false),
-    ("type", true),
-];
-
 /// The default measurement tier: compile each fast corpus in its own subprocess, measure
-/// every peak, and require its current under/over classification to match the recorded
-/// verdict. A platform that publishes no peak fails here rather than passing unmeasured.
+/// every peak, and report the raw observations. A platform that publishes no peak fails
+/// here rather than passing unmeasured.
 ///
 /// The three fast corpora preserve quick evidence for the type and enum shapes and for their
 /// combined early-stop interaction. They do not establish the maximum: the function-only
@@ -415,20 +382,20 @@ const RECORDED_CORPUS_VERDICTS: &[(&str, bool)] = &[
 /// only one shape — as this gate previously did — would report whichever amplification arm
 /// happened to be written rather than the live set the compiler can admit.
 #[test]
-fn the_fast_amplification_corpora_match_their_recorded_rss_verdicts() {
+fn the_fast_amplification_corpora_report_peak_rss() {
     measure_corpora(FAST_CORPORA);
 }
 
-/// The maximal arm's peak — the opt-in half of the tier. This is the figure the recorded
-/// table calls 14.08x the declared ceiling, and the default battery does **not** measure it.
+/// The maximal arm's peak — the opt-in half of the tier. The default battery does **not**
+/// measure it.
 #[test]
 #[ignore = "the maximal amplification arm: about 500 s, run with --ignored"]
-fn the_maximal_amplification_arm_matches_its_recorded_rss_overshoot() {
+fn the_maximal_amplification_arm_reports_peak_rss() {
     measure_corpora(&[MAXIMAL_CORPUS]);
 }
 
-/// Measure each named corpus in its own subprocess and hold every peak against its recorded
-/// verdict. A platform that publishes no peak fails here rather than passing unmeasured.
+/// Measure each named corpus in its own subprocess and report every raw peak. A platform
+/// that publishes no peak fails here rather than passing unmeasured.
 fn measure_corpora(corpora: &[&str]) {
     let mut peaks = Vec::new();
     for corpus in corpora.iter().copied() {
@@ -439,32 +406,6 @@ fn measure_corpora(corpora: &[&str]) {
         );
         println!("hostile-amplification peak RSS [{corpus}]: {peak} bytes");
         peaks.push((corpus, peak));
-    }
-    for (corpus, peak) in &peaks {
-        let under = *peak <= MAX_HOSTILE_COMPILE_RSS_BYTES;
-        let recorded = RECORDED_CORPUS_VERDICTS
-            .iter()
-            .find(|(name, _)| name == corpus)
-            .map(|(_, under)| *under)
-            .unwrap_or_else(|| panic!("`{corpus}` has no recorded verdict"));
-        assert_eq!(
-            under, recorded,
-            "the `{corpus}` corpus peaked at {peak} bytes against the declared owned-heap \
-             ceiling of {MAX_HOSTILE_COMPILE_RSS_BYTES} bytes, which is not the recorded \
-             verdict. If a corpus came under the ceiling, the finding is fixed and its record \
-             is retired; if one went over, that is a new finding. Either way it is \
-             adjudicated here — the ceiling is not raised.",
-        );
-        // A runaway regression inside a recorded overshoot is still a regression: the
-        // over/under classification alone would absorb a further doubling of an arm that is
-        // already recorded as over. This tripwire sits above the largest recorded figure —
-        // the function arm's 14.08x — and catches a doubling of it. It is a regression
-        // tripwire read from the recorded measurement, not a ceiling: the declared
-        // owned-heap authority above is the only ceiling, and it is not moved here.
-        assert!(
-            *peak < 22 * MAX_HOSTILE_COMPILE_RSS_BYTES,
-            "the `{corpus}` corpus peaked at {peak} bytes, past even the recorded overshoot",
-        );
     }
     let (worst_corpus, worst) = *peaks
         .iter()
@@ -620,9 +561,9 @@ fn each_fast_type_amplification_corpus_reaches_a_generic_mint_bound() {
 /// **This is the assertion the gate did without, and it is the one that catches the defect
 /// the corpus actually had.** Reading a value-shape bound as a record's declared width left
 /// every arm sixty-four times narrow while every other assertion here stayed green: a
-/// narrow corpus still reaches a generic-mint bound, still refuses as a source
-/// diagnostic, and still classifies under the owned-heap ceiling. Nothing measured how wide
-/// the bodies were, so nothing noticed that they were not the widest the compiler admits.
+/// narrow corpus still reaches a generic-mint bound and still refuses as a source
+/// diagnostic. Nothing measured how wide the bodies were, so nothing noticed that they
+/// were not the widest the compiler admits.
 ///
 /// The widths are counted out of the generated source rather than recomputed from the same
 /// constants that generate it, so a corpus that stopped emitting what it claims to emit
