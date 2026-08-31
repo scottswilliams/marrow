@@ -160,8 +160,10 @@ fn public_compile_failure_is_exhaustive_nonempty_and_worker_safe() {
 const SHALLOW_SEED_TYPE_COUNT: usize = 64;
 
 /// Build 4,096 distinct depth-one generic function instances without generic
-/// recursion. A caller appends the expression that requests the next shared
-/// instantiation, so count-limit tests can isolate that exact source site.
+/// recursion. The calls are divided among small functions so the fixture reaches
+/// the shared instantiation bound without first crossing the independent
+/// per-function code-byte bound. A caller appends the expression that requests the
+/// next shared instantiation, so count-limit tests can isolate that exact source site.
 fn shallow_function_reservation_fixture() -> String {
     let mut source = String::from(
         r#"module main
@@ -181,12 +183,12 @@ enum Held<T> {
     return 0
 }
 
-pub fn driver(): int {
-    var sink: int = 0
 "#,
     );
     // The 64 x 64 ordered pairs mint 4,096 distinct `prime<A, B>` rows.
     for left in 0..SHALLOW_SEED_TYPE_COUNT {
+        writeln!(source, "fn reserve{left}(): int {{").expect("write reservation function");
+        source.push_str("    var sink: int = 0\n");
         for right in 0..SHALLOW_SEED_TYPE_COUNT {
             writeln!(
                 source,
@@ -194,7 +196,13 @@ pub fn driver(): int {
             )
             .expect("write generated prime application");
         }
+        source.push_str("    return sink\n}\n\n");
     }
+    source.push_str(
+        r#"pub fn driver(): int {
+    var sink: int = 0
+"#,
+    );
     source
 }
 
@@ -877,7 +885,7 @@ fn count_limit_at_a_direct_generic_enum_construction_rejects_the_body() {
     let mut source = shallow_function_reservation_fixture();
 
     let constructor_line = source.lines().count() as u32 + 1;
-    assert_eq!(constructor_line, 4365, "generated source layout drifted");
+    assert_eq!(constructor_line, 4685, "generated source layout drifted");
     source.push_str(
         r#"    const held = Held::value(item: sink)
     match held {
@@ -904,7 +912,7 @@ fn count_limit_at_a_direct_generic_enum_construction_rejects_the_body() {
 fn interpolation_stops_after_a_part_reaches_the_instantiation_limit() {
     let mut source = shallow_function_reservation_fixture();
     let constructor_line = source.lines().count() as u32 + 1;
-    assert_eq!(constructor_line, 4365, "generated source layout drifted");
+    assert_eq!(constructor_line, 4685, "generated source layout drifted");
     source.push_str(
         r#"    const rendered = $"{Held::value(item: sink)} {missing()}"
     return 0
