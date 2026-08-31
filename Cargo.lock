@@ -126,7 +126,6 @@ dependencies = [
  "marrow-compile",
  "marrow-image",
  "marrow-kernel",
- "marrow-lsp",
  "marrow-project",
  "marrow-project-fs",
  "marrow-runner",

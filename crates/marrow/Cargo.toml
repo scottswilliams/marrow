@@ -19,8 +19,6 @@ marrow-compile = { path = "../marrow-compile" }
 # projects a verified image's interface through it and generates the client.
 marrow-image = { path = "../marrow-image" }
 marrow-kernel = { path = "../marrow-kernel" }
-# The in-tree language server, dispatched as `marrow lsp`.
-marrow-lsp = { path = "../marrow-lsp" }
 marrow-project = { path = "../marrow-project" }
 # The local-wire process/socket owner: the terminal spawns a release-verified companion
 # runner through it for a persistent `marrow run --store`, builds the call's JSON arguments
@@ -33,9 +31,8 @@ marrow-verify = { path = "../marrow-verify" }
 marrow-vm = { path = "../marrow-vm" }
 
 [dev-dependencies]
-# The raw JSON-RPC client for the `tests/lsp_stdio.rs` production probes. A dev-only,
-# std-only edge that shares the resolved package node but not the production LSP
-# feature tuple, and gains no serde/lsp-types/transport edge.
+# The Cargo-metadata decoder for the CLI/LSP dependency-direction gate. A dev-only,
+# std-only edge that gains no LSP protocol or transport dependency.
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 
 [lints]

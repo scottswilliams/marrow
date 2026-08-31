@@ -61,7 +61,7 @@ struct WorkerJob {
 struct Receipt;
 
 /// Run the language server over stdio, returning the process exit code.
-pub fn serve() -> u8 {
+pub(crate) fn serve() -> u8 {
     // Install a payload-free no-I/O panic hook before any thread or input, so a producer
     // panic cannot deadlock the process on a formatting or I/O attempt.
     std::panic::set_hook(Box::new(|_| {}));

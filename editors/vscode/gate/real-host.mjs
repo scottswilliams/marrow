@@ -28,7 +28,7 @@ const HERE = dirname(new URL(import.meta.url).pathname);
 const REPO = resolve(HERE, "../../..");
 const EDITOR = resolve(HERE, "..");
 const DRIVER = join(HERE, "host-driver");
-const TARGET = "/Users/scottwilliams/Dev/.build/marrow-targets/vsq01-main";
+const TARGET = "/Users/scottwilliams/Dev/.build/marrow-targets/SPLSP";
 const CODE = "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
 const CLI = "/Applications/Visual Studio Code.app/Contents/Resources/app/out/cli.js";
 const PRODUCT = "/Applications/Visual Studio Code.app/Contents/Resources/app/product.json";
@@ -36,7 +36,9 @@ const THEME_ROOT =
   "/Applications/Visual Studio Code.app/Contents/Resources/app/extensions/theme-defaults";
 const EXPECTED_HEAD = "56e2ae4c3778af6cb22487d9af5a73dc4476cda1";
 const EXPECTED_SERVER =
-  "39c12b09f699ab1e81cd0375d16f23c5a577110d72ba6c230d952cfd59e2a247";
+  "e8f1f7ee590030ab36a77fc2e1bca402422d1faaa078bef78d4829b05d94d269";
+const EXPECTED_CLI =
+  "3e9fffb78de81c1da3f38af0be8e6e4449c6da9f813a2a08454e072338891b7e";
 const TARGET_ID = "marrow-project.marrow";
 const DRIVER_ID = "marrow-project.marrow-vsq-host-driver";
 const EXTENSION_PACKAGE = join(EDITOR, "package.json");
@@ -256,10 +258,16 @@ function preflight() {
   for (const [path, expected] of Object.entries(THEME_FILES)) {
     requireCondition(shaFile(join(THEME_ROOT, path)) === expected, `theme authority drifted: ${path}`);
   }
-  const canonical = join(TARGET, "release", "marrow");
-  requireCondition(existsSync(canonical), "canonical release server is absent");
-  requireCondition(shaFile(canonical) === EXPECTED_SERVER, "canonical server digest drifted");
-  return { canonical, structural: structuralEditorChecks() };
+  const canonicalServer = join(TARGET, "release", "marrow-lsp");
+  const canonicalCli = join(TARGET, "release", "marrow");
+  requireCondition(existsSync(canonicalServer), "canonical release server is absent");
+  requireCondition(existsSync(canonicalCli), "canonical release CLI is absent");
+  requireCondition(
+    shaFile(canonicalServer) === EXPECTED_SERVER,
+    "canonical server digest drifted",
+  );
+  requireCondition(shaFile(canonicalCli) === EXPECTED_CLI, "canonical CLI digest drifted");
+  return { canonicalServer, canonicalCli, structural: structuralEditorChecks() };
 }
 
 function collectGrammarNames(value, names = new Set()) {
@@ -396,7 +404,7 @@ function structuralEditorChecks() {
   };
 }
 
-function copyStage(label, root, canonical) {
+function copyStage(label, root, canonicalServer) {
   const stage = join(root, `stage-${label}`);
   mkdirSync(stage, { mode: 0o700 });
   for (const entry of STAGE_INPUTS) {
@@ -410,8 +418,8 @@ function copyStage(label, root, canonical) {
   run("/usr/bin/env", ["npm", "ci", "--offline", "--ignore-scripts"], { cwd: stage });
   run("/usr/bin/env", ["npm", "run", "compile"], { cwd: stage });
   mkdirSync(join(stage, "server"), { mode: 0o700 });
-  copyFileSync(canonical, join(stage, "server", "marrow"));
-  chmodSync(join(stage, "server", "marrow"), 0o755);
+  copyFileSync(canonicalServer, join(stage, "server", "marrow-lsp"));
+  chmodSync(join(stage, "server", "marrow-lsp"), 0o755);
   const vsix = join(root, `marrow-${label}.vsix`);
   run(join(stage, "node_modules/.bin/vsce"), [
     "package",
@@ -476,7 +484,7 @@ function install(label, root, vsixes) {
   return { profile, extensions };
 }
 
-function prepareWorkspace(root, canonical) {
+function prepareWorkspace(root, canonicalCli) {
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true, mode: 0o700 });
   writeFileSync(join(workspace, "marrow.toml"), 'edition = "2026"\n');
@@ -491,7 +499,7 @@ function prepareWorkspace(root, canonical) {
   writeFileSync(formatPath, unformatted);
   const canonicalPath = join(workspace, "canonical-format.mw");
   writeFileSync(canonicalPath, unformatted);
-  run(canonical, ["fmt", "--write", canonicalPath], { cwd: workspace, timeoutMs: 10_000 });
+  run(canonicalCli, ["fmt", "--write", canonicalPath], { cwd: workspace, timeoutMs: 10_000 });
   const typingPath = join(workspace, "src/typing.mw");
   writeFileSync(typingPath, "module typing\n");
   const broken = `${graphSource}\nfn broken( {\n}\n`;
@@ -864,7 +872,7 @@ function descendants(rootPid, known = new Set([rootPid])) {
 
 function serverPids(rows) {
   return rows
-    .filter((row) => /\/server\/marrow lsp(?:\s|$)/u.test(row.command))
+    .filter((row) => /\/server\/marrow-lsp(?:\s|$)/u.test(row.command))
     .map((row) => row.pid)
     .sort((a, b) => a - b);
 }
@@ -1723,7 +1731,7 @@ function runSelfTests() {
 }
 
 async function runHostGate() {
-  const { canonical, structural } = preflight();
+  const { canonicalServer, canonicalCli, structural } = preflight();
   const root = realpathSync(mkdtempSync("/private/tmp/marrow-vsq-a1-"));
   const evidenceRoot = realpathSync(mkdtempSync("/private/tmp/marrow-vsq-a1-evidence-"));
   let retain = true;
@@ -1747,8 +1755,8 @@ async function runHostGate() {
   };
   activeCommandLog = evidence.commands;
   try {
-    const primary = copyStage("primary", root, canonical);
-    const reproduction = copyStage("reproduction", root, canonical);
+    const primary = copyStage("primary", root, canonicalServer);
+    const reproduction = copyStage("reproduction", root, canonicalServer);
     const driver = buildDriver(root, join(primary.stage, "node_modules/.bin/vsce"));
     const primaryInstall = install("primary", root, [primary.vsix, driver.vsix]);
     const reproductionInstall = install("reproduction", root, [reproduction.vsix, driver.vsix]);
@@ -1766,7 +1774,7 @@ async function runHostGate() {
       "--reproduction-extensions-dir", reproductionInstall.extensions,
       "--evidence", identityEvidence,
     ]);
-    const fixture = prepareWorkspace(root, canonical);
+    const fixture = prepareWorkspace(root, canonicalCli);
     const spec = comprehensiveSpec(fixture);
     const developmentSpec = {
       targetExtensionId: spec.targetExtensionId,

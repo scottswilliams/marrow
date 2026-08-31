@@ -7,7 +7,7 @@ language features come from that server.
 ## Scope
 
 The extension is a thin host. It registers the `marrow` language for the `.mw`
-extension and starts one bundled `marrow lsp` process per window over standard input
+extension and starts one bundled `marrow-lsp` process per window over standard input
 and output. Diagnostics, whole-document formatting, hover, and go-to-definition are
 served by the language server from the compiler's published analysis facts; the
 extension computes no such language meaning of its own.

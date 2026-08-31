@@ -1,6 +1,7 @@
 //! The Marrow language server.
 //!
-//! `marrow-lsp` is a language server dispatched as `marrow lsp`. It consumes the
+//! `marrow-lsp` is the binary-only language server dispatched by `marrow lsp` or
+//! launched directly by an editor. It consumes the
 //! compiler's published editor-analysis facts — diagnostics, checked formatting, hover,
 //! and definition over one exact [`marrow_compile::AnalysisSnapshot`] — and
 //! serves them over the Language Server Protocol. The server reconstructs no language
@@ -21,8 +22,11 @@
 //! writer accepts immutable framed bytes. The threads communicate over bounded
 //! standard-library channels and move-only affine credits (`credit`).
 //!
-//! The single public entry point is [`serve`]; every module below is a private
-//! implementation owner.
+//! The process entry point is the only crate-root surface; every module below is a
+//! private implementation owner.
+
+use std::ffi::OsStr;
+use std::process::ExitCode;
 
 mod analysis;
 mod capacities;
@@ -37,4 +41,28 @@ mod server;
 mod transport;
 mod uri;
 
-pub use server::serve;
+const HELP: &str = "\
+Usage:
+  marrow-lsp
+
+Run the Marrow language server over stdio (JSON-RPC 2.0 with LSP framing). The
+server takes no arguments and is normally launched by an editor or `marrow lsp`.
+";
+
+fn main() -> ExitCode {
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    match args.as_slice() {
+        [] => ExitCode::from(server::serve()),
+        [arg] if arg == OsStr::new("--help") || arg == OsStr::new("-h") => {
+            print!("{HELP}");
+            ExitCode::SUCCESS
+        }
+        [arg, ..] => {
+            eprintln!(
+                "unknown marrow-lsp option: {}; run marrow-lsp --help for usage",
+                arg.to_string_lossy()
+            );
+            ExitCode::from(2)
+        }
+    }
+}

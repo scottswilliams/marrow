@@ -6,7 +6,7 @@ import {
   ServerOptions,
 } from "vscode-languageclient/node";
 
-// The Marrow extension is a thin host: it starts exactly one bundled `marrow lsp`
+// The Marrow extension is a thin host: it starts exactly one bundled `marrow-lsp`
 // child over stdio and lets the server own every language fact. It parses no source,
 // computes no positions, classifies no paths, and adds no middleware, retry, or
 // diagnostic filtering. All semantic behavior — diagnostics, formatting, hover,
@@ -102,11 +102,11 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
 
   // No `transport` field: for an Executable, naming TransportKind.stdio makes the
   // client append a `--stdio` argument, which the server's exact-argument law
-  // refuses (exit 2). Omitting it uses stdio without altering the fixed ["lsp"]
-  // arguments. Found live by the H00b installed human gate.
+  // refuses (exit 2). Omitting it uses stdio without adding an argument to the
+  // server's fixed empty argument list. Found live by the H00b installed human gate.
   const executable: Executable = {
-    command: context.asAbsolutePath("server/marrow"),
-    args: ["lsp"],
+    command: context.asAbsolutePath("server/marrow-lsp"),
+    args: [],
   };
   const serverOptions: ServerOptions = { run: executable, debug: executable };
   const clientOptions: LanguageClientOptions = {

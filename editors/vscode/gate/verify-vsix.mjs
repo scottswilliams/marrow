@@ -448,8 +448,8 @@ function selfTestChain({ repo, stage, vsix, extensions, installed, index, label 
     },
     evidence: {
       candidate: { head: "a".repeat(40), cargoLock: { sha256: "b".repeat(64) } },
-      canonical: [{ path: "server/marrow", sha256: "c".repeat(64), mode: 0o755, size: 1 }],
-      stage: [{ path: "server/marrow", sha256: "c".repeat(64), mode: 0o755, size: 1 }],
+      canonical: [{ path: "server/marrow-lsp", sha256: "c".repeat(64), mode: 0o755, size: 1 }],
+      stage: [{ path: "server/marrow-lsp", sha256: "c".repeat(64), mode: 0o755, size: 1 }],
       vsix: { label },
       installed: { label },
     },

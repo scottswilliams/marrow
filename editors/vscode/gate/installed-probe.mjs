@@ -4,7 +4,7 @@
 // This script exercises the automatable portion of the H00b installed gate: it proves
 // the packaged artifacts exist, that the bundled server binary is the pinned canonical
 // build, that the thin host imports nothing outside its allowlist, and that the bundled
-// `marrow lsp` child honors the client-observable server contract the extension depends
+// `marrow-lsp` child honors the client-observable server contract the extension depends
 // on (single-root initialize, diagnostics publication, stale suppression, delivered-empty
 // retirement, capture-unavailable `-32803`, multi-root `-32602` pre-initialize refusal,
 // clean shutdown with no orphan child).
@@ -24,11 +24,11 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = join(HERE, "..");
-const SERVER = join(EXT_ROOT, "server", "marrow");
+const SERVER = join(EXT_ROOT, "server", "marrow-lsp");
 const BUNDLE = join(EXT_ROOT, "out", "extension.js");
 const REAL_HOST = join(HERE, "real-host.mjs");
 const CANONICAL_BINARY_SHA256 =
-  "39c12b09f699ab1e81cd0375d16f23c5a577110d72ba6c230d952cfd59e2a247";
+  "e8f1f7ee590030ab36a77fc2e1bca402422d1faaa078bef78d4829b05d94d269";
 
 const BANNED_IMPORTS = ["fs", "net", "http", "https", "dns", "child_process", "node:fs", "node:net", "node:http", "node:https", "node:dns", "node:child_process"];
 
@@ -51,11 +51,11 @@ function sha256File(p) {
 function staticGates() {
   console.log("[static] artifact presence and thin-host absence");
   check("out/extension.js present", existsSync(BUNDLE), `${BUNDLE} missing`);
-  check("server/marrow present", existsSync(SERVER), `${SERVER} missing`);
+  check("server/marrow-lsp present", existsSync(SERVER), `${SERVER} missing`);
   check("real-host gate present", existsSync(REAL_HOST), `${REAL_HOST} missing`);
   if (existsSync(SERVER)) {
     check(
-      "server/marrow is the pinned canonical binary",
+      "server/marrow-lsp is the pinned canonical binary",
       sha256File(SERVER) === CANONICAL_BINARY_SHA256,
       sha256File(SERVER),
     );
@@ -152,9 +152,9 @@ function fileUri(p) {
 }
 
 async function journeyGates() {
-  console.log("\n[journey] bundled `marrow lsp` server contract");
+  console.log("\n[journey] bundled `marrow-lsp` server contract");
   if (!existsSync(SERVER)) {
-    check("server present for journey", false, "cannot drive journeys without server/marrow");
+    check("server present for journey", false, "cannot drive journeys without server/marrow-lsp");
     return;
   }
   // Resolve the temp path: the capture adapter deliberately refuses symlinked path
@@ -171,8 +171,8 @@ async function journeyGates() {
   const rootUri = fileUri(root);
   const mainUri = `${rootUri}/src/main.mw`;
 
-  const s = new LspSession(SERVER, ["lsp"]);
-  check("child spawned with fixed args [\"lsp\"]", JSON.stringify(s.spawnArgs) === '["lsp"]');
+  const s = new LspSession(SERVER, []);
+  check("child spawned with fixed empty args", s.spawnArgs.length === 0);
 
   s.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { processId: null, rootUri, capabilities: {} } });
   const initResp = await s.wait((m) => m.id === 1);
@@ -236,7 +236,7 @@ async function journeyGates() {
   // mirrors: two workspaceFolders are -32602 without initializing.
   const root2a = realpathSync(mkdtempSync(join(tmpdir(), "marrow-h00b-mr-a-")));
   const root2b = realpathSync(mkdtempSync(join(tmpdir(), "marrow-h00b-mr-b-")));
-  const s2 = new LspSession(SERVER, ["lsp"]);
+  const s2 = new LspSession(SERVER, []);
   s2.send({
     jsonrpc: "2.0",
     id: 1,

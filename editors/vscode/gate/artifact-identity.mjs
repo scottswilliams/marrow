@@ -41,7 +41,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 
-export const SERVER_PATH = "server/marrow";
+export const SERVER_PATH = "server/marrow-lsp";
 export const ARTIFACT_FAULT_NAMES = Object.freeze([
   "stale agreeing chain",
   "stage to VSIX",
@@ -1424,7 +1424,7 @@ function projectStage({ repoRoot, stageRoot, canonicalServerPath, vsixPayload })
     compareRecords(candidate, staged, "candidate-stage", input);
   }
   const canonicalServerRoot = dirname(canonicalServerPath);
-  const canonicalServer = fileRecord(canonicalServerRoot, "marrow", SERVER_PATH, "canonical-stage");
+  const canonicalServer = fileRecord(canonicalServerRoot, "marrow-lsp", SERVER_PATH, "canonical-stage");
   const stagedServer = fileRecord(stage, SERVER_PATH, SERVER_PATH, "canonical-stage");
   requireDistinctInodes(canonicalServer, stagedServer, "canonical-stage", SERVER_PATH);
   compareRecords(canonicalServer, stagedServer, "canonical-stage", SERVER_PATH);
@@ -1653,7 +1653,7 @@ export function buildArtifactSets(options) {
   requireOutside(target, authority.repoRoot, "canonical");
   const stagePath = canonicalExistingPath(stageRoot, "directory", "candidate-stage");
   requireDisjointTrees(stagePath, target, "canonical-stage");
-  const canonicalServerPath = assertNoSymlinkPath(target, "release/marrow", "canonical");
+  const canonicalServerPath = assertNoSymlinkPath(target, "release/marrow-lsp", "canonical");
   const editorRoot = join(authority.repoRoot, "editors", "vscode");
   const packageLockPath = join(editorRoot, "package-lock.json");
   const { archive, payload: vsix, identity: vsixIdentity } = verifyVsix({ vsixPath, packageLockPath });
