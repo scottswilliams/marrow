@@ -76,7 +76,12 @@ fn staged_settlement_exposes_no_detached_owner_or_payload_surface() {
         }
     }
 
-    for producer in ["lower_function", "lower_instance", "lower_test", "prove_template"] {
+    for producer in [
+        "lower_function",
+        "lower_instance",
+        "lower_test",
+        "prove_template",
+    ] {
         assert!(
             body.contains(&format!("fn {producer}<'a>(\n        self,")),
             "transaction-derived `{producer}` output must consume its producer before it returns"
