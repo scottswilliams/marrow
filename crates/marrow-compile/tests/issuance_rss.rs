@@ -628,8 +628,10 @@ fn each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it() {
 }
 
 /// The function arm's body sits exactly at the code-byte envelope: it encodes, and one
-/// more statement is refused at that statement's source line before its instruction can
-/// enter the lowered tape.
+/// more statement is refused at the first instruction that would cross the bound. The
+/// refused instruction is deliberately in a binary expression's left operand; the
+/// unknown name on the right proves that refusal stops the construct immediately rather
+/// than continuing to lower a sibling operand.
 ///
 /// This is what makes `ADMITTED_CODE_PADDING` an observation rather than a number someone
 /// chose. Both halves are asserted, because a padding that merely encodes proves only that
@@ -645,28 +647,33 @@ fn the_function_arm_sits_exactly_at_the_code_byte_envelope() {
              {other:?}"
         ),
     }
-    let over_bound = code_envelope_mirror(ADMITTED_CODE_PADDING + 1);
-    let return_text = "    return settle(xs)\n";
-    let return_line_start = over_bound
-        .rfind(return_text)
-        .expect("the over-bound mirror carries its crossing return");
+    let over_bound = code_envelope_mirror(ADMITTED_CODE_PADDING + 1).replace(
+        "    return settle(xs)\n",
+        "    return -settle(xs) + missing\n",
+    );
+    let crossing_text = "-settle(xs)";
+    let crossing_start = over_bound
+        .rfind(crossing_text)
+        .expect("the over-bound mirror carries its crossing left operand");
     let offending_span = SourceSpan {
-        start_byte: return_line_start + 4,
-        end_byte: return_line_start + return_text.len() - 1,
-        line: over_bound.as_bytes()[..return_line_start]
+        start_byte: crossing_start,
+        end_byte: crossing_start + crossing_text.len(),
+        line: over_bound.as_bytes()[..crossing_start]
             .iter()
             .filter(|byte| **byte == b'\n')
             .count() as u32
             + 1,
-        column: 5,
+        column: 12,
     };
     match compile(&project(&over_bound)) {
         Err(CompileFailure::Diagnostics(diagnostics)) => {
-            let rows: Vec<_> = diagnostics
-                .iter()
-                .filter(|row| row.code() == "check.resource_limit")
-                .collect();
-            assert_eq!(rows.len(), 1, "the first crossing is reported once");
+            let rows: Vec<_> = diagnostics.iter().collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "the first crossing is the complete diagnostic set: {diagnostics:#?}",
+            );
+            assert_eq!(rows[0].code(), "check.resource_limit");
             assert_eq!(rows[0].file().as_str(), "src/main.mw");
             assert_eq!(rows[0].span(), offending_span);
         }
