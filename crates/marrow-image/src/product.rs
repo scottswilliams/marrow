@@ -173,7 +173,8 @@ pub enum DeclarationMemberShape {
         required: bool,
         /// This field's stored value shape, as a reference into the draft's one
         /// [`crate::CanonicalValueShapeDag`]. The row carries a reference, never a
-        /// shape, so a repeated or deeply shared value costs one `u32` per field.
+        /// shape, so a repeated or deeply shared value costs one stamped node handle per
+        /// field.
         value: ValueShapeNodeId,
     },
     Group {

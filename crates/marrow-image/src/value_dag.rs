@@ -19,8 +19,9 @@
 //!   holding a `ValueShapeNodeId` has a reference into one arena, and the arena's size
 //!   is the number of distinct shapes the program declares.
 //!
-//! Nodes are interned, so structurally identical shapes share one id: equality of two
-//! value shapes is equality of two `u32`s, and the arena is the canonical form.
+//! Nodes are interned, so structurally identical shapes share one id. The id carries the
+//! node's arena-local ordinal plus an exact-node stamp, and the arena is the canonical
+//! form.
 //!
 //! # Depth
 //!
@@ -57,6 +58,7 @@
 //! one identity — and never decided by aborting the caller.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::draft::DraftStateError;
 use crate::durable_id::{DurableGraphTooLarge, IDREF_MEMBER, IDREF_SUM, LedgerIdBytes};
@@ -64,18 +66,35 @@ use crate::ty::Scalar;
 
 /// A reference to one node of a [`CanonicalValueShapeDag`].
 ///
-/// The ordinal is private: an id is obtained only by minting a node into an arena, so
-/// it always refers to a node that exists, in the arena that minted it. There is
-/// deliberately no way to build one from a raw integer, and no way to build a value
-/// shape without an arena.
-///
-/// It authenticates nothing beyond that. An id carries no arena identity and no
-/// generation, so it names whatever node currently sits at its ordinal: held across a
-/// [`CanonicalValueShapeDag::truncate`] that drops that node, it would name the next
-/// shape minted in its place. Every arena in the tree is either append-only for its whole
-/// life or truncated only by an owner that discards the ids it took with it.
+/// Both fields are private: an id is obtained only by minting a node into an arena. The
+/// process-unique stamp authenticates the exact node at the ordinal, so a same-ordinal id
+/// from an independently minted arena and an id held across
+/// [`CanonicalValueShapeDag::truncate`] are both stale rather than silently binding to
+/// another shape. Cloning an arena preserves its exact nodes and stamps, so its existing
+/// ids deliberately remain valid in the clone. There is no way to build one from raw
+/// integers, and no way to build a value shape without an arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueShapeNodeId(u32);
+pub struct ValueShapeNodeId {
+    ordinal: u32,
+    stamp: ValueShapeNodeStamp,
+}
+
+/// The exact-node provenance carried by a [`ValueShapeNodeId`]. Stamps are never rewound:
+/// truncating and reusing an ordinal therefore cannot revive an old id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ValueShapeNodeStamp(u64);
+
+impl ValueShapeNodeStamp {
+    fn mint() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let stamp = NEXT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .expect("the process exhausted the value-shape node stamp domain");
+        Self(stamp)
+    }
+}
 
 /// The live bytes one interned value-shape node occupies in the arena: the node itself,
 /// its `depth` word, and the interning entry that finds it again. A dense composite's
@@ -87,6 +106,7 @@ pub struct ValueShapeNodeId(u32);
 /// equation rather than costing silently.
 pub(crate) const VALUE_SHAPE_NODE_BYTES: u64 = size_of::<ValueShapeNode>() as u64
     + size_of::<u32>() as u64
+    + size_of::<ValueShapeNodeStamp>() as u64
     + size_of::<(ValueShapeNode, ValueShapeNodeId)>() as u64;
 
 /// The live bytes one reference inside a value shape occupies, at the widest of the three
@@ -188,8 +208,9 @@ impl CanonicalValueShapeDag {
     /// The node for a dense struct value over already-minted leaves, in positional
     /// order.
     ///
-    /// A leaf this arena never minted — an id carried over from another arena — is
-    /// [`DraftStateError::ForeignDraft`], never an out-of-range index.
+    /// A leaf outside this arena's preserved provenance — an id from an independently
+    /// minted arena or invalidated by truncation — is [`DraftStateError::ForeignDraft`],
+    /// never an out-of-range index.
     pub fn struct_shape(
         &mut self,
         leaves: Vec<ValueShapeNodeId>,
@@ -220,9 +241,7 @@ impl CanonicalValueShapeDag {
         self.store.depth_of(node).map(|depth| depth as usize)
     }
 
-    /// Whether `node` names a minted node of this arena. An id is minted only against
-    /// an arena, but it carries no arena identity, so one minted by a *different* arena
-    /// can be out of range here.
+    /// Whether `node` authenticates an exact minted node of this arena.
     pub fn contains(&self, node: ValueShapeNodeId) -> bool {
         self.store.get(node).is_some()
     }
@@ -246,7 +265,9 @@ impl CanonicalValueShapeDag {
         // reachable length converts; clamping rather than asserting keeps the reader
         // free of a panic that the mint bound already makes unreachable.
         let count = u32::try_from(self.store.len()).unwrap_or(u32::MAX);
-        (0..count).map(ValueShapeNodeId)
+        (0..count)
+            .zip(self.store.stamps())
+            .map(|(ordinal, stamp)| ValueShapeNodeId { ordinal, stamp })
     }
 
     /// Drop every node minted at or after `len`, restoring the arena to the state a
@@ -271,9 +292,9 @@ impl CanonicalValueShapeDag {
     /// final, so one `max` over the direct references is the exact longest path and the
     /// arena stays acyclic by construction. An arena is reachable from another crate
     /// through [`crate::product::DurableContractGraph::value_shapes_mut`], so both
-    /// premises are checked rather than assumed — an id from another arena and an arena
-    /// at its carrier ceiling are the closed builder-domain refusals, and neither
-    /// mutates a single owner.
+    /// premises are checked rather than assumed — an id from an independently minted
+    /// arena and an arena at its carrier ceiling are the closed builder-domain refusals,
+    /// and neither mutates a single owner.
     fn intern(&mut self, node: ValueShapeNode) -> Result<ValueShapeNodeId, DraftStateError> {
         if let Some(existing) = self.interned.get(&node) {
             return Ok(*existing);
@@ -285,11 +306,12 @@ impl CanonicalValueShapeDag {
         if self.store.len() >= u32::MAX as usize {
             return Err(DraftStateError::CarrierDomain);
         }
-        let id = ValueShapeNodeId(
-            u32::try_from(self.store.len()).map_err(|_| DraftStateError::CarrierDomain)?,
-        );
+        let id = ValueShapeNodeId {
+            ordinal: u32::try_from(self.store.len()).map_err(|_| DraftStateError::CarrierDomain)?,
+            stamp: ValueShapeNodeStamp::mint(),
+        };
         self.interned.insert(node.clone(), id);
-        self.store.push(node, depth);
+        self.store.push(node, depth, id.stamp);
         Ok(id)
     }
 
@@ -326,14 +348,14 @@ use node_store::ValueShapeNodeStore;
 /// The arena's backing store, holding the minted nodes and their final depths behind
 /// the only lookup that exists for them.
 ///
-/// The two vectors are private to this module, and a module's ancestors cannot reach a
+/// The vectors are private to this module, and a module's ancestors cannot reach a
 /// descendant's private items, so no method of [`CanonicalValueShapeDag`] — public or
-/// private — can index them on an id it did not mint. A [`ValueShapeNodeId`] carries no
-/// arena identity, so one minted elsewhere is in the domain of every accessor that takes
-/// one; behind this boundary such an id is a `None` rather than an out-of-range abort
-/// reachable through the safe public surface.
+/// private — can index them on an unauthenticated ordinal. Every lookup compares the
+/// caller's exact-node stamp with the stamp stored beside that ordinal, so an id minted
+/// elsewhere or invalidated by truncation is `None` rather than a wrong-node binding or an
+/// out-of-range abort reachable through the safe public surface.
 mod node_store {
-    use super::{ValueShapeNode, ValueShapeNodeId};
+    use super::{ValueShapeNode, ValueShapeNodeId, ValueShapeNodeStamp};
 
     #[derive(Debug, Clone, Default)]
     pub(super) struct ValueShapeNodeStore {
@@ -342,6 +364,9 @@ mod node_store {
         /// that node itself. Written once, when the node is minted, from references whose
         /// own depth is already final.
         depth: Vec<u32>,
+        /// The exact-node stamp at the same ordinal. Truncation drops it and a later node
+        /// at that ordinal receives a fresh stamp.
+        stamps: Vec<ValueShapeNodeStamp>,
     }
 
     impl ValueShapeNodeStore {
@@ -356,29 +381,88 @@ mod node_store {
         /// Whether two stores hold the same nodes in the same order. Depth is derived
         /// from the nodes, so it does not participate.
         pub(super) fn same_nodes(&self, other: &Self) -> bool {
-            self.nodes == other.nodes
+            self.nodes.len() == other.nodes.len()
+                && self
+                    .nodes
+                    .iter()
+                    .zip(&other.nodes)
+                    .all(|(left, right)| same_shape(left, right))
         }
 
         pub(super) fn get(&self, node: ValueShapeNodeId) -> Option<&ValueShapeNode> {
-            self.nodes.get(node.index())
+            self.authenticate(node)
+                .and_then(|index| self.nodes.get(index))
         }
 
         pub(super) fn depth_of(&self, node: ValueShapeNodeId) -> Option<u32> {
-            self.depth.get(node.index()).copied()
+            self.authenticate(node)
+                .and_then(|index| self.depth.get(index).copied())
         }
 
-        /// Append one minted node with its final depth. The two vectors move together, so
-        /// an ordinal that names a node always names its depth.
-        pub(super) fn push(&mut self, node: ValueShapeNode, depth: u32) {
+        /// Append one minted node with its final depth and stamp. The three vectors move
+        /// together, so an authenticated ordinal names exactly one node and its depth.
+        pub(super) fn push(
+            &mut self,
+            node: ValueShapeNode,
+            depth: u32,
+            stamp: ValueShapeNodeStamp,
+        ) {
             self.nodes.push(node);
             self.depth.push(depth);
+            self.stamps.push(stamp);
         }
 
         pub(super) fn truncate(&mut self, len: usize) {
             self.nodes.truncate(len);
             self.depth.truncate(len);
+            self.stamps.truncate(len);
+        }
+
+        pub(super) fn stamps(&self) -> impl Iterator<Item = ValueShapeNodeStamp> + '_ {
+            self.stamps.iter().copied()
+        }
+
+        fn authenticate(&self, node: ValueShapeNodeId) -> Option<usize> {
+            let index = node.index();
+            (self.stamps.get(index).copied() == Some(node.stamp)).then_some(index)
         }
         // drop-path audit sentinel: end of ValueShapeNodeStore::truncate
+    }
+
+    /// Arena equality is semantic: independently built equal arenas carry different
+    /// provenance stamps, so direct references compare by their topological ordinals.
+    fn same_shape(left: &ValueShapeNode, right: &ValueShapeNode) -> bool {
+        match (left, right) {
+            (ValueShapeNode::Scalar(left), ValueShapeNode::Scalar(right)) => left == right,
+            (ValueShapeNode::Struct(left), ValueShapeNode::Struct(right)) => {
+                same_references(left, right)
+            }
+            (
+                ValueShapeNode::Enum {
+                    sum: left_sum,
+                    members: left_members,
+                },
+                ValueShapeNode::Enum {
+                    sum: right_sum,
+                    members: right_members,
+                },
+            ) => {
+                left_sum == right_sum
+                    && left_members.len() == right_members.len()
+                    && left_members.iter().zip(right_members).all(|(left, right)| {
+                        left.id == right.id && same_references(&left.payload, &right.payload)
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn same_references(left: &[ValueShapeNodeId], right: &[ValueShapeNodeId]) -> bool {
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right)
+                .all(|(left, right)| left.index() == right.index())
     }
 
     #[cfg(test)]
@@ -391,8 +475,12 @@ mod node_store {
         #[test]
         fn the_priced_store_names_all_of_its_fields() {
             let _ = |value: &ValueShapeNodeStore| {
-                let ValueShapeNodeStore { nodes, depth } = value;
-                let _ = (nodes, depth);
+                let ValueShapeNodeStore {
+                    nodes,
+                    depth,
+                    stamps,
+                } = value;
+                let _ = (nodes, depth, stamps);
             };
         }
     }
@@ -400,7 +488,7 @@ mod node_store {
 
 impl ValueShapeNodeId {
     pub(crate) fn index(self) -> usize {
-        self.0 as usize
+        self.ordinal as usize
     }
 }
 
@@ -470,11 +558,11 @@ enum ExpandTask<'a> {
 /// intermediate buffer holds one. It returns as soon as the whole shape is written, the
 /// sink reports it is full, or a reference is refused, whichever comes first.
 ///
-/// `root` is a caller-supplied id, and an id names a node only in the arena that minted
-/// it, so the lookup is checked: a root from another arena is the same refusal as an
-/// arity the wire cannot spell rather than an abort. Nested references are the arena's
-/// own, and the mint invariant keeps them in range, so that arm answers for a graph the
-/// declaration recheck would already have refused.
+/// `root` is a caller-supplied id, so the lookup authenticates its exact-node stamp. A
+/// root from independently minted provenance or invalidated by truncation is the same
+/// refusal as an arity the wire cannot spell rather than an abort. Nested references are
+/// the arena's own preserved provenance, and the mint invariant authenticates them, so
+/// that arm answers for a graph the declaration recheck would already have refused.
 pub(crate) fn expand(
     dag: &CanonicalValueShapeDag,
     root: ValueShapeNodeId,
@@ -571,7 +659,7 @@ mod tests {
     /// name all of their fields here, so a field added to either fails to build until the
     /// published per-node charge — and the maximum-live equations derived from it — have
     /// been re-derived. A new side table would otherwise cost bytes no charge covers.
-    /// The backing store's own two vectors are named by the half of this artifact that
+    /// The backing store's own three vectors are named by the half of this artifact that
     /// lives beside them, since its fields are private to their module.
     #[test]
     fn the_priced_arena_and_node_name_all_of_their_fields() {
@@ -596,11 +684,11 @@ mod tests {
         };
     }
 
-    /// An id minted by one arena names no node in another, and an arena is reachable
-    /// from another crate through `DurableContractGraph::value_shapes_mut`. Both
-    /// composite minters therefore refuse it as [`DraftStateError::ForeignDraft`] and
-    /// leave the target arena byte-for-byte unchanged — the id is never used as an
-    /// index into the depth vector, which is what previously aborted the process.
+    /// An id from one independently minted arena names no node in another, and an arena
+    /// is reachable from another crate through `DurableContractGraph::value_shapes_mut`.
+    /// Both composite minters therefore refuse it as [`DraftStateError::ForeignDraft`]
+    /// and leave the target arena byte-for-byte unchanged — the id is never used as an
+    /// unauthenticated index into the depth vector.
     #[test]
     fn a_foreign_leaf_is_the_typed_refusal_and_mutates_no_node() {
         let mut minting = CanonicalValueShapeDag::new();
@@ -618,17 +706,54 @@ mod tests {
         assert_eq!(empty, CanonicalValueShapeDag::new(), "no node was minted");
         assert_eq!(empty.len(), 0);
 
-        // The same id is not foreign to an arena that has minted that many nodes: the
-        // refusal is a range fact about *this* arena, so a populated target accepts it
-        // and the two arms above cannot pass by refusing everything.
+        // The exact same-ordinal foreign case: `foreign` denotes Int in `minting`, while
+        // ordinal zero denotes Text in `populated`. Range-checking alone would silently
+        // bind the foreign leaf to Text and mint the wrong composite.
         let mut populated = CanonicalValueShapeDag::new();
-        populated
+        let local_text = populated
             .scalar(Scalar::Text)
             .expect("the test arena mints");
-        let composite = populated
-            .struct_shape(vec![foreign])
-            .expect("an in-range leaf is accepted");
-        assert_eq!(populated.depth(composite), Some(2));
+        assert_eq!(
+            populated.struct_shape(vec![foreign]),
+            Err(DraftStateError::ForeignDraft),
+        );
+        assert_eq!(populated.len(), 1, "the foreign leaf minted no composite");
+        assert_eq!(
+            populated.view(local_text),
+            Some(ValueShapeView::Scalar(Scalar::Text)),
+        );
+    }
+
+    /// Truncation may reuse an ordinal but never an exact-node stamp. A handle to the
+    /// discarded node therefore stays stale after a different node takes its position.
+    #[test]
+    fn a_truncated_node_id_cannot_bind_to_the_replacement_at_its_ordinal() {
+        let mut dag = CanonicalValueShapeDag::new();
+        let stale_int = dag.scalar(Scalar::Int).expect("the test arena mints");
+        dag.truncate(0);
+        let replacement_text = dag.scalar(Scalar::Text).expect("the test arena re-mints");
+
+        assert_eq!(
+            stale_int.index(),
+            replacement_text.index(),
+            "the ordinal was reused"
+        );
+        assert_ne!(
+            stale_int, replacement_text,
+            "the exact-node stamp was not reused"
+        );
+        assert_eq!(dag.depth(stale_int), None);
+        assert_eq!(dag.view(stale_int), None);
+        assert!(!dag.contains(stale_int));
+        assert_eq!(
+            dag.struct_shape(vec![stale_int]),
+            Err(DraftStateError::ForeignDraft),
+        );
+        assert_eq!(dag.len(), 1, "the stale leaf minted no composite");
+        assert_eq!(
+            dag.view(replacement_text),
+            Some(ValueShapeView::Scalar(Scalar::Text)),
+        );
     }
 
     /// Every lookup the arena publishes answers a foreign id instead of aborting.
@@ -666,14 +791,21 @@ mod tests {
         .expect("its own arena expands the shape");
         assert!(!written.is_empty(), "the accepted expansion wrote bytes");
 
-        let empty = CanonicalValueShapeDag::new();
-        assert_eq!(empty.depth(foreign), None);
-        assert_eq!(empty.view(foreign), None);
-        assert!(!empty.contains(foreign));
+        // Populate the target through the same ordinal so these are authentication
+        // checks, not only range checks.
+        let mut target = CanonicalValueShapeDag::new();
+        let text = target.scalar(Scalar::Text).expect("the target mints");
+        let local = target
+            .struct_shape(vec![text, text])
+            .expect("the target mints the same ordinal");
+        assert_eq!(foreign.index(), local.index());
+        assert_eq!(target.depth(foreign), None);
+        assert_eq!(target.view(foreign), None);
+        assert!(!target.contains(foreign));
         let mut refused: Vec<u8> = Vec::new();
         assert_eq!(
             expand(
-                &empty,
+                &target,
                 foreign,
                 ValueShapeWireForm::DurableSection,
                 &mut refused,
@@ -698,6 +830,18 @@ mod tests {
             .expect("the test arena mints");
         assert_eq!(first, second);
         assert_eq!(dag.len(), 2, "one scalar node and one struct node");
+
+        let mut independently_built = CanonicalValueShapeDag::new();
+        let other_int = independently_built
+            .scalar(Scalar::Int)
+            .expect("the second arena mints");
+        independently_built
+            .struct_shape(vec![other_int, other_int])
+            .expect("the second arena mints");
+        assert_eq!(
+            dag, independently_built,
+            "arena equality ignores provenance stamps"
+        );
     }
 
     /// Depth is the longest path down to a scalar, counting the node itself.

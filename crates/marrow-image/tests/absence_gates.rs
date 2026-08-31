@@ -1742,16 +1742,14 @@ fn without_arena_accessor(code: &str) -> String {
 
 /// No value shape is minted inside a template proof.
 ///
-/// A `ValueShapeNodeId` is an ordinal into one arena and authenticates nothing: it carries
-/// no draft identity and no generation, so it means whichever node currently sits at that
-/// ordinal. A template proof appends to the real draft and its guard truncates the arena
-/// back when the proof is discarded, so an id minted inside a proof and kept past it would
-/// name whatever shape a later mint puts in its place — a different value wearing the same
-/// reference.
+/// A `ValueShapeNodeId` carries an ordinal and an exact-node stamp, so an id held across a
+/// template proof's truncation cannot bind to a later node at the reused ordinal. The proof
+/// still has no durable declaration to own such a shape: minting one would be discarded
+/// work and a new semantic side effect in a pass whose durable surface is empty.
 ///
 /// Nothing in the tree can reach that today: the two production owners that mint value
-/// shapes open no proof, and the proof bodies mint none. That is a property of the caller
-/// set rather than of the id, which is why it is pinned rather than assumed.
+/// shapes open no proof, and the proof bodies mint none. This caller-set boundary is pinned
+/// independently of the handle authentication that makes an accidental escape stale.
 #[test]
 fn no_value_shape_is_minted_inside_a_template_proof() {
     let sources = workspace_sources("src");
@@ -2510,12 +2508,11 @@ fn the_coupled_mint_scanner_sees_a_planted_inversion() {
 /// Every published lookup of the value-shape arena that takes a caller-supplied id, with
 /// the checked return each one must carry.
 ///
-/// A [`marrow_image::ValueShapeNodeId`] authenticates nothing: it is an ordinal, and it
-/// names a node only in the arena that minted it. An arena is reachable from another
-/// crate through `DurableContractGraph::value_shapes_mut`, so every one of these is a
-/// safe public entry point that a foreign id reaches. Each previously indexed a backing
-/// vector directly, which turned a foreign id into a process abort one method away from a
-/// refusal the mints already stated properly.
+/// A [`marrow_image::ValueShapeNodeId`] authenticates one exact node by ordinal and stamp.
+/// An arena is reachable from another crate through
+/// `DurableContractGraph::value_shapes_mut`, so every one of these is a safe public entry
+/// point that a foreign or stale id reaches. Each must preserve the typed/optional refusal
+/// when authentication fails rather than indexing by the ordinal alone.
 const ARENA_ID_LOOKUPS: [&str; 5] = ["contains", "depth", "enum_shape", "struct_shape", "view"];
 
 /// The value-shape arena's published lookups are checked, and its backing vectors stay
