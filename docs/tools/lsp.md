@@ -1,9 +1,9 @@
 # Language Server
 
-`marrow lsp` runs an in-tree language server over standard input and output. It
-speaks JSON-RPC 2.0 with Language Server Protocol (LSP) message framing and serves
-editor features from the compiler's published analysis facts. It is normally
-launched by an editor, not run by hand.
+`marrow-lsp` is the standalone in-tree language-server command. It reads and
+writes JSON-RPC 2.0 with Language Server Protocol (LSP) message framing over
+standard input and output, takes no arguments, and is normally launched by an
+editor rather than run by hand. It is not a `marrow` subcommand.
 
 The server reconstructs no language semantics. Diagnostics, formatting, hover,
 definition, completion, signature help, and document symbols come only from the
@@ -133,7 +133,7 @@ user is currently looking at.
 
 An installed Visual Studio Code extension packages this server for editor use. It lives
 in the repository at `editors/vscode/`. The extension is a thin host: it registers the
-`marrow` language for the `.mw` extension and starts one bundled `marrow lsp` process
+`marrow` language for the `.mw` extension and starts one bundled `marrow-lsp` process
 per window over standard input and output. It contributes a static TextMate grammar for
 syntax highlighting and a language configuration for `//` comment toggling and bracket
 pairing; the grammar is generated from the parser's reserved-word inventory and
@@ -143,19 +143,21 @@ formatting, hover, definition, completion, signature help, and document symbols 
 from the server.
 
 The packaged extension targets macOS on Apple Silicon (`darwin-arm64`) and bundles the
-matching `marrow` release binary; the server is launched from that bundled absolute path
-with the fixed arguments `marrow lsp`, never from a search path, and there is no setting
-to override it. The extension activates when a `.mw` file is opened. It supports a single
+matching `server/marrow-lsp` release binary. The server is launched from that bundled
+absolute path with an empty argument list, never from a search path, and there is no
+setting to override it. The extension activates when a `.mw` file is opened. It supports a single
 workspace folder or none; two or more folders are refused with a message, matching the
 server's own single-root rule, and recovery is available through a restart command. The
 extension does not activate in untrusted (Restricted Mode) or virtual workspaces, and it
 performs no telemetry, network access, crash reporting, or updates.
 
-The packaging is reproducible: two independent builds of the same base produce an
-identical sorted per-entry (path, hash, executable bit) manifest, the bundled server is
-byte-identical to the canonical release binary of that base, and the package contains
-exactly one native executable (that server). These properties are checked by
-`editors/vscode/gate/verify-vsix.mjs`.
+The packaging is reproducible: two clean release builds from the exact asserted source
+postimage produce byte-identical `marrow-lsp` executables, and each independently built
+executable feeds a disjoint stage, VSIX, and installed-extension chain. The two packages
+have an identical sorted per-entry (path, hash, executable bit) manifest and contain
+exactly one native executable (the server). These properties are checked by
+`editors/vscode/gate/verify-vsix.mjs` and the real-host gate that constructs the two
+source builds.
 
 ## Scope
 

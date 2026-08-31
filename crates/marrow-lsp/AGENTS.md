@@ -1,10 +1,11 @@
 # marrow-lsp contributor notes
 
-`marrow-lsp` is the in-tree language server dispatched as `marrow lsp`. It is
-downstream of the compiler: it consumes the published editor-analysis fact floor
+`marrow-lsp` is a standalone command and retained library downstream of the compiler.
+It consumes the published editor-analysis fact floor
 (`marrow_compile::AnalysisSnapshot` — diagnostics, checked formatting, hover,
-definition) and the shared physical project adapter (`marrow-project-fs`), and it
-reconstructs nothing. Types, paths, facts, diagnostics, and formatting come only
+definition, completion, signature help, and document symbols) and the shared physical
+project adapter (`marrow-project-fs`), and it reconstructs nothing. Types, paths,
+facts, diagnostics, and formatting come only
 from those owners. Missing semantic facts are added to the compiler first; the LSP
 must not reconstruct types, paths, authority, evolution, or runtime meaning, and it
 opens no store.
@@ -31,9 +32,10 @@ opens no store.
 ## Coverage
 
 The server implements the primary journeys end to end over real stdio
-(`marrow/tests/lsp_stdio.rs`): initialize/initialized, full-document open/change/close
+(`marrow-lsp/tests/lsp_stdio.rs`): initialize/initialized, full-document open/change/close
 sync, whole-project recomputation, per-file diagnostic publication with empty lists
-and tombstones, and hover/definition/formatting.
+and tombstones, hover/definition/formatting, completion, signature help, and document
+symbols.
 
 The coordinator is a pure event machine, so its concurrency law matrix is enforced by
 deterministic in-crate tests (no timing dependence, no test-only production entry
@@ -52,7 +54,6 @@ capacity credits — each carry their own red suite.
 
 ## Absences (standing)
 
-No completion, signature help, document symbols, references, rename, workspace
-symbols, on-type formatting, `language-configuration.json`, data browser, telemetry,
-network client, or updater. Those are future editor capabilities that depend on
-compiler facts not yet published.
+No references, rename, workspace symbols, on-type formatting,
+`language-configuration.json`, data browser, telemetry, network client, or updater.
+Those are future editor capabilities that depend on compiler facts not yet published.

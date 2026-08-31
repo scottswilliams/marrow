@@ -20,7 +20,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { normalizeVsixModes } from "./artifact-identity.mjs";
 
@@ -28,17 +28,11 @@ const HERE = dirname(new URL(import.meta.url).pathname);
 const REPO = resolve(HERE, "../../..");
 const EDITOR = resolve(HERE, "..");
 const DRIVER = join(HERE, "host-driver");
-const TARGET = "/Users/scottwilliams/Dev/.build/marrow-targets/SPLSP";
 const CODE = "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
 const CLI = "/Applications/Visual Studio Code.app/Contents/Resources/app/out/cli.js";
 const PRODUCT = "/Applications/Visual Studio Code.app/Contents/Resources/app/product.json";
 const THEME_ROOT =
   "/Applications/Visual Studio Code.app/Contents/Resources/app/extensions/theme-defaults";
-const EXPECTED_HEAD = "56e2ae4c3778af6cb22487d9af5a73dc4476cda1";
-const EXPECTED_SERVER =
-  "e8f1f7ee590030ab36a77fc2e1bca402422d1faaa078bef78d4829b05d94d269";
-const EXPECTED_CLI =
-  "3e9fffb78de81c1da3f38af0be8e6e4449c6da9f813a2a08454e072338891b7e";
 const TARGET_ID = "marrow-project.marrow";
 const DRIVER_ID = "marrow-project.marrow-vsq-host-driver";
 const EXTENSION_PACKAGE = join(EDITOR, "package.json");
@@ -86,19 +80,19 @@ const STAGE_INPUTS = Object.freeze([
 ]);
 
 const CODE_FILES = Object.freeze({
-  [CODE]: "e1e3268741a2658a22b31e82b58a42fa48be73f64fc2de006be48a2ba136b930",
-  [PRODUCT]: "e8ce947ba231a32c15993a6068add7de7268be112c928005017bd3df7727e06d",
-  [CLI]: "7930c3f6f8bc2854f6fec7091b220a0506fe7948014963d336bb4c6ad69af636",
+  [CODE]: "9a8597fb750505964ceffee9f42dc6731421ae6f76fdcc2511ef39efa6f1504b",
+  [PRODUCT]: "5cb287f8602ba954953be9efe16186f92ba19620b9b3ac2f4ac68d0bd8203b32",
+  [CLI]: "68cb59b753fce7f8e16602eafae1e444dbfe28d6a3f9b25d9ca1cc22faf3a332",
 });
 
 const THEME_FILES = Object.freeze({
   "package.json": "1188ab40303da2345797c509f81c87c3e168249e50009bdec24a1ea28b515bb4",
   "package.nls.json": "8eba17a4db2c6db687367cec5553292732a1afcac56b472c00b4018a4af69486",
-  "themes/2026-dark.json": "10f8dbeb38fb722394096df9f91d5042af31b1f28946a84340dd763fc01f01f7",
+  "themes/2026-dark.json": "de4cf250446fee7ca2e327ae35d5e24f95d438abbc23fc6b91f0bc42332d81fc",
   "themes/dark_modern.json": "7e87bcc01b7b4ca057fc1b4463cddcc9b3f494bd6566d22d9aaddadab2d45db4",
   "themes/dark_plus.json": "88f5b662378cbe39473a4a8d916a1b4ec580f85858876eaec440288aee2852df",
   "themes/dark_vs.json": "3c9d8a8056638204ab6419fa43ada5ae3ea1ae5ecf262ba550b7f554b57f230c",
-  "themes/2026-light.json": "e30ba1939d7d2535ac723a44386d345396b59a5a442d5f6f58de303633dda2d2",
+  "themes/2026-light.json": "61a81030ca7f3121c1ca522e727e9ab521585e95743ee94efa1d932a6c7baa88",
   "themes/light_modern.json": "cad5a1a2da4d66a2a0354f2e41bd45dfbd206ca58b2ba8c920a02dcd8c16c989",
   "themes/light_plus.json": "bf64f3ec2a80788fad115086bd10fd4136dd1d760ec478f4107756f098d101ea",
   "themes/light_vs.json": "c3273b4a9d00bfe126f138285a6e460bd9f62622ea4861f4590bdee26a889240",
@@ -226,21 +220,54 @@ function run(command, args, { cwd = REPO, env = {}, timeoutMs = COMMAND_TIMEOUT_
   };
 }
 
-function preflight() {
+function isWithin(path, parent) {
+  const rel = relative(parent, path);
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+}
+
+function candidateAuthority(expectedHead) {
+  requireCondition(
+    typeof expectedHead === "string" && /^[0-9a-f]{40}$/u.test(expectedHead),
+    "expected HEAD must be lowercase 40-hex",
+  );
   requireCondition(git(["diff", "--cached", "--name-only"]) === "", "candidate has staged changes");
   const changed = new Set([
     ...git(["diff", "--name-only"]).split("\n").filter(Boolean),
     ...git(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean),
   ]);
   requireCondition(
-    [...changed].every((path) => OWNED_PATHS.includes(path)),
-    `candidate has out-of-scope changes: ${[...changed].filter((path) => !OWNED_PATHS.includes(path)).join(",")}`,
+    changed.size === 0,
+    `candidate has uncommitted changes: ${[...changed].join(",")}`,
   );
+  requireCondition(git(["rev-parse", "HEAD"]) === expectedHead, "candidate HEAD drifted");
+  requireCondition(
+    git(["hash-object", "Cargo.lock"]) === git(["rev-parse", `${expectedHead}:Cargo.lock`]),
+    "candidate Cargo.lock differs from the asserted HEAD",
+  );
+  return {
+    head: expectedHead,
+    cargoLockSha256: shaFile(join(REPO, "Cargo.lock")),
+  };
+}
+
+function externalTarget(targetDir) {
+  requireCondition(isAbsolute(targetDir), "Cargo target must be an absolute path");
+  const target = realpathSync(targetDir);
+  requireCondition(statSync(target).isDirectory(), "Cargo target is not a directory");
+  requireCondition(
+    !isWithin(target, REPO) && !isWithin(REPO, target),
+    "Cargo target and candidate repository must be disjoint",
+  );
+  return target;
+}
+
+function preflight(expectedHead, targetDir) {
+  const candidate = candidateAuthority(expectedHead);
+  const target = externalTarget(targetDir);
   requireCondition(
     OWNED_PATHS.every((path) => existsSync(join(REPO, path))),
     "one or more owned A1 files are absent",
   );
-  requireCondition(git(["rev-parse", "HEAD"]) === EXPECTED_HEAD, "candidate HEAD drifted");
   requireCondition(shaFile(join(HERE, "installed-probe.mjs")) !== undefined, "probe is absent");
   requireCondition(shaFile(join(HERE, "host-authority.mjs")) ===
     "72dfcf03bbfe735adadaae98f023315751ff0226994be6cf750324ade990083c",
@@ -250,24 +277,108 @@ function preflight() {
   }
   const product = JSON.parse(readFileSync(PRODUCT, "utf8"));
   requireCondition(
-    product.version === "1.130.0" &&
-      product.commit === "1b6a188127eeaf9194f945eb6eb89a657e93c54c" &&
-      product.date === "2026-07-22T14:55:04Z",
+    product.version === "1.131.0" &&
+      product.commit === "e4c7e7b1d6d060162f4aa7f8225271b67ce1df75" &&
+      product.date === "2026-07-28T10:51:25Z",
     "Code product identity drifted",
   );
   for (const [path, expected] of Object.entries(THEME_FILES)) {
     requireCondition(shaFile(join(THEME_ROOT, path)) === expected, `theme authority drifted: ${path}`);
   }
-  const canonicalServer = join(TARGET, "release", "marrow-lsp");
-  const canonicalCli = join(TARGET, "release", "marrow");
-  requireCondition(existsSync(canonicalServer), "canonical release server is absent");
-  requireCondition(existsSync(canonicalCli), "canonical release CLI is absent");
+  return { candidate, target, structural: structuralEditorChecks() };
+}
+
+function executableRecord(path) {
+  const info = statSync(path);
+  requireCondition(info.isFile(), `${path} is not a regular file`);
+  requireCondition((info.mode & 0o777) === 0o755, `${path} mode is not 0755`);
+  return {
+    path: realpathSync(path),
+    sha256: shaFile(path),
+    size: info.size,
+    mode: info.mode & 0o777,
+    device: info.dev,
+    inode: info.ino,
+  };
+}
+
+function runCargo(target, args) {
+  return run("/usr/bin/env", ["cargo", ...args], {
+    env: { CARGO_TARGET_DIR: target },
+    timeoutMs: 10 * 60 * 1_000,
+  });
+}
+
+function cleanReleasePackage(target, packageName, binaryName) {
+  runCargo(target, [
+    "clean",
+    "--manifest-path", join(REPO, "Cargo.toml"),
+    "--release",
+    "-p", packageName,
+  ]);
   requireCondition(
-    shaFile(canonicalServer) === EXPECTED_SERVER,
-    "canonical server digest drifted",
+    !existsSync(join(target, "release", binaryName)),
+    `${binaryName} survived its release-package clean`,
   );
-  requireCondition(shaFile(canonicalCli) === EXPECTED_CLI, "canonical CLI digest drifted");
-  return { canonicalServer, canonicalCli, structural: structuralEditorChecks() };
+}
+
+function buildReleaseBinary({ label, root, target, expectedHead, packageName, binaryName }) {
+  const before = candidateAuthority(expectedHead);
+  cleanReleasePackage(target, packageName, binaryName);
+  runCargo(target, [
+    "build",
+    "--manifest-path", join(REPO, "Cargo.toml"),
+    "--release",
+    "--locked",
+    "-p", packageName,
+    "--bin", binaryName,
+  ]);
+  const after = candidateAuthority(expectedHead);
+  requireCondition(
+    before.head === after.head && before.cargoLockSha256 === after.cargoLockSha256,
+    `${label} build authority drifted`,
+  );
+  const built = executableRecord(join(target, "release", binaryName));
+  const captureRoot = join(root, `canonical-${label}`);
+  mkdirSync(captureRoot, { mode: 0o700 });
+  const capturedPath = join(captureRoot, binaryName);
+  copyFileSync(built.path, capturedPath);
+  chmodSync(capturedPath, 0o755);
+  const captured = executableRecord(capturedPath);
+  requireCondition(
+    built.sha256 === captured.sha256 && built.size === captured.size && built.mode === captured.mode,
+    `${label} canonical capture differs from the Cargo output`,
+  );
+  return { label, candidate: after, cargoOutput: built, captured };
+}
+
+function assertReproducibleServerBuilds(primary, reproduction) {
+  requireCondition(
+    primary.candidate.head === reproduction.candidate.head &&
+      primary.candidate.cargoLockSha256 === reproduction.candidate.cargoLockSha256,
+    "independent server builds used different source authority",
+  );
+  requireCondition(
+    primary.captured.path !== reproduction.captured.path &&
+      (primary.captured.device !== reproduction.captured.device ||
+        primary.captured.inode !== reproduction.captured.inode),
+    "independent server captures alias the same file",
+  );
+  requireCondition(
+    primary.captured.sha256 === reproduction.captured.sha256 &&
+      primary.captured.size === reproduction.captured.size &&
+      primary.captured.mode === reproduction.captured.mode,
+    "independent server builds differ",
+  );
+  return {
+    head: primary.candidate.head,
+    cargoLockSha256: primary.candidate.cargoLockSha256,
+    sha256: primary.captured.sha256,
+    size: primary.captured.size,
+    mode: primary.captured.mode,
+    primary: primary.captured,
+    reproduction: reproduction.captured,
+  };
 }
 
 function collectGrammarNames(value, names = new Set()) {
@@ -1694,6 +1805,33 @@ function runSelfTests() {
   assert.equal(cold.median, 3);
   const ready = assertSamples("ready", [11, 1, 10, 2, 9, 3, 8, 4, 7, 5, 6], 11, 50, 200);
   assert.equal(ready.median, 6);
+  const build = (label, digest, inode) => ({
+    label,
+    candidate: { head: "a".repeat(40), cargoLockSha256: "b".repeat(64) },
+    captured: {
+      path: `/private/tmp/${label}/marrow-lsp`,
+      sha256: digest,
+      size: 1,
+      mode: 0o755,
+      device: 1,
+      inode,
+    },
+  });
+  assert.equal(
+    assertReproducibleServerBuilds(
+      build("primary", "c".repeat(64), 1),
+      build("reproduction", "c".repeat(64), 2),
+    ).sha256,
+    "c".repeat(64),
+  );
+  assert.throws(() => assertReproducibleServerBuilds(
+    build("primary", "c".repeat(64), 1),
+    build("reproduction", "d".repeat(64), 2),
+  ));
+  assert.throws(() => assertReproducibleServerBuilds(
+    build("primary", "c".repeat(64), 1),
+    build("primary", "c".repeat(64), 1),
+  ));
   for (const [name, expected] of Object.entries(THEME_FILES)) {
     assert.equal(shaFile(join(THEME_ROOT, name)), expected);
   }
@@ -1730,8 +1868,7 @@ function runSelfTests() {
   console.log("real-host self-tests: PASS");
 }
 
-async function runHostGate() {
-  const { canonicalServer, canonicalCli, structural } = preflight();
+async function runHostGate({ expectedHead, targetDir }) {
   const root = realpathSync(mkdtempSync("/private/tmp/marrow-vsq-a1-"));
   const evidenceRoot = realpathSync(mkdtempSync("/private/tmp/marrow-vsq-a1-evidence-"));
   let retain = true;
@@ -1739,13 +1876,11 @@ async function runHostGate() {
     schema: 1,
     root,
     evidenceRoot,
-    candidate: EXPECTED_HEAD,
-    canonicalServerSha256: EXPECTED_SERVER,
+    candidate: expectedHead,
     commands: [],
     hosts: [],
     scopes: [],
     samples: {},
-    structural,
     interactivePending: {
       physicalTyping:
         "Code 1.130 background CDP/command input did not mutate the focused textarea; retained red evidence",
@@ -1755,17 +1890,64 @@ async function runHostGate() {
   };
   activeCommandLog = evidence.commands;
   try {
-    const primary = copyStage("primary", root, canonicalServer);
-    const reproduction = copyStage("reproduction", root, canonicalServer);
+    const { candidate, target, structural } = preflight(expectedHead, targetDir);
+    evidence.candidateAuthority = candidate;
+    evidence.target = target;
+    evidence.structural = structural;
+
+    const primaryServer = buildReleaseBinary({
+      label: "primary-server",
+      root,
+      target,
+      expectedHead,
+      packageName: "marrow-lsp",
+      binaryName: "marrow-lsp",
+    });
+    const canonicalCli = buildReleaseBinary({
+      label: "cli",
+      root,
+      target,
+      expectedHead,
+      packageName: "marrow",
+      binaryName: "marrow",
+    });
+    const primary = copyStage("primary", root, primaryServer.captured.path);
     const driver = buildDriver(root, join(primary.stage, "node_modules/.bin/vsce"));
     const primaryInstall = install("primary", root, [primary.vsix, driver.vsix]);
+
+    const reproductionServer = buildReleaseBinary({
+      label: "reproduction-server",
+      root,
+      target,
+      expectedHead,
+      packageName: "marrow-lsp",
+      binaryName: "marrow-lsp",
+    });
+    const serverReproduction = assertReproducibleServerBuilds(
+      primaryServer,
+      reproductionServer,
+    );
+    evidence.sourceBuilds = {
+      primaryServer,
+      reproductionServer,
+      serverReproduction,
+      cli: canonicalCli,
+    };
+    evidence.canonicalServerSha256 = serverReproduction.sha256;
+    evidence.canonicalCliSha256 = canonicalCli.captured.sha256;
+
+    const reproduction = copyStage(
+      "reproduction",
+      root,
+      reproductionServer.captured.path,
+    );
     const reproductionInstall = install("reproduction", root, [reproduction.vsix, driver.vsix]);
     const identityEvidence = join(evidenceRoot, "artifact-identity.json");
     run(process.execPath, [
       join(HERE, "verify-vsix.mjs"),
       "--repo", REPO,
-      "--expected-head", EXPECTED_HEAD,
-      "--target-dir", TARGET,
+      "--expected-head", expectedHead,
+      "--target-dir", target,
       "--primary-stage", primary.stage,
       "--primary-vsix", primary.vsix,
       "--primary-extensions-dir", primaryInstall.extensions,
@@ -1774,7 +1956,7 @@ async function runHostGate() {
       "--reproduction-extensions-dir", reproductionInstall.extensions,
       "--evidence", identityEvidence,
     ]);
-    const fixture = prepareWorkspace(root, canonicalCli);
+    const fixture = prepareWorkspace(root, canonicalCli.captured.path);
     const spec = comprehensiveSpec(fixture);
     const developmentSpec = {
       targetExtensionId: spec.targetExtensionId,
@@ -1950,11 +2132,42 @@ async function runHostGate() {
   }
 }
 
-if (process.argv.length === 3 && process.argv[2] === "--self-test") {
-  runSelfTests();
-} else if (process.argv.length === 3 && process.argv[2] === "--run") {
-  await runHostGate();
-} else {
-  console.error("usage: node gate/real-host.mjs --self-test|--run");
+function parseInvocation(argv) {
+  if (argv.length === 1 && argv[0] === "--self-test") {
+    return { mode: "self-test" };
+  }
+  requireCondition(argv[0] === "--run", "first argument must be --run or --self-test");
+  const values = new Map();
+  for (let index = 1; index < argv.length; index += 2) {
+    const flag = argv[index];
+    const value = argv[index + 1];
+    requireCondition(
+      (flag === "--expected-head" || flag === "--target-dir") && value !== undefined,
+      `invalid real-host argument: ${flag ?? "<missing>"}`,
+    );
+    requireCondition(!values.has(flag), `duplicate real-host argument: ${flag}`);
+    values.set(flag, value);
+  }
+  requireCondition(values.size === 2, "--expected-head and --target-dir are required");
+  return {
+    mode: "run",
+    expectedHead: values.get("--expected-head"),
+    targetDir: values.get("--target-dir"),
+  };
+}
+
+try {
+  const invocation = parseInvocation(process.argv.slice(2));
+  if (invocation.mode === "self-test") {
+    runSelfTests();
+  } else {
+    await runHostGate(invocation);
+  }
+} catch (error) {
+  console.error(error.message);
+  console.error(
+    "usage: node gate/real-host.mjs --self-test | " +
+      "--run --expected-head <40hex> --target-dir <external-cargo-target>",
+  );
   process.exitCode = 2;
 }

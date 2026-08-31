@@ -5,7 +5,7 @@ checkout to a running durable program. Every command below is run exactly as
 shown. Marrow is unreleased and its admitted language subset is narrow and
 growing; the [status](status.md) page states what is current.
 
-## Build the command
+## Build the commands
 
 Marrow builds from source with the pinned Rust toolchain (Rust 1.89) on Linux or
 macOS. The durable half of this page — provisioning and opening a store —
@@ -16,11 +16,14 @@ additionally requires macOS, or Linux on `x86_64` or `aarch64`. See
 git clone https://github.com/scottswilliams/marrow
 cd marrow
 cargo install --locked --path crates/marrow
+cargo install --locked --path crates/marrow-lsp
 marrow --version
+marrow-lsp --help
 ```
 
-`marrow --version` prints the package version of the binary. Installing Marrow
-starts no service and creates no data directory.
+The two install commands provide the `marrow` CLI and the standalone
+`marrow-lsp` editor server. `marrow --version` prints the package version of the
+CLI binary. Installing them starts no service and creates no data directory.
 
 ## Create a project
 
@@ -194,10 +197,10 @@ a flat-scalar export with `marrow import`.
 The persistent path runs the program in a separate companion runner attached to
 the store; the terminal never opens the store itself. This requires the **stock
 install layout**: the `marrow-runner` binary and the `marrow-companions` release
-manifest installed in the same directory as `marrow`. A plain
-`cargo install --path crates/marrow` installs only the `marrow` command, which
-gives the storeless and `marrow test` paths above; it does not assemble the
-companion layout. The worked applications [`apps/emr`](../apps/emr/README.md) and
+manifest installed in the same directory as `marrow`. The two source-install
+commands above install the CLI and editor server, but do not assemble that
+companion layout. They provide the storeless and `marrow test` paths above. The
+worked applications [`apps/emr`](../apps/emr/README.md) and
 [`apps/club-locker`](../apps/club-locker/README.md) carry their own build tooling
 that assembles the layout and runs against a native store.
 

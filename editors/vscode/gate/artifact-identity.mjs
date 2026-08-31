@@ -98,16 +98,6 @@ const CANDIDATE_STAGE_INPUTS = Object.freeze([
   "language-configuration.json",
   "syntaxes/marrow.tmLanguage.json",
 ]);
-const A1_OWNED_PATHS = Object.freeze([
-  "editors/vscode/gate/installed-probe.mjs",
-  "editors/vscode/gate/verify-vsix.mjs",
-  "editors/vscode/gate/artifact-identity.mjs",
-  "editors/vscode/gate/real-host.mjs",
-  "editors/vscode/gate/host-driver/package.json",
-  "editors/vscode/gate/host-driver/extension.cjs",
-  "editors/vscode/gate/host-driver/tests.cjs",
-  "editors/vscode/src/extension.ts",
-]);
 const VSIX_STAGE_ALIASES = new Map([
   ["readme.md", "README.md"],
   ["LICENSE.txt", "LICENSE"],
@@ -996,13 +986,12 @@ export function assertCandidateAuthority({ repoRoot, expectedHead }) {
     ...runGit(root, ["ls-files", "--others", "--exclude-standard", "-z"], "candidate-clean")
       .toString("utf8").split("\0").filter(Boolean),
   ];
-  const unexpected = changed.filter((path) => !A1_OWNED_PATHS.includes(path));
   requireCondition(
-    unexpected.length === 0,
+    changed.length === 0,
     "identity.candidate",
     "candidate-clean",
     root,
-    `out-of-scope paths: ${unexpected.join(",")}`,
+    `uncommitted paths: ${changed.join(",")}`,
   );
   runGit(root, ["ls-files", "--error-unmatch", "--", "Cargo.lock"], "candidate-lock");
   const lockPath = assertNoSymlinkPath(root, "Cargo.lock", "candidate-lock");

@@ -118,15 +118,20 @@ fn marrow_cannot_reach_the_language_server_or_lsp_types() {
     let targets = lsp["targets"]
         .as_array()
         .expect("marrow-lsp targets are an array");
-    assert!(
-        targets.iter().all(|target| {
-            !target["kind"]
-                .as_array()
-                .expect("target kind is an array")
-                .iter()
-                .any(|kind| kind.as_str() == Some("lib"))
-        }),
-        "marrow-lsp must remain binary-only"
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|target| {
+                target["name"].as_str() == Some("marrow_lsp")
+                    && target["kind"]
+                        .as_array()
+                        .expect("target kind is an array")
+                        .iter()
+                        .any(|kind| kind.as_str() == Some("lib"))
+            })
+            .count(),
+        1,
+        "marrow-lsp must retain exactly one library target"
     );
     assert_eq!(
         targets
@@ -142,5 +147,29 @@ fn marrow_cannot_reach_the_language_server_or_lsp_types() {
             .count(),
         1,
         "marrow-lsp must expose exactly one named server binary"
+    );
+}
+
+#[test]
+fn the_language_server_is_not_a_marrow_subcommand() {
+    let old_spelling = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .args(["lsp", "--help"])
+        .output()
+        .expect("run the marrow CLI with the removed spelling");
+    assert_eq!(
+        old_spelling.status.code(),
+        Some(2),
+        "the removed command must be an unknown-command usage failure"
+    );
+
+    let help = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .arg("--help")
+        .output()
+        .expect("run marrow --help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).expect("help is UTF-8");
+    assert!(
+        !stdout.lines().any(|line| line.trim() == "marrow lsp"),
+        "marrow --help must not advertise the removed subcommand"
     );
 }

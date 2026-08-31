@@ -19,23 +19,29 @@ any other target still compiles and still runs storeless commands; an attempt to
 open a store refuses at run time, naming the operating system and architecture
 it refused on.
 
-## Install The Command
+## Install the commands
 
 ```sh
 git clone https://github.com/scottswilliams/marrow
 cd marrow
 cargo install --locked --path crates/marrow
+cargo install --locked --path crates/marrow-lsp
 marrow --version
+marrow-lsp --help
 ```
 
-The package version printed by `marrow --version` describes the current binary;
-it does not identify a released compatibility contract.
+These commands install two standalone executables: `marrow`, the command-line
+interface, and `marrow-lsp`, the editor language server. The language server is
+not a `marrow` subcommand. The package version printed by `marrow --version`
+describes the current binary; it does not identify a released compatibility
+contract.
 
 To build without installing:
 
 ```sh
-cargo build --release --locked --manifest-path crates/marrow/Cargo.toml
+cargo build --release --locked --manifest-path Cargo.toml -p marrow -p marrow-lsp --bins
 ./target/release/marrow --version
+./target/release/marrow-lsp --help
 ```
 
 ## After Installing

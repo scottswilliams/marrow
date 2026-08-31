@@ -12,7 +12,7 @@
 // Real VS Code host behavior is owned by real-host.mjs. This probe keeps the direct
 // installed-server protocol checks separate rather than simulating editor UI behavior.
 //
-// Usage: node gate/installed-probe.mjs
+// Usage: node gate/installed-probe.mjs --expected-server-sha256 <64hex>
 // Exits nonzero on any failed assertion (and before the extension is built).
 
 import { readFileSync, existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
@@ -27,8 +27,6 @@ const EXT_ROOT = join(HERE, "..");
 const SERVER = join(EXT_ROOT, "server", "marrow-lsp");
 const BUNDLE = join(EXT_ROOT, "out", "extension.js");
 const REAL_HOST = join(HERE, "real-host.mjs");
-const CANONICAL_BINARY_SHA256 =
-  "e8f1f7ee590030ab36a77fc2e1bca402422d1faaa078bef78d4829b05d94d269";
 
 const BANNED_IMPORTS = ["fs", "net", "http", "https", "dns", "child_process", "node:fs", "node:net", "node:http", "node:https", "node:dns", "node:child_process"];
 
@@ -48,7 +46,7 @@ function sha256File(p) {
 
 // ---- artifact presence + thin-host absence scan (also the pre-build red) ----
 
-function staticGates() {
+function staticGates(expectedServerSha256) {
   console.log("[static] artifact presence and thin-host absence");
   check("out/extension.js present", existsSync(BUNDLE), `${BUNDLE} missing`);
   check("server/marrow-lsp present", existsSync(SERVER), `${SERVER} missing`);
@@ -56,7 +54,7 @@ function staticGates() {
   if (existsSync(SERVER)) {
     check(
       "server/marrow-lsp is the pinned canonical binary",
-      sha256File(SERVER) === CANONICAL_BINARY_SHA256,
+      sha256File(SERVER) === expectedServerSha256,
       sha256File(SERVER),
     );
   }
@@ -264,8 +262,20 @@ function realHostBoundary() {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  if (
+    args.length !== 2 ||
+    args[0] !== "--expected-server-sha256" ||
+    !/^[0-9a-f]{64}$/u.test(args[1])
+  ) {
+    console.error(
+      "usage: node gate/installed-probe.mjs --expected-server-sha256 <64hex>",
+    );
+    process.exit(2);
+    return;
+  }
   console.log("=== Marrow H00b installed-journey probe ===");
-  staticGates();
+  staticGates(args[1]);
   await journeyGates();
   realHostBoundary();
   console.log(`\nresult: ${failures} failure(s)`);

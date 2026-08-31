@@ -43,17 +43,20 @@ absolute-path `server/marrow-lsp`, launched with a fixed empty argument list.
 - Install only with `npm ci`. `.npmrc` sets `ignore-scripts=true`; there are no
   lifecycle scripts to run. `package-lock.json` is frozen; regenerating it reruns the
   dependency and license review.
-- Build: `npm ci` → `npx tsc -p ./` → copy the canonical `marrow-lsp` release binary to
-  `server/marrow-lsp` (mode 0755) → `npx vsce package --target darwin-arm64`.
-- The bundled binary is byte-identical to the canonical release build of the exact
-  integrated base; the identity gate derives and compares its SHA-256 through both
-  independently packaged and installed chains.
+- The real-host gate cleans and builds the `marrow-lsp` release target twice from the
+  exact clean asserted postimage. Each captured executable feeds its own `npm ci` →
+  TypeScript compile → stage → VSIX → isolated install chain.
+- The two source builds and every downstream payload are byte-identical, while the
+  captured executables, stages, archives, and installs remain distinct files or trees.
 
 ## Gates
 
-- `node gate/verify-vsix.mjs <a.vsix> [<b.vsix>]` — closed inventory allowlist, the
-  hash-pinned assets, the single-Mach-O payload rule, and dual-build manifest
-  equivalence. It is run explicitly, never as an npm lifecycle script.
-- `node gate/installed-probe.mjs` — the automatable installed-journey checks. Clauses
+- `node gate/verify-vsix.mjs --self-test` checks the identity wrapper and fault matrix;
+  its full two-chain invocation is constructed by `real-host.mjs`.
+- `node gate/real-host.mjs --run --expected-head <40hex> --target-dir
+  <external-cargo-target>` builds both source artifacts, verifies both package/install
+  chains, and runs the installed host journeys.
+- `node gate/installed-probe.mjs --expected-server-sha256 <64hex>` runs the automatable
+  installed-journey checks against a digest supplied by the current build proof. Clauses
   needing the real VS Code host and interactive Workspace Trust UI are reported
   PENDING-HUMAN.

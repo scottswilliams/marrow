@@ -1,13 +1,16 @@
 [package]
 name = "marrow-lsp"
 description = "The Marrow language server: diagnostics, formatting, hover, and definition over the compiler's published analysis facts."
-autolib = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+[lib]
+name = "marrow_lsp"
+path = "src/lib.rs"
 
 [[bin]]
 name = "marrow-lsp"

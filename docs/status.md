@@ -57,10 +57,11 @@ server (`marrow-lsp`); and the `marrow` CLI. The
 - `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
   or every captured source file in a project directory (`--check`/`--write`);
   `marrow check` checks a project and describes each export's durable access
-  demand in source spelling; `run`, `test`, `import`, `image`, and `lsp` drive
-  their current bounded paths; `marrow client typescript` generates the strict
+  demand in source spelling; `run`, `test`, `import`, and `image` drive their
+  current bounded paths; `marrow client typescript` generates the strict
   TypeScript client and the pinned Node supervision module; `marrow --version`
-  and `marrow --help`. Other recognized command names report
+  and `marrow --help`. The standalone `marrow-lsp` command serves editor facts
+  over stdio. Other recognized command names report
   `cli.command_unsupported` until their refounding lanes land.
 - The formatter canonicalizes a left-anchored self-update to compound assignment
   (`x = x + e` becomes `x += e`) and owns the `use` block (sorted, deduplicated,

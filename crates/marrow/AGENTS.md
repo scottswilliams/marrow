@@ -1,6 +1,6 @@
 # marrow CLI Contributor Notes
 
-On the beta line this is a thin CLI with six implemented commands. `marrow
+On the beta line this is a thin CLI. `marrow
 init` creates a project, and `marrow fmt` formats a single `.mw` file or every
 captured source file in a project directory through the retained formatter.
 `marrow check [projectdir]` captures the project, runs the resilient analysis
@@ -30,18 +30,14 @@ per test plus a summary. `marrow client typescript`
 compiles and verifies the project, reconstructs its wire interface (the one
 transfer/identity owner is `marrow-image`), and emits the deterministic strict
 TypeScript client beside the pinned Node supervision module (`src/supervisor/`,
-emitted verbatim and drift-gated). `marrow lsp` hands stdin/stdout
-to the `marrow-lsp` language server, which owns the whole protocol lifecycle and
-serves diagnostics, formatting, hover, and definition; `cmd_lsp` is a thin
-dispatcher that parses no protocol itself. Every other command name (`data`,
+emitted verbatim and drift-gated). Every other command name (`data`,
 `doctor`, `evolve`, `serve`, `backup`, `restore`) is recognized and reports a
 typed `cli.command_unsupported` response until its refounding lane lands it.
-The binary depends on `marrow-codes`, `marrow-project`, `marrow-project-fs`,
-`marrow-syntax`, `marrow-compile`, `marrow-image`, `marrow-verify`, `marrow-vm`,
-`marrow-kernel`, and `marrow-lsp` — never on `marrow-runner` (the CLI→runner Rust
-edge is an absence target). A dev-only, std-only `serde_json` edge in
-`tests/lsp_stdio.rs` drives the language-server binary over stdio; it shares the
-resolved package node but not the server's production feature tuple. The physical project-capture adapter is the separate
+The `marrow-lsp` package is a separate downstream tool. The CLI has no direct or
+transitive dependency on `marrow-lsp` or `lsp-types`; a dev-only, std-only
+`serde_json` edge in `tests/lsp_stdio.rs` decodes Cargo metadata to enforce that
+direction under all features. The server's production stdio suite lives in
+`crates/marrow-lsp/tests/lsp_stdio.rs`. The physical project-capture adapter is the separate
 `marrow-project-fs` crate; the CLI captures each project through its
 `capture_project` with an empty overlay and renders any capture failure through
 the adapter's presentation facade, rebuilding no discovery, identity, or capture

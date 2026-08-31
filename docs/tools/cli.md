@@ -5,7 +5,7 @@ usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
 current binary; `marrow --version` prints the package version.
 
 The beta line's CLI is deliberately thin. `init`, `fmt`, `check`, `run`, `test`,
-`import`, `client typescript`, `image`, `lsp`, `--help`, and `--version` are the
+`import`, `client typescript`, `image`, `--help`, and `--version` are the
 available commands; every other recognized
 command name belongs to a capability being refounded and reports the typed code
 `cli.command_unsupported` with exit `1`, so a script never mistakes absence for
@@ -24,7 +24,6 @@ direction.
 | `import` | Populate and provision a native store from a flat-scalar JSONL corpus (this page). |
 | `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
 | `image` | Emit the verified program image a deployment ships, against an accepted ceiling id (this page). |
-| `lsp` | Run the language server over stdio (this page; see [language server](lsp.md)). |
 | `data`, `doctor`, `evolve`, `serve`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
 
 ## `marrow init`
@@ -311,21 +310,6 @@ before any image is written. When the argument is absent or names a different id
 image is written and the command reports `cli.ceiling_unaccepted` with the actual
 ceiling id to accept, so a deployment's durable authority is named deliberately and
 never widened or narrowed by accident. Stable inputs yield a byte-identical image.
-
-## `marrow lsp`
-
-```text
-marrow lsp
-```
-
-Runs the [language server](lsp.md) over standard input and output, speaking
-JSON-RPC 2.0 with Language Server Protocol framing. The server captures and
-analyzes the project at the client-selected workspace root and serves
-diagnostics, whole-document formatting, hover, and go-to-definition from the
-compiler's published analysis facts. It takes no arguments and is normally
-launched by an editor, not run by hand; it reads and writes the protocol stream,
-never ordinary terminal text. The command does not open a store. See
-[language server](lsp.md) for the served capabilities and the protocol contract.
 
 ## Usage and exit codes
 
