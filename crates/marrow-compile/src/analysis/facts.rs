@@ -6,7 +6,6 @@
 //! reads it, the queries that answer from it, and the fact shapes it holds stay with
 //! their own owners.
 
-use marrow_image::{DraftTxn, ImageDraft};
 use marrow_syntax::SourceSpan;
 
 use super::{
@@ -17,7 +16,9 @@ use super::{
 use marrow_project::ProjectInput;
 
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector};
-use crate::types::{GenericInvariant, GenericOwnerTxn, TypeRegistry};
+
+mod staging;
+pub(crate) use staging::StagedBodyTxn;
 
 /// The one live private analysis-fact owner.
 ///
@@ -121,7 +122,7 @@ impl AnalysisFactCollector {
     /// re-composing it here reaches the same verdict the body already observed: a body
     /// that crossed the ceiling live limits the ledger the moment it settles, and one
     /// that did not cannot.
-    pub(crate) fn absorb(&mut self, released: ReleasedFacts) {
+    fn absorb(&mut self, released: ReleasedFacts) {
         let ReleasedFacts {
             count,
             bytes,
@@ -287,7 +288,7 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
 /// snapshot that body's facts never entered. Subtracting a charge back out could not be
 /// total — a crossing discards the ledger's whole retained payload, and no subtraction
 /// re-materializes it.
-pub(crate) struct StagedFacts {
+struct StagedFacts {
     /// This body's own contribution, over and above the ledger's settled totals.
     count: u64,
     bytes: u64,
@@ -300,20 +301,10 @@ pub(crate) struct StagedFacts {
 
 /// One settled body's facts on their way into the ledger. Produced only by the private
 /// [`StagedFacts::finish`] after the producer-owning aggregate consumes its guard.
-pub(crate) struct ReleasedFacts {
+struct ReleasedFacts {
     count: u64,
     bytes: u64,
     facts: RetainingFacts,
-}
-
-/// One generic-owner producer and both payloads it may publish. The fields never detach:
-/// every successful exit consumes this exact producer before sealing its diagnostics and
-/// facts, while an invariant or unwind drops the armed producer and both private payloads
-/// together.
-pub(crate) struct StagedBodyTxn<'r, 'd> {
-    owner: GenericOwnerTxn<'r, 'd>,
-    diagnostics: DiagnosticCollector,
-    facts: StagedFacts,
 }
 
 /// The immutable product of one settled body. Its private fields can only be absorbed
@@ -322,77 +313,6 @@ pub(crate) struct StagedBodyTxn<'r, 'd> {
 pub(crate) struct ReleasedBody {
     diagnostics: BoundedDiagnostics,
     facts: ReleasedFacts,
-}
-
-impl<'r, 'd> StagedBodyTxn<'r, 'd> {
-    pub(crate) fn begin(
-        registry: &'r mut TypeRegistry,
-        draft: &'d mut ImageDraft,
-    ) -> Result<Self, GenericInvariant> {
-        Ok(Self::new(GenericOwnerTxn::begin(registry, draft)?))
-    }
-
-    pub(crate) fn enter_proof(
-        registry: &'r mut TypeRegistry,
-        draft: &'d mut ImageDraft,
-    ) -> Result<Self, GenericInvariant> {
-        Ok(Self::new(GenericOwnerTxn::enter_proof(registry, draft)?))
-    }
-
-    fn new(owner: GenericOwnerTxn<'r, 'd>) -> Self {
-        Self {
-            owner,
-            diagnostics: DiagnosticCollector::new(),
-            facts: StagedFacts::new(),
-        }
-    }
-
-    pub(crate) fn parts(
-        &mut self,
-    ) -> (
-        &mut TypeRegistry,
-        &mut DraftTxn<'d>,
-        &mut DiagnosticCollector,
-        &mut StagedFacts,
-    ) {
-        let Self {
-            owner,
-            diagnostics,
-            facts,
-        } = self;
-        let (registry, draft) = owner.parts();
-        (registry, draft, diagnostics, facts)
-    }
-
-    pub(crate) fn registry(&self) -> &TypeRegistry {
-        self.owner.registry()
-    }
-
-    pub(crate) fn commit(self) -> ReleasedBody {
-        let Self {
-            owner,
-            diagnostics,
-            facts,
-        } = self;
-        owner.commit();
-        ReleasedBody {
-            diagnostics: diagnostics.finish(),
-            facts: facts.finish(),
-        }
-    }
-
-    pub(crate) fn erase(self) -> ReleasedBody {
-        let Self {
-            owner,
-            diagnostics,
-            facts,
-        } = self;
-        owner.erase();
-        ReleasedBody {
-            diagnostics: diagnostics.finish(),
-            facts: facts.finish(),
-        }
-    }
 }
 
 impl ReleasedBody {
@@ -419,15 +339,13 @@ impl StagedFacts {
     /// Where this body's lowering writes its editor facts, in place of any ledger the
     /// caller owns. The ledger is borrowed shared: a producer can charge against its
     /// totals and cannot retain into it.
-    pub(crate) fn sink<'a>(
-        &'a mut self,
-        ledger: &'a AnalysisFactCollector,
-        file: FileRef,
-    ) -> FactSink<'a> {
-        FactSink::Retaining {
-            ledger,
-            staged: self,
-            file,
+    fn sink<'a>(&'a mut self, ledger: &'a AnalysisFactCollector, file: FileRef) -> FactSink<'a> {
+        FactSink {
+            state: FactSinkState::Retaining {
+                ledger,
+                staged: self,
+                file,
+            },
         }
     }
 
@@ -515,7 +433,11 @@ impl StagedFacts {
 /// ceilings at the push that produced it, so no single body can stage more facts than a
 /// whole snapshot admits. A body whose facts duplicate an already-collected template's is
 /// given the `Discarding` state rather than a scratch vector nobody reads.
-pub(crate) enum FactSink<'a> {
+pub(crate) struct FactSink<'a> {
+    state: FactSinkState<'a>,
+}
+
+enum FactSinkState<'a> {
     Retaining {
         /// Shared: a producer charges against the settled totals and cannot retain into
         /// them.
@@ -529,6 +451,13 @@ pub(crate) enum FactSink<'a> {
 }
 
 impl FactSink<'_> {
+    /// A sink for an instance whose facts were already collected at template proof.
+    pub(crate) fn discarding() -> Self {
+        Self {
+            state: FactSinkState::Discarding,
+        }
+    }
+
     /// Admit one editor hover fact in this sink's file, at the push that produced it.
     /// The composed ceilings charge it before it is staged, so the count a single body
     /// can hold live is bounded by the snapshot ceiling rather than by the body's length.
@@ -538,11 +467,11 @@ impl FactSink<'_> {
         display: Box<str>,
         definition: Option<DefinitionTarget>,
     ) {
-        if let FactSink::Retaining {
+        if let FactSinkState::Retaining {
             ledger,
             staged,
             file,
-        } = self
+        } = &mut self.state
         {
             staged.hover_fact(ledger, *file, span, display, definition);
         }
@@ -551,11 +480,11 @@ impl FactSink<'_> {
     /// Stage one dependency gap in this sink's file. Gaps are written as they are
     /// discovered, so one survives an ordinary refusal of the body it sits in.
     pub(crate) fn gap(&mut self, span: SourceSpan) {
-        if let FactSink::Retaining {
+        if let FactSinkState::Retaining {
             ledger,
             staged,
             file,
-        } = self
+        } = &mut self.state
         {
             staged.gap_fact(ledger, *file, span);
         }
@@ -565,9 +494,9 @@ impl FactSink<'_> {
     /// display only inside this guard: a discarding sink keeps nothing, and once the
     /// ledger is Limited the whole snapshot is already refused, so both are waste.
     pub(crate) fn renders_facts(&self) -> bool {
-        match self {
-            FactSink::Retaining { ledger, staged, .. } => staged.retains(ledger),
-            FactSink::Discarding => false,
+        match &self.state {
+            FactSinkState::Retaining { ledger, staged, .. } => staged.retains(ledger),
+            FactSinkState::Discarding => false,
         }
     }
 }

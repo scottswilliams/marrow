@@ -202,7 +202,7 @@ pub(crate) enum BodyOutcome {
     Refused,
 }
 
-type LowerResult = Result<BodyOutcome, LowerInvariant>;
+pub(crate) type LowerResult = Result<BodyOutcome, LowerInvariant>;
 
 /// Which lowering pass a body is in: an ordinary or instance body that emits an
 /// image function and monomorphizes its generic calls, or the once-checked template
@@ -422,7 +422,8 @@ pub(crate) use self::builtins::{
 };
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::registry::{
-    DeclaredFn, FunctionRegistry, GenericRegistry, ModuleBinding, ModuleLedger, SignatureOutcome,
+    DeclaredFn, FunctionRegistry, GenericRegistry, GenericTemplate, ModuleBinding, ModuleLedger,
+    SignatureOutcome,
 };
 pub(crate) use self::types::parse_int;
 
@@ -622,6 +623,46 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )
     }
 
+    /// Lower one generic template against its abstract parameter constraints. The
+    /// producer-owning staging guard calls this exact operation without exposing its
+    /// draft, registry, diagnostic, or fact owners to the driver.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lower_template(
+        draft: &'a mut DraftTxn<'d>,
+        records: &'a mut TypeRegistry,
+        durable: &'a DurableRegistry,
+        functions: &'a FunctionRegistry,
+        generics: &'a GenericRegistry<'a>,
+        consts: &'a ConstRegistry,
+        diagnostics: &'a mut DiagnosticCollector,
+        facts: FactSink<'a>,
+        template: &'a GenericTemplate<'a>,
+    ) -> LowerResult {
+        let type_env = template
+            .type_params
+            .iter()
+            .map(|(name, constraint)| TypeParamSlot {
+                name: name.clone(),
+                binding: ParamBinding::Abstract(*constraint),
+            })
+            .collect();
+        Self::lower_with_env(
+            draft,
+            records,
+            durable,
+            functions,
+            generics,
+            consts,
+            diagnostics,
+            facts,
+            &template.file,
+            &template.module,
+            template.decl,
+            type_env,
+            LowerMode::Template,
+        )
+    }
+
     /// Run the once-checked template pass over a generic function: lower its body
     /// against abstract type parameters (each admitting only its declared constraint)
     /// inside a composite savepoint over the in-progress registry and draft. The body
@@ -639,8 +680,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         facts: &AnalysisFactCollector,
         template: &GenericTemplate,
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
-        let file = &template.file;
-        let module = &template.module;
         // Prove the body directly on the in-progress registry and draft — so it sees every
         // already-minted type at its real index (a concrete callee's signature stays
         // consistent) — inside the generic-owner composite guard that erases the
@@ -651,46 +690,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // guard, exactly once. The producer-owning scope also owns both payloads, so a
         // failure drops its diagnostics and editor facts with the still-armed producer.
         let mut scope = StagedBodyTxn::enter_proof(records, draft)?;
-        // Each parameter's position in this vector is its abstract `LTy::Param`
-        // index, and its constraint is read back from here by `constraint_at`.
-        let type_env = template
-            .type_params
-            .iter()
-            .map(|(name, constraint)| TypeParamSlot {
-                name: name.clone(),
-                binding: ParamBinding::Abstract(*constraint),
-            })
-            .collect::<Vec<_>>();
         // The template body is checked exactly once (never per instance), so its editor
         // facts are collected here: a template-parameter use renders by its declared
         // spelling and no divergent-monomorphization O(N²) rendering occurs. The sink
         // charges them live but retains them only in this producer-owning scope. Only the
         // throwaway image function this pass emits is discarded with the scope.
-        {
-            let (registry, txn, diagnostics, staged_facts) = scope.parts();
-            FnLowerer::lower_with_env(
-                txn,
-                registry,
-                durable,
-                functions,
-                generics,
-                consts,
-                diagnostics,
-                staged_facts.sink(facts, template.at()),
-                file,
-                module,
-                template.decl,
-                type_env,
-                LowerMode::Template,
-            )?;
-        }
-        // Take the proof's diagnostics before the scope is erased:
-        // `take_generic_diagnostics` drains the swapped-in buffer and limit owner that the
-        // guard then re-seats.
-        let generic = scope.registry().take_generic_diagnostics();
-        // Erase rather than drop so the proof releases its payload only after both owner
-        // inverses have run. The `?` above drops producer and payload together.
-        let body = scope.erase();
+        scope.lower_template(durable, functions, generics, consts, facts, template)?;
+        // Erase rather than drop so neither the generic-owner transfer nor the body
+        // payload is released until both producer inverses have run. The `?` above drops
+        // producer and payload together.
+        let (generic, body) = scope.erase_proof();
         Ok(TemplateProofOutcome { generic, body })
     }
 
@@ -1752,7 +1761,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
 
         for expected in 0..marrow_image::bounds::MAX_LOCALS {
@@ -1818,7 +1827,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
 
         assert_eq!(Instr::Pop.encoded_len(), 1);
@@ -1897,7 +1906,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
 
         assert!(
@@ -1965,7 +1974,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         lowerer.locals.push(Local {
             name: "value".to_string(),
@@ -2027,7 +2036,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
 
         assert!(
@@ -2093,7 +2102,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
 
         assert!(
@@ -2174,7 +2183,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         lowerer.reject_unification(
             UnifyError::Invariant(expected),
@@ -2247,7 +2256,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         lowerer.reject_unification(
             UnifyError::Invariant(expected),
@@ -2316,7 +2325,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         assert!(
             lowerer
@@ -2391,7 +2400,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         assert!(
             lowerer
@@ -2468,7 +2477,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         assert!(
             lowerer
@@ -2555,7 +2564,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         assert!(
             lowerer
@@ -2619,7 +2628,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         assert!(
             lowerer
@@ -2712,7 +2721,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         assert!(
             lowerer
@@ -2794,7 +2803,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            FactSink::Discarding,
+            FactSink::discarding(),
         );
         assert!(
             lowerer

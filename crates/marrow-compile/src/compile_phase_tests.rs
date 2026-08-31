@@ -51,6 +51,41 @@ fn export_path_validation_guards_the_id_payload() {
     assert!(!valid_export_path("a b", "run"));
 }
 
+/// The settlement wrappers expose exact operations, never a detachable producer or
+/// payload. This pins the privacy shape that makes cross-transaction staging
+/// unrepresentable: widening either wrapper requires changing this gate deliberately.
+#[test]
+fn staged_settlement_exposes_no_detached_owner_or_payload_surface() {
+    let body = include_str!("analysis/facts/staging.rs");
+    let durable = include_str!("durable/staging.rs");
+    for source in [body, durable] {
+        for forbidden in [
+            "pub(crate) fn parts",
+            "pub(super) fn parts",
+            "-> &mut",
+            "impl std::ops::Deref",
+            "impl std::ops::DerefMut",
+            "impl FnOnce",
+            "impl FnMut",
+            "into_inner",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "a staged settlement wrapper exposes forbidden surface `{forbidden}`"
+            );
+        }
+    }
+
+    let facts = include_str!("analysis/facts.rs");
+    assert!(facts.contains("pub(crate) struct FactSink<'a>"));
+    assert!(facts.contains("state: FactSinkState<'a>"));
+    assert!(!facts.contains("pub(crate) enum FactSink"));
+    assert!(!facts.contains("pub(crate) fn sink"));
+
+    let diagnostics = include_str!("diag.rs");
+    assert!(!diagnostics.contains("StagedDiagnosticTxn"));
+}
+
 fn diagnostic(code: &'static str, line: u32) -> SourceDiagnostic {
     SourceDiagnostic::at(
         code,

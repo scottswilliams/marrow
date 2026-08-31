@@ -17,7 +17,6 @@
 
 use crate::decl::{DeclarationNamespace, RefusalReport};
 use marrow_codes::Code;
-use marrow_image::DraftTxn;
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind};
 use marrow_syntax::{
     Diagnostic, DiagnosticReason, Severity, SourceSpan, SyntaxDiagnosticLimit, SyntaxDiagnostics,
@@ -436,40 +435,6 @@ pub(crate) enum BoundedDiagnostics {
     },
 }
 
-/// One durable-build producer and its still-private diagnostics. No caller can detach the
-/// payload from this guard or pair it with another transaction: consuming the aggregate
-/// commits or rolls back its exact producer before releasing the finished rows.
-pub(crate) struct StagedDiagnosticTxn<'d> {
-    owner: DraftTxn<'d>,
-    diagnostics: DiagnosticCollector,
-}
-
-impl<'d> StagedDiagnosticTxn<'d> {
-    pub(crate) fn new(owner: DraftTxn<'d>) -> Self {
-        Self {
-            owner,
-            diagnostics: DiagnosticCollector::new(),
-        }
-    }
-
-    /// The producer and its diagnostic sink, reborrowed from the same aggregate.
-    pub(crate) fn parts(&mut self) -> (&mut DraftTxn<'d>, &mut DiagnosticCollector) {
-        (&mut self.owner, &mut self.diagnostics)
-    }
-
-    pub(crate) fn commit(self) -> BoundedDiagnostics {
-        let Self { owner, diagnostics } = self;
-        owner.commit();
-        diagnostics.finish()
-    }
-
-    pub(crate) fn rollback(self) -> BoundedDiagnostics {
-        let Self { owner, diagnostics } = self;
-        owner.rollback();
-        diagnostics.finish()
-    }
-}
-
 impl BoundedDiagnostics {
     /// Logical emptiness: a Limited terminal retains no rows but is never
     /// empty — its limit displaced at least one row.
@@ -791,60 +756,6 @@ mod tests {
             SourceSpan::default(),
             "x".repeat(message_len),
         )
-    }
-
-    /// Commit consumes the exact producer before releasing its own rows.
-    #[test]
-    fn a_staged_diagnostic_transaction_commits_its_producer_before_release() {
-        let mut draft = marrow_image::ImageDraft::new();
-        let mut staged = StagedDiagnosticTxn::new(crate::compile::admitted(&mut draft));
-        let (txn, diagnostics) = staged.parts();
-        let name = txn
-            .intern_string("committed")
-            .expect("a within-domain mint");
-        txn.reserve_record_type(name).expect("a within-domain mint");
-        diagnostics.push(row_with_message_len(1));
-
-        let released = staged.commit().expect_complete();
-        assert_eq!(released.len(), 1);
-        assert_eq!(draft.record_type_count(), 1, "the producer committed");
-    }
-
-    /// Rollback runs the exact producer's inverse before releasing its refusal rows.
-    #[test]
-    fn a_staged_diagnostic_transaction_rolls_back_before_release() {
-        let mut draft = marrow_image::ImageDraft::new();
-        let mut staged = StagedDiagnosticTxn::new(crate::compile::admitted(&mut draft));
-        let (txn, diagnostics) = staged.parts();
-        let name = txn
-            .intern_string("rolled-back")
-            .expect("a within-domain mint");
-        txn.reserve_record_type(name).expect("a within-domain mint");
-        diagnostics.push(row_with_message_len(1));
-
-        let released = staged.rollback().expect_complete();
-        assert_eq!(released.len(), 1);
-        assert_eq!(draft.record_type_count(), 0, "the producer rolled back");
-    }
-
-    /// Abandoning the aggregate drops both its payload and its armed producer.
-    #[test]
-    fn abandoning_a_staged_diagnostic_transaction_rolls_back_its_producer() {
-        let mut draft = marrow_image::ImageDraft::new();
-        {
-            let mut staged = StagedDiagnosticTxn::new(crate::compile::admitted(&mut draft));
-            let (txn, diagnostics) = staged.parts();
-            let name = txn
-                .intern_string("abandoned")
-                .expect("a within-domain mint");
-            txn.reserve_record_type(name).expect("a within-domain mint");
-            diagnostics.push(row_with_message_len(1));
-        }
-        assert_eq!(
-            draft.record_type_count(),
-            0,
-            "drop ran the producer inverse"
-        );
     }
 
     /// The byte-charge law, per payload variant: file spelling plus owned

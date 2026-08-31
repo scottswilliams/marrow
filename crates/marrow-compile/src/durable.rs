@@ -50,11 +50,14 @@ use crate::decl::{
     RefusalReport, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
-use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic, StagedDiagnosticTxn};
+use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
 };
+
+mod staging;
+use staging::StagedStoreTxn;
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
@@ -757,25 +760,18 @@ impl DurableRegistry {
                 // The diagnostic custody seam: this aggregate owns the armed transaction
                 // and its private rows together. An invariant abort drops both; a checked
                 // outcome consumes this exact producer before releasing its rows.
-                let mut staged = StagedDiagnosticTxn::new(admitted(draft));
-                let built = {
-                    let (txn, staged_diagnostics) = staged.parts();
-                    build_one(
-                        AdmittedDraft {
-                            draft: txn,
-                            plan: &plan,
-                        },
-                        &mut type_metadata,
-                        resources,
-                        declared,
-                        StoreOccurrence {
-                            decl: store,
-                            multiplicity: census.multiplicity(&store.resource),
-                        },
-                        &mut identity_build,
-                        staged_diagnostics,
-                    )?
-                };
+                let mut staged = StagedStoreTxn::new(draft);
+                let built = staged.build_one(
+                    &plan,
+                    &mut type_metadata,
+                    resources,
+                    declared,
+                    StoreOccurrence {
+                        decl: store,
+                        multiplicity: census.multiplicity(&store.resource),
+                    },
+                    &mut identity_build,
+                )?;
                 let (occurrence, released) = match built {
                     StoreBuild::Admitted(built) => {
                         registry.naming.extend(built.naming);

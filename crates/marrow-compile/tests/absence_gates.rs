@@ -2204,63 +2204,66 @@ fn function_bodies(code: &str) -> Vec<(String, String)> {
 /// clean result over a caller it never read.
 #[test]
 fn every_lowering_call_hands_its_producers_staged_owners() {
-    let code = production_code(
+    let coordinator = production_code(
         &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compile.rs"))
             .expect("read the compile coordinator"),
     );
-
-    let sites = lowering_call_sites(&code);
+    let coordinator_sites = lowering_call_sites(&coordinator);
     // The set is asserted, not merely iterated: a gate that finds no site is a gate that
     // silently checks nothing, and a new lowering entry point must be adjudicated here
     // rather than absorbed.
+    let found: Vec<&str> = coordinator_sites
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        found,
+        vec!["FnLowerer::check_template"],
+        "the compile coordinator reaches body lowering only through the producer-owning \
+         staging surface; a new direct lowerer call must be adjudicated here",
+    );
+    assert!(
+        coordinator_sites[0].1.contains("facts,"),
+        "the template-proof owner receives the shared fact ledger and constructs its \
+         private staged fact owner internally",
+    );
+
+    let staging = production_code(
+        &fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis/facts/staging.rs"),
+        )
+        .expect("read the body staging owner"),
+    );
+    let sites = lowering_call_sites(&staging);
     let found: Vec<&str> = sites.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         found,
         vec![
-            "FnLowerer::check_template",
-            "FnLowerer::lower_instance",
             "FnLowerer::lower",
+            "FnLowerer::lower_instance",
             "FnLowerer::lower_test",
+            "FnLowerer::lower_template",
         ],
-        "the set of lowering call sites in the compile coordinator moved; each one places \
-         its producers' output in staged custody, so a new one is adjudicated here",
+        "the exact lowering operations inside producer-bound custody moved; a new one \
+         must be adjudicated here",
     );
-
     for (name, arguments) in &sites {
-        // Whole-token: `staged_facts.sink(` ends with the same bytes as the live ledger's
-        // `facts.sink(`, so a substring test would report the staged spelling as the live
-        // one and refuse the very shape this gate requires.
         assert!(
             !names_the_live_ledger_sink(arguments),
             "`{name}` hands a producer the live fact ledger, so a body abandoned after \
              writing facts leaves them in the ledger a snapshot is projected from",
         );
-        let staged_facts = if *name == "FnLowerer::check_template" {
-            arguments.contains("facts,")
-        } else {
-            arguments.contains("staged_facts.sink(") || arguments.contains("FactSink::Discarding")
-        };
+        let staged_facts = arguments.contains("staged_facts.sink(")
+            || arguments.contains("FactSink::discarding()");
         assert!(
             staged_facts,
-            "`{name}` must hand its producer a staged fact owner, or `FactSink::Discarding` \
-             where the facts were collected once at the template proof; `check_template` \
-             receives the shared ledger and constructs its staged owner inside \
-             the proof scope",
+            "`{name}` must use the fact owner stored inside its producer-bound wrapper, \
+             or discard facts already collected at template proof",
         );
-        // `check_template` owns its diagnostics in a local collector that its own failure
-        // drops, so it takes no collector argument at all; every other call takes one and
-        // it must be the staged one.
-        if *name != "FnLowerer::check_template" {
-            assert!(
-                arguments.contains("staged_diagnostics,"),
-                "`{name}` hands the lowerer a staged diagnostic collector",
-            );
-            assert!(
-                !arguments.contains("\n                    diagnostics,\n"),
-                "`{name}` hands the lowerer the caller's collector, so a refused body's \
-                 rows are published while its batch is still armed",
-            );
-        }
+        assert!(
+            arguments.contains("staged_diagnostics,"),
+            "`{name}` must use the diagnostic owner stored inside its producer-bound wrapper",
+        );
     }
 
     let lower = production_code(
@@ -2269,10 +2272,10 @@ fn every_lowering_call_hands_its_producers_staged_owners() {
     );
     assert!(
         lower.contains("StagedBodyTxn::enter_proof(records, draft)?")
-            && lower.contains("let (registry, txn, diagnostics, staged_facts) = scope.parts();")
-            && lower.contains("staged_facts.sink(facts, template.at())"),
-        "the template proof owns its producer and both payloads in one scope and hands \
-         only those staged sinks to body lowering",
+            && lower.contains("scope.lower_template(")
+            && lower.contains("scope.erase_proof()"),
+        "the template proof reaches lowering and release only through its producer-bound \
+         custody operations",
     );
 }
 
@@ -2351,22 +2354,28 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
         !analysis.contains("ledger: &'a mut AnalysisFactCollector"),
         "an exclusive ledger borrow in the fact sink restores the write-through",
     );
+    let body_staging = production_code(
+        &fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis/facts/staging.rs"),
+        )
+        .expect("read the body custody owner"),
+    );
     assert!(
-        analysis.contains("owner: GenericOwnerTxn<'r, 'd>,")
-            && analysis.contains("owner.commit();")
-            && analysis.contains("owner.erase();"),
+        body_staging.contains("owner: GenericOwnerTxn<'r, 'd>,")
+            && body_staging.contains("owner.commit();")
+            && body_staging.contains("owner.erase();"),
         "the staged body owns its generic producer and consumes it before constructing \
          released facts",
     );
 
-    let diagnostics = production_code(
-        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/diag.rs"))
-            .expect("read the diagnostic custody owner"),
+    let durable_staging = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/durable/staging.rs"))
+            .expect("read the durable custody owner"),
     );
     assert!(
-        diagnostics.contains("owner: DraftTxn<'d>,")
-            && diagnostics.contains("owner.commit();")
-            && diagnostics.contains("owner.rollback();"),
+        durable_staging.contains("owner: DraftTxn<'d>,")
+            && durable_staging.contains("owner.commit();")
+            && durable_staging.contains("owner.rollback();"),
         "durable staged diagnostics own and consume their exact producer",
     );
 
@@ -2397,6 +2406,10 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
         &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compile.rs"))
             .expect("read the compile coordinator"),
     );
+    let diagnostics = production_code(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/diag.rs"))
+            .expect("read the diagnostic owner"),
+    );
     for forbidden in [
         "SettlementStaging",
         "SettlementAuthority",
@@ -2408,6 +2421,8 @@ fn the_fact_seam_stages_its_retain_and_borrows_the_ledger_shared() {
         assert!(
             !image.contains(forbidden)
                 && !analysis.contains(forbidden)
+                && !body_staging.contains(forbidden)
+                && !durable_staging.contains(forbidden)
                 && !diagnostics.contains(forbidden)
                 && !compile.contains(forbidden),
             "detached settlement seam `{forbidden}` must remain absent",
@@ -2459,14 +2474,16 @@ fn the_lowering_call_scanner_sees_a_planted_live_collector() {
         "the planted call stages nothing, which is what the gate refuses",
     );
 
-    // And the real coordinator is a live subject for the same scanner.
+    // And the real private staging owner is a live subject for the same scanner.
     let code = production_code(
-        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compile.rs"))
-            .expect("read the compile coordinator"),
+        &fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/analysis/facts/staging.rs"),
+        )
+        .expect("read the body staging owner"),
     );
     assert!(
         lowering_call_sites(&code).len() >= 4,
-        "the coordinator's lowering calls are found, so the gate has live subjects",
+        "the private staging owner's lowering calls are found, so the gate has live subjects",
     );
 }
 

@@ -101,7 +101,7 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
         &generics,
         &consts,
         &mut diagnostics,
-        FactSink::Discarding,
+        FactSink::discarding(),
     );
 
     let result = lowerer.lower_interpolation(parts, *span);
@@ -149,7 +149,7 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
         &generics,
         &consts,
         &mut diagnostics,
-        FactSink::Discarding,
+        FactSink::discarding(),
     );
 
     let flow = lowerer.lower_statement(statement);
@@ -207,7 +207,7 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
         &generics,
         &consts,
         &mut diagnostics,
-        FactSink::Discarding,
+        FactSink::discarding(),
     );
     lowerer.locals.push(Local {
         name: "maybe".to_string(),
@@ -276,7 +276,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
         &generics,
         &consts,
         &mut diagnostics,
-        FactSink::Discarding,
+        FactSink::discarding(),
     );
 
     let flow = lowerer.lower_block(&function.body);
@@ -384,7 +384,7 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
         &generics,
         &consts,
         &mut diagnostics,
-        FactSink::Discarding,
+        FactSink::discarding(),
     );
 
     assert!(
@@ -425,7 +425,7 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
         &generics,
         &consts,
         &mut diagnostics,
-        FactSink::Discarding,
+        FactSink::discarding(),
     );
 
     assert!(

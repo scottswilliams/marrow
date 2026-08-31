@@ -16,9 +16,7 @@ use marrow_syntax::{
     SourceFile, SourceSpan, StoreDecl, StructDecl, parse_source,
 };
 
-use crate::analysis::{
-    AnalysisFactCollector, BoundedAnalysisFacts, FactSink, FileRef, StagedBodyTxn,
-};
+use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FileRef, StagedBodyTxn};
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
     DeclarationSite, DeclareError, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse,
@@ -1875,26 +1873,19 @@ fn registry_phases(
             // through `?` below while the producer-owning aggregate drops both owners.
             // The instance's editor facts were collected once at its template's proof, so
             // its staged fact payload stays empty.
-            let lowered_body = {
-                let (records, txn, staged_diagnostics, _) = batch.parts();
-                match FnLowerer::lower_instance(
-                    txn,
-                    records,
-                    resolution.durable,
-                    resolution.signatures,
-                    resolution.generics,
-                    resolution.constants,
-                    staged_diagnostics,
-                    FactSink::Discarding,
-                    template,
-                    &args,
-                ) {
-                    Ok(BodyOutcome::Lowered(result)) => Some(result),
-                    // An ordinary refusal keeps the batch, aligned with the registry.
-                    Ok(BodyOutcome::Refused) => None,
-                    Err(invariant) => {
-                        return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
-                    }
+            let lowered_body = match batch.lower_instance(
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                template,
+                &args,
+            ) {
+                Ok(BodyOutcome::Lowered(result)) => Some(result),
+                // An ordinary refusal keeps the batch, aligned with the registry.
+                Ok(BodyOutcome::Refused) => None,
+                Err(invariant) => {
+                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
                 }
             };
             batch.commit().absorb(diagnostics, facts);
@@ -2003,30 +1994,25 @@ fn lower_declared_functions(
             // This body's refusal rows are staged outside the caller's collector while the
             // batch is armed. An invariant leaves through `?` below and drops producer,
             // diagnostics, and facts as one aggregate.
-            let lowered_body = {
-                let (records, txn, staged_diagnostics, staged_facts) = batch.parts();
-                match FnLowerer::lower(
-                    txn,
-                    records,
-                    resolution.durable,
-                    resolution.signatures,
-                    resolution.generics,
-                    resolution.constants,
-                    staged_diagnostics,
-                    staged_facts.sink(facts, module.at),
-                    &module.file,
-                    &module.name,
-                    function,
-                ) {
-                    Ok(BodyOutcome::Lowered(result)) => Some(result),
-                    // An ordinary refusal commits the batch rather than rolling it back:
-                    // the interns and registry rows a refused body already minted are
-                    // referenced by rows outside it, so discarding them would leave the
-                    // registry and the draft describing different populations.
-                    Ok(BodyOutcome::Refused) => None,
-                    Err(invariant) => {
-                        return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
-                    }
+            let lowered_body = match batch.lower_function(
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                facts,
+                module.at,
+                &module.file,
+                &module.name,
+                function,
+            ) {
+                Ok(BodyOutcome::Lowered(result)) => Some(result),
+                // An ordinary refusal commits the batch rather than rolling it back:
+                // the interns and registry rows a refused body already minted are
+                // referenced by rows outside it, so discarding them would leave the
+                // registry and the draft describing different populations.
+                Ok(BodyOutcome::Refused) => None,
+                Err(invariant) => {
+                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
                 }
             };
             let Some(result) = lowered_body else {
@@ -2057,39 +2043,28 @@ fn lower_declared_functions(
                 code_spans: result.code_spans,
             });
             let export = if function.public {
-                // The injectivity owner's own guard: every dotted module segment and the
-                // item must be ASCII identifiers before an ExportId is minted over them
-                // (see marrow-image::export_id). Unreachable through the current capture
-                // path, which already constrains both; kept so the id payload's
-                // injectivity never silently rests on an upstream layer alone.
-                if valid_export_path(&module.name, &function.name) {
-                    let id = ExportId::of_local(&module.name, &function.name);
-                    let (_, txn, _, _) = batch.parts();
-                    txn.add_export(id, result.func);
-                    Some(ExportEntry {
-                        module: module.name.clone(),
-                        item: function.name.clone(),
-                        id,
-                    })
-                } else {
-                    let (_, _, staged_diagnostics, _) = batch.parts();
-                    staged_diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckModulePath.as_str(),
-                        &module.file,
-                        function.span,
-                        format!(
-                            "export `{}` in module `{}` is not an ASCII identifier path, \
-                             so it cannot be exported",
-                            function.name, module.name
-                        ),
-                    ));
-                    batch.commit().absorb(diagnostics, facts);
+                // Export validation and minting stay inside the producer-owning wrapper:
+                // the driver receives only the settled body and the accepted id.
+                let (released, id) = batch.commit_export(
+                    &module.file,
+                    function.span,
+                    &module.name,
+                    &function.name,
+                    result.func,
+                );
+                released.absorb(diagnostics, facts);
+                let Some(id) = id else {
                     continue;
-                }
+                };
+                Some(ExportEntry {
+                    module: module.name.clone(),
+                    item: function.name.clone(),
+                    id,
+                })
             } else {
+                batch.commit().absorb(diagnostics, facts);
                 None
             };
-            batch.commit().absorb(diagnostics, facts);
             exports.extend(export);
             if records.has_instantiation_limit() {
                 return Ok(LoweredFunctions {
@@ -2159,31 +2134,26 @@ fn lower_declared_tests(
             let mut batch = StagedBodyTxn::begin(records, draft)
                 .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
             // Staged inside the producer-owning guard exactly as a declared body's rows are.
-            let lowered_body = {
-                let (records, txn, staged_diagnostics, staged_facts) = batch.parts();
-                match FnLowerer::lower_test(
-                    txn,
-                    records,
-                    resolution.durable,
-                    resolution.signatures,
-                    resolution.generics,
-                    resolution.constants,
-                    staged_diagnostics,
-                    staged_facts.sink(facts, module.at),
-                    &module.file,
-                    &module.name,
-                    &test.name,
-                    &test.body,
-                ) {
-                    Ok(BodyOutcome::Lowered(result)) => Some(result),
-                    // An ordinary refusal commits the batch rather than rolling it back:
-                    // the interns and registry rows a refused body already minted are
-                    // referenced by rows outside it, so discarding them would leave the
-                    // registry and the draft describing different populations.
-                    Ok(BodyOutcome::Refused) => None,
-                    Err(invariant) => {
-                        return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
-                    }
+            let lowered_body = match batch.lower_test(
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                facts,
+                module.at,
+                &module.file,
+                &module.name,
+                &test.name,
+                &test.body,
+            ) {
+                Ok(BodyOutcome::Lowered(result)) => Some(result),
+                // An ordinary refusal commits the batch rather than rolling it back:
+                // the interns and registry rows a refused body already minted are
+                // referenced by rows outside it, so discarding them would leave the
+                // registry and the draft describing different populations.
+                Ok(BodyOutcome::Refused) => None,
+                Err(invariant) => {
+                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
                 }
             };
             let Some(result) = lowered_body else {
@@ -2213,16 +2183,10 @@ fn lower_declared_tests(
                 code: result.code,
                 code_spans: result.code_spans,
             });
-            {
-                let (_, txn, _, _) = batch.parts();
-                let name_id = txn.intern_string(&test.name).map_err(|refusal| {
-                    PhaseStop::Invariant(InvariantCause::Generic(GenericInvariant::BuilderDomain(
-                        refusal,
-                    )))
-                })?;
-                txn.add_test_entry(name_id, result.func);
-            }
-            batch.commit().absorb(diagnostics, facts);
+            batch
+                .commit_test(&test.name, result.func)
+                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?
+                .absorb(diagnostics, facts);
             entries.push(TestEntry {
                 name: test.name.clone(),
                 module: module.name.clone(),
@@ -2944,7 +2908,7 @@ fn check_record_field_width(
 /// (a letter or `_`, then letters, digits, or `_`; never a `.`). This is what
 /// keeps the id payload's dotted `module` join injective over segments, so it is
 /// checked here — immediately before minting — rather than assumed from capture.
-fn valid_export_path(module: &str, item: &str) -> bool {
+pub(crate) fn valid_export_path(module: &str, item: &str) -> bool {
     module.split('.').all(is_ascii_identifier) && is_ascii_identifier(item)
 }
 
