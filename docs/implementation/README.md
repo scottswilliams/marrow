@@ -404,9 +404,9 @@ row, one occurrence row, one managed index, one value node, one value reference 
 admission owner derives its own maximum from those charges rather than sampling a fixture.
 
 ```text
-compiler-side, at the identity ledger's admitted anchors    =  43,243,432 B  (<= 64 MiB declared)
-verifier-side, at the whole-image ceiling                   =  72,876,264 B  (<= 256 MiB declared)
-durable value arena, at the type population                 = 8,212,611,072 B  (> 640 MiB declared)
+compiler-side, at the identity ledger's admitted anchors    =  43,243,456 B  (<= 64 MiB declared)
+verifier-side, at the whole-image ceiling                   =  85,459,200 B  (<= 256 MiB declared)
+durable value arena, at the type population                 = 8,213,004,288 B  (> 640 MiB declared)
 ```
 
 The first two are asserted in a `const` context, so a representation change that breached

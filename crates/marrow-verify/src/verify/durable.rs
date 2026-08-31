@@ -1914,7 +1914,7 @@ mod capacity_tests {
     #[test]
     fn the_verifier_side_maximum_live_graph_holds_its_accounted_figure() {
         assert_eq!(
-            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 72_876_264,
+            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 85_459_200,
             "the accounted verifier-side live graph moved; re-derive the exported term and \
              update the implementation map with this pin"
         );
