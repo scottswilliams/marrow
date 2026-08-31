@@ -1328,7 +1328,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// check runs inside expression lowering; every other terminal owner uses the
     /// ordinary construct-refusal path and is classified at the statement boundary.
     fn terminal_lowering_failure(&self) -> LoweringFailure {
-        debug_assert!(self.terminal_rejection());
         if self.code_limit_reached {
             LoweringFailure::CodeLimitReached
         } else {
