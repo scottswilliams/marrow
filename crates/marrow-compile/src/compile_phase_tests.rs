@@ -105,6 +105,12 @@ fn staged_settlement_exposes_no_detached_owner_or_payload_surface() {
 
     let diagnostics = include_str!("diag.rs");
     assert!(!diagnostics.contains("StagedDiagnosticTxn"));
+
+    let lower = include_str!("lower/mod.rs");
+    assert!(
+        !lower.contains("pub(crate) type LowerResult"),
+        "the lowered outcome alias is private to the lowerer that produces it"
+    );
 }
 
 fn diagnostic(code: &'static str, line: u32) -> SourceDiagnostic {

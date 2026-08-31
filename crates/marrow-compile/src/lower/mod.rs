@@ -202,7 +202,7 @@ pub(crate) enum BodyOutcome {
     Refused,
 }
 
-pub(crate) type LowerResult = Result<BodyOutcome, LowerInvariant>;
+type LowerResult = Result<BodyOutcome, LowerInvariant>;
 
 /// Which lowering pass a body is in: an ordinary or instance body that emits an
 /// image function and monomorphizes its generic calls, or the once-checked template
