@@ -345,6 +345,12 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// once-checked template pass over abstract parameters.
     mode: LowerMode,
     code: Vec<Instr>,
+    /// Exact encoded bytes already retained in `code`, charged from the image
+    /// instruction-width owner before each append.
+    code_bytes: usize,
+    /// The first instruction that would cross the per-function code-byte bound is a
+    /// source-located terminal refusal. Later emission in the same construct is a no-op.
+    code_limit_reached: bool,
     spans: Vec<SpanEntry>,
     /// Full UTF-8 source span of each emitted instruction, parallel to `code`. The
     /// image itself keeps only the line/column [`SpanEntry`]; these byte-accurate
@@ -472,6 +478,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             type_env: Vec::new(),
             mode: LowerMode::Concrete,
             code: Vec::new(),
+            code_bytes: 0,
+            code_limit_reached: false,
             spans: Vec::new(),
             full_spans: Vec::new(),
             calls: Vec::new(),
@@ -954,6 +962,28 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     fn push(&mut self, instr: Instr, span: SourceSpan) {
+        if self.code_limit_reached {
+            return;
+        }
+        let next_code_bytes = self
+            .code_bytes
+            .checked_add(instr.encoded_len())
+            .filter(|bytes| *bytes <= marrow_image::bounds::MAX_CODE_BYTES);
+        let Some(next_code_bytes) = next_code_bytes else {
+            self.code_limit_reached = true;
+            self.failed = true;
+            self.diagnostics.push(SourceDiagnostic::at(
+                Code::CheckResourceLimit.as_str(),
+                self.file,
+                span,
+                format!(
+                    "this construct would make the function's compiled code exceed the fixed \
+                     limit of {} bytes",
+                    marrow_image::bounds::MAX_CODE_BYTES
+                ),
+            ));
+            return;
+        };
         if self.txn_depth == 0 {
             match &instr {
                 Instr::Call(target) => self.unwrapped_calls.push((*target, span)),
@@ -962,6 +992,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
         let index = self.code.len() as u32;
+        self.code_bytes = next_code_bytes;
         self.code.push(instr);
         self.spans.push(SpanEntry {
             instr_index: index,
@@ -990,7 +1021,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     fn patch(&mut self, at: usize, target: usize) {
-        match &mut self.code[at] {
+        let Some(instr) = self.code.get_mut(at) else {
+            if self.code_limit_reached {
+                return;
+            }
+            panic!("lowering patch index {at} is outside the instruction tape");
+        };
+        match instr {
             Instr::Jump(t)
             | Instr::JumpIfFalse(t)
             | Instr::BranchPresent(t)
@@ -1254,11 +1291,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 
     /// Whether lowering must stop before any later handler, interning, patching, or
-    /// emission. The shared instantiation limit, the frame's first over-bound local
-    /// request, and the first private generic invariant are terminal for this body.
+    /// emission. The shared instantiation limit, the frame's or code tape's first
+    /// over-bound request, and the first private generic invariant are terminal for
+    /// this body.
     fn terminal_rejection(&self) -> bool {
         self.records.has_instantiation_limit()
             || self.local_limit_reached
+            || self.code_limit_reached
             || self.invariant.is_some()
     }
 
@@ -1744,6 +1783,69 @@ mod generic_cache_boundary_tests {
             "a rejected request does not mutate the admitted count"
         );
         assert!(lowerer.alloc_slot(request_span).is_none());
+        assert!(lowerer.terminal_rejection());
+        assert_eq!(lowerer.diagnostics.probe_rows().len(), 1);
+        assert_eq!(
+            lowerer.diagnostics.probe_rows()[0].code(),
+            Code::CheckResourceLimit.as_str()
+        );
+        assert_eq!(lowerer.diagnostics.probe_rows()[0].span(), request_span);
+        assert!(matches!(
+            lowerer.finish("rejected", Vec::new(), ImageType::Unit),
+            Ok(BodyOutcome::Refused)
+        ));
+
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
+        assert_eq!(diagnostics.probe_rows().len(), 1);
+    }
+
+    #[test]
+    fn code_byte_limit_rejection_precedes_tape_mutation_and_reports_once() {
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = draft_owner
+            .begin_transaction(draft_owner.savepoint())
+            .expect("a fresh savepoint admits");
+        let mut records = generic_enum_registry(&mut draft);
+        let before = draft.encode().expect("empty draft encodes");
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
+        let mut diagnostics = DiagnosticCollector::new();
+        let request_span = SourceSpan {
+            start_byte: 40,
+            end_byte: 60,
+            line: 3,
+            column: 5,
+        };
+        let mut lowerer = lowerer(
+            &mut draft,
+            &mut records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+            FactSink::Discarding,
+        );
+
+        assert_eq!(Instr::Pop.encoded_len(), 1);
+        for _ in 0..marrow_image::bounds::MAX_CODE_BYTES {
+            lowerer.push(Instr::Pop, request_span);
+        }
+        assert_eq!(lowerer.code_bytes, marrow_image::bounds::MAX_CODE_BYTES);
+        assert_eq!(lowerer.code.len(), marrow_image::bounds::MAX_CODE_BYTES);
+        assert_eq!(lowerer.spans.len(), lowerer.code.len());
+        assert_eq!(lowerer.full_spans.len(), lowerer.code.len());
+
+        lowerer.push(Instr::Pop, request_span);
+        lowerer.push(Instr::Pop, request_span);
+        assert_eq!(lowerer.code_bytes, marrow_image::bounds::MAX_CODE_BYTES);
+        assert_eq!(lowerer.code.len(), marrow_image::bounds::MAX_CODE_BYTES);
+        assert_eq!(lowerer.spans.len(), lowerer.code.len());
+        assert_eq!(lowerer.full_spans.len(), lowerer.code.len());
         assert!(lowerer.terminal_rejection());
         assert_eq!(lowerer.diagnostics.probe_rows().len(), 1);
         assert_eq!(

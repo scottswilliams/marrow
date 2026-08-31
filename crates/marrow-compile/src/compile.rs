@@ -216,9 +216,6 @@ pub enum ResourceLimitKind {
     /// segment), so it surfaces as a locationless resource limit rather than the
     /// synthetic diagnostic it once produced.
     StringBytes,
-    /// One function's encoded bytecode over the per-function byte bound. Known only
-    /// after lowering.
-    CodeBytes,
     /// The ordered diagnostic set grew past the count bound, so the incomplete
     /// collection was discarded rather than surfaced as a truncated result.
     DiagnosticCount,
@@ -261,7 +258,6 @@ impl ResourceLimitKind {
             ResourceLimitKind::TestEntries => "TestEntries",
             ResourceLimitKind::ImageBytes => "ImageBytes",
             ResourceLimitKind::StringBytes => "StringBytes",
-            ResourceLimitKind::CodeBytes => "CodeBytes",
             ResourceLimitKind::DiagnosticCount => "DiagnosticCount",
             ResourceLimitKind::DiagnosticBytes => "DiagnosticBytes",
             ResourceLimitKind::ProjectFiles => "ProjectFiles",
@@ -290,7 +286,6 @@ impl ResourceLimitKind {
             ResourceLimitKind::TestEntries => "the test entry table is full",
             ResourceLimitKind::ImageBytes => "the program image is too large",
             ResourceLimitKind::StringBytes => "one text value is too large",
-            ResourceLimitKind::CodeBytes => "one function's compiled code is too large",
             ResourceLimitKind::DiagnosticCount => "too many diagnostics to retain",
             ResourceLimitKind::DiagnosticBytes => "the diagnostics hold too much text to retain",
             ResourceLimitKind::ProjectFiles => "the project has too many source files",
@@ -536,14 +531,11 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         ImageBuildError::ApplicationIdentityConflict | ImageBuildError::LedgerDrift(_) => {
             ImagePolicyOutcome::Invariant(InvariantCause::ImageBuild(error))
         }
-        // Per-construct bounds reachable through a path no pre-mutation source
+        // A per-construct bound reachable through a path no pre-mutation source
         // precheck yet covers: an honest locationless resource limit, never the
         // synthetic diagnostic.
         ImageBuildError::StringTooLong => {
             aggregate(ResourceLimitKind::StringBytes, bounds::MAX_STRING_BYTES)
-        }
-        ImageBuildError::CodeTooLong => {
-            aggregate(ResourceLimitKind::CodeBytes, bounds::MAX_CODE_BYTES)
         }
         // Per-construct bounds a source precheck refuses before the draft is built, so
         // an encode-time occurrence is a defense-in-depth producer defect; and
@@ -556,7 +548,8 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         // graph's one constructor, which refuses an over-deep command vector before a
         // row exists; and the per-Product member count is bounded by the identity
         // ledger a level above, whose own row bound sits below the member bound.
-        ImageBuildError::TooManyFields
+        ImageBuildError::CodeTooLong
+        | ImageBuildError::TooManyFields
         | ImageBuildError::TooManyDurableMembers
         | ImageBuildError::DurableTreeTooDeep
         | ImageBuildError::TooManyIndexComponents

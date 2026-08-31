@@ -668,8 +668,14 @@ impl Instr {
         }
     }
 
-    /// This instruction's total encoded byte width (opcode + operands).
-    pub(crate) fn encoded_len(&self) -> usize {
+    /// This instruction's exact encoded width (opcode plus operands) in the v0 code
+    /// tape.
+    ///
+    /// Lowering reads the same owner before retaining an instruction, so the
+    /// per-function byte limit is enforced at the source construct that would cross
+    /// it rather than rediscovered only after a complete tape has been built.
+    #[doc(hidden)]
+    pub fn encoded_len(&self) -> usize {
         1 + self.operand_len()
     }
 

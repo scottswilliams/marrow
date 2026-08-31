@@ -703,9 +703,10 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "u16::try_from(count).map_err(|_| DurableGraphTooLarge)",
     ),
     // Code layout accumulates wide and narrows at the two consuming boundaries. Both
-    // sites are bounded by the exact `ImageBuildError::CodeTooLong` refusal, projected
-    // by the compiler as `cli.compiler_resource_limit` for `CodeBytes`; the per-function
-    // total has no narrower source span than the function-level resource subject.
+    // sites are bounded by the exact `ImageBuildError::CodeTooLong` refusal. Production
+    // lowering refuses the crossing instruction at its source span before retaining it,
+    // so an encode-time occurrence is a producer invariant rather than a locationless
+    // compiler resource outcome.
     (
         "marrow-image",
         "encode.rs",

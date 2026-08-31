@@ -606,7 +606,6 @@ fn resource_limit_kind_detail_is_frozen() {
         (TestEntries, "TestEntries"),
         (ImageBytes, "ImageBytes"),
         (StringBytes, "StringBytes"),
-        (CodeBytes, "CodeBytes"),
         (DiagnosticCount, "DiagnosticCount"),
         (DiagnosticBytes, "DiagnosticBytes"),
         (ProjectFiles, "ProjectFiles"),

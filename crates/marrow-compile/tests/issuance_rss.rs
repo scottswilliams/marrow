@@ -34,6 +34,7 @@ use std::process::Command;
 
 use marrow_compile::{CompileFailure, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_syntax::SourceSpan;
 
 /// The widest admissible record declaration, read from the owner that fixes it rather
 /// than hand-copied: a bound change must move the corpus with it, not leave it describing
@@ -68,7 +69,7 @@ const ADMITTED_LOCALS: usize = marrow_image::bounds::MAX_LOCALS - 2;
 /// measured one of the two dimensions.
 ///
 /// The number is **observed, not computed**: it is the largest padding whose body still
-/// encodes, and one more statement is refused with the typed `CodeBytes` limit.
+/// encodes, and one more statement is refused at its source span by the code-byte limit.
 /// `the_function_arm_sits_exactly_at_the_code_byte_envelope` re-observes both halves of
 /// that boundary on the arm's own generator, so this constant cannot drift away from the
 /// bound it claims to sit at.
@@ -686,7 +687,8 @@ fn each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it() {
 }
 
 /// The function arm's body sits exactly at the code-byte envelope: it encodes, and one
-/// more statement is refused with the typed `CodeBytes` limit.
+/// more statement is refused at that statement's source line before its instruction can
+/// enter the lowered tape.
 ///
 /// This is what makes `ADMITTED_CODE_PADDING` an observation rather than a number someone
 /// chose. Both halves are asserted, because a padding that merely encodes proves only that
@@ -702,14 +704,33 @@ fn the_function_arm_sits_exactly_at_the_code_byte_envelope() {
              {other:?}"
         ),
     }
-    match compile(&project(&code_envelope_mirror(ADMITTED_CODE_PADDING + 1))) {
-        Err(CompileFailure::ResourceLimit(limit)) => assert_eq!(
-            limit.limit(),
-            marrow_image::bounds::MAX_CODE_BYTES as u64,
-            "one statement past the envelope is refused by the code-byte bound itself",
-        ),
+    let over_bound = code_envelope_mirror(ADMITTED_CODE_PADDING + 1);
+    let return_text = "    return settle(xs)\n";
+    let return_line_start = over_bound
+        .rfind(return_text)
+        .expect("the over-bound mirror carries its crossing return");
+    let offending_span = SourceSpan {
+        start_byte: return_line_start + 4,
+        end_byte: return_line_start + return_text.len() - 1,
+        line: over_bound.as_bytes()[..return_line_start]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count() as u32
+            + 1,
+        column: 5,
+    };
+    match compile(&project(&over_bound)) {
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            let rows: Vec<_> = diagnostics
+                .iter()
+                .filter(|row| row.code() == "check.resource_limit")
+                .collect();
+            assert_eq!(rows.len(), 1, "the first crossing is reported once");
+            assert_eq!(rows[0].file().as_str(), "src/main.mw");
+            assert_eq!(rows[0].span(), offending_span);
+        }
         other => panic!(
-            "one statement past the envelope must be refused with the code-byte limit: \
+            "one statement past the envelope must be refused at its source span: \
              {other:?}"
         ),
     }

@@ -267,7 +267,6 @@ fn owner_of(kind: ResourceLimitKind) -> Owner {
         | ResourceLimitKind::Roots
         | ResourceLimitKind::Sites
         | ResourceLimitKind::Functions
-        | ResourceLimitKind::CodeBytes
         | ResourceLimitKind::Exports
         | ResourceLimitKind::TestEntries
         | ResourceLimitKind::ImageBytes => Owner::ImagePolicy,
@@ -289,7 +288,6 @@ const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::TestEntries,
     ResourceLimitKind::ImageBytes,
     ResourceLimitKind::StringBytes,
-    ResourceLimitKind::CodeBytes,
     ResourceLimitKind::DiagnosticCount,
     ResourceLimitKind::DiagnosticBytes,
     ResourceLimitKind::ProjectFiles,
