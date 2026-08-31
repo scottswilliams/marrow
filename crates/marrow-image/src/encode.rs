@@ -417,13 +417,21 @@ pub(crate) struct CodeLayout {
 /// accumulates into offsets. The policy walk reads the length without materializing
 /// the offsets.
 ///
-/// The sum accumulates in a carrier wider than the `u32` the container spells, so no
-/// caller can observe a wrapped length: a length is narrowed only where it is written
-/// or compared, against [`bounds::MAX_CODE_BYTES`]. The wide accumulation itself
-/// cannot overflow — a slice holds fewer than `u64::MAX / 16` instructions and each
-/// contributes at most sixteen bytes.
-pub(crate) fn laid_out_code_len(code: &[Instr]) -> u64 {
-    code.iter().map(|instr| instr.encoded_len() as u64).sum()
+/// Each addition is checked before the result can be observed. Instruction widths are
+/// variable — a sparse durable write carries one slot operand per key column — so there is
+/// no fixed per-instruction maximum that proves an unchecked sum safe for the public draft
+/// surface.
+pub(crate) fn laid_out_code_len(code: &[Instr]) -> Result<u64, ImageBuildError> {
+    code.iter().try_fold(0, checked_code_offset)
+}
+
+/// Add one instruction's exact width to a laid-out offset without wrapping either the
+/// platform-width conversion or the accumulator.
+fn checked_code_offset(offset: u64, instr: &Instr) -> Result<u64, ImageBuildError> {
+    let width = u64::try_from(instr.encoded_len()).map_err(|_| ImageBuildError::CodeTooLong)?;
+    offset
+        .checked_add(width)
+        .ok_or(ImageBuildError::CodeTooLong)
 }
 
 /// Lay out one function's code: each instruction's byte offset, and the total width.
@@ -438,7 +446,7 @@ fn code_layout(code: &[Instr]) -> Result<CodeLayout, ImageBuildError> {
     let mut offset: u64 = 0;
     for instr in code {
         offsets.push(u32::try_from(offset).map_err(|_| ImageBuildError::CodeTooLong)?);
-        offset += instr.encoded_len() as u64;
+        offset = checked_code_offset(offset, instr)?;
     }
     let total_len = u32::try_from(offset).map_err(|_| ImageBuildError::CodeTooLong)?;
     Ok(CodeLayout { offsets, total_len })
@@ -722,7 +730,7 @@ fn push_u32(out: &mut impl ImageByteSink, value: u32) {
 /// remapped operands, spans, exports, and test entries.
 #[cfg(test)]
 mod counted_equals_emitted {
-    use super::{CodeLayout, remap_of};
+    use super::{CodeLayout, checked_code_offset, remap_of};
     use crate::draft::{
         AdmittedGraphInputPlan, CollectionTypeDef, FieldDef, FunctionDef, ImageDraft,
         RecordTypeDef, RootOccurrenceDef, SpanEntry, VariantDef,
@@ -734,6 +742,23 @@ mod counted_equals_emitted {
     use crate::semantic::SemanticTarget;
     use crate::ty::{ImageType, Scalar};
     use crate::value_dag::ImageByteSink;
+
+    #[test]
+    fn code_offset_overflow_is_the_typed_code_length_refusal() {
+        assert_eq!(
+            checked_code_offset(u64::MAX, &Instr::Return),
+            Err(crate::draft::ImageBuildError::CodeTooLong),
+        );
+        assert_eq!(
+            Instr::RangeGuard {
+                lo: i64::MIN,
+                hi: i64::MAX,
+            }
+            .encoded_len(),
+            17,
+            "the old sixteen-byte instruction proof is false",
+        );
+    }
 
     /// A sink that keeps nothing: the counting instantiation of each writer.
     #[derive(Default)]

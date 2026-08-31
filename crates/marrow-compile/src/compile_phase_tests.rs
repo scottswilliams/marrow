@@ -637,6 +637,11 @@ fn image_build_errors_classify_without_a_fabricated_location() {
         matches!(prechecked, super::ImagePolicyOutcome::Invariant(_)),
         "a compiler draft past the source-prechecked local bound is an opaque invariant"
     );
+    let code_prechecked = super::image_build_outcome(marrow_image::ImageBuildError::CodeTooLong);
+    assert!(
+        matches!(code_prechecked, super::ImagePolicyOutcome::Invariant(_)),
+        "a compiler draft past the source-prechecked code-byte bound is an opaque invariant"
+    );
 
     let contradiction =
         super::image_build_outcome(marrow_image::ImageBuildError::InvalidReference("x"));

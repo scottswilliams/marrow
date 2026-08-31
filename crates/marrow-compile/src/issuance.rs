@@ -75,10 +75,11 @@
 //! including [`marrow_image::bounds::MAX_COLLECTIONS`], remain policy verdicts applied by
 //! the image measure/encode path after construction. Nor is it a peak-memory proof: no
 //! compiler-enforced working-set ceiling exists, and the separate issuance RSS gate records
-//! that evidence. Function instructions are outside this non-function identity population;
-//! their encoded byte length is accumulated wide and bounded separately by
-//! [`marrow_image::bounds::MAX_CODE_BYTES`] as
-//! [`marrow_image::ImageBuildError::CodeTooLong`].
+//! that evidence. Function instructions are outside this non-function identity population.
+//! Lowering checks each exact encoded width before retaining the crossing instruction and
+//! reports `check.resource_limit` at that source construct; the image independently uses
+//! checked wide accumulation and retains [`marrow_image::ImageBuildError::CodeTooLong`] as
+//! defense in depth against a hostile direct draft.
 //!
 //! `Layout` and lossless-widening facts for the carrier itself are asserted in
 //! `marrow-image`'s `issuance` module, on both supported targets.
