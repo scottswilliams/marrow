@@ -1868,7 +1868,15 @@ function runSelfTests() {
   console.log("real-host self-tests: PASS");
 }
 
-async function runHostGate({ expectedHead, targetDir }) {
+function publishResult(evidenceRoot, evidence) {
+  const finalPath = join(evidenceRoot, "result.json");
+  const body = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  requireCondition(body.length <= MAX_EVIDENCE, "host result exceeds 4 MiB");
+  writeFileSync(finalPath, body, { mode: 0o600, flag: "wx" });
+  return { finalPath, body };
+}
+
+async function runHostGate({ expectedHead, targetDir, identityOnly = false }) {
   const root = realpathSync(mkdtempSync("/private/tmp/marrow-vsq-a1-"));
   const evidenceRoot = realpathSync(mkdtempSync("/private/tmp/marrow-vsq-a1-evidence-"));
   let retain = true;
@@ -1956,6 +1964,26 @@ async function runHostGate({ expectedHead, targetDir }) {
       "--reproduction-extensions-dir", reproductionInstall.extensions,
       "--evidence", identityEvidence,
     ]);
+    if (identityOnly) {
+      evidence.hostExecution = {
+        status: "NOT_RUN",
+        reason: "identity-only invocation stopped after source builds, packages, and installs",
+      };
+      const { finalPath, body } = publishResult(evidenceRoot, evidence);
+      console.log(JSON.stringify({
+        status: "IDENTITY_CLEAN",
+        root,
+        evidenceRoot,
+        evidence: finalPath,
+        evidenceSha256: sha256(body),
+        primaryVsix: primary.vsix,
+        primaryVsixSha256: shaFile(primary.vsix),
+        reproductionVsix: reproduction.vsix,
+        reproductionVsixSha256: shaFile(reproduction.vsix),
+      }));
+      retain = true;
+      return;
+    }
     const fixture = prepareWorkspace(root, canonicalCli.captured.path);
     const spec = comprehensiveSpec(fixture);
     const developmentSpec = {
@@ -2095,10 +2123,7 @@ async function runHostGate({ expectedHead, targetDir }) {
     await runNegativeRecoveryMatrix(root, reproductionInstall, fixture, evidence);
     await runColdSamples(root, reproductionInstall, fixture, evidence);
 
-    const finalPath = join(evidenceRoot, "result.json");
-    const body = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
-    requireCondition(body.length <= MAX_EVIDENCE, "host result exceeds 4 MiB");
-    writeFileSync(finalPath, body, { mode: 0o600, flag: "wx" });
+    const { finalPath, body } = publishResult(evidenceRoot, evidence);
     console.log(JSON.stringify({
       status: "PROVISIONAL_CLEAN",
       root,
@@ -2118,6 +2143,7 @@ async function runHostGate({ expectedHead, targetDir }) {
       status: "RED",
       root,
       error: { name: error.name, message: error.message, stack: error.stack },
+      evidence,
     }, null, 2)}\n`);
     writeFileSync(join(evidenceRoot, "failure.json"), failure, { mode: 0o600, flag: "wx" });
     console.error(error.stack ?? error);
@@ -2136,7 +2162,11 @@ function parseInvocation(argv) {
   if (argv.length === 1 && argv[0] === "--self-test") {
     return { mode: "self-test" };
   }
-  requireCondition(argv[0] === "--run", "first argument must be --run or --self-test");
+  requireCondition(
+    argv[0] === "--run" || argv[0] === "--identity-only",
+    "first argument must be --run, --identity-only, or --self-test",
+  );
+  const identityOnly = argv[0] === "--identity-only";
   const values = new Map();
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
@@ -2153,6 +2183,7 @@ function parseInvocation(argv) {
     mode: "run",
     expectedHead: values.get("--expected-head"),
     targetDir: values.get("--target-dir"),
+    identityOnly,
   };
 }
 
@@ -2167,7 +2198,8 @@ try {
   console.error(error.message);
   console.error(
     "usage: node gate/real-host.mjs --self-test | " +
-      "--run --expected-head <40hex> --target-dir <external-cargo-target>",
+      "(--run | --identity-only) --expected-head <40hex> " +
+      "--target-dir <external-cargo-target>",
   );
   process.exitCode = 2;
 }

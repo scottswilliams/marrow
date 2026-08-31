@@ -53,9 +53,10 @@ absolute-path `server/marrow-lsp`, launched with a fixed empty argument list.
 
 - `node gate/verify-vsix.mjs --self-test` checks the identity wrapper and fault matrix;
   its full two-chain invocation is constructed by `real-host.mjs`.
-- `node gate/real-host.mjs --run --expected-head <40hex> --target-dir
-  <external-cargo-target>` builds both source artifacts, verifies both package/install
-  chains, and runs the installed host journeys.
+- `node gate/real-host.mjs --identity-only --expected-head <40hex> --target-dir
+  <external-cargo-target>` builds both source artifacts and verifies both package/install
+  chains. Replacing `--identity-only` with `--run` additionally runs the installed host
+  journeys and their process-custody checks.
 - `node gate/installed-probe.mjs --expected-server-sha256 <64hex>` runs the automatable
   installed-journey checks against a digest supplied by the current build proof. Clauses
   needing the real VS Code host and interactive Workspace Trust UI are reported
