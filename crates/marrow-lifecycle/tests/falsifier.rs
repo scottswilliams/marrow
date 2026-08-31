@@ -120,8 +120,9 @@ fn add_main(draft: &mut DraftTxn<'_>) {
 /// entry record, and [`OCCURRENCES`] roots projecting it.
 fn maximum_draft() -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
+    let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
-        .begin_transaction(draft_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let int = draft
         .value_scalar(Scalar::Int)
@@ -293,8 +294,9 @@ fn journey() {
     //    and the rejected input is dropped on the way out.
     let narrow = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
     let mut refused_owner = ImageDraft::new();
+    let savepoint = refused_owner.savepoint();
     let mut refused = refused_owner
-        .begin_transaction(refused_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let name = refused.intern_string("R").expect("a within-domain mint");
     let record = refused

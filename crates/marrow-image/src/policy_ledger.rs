@@ -319,8 +319,9 @@ mod tests {
     /// transaction surface, so its true ledger holds exactly the Consts slot.
     fn consts_crossed_draft() -> ImageDraft {
         let mut owner = ImageDraft::new();
+        let savepoint = owner.savepoint();
         let mut txn = owner
-            .begin_transaction(owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         for value in 0..=(bounds::MAX_CONSTS as i64) {
             txn.intern_int(value).expect("a within-domain mint");
@@ -398,8 +399,9 @@ mod tests {
     #[test]
     fn a_sites_crossing_populates_and_rolls_back_its_ledger_slot() {
         let mut owner = ImageDraft::new();
+        let savepoint = owner.savepoint();
         let mut draft = owner
-            .begin_transaction(owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         declare_wide(&mut draft);
         demand_every_leaf_under_a_fresh_root(&mut draft, 0x21, bounds::MAX_SITES);
@@ -412,8 +414,9 @@ mod tests {
 
         // A rolled-back crossing restores the vacant slot with the receipt.
         {
+            let savepoint = owner.savepoint();
             let mut txn = owner
-                .begin_transaction(owner.savepoint())
+                .begin_transaction(savepoint)
                 .expect("a fresh savepoint admits");
             demand_every_leaf_under_a_fresh_root(&mut txn, 0x22, 1);
             assert_eq!(
@@ -431,8 +434,9 @@ mod tests {
         );
 
         // A committed crossing retains the slot, the cached minimum, and no excess row.
+        let savepoint = owner.savepoint();
         let mut txn = owner
-            .begin_transaction(owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         demand_every_leaf_under_a_fresh_root(&mut txn, 0x23, 1);
         txn.commit();

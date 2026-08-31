@@ -1463,8 +1463,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn recursive_generic_unification_builds_one_metadata_directory() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let list = records
@@ -1520,8 +1521,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn generic_unification_prevalidates_inferred_metadata_before_named_mismatch() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let records = generic_enum_registry(&mut draft);
         let (_, orphan) = orphan_enum_and_struct(&mut draft);
@@ -1595,8 +1597,9 @@ mod generic_cache_boundary_tests {
 
         for family in ["struct", "enum", "collection"] {
             let mut draft_owner = ImageDraft::new();
+            let savepoint = draft_owner.savepoint();
             let mut draft = draft_owner
-                .begin_transaction(draft_owner.savepoint())
+                .begin_transaction(savepoint)
                 .expect("a fresh savepoint admits");
             let mut records = generic_enum_registry(&mut draft);
             let (orphan_enum, orphan_struct) = orphan_enum_and_struct(&mut draft);
@@ -1664,8 +1667,9 @@ mod generic_cache_boundary_tests {
             span: span(),
         };
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let missing = GArg::Nominal(NominalId(0));
@@ -1739,8 +1743,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn local_slot_limit_rejection_is_atomic_and_reported_once() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
@@ -1804,8 +1809,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn code_byte_limit_rejection_precedes_tape_mutation_and_reports_once() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
@@ -1888,8 +1894,9 @@ mod generic_cache_boundary_tests {
 
     fn assert_typed_invariant_rejects_consumer(invariant: GenericInvariant) {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
@@ -1954,8 +1961,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn bare_enum_without_ready_variants_fails_without_unwinding() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let (enum_id, _) = orphan_enum_and_struct(&mut draft);
@@ -2015,8 +2023,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn enum_template_at_struct_constructor_fails_without_unwinding() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let (_, struct_id) = orphan_enum_and_struct(&mut draft);
@@ -2080,8 +2089,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn bare_struct_without_ready_body_fails_without_unwinding() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let (_, type_id) = orphan_enum_and_struct(&mut draft);
@@ -2139,8 +2149,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn generic_struct_minted_as_enum_is_an_exact_invariant() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_struct_registry(&mut draft);
         let template = records
@@ -2215,8 +2226,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn generic_enum_minted_as_record_is_an_exact_invariant() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let template = records
@@ -2287,8 +2299,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn ready_enum_id_with_struct_body_rejects_lowering_exactly() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let enum_id = records
@@ -2357,8 +2370,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn template_confirmed_generic_enum_missing_ready_variant_is_invariant() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let template = records
@@ -2433,8 +2447,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn interpolation_invariant_stops_before_later_literal_emission() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let template = records
@@ -2523,8 +2538,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn reserved_constructor_and_try_stop_before_effects_after_typed_reader_failure() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let option = records
@@ -2597,8 +2613,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn checked_result_invariant_stops_before_handler_and_patch_work() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Option);
@@ -2691,8 +2708,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn nested_else_if_terminal_invariant_never_falls_through_or_patches() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Result);
@@ -2759,8 +2777,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn first_invariant_stops_real_block_before_later_owner_mutation() {
         let mut draft_owner = ImageDraft::new();
+        let savepoint = draft_owner.savepoint();
         let mut draft = draft_owner
-            .begin_transaction(draft_owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         let mut records = generic_enum_registry(&mut draft);
         let template = records

@@ -915,8 +915,9 @@ mod index_site_partition {
     /// the draft, the field-leaf (non-index) site operand, and the list-type index.
     /// The armed transaction a fresh savepoint admits over `owner`.
     fn admitted(owner: &mut marrow_image::ImageDraft) -> DraftTxn<'_> {
+        let savepoint = owner.savepoint();
         owner
-            .begin_transaction(owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits")
     }
 

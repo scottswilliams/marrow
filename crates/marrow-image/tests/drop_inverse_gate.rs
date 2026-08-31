@@ -690,9 +690,6 @@ const RESOLVED_CALL_PATHS: &[&str] = &[
     // every armed inverse run exactly once, on the drop path as on the explicit one.
     "self.draft.take",
     "self.inverse.take",
-    // `Option::take` moves the retained admission-time fill revision out of the journal
-    // so rollback can restore it without allocating. It is total and never panics.
-    "self.journal.fill_revision.take",
     "draft.enums.get_mut",
     "draft.enums_fill.get_mut",
     "draft.types.get_mut",

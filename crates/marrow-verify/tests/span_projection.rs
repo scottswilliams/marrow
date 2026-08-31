@@ -17,8 +17,9 @@ const SPAN_SECTION_ID: u8 = 0x07;
 
 fn linear_span_image(with_spans: bool) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
+    let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
-        .begin_transaction(draft_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let source = draft
         .intern_string("src/main.mw")

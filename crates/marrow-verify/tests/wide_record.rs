@@ -31,8 +31,9 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// scalar fields.
 fn draft_with_record(field_count: usize) -> ImageDraft {
     let mut draft_owner = ImageDraft::new();
+    let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
-        .begin_transaction(draft_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let src = draft
         .intern_string("src/main.mw")

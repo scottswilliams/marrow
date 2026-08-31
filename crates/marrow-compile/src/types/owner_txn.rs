@@ -125,8 +125,9 @@ impl<'r, 'd> GenericOwnerTxn<'r, 'd> {
             clippy::expect_used,
             reason = "admission law: a savepoint minted and consumed in one expression is fresh"
         )]
+        let savepoint = draft.savepoint();
         let txn = draft
-            .begin_transaction(draft.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits the batch");
         Self {
             registry,

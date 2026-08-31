@@ -18,8 +18,9 @@ use image_forgery::rehash;
 
 /// The armed transaction a fresh savepoint admits over `owner`.
 fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
+    let savepoint = owner.savepoint();
     owner
-        .begin_transaction(owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits")
 }
 

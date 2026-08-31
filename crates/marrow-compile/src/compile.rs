@@ -48,8 +48,9 @@ pub(crate) fn admitted(owner: &mut ImageDraft) -> DraftTxn<'_> {
         clippy::expect_used,
         reason = "admission law: a savepoint minted and consumed in one expression is fresh"
     )]
+    let savepoint = owner.savepoint();
     owner
-        .begin_transaction(owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits")
 }
 

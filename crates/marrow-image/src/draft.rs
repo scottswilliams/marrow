@@ -633,7 +633,7 @@ impl std::error::Error for ImageBuildError {}
 ///
 /// ```compile_fail,E0599
 /// // A draft is not `Clone`: copying one would copy its identity and its stamp cursor.
-/// let draft = marrow_image::ImageDraft::new();
+/// let mut draft = marrow_image::ImageDraft::new();
 /// let _copy = draft.clone();
 /// ```
 ///
@@ -724,13 +724,9 @@ pub struct ImageDraft {
     functions: Vec<FunctionDef>,
     exports: Vec<ExportDef>,
     test_entries: Vec<TestEntryDef>,
-    /// The savepoint-comparison allocation identity (see [`DraftIdentityCell`]).
-    identity_cell: Rc<DraftIdentityCell>,
-    /// The current one-shot transaction epoch (see [`TransactionEpoch`]).
+    /// The current one-shot transaction epoch (see [`TransactionEpoch`]). Its nested
+    /// draft anchor distinguishes foreign savepoints without a second brand per token.
     epoch: Rc<TransactionEpoch>,
-    /// Strong authentication for the current one-time-fill state. A successful fill
-    /// rotates this allocation; rollback restores the admission-time allocation.
-    fill_revision: Rc<FillRevision>,
     /// The eight-slot policy-crossing observer the one mutation surface maintains.
     ledger: TablePolicyLedger,
 }
@@ -762,19 +758,17 @@ pub(crate) struct ApplicationIdentityConflict {
 #[derive(Debug)]
 struct DraftIdentityCell;
 
-/// The one-shot transaction epoch. Admission installs a fresh allocation before any
+/// The one-shot transaction epoch. Its nested allocation is the draft identity, so one
+/// strong token carries both classifications: a different nested anchor is foreign and a
+/// different epoch allocation over the same anchor is stale. Admission installs a fresh allocation before any
 /// table mutation, staling every sibling savepoint of the consumed epoch. It is
 /// monotone authentication state, not part of the logical inverse: commit and armed
 /// rollback both retain the rotated epoch, so a sibling stays stale even when every
 /// logical draft byte again equals the pre-transaction state.
 #[derive(Debug)]
-struct TransactionEpoch;
-
-/// Strong authentication for in-place one-time fills. A retained allocation, rather
-/// than a wrapping counter or a table scan, makes a savepoint's observed fill state an
-/// O(1), ABA-free admission fact.
-#[derive(Debug)]
-struct FillRevision;
+struct TransactionEpoch {
+    draft: Rc<DraftIdentityCell>,
+}
 
 /// A hostile-state refusal of the transaction surface: the closed set the mutation
 /// entry points return before any owner changes. Never a policy maximum — crossing a
@@ -847,10 +841,9 @@ struct FreshConst {
 /// The private structural image a savepoint carries and a transaction's journal
 /// restores to: every owner's append-only length, the durable graph's checkpoint,
 /// and the conflict/receipt slots. Deliberately **not** a ledger copy or fill-state
-/// scan: the one-shot epoch proves the ledger is still the state the savepoint
-/// observed, while [`DraftSavepoint::fill_revision`] authenticates fills in O(1).
-/// The armed inverse takes its own fixed ledger copy and retained fill revision at
-/// admission.
+/// scan: only an unarmed draft can mint a savepoint, and admission immediately rotates
+/// the one-shot epoch before a transaction can fill anything. The armed inverse takes
+/// its own fixed ledger copy at admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DraftSnapshot {
     strings: usize,
@@ -869,8 +862,8 @@ struct DraftSnapshot {
 }
 
 /// A pre-admission, affine draft savepoint: it strongly retains the draft's
-/// allocation-identity anchor, current one-shot epoch, and authenticated fill
-/// revision, and carries the exact private restore snapshot. Sibling-mintable; consumed whole by
+/// current one-shot epoch (which owns the draft's allocation-identity anchor) and carries
+/// the exact private restore snapshot. Sibling-mintable; consumed whole by
 /// [`ImageDraft::begin_transaction`], which validates it by allocation identity
 /// before any mutation. Deliberately neither `Clone` nor `Copy`: a savepoint is an
 /// affine admission token, and copying one is how a consumed epoch gets re-presented.
@@ -922,9 +915,7 @@ struct DraftSnapshot {
 /// ```
 #[doc(hidden)]
 pub struct DraftSavepoint {
-    identity: Rc<DraftIdentityCell>,
     epoch: Rc<TransactionEpoch>,
-    fill_revision: Rc<FillRevision>,
     snapshot: DraftSnapshot,
 }
 
@@ -960,9 +951,6 @@ enum FillInverse {
 struct DraftJournal {
     at: DraftSnapshot,
     ledger: TablePolicyLedger,
-    /// Admission-time fill authentication, moved back on rollback so the inverse
-    /// remains allocation-free. `Option` permits that move from a dropping guard.
-    fill_revision: Option<Rc<FillRevision>>,
     fills: Vec<FillInverse>,
 }
 
@@ -975,7 +963,6 @@ struct DraftJournal {
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct SettlementStaging {
-    identity: Rc<DraftIdentityCell>,
     epoch: Rc<TransactionEpoch>,
 }
 
@@ -998,7 +985,6 @@ pub struct SettlementStaging {
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct SettlementAuthority {
-    identity: Rc<DraftIdentityCell>,
     epoch: Rc<TransactionEpoch>,
 }
 
@@ -1007,7 +993,7 @@ impl SettlementAuthority {
     /// transaction. A different draft is foreign; another epoch of the same draft is
     /// stale. Either refusal leaves the staged payload outside every published owner.
     pub fn release(&self, staging: SettlementStaging) -> Result<(), DraftStateError> {
-        if !Rc::ptr_eq(&self.identity, &staging.identity) {
+        if !Rc::ptr_eq(&self.epoch.draft, &staging.epoch.draft) {
             return Err(DraftStateError::ForeignDraft);
         }
         if !Rc::ptr_eq(&self.epoch, &staging.epoch) {
@@ -1026,6 +1012,15 @@ impl SettlementAuthority {
 ///
 /// Reads pass through [`std::ops::Deref`] to the draft's read surface; the guard
 /// exposes no `&mut ImageDraft`, so no mutation can bypass the journal.
+///
+/// ```compile_fail,E0599
+/// // Only the unarmed draft can mint an admission token. A transaction cannot create a
+/// // mid-transaction savepoint whose meaning would depend on later rollback.
+/// let mut draft = marrow_image::ImageDraft::new();
+/// let savepoint = draft.savepoint();
+/// let txn = draft.begin_transaction(savepoint).unwrap();
+/// let _ = txn.savepoint();
+/// ```
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct DraftTxn<'d> {
@@ -1047,7 +1042,6 @@ impl<'d> DraftTxn<'d> {
     /// yield the capability that authorizes the matching predecessor settlement.
     pub fn commit(mut self) -> SettlementAuthority {
         let authority = SettlementAuthority {
-            identity: Rc::clone(&self.draft.identity_cell),
             epoch: Rc::clone(&self.draft.epoch),
         };
         self.armed = false;
@@ -1062,7 +1056,6 @@ impl<'d> DraftTxn<'d> {
     /// leaves an unwind and an early `?` return unable to settle anything.
     pub fn rollback(mut self) -> SettlementAuthority {
         let authority = SettlementAuthority {
-            identity: Rc::clone(&self.draft.identity_cell),
             epoch: Rc::clone(&self.draft.epoch),
         };
         self.rollback_armed();
@@ -1074,20 +1067,8 @@ impl<'d> DraftTxn<'d> {
     /// payload owner retains this affine token privately until settlement.
     pub fn settlement_staging(&self) -> SettlementStaging {
         SettlementStaging {
-            identity: Rc::clone(&self.draft.identity_cell),
             epoch: Rc::clone(&self.draft.epoch),
         }
-    }
-
-    /// A savepoint of the transaction's in-progress state — the deliberate shadow of
-    /// the read surface's [`ImageDraft::savepoint`], so a mid-transaction mint is an
-    /// explicit choice rather than a `Deref` accident. It captures the current
-    /// (already rotated) epoch, live structural snapshot, and authenticated fill
-    /// state. Commit admits the token only when no later mutation changed the state
-    /// it observed. Rollback admits a token whose observed state is exactly what the
-    /// inverse restored, but refuses one that observed a fill the inverse removed.
-    pub fn savepoint(&self) -> DraftSavepoint {
-        self.draft.savepoint()
     }
 
     pub fn intern_string(&mut self, text: &str) -> Result<StrId, DraftStateError> {
@@ -1160,7 +1141,6 @@ impl<'d> DraftTxn<'d> {
         if state == FillState::Filled {
             return Err(DraftStateError::IncoherentToken);
         }
-        let next_fill_revision = Rc::new(FillRevision);
         if row < self.journal.at.types {
             self.journal.fills.reserve(1);
             let Some(slot) = self.draft.types.get_mut(row) else {
@@ -1179,7 +1159,6 @@ impl<'d> DraftTxn<'d> {
         if let Some(state) = self.draft.types_fill.get_mut(row) {
             *state = FillState::Filled;
         }
-        self.draft.fill_revision = next_fill_revision;
         Ok(())
     }
 
@@ -1197,7 +1176,6 @@ impl<'d> DraftTxn<'d> {
         if state == FillState::Filled {
             return Err(DraftStateError::IncoherentToken);
         }
-        let next_fill_revision = Rc::new(FillRevision);
         if row < self.journal.at.enums {
             self.journal.fills.reserve(1);
             let Some(slot) = self.draft.enums.get_mut(row) else {
@@ -1217,7 +1195,6 @@ impl<'d> DraftTxn<'d> {
         if let Some(state) = self.draft.enums_fill.get_mut(row) {
             *state = FillState::Filled;
         }
-        self.draft.fill_revision = next_fill_revision;
         Ok(())
     }
 
@@ -1348,9 +1325,6 @@ impl<'d> DraftTxn<'d> {
                 }
             }
         }
-        if let Some(fill_revision) = self.journal.fill_revision.take() {
-            draft.fill_revision = fill_revision;
-        }
         // 6/7. Table suffixes, with each interned owner's index key removed while the
         //      popped row is still live.
         draft.colls.truncate(at.colls);
@@ -1399,6 +1373,7 @@ impl Default for ImageDraft {
 
 impl ImageDraft {
     pub fn new() -> Self {
+        let draft = Rc::new(DraftIdentityCell);
         Self {
             durable: DurableContractGraph::new(),
             strings: Vec::new(),
@@ -1416,9 +1391,7 @@ impl ImageDraft {
             functions: Vec::new(),
             exports: Vec::new(),
             test_entries: Vec::new(),
-            identity_cell: Rc::new(DraftIdentityCell),
-            epoch: Rc::new(TransactionEpoch),
-            fill_revision: Rc::new(FillRevision),
+            epoch: Rc::new(TransactionEpoch { draft }),
             ledger: TablePolicyLedger::vacant(),
         }
     }
@@ -1971,11 +1944,9 @@ impl ImageDraft {
     /// sibling-mintable; each is an affine admission token
     /// [`Self::begin_transaction`] consumes.
     #[doc(hidden)]
-    pub fn savepoint(&self) -> DraftSavepoint {
+    pub fn savepoint(&mut self) -> DraftSavepoint {
         DraftSavepoint {
-            identity: Rc::clone(&self.identity_cell),
             epoch: Rc::clone(&self.epoch),
-            fill_revision: Rc::clone(&self.fill_revision),
             snapshot: self.snapshot(),
         }
     }
@@ -1993,25 +1964,23 @@ impl ImageDraft {
         &mut self,
         savepoint: DraftSavepoint,
     ) -> Result<DraftTxn<'_>, DraftStateError> {
-        if !Rc::ptr_eq(&self.identity_cell, &savepoint.identity) {
+        if !Rc::ptr_eq(&self.epoch.draft, &savepoint.epoch.draft) {
             return Err(DraftStateError::ForeignDraft);
         }
         if !Rc::ptr_eq(&self.epoch, &savepoint.epoch) {
             return Err(DraftStateError::StaleEpoch);
         }
-        if !Rc::ptr_eq(&self.fill_revision, &savepoint.fill_revision) {
-            return Err(DraftStateError::IncoherentToken);
-        }
         if self.snapshot() != savepoint.snapshot {
             return Err(DraftStateError::IncoherentToken);
         }
-        self.epoch = Rc::new(TransactionEpoch);
+        self.epoch = Rc::new(TransactionEpoch {
+            draft: Rc::clone(&self.epoch.draft),
+        });
         let ledger = self.ledger;
         Ok(DraftTxn {
             journal: DraftJournal {
                 at: savepoint.snapshot,
                 ledger,
-                fill_revision: Some(Rc::clone(&self.fill_revision)),
                 fills: Vec::new(),
             },
             draft: self,
@@ -2041,9 +2010,7 @@ impl ImageDraft {
             functions,
             exports,
             test_entries,
-            identity_cell: _,
             epoch: _,
-            fill_revision: _,
             ledger: _,
         } = self;
         DraftSnapshot {
@@ -2345,8 +2312,9 @@ mod ledger_corruption_tests {
     /// transaction surface.
     fn consts_crossed_owner() -> ImageDraft {
         let mut owner = ImageDraft::new();
+        let savepoint = owner.savepoint();
         let mut txn = owner
-            .begin_transaction(owner.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         for value in 0..=(crate::bounds::MAX_CONSTS as i64) {
             txn.intern_int(value).expect("a within-domain mint");
@@ -2568,8 +2536,9 @@ mod site_binding_tests {
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
         // Build the rows inside an armed transaction, so dropping it discards them.
         let handle = {
+            let savepoint = draft.savepoint();
             let mut proof = draft
-                .begin_transaction(draft.savepoint())
+                .begin_transaction(savepoint)
                 .expect("a fresh savepoint admits");
             let name = proof.intern_string("r").expect("a within-domain mint");
             let value = proof

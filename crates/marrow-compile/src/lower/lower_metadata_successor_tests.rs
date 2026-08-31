@@ -319,8 +319,9 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, DraftTxn<'static>, usi
         declaration,
     )];
     let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
-        .begin_transaction(draft_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(
@@ -343,8 +344,9 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, DraftTxn<'static>, usi
 
 fn built_reserved_registry() -> (TypeRegistry, DraftTxn<'static>) {
     let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
-        .begin_transaction(draft_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(

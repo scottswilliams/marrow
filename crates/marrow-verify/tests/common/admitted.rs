@@ -6,7 +6,8 @@
 
 /// The armed transaction a fresh savepoint admits over `owner`.
 pub fn admitted(owner: &mut marrow_image::ImageDraft) -> marrow_image::DraftTxn<'_> {
+    let savepoint = owner.savepoint();
     owner
-        .begin_transaction(owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits")
 }

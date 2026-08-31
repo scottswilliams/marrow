@@ -45,8 +45,9 @@ enum PostCommitFault {
 
 fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedImage {
     let mut draft_owner = ImageDraft::new();
+    let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
-        .begin_transaction(draft_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let record_name = draft
         .intern_string("Counter")

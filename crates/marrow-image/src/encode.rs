@@ -778,8 +778,9 @@ mod counted_equals_emitted {
         let record = draft
             .reserve_record_type(record_name)
             .expect("a within-domain mint");
+        let savepoint = draft.savepoint();
         let mut fills = draft
-            .begin_transaction(draft.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         fills
             .set_record_fields(
@@ -802,8 +803,9 @@ mod counted_equals_emitted {
         let choice = draft
             .reserve_enum_type(enum_name)
             .expect("a within-domain mint");
+        let savepoint = draft.savepoint();
         let mut fills = draft
-            .begin_transaction(draft.savepoint())
+            .begin_transaction(savepoint)
             .expect("a fresh savepoint admits");
         fills
             .set_enum_variants(

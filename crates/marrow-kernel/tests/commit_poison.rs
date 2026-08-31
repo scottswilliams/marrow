@@ -76,8 +76,9 @@ enum VmWrite {
 
 fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     let mut draft_owner = ImageDraft::new();
+    let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
-        .begin_transaction(draft_owner.savepoint())
+        .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
     let record_name = draft
         .intern_string("Counter")
