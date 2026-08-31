@@ -1,7 +1,7 @@
-//! The transaction surface's state battery: savepoint identity, epoch, and fill-state
-//! authentication laws; the armed rollback's byte-exact total inverse; and the per-kind
-//! nonblocking N+1 ledger deltas observed through the public fence — commit retains the
-//! crossing, while rollback restores the exact pre-transaction verdict and bytes.
+//! The transaction surface's state battery: savepoint identity and epoch laws; the armed
+//! rollback's byte-exact total inverse; and the per-kind nonblocking N+1 ledger deltas
+//! observed through the public fence — commit retains the crossing, while rollback restores
+//! the exact pre-transaction verdict and bytes.
 
 use marrow_image::bounds::{
     MAX_COLLECTIONS, MAX_CONSTS, MAX_ENUMS, MAX_ROOTS, MAX_STRING_BYTES, MAX_STRINGS, MAX_TYPES,
