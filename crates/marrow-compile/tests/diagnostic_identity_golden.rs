@@ -658,3 +658,74 @@ fn the_index_admission_corpus_reaches_every_admission_rule() {
         );
     }
 }
+// ---------------------------------------------------------------------------
+// Corpus F — durable key-tuple width.
+// ---------------------------------------------------------------------------
+
+/// The two durable key tuples a program can declare, each one column past the fixed
+/// width: a keyed `branch` placement's tuple, and a `store` root's own.
+///
+/// The two are the same shape under the same limit, declared in two different places
+/// and reported with two different subjects. A corpus carrying only one of them would
+/// keep passing an owner that had collapsed the two subjects into whichever one it
+/// still reached, which is exactly the failure a shared renderer can introduce. The
+/// over-wide branch hangs off an admitted root so the branch refusal is reached at all,
+/// and the over-wide root is declared second so both rows are observable in one run.
+const KEY_WIDTH_MAIN: &str = r#"module main
+
+resource Slim {
+    required label: string
+
+    deep[a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int] {
+        required note: string
+    }
+}
+
+resource Plain {
+    required label: string
+}
+
+store ^branchy[id: int]: Slim
+
+store ^wide[k1: int, k2: int, k3: int, k4: int, k5: int, k6: int, k7: int, k8: int, k9: int]: Plain
+"#;
+
+/// The artifact this corpus reported before the two key tuples became one row table,
+/// captured from the pre-conversion tree and unchanged by it.
+const KEY_WIDTH_ARTIFACT: &str = "src/main.mw:15:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:15:7 check.durable_identity durable identity for root `branchy` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:15:7 check.durable_identity durable identity for product `Slim` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:15:7 check.durable_identity durable identity for key `branchy.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:15:7 check.durable_identity durable identity for field `Slim.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:15:7 check.durable_identity durable identity for root `Slim.deep` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:6:1 check.resource_limit a branch key tuple has 9 columns; the fixed limit is 8\n\
+     src/main.mw:15:7 check.durable_identity durable identity for field `Slim.deep.note` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:17:7 check.resource_limit a store root key tuple has 9 columns; the fixed limit is 8";
+
+#[test]
+fn the_key_width_corpus_reports_its_exact_ordered_artifact() {
+    let project = project_capture::project_with_ids(&[("src/main.mw", KEY_WIDTH_MAIN)], None);
+    let diagnostics = refused(&project);
+
+    assert_eq!(
+        artifact(&diagnostics),
+        KEY_WIDTH_ARTIFACT,
+        "the key-width artifact moved",
+    );
+}
+
+/// Both key-tuple subjects are present, and both tuples really are one column past the
+/// fixed width — so the corpus cannot go vacuous by the limit moving underneath it.
+#[test]
+fn the_key_width_corpus_carries_both_tuple_subjects() {
+    assert_eq!(
+        bounds::MAX_KEY_COLUMNS + 1,
+        9,
+        "the corpus declares nine-column tuples because the fixed limit is eight",
+    );
+    assert!(
+        KEY_WIDTH_ARTIFACT.contains("a branch key tuple has 9 columns")
+            && KEY_WIDTH_ARTIFACT.contains("a store root key tuple has 9 columns"),
+        "the artifact must carry both key-tuple subjects",
+    );
+}

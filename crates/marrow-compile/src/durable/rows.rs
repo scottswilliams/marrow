@@ -9,8 +9,9 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use marrow_image::bounds;
 use marrow_project::FileIdentity;
-use marrow_syntax::{IndexDecl, ResourceDecl, SourceSpan, StoreDecl};
+use marrow_syntax::{IndexDecl, KeyParam, ResourceDecl, SourceSpan, StoreDecl, TypeExpr};
 
 use crate::analysis::FileRef;
 use crate::decl::{Binding, DeclarationIndexDrift};
@@ -88,6 +89,8 @@ pub(super) struct StoreRow<'a> {
     /// The root's managed indexes, taken from the declaration with the binding so the
     /// build reads no `index` syntax of its own.
     pub(super) indexes: IndexTable<'a>,
+    /// The root's identity key tuple, taken with the same reading.
+    pub(super) keys: KeyTable<'a>,
 }
 
 /// What a `store` declaration's written resource spelling binds to.
@@ -126,6 +129,13 @@ impl<'a> StoreRow<'a> {
             resource,
             binding,
             indexes: IndexTable::take(&store.indexes),
+            keys: KeyTable::take(
+                KeyOwner::Store {
+                    root: &store.root.root,
+                    span: store.root.span,
+                },
+                &store.root.keys,
+            ),
         })
     }
 
@@ -246,5 +256,107 @@ impl<'a> IndexTable<'a> {
         self.indexes
             .iter()
             .map(|row| (row, &self.args[row.args.clone()]))
+    }
+}
+/// Which declaration a durable key tuple belongs to: the anchor its columns hang
+/// under, the span its width cap reports at, and the subject that cap names.
+///
+/// A root's key tuple and a branch's key tuple are the same shape enforced by the
+/// same rules and anchored the same way, declared in two different places. Carrying
+/// the difference as a closed owner is what lets the rules and the anchor join exist
+/// once: the two sites used to spell the join `format!("{path}.{name}")` twice, in
+/// two functions, and a divergence between them re-anchors committed durable identity
+/// with no diagnostic anywhere.
+pub(super) enum KeyOwner<'a> {
+    /// A `store` root's key tuple, anchored at the root placement name.
+    Store { root: &'a str, span: SourceSpan },
+    /// A keyed `branch` placement's key tuple, anchored at the branch's member path.
+    Member { path: &'a str, span: SourceSpan },
+}
+
+impl<'a> KeyOwner<'a> {
+    /// The path every column of this tuple anchors under.
+    fn anchor(&self) -> &'a str {
+        match self {
+            Self::Store { root, .. } => root,
+            Self::Member { path, .. } => path,
+        }
+    }
+
+    /// What the width-cap refusal calls this tuple.
+    fn subject(&self) -> &'static str {
+        match self {
+            Self::Store { .. } => "a store root key tuple",
+            Self::Member { .. } => "a branch key tuple",
+        }
+    }
+
+    fn span(&self) -> SourceSpan {
+        match self {
+            Self::Store { span, .. } | Self::Member { span, .. } => *span,
+        }
+    }
+}
+
+/// One column of a durable key tuple: the name its ledger anchor ends with, and the
+/// declared type its scalar is resolved from.
+///
+/// The column's position in [`KeyTable::rows`] is its declaration order, which is the
+/// order the identity suffix law and the image key tuple both read.
+pub(super) struct KeyRow<'a> {
+    pub(super) name: &'a str,
+    pub(super) ty: &'a TypeExpr,
+}
+
+/// One declaration's durable key tuple, taken once from the declaration.
+pub(super) struct KeyTable<'a> {
+    owner: KeyOwner<'a>,
+    rows: Vec<KeyRow<'a>>,
+}
+
+impl<'a> KeyTable<'a> {
+    pub(super) fn take(owner: KeyOwner<'a>, keys: &'a [KeyParam]) -> Self {
+        let rows = keys
+            .iter()
+            .map(|key| KeyRow {
+                name: &key.name,
+                ty: &key.ty,
+            })
+            .collect();
+        Self { owner, rows }
+    }
+
+    pub(super) fn rows(&self) -> &[KeyRow<'a>] {
+        &self.rows
+    }
+
+    /// The span a refusal about this tuple as a whole reports at.
+    pub(super) fn span(&self) -> SourceSpan {
+        self.owner.span()
+    }
+
+    /// The width-cap refusal this tuple earns, or `None` when it fits.
+    ///
+    /// The cap is the image's fixed key-tuple width and applies to a root and a branch
+    /// alike, so it is enforced here rather than once per declaring site.
+    pub(super) fn over_wide(&self) -> Option<String> {
+        (self.rows.len() > bounds::MAX_KEY_COLUMNS).then(|| {
+            format!(
+                "{} has {} columns; the fixed limit is {}",
+                self.owner.subject(),
+                self.rows.len(),
+                bounds::MAX_KEY_COLUMNS
+            )
+        })
+    }
+
+    /// The ledger anchor path of one column: the owner's anchor, then the column name.
+    ///
+    /// This is the only place a key column's anchor is assembled. The anchors it
+    /// returns are the keys of the machine-written `.marrow/ids` ledger, so a second
+    /// spelling of this join would silently re-anchor durable identity — which is why
+    /// the join has one owner and `durable_identity_stability.rs` freezes its output.
+    pub(super) fn identity_path(&self, row: &KeyRow<'a>) -> String {
+        format!("{}.{}", self.owner.anchor(), row.name)
     }
 }

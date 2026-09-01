@@ -38,7 +38,7 @@ use marrow_image::{
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
-    FieldDecl, GroupDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr,
+    FieldDecl, GroupDecl, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr,
 };
 
 use crate::analysis::FileRef;
@@ -59,8 +59,8 @@ mod rows;
 mod staging;
 
 use rows::{
-    IndexArgReach, IndexArgRow, IndexRow, IndexTable, ProductKey, ResourceDirectory,
-    StoreResourceBinding, StoreRow,
+    IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyOwner, KeyTable, ProductKey,
+    ResourceDirectory, StoreResourceBinding, StoreRow,
 };
 use staging::StagedStoreTxn;
 
@@ -1165,23 +1165,13 @@ fn build_one(
             DurableRefusal::Admission { row },
         )))
     };
-    if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
-        return refuse(
-            diagnostics,
-            resource_limit(
-                file,
-                store.root.span,
-                format!(
-                    "a store root key tuple has {} columns; the fixed limit is {}",
-                    store.root.keys.len(),
-                    bounds::MAX_KEY_COLUMNS
-                ),
-            ),
-        );
+    let keys = &row.keys;
+    if let Some(message) = keys.over_wide() {
+        return refuse(diagnostics, resource_limit(file, keys.span(), message));
     }
     // Resolve each root key column's scalar in declared tuple order. A singleton
     // root has no columns.
-    let key_scalars = match resolve_key_scalars(file, store.root.span, &store.root.keys, records) {
+    let key_scalars = match resolve_key_scalars(file, keys, records) {
         Ok(scalars) => scalars,
         Err(row) => return refuse(diagnostics, *row),
     };
@@ -1236,16 +1226,10 @@ fn build_one(
     let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
     resolver.name_step(placement, PathSigil::Root, &store.root.root);
     let product = resolver.resolve(IdentityKind::Product, &store.resource);
-    let key_ids: Vec<LedgerIdBytes> = store
-        .root
-        .keys
+    let key_ids: Vec<LedgerIdBytes> = keys
+        .rows()
         .iter()
-        .map(|key_param| {
-            resolver.resolve(
-                IdentityKind::Key,
-                &format!("{}.{}", store.root.root, key_param.name),
-            )
-        })
+        .map(|key| resolver.resolve(IdentityKind::Key, &keys.identity_path(key)))
         .collect();
 
     // The resource's member tree, in canonical order: its top-level fields
@@ -1293,13 +1277,12 @@ fn build_one(
     // and value shape is read from it. An index admission violation is a precise
     // `check.type` diagnostic that also marks the graph incomplete, so a rejected
     // index discards the whole durable graph rather than emitting a partial one.
-    let key_entries: Vec<(String, LedgerIdBytes, ScalarType)> = store
-        .root
-        .keys
+    let key_entries: Vec<(String, LedgerIdBytes, ScalarType)> = keys
+        .rows()
         .iter()
         .zip(&key_ids)
         .zip(&key_scalars)
-        .map(|((key_param, id), scalar)| (key_param.name.clone(), *id, *scalar))
+        .map(|((key, id), scalar)| (key.name.to_string(), *id, *scalar))
         .collect();
     // The Product's members, however they were reached: the command vector this store
     // just built, or the declaration the draft already holds. Both place the resource's
@@ -1524,13 +1507,13 @@ fn build_one(
 /// per refused store, never per admitted column.
 fn resolve_key_scalars(
     file: &FileIdentity,
-    span: SourceSpan,
-    keys: &[KeyParam],
+    keys: &KeyTable<'_>,
     records: &TypeRegistry,
 ) -> Result<Vec<ScalarType>, Box<SourceDiagnostic>> {
-    let mut scalars = Vec::with_capacity(keys.len());
-    for key_param in keys {
-        let Some(key) = scalar_of(&records.expand(&key_param.ty)) else {
+    let span = keys.span();
+    let mut scalars = Vec::with_capacity(keys.rows().len());
+    for column in keys.rows() {
+        let Some(key) = scalar_of(&records.expand(column.ty)) else {
             return Err(Box::new(unsupported(file, span, "this key type")));
         };
         // The closed orderable durable-key scalar set (frozen at C04): int, string,
@@ -2082,31 +2065,30 @@ impl<'a> IdentityResolver<'a> {
         group: &GroupDecl,
         path: &str,
     ) -> Vec<KeyColumn> {
-        if group.keys.len() > bounds::MAX_KEY_COLUMNS {
-            self.reject_resource_limit(
-                group.span,
-                format!(
-                    "a branch key tuple has {} columns; the fixed limit is {}",
-                    group.keys.len(),
-                    bounds::MAX_KEY_COLUMNS
-                ),
-            );
+        let keys = KeyTable::take(
+            KeyOwner::Member {
+                path,
+                span: group.span,
+            },
+            &group.keys,
+        );
+        if let Some(message) = keys.over_wide() {
+            self.reject_resource_limit(keys.span(), message);
             return Vec::new();
         }
-        let scalars = match resolve_key_scalars(self.file, group.span, &group.keys, records) {
+        let scalars = match resolve_key_scalars(self.file, &keys, records) {
             Ok(scalars) => scalars,
             Err(row) => {
                 self.refuse(DurableRefusal::Admission { row: *row });
                 return Vec::new();
             }
         };
-        group
-            .keys
+        keys.rows()
             .iter()
             .zip(scalars)
-            .map(|(key_param, scalar)| KeyColumn {
+            .map(|(key, scalar)| KeyColumn {
                 scalar: scalar.image(),
-                id: self.resolve(IdentityKind::Key, &format!("{path}.{}", key_param.name)),
+                id: self.resolve(IdentityKind::Key, &keys.identity_path(key)),
             })
             .collect()
     }

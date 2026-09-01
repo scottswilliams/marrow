@@ -3061,3 +3061,41 @@ fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
         );
     }
 }
+
+/// A durable key column's ledger anchor is assembled in exactly one place.
+///
+/// A store root's key tuple and a branch placement's key tuple are the same shape under
+/// the same rules, and each used to spell its own `format!("{path}.{name}")` join — one
+/// in `build_one`, one in `build_branch_keys`. Those anchors are the keys of the
+/// machine-written `.marrow/ids` ledger: a divergence between the two spellings does not
+/// report anything, it silently re-anchors committed durable identity, and
+/// `durable_identity_stability.rs` exists because that is invisible to every diagnostic
+/// gate. One owner for the join is what makes the two spellings unable to diverge.
+///
+/// The counts are exact rather than "at most", because a reintroduced inline join would
+/// leave `identity_path` behind at one site and pass a mere absence check.
+#[test]
+fn a_durable_key_anchor_is_joined_in_one_place() {
+    let builder = production_code_of("durable.rs");
+    for absent in ["KeyParam", "key_param"] {
+        assert!(
+            !builder.contains(absent),
+            "`{absent}` names key syntax; the durable builder reads `KeyTable` rows",
+        );
+    }
+    assert_eq!(
+        builder.matches("IdentityKind::Key,").count(),
+        2,
+        "exactly two sites mint a key anchor: the store root's tuple and a branch's",
+    );
+    assert_eq!(
+        builder.matches("identity_path(").count(),
+        2,
+        "both key-anchor sites must read the one join, and nothing else may",
+    );
+    let rows = production_code_of("durable/rows.rs");
+    assert!(
+        rows.contains("fn identity_path(") && rows.contains("fn over_wide("),
+        "the key row table must own the anchor join and the width cap",
+    );
+}
