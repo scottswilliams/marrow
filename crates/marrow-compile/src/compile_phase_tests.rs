@@ -758,3 +758,128 @@ fn a_hostile_image_draft_retains_the_direct_too_many_locals_error() {
         Err(marrow_image::ImageBuildError::TooManyLocals)
     ));
 }
+
+/// The staged store producer's checked-refusal arm restores the image draft after
+/// real staged work.
+///
+/// A store refused by managed-index admission is refused *after* its product graph
+/// was built against the armed image transaction: building `Note`'s graph appends
+/// the `sub` branch's entry record type to the draft before the completeness gate
+/// runs, so the `StoreBuild::Refused` settlement is reached with a real staged draft
+/// mutation behind it, not on the early admission exits that stage nothing. The
+/// rollback's observable effect is byte-exact: the encoded image of a build whose
+/// last store staged and then refused equals the encoded image of a build that
+/// never declared that store, while the refusal's own diagnostic still settles.
+/// A regression that committed — or only partially restored — the refused store's
+/// staged rows moves the encoded bytes and fails here.
+#[test]
+fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
+    const DECLARATIONS: &str = "module main\n\n\
+        resource Book {\n    required title: string\n}\n\n\
+        resource Note {\n    required text: string\n    tag: string\n\n    \
+        sub[k: int] {\n        v: int\n    }\n}\n\n\
+        store ^books[id: int]: Book\n";
+    // The refused store: its product graph for `Note` is built and staged first, and
+    // only then does the index whose name repeats the stored field `tag` refuse it.
+    const REFUSED_STORE: &str = "\nstore ^notes[id: int]: Note {\n    index tag[tag] unique\n}\n";
+    // Complete for every anchor either build resolves, so index admission is the one
+    // refusal in play. A refused index resolves no identity of its own.
+    const ANCHORS: &[&str] = &[
+        "application .",
+        "root books",
+        "product Book",
+        "key books.id",
+        "field Book.title",
+        "root notes",
+        "product Note",
+        "key notes.id",
+        "field Note.text",
+        "field Note.tag",
+        "root Note.sub",
+        "key Note.sub.k",
+        "field Note.sub.v",
+    ];
+
+    let ledger = {
+        let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+        for (seed, anchor) in ANCHORS.iter().enumerate() {
+            use std::fmt::Write as _;
+            let _ = writeln!(text, "id {anchor} {:032x}", seed as u128 + 1);
+        }
+        text.push_str("high-water 0\nend\n");
+        marrow_project::IdentityLedger::parse(text.as_bytes()).expect("the ledger parses")
+    };
+
+    let build = |source: &str| {
+        let parsed = marrow_syntax::parse_source(source);
+        assert!(!parsed.has_errors(), "the corpus parses");
+        let file = crate::test_file_identity("src/main.mw");
+        let at = crate::analysis::FileRef::admitted(0);
+        let mut resources = Vec::new();
+        let mut stores = Vec::new();
+        for declaration in &parsed.file.declarations {
+            match declaration {
+                marrow_syntax::Declaration::Resource(d) => resources.push((at, file.clone(), d)),
+                marrow_syntax::Declaration::Store(d) => stores.push((at, file.clone(), d)),
+                other => panic!("the corpus declares only resources and stores: {other:?}"),
+            }
+        }
+        let budget = crate::decl::DeclarationBudget::default();
+        let mut draft_owner = marrow_image::ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let mut diagnostics = DiagnosticCollector::new();
+        let records = crate::types::TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &resources,
+            &mut diagnostics,
+            budget.clone(),
+        )
+        .expect("the corpus registry stays within the ledger budget");
+        assert!(diagnostics.is_empty(), "the corpus types check clean");
+        draft.commit();
+        crate::durable::DurableRegistry::build(
+            &mut draft_owner,
+            &records,
+            &resources,
+            &stores,
+            Some(&ledger),
+            &mut diagnostics,
+            budget,
+        )
+        .expect("the durable build settles refusals as diagnostics, not errors");
+        let rows: Vec<String> = diagnostics
+            .finish()
+            .expect_complete()
+            .iter()
+            .map(|row| row.message().to_string())
+            .collect();
+        let bytes = draft_owner
+            .encode()
+            .expect("the corpus is inside every image bound")
+            .bytes;
+        (rows, bytes)
+    };
+
+    let (refused_rows, refused_bytes) = build(&format!("{DECLARATIONS}{REFUSED_STORE}"));
+    let (control_rows, control_bytes) = build(DECLARATIONS);
+
+    assert_eq!(
+        refused_rows,
+        vec![
+            "index `tag` collides with an identity key, a stored field, or another index of \
+             `notes`"
+                .to_string()
+        ],
+        "the refused store must be refused by index admission after its graph staged",
+    );
+    assert!(control_rows.is_empty(), "the control corpus builds clean");
+    assert_eq!(
+        refused_bytes, control_bytes,
+        "a store refused after staging must leave the image byte-identical to a build \
+         that never declared it",
+    );
+}
