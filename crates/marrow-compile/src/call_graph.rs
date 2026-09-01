@@ -101,7 +101,6 @@ pub(crate) fn analyze(callees: &[&[u16]]) -> CallGraphAnalysis {
     let mut index_of = vec![UNVISITED; count];
     let mut lowlink = vec![0usize; count];
     let mut on_stack = vec![false; count];
-    let mut has_self_edge = vec![false; count];
     let mut component_stack = Vec::with_capacity(count);
     let mut reverse_topological = Vec::with_capacity(count);
     let mut on_cycle = vec![false; count];
@@ -134,7 +133,8 @@ pub(crate) fn analyze(callees: &[&[u16]]) -> CallGraphAnalysis {
                 bump_call_graph(|counts| counts.graph_edge_visits += 1);
 
                 if callee == vertex {
-                    has_self_edge[vertex] = true;
+                    has_cycle = true;
+                    on_cycle[vertex] = true;
                 }
                 if callee >= count {
                     continue;
@@ -171,11 +171,6 @@ pub(crate) fn analyze(callees: &[&[u16]]) -> CallGraphAnalysis {
                     for &member in component {
                         on_cycle[member] = true;
                     }
-                } else if let Some(&member) = component.first()
-                    && has_self_edge[member]
-                {
-                    has_cycle = true;
-                    on_cycle[member] = true;
                 }
             }
 

@@ -2541,8 +2541,8 @@ fn reject_transaction_ownership(
     // `mutates[f]` / `durable[f]`: `f` or a transitive callee stages a mutation / performs
     // any durable operation. The base case is a direct opcode; the inductive case unions
     // each callee's closure. Recursion is already rejected, so the monotone boolean
-    // one callee-before-caller pass over the acyclic graph. These mirror the
-    // verifier's mutate and non-empty-atom closures the lattice consumes.
+    // closures settle in one callee-before-caller pass over the acyclic graph. These
+    // mirror the verifier's mutate and non-empty-atom closures the lattice consumes.
     let visit_callees = |index: usize, visit: &mut dyn FnMut(usize)| {
         if let Some(Some(function)) = by_index.get(index) {
             for &callee in &function.callees {
