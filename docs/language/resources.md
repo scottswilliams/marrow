@@ -72,17 +72,17 @@ notes(noteId: string)
 entry is subject to its own required-member validation when that entry exists.
 No entry is required merely because the layer is declared.
 
-Several key columns are allowed:
+Several key components are allowed:
 
 ```text
 cells(row: int, column: int): decimal
 ```
 
 Keys must be supported ordered scalar types. Optional, decimal, resource,
-collection, and entry-identity types are not accepted as resource key columns.
+collection, and entry-identity types are not accepted as resource key components.
 Key parameter names share the member namespace at their layer.
 
-A one-column `int` leaf such as `tags(pos: int): string` has positional
+A one-component `int` leaf such as `tags(pos: int): string` has positional
 behavior: positive integer positions, 1-based append, and holes. Other key
 shapes are ordinary ordered keyed layers.
 
@@ -103,16 +103,16 @@ member and value graph and the identical branch entry records.
 
 When a resource backs a store, its group and branch declarations are part of the
 durable graph. Each group has its own durable identity (a `group` identity), and
-each branch has its own placement identity, one identity per key column, and one
+each branch has its own placement identity, one identity per key component, and one
 per stored field — anchored at a group- or branch-qualified path
 (`Book.details.pages`, `Book.notes.noteId`, `Book.notes.text`). Groups and
 branches contribute to the [durable-contract
 identity](durable-places.md#durable-identity) exactly as roots do.
 
-A `branch` keyed by one or more columns and holding only scalar fields is part of the
-executable durable graph, and such branches may nest within the fixed 16-level
-member-tree depth: their whole entries
-are created, read, replaced, and erased through the key-path address
+A `branch` keyed by one or more key components and holding only scalar fields is
+part of the executable durable graph, and such branches may nest within the fixed
+16-level member-tree depth: their whole entries are created, read, replaced, and
+erased through the key-path address
 `^root[key…].branch[bkey…]…` (see [Durable places](durable-places.md#keyed-branches)).
 A top-level field may also hold a widened value — a dense `struct`/record, a closed
 `enum`, or an `Option`/`Result` — stored inline in its field cell and read whole or by

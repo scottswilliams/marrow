@@ -158,11 +158,11 @@ without any raw seeder. A test either performs those durable operations directly
 or **drives** the application's exports, where each export call is its own
 invocation boundary — a mutating export commits to the attachment and a later
 reading export observes it, and a faulting export rolls back without disturbing a
-prior commit. A body may not combine the two styles (`check.test_driver_mix`). The flat single-column scalar root — entry and field
+prior commit. A body may not combine the two styles (`check.test_driver_mix`). The flat single-component scalar root — entry and field
 presence, field reads and coalesce, required and sparse field writes — executes
-this way, together with its single-level single-column-keyed scalar-field `branch`
+this way, together with its single-level single-component-keyed scalar-field `branch`
 placements, whose whole entries create, read, replace, and erase through the
-two-column address `^root(key).branch(bkey)` (a branch entry is a distinct node one
+two-component address `^root(key).branch(bkey)` (a branch entry is a distinct node one
 level down, so its create leaves the root descendant-only and a whole-entry root
 replace or erase preserves it). Bounded nested `for` traversal executes over a root
 entry family or a single-level branch family: `for k in <place> at most N [from f]`
@@ -205,10 +205,10 @@ owner only inside that process. Recovery quarantine is irreversible: dropping a
 known owner, reaching unknown, or losing the opaque recovery fact leaves the
 descriptor unclean and retains the advisory lock until process exit. No path
 replays application code. A store root is a
-singleton (no key), a single-column keyed root, or a composite keyed tuple of up
-to eight ordered columns; each key column is a scalar in the closed orderable
-durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every
-root — and each of its key columns — is a distinct durable graph node with a
+singleton (no key), a single-component keyed root, or a composite keyed tuple of
+up to eight ordered components; each key component is a scalar in the closed
+orderable durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`).
+Every root — and each of its key components — is a distinct durable graph node with a
 complete entropy-minted identity in the committed machine-written `.marrow/ids`
 ledger. Storeless `marrow run` receives each compiler-owned missing anchor once
 per project, admits the whole bounded request before entropy, and publishes the
@@ -216,7 +216,7 @@ canonical successor; every other path requires complete identities. Tombstones
 are parsed and preserved, while the production retirement action remains
 future. The program's durable graph carries a stable 32-byte
 durable-contract identity computed over those ledger ids and the graph shape
-(including key-column order) — so an anchor move preserves durable identity (the
+(including key-component order) — so an anchor move preserves durable identity (the
 ledger-model property; a rename becomes an anchor move under the future apply
 action, while the additive-only `run` mint does not) — which the verifier
 independently recomputes from the image and rejects on mismatch. A project may
@@ -235,18 +235,18 @@ and executes ephemerally; provisioning a persistent store from it is refused, be
 the head identity map is a bijection over every root's node identities and one
 declaration under two roots presents each member identity twice. That refusal is the
 named hold on the physical layout for a shared declaration. The
-compiler fully lowers operations over a keyed root — single-column or a composite tuple
+compiler fully lowers operations over a keyed root — single-component or a composite tuple
 — whose top-level fields are each a scalar or a widened value (a dense `struct`/record, a
 closed `enum`, or an `Option`/`Result`), together with its root-level `group` members (of
 scalar or widened leaves, read/replaced/erased whole and by leaf) and its `branch`
-placements (with one or more key columns each) nested within the fixed 16-level
-member-tree depth; bounded traversal,
-however, iterates a single key column, so a `for` head over a composite-keyed layer parks. An entry identity `Id(^root)`
+placements (with one or more key components each) nested within the fixed
+16-level member-tree depth; bounded traversal, however, iterates a single key
+component, so a `for` head over a composite-keyed layer parks. An entry identity `Id(^root)`
 is a first-class runtime value — constructed with `Id(^root, keys)`, compared, passed and
 returned, and dereferenced with `^root[id]` — but is not a durable field value. A managed
 index read executes: a non-unique index is scanned with a bounded `for` head binding the
 source `Id(^root)`, and a unique index is an exact `^root.index[keys]` lookup yielding the
-optional `Id(^root)`; the scan requires a single-column-identity root and binds the
+optional `Id(^root)`; the scan requires a single-component-identity root and binds the
 trailing identity component. Singleton and nominal-field roots, and a group nested in a
 branch or in another group, declare and verify their identity but their operations are not
 yet lowered, and a collection in a field is rejected. The admitted subset is narrow and grows
