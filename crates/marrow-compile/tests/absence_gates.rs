@@ -2935,3 +2935,40 @@ fn the_coordinate_ownership_gate_reads_code_and_not_prose() {
         "the projection must blank doc comments; a phrase from this module's prose survived",
     );
 }
+
+/// The durable build reaches a resource only through its `StoreRow` binding, so the
+/// second, declaration-side lookup by name and the invariant its disagreement raised
+/// are deleted rather than left unreachable.
+///
+/// The invariant existed because two owners answered "which resource is this store
+/// over" — the type registry by name, and the declaration list by name again — and
+/// nothing stopped them disagreeing. Carrying `Accepted(ResourceDeclId)` on the row
+/// makes the disagreement unrepresentable: a store reaches a record only through a row
+/// that already holds the declaration it was built from. Leaving the variant in place
+/// would let a later edit reintroduce the second lookup and have somewhere to report
+/// it, which is how a structural fix decays back into a runtime check.
+///
+/// The scan covers this crate's whole source, test modules included, so the two test
+/// mappers that named the variant cannot keep it alive either.
+#[test]
+fn the_durable_resource_disagreement_has_no_invariant_to_report() {
+    for deleted in [
+        "DurableResourceMissing",
+        "records.by_name(&store.resource)",
+        "decl.name == store.resource",
+    ] {
+        let found = occurrences(deleted);
+        assert!(
+            found.is_empty(),
+            "`{deleted}` is replaced by the typed `StoreRow` binding and must not \
+             exist: {found:?}",
+        );
+    }
+    // The live subject: the binding that replaced them is present, so the absences
+    // above are the absences of a displaced shape and not of a crate that stopped
+    // building durable graphs.
+    assert!(
+        !production_occurrences("StoreResourceBinding::Accepted").is_empty(),
+        "the typed store binding must be the live subject of this gate",
+    );
+}

@@ -5,12 +5,10 @@
 //! its diagnostic owner while another store transaction is live.
 
 use marrow_image::{AdmittedGraphInputPlan, DraftTxn, ImageDraft};
-use marrow_project::FileIdentity;
-use marrow_syntax::ResourceDecl;
 
 use super::{
-    AdmittedDraft, DeclarationSite, DurableTypeMetadata, FileRef, GenericInvariant,
-    IdentityBuildState, StoreBuild, StoreOccurrence, build_one,
+    AdmittedDraft, DeclarationSite, DurableTypeMetadata, GenericInvariant, IdentityBuildState,
+    ResourceDirectory, StoreBuild, StoreOccurrence, build_one,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector};
 
@@ -34,7 +32,7 @@ impl<'d> StagedStoreTxn<'d> {
         self,
         plan: &AdmittedGraphInputPlan,
         type_metadata: &mut DurableTypeMetadata<'_, '_>,
-        resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+        directory: &ResourceDirectory<'_>,
         declared: DeclarationSite<'_>,
         store: StoreOccurrence<'_>,
         identity_build: &mut IdentityBuildState<'_, '_>,
@@ -49,7 +47,7 @@ impl<'d> StagedStoreTxn<'d> {
                 plan,
             },
             type_metadata,
-            resources,
+            directory,
             declared,
             store,
             identity_build,

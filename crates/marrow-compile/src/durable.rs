@@ -709,7 +709,14 @@ impl DurableRegistry {
         // so no root emits a site under a policy a later store would change. A Product's
         // multiplicity is a property of the whole declaration set, not of the store being
         // built, and a per-store decision would give the roots of one Product two policies.
-        let census = ProductOccurrenceCensus::take(stores);
+        // Resolve every store's resource spelling once, against both of a resource's
+        // owners at the same site, before either the census or the first build reads it.
+        let directory = ResourceDirectory::take(resources, records);
+        let rows = stores
+            .iter()
+            .map(|(_, _, store)| StoreRow::resolve(&directory, records, store))
+            .collect::<Result<Vec<_>, _>>()?;
+        let census = ProductOccurrenceCensus::take(stores, &rows);
         // The census is the admission owner for durable graph input: it is the one place
         // that knows the whole declaration set before any of it reaches the draft, so it
         // is where the construction budget is frozen.
@@ -728,7 +735,7 @@ impl DurableRegistry {
                 ledger,
                 reported_gaps: &mut reported_identity_gaps,
             };
-            for (at, file, store) in stores {
+            for ((at, file, store), row) in stores.iter().zip(&rows) {
                 let declared = DeclarationSite {
                     name: &store.root.root,
                     file,
@@ -764,11 +771,12 @@ impl DurableRegistry {
                 let (built, released) = staged.build_one(
                     &plan,
                     &mut type_metadata,
-                    resources,
+                    &directory,
                     declared,
                     StoreOccurrence {
                         decl: store,
-                        multiplicity: census.multiplicity(&store.resource),
+                        row,
+                        multiplicity: census.multiplicity(row.product_key()),
                     },
                     &mut identity_build,
                 )?;
@@ -820,11 +828,11 @@ impl DurableRegistry {
                         stores.first_refused.get_or_insert(store.root.root.clone());
                     }
                 }
-                if declare_branch_paths
-                    && let Some((_, _, decl)) =
-                        resources.iter().find(|(_, _, d)| d.name == store.resource)
-                {
-                    registry.record_declared_branch_paths(&store.resource, &decl.members);
+                if declare_branch_paths && let StoreResourceBinding::Accepted(bound) = row.binding {
+                    registry.record_declared_branch_paths(
+                        &store.resource,
+                        &directory.row(bound).decl.members,
+                    );
                 }
                 if let Some(at) = declare_branches {
                     let branches = std::mem::take(&mut registry.roots[at].branches);
@@ -1028,8 +1036,8 @@ enum ProductOccurrenceMultiplicity {
 /// So for every image that is produced, this census is the accepted root/Product census,
 /// and a Product's multiplicity is decided once, before its first occurrence emits a site.
 struct ProductOccurrenceCensus<'stores> {
-    /// The resources named by more than one admissible store declaration.
-    repeated: BTreeSet<&'stores str>,
+    /// The Products named by more than one admissible store declaration.
+    repeated: BTreeSet<ProductKey<'stores>>,
     /// Distinct resources named by an admissible store declaration: the Product
     /// declarations this compile can admit.
     products: usize,
@@ -1042,22 +1050,24 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
     /// exactly the repeated placement names [`DurableRegistry::build`] skips: a repeated
     /// root name is rejected before it is built, so it is not an occurrence of anything.
     ///
-    /// Keying on the resource spelling is safe rather than a second identity classifier:
-    /// resources resolve project-globally, so one spelling is one resource, and the Product
-    /// ledger identity a store's declaration carries is minted from that same spelling. The
-    /// census therefore partitions declarations exactly as the Product identity does. If
-    /// resources ever resolve per-module or a Product identity is minted from anything else,
-    /// this must key on the resolved identity instead.
-    fn take(stores: &'stores [(FileRef, FileIdentity, &StoreDecl)]) -> Self {
+    /// Each declaration is counted under its [`ProductKey`] — the resolved resource
+    /// declaration it binds, or its written spelling when it binds none — so the census
+    /// partitions declarations exactly as the Product identity does without treating the
+    /// source text as an identity classifier.
+    fn take(
+        stores: &'stores [(FileRef, FileIdentity, &StoreDecl)],
+        rows: &[StoreRow<'stores>],
+    ) -> Self {
         let mut declared: BTreeSet<&str> = BTreeSet::new();
-        let mut seen_once: BTreeSet<&str> = BTreeSet::new();
-        let mut repeated: BTreeSet<&str> = BTreeSet::new();
-        for (_, _, store) in stores {
+        let mut seen_once: BTreeSet<ProductKey<'stores>> = BTreeSet::new();
+        let mut repeated: BTreeSet<ProductKey<'stores>> = BTreeSet::new();
+        for ((_, _, store), row) in stores.iter().zip(rows) {
             if !declared.insert(store.root.root.as_str()) {
                 continue;
             }
-            if !seen_once.insert(store.resource.as_str()) {
-                repeated.insert(store.resource.as_str());
+            let key = row.product_key();
+            if !seen_once.insert(key) {
+                repeated.insert(key);
             }
         }
         Self {
@@ -1086,8 +1096,8 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
         )
     }
 
-    fn multiplicity(&self, resource: &str) -> ProductOccurrenceMultiplicity {
-        if self.repeated.contains(resource) {
+    fn multiplicity(&self, product: ProductKey<'stores>) -> ProductOccurrenceMultiplicity {
+        if self.repeated.contains(&product) {
             ProductOccurrenceMultiplicity::Shared
         } else {
             ProductOccurrenceMultiplicity::Unique
@@ -1100,7 +1110,141 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
 /// how many occurrences that Product has is decided before any of them is built.
 struct StoreOccurrence<'store> {
     decl: &'store StoreDecl,
+    /// This declaration's resolved resource binding, decided before any store is built.
+    row: &'store StoreRow<'store>,
     multiplicity: ProductOccurrenceMultiplicity,
+}
+
+/// A typed handle to one admitted `resource` declaration, valid only in the
+/// [`ResourceDirectory`] that minted it.
+///
+/// A row index rather than a narrowed ordinal: it addresses this compile's
+/// declaration list and never reaches the wire.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ResourceDeclId(usize);
+
+/// One `resource` declaration as the durable builder reads it: the declaration the
+/// parser wrote, and the record the type registry admitted for it.
+struct ResourceRow<'a> {
+    decl: &'a ResourceDecl,
+    record: &'a RecordInfo,
+}
+
+/// Every `resource` declaration the type registry admitted, addressed by
+/// [`ResourceDeclId`] and looked up by written spelling.
+///
+/// This is the one join between a resource's two owners — the declaration the parser
+/// wrote and the record the type registry admitted — and it is performed once, before
+/// any store is built. Downstream a store reaches a record only *through* a row that
+/// already holds the declaration it was built from, so the two owners disagreeing
+/// about one name is unrepresentable rather than reported: that is what retires the
+/// invariant a second, declaration-side lookup by name used to raise.
+struct ResourceDirectory<'a> {
+    rows: Vec<ResourceRow<'a>>,
+    by_spelling: BTreeMap<&'a str, ResourceDeclId>,
+}
+
+impl<'a> ResourceDirectory<'a> {
+    fn take(
+        resources: &[(FileRef, FileIdentity, &'a ResourceDecl)],
+        records: &'a TypeRegistry,
+    ) -> Self {
+        let mut rows = Vec::new();
+        let mut by_spelling = BTreeMap::new();
+        for (_, _, decl) in resources {
+            let Some(record) = records.by_name(&decl.name) else {
+                continue;
+            };
+            let id = ResourceDeclId(rows.len());
+            rows.push(ResourceRow { decl, record });
+            // A repeated resource name is refused by the declare pass, which keeps the
+            // first declaration; answering the spelling with the first row is the same
+            // choice, spelled once.
+            by_spelling.entry(decl.name.as_str()).or_insert(id);
+        }
+        Self { rows, by_spelling }
+    }
+
+    fn lookup(&self, spelling: &str) -> Option<ResourceDeclId> {
+        self.by_spelling.get(spelling).copied()
+    }
+
+    /// The row `id` addresses. `id` is minted only by [`Self::take`], from a length
+    /// taken immediately before the matching push, so it addresses a row of this
+    /// directory by construction.
+    fn row(&self, id: ResourceDeclId) -> &ResourceRow<'a> {
+        &self.rows[id.0]
+    }
+}
+
+/// One `store` declaration's resource binding, resolved before any store is built.
+///
+/// The row carries the written spelling beside the binding because every diagnostic
+/// the binding produces renders that spelling: a row that held only the resolution
+/// would send its consumer back to the declaration for the half it reports.
+struct StoreRow<'a> {
+    resource: &'a str,
+    binding: StoreResourceBinding,
+}
+
+/// What a `store` declaration's written resource spelling binds to.
+enum StoreResourceBinding {
+    /// The spelling names a `resource` declaration the type registry admitted.
+    Accepted(ResourceDeclId),
+    /// The spelling names a declaration this project refused, so the name is written
+    /// but binds no admitted shape.
+    ///
+    /// The refusal's own handle is deliberately not carried. The durable build reports
+    /// the refused and the absent case with the same row at the same span, so a handle
+    /// here would be a retained cause no consumer can read — and the moment a steer to
+    /// that cause is wanted, it is the `named_type` lookup below that mints it, one
+    /// line from where this arm is decided.
+    Refused,
+    /// No admitted or refused declaration answers the spelling as a resource — it
+    /// names nothing, or it names a declaration of another kind.
+    Absent,
+}
+
+impl<'a> StoreRow<'a> {
+    fn resolve(
+        directory: &ResourceDirectory<'a>,
+        records: &TypeRegistry,
+        store: &'a StoreDecl,
+    ) -> Result<Self, DeclarationIndexDrift> {
+        let resource = store.resource.as_str();
+        let binding = match directory.lookup(resource) {
+            Some(id) => StoreResourceBinding::Accepted(id),
+            None => match records.named_type(resource)? {
+                Binding::Refused(..) => StoreResourceBinding::Refused,
+                Binding::Accepted(_) | Binding::Absent => StoreResourceBinding::Absent,
+            },
+        };
+        Ok(Self { resource, binding })
+    }
+
+    /// The Product this store is an occurrence of, for the census.
+    fn product_key(&self) -> ProductKey<'a> {
+        match self.binding {
+            StoreResourceBinding::Accepted(id) => ProductKey::Bound(id),
+            StoreResourceBinding::Refused | StoreResourceBinding::Absent => {
+                ProductKey::Unbound(self.resource)
+            }
+        }
+    }
+}
+
+/// The Product a store declaration counts as an occurrence of.
+///
+/// A bound store counts under the resolved declaration it binds; an unbound one counts
+/// under its written spelling, because that is all an unbound store has. Keying the
+/// bound case on the resolved declaration is what the census's own retained note asked
+/// for: distinct spellings cannot name one declaration, so the partition is the
+/// Product's rather than the source text's, and it stays correct if resources ever stop
+/// resolving project-globally.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProductKey<'stores> {
+    Bound(ResourceDeclId),
+    Unbound(&'stores str),
 }
 
 /// The draft under construction and the budget its construction is admitted under.
@@ -1126,7 +1270,7 @@ struct AdmittedDraft<'draft, 'txn, 'plan> {
 fn build_one(
     admitted: AdmittedDraft<'_, '_, '_>,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    directory: &ResourceDirectory<'_>,
     declared: DeclarationSite<'_>,
     store: StoreOccurrence<'_>,
     identity_build: &mut IdentityBuildState<'_, '_>,
@@ -1135,6 +1279,7 @@ fn build_one(
     let AdmittedDraft { draft, plan } = admitted;
     let StoreOccurrence {
         decl: store,
+        row,
         multiplicity,
     } = store;
     let file = declared.file;
@@ -1167,27 +1312,27 @@ fn build_one(
         Ok(scalars) => scalars,
         Err(row) => return refuse(diagnostics, *row),
     };
-    let Some(record) = records.by_name(&store.resource) else {
-        return refuse(
-            diagnostics,
-            SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                file,
-                store.span,
-                format!("`{}` is not a resource in this project", store.resource),
-            ),
-        );
-    };
-    // The type registry admitted this resource by name, so the declaration it was
-    // built from is in the resource set. A miss is the two owners disagreeing about
-    // the same name, not a fact about the source: reporting it as a refusal would
-    // charge the user for a compiler inconsistency, and staying silent would drop the
-    // root with no cause at all.
-    let Some((_, _, resource)) = resources
-        .iter()
-        .find(|(_, _, decl)| decl.name == store.resource)
-    else {
-        return Err(GenericInvariant::DurableResourceMissing(record.type_id));
+    // The declaration and the record it was built from are read from one row, so a
+    // store cannot reach a record whose declaration the durable build does not hold.
+    // The refused and absent arms report the same row at the same span: a name that is
+    // written but binds no admitted resource is not a resource of this project either
+    // way, and steering the refused case to its own cause is a separate change.
+    let (resource, record) = match row.binding {
+        StoreResourceBinding::Accepted(bound) => {
+            let bound = directory.row(bound);
+            (bound.decl, bound.record)
+        }
+        StoreResourceBinding::Refused | StoreResourceBinding::Absent => {
+            return refuse(
+                diagnostics,
+                SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    file,
+                    store.span,
+                    format!("`{}` is not a resource in this project", row.resource),
+                ),
+            );
+        }
     };
 
     // Compiler-owned enum readiness is validated before the first ledger lookup.

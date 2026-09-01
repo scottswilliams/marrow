@@ -102,6 +102,15 @@ pub(crate) struct ScalingCounts {
     /// is exactly zero — a bound, not a ratio, which is why the gate asserts
     /// equality with zero rather than a shrinking count.
     pub(crate) value_cycle_declaration_scan_steps: usize,
+    /// Syntax-tree declarations examined by the durable store build while answering
+    /// "which resource declaration does this store bind".
+    ///
+    /// The build once searched the retained resource declaration list by name — in
+    /// store binding and again for a bound Product's branch paths — after the type
+    /// registry had already admitted the same name. The store's row binding owns
+    /// that resolution, so the build reads no declaration list at all and this is
+    /// exactly zero.
+    pub(crate) durable_declaration_scan_steps: usize,
     /// Template-body declaration entries a fill copied out of the template — one per
     /// declared field for a struct fill, and one per declared variant plus one per
     /// declared payload leaf for an enum fill.
@@ -127,6 +136,7 @@ thread_local! {
         template_proof_rows: 0,
         hover_spelling_chars: 0,
         value_cycle_declaration_scan_steps: 0,
+        durable_declaration_scan_steps: 0,
         template_body_clone_entries: 0,
     }) };
 }

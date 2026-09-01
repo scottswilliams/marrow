@@ -538,12 +538,6 @@ pub(crate) enum GenericInvariant {
         cache_index: usize,
         draft_index: usize,
     },
-    /// A `store` names a resource the type registry admitted, but the resource
-    /// declaration it was built from is not in the declaration set the durable build
-    /// walks. The two owners disagree about one name; it is not a fact about the
-    /// source, so it is neither reported against the declaration nor allowed to drop
-    /// the root silently.
-    DurableResourceMissing(marrow_image::TypeId),
     /// The image draft refused a Product declaration, a root occurrence, a site binding,
     /// a site request, or a function body's site operands. Every one of those is a
     /// producer-side invariant: the compiler names a place the draft itself published, so

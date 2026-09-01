@@ -352,3 +352,103 @@ fn the_value_cycle_corpus_spans_two_modules_and_stays_interleaved() {
         "the second module must keep an acyclic struct beside its cyclic one",
     );
 }
+// ---------------------------------------------------------------------------
+// Corpus D — store resource bindings.
+// ---------------------------------------------------------------------------
+
+/// Store declarations whose written resource spelling binds four different ways:
+/// an admitted resource, a name declared as another kind, a name declared nowhere,
+/// and a second admitted resource in another module.
+///
+/// The binding a `store` resolves is decided once, before any store is built, and
+/// the rows a reader sees depend on *which* stores refuse and in what order. A
+/// corpus with one bad store would keep passing an owner that refused every store,
+/// and a single-module corpus would keep passing one that resolved every spelling
+/// against the first module's declarations. The admitted stores interleaved between
+/// the refused ones are what make "refuse everything" observable, and they are also
+/// what carries the identity gaps that follow an admitted binding — so the artifact
+/// pins the refusals *and* their precedence against the rows an accepted binding
+/// goes on to produce.
+const STORE_BINDING_MAIN: &str = r#"module main
+
+use other
+
+struct NotAResource {
+    value: int
+}
+
+resource Kept {
+    required title: string
+}
+
+store ^kept[id: int]: Kept
+
+store ^shaped[id: int]: NotAResource
+
+store ^nowhere[id: int]: NeverDeclared
+
+pub fn driver(n: int): int {
+    return n
+}
+"#;
+
+const STORE_BINDING_OTHER: &str = r#"module other
+
+resource Elsewhere {
+    required label: string
+}
+
+store ^elsewhere[id: int]: Elsewhere
+
+store ^alsoNowhere[id: int]: StillNeverDeclared
+"#;
+
+/// The artifact this corpus reported before the store binding became a typed row,
+/// captured from the pre-conversion tree and unchanged by it.
+const STORE_BINDING_ARTIFACT: &str = "src/main.mw:13:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/main.mw:13:7 check.durable_identity durable identity for root `kept` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/main.mw:13:7 check.durable_identity durable identity for product `Kept` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/main.mw:13:7 check.durable_identity durable identity for key `kept.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/main.mw:13:7 check.durable_identity durable identity for field `Kept.title` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/main.mw:15:1 check.type `NotAResource` is not a resource in this project\n\
+src/main.mw:17:1 check.type `NeverDeclared` is not a resource in this project\n\
+src/other.mw:7:7 check.durable_identity durable identity for root `elsewhere` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/other.mw:7:7 check.durable_identity durable identity for product `Elsewhere` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/other.mw:7:7 check.durable_identity durable identity for key `elsewhere.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/other.mw:7:7 check.durable_identity durable identity for field `Elsewhere.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+src/other.mw:9:1 check.type `StillNeverDeclared` is not a resource in this project";
+
+#[test]
+fn the_store_binding_corpus_reports_its_exact_ordered_artifact() {
+    let project = project_capture::project_with_ids(
+        &[
+            ("src/main.mw", STORE_BINDING_MAIN),
+            ("src/other.mw", STORE_BINDING_OTHER),
+        ],
+        None,
+    );
+    let diagnostics = refused(&project);
+
+    assert_eq!(
+        artifact(&diagnostics),
+        STORE_BINDING_ARTIFACT,
+        "the store-binding artifact moved",
+    );
+}
+
+/// The corpus earns its name: every binding class is present, in two modules, with
+/// admitted stores interleaved between the refused ones.
+#[test]
+fn the_store_binding_corpus_covers_every_binding_class() {
+    assert!(
+        STORE_BINDING_MAIN.contains("resource Kept")
+            && STORE_BINDING_MAIN.contains("struct NotAResource")
+            && STORE_BINDING_MAIN.contains(": NeverDeclared"),
+        "the main module must keep an admitted, a wrong-kind, and an undeclared binding",
+    );
+    assert!(
+        STORE_BINDING_OTHER.contains("resource Elsewhere")
+            && STORE_BINDING_OTHER.contains(": StillNeverDeclared"),
+        "the second module must keep an admitted and an undeclared binding of its own",
+    );
+}
