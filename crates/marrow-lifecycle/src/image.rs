@@ -2,12 +2,16 @@
 //! active binding facts a binding-only rebind compares, and the head identity map that
 //! pins each durable node's ledger id to its store-local cell-key number.
 //!
-//! Every fact here is derived purely from a [`VerifiedImage`] — the sole source of a valid
+//! The persisted facts derive purely from a [`VerifiedImage`] — the sole source of a valid
 //! durable schema — so the store owner needs no dependency on the runner or the compiler.
+//! The head-map pin verification additionally consumes the kernel's own cell numbering of
+//! the projection an open installs, so the numbers it compares are the numbers that will
+//! address cells.
 
 use std::collections::HashMap;
 
 use marrow_image::{LedgerIdBytes, interface_fingerprint};
+use marrow_kernel::durable::{BranchNumbering, BranchSchema, StoreProjection, number_store};
 use marrow_verify::{
     CeilingDescriptor, SemanticNode, SemanticNodeKind, SemanticStep, VerifiedImage,
 };
@@ -24,8 +28,9 @@ const IMAGE_FORMAT_VERSION: u8 = 0;
 /// export-set interface fingerprint). The interface fingerprint is a runner-free digest over
 /// the image's export declaration identities (see [`interface_fingerprint`]) — blind to
 /// signatures, so a resignatured export is not a binding-fact delta today; the durable
-/// contract independently catches every durable-graph change. Authority is *not* a binding fact — the accepted deployment ceiling is a
-/// separately owned standing maximum recorded once at provision (see [`accepted_ceiling`])
+/// contract independently catches every durable-graph change. Authority is *not* a binding
+/// fact — the accepted deployment ceiling is a separately owned standing maximum recorded
+/// once at provision (see [`accepted_ceiling`])
 /// and enforced atom-granularly at attach, so a demand change within the ceiling is not a
 /// rebind delta and a demand change beyond it is a distinct, more actionable refusal.
 pub fn active_binding(image: &VerifiedImage) -> ActiveBinding {
@@ -68,11 +73,13 @@ pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
 /// The first point at which a persisted head-map pin and the numbering this toolchain
 /// derives disagree. The payload is typed so a tool asserts the disagreement itself, not a
 /// rendered sentence; the hex spelling exists only in [`std::fmt::Display`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PinDisagreement {
     /// A durable node the two bijections bind differently: the number the persisted pin
     /// binds its ledger id to (`None`: the pin does not carry the id), and the number the
-    /// derivation assigns (`None`: the derivation does not reach the id).
+    /// derivation assigns (`None`: the derivation does not reach the id). At least one side
+    /// is always `Some`: a disagreement is reported only for a node that one of the two
+    /// sides binds.
     Binding {
         ledger_id: LedgerIdBytes,
         persisted: Option<u32>,
@@ -82,14 +89,21 @@ pub enum PinDisagreement {
     /// numbers were used and retired where the derivation retires nothing. No production
     /// path writes such a head today, so it is refused rather than tolerated.
     HighWater { persisted: u32, derived: u32 },
+    /// A store-schema node the verified image does not name (or names ambiguously), so no
+    /// ledger identity can be paired with its cell number: the derivation cannot reproduce
+    /// a pin at all, and the store is refused rather than served under an unpaired
+    /// numbering. Carries the node's `^root.member` spelling.
+    Unnamed { place: String },
 }
 
 /// The head-map pin refusal: the store's persisted ledger-id ↔ cell-number bijection
-/// (FR01 §3) disagrees with the numbering this toolchain derives for the store's active
-/// durable contract. Fail-closed and recovery-shaped — serving the store would readdress
-/// durable cells (ledger id X's bytes read as id Y's value), so the attach refuses before
-/// any engine call and the store bytes are untouched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// (FR01 §3) disagrees with the (ledger id → cell number) binding this toolchain would
+/// actually serve the store under. Fail-closed and recovery-shaped — serving the store
+/// would readdress durable cells (ledger id X's bytes read as id Y's value), so the attach
+/// refuses before any engine call. The head, envelope, and engine data are unchanged by the
+/// refusal; only the lock's owner marker was rewritten by acquisition, so the next
+/// successful open runs the unclean-open audit.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadMapPinMismatch {
     /// The first disagreement, in the derived walk order (then any pin-only binding, then
     /// the high-water), so the rendered refusal is a deterministic function of the delta.
@@ -99,7 +113,9 @@ pub struct HeadMapPinMismatch {
 impl HeadMapPinMismatch {
     /// The stable dotted code a tool reports. The pin is part of the store's durable
     /// addressing, so a disagreement is recovery-shaped: whether the head bytes drifted or
-    /// the toolchain's walk did, the store's cells cannot be addressed under this pairing.
+    /// the toolchain's numbering did, the store's cells cannot be addressed under this
+    /// pairing. Whether toolchain-numbering drift deserves its own code family distinct
+    /// from `store.corruption` is a codes-registry question outside this crate.
     pub fn code(&self) -> &'static str {
         marrow_codes::Code::StoreCorruption.as_str()
     }
@@ -119,14 +135,13 @@ impl std::fmt::Display for HeadMapPinMismatch {
                 persisted,
                 derived,
             } => {
-                let mut hex = String::with_capacity(32);
+                write!(f, "ledger id ")?;
                 for byte in ledger_id.bytes() {
-                    use std::fmt::Write;
-                    let _ = write!(hex, "{byte:02x}");
+                    write!(f, "{byte:02x}")?;
                 }
                 match persisted {
-                    Some(number) => write!(f, "ledger id {hex} is pinned to number {number}")?,
-                    None => write!(f, "ledger id {hex} is not in the pin")?,
+                    Some(number) => write!(f, " is pinned to number {number}")?,
+                    None => write!(f, " is not in the pin")?,
                 }
                 match derived {
                     Some(number) => write!(f, " but derives number {number}")?,
@@ -138,78 +153,230 @@ impl std::fmt::Display for HeadMapPinMismatch {
                 "every binding agrees but the pinned high-water is {persisted} where the \
                  derivation's is {derived}"
             )?,
+            PinDisagreement::Unnamed { place } => write!(
+                f,
+                "the store node {place} cannot be paired with a durable identity from the \
+                 program image"
+            )?,
         }
         write!(
             f,
             ". The store is refused before any data access: serving it would address durable \
-             cells under the wrong identities. Restore the store from a trusted backup, or \
-             attach with the toolchain that provisioned it"
+             cells under the wrong identities. A toolchain matching the one that provisioned \
+             the store can still serve it; no repair or migration path exists today"
         )
     }
 }
 
-/// Verify the persisted head-map pin against the numbering this toolchain derives for
-/// `image`: every ledger id must carry exactly the number position the canonical split
-/// pre-order assigns (the same `number i = i`-th walked node mint [`head_map`] projects at
-/// provision), no binding may exist on only one side, and the high-water must be the walked
-/// node count. Total over any decoded [`HeadMap`] — the comparison consumes the persisted
-/// bijection and the derived walk, allocating one hash map over the persisted entries, and
-/// returns the first disagreement rather than panicking on any shape.
-///
-/// The attach actor runs this after the single-owner lock and before any engine call,
-/// exactly when the incoming durable contract equals the store's active contract — the one
-/// case where the persisted pin claims to describe the presented image's numbering.
-pub fn verify_head_map_pin(
+impl std::error::Error for HeadMapPinMismatch {}
+
+/// The derived head-map pin: the exact (ledger id → cell number) binding this toolchain
+/// would serve the store under. The cell numbers are the kernel's own — [`number_store`]
+/// over the exact projection this open installs — read in lockstep with the projection's
+/// schemas, the same lockstep the kernel's site resolver performs, so the numbers compared
+/// are the numbers that will address cells. Each schema node is then paired with its ledger
+/// identity by its path-qualified source name through the image's sealed↔semantic
+/// correspondence (`crate::authority::named_durable_nodes`). Pairing by name rather than by
+/// walk position is what makes the pin bite on derivation drift: kernel numbers are dense
+/// over any projection shape, so a positionally paired comparison would accept a projection
+/// that orders or shapes the store differently than the provisioning toolchain did, while
+/// the name pairing turns that drift into different (id, number) pairs and a refusal.
+pub(crate) struct DerivedPin {
+    /// One (ledger id, kernel cell number) per durable node, in the kernel's structural
+    /// walk order (each root: the root, its fields, its groups and their fields, its
+    /// branches recursively) — the deterministic order disagreements report in.
+    pairs: Vec<(LedgerIdBytes, u32)>,
+    /// One past the highest kernel number — the high-water a fresh pin over this numbering
+    /// records.
+    next_number: u32,
+}
+
+/// Derive the pin this toolchain would serve `image` under `projection` with, or the typed
+/// refusal when a store node cannot be paired with a durable identity. Pure over its
+/// inputs: no store access, one `number_store` call, one hash map over the image's named
+/// nodes.
+pub(crate) fn derive_head_map_pin(
     image: &VerifiedImage,
-    persisted: &HeadMap,
-) -> Result<(), HeadMapPinMismatch> {
-    let (nodes, order) = split_order(image);
-    let mut pinned: HashMap<[u8; 16], u32> = persisted
-        .entries()
-        .iter()
-        .map(|entry| (*entry.ledger_id.bytes(), entry.number))
-        .collect();
-    for (derived_number, &node) in order.iter().enumerate() {
-        let ledger_id = nodes[node].path.node_id();
-        let derived_number = derived_number as u32;
-        match pinned.remove(ledger_id.bytes()) {
-            Some(number) if number == derived_number => {}
-            pinned_number => {
-                return Err(HeadMapPinMismatch {
-                    disagreement: PinDisagreement::Binding {
-                        ledger_id,
-                        persisted: pinned_number,
-                        derived: Some(derived_number),
-                    },
-                });
-            }
+    projection: &StoreProjection,
+) -> Result<DerivedPin, HeadMapPinMismatch> {
+    let mut ids_by_path: HashMap<Vec<String>, LedgerIdBytes> = HashMap::new();
+    for node in crate::authority::named_durable_nodes(image) {
+        let place = spell_place(&node.path);
+        if ids_by_path.insert(node.path, node.ledger_id).is_some() {
+            // Two image nodes under one spelling: the name join is ambiguous, so no pairing
+            // is trustworthy. The compiler rejects duplicate member names, so this is reachable
+            // only through correspondence drift — refused, never guessed.
+            return Err(HeadMapPinMismatch {
+                disagreement: PinDisagreement::Unnamed { place },
+            });
         }
     }
-    // A pin-only binding: an id the persisted map carries that the derivation never walks.
-    // Reported in the persisted encoding order, the map's own deterministic order.
-    if let Some(entry) = persisted
-        .entries()
-        .iter()
-        .find(|entry| pinned.contains_key(entry.ledger_id.bytes()))
-    {
-        return Err(HeadMapPinMismatch {
-            disagreement: PinDisagreement::Binding {
-                ledger_id: entry.ledger_id,
-                persisted: Some(entry.number),
-                derived: None,
-            },
-        });
+
+    // `number_store` mirrors the projection's schema structure node for node, so the zips
+    // below pair each schema node with its own kernel number by construction; only the
+    // name resolution against the image can fail.
+    let numbering = number_store(projection);
+    let mut pairs = Vec::new();
+    let mut path: Vec<String> = Vec::new();
+    for (schema, numbers) in projection.roots().iter().zip(&numbering) {
+        path.push(schema.root_name().to_string());
+        pair_node(&ids_by_path, &path, numbers.root(), &mut pairs)?;
+        for (field, &number) in schema.fields().iter().zip(numbers.fields()) {
+            path.push(field.name().to_string());
+            pair_node(&ids_by_path, &path, number, &mut pairs)?;
+            path.pop();
+        }
+        for (group, group_numbers) in schema.groups().iter().zip(numbers.groups()) {
+            path.push(group.name().to_string());
+            pair_node(&ids_by_path, &path, group_numbers.number(), &mut pairs)?;
+            for (field, &number) in group.fields().iter().zip(group_numbers.fields()) {
+                path.push(field.name().to_string());
+                pair_node(&ids_by_path, &path, number, &mut pairs)?;
+                path.pop();
+            }
+            path.pop();
+        }
+        pair_branches(
+            &ids_by_path,
+            schema.branches(),
+            numbers.branches(),
+            &mut path,
+            &mut pairs,
+        )?;
+        path.pop();
     }
-    let derived = order.len() as u32;
-    if persisted.next_number() != derived {
-        return Err(HeadMapPinMismatch {
-            disagreement: PinDisagreement::HighWater {
-                persisted: persisted.next_number(),
-                derived,
+    let next_number = pairs
+        .iter()
+        .map(|&(_, number)| number)
+        .max()
+        .map_or(0, |max| max + 1);
+    Ok(DerivedPin { pairs, next_number })
+}
+
+/// Pair one store node — named by `path`, numbered by the kernel — with its image ledger
+/// identity, or refuse when the image does not name it.
+fn pair_node(
+    ids_by_path: &HashMap<Vec<String>, LedgerIdBytes>,
+    path: &[String],
+    number: u32,
+    pairs: &mut Vec<(LedgerIdBytes, u32)>,
+) -> Result<(), HeadMapPinMismatch> {
+    match ids_by_path.get(path) {
+        Some(&ledger_id) => {
+            pairs.push((ledger_id, number));
+            Ok(())
+        }
+        None => Err(HeadMapPinMismatch {
+            disagreement: PinDisagreement::Unnamed {
+                place: spell_place(path),
             },
-        });
+        }),
+    }
+}
+
+/// Pair one level of keyed branches with its mirrored numbering, recursively.
+fn pair_branches(
+    ids_by_path: &HashMap<Vec<String>, LedgerIdBytes>,
+    branches: &[BranchSchema],
+    numbering: &[BranchNumbering],
+    path: &mut Vec<String>,
+    pairs: &mut Vec<(LedgerIdBytes, u32)>,
+) -> Result<(), HeadMapPinMismatch> {
+    for (branch, numbers) in branches.iter().zip(numbering) {
+        path.push(branch.name().to_string());
+        pair_node(ids_by_path, path, numbers.number(), pairs)?;
+        for (field, &number) in branch.fields().iter().zip(numbers.fields()) {
+            path.push(field.name().to_string());
+            pair_node(ids_by_path, path, number, pairs)?;
+            path.pop();
+        }
+        pair_branches(
+            ids_by_path,
+            branch.branches(),
+            numbers.branches(),
+            path,
+            pairs,
+        )?;
+        path.pop();
     }
     Ok(())
+}
+
+/// A durable node's `^root.member` source spelling from its name path.
+fn spell_place(path: &[String]) -> String {
+    let mut out = String::new();
+    for (index, segment) in path.iter().enumerate() {
+        out.push(if index == 0 { '^' } else { '.' });
+        out.push_str(segment);
+    }
+    out
+}
+
+impl DerivedPin {
+    /// Compare this derivation against the persisted pin. Total over any decoded
+    /// [`HeadMap`]: one hash map over the persisted entries, the first disagreement
+    /// reported in the derived walk order, then any pin-only binding in the persisted
+    /// encoding order, then the high-water — never a panic.
+    pub(crate) fn verify(&self, persisted: &HeadMap) -> Result<(), HeadMapPinMismatch> {
+        let mut pinned: HashMap<[u8; 16], u32> = persisted
+            .entries()
+            .iter()
+            .map(|entry| (*entry.ledger_id.bytes(), entry.number))
+            .collect();
+        for &(ledger_id, derived_number) in &self.pairs {
+            match pinned.remove(ledger_id.bytes()) {
+                Some(number) if number == derived_number => {}
+                pinned_number => {
+                    return Err(HeadMapPinMismatch {
+                        disagreement: PinDisagreement::Binding {
+                            ledger_id,
+                            persisted: pinned_number,
+                            derived: Some(derived_number),
+                        },
+                    });
+                }
+            }
+        }
+        // A pin-only binding: an id the persisted map carries that the derivation never
+        // pairs.
+        if let Some(entry) = persisted
+            .entries()
+            .iter()
+            .find(|entry| pinned.contains_key(entry.ledger_id.bytes()))
+        {
+            return Err(HeadMapPinMismatch {
+                disagreement: PinDisagreement::Binding {
+                    ledger_id: entry.ledger_id,
+                    persisted: Some(entry.number),
+                    derived: None,
+                },
+            });
+        }
+        if persisted.next_number() != self.next_number {
+            return Err(HeadMapPinMismatch {
+                disagreement: PinDisagreement::HighWater {
+                    persisted: persisted.next_number(),
+                    derived: self.next_number,
+                },
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Verify the store's persisted head-map pin against the numbering this toolchain would
+/// actually serve it under: the kernel's [`number_store`] numbers over the exact
+/// `projection` the open installs, paired to the image's durable identities by source name
+/// (see [`DerivedPin`]). The attach actor runs this after the single-owner lock and before
+/// any engine call, exactly when the incoming durable contract equals the store's active
+/// contract — the one case where the persisted pin claims to describe the presented image's
+/// numbering.
+pub fn verify_head_map_pin(
+    image: &VerifiedImage,
+    projection: &StoreProjection,
+    persisted: &HeadMap,
+) -> Result<(), HeadMapPinMismatch> {
+    derive_head_map_pin(image, projection)?.verify(persisted)
 }
 
 /// The kind **and ledger identity** of each durable node in the same canonical split
@@ -236,8 +403,8 @@ pub fn head_map_node_order(image: &VerifiedImage) -> Vec<(SemanticNodeKind, Ledg
 /// Managed-index nodes carry a 16-byte identity in their cell keys, not a number, so they are
 /// excluded. Both [`head_map`] and [`head_map_node_order`] project this one walk, so they
 /// cannot disagree.
-fn split_order(image: &VerifiedImage) -> (Vec<SemanticNode>, Vec<usize>) {
-    let nodes = image.semantic_nodes().to_vec();
+fn split_order(image: &VerifiedImage) -> (&[SemanticNode], Vec<usize>) {
+    let nodes = image.semantic_nodes();
 
     // Children of each container, keyed by the container's full step chain, in the
     // declaration order `semantic_nodes` yields (a node before its descendants, members in
@@ -254,7 +421,7 @@ fn split_order(image: &VerifiedImage) -> (Vec<SemanticNode>, Vec<usize>) {
     let mut order: Vec<usize> = Vec::with_capacity(nodes.len());
     for (index, node) in nodes.iter().enumerate() {
         if node.kind == SemanticNodeKind::Root {
-            walk_split_order(index, &nodes, &children, &mut order);
+            walk_split_order(index, nodes, &children, &mut order);
         }
     }
     (nodes, order)

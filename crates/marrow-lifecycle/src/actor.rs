@@ -12,11 +12,14 @@
 //!   is refused with zero engine calls, naming the exceeding export, effect, and place in
 //!   source vocabulary (`authority::admit`). Not corruption: the store is intact.
 //! - **Head-map pin disagreement** — the persisted ledger-id ↔ cell-number bijection
-//!   (FR01 §3) disagrees with the numbering this toolchain derives for the store's active
-//!   durable contract. Checked with the admission gate, before any engine call: a store is
-//!   never served under a numbering that disagrees with its persisted pin, because serving
-//!   it would readdress durable cells (`crate::image::verify_head_map_pin`). Fail-closed and
-//!   recovery-shaped; the store bytes are untouched.
+//!   (FR01 §3) disagrees with the (ledger id → cell number) binding this toolchain would
+//!   actually serve the store under: the kernel's numbering of the exact projection this
+//!   open installs, paired to the image's durable identities by source name
+//!   (`crate::image::derive_head_map_pin`). Checked with the admission gate, before any
+//!   engine call: a store is never served under a numbering that disagrees with its
+//!   persisted pin, because serving it would readdress durable cells. Fail-closed and
+//!   recovery-shaped; the head, envelope, and engine data are unchanged (acquisition has
+//!   already rewritten the lock's owner marker, so the next successful open audits).
 //! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
 //!   image's code (its byte identity) differs. The actor atomically rewrites the envelope and
 //!   head to the new image and issues a receipt *after* the commit confirms. The receipt
@@ -44,7 +47,7 @@ use marrow_verify::VerifiedImage;
 
 use crate::authority::{self, DemandExceedsCeiling};
 use crate::head::{ActiveBinding, LogicalHead};
-use crate::image::{HeadMapPinMismatch, active_binding, verify_head_map_pin};
+use crate::image::{HeadMapPinMismatch, active_binding, derive_head_map_pin};
 use crate::provision::{AdmitError, OpenError, OpenStore, open_admitted};
 use crate::store_dir;
 
@@ -150,9 +153,11 @@ pub enum LifecycleError {
     /// apply`, never corruption.
     ContractChanged(ContractChanged),
     /// The store's persisted head-map pin (the ledger-id ↔ cell-number bijection, FR01 §3)
-    /// disagrees with the numbering this toolchain derives for the store's active durable
-    /// contract. Fail-closed and recovery-shaped: serving the store would readdress durable
-    /// cells, so the attach refuses with zero engine calls and the store bytes untouched.
+    /// disagrees with the (ledger id → cell number) binding this toolchain would serve the
+    /// store under. Fail-closed and recovery-shaped: serving the store would readdress
+    /// durable cells, so the attach refuses with zero engine calls; head, envelope, and
+    /// engine data are unchanged, and only the lock's owner marker was rewritten by
+    /// acquisition.
     HeadMapPin(HeadMapPinMismatch),
     /// Rewriting the envelope or head during a rebind failed.
     Io(std::io::Error),
@@ -198,6 +203,13 @@ pub fn attach(
 ) -> Result<AttachOutcome, LifecycleError> {
     let incoming = active_binding(image);
 
+    // The (ledger id → cell number) binding this toolchain would actually serve the store
+    // under: the kernel's numbering of this exact projection, paired to the image's durable
+    // identities by source name (`crate::image::derive_head_map_pin`). Pure over
+    // (image, projection); derived here, before the store is touched, so the admission
+    // closure below needs no borrow of the projection the open consumes.
+    let expected_pin = derive_head_map_pin(image, &projection);
+
     // The admission gate runs after the single-owner lock and before any engine call, so an
     // image whose demand exceeds the store's accepted ceiling is refused with zero engine
     // calls. The gate reconstructs the accepted ceiling from the persisted head and intersects
@@ -209,14 +221,20 @@ pub fn attach(
         authority::admit(image, &accepted).map_err(AdmissionRefusal::Exceeds)?;
         // The head-map pin (FR01 §3): when the incoming durable contract is the store's
         // active contract, the persisted ledger-id ↔ cell-number bijection must be exactly
-        // the numbering this toolchain derives — a disagreement (a drifted walk, a permuted
-        // or foreign head) would readdress durable cells, so the store is refused here,
-        // with zero engine calls, before anything can read or write under the wrong
+        // the binding the derived pin carries — a disagreement (a drifted numbering, a
+        // permuted or foreign head) would readdress durable cells, so the store is refused
+        // here, with zero engine calls, before anything can read or write under the wrong
         // numbers. A *changed* durable contract is a different graph whose numbering
         // legitimately differs; that path is classified as the typed contract-changed
-        // refusal after the open and never serves the store either.
+        // refusal after the engine's physical open (and, after an unclean shutdown, its
+        // integrity audit — numbering-independent physical access), before any session, and
+        // never serves the store. A failing engine on that path surfaces as its own open
+        // error rather than the contract refusal.
         if incoming.durable_contract == head.binding.durable_contract {
-            verify_head_map_pin(image, &head.head_map).map_err(AdmissionRefusal::Pin)?;
+            match &expected_pin {
+                Ok(pin) => pin.verify(&head.head_map).map_err(AdmissionRefusal::Pin)?,
+                Err(mismatch) => return Err(AdmissionRefusal::Pin(mismatch.clone())),
+            }
         }
         Ok(())
     };

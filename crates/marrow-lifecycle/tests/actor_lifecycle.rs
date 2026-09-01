@@ -4,6 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "../../marrow-compile/tests/common/source_projection.rs"]
+mod source_projection;
+
 use marrow_lifecycle::{
     AttachOutcome, ChangedFact, EngineKind, HEAD_FILE, LifecycleError, LogicalHead,
     PinDisagreement, ProvisionRequest, StoreEnvelope, StoreInstanceId, active_binding, attach,
@@ -246,6 +249,28 @@ fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
         flatten_branches(root, &mut Vec::new(), schema.branches(), &mut kernel_order);
     }
 
+    // The kernel's own number assignment ties to this same structural order: `number_store`
+    // over the derived projection allocates exactly 0..n-1 when read in the structural walk
+    // (each root, its fields, its groups and their fields, its branches recursively), so the
+    // name-anchored order above is also the kernel's allocation order — the third leg the
+    // runtime pin comparison consumes.
+    let numbering = marrow_kernel::durable::number_store(&projection);
+    let mut kernel_numbers: Vec<u32> = Vec::new();
+    for root in &numbering {
+        kernel_numbers.push(root.root());
+        kernel_numbers.extend_from_slice(root.fields());
+        for group in root.groups() {
+            kernel_numbers.push(group.number());
+            kernel_numbers.extend_from_slice(group.fields());
+        }
+        flatten_branch_numbers(root.branches(), &mut kernel_numbers);
+    }
+    assert_eq!(
+        kernel_numbers,
+        (0..kernel_order.len() as u32).collect::<Vec<_>>(),
+        "number_store allocates dense pre-order numbers in the structural walk order",
+    );
+
     // The lifecycle head-map walk's (kind, ledger id) pairs, in its numbering order.
     let lifecycle_order = marrow_lifecycle::head_map_node_order(&image);
 
@@ -267,6 +292,17 @@ fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
             entry.ledger_id, kernel_order[i].1,
             "head-map number {i} binds a different node than the kernel walk",
         );
+    }
+}
+
+fn flatten_branch_numbers(
+    branches: &[marrow_kernel::durable::BranchNumbering],
+    out: &mut Vec<u32>,
+) {
+    for branch in branches {
+        out.push(branch.number());
+        out.extend_from_slice(branch.fields());
+        flatten_branch_numbers(branch.branches(), out);
     }
 }
 
@@ -422,15 +458,9 @@ fn a_crash_between_head_and_envelope_commit_recovers_to_the_new_binding() {
 /// *permuted* head map: the same ledger ids with the first and last swapped, so two nodes
 /// carry each other's cell numbers. The permuted map is still a valid bijection and the
 /// rewritten head reseals, so decode admits it — only the pin comparison can catch the
-/// disagreement. Returns the swapped (first, last) ledger ids and the last number.
-fn permute_persisted_pin(
-    dir: &Path,
-    image: &VerifiedImage,
-) -> (
-    marrow_image::LedgerIdBytes,
-    marrow_image::LedgerIdBytes,
-    u32,
-) {
+/// disagreement. Returns the first walked node's ledger id and the number the permutation
+/// pins it to (the last number).
+fn permute_persisted_pin(dir: &Path, image: &VerifiedImage) -> (marrow_image::LedgerIdBytes, u32) {
     let map = head_map(image).expect("head map");
     let mut ids: Vec<marrow_image::LedgerIdBytes> =
         map.entries().iter().map(|entry| entry.ledger_id).collect();
@@ -443,7 +473,7 @@ fn permute_persisted_pin(
         permuted,
     );
     std::fs::write(dir.join(HEAD_FILE), forged.encode()).expect("write permuted head");
-    (ids[last], ids[0], last as u32)
+    (ids[last], last as u32)
 }
 
 /// The pin family covers every serving outcome: an attach serves a store only as
@@ -457,18 +487,17 @@ fn _pin_family_covers_every_serving_outcome(outcome: AttachOutcome) {
     }
 }
 
-/// The head-map pin bites (FR01 §3): a provisioned store whose persisted ledger-id ↔
-/// cell-number bijection disagrees with the numbering this toolchain derives for the same
-/// durable contract — a permuted bijection, the exact readdressing hazard where ledger id
-/// X's bytes would be served as id Y's value — is refused at attach with a typed fail-closed
-/// error naming the pin's first disagreeing binding. Before the pin comparison existed,
-/// attach served this store silently as already-active.
+/// The head-map pin bites (FR01 §3): a store is never served under a numbering that
+/// disagrees with its persisted ledger-id ↔ cell-number bijection. A permuted bijection —
+/// the exact readdressing hazard where ledger id X's bytes would be served as id Y's value —
+/// is refused at attach with a typed fail-closed error naming the pin's first disagreeing
+/// binding, on the already-active arm the same image would otherwise serve through.
 #[test]
 fn a_store_with_a_permuted_head_map_pin_is_refused_at_attach() {
     let scratch = Scratch::new("pin-permuted");
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
     provision_from(scratch.dir(), &image);
-    let (first_id, _, last_number) = permute_persisted_pin(scratch.dir(), &image);
+    let (first_id, last_number) = permute_persisted_pin(scratch.dir(), &image);
 
     let projection = projection_of(&image);
     match attach(scratch.dir(), &image, projection) {
@@ -632,21 +661,123 @@ fn an_inflated_pin_high_water_is_a_typed_disagreement() {
     }
 }
 
+/// The pin bites on projection-derivation drift, the kernel-side hazard: a projection that
+/// orders the store differently than the provisioning toolchain did (simulated here by
+/// re-deriving the same schemas with the roots swapped) yields different (ledger id → cell
+/// number) pairs, and attach refuses before any engine call. Kernel numbers are dense over
+/// any projection shape, so only the name pairing — not walk position — catches this.
+#[test]
+fn a_drifted_projection_derivation_is_refused_by_the_pin() {
+    let scratch = Scratch::new("pin-drifted-projection");
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    provision_from(scratch.dir(), &image);
+
+    let derived = projection_of(&image);
+    let mut builder = marrow_kernel::durable::StoreProjection::builder();
+    for schema in derived.roots().iter().rev() {
+        builder.root(schema.clone());
+    }
+    let drifted = builder
+        .finish()
+        .expect("the swapped-root projection builds");
+
+    // Under the drifted derivation the tags root would be served as cell number 0, while
+    // the persisted pin binds it to its provisioned number — the first disagreement in the
+    // drifted walk order.
+    let map = head_map(&image).expect("head map");
+    let tags_root = marrow_image::LedgerIdBytes::from_bytes([0x4b; 16]);
+    let pinned_tags = map
+        .number_of(&tags_root)
+        .expect("the pin binds the tags root");
+    match attach(scratch.dir(), &image, drifted) {
+        Err(LifecycleError::HeadMapPin(refusal)) => assert_eq!(
+            refusal.disagreement,
+            PinDisagreement::Binding {
+                ledger_id: tags_root,
+                persisted: Some(pinned_tags),
+                derived: Some(0),
+            },
+        ),
+        Err(other) => panic!("expected the pin refusal, got code {}", other.code()),
+        Ok(_) => panic!("a drifted projection derivation readdresses cells and must refuse"),
+    }
+}
+
+/// A store-schema node the image does not name is a typed fail-closed refusal: no ledger
+/// identity can be paired with its kernel number, so no pin can be derived at all.
+#[test]
+fn an_unnamed_store_node_is_a_typed_refusal() {
+    use marrow_kernel::codec::value::ScalarKind;
+
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    let schema = marrow_kernel::durable::StoreSchemaBuilder::root("phantom", vec![ScalarKind::Int])
+        .finish()
+        .expect("a rootonly schema builds");
+    let mut builder = marrow_kernel::durable::StoreProjection::builder();
+    builder.root(schema);
+    let foreign = builder.finish().expect("the projection builds");
+
+    let map = head_map(&image).expect("head map");
+    match marrow_lifecycle::verify_head_map_pin(&image, &foreign, &map) {
+        Err(refusal) => assert_eq!(
+            refusal.disagreement,
+            PinDisagreement::Unnamed {
+                place: "^phantom".to_string()
+            },
+        ),
+        Ok(()) => panic!("an unnamed store node must refuse"),
+    }
+}
+
+/// The honest ordering of the contract-changed path: the pin comparison is scoped to an
+/// unchanged durable contract, and the contract-changed classification runs after the
+/// engine's physical open (numbering-independent access, no session). A failing engine on
+/// that path therefore surfaces as its own open error — never as `store.contract_changed`,
+/// and never as a served store.
+#[test]
+fn a_changed_contract_over_a_garbage_engine_is_an_open_error() {
+    let scratch = Scratch::new("contract-garbage-engine");
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    provision_from(scratch.dir(), &image);
+    std::fs::write(
+        scratch.dir().join(marrow_lifecycle::ENGINE_FILE),
+        b"not an engine",
+    )
+    .expect("corrupt the engine file");
+
+    let evolved = compile(
+        &GRAPH_SOURCE.replace("    subtitle: string\n", "    required subtitle: string\n"),
+        GRAPH_IDS,
+    );
+    match attach(scratch.dir(), &evolved, projection_of(&evolved)) {
+        Err(LifecycleError::Open(_)) => {}
+        Err(other) => panic!(
+            "a failing engine preempts the contract refusal, got code {}",
+            other.code()
+        ),
+        Ok(_) => panic!("a garbage engine must not open"),
+    }
+}
+
 /// The comparison itself, at its public seam: the pin a provision persists verifies against
-/// the very image it was derived from, and a permuted pin reports its first disagreement in
-/// the derived walk order (deterministic, so the rendered refusal is a stable function of
-/// the delta).
+/// the very image and projection it was derived from, and a permuted pin reports its first
+/// disagreement in the derived walk order (deterministic, so the rendered refusal is a
+/// stable function of the delta).
 #[test]
 fn verify_head_map_pin_accepts_the_provisioned_pin_and_orders_disagreements() {
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    let projection = projection_of(&image);
     let map = head_map(&image).expect("head map");
-    assert_eq!(marrow_lifecycle::verify_head_map_pin(&image, &map), Ok(()));
+    assert_eq!(
+        marrow_lifecycle::verify_head_map_pin(&image, &projection, &map),
+        Ok(())
+    );
 
     let mut ids: Vec<marrow_image::LedgerIdBytes> =
         map.entries().iter().map(|entry| entry.ledger_id).collect();
     ids.swap(1, 2);
     let permuted = marrow_lifecycle::HeadMap::assign(&ids).expect("assign");
-    match marrow_lifecycle::verify_head_map_pin(&image, &permuted) {
+    match marrow_lifecycle::verify_head_map_pin(&image, &projection, &permuted) {
         Err(refusal) => assert_eq!(
             refusal.disagreement,
             PinDisagreement::Binding {
@@ -707,4 +838,205 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
         ),
         Ok(_) => panic!("a durable-contract change must be refused, but attach succeeded"),
     }
+}
+
+/// The contracted absence/tidy check over the open paths: plain `open` is the one public
+/// `OpenStore` constructor that runs no head-map pin comparison, and its production caller
+/// set is pinned here. Today that set is exactly the trusted bulk importer `import_jsonl`
+/// (a WRITE path; the follow-on row threads the image into it so it can be fenced), and no
+/// crate outside `marrow-lifecycle` names lifecycle `open` at all — every other production
+/// route to a served store goes through `attach`, which runs the pin. A new caller turns up
+/// in this listing and must either go through `attach` or extend the pin family.
+#[test]
+fn plain_open_has_exactly_the_documented_unfenced_callers() {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let crates = workspace.join("crates");
+    assert!(
+        crates.join("marrow-runner").is_dir() && crates.join("marrow-kernel").is_dir(),
+        "workspace layout moved; rescope this scan"
+    );
+
+    let mut lifecycle_callers: Vec<(String, usize)> = Vec::new();
+    let mut foreign_references: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    let mut saw = (false, false); // (import.rs, provision.rs) — the scan reached its subjects
+    for crate_dir in std::fs::read_dir(&crates).expect("list crates") {
+        let crate_dir = crate_dir.expect("crate entry").path();
+        let source_root = crate_dir.join("src");
+        if !source_root.is_dir() {
+            continue;
+        }
+        let in_lifecycle = crate_dir
+            .file_name()
+            .is_some_and(|name| name == "marrow-lifecycle");
+        let mut stack = vec![source_root];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("list sources") {
+                let path = entry.expect("source entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs") {
+                    continue;
+                }
+                // Production projection: comments, string/char literals, and #[cfg(test)]
+                // items blanked, so a spelling inside prose, a literal, or a unit test can
+                // neither trip nor silently satisfy the gate.
+                let code = source_projection::production_code(
+                    &std::fs::read_to_string(&path).expect("read source"),
+                );
+                scanned += 1;
+                let name = path
+                    .file_name()
+                    .expect("a source file has a name")
+                    .to_string_lossy()
+                    .into_owned();
+                if in_lifecycle {
+                    saw.0 |= name == "import.rs";
+                    saw.1 |= name == "provision.rs";
+                    let calls = free_open_calls(&code);
+                    if calls > 0 {
+                        lifecycle_callers.push((name, calls));
+                    }
+                } else if names_lifecycle_open(&code) {
+                    foreign_references.push(name);
+                }
+            }
+        }
+    }
+    assert!(
+        scanned > 100,
+        "the scan visited too few files to be trusted ({scanned})"
+    );
+    assert!(
+        saw.0 && saw.1,
+        "the scan did not reach the open owner and its caller"
+    );
+    lifecycle_callers.sort();
+    assert_eq!(
+        lifecycle_callers,
+        vec![("import.rs".to_string(), 1)],
+        "plain `open` (no pin comparison) gained or lost a production caller",
+    );
+    assert_eq!(
+        foreign_references,
+        Vec::<String>::new(),
+        "a crate outside marrow-lifecycle names lifecycle `open`, which would serve a store \
+         without the head-map pin comparison",
+    );
+}
+
+/// Count calls of lifecycle's plain `open(` in a literal-stripped projection: the bare
+/// token (not `reopen(`, not a method call `.open(`, not `open_admitted(`, not the
+/// `fn open(` definition, and not a foreign qualified call such as `File::open(`) plus the
+/// crate's own qualified spelling `provision::open(`.
+fn free_open_calls(code: &str) -> usize {
+    let bytes = code.as_bytes();
+    let mut count = 0;
+    let mut from = 0;
+    while let Some(found) = code[from..].find("open(") {
+        let at = from + found;
+        let bare = at
+            .checked_sub(1)
+            .map(|before| bytes[before])
+            .is_none_or(|byte| {
+                !source_projection::is_ident_byte(byte) && byte != b'.' && byte != b':'
+            });
+        let crate_qualified = code[..at].ends_with("provision::");
+        let is_definition = code[..at].trim_end().ends_with("fn");
+        if (bare || crate_qualified) && !is_definition {
+            count += 1;
+        }
+        from = at + "open(".len();
+    }
+    count
+}
+
+/// Whether a foreign crate's projection names lifecycle `open`: a direct
+/// `marrow_lifecycle::open` path at a token boundary, or a `use marrow_lifecycle::…;`
+/// import whose item list carries the bare token `open`.
+fn names_lifecycle_open(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    let mut from = 0;
+    while let Some(found) = code[from..].find("marrow_lifecycle::open") {
+        let at = from + found;
+        let end = at + "marrow_lifecycle::open".len();
+        let before_ok = at
+            .checked_sub(1)
+            .map(|before| bytes[before])
+            .is_none_or(|byte| !source_projection::is_ident_byte(byte));
+        let after_ok = bytes
+            .get(end)
+            .is_none_or(|&byte| !source_projection::is_ident_byte(byte));
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    let mut from = 0;
+    while let Some(found) = code[from..].find("use marrow_lifecycle::") {
+        let start = from + found;
+        let end = code[start..]
+            .find(';')
+            .map_or(code.len(), |semi| start + semi);
+        if has_bare_open_token(&code[start..end]) {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Whether `text` carries the bare token `open` (exact, token-bounded).
+fn has_bare_open_token(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("open") {
+        let at = from + found;
+        let end = at + "open".len();
+        let before_ok = at
+            .checked_sub(1)
+            .map(|before| bytes[before])
+            .is_none_or(|byte| !source_projection::is_ident_byte(byte));
+        let after_ok = bytes
+            .get(end)
+            .is_none_or(|&byte| !source_projection::is_ident_byte(byte));
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// The plant probes for the caller scan: the scanner sees a real call and stays blind to
+/// methods, other tokens, definitions, and spellings inside literals.
+#[test]
+fn the_open_caller_scanner_sees_calls_and_ignores_literals_and_methods() {
+    assert_eq!(free_open_calls("let store = open(dir, projection);"), 1);
+    assert_eq!(free_open_calls("open_admitted(dir, projection, admit)"), 0);
+    assert_eq!(free_open_calls("engine.open(path)"), 0);
+    assert_eq!(free_open_calls("reopen(dir)"), 0);
+    assert_eq!(free_open_calls("File::open(path)"), 0);
+    assert_eq!(
+        free_open_calls("crate::provision::open(dir, projection)"),
+        1
+    );
+    assert_eq!(free_open_calls("pub fn open(dir: &Path) {"), 0);
+    assert_eq!(
+        free_open_calls(&source_projection::production_code("let s = \"open(\";")),
+        0,
+        "a spelling inside a string literal is not a call",
+    );
+    assert!(names_lifecycle_open(
+        "use marrow_lifecycle::{OpenError, open};"
+    ));
+    assert!(names_lifecycle_open(
+        "marrow_lifecycle::open(dir, projection)"
+    ));
+    assert!(!names_lifecycle_open("use marrow_lifecycle::OpenStore;"));
+    assert!(!names_lifecycle_open(&source_projection::production_code(
+        "let s = \"marrow_lifecycle::open\";"
+    )));
 }

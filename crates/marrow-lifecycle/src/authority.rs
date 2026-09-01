@@ -182,50 +182,84 @@ struct Naming {
     by_id: HashMap<LedgerIdBytes, (Sigil, String)>,
 }
 
-impl Naming {
-    /// Build the join by co-walking the image's sealed roots with its semantic nodes: each
-    /// sealed node's source name is paired with the ledger id its semantic node carries, matched
-    /// by declaration order and node kind. A count mismatch at any level degrades that level to
-    /// unnamed rather than risking a misaligned name.
-    fn from_image(image: &VerifiedImage) -> Self {
-        let nodes = image.semantic_nodes();
-        // Children of each container, keyed by the container's full step chain, in the order
-        // semantic_nodes yields them (a node before its descendants, members in declaration
-        // order) — the same structure image.rs::split_order relies on.
-        let mut children: HashMap<Vec<SemanticStep>, Vec<usize>> = HashMap::new();
-        for (index, node) in nodes.iter().enumerate() {
-            let steps = node.path.steps();
-            if steps.len() >= 2 {
-                children
-                    .entry(steps[..steps.len() - 1].to_vec())
-                    .or_default()
-                    .push(index);
-            }
-        }
+/// One durable node of the verified image, named by its path-qualified source spelling: the
+/// store root's name followed by each member name down to the node, beside the ledger id its
+/// semantic node carries. Produced only by [`named_durable_nodes`], the single owner of the
+/// sealed↔semantic correspondence.
+pub(crate) struct NamedDurableNode {
+    pub(crate) ledger_id: LedgerIdBytes,
+    /// The node's name path: `["books"]` for a root, `["books", "notes", "body"]` for a
+    /// member. Never empty.
+    pub(crate) path: Vec<String>,
+}
 
+/// The sealed↔semantic correspondence, in declaration order: each sealed node's source name
+/// path beside the ledger id its semantic node carries, matched per level by declaration
+/// order and node kind. A count mismatch at a level omits that level's nodes rather than
+/// risking a misaligned name; each consumer chooses its own posture toward an omission (the
+/// authority refusal degrades that place to unnamed, the head-map pin refuses fail-closed).
+pub(crate) fn named_durable_nodes(image: &VerifiedImage) -> Vec<NamedDurableNode> {
+    let nodes = image.semantic_nodes();
+    // Children of each container, keyed by the container's full step chain, in the order
+    // semantic_nodes yields them (a node before its descendants, members in declaration
+    // order) — the same structure image.rs::split_order relies on.
+    let mut children: HashMap<Vec<SemanticStep>, Vec<usize>> = HashMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let steps = node.path.steps();
+        if steps.len() >= 2 {
+            children
+                .entry(steps[..steps.len() - 1].to_vec())
+                .or_default()
+                .push(index);
+        }
+    }
+
+    let mut named = Vec::new();
+    let root_nodes: Vec<usize> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == SemanticNodeKind::Root)
+        .map(|(index, _)| index)
+        .collect();
+    // Roots correlate with image.roots() by declaration order (both are declaration-ordered).
+    if root_nodes.len() == image.roots().len() {
+        for (root_index, &node_index) in root_nodes.iter().enumerate() {
+            let sealed = &image.roots()[root_index];
+            let mut path = vec![sealed.name().to_string()];
+            named.push(NamedDurableNode {
+                ledger_id: nodes[node_index].path.node_id(),
+                path: path.clone(),
+            });
+            walk_members(
+                nodes,
+                &children,
+                node_index,
+                Members::root(image, sealed),
+                &mut path,
+                &mut named,
+            );
+        }
+    }
+    named
+}
+
+impl Naming {
+    /// Build the join from the one sealed↔semantic correspondence: each named node's last
+    /// path segment is its display name, and a one-segment path is a root.
+    fn from_image(image: &VerifiedImage) -> Self {
         let mut by_id: HashMap<LedgerIdBytes, (Sigil, String)> = HashMap::new();
-        let root_nodes: Vec<usize> = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.kind == SemanticNodeKind::Root)
-            .map(|(index, _)| index)
-            .collect();
-        // Roots correlate with image.roots() by declaration order (both are declaration-ordered).
-        if root_nodes.len() == image.roots().len() {
-            for (root_index, &node_index) in root_nodes.iter().enumerate() {
-                let sealed = &image.roots()[root_index];
-                by_id.insert(
-                    nodes[node_index].path.node_id(),
-                    (Sigil::Root, sealed.name().to_string()),
-                );
-                walk_members(
-                    nodes,
-                    &children,
-                    node_index,
-                    Members::root(image, sealed),
-                    &mut by_id,
-                );
-            }
+        for node in named_durable_nodes(image) {
+            let sigil = if node.path.len() == 1 {
+                Sigil::Root
+            } else {
+                Sigil::Child
+            };
+            let name = node
+                .path
+                .last()
+                .cloned()
+                .expect("a named durable node carries at least its root segment");
+            by_id.insert(node.ledger_id, (sigil, name));
         }
         Self { by_id }
     }
@@ -330,15 +364,17 @@ fn branch_members(image: &VerifiedImage, branch: &SealedBranch) -> BranchMembers
     }
 }
 
-/// Correlate a node's semantic children with its sealed members and record each member's id →
-/// name, recursing into groups and branches. A count mismatch at a level degrades that level
-/// (no name recorded), so a misaligned walk never invents a wrong name.
+/// Correlate a node's semantic children with its sealed members and emit each member's
+/// path-qualified name beside its ledger id, recursing into groups and branches. A count
+/// mismatch at a level degrades that level (no node emitted), so a misaligned walk never
+/// invents a wrong name.
 fn walk_members(
     nodes: &[marrow_image::SemanticNode],
     children: &HashMap<Vec<SemanticStep>, Vec<usize>>,
     node_index: usize,
     members: Members,
-    by_id: &mut HashMap<LedgerIdBytes, (Sigil, String)>,
+    path: &mut Vec<String>,
+    named: &mut Vec<NamedDurableNode>,
 ) {
     let key = nodes[node_index].path.steps().to_vec();
     let kids = children.get(&key).cloned().unwrap_or_default();
@@ -348,32 +384,43 @@ fn walk_members(
             .filter(|&i| nodes[i].kind == kind)
             .collect()
     };
+    let emit =
+        |named: &mut Vec<NamedDurableNode>, path: &mut Vec<String>, index: usize, name: String| {
+            path.push(name);
+            named.push(NamedDurableNode {
+                ledger_id: nodes[index].path.node_id(),
+                path: path.clone(),
+            });
+        };
 
     let field_nodes = kids_of(SemanticNodeKind::Field);
     if field_nodes.len() == members.fields.len() {
         for (&fi, name) in field_nodes.iter().zip(members.fields) {
-            by_id.insert(nodes[fi].path.node_id(), (Sigil::Child, name));
+            emit(named, path, fi, name);
+            path.pop();
         }
     }
 
     let group_nodes = kids_of(SemanticNodeKind::Group);
     if group_nodes.len() == members.groups.len() {
         for (&gi, (name, group_fields)) in group_nodes.iter().zip(members.groups) {
-            by_id.insert(nodes[gi].path.node_id(), (Sigil::Child, name));
+            emit(named, path, gi, name);
             let group_members = Members {
                 fields: group_fields,
                 groups: Vec::new(),
                 branches: Vec::new(),
             };
-            walk_members(nodes, children, gi, group_members, by_id);
+            walk_members(nodes, children, gi, group_members, path, named);
+            path.pop();
         }
     }
 
     let branch_nodes = kids_of(SemanticNodeKind::Branch);
     if branch_nodes.len() == members.branches.len() {
         for (&bi, branch) in branch_nodes.iter().zip(members.branches) {
-            by_id.insert(nodes[bi].path.node_id(), (Sigil::Child, branch.name));
-            walk_members(nodes, children, bi, branch.members, by_id);
+            emit(named, path, bi, branch.name);
+            walk_members(nodes, children, bi, branch.members, path, named);
+            path.pop();
         }
     }
 }
