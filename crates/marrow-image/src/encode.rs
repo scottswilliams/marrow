@@ -151,15 +151,21 @@ impl ImageDraft {
     /// The canonical constant permutation (row law), ordered by each base row's
     /// `(tag, wire-byte)` sort key with text payloads resolved to final string indices.
     pub(crate) fn const_permutation(&self, str_map: &[u16]) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.consts().len()).collect();
-        order.sort_by(|&a, &b| {
-            #[cfg(test)]
-            bump_image_algorithm_counts(|counts| counts.constant_key_constructions += 1);
-            let left = self.consts()[a].sort_key(str_map);
-            #[cfg(test)]
-            bump_image_algorithm_counts(|counts| counts.constant_key_constructions += 1);
-            left.cmp(&self.consts()[b].sort_key(str_map))
-        });
+        // A key depends only on its row and the already-final string permutation.
+        // Retaining one per row avoids rebuilding two owned payloads at every sort
+        // comparison; the permutation still sorts the same keys with the same stable
+        // comparator.
+        let keys: Vec<(u8, Vec<u8>)> = self
+            .consts()
+            .iter()
+            .map(|value| {
+                #[cfg(test)]
+                bump_image_algorithm_counts(|counts| counts.constant_key_constructions += 1);
+                value.sort_key(str_map)
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..keys.len()).collect();
+        order.sort_by(|&a, &b| keys[a].cmp(&keys[b]));
         order
     }
 

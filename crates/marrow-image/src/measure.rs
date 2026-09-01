@@ -54,29 +54,40 @@
 //!
 //! # Allocation posture and the max-live term (the editor-capacity pre-join term)
 //!
-//! Every pre-verdict path is zero-heap — the coherence walk (its site-projection
-//! validation streams and materializes no path), the policy audit, the counting
-//! sink (`usize`), the witness (`u32`), the plan (inline arrays and scalars), and
-//! the offset-free FUNCTIONS/SPANS counting arithmetic — with exactly one
-//! exception, the adjudicated DURABLE expansion worklist below. Layout offsets and
+//! Pre-verdict heap scratch is limited to the two non-overlapping families below.
+//! The site-projection validation still streams and materializes no path; the policy
+//! audit, counting sink (`usize`), witness (`u32`), plan (inline arrays and scalars),
+//! and offset-free FUNCTIONS/SPANS arithmetic remain zero-heap. Layout offsets and
 //! sort scratch are emission-only. Beyond the retained draft baseline (the pools,
 //! tables, and plans the draft owns for its whole life) and the fitting emitter's
-//! post-plan sort/section/output topology, the max-live expression charges:
+//! post-plan sort/section/output topology, the max-live expression charges the
+//! larger, not the sum, of:
+//!
+//! - the EXPORTS/TEST-ENTRY relation scratch: one byte per retained function carries
+//!   its export/test flags. During EXPORTS it overlaps a `HashSet` of borrowed export
+//!   identities, pre-sized to the export population; during TEST-ENTRY it instead
+//!   overlaps one bit per retained string for name uniqueness. Coherence precedes
+//!   policy, so these are population-bounded terms and may include provisional
+//!   over-policy rows; no §E-clean assumption sizes them. `HashSet` bucket bytes are
+//!   standard-library/allocator dependent, so this contract records rows and
+//!   capacity rather than inventing an exact byte width. The scratch is dropped when
+//!   TEST-ENTRY coherence ends.
 //!
 //! - the DURABLE traversal's ceiling-bounded expansion worklist — the one
-//!   sanctioned pre-verdict allocation (stop adjudication of record). Measured
-//!   through the scheduling harness over both worst-case corpora, recording `Vec`
-//!   capacity (what lives), not length: the 31-level 64-edge struct chain peaks at
-//!   1,954 pending tasks, capacity 2,048 × 16 bytes/task = 32,768 live bytes; the
-//!   31-level enum chain of 256 members × 64 payload references — the widest
-//!   scheduling fan-out the §E bounds admit — peaks at 9,859 pending tasks,
-//!   capacity 16,384 × 16 bytes/task = **262,144 live bytes**, with a
-//!   `Vec`-doubling old/new-buffer overlap of at most **393,216 bytes**. The enum
-//!   figure bounds the admitted domain.
+//!   stop-adjudication allocation. Measured through the scheduling harness over both
+//!   worst-case corpora, recording `Vec` capacity (what lives), not length: the
+//!   31-level 64-edge struct chain peaks at 1,954 pending tasks, capacity 2,048 × 16
+//!   bytes/task = 32,768 live bytes; the 31-level enum chain of 256 members × 64
+//!   payload references — the widest scheduling fan-out the §E bounds admit — peaks
+//!   at 9,859 pending tasks, capacity 16,384 × 16 bytes/task = **262,144 live
+//!   bytes**, with a `Vec`-doubling old/new-buffer overlap of at most **393,216
+//!   bytes**. The enum figure bounds the admitted domain.
 //!
 //! The `#[ignore]`d measurement harness that produced these numbers lives beside
 //! the traversal owner (`value_dag.rs`); re-run it with `--ignored` when a
 //! representation widens, and re-gate through the persistent editor-capacity law.
+
+use std::collections::HashSet;
 
 use crate::bounds;
 use crate::digest::image_id;
@@ -201,9 +212,9 @@ impl LegacyV0MeasureCore {
         durable_references(draft)?;
         types_references(draft)?;
         consts_references(draft)?;
-        exports_relations(draft)?;
+        let mut function_relations = exports_relations(draft)?;
         span_references(draft)?;
-        test_entry_relations(draft)?;
+        test_entry_relations(draft, &mut function_relations)?;
         enums_references(draft)?;
         collections_references(draft)?;
         Ok(CoherentDraft(draft))
@@ -1072,31 +1083,49 @@ fn consts_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 
 /// Step 7: EXPORTS — every target in range, then the export relations: one export per
 /// function, and one row per `ExportId`.
-fn exports_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
+struct FunctionRelations {
+    flags: Vec<u8>,
+}
+
+const EXPORTED_FUNCTION: u8 = 0b01;
+const TEST_ENTRY_FUNCTION: u8 = 0b10;
+
+fn exports_relations(draft: &ImageDraft) -> Result<FunctionRelations, ImageBuildError> {
     let rows = draft.export_rows();
     for export in rows {
         func_ref(draft, export.func(), "export target")?;
     }
-    for (index, export) in rows.iter().enumerate() {
-        for later in &rows[index + 1..] {
-            if {
-                #[cfg(test)]
-                crate::encode::bump_image_algorithm_counts(|counts| {
-                    counts.export_target_uniqueness_probes += 1
-                });
-                export.func() == later.func()
-            } || {
-                #[cfg(test)]
-                crate::encode::bump_image_algorithm_counts(|counts| {
-                    counts.export_id_uniqueness_probes += 1
-                });
-                export.id() == later.id()
-            } {
-                return Err(ImageBuildError::InvalidReference("export table"));
-            }
+
+    // Function indices are dense, so one flag byte is the keyed relation owner for
+    // both export membership here and test-entry membership below. Export identities
+    // have no dense ordinal and use the one keyed set this coherence walk needs. The
+    // set is never iterated, so its randomized layout cannot affect a verdict or byte.
+    let mut relations = FunctionRelations {
+        flags: vec![0; draft.functions().len()],
+    };
+    let mut seen_ids: HashSet<&crate::export_id::ExportId> = HashSet::with_capacity(rows.len());
+    for export in rows {
+        #[cfg(test)]
+        crate::encode::bump_image_algorithm_counts(|counts| {
+            counts.export_target_uniqueness_probes += 1
+        });
+        let Some(flags) = relations.flags.get_mut(export.func() as usize) else {
+            return Err(ImageBuildError::InvalidReference("export table"));
+        };
+        if *flags & EXPORTED_FUNCTION != 0 {
+            return Err(ImageBuildError::InvalidReference("export table"));
+        }
+        *flags |= EXPORTED_FUNCTION;
+
+        #[cfg(test)]
+        crate::encode::bump_image_algorithm_counts(|counts| {
+            counts.export_id_uniqueness_probes += 1
+        });
+        if !seen_ids.insert(export.id()) {
+            return Err(ImageBuildError::InvalidReference("export table"));
         }
     }
-    Ok(())
+    Ok(relations)
 }
 
 /// Step 8: SPANS — every span's instruction index names an instruction of its
@@ -1118,7 +1147,10 @@ fn span_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 /// parameters first, then the unit return), the no-calls-into-a-test-entry law, and
 /// the driver-mix law (a direct durable operation beside a drive of a
 /// transaction-owning callee).
-fn test_entry_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
+fn test_entry_relations(
+    draft: &ImageDraft,
+    function_relations: &mut FunctionRelations,
+) -> Result<(), ImageBuildError> {
     let entries = draft.test_entry_rows();
     for entry in entries {
         string_ref(draft, entry.name(), "test name")?;
@@ -1126,33 +1158,44 @@ fn test_entry_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for entry in entries {
         func_ref(draft, entry.func(), "test target")?;
     }
-    for (index, entry) in entries.iter().enumerate() {
-        for later in &entries[index + 1..] {
-            if {
-                #[cfg(test)]
-                crate::encode::bump_image_algorithm_counts(|counts| {
-                    counts.test_name_uniqueness_probes += 1
-                });
-                entry.name() == later.name()
-            } || {
-                #[cfg(test)]
-                crate::encode::bump_image_algorithm_counts(|counts| {
-                    counts.test_target_uniqueness_probes += 1
-                });
-                entry.func() == later.func()
-            } {
-                return Err(ImageBuildError::InvalidReference("test table"));
-            }
+    // Names are dense string ordinals and targets are dense function ordinals, so
+    // both uniqueness laws are direct keyed insertion. The function flags are kept
+    // for every membership question that follows.
+    let mut seen_names = vec![false; draft.strings().len()];
+    for entry in entries {
+        #[cfg(test)]
+        crate::encode::bump_image_algorithm_counts(|counts| {
+            counts.test_name_uniqueness_probes += 1
+        });
+        let Some(seen_name) = seen_names.get_mut(entry.name().index() as usize) else {
+            return Err(ImageBuildError::InvalidReference("test table"));
+        };
+        if *seen_name {
+            return Err(ImageBuildError::InvalidReference("test table"));
         }
+        *seen_name = true;
+
+        #[cfg(test)]
+        crate::encode::bump_image_algorithm_counts(|counts| {
+            counts.test_target_uniqueness_probes += 1
+        });
+        let Some(flags) = function_relations.flags.get_mut(entry.func() as usize) else {
+            return Err(ImageBuildError::InvalidReference("test table"));
+        };
+        if *flags & TEST_ENTRY_FUNCTION != 0 {
+            return Err(ImageBuildError::InvalidReference("test table"));
+        }
+        *flags |= TEST_ENTRY_FUNCTION;
     }
     let is_test_entry = |func: u16| {
-        entries.iter().any(|entry| {
-            #[cfg(test)]
-            crate::encode::bump_image_algorithm_counts(|counts| {
-                counts.test_entry_membership_probes += 1
-            });
-            entry.func() == func
-        })
+        #[cfg(test)]
+        crate::encode::bump_image_algorithm_counts(|counts| {
+            counts.test_entry_membership_probes += 1
+        });
+        function_relations
+            .flags
+            .get(func as usize)
+            .is_some_and(|flags| *flags & TEST_ENTRY_FUNCTION != 0)
     };
     for (index, function) in draft.functions().iter().enumerate() {
         let has_assert = function
@@ -1165,13 +1208,9 @@ fn test_entry_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     }
     for entry in entries {
         let function = &draft.functions()[entry.func() as usize];
-        if draft.export_rows().iter().any(|export| {
-            #[cfg(test)]
-            crate::encode::bump_image_algorithm_counts(|counts| {
-                counts.export_membership_probes += 1
-            });
-            export.func() == entry.func()
-        }) {
+        #[cfg(test)]
+        crate::encode::bump_image_algorithm_counts(|counts| counts.export_membership_probes += 1);
+        if function_relations.flags[entry.func() as usize] & EXPORTED_FUNCTION != 0 {
             return Err(ImageBuildError::InvalidReference("test table"));
         }
         if !function.params.is_empty() {
