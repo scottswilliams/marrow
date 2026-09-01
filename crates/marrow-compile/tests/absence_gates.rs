@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 #[path = "common/source_projection.rs"]
 mod source_projection;
 use source_projection::{
-    is_ident_byte, is_test_only_file, last_production_item, production_code, without_literals,
+    is_ident_byte, is_test_only_file, last_production_item, production_code, production_code_of,
+    without_literals,
 };
 
 fn src_files() -> Vec<PathBuf> {
@@ -534,11 +535,6 @@ fn production_occurrences(needle: &str) -> Vec<(PathBuf, usize)> {
         }
     }
     found
-}
-
-fn production_code_of(file: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
-    production_code(&fs::read_to_string(path).expect("read source file"))
 }
 
 /// The production code of a whole module directory, concatenated.

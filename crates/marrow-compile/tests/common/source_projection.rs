@@ -245,6 +245,14 @@ pub fn last_production_item(source: &str) -> Option<String> {
 }
 
 /// Whether any quote in `line` opens a char literal rather than a lifetime.
+/// The production code of one source file under this crate's `src`, read and
+/// projected in one step. The suites that scan a single named file share this
+/// wrapper so the path join and the projection call have one spelling.
+pub fn production_code_of(file: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
+    production_code(&std::fs::read_to_string(path).expect("read source file"))
+}
+
 fn contains_char_literal(line: &str) -> bool {
     let bytes = line.as_bytes();
     (0..bytes.len())

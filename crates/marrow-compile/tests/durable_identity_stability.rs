@@ -194,14 +194,7 @@ fn the_corpus_reaches_every_identity_kind() {
 #[path = "common/source_projection.rs"]
 mod source_projection;
 
-/// The production code of one `marrow-compile` source file, comments, strings, and
-/// `#[cfg(test)]` items blanked by the shared projection.
-fn production_code_of(file: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join(file);
-    source_projection::production_code(&std::fs::read_to_string(path).expect("read source file"))
-}
+use source_projection::production_code_of;
 
 /// The durable builder reads its declaration row tables, never index or key syntax,
 /// and a key column's ledger anchor is assembled in exactly one place.
