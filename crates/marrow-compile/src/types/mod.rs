@@ -512,6 +512,13 @@ pub(crate) enum GenericInvariant {
     /// a refusal would charge the user for the drift, and staying silent would
     /// bind the store to a declaration that does not exist.
     DurableResourceMissing(marrow_image::TypeId),
+    /// A store's executable derivation read a branch key tuple whose scalar
+    /// resolution the directory recorded as refused. The graph build consumes that
+    /// refusal as the branch's own diagnostic and a refused branch refuses its
+    /// store, so a store that reaches the executable derivation proved every branch
+    /// resolved — this arm is the compiler disagreeing with its own admission
+    /// ordering, never a fact about the source.
+    DurableBranchKeyUnresolved,
     /// A declared value type on a containment cycle has no declaration coordinate.
     ///
     /// The declare pass mints the coordinate in the same statement sequence that

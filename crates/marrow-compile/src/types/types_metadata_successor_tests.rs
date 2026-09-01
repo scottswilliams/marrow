@@ -1474,6 +1474,7 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             let _ = type_id;
             18
         }
+        GenericInvariant::DurableBranchKeyUnresolved => 24,
         GenericInvariant::DeclarationCoordinateMissing(type_id) => {
             let _ = type_id;
             23

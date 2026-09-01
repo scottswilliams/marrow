@@ -111,6 +111,14 @@ pub(crate) struct ScalingCounts {
     /// that resolution, so the build reads no declaration list at all and this is
     /// exactly zero.
     pub(crate) durable_declaration_scan_steps: usize,
+    /// Branch key rows constructed by the durable declaration projection.
+    ///
+    /// A branch's key tuple is a fact of its resource declaration, so the projection
+    /// constructs its row exactly once per compile, however many stores occur the
+    /// resource and however many of them stage and roll back. The production
+    /// projection charges each construction here, so a row family that drifted back
+    /// to per-store construction is caught at the count.
+    pub(crate) branch_key_row_constructions: usize,
     /// Template-body declaration entries a fill copied out of the template — one per
     /// declared field for a struct fill, and one per declared variant plus one per
     /// declared payload leaf for an enum fill.
@@ -137,6 +145,7 @@ thread_local! {
         hover_spelling_chars: 0,
         value_cycle_declaration_scan_steps: 0,
         durable_declaration_scan_steps: 0,
+        branch_key_row_constructions: 0,
         template_body_clone_entries: 0,
     }) };
 }
@@ -145,6 +154,12 @@ thread_local! {
 /// hover display. A no-op outside the scaling-count test window.
 pub(crate) fn bump_hover_spelling_chars(chars: usize) {
     bump_scaling(|counts| counts.hover_spelling_chars += chars);
+}
+
+/// Observe one branch key row construction in the durable declaration projection.
+/// A no-op outside the scaling-count test window.
+pub(crate) fn bump_branch_key_row_construction() {
+    bump_scaling(|counts| counts.branch_key_row_constructions += 1);
 }
 
 pub(super) fn bump_scaling(update: impl FnOnce(&mut ScalingCounts)) {

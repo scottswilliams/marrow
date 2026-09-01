@@ -206,6 +206,7 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         GenericInvariant::FunctionIndexDomain => "function index domain",
         GenericInvariant::DurableConstructionRefused => "durable construction refused",
         GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
+        GenericInvariant::DurableBranchKeyUnresolved => "durable branch key unresolved",
         GenericInvariant::DeclarationCoordinateMissing(_) => "declaration coordinate missing",
     }
 }
@@ -950,5 +951,44 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
     assert!(
         diagnostics.finish().expect_complete().is_empty(),
         "the drift is a compiler fault; no user-facing row may be minted for it",
+    );
+}
+
+/// A branch's key row is constructed exactly once per compile, however many stores
+/// occur its resource and whatever those stores' fates.
+///
+/// Before the directory owned the branch projection, each store attempt constructed
+/// the branch key rows afresh — a store refused on identity gaps rolled back and the
+/// next store re-resolved the same declaration, so "resolved once into a typed row"
+/// held per attempt rather than per compile. The corpus is the review's own: two
+/// stores over one keyed-branch resource with no identity ledger, so the first store
+/// refuses after staging and the second walks the same product. The count is exact:
+/// one keyed branch, one construction.
+#[test]
+fn a_branch_key_row_is_constructed_once_per_compile() {
+    let source = "module main\n\nresource R {\n    required title: string\n\n    \
+                  items[itemId: string] {\n        required value: string\n    }\n}\n\n\
+                  store ^a[id: int]: R\n\nstore ^b[id: int]: R\n\nfn main() {\n}\n";
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        None,
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture project");
+    let (result, counts) =
+        crate::types::capture_scaling_counts(|| crate::compile::compile(&project));
+    assert!(
+        result.is_err(),
+        "the unminted corpus is refused; both stores reach the durable build"
+    );
+    assert_eq!(
+        counts.branch_key_row_constructions, 1,
+        "one keyed branch must mean one key-row construction, store count independent",
     );
 }

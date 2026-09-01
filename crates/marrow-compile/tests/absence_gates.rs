@@ -2124,9 +2124,14 @@ fn fallible_work_follows_the_first_eager_site_staging_in_the_store_build() {
     // than where a call actually leaves. The subject is the exact set of calls that exit
     // with sites already staged.
     let propagating = propagating_callees(after);
+    // `build_executable_branches` joined the set when the executable derivation began
+    // reading the settled branch key rows: its one exit is the admission-ordering
+    // coherence invariant, which aborts the whole durable build and drops the staged
+    // transaction with it.
     assert_eq!(
         propagating,
         vec![
+            "build_executable_branches",
             "emit_root_member_sites",
             "member_flat_at_root",
             "request_eager_site",

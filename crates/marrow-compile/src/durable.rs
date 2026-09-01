@@ -37,9 +37,7 @@ use marrow_image::{
     SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
-use marrow_syntax::{
-    FieldDecl, GroupDecl, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr,
-};
+use marrow_syntax::{FieldDecl, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr};
 
 use crate::analysis::FileRef;
 use crate::compile::admitted;
@@ -59,8 +57,8 @@ mod rows;
 mod staging;
 
 use rows::{
-    IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyOwner, KeyTable, ProductKey,
-    ResourceDirectory, StoreResourceBinding, StoreRow,
+    BranchKeyRows, GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyTable,
+    ProductKey, ResourceDirectory, StoreResourceBinding, StoreRow,
 };
 use staging::StagedStoreTxn;
 
@@ -665,21 +663,17 @@ impl DurableRegistry {
         }
     }
 
-    /// Record the qualified paths of every keyed branch `members` declares below
-    /// `container`, recursively. Source declaration facts only: no key column, field type,
-    /// record, site, or root is read, so the answer is available for every admitted Product
-    /// whether or not a root over it reached the executable subset.
-    fn record_declared_branch_paths(&mut self, container: &str, members: &[ResourceMember]) {
-        for member in members {
-            let ResourceMember::Group(group) = member else {
-                continue;
-            };
-            if group.keys.is_empty() {
+    /// Record the qualified path of every keyed branch among `groups`, recursively.
+    /// The rows carry each branch's path and keyedness, so this projection reads no
+    /// declaration syntax and re-derives neither; the answer is available for every
+    /// admitted Product whether or not a root over it reached the executable subset.
+    fn record_declared_branch_paths(&mut self, groups: &[GroupRow<'_>]) {
+        for row in groups {
+            if row.keys.is_none() {
                 continue;
             }
-            let qualified = format!("{container}.{}", group.name);
-            self.record_declared_branch_paths(&qualified, &group.members);
-            self.declared_branch_paths.insert(qualified);
+            self.record_declared_branch_paths(&row.groups);
+            self.declared_branch_paths.insert(row.path.clone());
         }
     }
 
@@ -806,7 +800,7 @@ impl DurableRegistry {
                 // by the resource it binds.
                 let stores = registry
                     .products
-                    .entry(store.resource.clone())
+                    .entry(row.resource.to_string())
                     .or_insert_with(|| ProductStores {
                         admitted: Vec::new(),
                         first_refused: None,
@@ -834,10 +828,7 @@ impl DurableRegistry {
                     }
                 }
                 if declare_branch_paths && let StoreResourceBinding::Accepted(bound) = row.binding {
-                    registry.record_declared_branch_paths(
-                        &store.resource,
-                        &directory.row(bound).decl.members,
-                    );
+                    registry.record_declared_branch_paths(&directory.row(bound).groups);
                 }
                 if let Some(at) = declare_branches {
                     let branches = std::mem::take(&mut registry.roots[at].branches);
@@ -1180,10 +1171,10 @@ fn build_one(
     // The refused and absent arms report the same row at the same span: a name that is
     // written but binds no admitted resource is not a resource of this project either
     // way, and steering the refused case to its own cause is a separate change.
-    let (resource, record) = match row.binding {
+    let (record, group_rows) = match row.binding {
         StoreResourceBinding::Accepted(bound) => {
             let bound = directory.row(bound);
-            (bound.decl, bound.record)
+            (bound.record, bound.groups.as_slice())
         }
         StoreResourceBinding::Unbound => {
             return refuse(
@@ -1225,7 +1216,7 @@ fn build_one(
     let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
     let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
     resolver.name_step(placement, PathSigil::Root, &store.root.root);
-    let product = resolver.resolve(IdentityKind::Product, &store.resource);
+    let product = resolver.resolve(IdentityKind::Product, row.resource);
     let key_ids: Vec<LedgerIdBytes> = keys
         .rows()
         .iter()
@@ -1255,7 +1246,7 @@ fn build_one(
     let built = match draft.product_members(product) {
         Some(members) => Some(ProductDeclarationSource::Held(members)),
         None => resolver
-            .build_product_graph(draft, records, metadata, store, resource, record)
+            .build_product_graph(draft, records, metadata, store, record, group_rows)
             .map(ProductDeclarationSource::Built),
     };
     if let Some(invariant) = resolver.invariant {
@@ -1447,7 +1438,7 @@ fn build_one(
     let executable = keyed && all_fields_executable && members_flat;
     let (branches, groups) = if executable {
         (
-            build_executable_branches(records, resource, &captured.branches),
+            build_executable_branches(records, group_rows, &captured.branches)?,
             build_executable_groups(&record.groups, &captured.groups),
         )
     } else {
@@ -1513,7 +1504,7 @@ fn resolve_key_scalars(
     let span = keys.span();
     let mut scalars = Vec::with_capacity(keys.rows().len());
     for column in keys.rows() {
-        let Some(key) = scalar_of(&records.expand(column.ty)) else {
+        let Some(key) = scalar_of(&records.expand(&column.ty)) else {
             return Err(Box::new(unsupported(file, span, "this key type")));
         };
         // The closed orderable durable-key scalar set (frozen at C04): int, string,
@@ -1553,7 +1544,6 @@ fn resolve_key_scalars(
 /// "identity gap".
 struct IdentityResolver<'a> {
     declared: DeclarationSite<'a>,
-    file: &'a FileIdentity,
     span: SourceSpan,
     ledger: Option<&'a IdentityLedger>,
     refusal: Option<DeclarationRefusalSummary>,
@@ -1601,7 +1591,6 @@ impl<'a> IdentityResolver<'a> {
     ) -> Self {
         Self {
             declared,
-            file: declared.file,
             span,
             ledger,
             refusal: None,
@@ -1928,14 +1917,15 @@ impl<'a> IdentityResolver<'a> {
     /// store-traversal order: a later root over the same Product reads the declaration
     /// the draft already holds, resolving no anchor a second time and minting no second
     /// entry record type for the Product's nested branches.
+    #[allow(clippy::too_many_arguments)]
     fn build_product_graph(
         &mut self,
         draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         store: &StoreDecl,
-        resource: &ResourceDecl,
         record: &RecordInfo,
+        groups: &[GroupRow<'_>],
     ) -> Option<Vec<DeclarationMemberDef>> {
         let mut nodes: Vec<DeclarationDraftNode> = Vec::new();
         for field in &record.fields {
@@ -1968,7 +1958,7 @@ impl<'a> IdentityResolver<'a> {
             MemberCursor::top(&store.resource),
             draft,
             records,
-            &resource.members,
+            groups,
         );
         Some(declaration_commands(nodes))
     }
@@ -1990,18 +1980,16 @@ impl<'a> IdentityResolver<'a> {
         cursor: MemberCursor<'_>,
         draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
-        members: &[ResourceMember],
+        groups: &[GroupRow<'_>],
     ) {
-        for member in members {
-            let ResourceMember::Group(group) = member else {
-                continue;
-            };
-            let path = format!("{}.{}", cursor.container, group.name);
-            if group.keys.is_empty() {
+        for row in groups {
+            let group = row.group;
+            let path = row.path.as_str();
+            let Some(branch_keys) = &row.keys else {
                 // A `group`: an unkeyed static field-path namespace. Its direct fields
                 // flatten into the containing resource's namespace, so it mints no
                 // record type of its own.
-                let id = self.resolve(IdentityKind::Group, &path);
+                let id = self.resolve(IdentityKind::Group, path);
                 self.name_step(id, PathSigil::Child, &group.name);
                 let at = nodes.len();
                 nodes.push(DeclarationDraftNode::declared(
@@ -2009,8 +1997,10 @@ impl<'a> IdentityResolver<'a> {
                     DeclarationWireClass::Group,
                     DeclarationMemberShape::Group { id },
                 ));
-                self.build_member_tree(nodes, cursor.below(at, &path), draft, records, group);
-            } else {
+                self.build_member_tree(nodes, cursor.below(at, path), draft, records, row);
+                continue;
+            };
+            {
                 // A keyed `branch`: a distinct keyed placement, like a root. Its entry
                 // is a record of its own direct scalar fields; materialize that record
                 // type (ordered like the member tree) so a whole branch-entry read
@@ -2018,9 +2008,9 @@ impl<'a> IdentityResolver<'a> {
                 // the qualified `Resource.branch` path — the branch's constructor
                 // spelling; the branch's own `name` is the simple member name the
                 // physical layer keys its family by.
-                let placement = self.resolve(IdentityKind::Root, &path);
+                let placement = self.resolve(IdentityKind::Root, path);
                 self.name_step(placement, PathSigil::Child, &group.name);
-                let keys = self.build_branch_keys(records, group, &path);
+                let keys = self.build_branch_keys(branch_keys);
                 // The branch's slot is reserved before its members are walked: its own
                 // members declare it as their parent, and its entry record type is minted
                 // from them, so the shape is completed once the walk returns.
@@ -2030,8 +2020,8 @@ impl<'a> IdentityResolver<'a> {
                     DeclarationWireClass::Branch,
                 ));
                 let record_fields =
-                    self.build_member_tree(nodes, cursor.below(at, &path), draft, records, group);
-                let minted = draft.intern_string(&path);
+                    self.build_member_tree(nodes, cursor.below(at, path), draft, records, row);
+                let minted = draft.intern_string(path);
                 let Some(record_name) = self.checked_mint(minted) else {
                     return;
                 };
@@ -2059,36 +2049,27 @@ impl<'a> IdentityResolver<'a> {
     /// The key tuple of a branch placement: each column's scalar and its ledger id
     /// anchored at `<branch path>.<column>`. A key type outside the closed orderable
     /// durable-key set is a precise diagnostic and marks the graph incomplete.
-    fn build_branch_keys(
-        &mut self,
-        records: &TypeRegistry,
-        group: &GroupDecl,
-        path: &str,
-    ) -> Vec<KeyColumn> {
-        let keys = KeyTable::take(
-            KeyOwner::Member {
-                path,
-                span: group.span,
-            },
-            &group.keys,
-        );
-        if let Some(message) = keys.over_wide() {
-            self.reject_resource_limit(keys.span(), message);
+    fn build_branch_keys(&mut self, keys: &BranchKeyRows<'_>) -> Vec<KeyColumn> {
+        if let Some(message) = keys.table.over_wide() {
+            self.reject_resource_limit(keys.table.span(), message);
             return Vec::new();
         }
-        let scalars = match resolve_key_scalars(self.file, &keys, records) {
+        let scalars = match &keys.scalars {
             Ok(scalars) => scalars,
             Err(row) => {
-                self.refuse(DurableRefusal::Admission { row: *row });
+                self.refuse(DurableRefusal::Admission {
+                    row: row.as_ref().clone(),
+                });
                 return Vec::new();
             }
         };
-        keys.rows()
+        keys.table
+            .rows()
             .iter()
             .zip(scalars)
             .map(|(key, scalar)| KeyColumn {
                 scalar: scalar.image(),
-                id: self.resolve(IdentityKind::Key, &keys.identity_path(key)),
+                id: self.resolve(IdentityKind::Key, &keys.table.identity_path(key)),
             })
             .collect()
     }
@@ -2112,8 +2093,9 @@ impl<'a> IdentityResolver<'a> {
         cursor: MemberCursor<'_>,
         draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
-        group: &GroupDecl,
+        row: &GroupRow<'_>,
     ) -> Vec<FieldDef> {
+        let group = row.group;
         if cursor.depth > bounds::MAX_DURABLE_DEPTH {
             if let Some(member) = group.members.first() {
                 self.reject_resource_limit(member.span(), over_deep_member_message());
@@ -2136,7 +2118,7 @@ impl<'a> IdentityResolver<'a> {
                 record_fields.push(record_field);
             }
         }
-        self.build_extras(nodes, cursor, draft, records, &group.members);
+        self.build_extras(nodes, cursor, draft, records, &row.groups);
         record_fields
     }
 
@@ -2743,17 +2725,17 @@ fn build_executable_groups(
 /// The executable branch descriptors of a flat-executable root, in declaration order,
 /// recursively. Each branch's materialized record type and its whole-payload, per-field,
 /// and nested-branch sites come from `top_branches`, and its simple name, key, field plan,
-/// and nested branches from the source resource declaration — all in the same declaration
+/// and nested branches from the resource's group rows — all in the same declaration
 /// order, so a branch path indexes both the sealed branch tree and this one identically.
 /// Called only when the caller has proven the root flat-executable, so every branch is a
 /// scalar-field keyed branch (its nested members are scalar fields and simple
 /// branches).
 fn build_executable_branches(
     records: &TypeRegistry,
-    resource: &ResourceDecl,
+    groups: &[GroupRow<'_>],
     top_branches: &[BranchSites],
-) -> Vec<DurableBranch> {
-    build_branches(records, &resource.members, top_branches)
+) -> Result<Vec<DurableBranch>, GenericInvariant> {
+    build_branches(records, groups, top_branches)
 }
 
 /// Build the [`DurableBranch`] descriptors for the keyed branches among `members`, zipped
@@ -2762,29 +2744,19 @@ fn build_executable_branches(
 /// are both in declaration order, so the zip pairs each branch with its own sites.
 fn build_branches(
     records: &TypeRegistry,
-    members: &[ResourceMember],
+    groups: &[GroupRow<'_>],
     sites: &[BranchSites],
-) -> Vec<DurableBranch> {
-    members
+) -> Result<Vec<DurableBranch>, GenericInvariant> {
+    groups
         .iter()
-        .filter_map(|member| match member {
-            ResourceMember::Group(group) if !group.keys.is_empty() => Some(group),
-            _ => None,
-        })
+        .filter_map(|row| row.keys.as_ref().map(|keys| (row, keys)))
         .zip(sites)
-        .map(|(group, sites)| {
-            #[expect(
-                clippy::expect_used,
-                reason = "checker-classified type: key columns admitted to an executable branch were classified as orderable key scalars during checking, so expansion yields a scalar"
-            )]
-            let key = group
-                .keys
-                .iter()
-                .map(|column| {
-                    scalar_of(&records.expand(&column.ty))
-                        .expect("an executable branch key column is an orderable key scalar")
-                })
-                .collect();
+        .map(|((row, keys), sites)| {
+            let group = row.group;
+            // The key scalars were resolved once, when the row was taken; the graph
+            // build consumed a refusal as this branch's own diagnostic, so a branch
+            // reaching the executable derivation reads the settled tuple.
+            let key = keys.resolved()?.to_vec();
             let fields = group
                 .members
                 .iter()
@@ -2808,15 +2780,15 @@ fn build_branches(
                     }
                 })
                 .collect();
-            let branches = build_branches(records, &group.members, &sites.branches);
-            DurableBranch {
+            let branches = build_branches(records, &row.groups, &sites.branches)?;
+            Ok(DurableBranch {
                 name: group.name.clone(),
                 key,
                 record: sites.record,
                 path: sites.path.clone(),
                 fields,
                 branches,
-            }
+            })
         })
         .collect()
 }

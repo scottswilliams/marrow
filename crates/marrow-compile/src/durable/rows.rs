@@ -11,9 +11,13 @@ use std::ops::Range;
 
 use marrow_image::bounds;
 use marrow_project::FileIdentity;
-use marrow_syntax::{IndexDecl, KeyParam, ResourceDecl, SourceSpan, StoreDecl, TypeExpr};
+use marrow_syntax::{
+    GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
+};
 
 use crate::analysis::FileRef;
+use crate::diag::SourceDiagnostic;
+use crate::scalar::ScalarType;
 use crate::types::{GenericInvariant, RecordInfo, TypeRegistry};
 /// A typed handle to one admitted `resource` declaration, valid only in the
 /// [`ResourceDirectory`] that minted it.
@@ -23,11 +27,16 @@ use crate::types::{GenericInvariant, RecordInfo, TypeRegistry};
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ResourceDeclId(usize);
 
-/// One `resource` declaration as the durable builder reads it: the declaration the
-/// parser wrote, and the record the type registry admitted for it.
+/// One `resource` declaration as the durable builder reads it: the record the type
+/// registry admitted, and the member `group`/`branch` tree projected from the
+/// declaration the parser wrote.
+///
+/// The declaration itself is consumed whole at the take: everything the build reads
+/// from it afterwards travels as rows, so no later phase can reach back into the
+/// syntax it was projected from.
 pub(super) struct ResourceRow<'a> {
-    pub(super) decl: &'a ResourceDecl,
     pub(super) record: &'a RecordInfo,
+    pub(super) groups: Vec<GroupRow<'a>>,
 }
 
 /// Every `resource` declaration the type registry admitted, addressed by
@@ -55,18 +64,21 @@ impl<'a> ResourceDirectory<'a> {
         // first declaration; answering the spelling with the first declaration is the
         // same choice, spelled once. One keyed pass here; the join below is a lookup,
         // not a scan, so the take is linear-logarithmic in the declaration count.
-        let mut declared: BTreeMap<&str, &'a ResourceDecl> = BTreeMap::new();
-        for (_, _, decl) in resources {
-            declared.entry(decl.name.as_str()).or_insert(decl);
+        let mut declared: BTreeMap<&str, (&FileIdentity, &'a ResourceDecl)> = BTreeMap::new();
+        for (_, file, decl) in resources {
+            declared.entry(decl.name.as_str()).or_insert((file, decl));
         }
         let mut rows = Vec::new();
         let mut by_spelling = BTreeMap::new();
         for record in records.admitted_resources() {
-            let Some(decl) = declared.get(record.name.as_str()) else {
+            let Some((file, decl)) = declared.get(record.name.as_str()).copied() else {
                 return Err(GenericInvariant::DurableResourceMissing(record.type_id));
             };
             let id = ResourceDeclId(rows.len());
-            rows.push(ResourceRow { decl, record });
+            rows.push(ResourceRow {
+                record,
+                groups: group_rows(file, records, &record.name, &decl.members),
+            });
             by_spelling.insert(record.name.as_str(), id);
         }
         Ok(Self { rows, by_spelling })
@@ -263,12 +275,13 @@ pub(super) enum KeyOwner<'a> {
     /// A `store` root's key tuple, anchored at the root placement name.
     Store { root: &'a str, span: SourceSpan },
     /// A keyed `branch` placement's key tuple, anchored at the branch's member path.
-    Member { path: &'a str, span: SourceSpan },
+    /// The path is owned: it is assembled once, when the branch's row is taken.
+    Member { path: String, span: SourceSpan },
 }
 
-impl<'a> KeyOwner<'a> {
+impl KeyOwner<'_> {
     /// The path every column of this tuple anchors under.
-    fn anchor(&self) -> &'a str {
+    fn anchor(&self) -> &str {
         match self {
             Self::Store { root, .. } => root,
             Self::Member { path, .. } => path,
@@ -290,36 +303,24 @@ impl<'a> KeyOwner<'a> {
     }
 }
 
-/// One column of a durable key tuple: the name its ledger anchor ends with, and the
-/// declared type its scalar is resolved from.
-///
-/// The column's position in [`KeyTable::rows`] is its declaration order, which is the
-/// order the identity suffix law and the image key tuple both read.
-pub(super) struct KeyRow<'a> {
-    pub(super) name: &'a str,
-    pub(super) ty: &'a TypeExpr,
-}
-
 /// One declaration's durable key tuple, taken once from the declaration.
+///
+/// The columns are the declaration's own, borrowed rather than copied: each carries
+/// the name its ledger anchor ends with and the declared type its scalar is resolved
+/// from, and a column's position is its declaration order — the order the identity
+/// suffix law and the image key tuple both read.
 pub(super) struct KeyTable<'a> {
     owner: KeyOwner<'a>,
-    rows: Vec<KeyRow<'a>>,
+    rows: &'a [KeyParam],
 }
 
 impl<'a> KeyTable<'a> {
     pub(super) fn take(owner: KeyOwner<'a>, keys: &'a [KeyParam]) -> Self {
-        let rows = keys
-            .iter()
-            .map(|key| KeyRow {
-                name: &key.name,
-                ty: &key.ty,
-            })
-            .collect();
-        Self { owner, rows }
+        Self { owner, rows: keys }
     }
 
-    pub(super) fn rows(&self) -> &[KeyRow<'a>] {
-        &self.rows
+    pub(super) fn rows(&self) -> &'a [KeyParam] {
+        self.rows
     }
 
     /// The span a refusal about this tuple as a whole reports at.
@@ -348,7 +349,88 @@ impl<'a> KeyTable<'a> {
     /// returns are the keys of the machine-written `.marrow/ids` ledger, so a second
     /// spelling of this join would silently re-anchor durable identity — which is why
     /// the join has one owner and `durable_identity_stability.rs` freezes its output.
-    pub(super) fn identity_path(&self, row: &KeyRow<'a>) -> String {
-        format!("{}.{}", self.owner.anchor(), row.name)
+    pub(super) fn identity_path(&self, column: &KeyParam) -> String {
+        format!("{}.{}", self.owner.anchor(), column.name)
     }
+}
+/// One `group` member of a resource — a static namespace or, when keyed, a `branch`
+/// placement — as the durable build reads it: the declaration it was taken from, the
+/// qualified path every walker used to assemble on its own, its key rows when keyed,
+/// and its nested group rows in declaration order.
+///
+/// The tree mirrors the declaration's group nesting exactly, so a walker drives off
+/// the rows and can no longer re-derive a path or reclassify keyedness. It is taken
+/// once per compile, with the directory: a store attempt that stages and rolls back
+/// consumes the same rows a later attempt does.
+pub(super) struct GroupRow<'a> {
+    pub(super) group: &'a GroupDecl,
+    /// The qualified member path, the branch-path and key-anchor prefix. Assembled
+    /// here and nowhere else.
+    pub(super) path: String,
+    /// `Some` for a keyed `branch` placement, `None` for a static `group`.
+    pub(super) keys: Option<BranchKeyRows<'a>>,
+    pub(super) groups: Vec<GroupRow<'a>>,
+}
+
+/// A keyed branch placement's key tuple and its scalar resolution, both settled once
+/// per compile.
+///
+/// The resolution is stored rather than re-derived per consumer: the graph build
+/// renders the refusal (at its walk position, so diagnostic order is unchanged), and
+/// the executable derivation reads the same settled answer instead of expanding the
+/// raw column types a second time — which is what retires the disagreement fence the
+/// second expansion needed.
+pub(super) struct BranchKeyRows<'a> {
+    pub(super) table: KeyTable<'a>,
+    pub(super) scalars: Result<Vec<ScalarType>, Box<SourceDiagnostic>>,
+}
+
+impl BranchKeyRows<'_> {
+    /// The resolved scalar tuple, or the typed coherence failure for a consumer that
+    /// can only run once this tuple was admitted. The graph build consumes the `Err`
+    /// arm as this branch's refusal, and a refused branch refuses its store, so a
+    /// store that reached the executable derivation proved every branch resolved.
+    pub(super) fn resolved(&self) -> Result<&[ScalarType], GenericInvariant> {
+        match &self.scalars {
+            Ok(scalars) => Ok(scalars),
+            Err(_) => Err(GenericInvariant::DurableBranchKeyUnresolved),
+        }
+    }
+}
+
+/// Project the group rows of `members`, in declaration order, recursively.
+fn group_rows<'a>(
+    file: &FileIdentity,
+    records: &TypeRegistry,
+    container: &str,
+    members: &'a [ResourceMember],
+) -> Vec<GroupRow<'a>> {
+    let mut rows = Vec::new();
+    for member in members {
+        let ResourceMember::Group(group) = member else {
+            continue;
+        };
+        let path = format!("{container}.{}", group.name);
+        let keys = (!group.keys.is_empty()).then(|| {
+            #[cfg(test)]
+            crate::types::bump_branch_key_row_construction();
+            let table = KeyTable::take(
+                KeyOwner::Member {
+                    path: path.clone(),
+                    span: group.span,
+                },
+                &group.keys,
+            );
+            let scalars = super::resolve_key_scalars(file, &table, records);
+            BranchKeyRows { table, scalars }
+        });
+        let groups = group_rows(file, records, &path, &group.members);
+        rows.push(GroupRow {
+            group,
+            path,
+            keys,
+            groups,
+        });
+    }
+    rows
 }
