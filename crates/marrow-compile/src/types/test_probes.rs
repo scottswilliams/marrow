@@ -92,25 +92,6 @@ pub(crate) struct ScalingCounts {
     /// On a divergent-monomorphization program the pre-repair per-instance render made
     /// this Σ O(depth) = O(instances²); the repair holds it to the monomorphic baseline.
     pub(crate) hover_spelling_chars: usize,
-    /// Syntax-tree declarations examined by `reject_value_cycles` while answering
-    /// "where was this type written".
-    ///
-    /// The pass once scanned the project's struct and resource declaration lists
-    /// for a name match, once per type it reported, so a project with `d`
-    /// declarations and `c` reported cycles paid up to `c * d`. The declare pass
-    /// now owns that coordinate, so the pass reads no declaration at all and this
-    /// is exactly zero — a bound, not a ratio, which is why the gate asserts
-    /// equality with zero rather than a shrinking count.
-    pub(crate) value_cycle_declaration_scan_steps: usize,
-    /// Syntax-tree declarations examined by the durable store build while answering
-    /// "which resource declaration does this store bind".
-    ///
-    /// The build once searched the retained resource declaration list by name — in
-    /// store binding and again for a bound Product's branch paths — after the type
-    /// registry had already admitted the same name. The store's row binding owns
-    /// that resolution, so the build reads no declaration list at all and this is
-    /// exactly zero.
-    pub(crate) durable_declaration_scan_steps: usize,
     /// Branch key rows constructed by the durable declaration projection.
     ///
     /// A branch's key tuple is a fact of its resource declaration, so the projection
@@ -143,8 +124,6 @@ thread_local! {
         template_proofs: 0,
         template_proof_rows: 0,
         hover_spelling_chars: 0,
-        value_cycle_declaration_scan_steps: 0,
-        durable_declaration_scan_steps: 0,
         branch_key_row_constructions: 0,
         template_body_clone_entries: 0,
     }) };

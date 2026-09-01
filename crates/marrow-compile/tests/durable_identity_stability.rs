@@ -295,3 +295,135 @@ fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
         );
     }
 }
+
+/// Every row table holds exactly its typed fields — pinned line by line, because the
+/// round-1 review constructed a bridge the lexical needles missed: a type alias for
+/// the raw declaration slice, carried as an extra directory field and consumed by a
+/// `find_map` name recovery, kept every asserted count intact. A field-exact pin has
+/// no such gap: any carrier added to a row table changes the pinned field list,
+/// whatever its type is spelled as.
+#[test]
+fn the_row_tables_hold_exactly_their_typed_fields() {
+    let rows = production_code_of("durable/rows.rs");
+    let field_lines = |name: &str| -> Vec<String> {
+        let header = format!("pub(super) struct {name} {{");
+        let body = rows
+            .split_once(&header)
+            .unwrap_or_else(|| panic!("`{name}` is declared in the row tables"))
+            .1;
+        let body = body.split_once("\n}").expect("the struct body is closed").0;
+        body.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let pins: [(&str, &[&str]); 5] = [
+        (
+            "ResourceDirectory<'a>",
+            &[
+                "rows: Vec<ResourceRow<'a>>,",
+                "by_spelling: BTreeMap<&'a str, ResourceDeclId>,",
+            ],
+        ),
+        (
+            "ResourceRow<'a>",
+            &[
+                "pub(super) record: &'a RecordInfo,",
+                "pub(super) groups: Vec<GroupRow<'a>>,",
+            ],
+        ),
+        (
+            "StoreRow<'a>",
+            &[
+                "pub(super) resource: &'a str,",
+                "pub(super) binding: StoreResourceBinding,",
+                "pub(super) indexes: IndexTable<'a>,",
+                "pub(super) keys: KeyTable<'a>,",
+            ],
+        ),
+        (
+            "GroupRow<'a>",
+            &[
+                "pub(super) group: &'a GroupDecl,",
+                "pub(super) path: String,",
+                "pub(super) keys: Option<BranchKeyRows<'a>>,",
+                "pub(super) groups: Vec<GroupRow<'a>>,",
+            ],
+        ),
+        (
+            "BranchKeyRows<'a>",
+            &[
+                "pub(super) table: KeyTable<'a>,",
+                "pub(super) scalars: Result<Vec<ScalarType>, Box<SourceDiagnostic>>,",
+            ],
+        ),
+    ];
+    for (name, fields) in pins {
+        assert_eq!(
+            field_lines(name),
+            fields,
+            "`{name}` grew or changed a field; a new carrier is a lease-and-review event",
+        );
+    }
+}
+
+/// Declaration-by-name recovery has no shape left to hide in: the durable module's
+/// `.find` population is a closed census of within-declaration member lookups, and
+/// the recovery combinators are absent entirely.
+///
+/// The counts are exact rather than "at most" so a recovery rewritten onto an
+/// allowed combinator moves a number instead of slipping past a needle. Every
+/// counted site compares members of ONE declaration's own row — never one
+/// declaration list against another's name.
+#[test]
+fn declaration_name_recovery_has_no_shape_to_hide_in() {
+    let builder = production_code_of("durable.rs");
+    let rows = production_code_of("durable/rows.rs");
+    let staging = production_code_of("durable/staging.rs");
+    assert_eq!(
+        builder.matches(".find(").count(),
+        11,
+        "the builder's find census moved: nine member helpers and two index-component \
+         lookups, each within one declaration's own members",
+    );
+    assert_eq!(
+        rows.matches(".find(").count() + staging.matches(".find(").count(),
+        0,
+        "the row tables and the staging boundary perform no searches at all",
+    );
+    for (file, code) in [
+        ("durable.rs", &builder),
+        ("durable/rows.rs", &rows),
+        ("durable/staging.rs", &staging),
+    ] {
+        for shape in ["find_map", ".position(", "unstable_name_collisions"] {
+            assert!(
+                !code.contains(shape),
+                "`{shape}` in `{file}` is a recovery shape the census does not admit",
+            );
+        }
+    }
+    // The raw declaration type itself is a closed census: the build entry and the
+    // row tables' take own every mention, so an alias cannot be minted from either
+    // file without moving a count.
+    let mentions = |code: &String| {
+        code.matches("ResourceDecl").count() - code.matches("ResourceDeclId").count()
+    };
+    assert_eq!(
+        mentions(&builder),
+        2,
+        "durable.rs names the raw declaration type only at its import and build entry",
+    );
+    assert_eq!(
+        mentions(&rows),
+        3,
+        "rows.rs names the raw declaration type only at its import, take signature, \
+         and declaration map",
+    );
+    assert_eq!(
+        mentions(&staging),
+        0,
+        "the staging boundary never names the raw declaration type",
+    );
+}

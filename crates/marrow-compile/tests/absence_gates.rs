@@ -2916,9 +2916,13 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
     ] {
         assert!(
             !module.contains(escape),
-            "no production signature may hand out the coordinate table (`{escape}`)",
+            "the coordinate table escapes (`{escape}`)"
         );
     }
+    assert!(
+        !module.contains("Clone for DeclarationCoordinates"),
+        "a hand-written `impl Clone` reopens the copy the derive scan forbids",
+    );
     assert!(
         !module.contains("stale-row window"),
         "the projection must blank doc comments; this module's own prose survived",
@@ -2926,18 +2930,12 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
 }
 
 /// The durable build reaches a resource only through its `StoreRow` binding: the
-/// displaced per-store name lookups are gone, and the registry/slice drift the old
-/// per-store lookup could hit is decided at exactly one place — the directory join —
-/// which is the sole producer of `DurableResourceMissing`.
-///
-/// The old shape had two owners answering "which resource is this store over" per
-/// store, with nothing stopping them disagreeing; the row binding leaves one join,
-/// performed once, whose drift arm is a typed invariant rather than a user-facing
-/// diagnostic. The producer count is exact so a second lookup that raises the same
-/// invariant cannot hide behind the variant's continued existence. The structural
-/// half of this family — the builder naming no index or key syntax, the single
-/// key-anchor join, and the raw-slice-free staging boundary — is enforced beside the
-/// identity contract it protects, in `durable_identity_stability.rs`.
+/// displaced per-store name lookups are gone, and the registry/slice drift they
+/// could hit is decided at exactly one place — the directory join — which is the
+/// sole producer of `DurableResourceMissing`, its count exact so a second lookup
+/// cannot hide behind the variant's continued existence. The structural half of
+/// this family is enforced beside the identity contract it protects, in
+/// `durable_identity_stability.rs`.
 #[test]
 fn the_durable_resource_drift_has_one_deciding_join() {
     for deleted in [
@@ -2948,8 +2946,7 @@ fn the_durable_resource_drift_has_one_deciding_join() {
         let found = occurrences(deleted);
         assert!(
             found.is_empty(),
-            "`{deleted}` is replaced by the typed `StoreRow` binding and must not \
-             exist: {found:?}",
+            "`{deleted}` is displaced by rows: {found:?}"
         );
     }
     let producers = production_occurrences("GenericInvariant::DurableResourceMissing(");
@@ -2962,4 +2959,41 @@ fn the_durable_resource_drift_has_one_deciding_join() {
         !production_occurrences("StoreResourceBinding::Accepted").is_empty(),
         "the typed store binding must be the live subject of this gate",
     );
+}
+/// Reporting a value cycle reads no syntax declaration — held at the signature and
+/// body, since review round 1 proved a lexical counter pins nothing: the pass reads
+/// only what its parameters carry; the body needles catch a smuggled scan.
+#[test]
+fn reporting_a_value_cycle_reads_no_syntax_declaration() {
+    let code = production_code_of("types/mod.rs");
+    let signature = concat!(
+        "pub(crate) fn reject_value_cycles(\n",
+        "    registry: &TypeRegistry,\n",
+        "    diagnostics: &mut DiagnosticCollector,\n",
+        ") -> Result<(), GenericInvariant> {"
+    );
+    assert_eq!(
+        code.matches(signature).count(),
+        1,
+        "the value-cycle pass takes the registry and the collector, and nothing else",
+    );
+    let body = function_bodies(&code)
+        .into_iter()
+        .find(|(name, _)| name == "reject_value_cycles")
+        .map(|(_, body)| body)
+        .expect("the value-cycle pass is present, so this gate has a live subject");
+    for forbidden in [
+        "StructDecl",
+        "ResourceDecl",
+        "FileIdentity",
+        ".find(",
+        "decl.name",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "`{forbidden}` inside the value-cycle pass is a reintroduced declaration read",
+        );
+    }
+    let live = body.contains("coordinates.resolve(");
+    assert!(live, "the coordinate table is the live source of positions");
 }

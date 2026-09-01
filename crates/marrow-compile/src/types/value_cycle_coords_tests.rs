@@ -1,16 +1,15 @@
 //! The value-cycle report reads declaration coordinates the declare pass owns, not
-//! the syntax tree.
+//! the syntax tree, and the durable declaration projection is the one reader of the
+//! declarations it projects.
 //!
-//! Driven through the production `compile` path. The observable is an exact
-//! operation count, not a ratio: the pass examines zero syntax declarations, so a
-//! reintroduced name scan fails the gate at one declaration rather than needing a
-//! scale at which a linear term becomes visible.
-
-use std::fmt::Write as _;
+//! The behavioral half here pins the report's artifact through the production
+//! `compile` path; the structural half — the reject pass's declaration-free
+//! signature and the projection-owned syntax reads — is enforced by
+//! `reporting_a_value_cycle_reads_no_syntax_declaration` in `absence_gates` and the
+//! row-table gates beside the identity contract in `durable_identity_stability`.
 
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-use super::{ScalingCounts, capture_scaling_counts};
 use crate::CompileFailure;
 use crate::compile::compile;
 
@@ -22,56 +21,6 @@ fn project(source: String) -> ProjectInput {
     )];
     marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
         .expect("capture project")
-}
-
-/// A corpus whose value cycles are reported: `pad` unrelated declarations ahead of
-/// a cyclic struct and a cyclic resource, so a name scan over either declaration
-/// list has something to walk before it matches.
-fn cyclic_corpus(pad: usize) -> String {
-    let mut source = String::new();
-    for index in 0..pad {
-        writeln!(source, "struct Pad{index} {{ value: int }}").expect("write pad struct");
-    }
-    for index in 0..pad {
-        writeln!(source, "resource Spare{index} {{ value: int }}").expect("write pad resource");
-    }
-    source.push_str("struct Knot { me: Knot }\n");
-    source.push_str("resource Coil { me: Coil }\n");
-    source.push_str("fn main() {\n}\n");
-    source
-}
-
-/// The counts of one compile, kept whether or not the program is admitted — this
-/// corpus is deliberately refused, and its refusal is the thing being measured.
-fn counts_of(source: String) -> (bool, ScalingCounts) {
-    let (result, counts) = capture_scaling_counts(|| compile(&project(source)));
-    (result.is_err(), counts)
-}
-
-/// The corpus must actually reach the report. A corpus that compiled cleanly, or
-/// that stopped at an earlier phase, would make the zero below vacuous.
-#[test]
-fn the_cyclic_corpus_is_still_refused() {
-    let (refused, _) = counts_of(cyclic_corpus(16));
-    assert!(
-        refused,
-        "the value-cycle corpus must be refused; a clean compile never reaches the report"
-    );
-}
-
-/// The gate: reporting a value cycle examines no syntax declaration.
-#[test]
-fn reporting_a_value_cycle_reads_no_syntax_declaration() {
-    for pad in [1, 16, 64] {
-        let (refused, counts) = counts_of(cyclic_corpus(pad));
-        assert!(refused, "the corpus at pad {pad} must be refused");
-        assert_eq!(
-            counts.value_cycle_declaration_scan_steps, 0,
-            "reporting a value cycle scanned {} syntax declarations at pad {pad}; the declare \
-             pass owns the coordinate, so the report must read none",
-            counts.value_cycle_declaration_scan_steps
-        );
-    }
 }
 
 /// One program reaching every declaration family this row projects into typed rows:
@@ -115,15 +64,16 @@ const PROJECTION_ARTIFACT: &str = "src/main.mw:11:7 check.durable_identity durab
      src/main.mw:14:1 check.type `Missing` is not a resource in this project\n\
      src/main.mw:1:8 check.recursion value type `Knot` contains itself through the cycle Knot -> Knot";
 
-/// The opening production-path check of this row: after the declare pass and the
-/// durable row tables are built, the retained raw declaration lists are read by
-/// nothing — value-cycle reporting and store binding consume typed rows — and the
-/// cycle diagnostics and `.marrow/ids` anchor demand are byte-identical to the
-/// pre-conversion artifact.
+/// The opening production-path check of this row, behavioral half: the complete
+/// value-cycle/store/index/key corpus reports cycle diagnostics and a `.marrow/ids`
+/// anchor demand byte-identical to the pre-conversion artifact. The other half —
+/// that the retained declaration lists are unreadable after row construction — is
+/// structural, and lives in the signature and row-table gates this file's header
+/// names: a lexical counter cannot pin an absence, as the round-1 reviews proved by
+/// reintroducing the scan under a green battery.
 #[test]
 fn durable_projection_survives_syntax_poison() {
-    let (result, counts) =
-        capture_scaling_counts(|| compile(&project(PROJECTION_CORPUS.to_string())));
+    let result = compile(&project(PROJECTION_CORPUS.to_string()));
     let diagnostics = match result {
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics,
         other => panic!("the projection corpus must be refused with diagnostics: {other:?}"),
@@ -146,16 +96,6 @@ fn durable_projection_survives_syntax_poison() {
     assert_eq!(
         artifact, PROJECTION_ARTIFACT,
         "the projection artifact moved"
-    );
-    assert_eq!(
-        counts.value_cycle_declaration_scan_steps, 0,
-        "value-cycle reporting read {} retained syntax declarations after row construction",
-        counts.value_cycle_declaration_scan_steps
-    );
-    assert_eq!(
-        counts.durable_declaration_scan_steps, 0,
-        "the durable build read {} retained syntax declarations after row construction",
-        counts.durable_declaration_scan_steps
     );
 }
 
