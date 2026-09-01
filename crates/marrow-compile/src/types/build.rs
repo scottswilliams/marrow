@@ -1069,6 +1069,9 @@ pub(super) fn declare_structs<'a>(
         }
         let name_id = draft.intern_string(&decl.name)?;
         let type_id = draft.reserve_record_type(name_id)?;
+        registry
+            .coordinates
+            .declare(type_id, *at, file, decl.name_span);
         registry.structs.push(StructInfo {
             type_id,
             name: decl.name.clone(),
@@ -1590,6 +1593,9 @@ pub(super) fn declare_records<'a>(
         }
         let name_id = draft.intern_string(&resource.name)?;
         let type_id = draft.reserve_record_type(name_id)?;
+        registry
+            .coordinates
+            .declare(type_id, *at, file, resource.name_span);
         registry.records.push(RecordInfo {
             type_id,
             name: resource.name.clone(),

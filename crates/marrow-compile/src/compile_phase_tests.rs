@@ -206,6 +206,7 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         GenericInvariant::DeclarationIndexDrift => "declaration index drift",
         GenericInvariant::FunctionIndexDomain => "function index domain",
         GenericInvariant::DurableConstructionRefused => "durable construction refused",
+        GenericInvariant::DeclarationCoordinateMissing(_) => "declaration coordinate missing",
     }
 }
 

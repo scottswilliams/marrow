@@ -92,6 +92,16 @@ pub(crate) struct ScalingCounts {
     /// On a divergent-monomorphization program the pre-repair per-instance render made
     /// this Σ O(depth) = O(instances²); the repair holds it to the monomorphic baseline.
     pub(crate) hover_spelling_chars: usize,
+    /// Syntax-tree declarations examined by `reject_value_cycles` while answering
+    /// "where was this type written".
+    ///
+    /// The pass once scanned the project's struct and resource declaration lists
+    /// for a name match, once per type it reported, so a project with `d`
+    /// declarations and `c` reported cycles paid up to `c * d`. The declare pass
+    /// now owns that coordinate, so the pass reads no declaration at all and this
+    /// is exactly zero — a bound, not a ratio, which is why the gate asserts
+    /// equality with zero rather than a shrinking count.
+    pub(crate) value_cycle_declaration_scan_steps: usize,
     /// Template-body declaration entries a fill copied out of the template — one per
     /// declared field for a struct fill, and one per declared variant plus one per
     /// declared payload leaf for an enum fill.
@@ -116,6 +126,7 @@ thread_local! {
         template_proofs: 0,
         template_proof_rows: 0,
         hover_spelling_chars: 0,
+        value_cycle_declaration_scan_steps: 0,
         template_body_clone_entries: 0,
     }) };
 }

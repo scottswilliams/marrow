@@ -78,6 +78,7 @@ fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         collections: RefCell::default(),
         collection_index: RefCell::default(),
         row_directory: RefCell::default(),
+        coordinates: DeclarationCoordinates::default(),
     }
 }
 
@@ -1472,6 +1473,10 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
         GenericInvariant::DurableResourceMissing(type_id) => {
             let _ = type_id;
             18
+        }
+        GenericInvariant::DeclarationCoordinateMissing(type_id) => {
+            let _ = type_id;
+            23
         }
         GenericInvariant::DeclarationIndexDrift => 19,
         GenericInvariant::FunctionIndexDomain => 21,

@@ -101,6 +101,7 @@ fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         collections: RefCell::default(),
         collection_index: RefCell::default(),
         row_directory: RefCell::default(),
+        coordinates: DeclarationCoordinates::default(),
     }
 }
 
@@ -3523,7 +3524,7 @@ fn value_cycle_invariant_precedes_and_preserves_source_diagnostics() {
     let before = diagnostics.probe();
 
     assert_eq!(
-        reject_value_cycles(&registry, &[], &[], &mut diagnostics),
+        reject_value_cycles(&registry, &mut diagnostics),
         Err(expected)
     );
     assert_eq!(diagnostics.probe(), before);

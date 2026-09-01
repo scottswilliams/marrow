@@ -1,0 +1,81 @@
+//! The declaration coordinate tables the declare pass owns: where each declared
+//! value type was written.
+//!
+//! A later pass that must report at a declaration — today the value-containment
+//! cycle check — reads the coordinate from here instead of scanning the syntax
+//! tree for a declaration whose name matches. That scan was linear in the
+//! project's declarations and ran once per reported type, and it could only be
+//! written at all because the pass still borrowed the tree.
+//!
+//! The tables are owned fields of [`super::TypeRegistry`], the bundle declaration
+//! admission builds and hands out whole. Declaration admission is one-shot: a pass
+//! that fails returns `Err` and the partially built registry is dropped with
+//! everything it owns, so a failed admission leaves no coordinate reachable and
+//! there is no window in which a stale row could be read. That ownership is the
+//! whole rollback discipline for these tables. **If declaration admission ever
+//! becomes transactional, they owe the same inverse the generic owners already
+//! carry in `super::owner_txn`**, because a surviving prefix would then outlive
+//! the declarations that minted it.
+
+use std::collections::BTreeMap;
+
+use marrow_image::TypeId;
+use marrow_project::FileIdentity;
+use marrow_syntax::SourceSpan;
+
+use crate::analysis::FileRef;
+
+/// Where one declared value type was written: its module and its name span.
+///
+/// The module is the existing [`FileRef`] coordinate rather than a second module
+/// ordinal invented here — the compiler already has one owner for "which module",
+/// and a coordinate table is not a reason to mint another. The span is held
+/// inline: this is the only row family citing it today, so a shared span table
+/// would be indirection without sharing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct DeclarationCoordinate {
+    at: FileRef,
+    span: SourceSpan,
+}
+
+/// The declare pass's coordinate tables.
+///
+/// Deliberately not `Clone` and never returned by value: a copy handed to a caller
+/// would outlive the admission that minted it, which is exactly the stale-row
+/// window the one-shot ownership above rules out.
+#[derive(Default)]
+pub(crate) struct DeclarationCoordinates {
+    /// One owned identity per module that declared a value type, not one per
+    /// declaration. Keyed rather than appended because the declare pass is not
+    /// required to finish one module's declarations before starting the next.
+    files: BTreeMap<FileRef, FileIdentity>,
+    declarations: BTreeMap<TypeId, DeclarationCoordinate>,
+}
+
+impl DeclarationCoordinates {
+    /// Record where `type_id` was declared.
+    ///
+    /// A repeat for the same type would be the declare pass reserving one image
+    /// type twice, which it does not do; the first coordinate stands, so a caller
+    /// reporting at a declaration can never be steered to a later homonym.
+    pub(super) fn declare(
+        &mut self,
+        type_id: TypeId,
+        at: FileRef,
+        file: &FileIdentity,
+        span: SourceSpan,
+    ) {
+        self.files.entry(at).or_insert_with(|| file.clone());
+        self.declarations
+            .entry(type_id)
+            .or_insert(DeclarationCoordinate { at, span });
+    }
+
+    /// Where `type_id` was declared, or `None` for a type this pass minted no
+    /// coordinate for — a reserved toolchain template has no source declaration.
+    pub(super) fn resolve(&self, type_id: TypeId) -> Option<(&FileIdentity, SourceSpan)> {
+        let coordinate = self.declarations.get(&type_id)?;
+        let file = self.files.get(&coordinate.at)?;
+        Some((file, coordinate.span))
+    }
+}

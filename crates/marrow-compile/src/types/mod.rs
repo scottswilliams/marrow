@@ -45,6 +45,7 @@ use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;
 
 mod build;
+mod decl_coords;
 mod function_index;
 pub(crate) use function_index::narrow_function_index;
 mod metadata;
@@ -56,6 +57,7 @@ use build::{
     fill_records, fill_structs, register_type_templates, reserved_templates,
     validate_alias_targets,
 };
+use decl_coords::DeclarationCoordinates;
 use metadata::{DeclaredCounts, RowDirectory, RowDirectoryGuard};
 pub(crate) use owner_txn::GenericOwnerTxn;
 use owner_txn::ProofIsolation;
@@ -502,6 +504,14 @@ pub(crate) enum GenericInvariant {
     },
     ReadyBodyShapeMismatch(TypeInstId),
     ReadyBodyMissing(TypeInstId),
+    /// A declared value type on a containment cycle has no declaration coordinate.
+    ///
+    /// The declare pass mints the coordinate in the same statement sequence that
+    /// pushes the registry row, so a miss is those two owners disagreeing about one
+    /// declaration — a compiler coherence failure, never a fact about the source.
+    /// Reporting it as a refusal would charge the user for that disagreement, and
+    /// dropping the row would lose a real cycle report with no cause at all.
+    DeclarationCoordinateMissing(TypeId),
     ReadyEnumVariantMissing {
         id: EnumId,
         template: usize,
@@ -1347,6 +1357,14 @@ pub(crate) struct TypeRegistry {
     /// projection of the append-only owners, never a mint/dedup authority; a caller that
     /// mutates an already-classified row out of the append order must invalidate it.
     row_directory: RefCell<Option<RowDirectory>>,
+    /// Where each declared value type was written.
+    ///
+    /// Owned here rather than beside the pass that reports at a declaration:
+    /// declaration admission is one-shot, so this table lives and dies with the
+    /// registry it is a field of, and a failed admission drops it whole. See
+    /// [`decl_coords`] for the ownership argument and the condition under which
+    /// these rows would owe a transaction inverse.
+    coordinates: DeclarationCoordinates,
 }
 
 impl TypeRegistry {
@@ -1371,6 +1389,7 @@ impl TypeRegistry {
             collections: RefCell::default(),
             collection_index: RefCell::default(),
             row_directory: RefCell::default(),
+            coordinates: DeclarationCoordinates::default(),
         }
     }
 }
@@ -3431,6 +3450,7 @@ impl TypeRegistry {
             collections: RefCell::default(),
             collection_index: RefCell::default(),
             row_directory: RefCell::default(),
+            coordinates: DeclarationCoordinates::default(),
         };
         registry.nominals = build_nominals(
             &mut registry,
@@ -3740,8 +3760,6 @@ impl TypeRegistry {
 /// the trust boundary.
 pub(crate) fn reject_value_cycles(
     registry: &TypeRegistry,
-    structs: &[(FileRef, FileIdentity, &StructDecl)],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
     let view = registry.metadata_view();
@@ -3755,30 +3773,19 @@ pub(crate) fn reject_value_cycles(
             continue;
         }
         if let Some(path) = graph.cycle_through(ValueNode::Record(info.type_id)) {
-            #[expect(
-                clippy::expect_used,
-                reason = "lowering bookkeeping: every registered struct was reserved from this declaration list, so its declaration survives to be found"
-            )]
-            let (file, span) = structs
-                .iter()
-                .find(|(_, _, decl)| decl.name == info.name)
-                .map(|(_, file, decl)| (file.clone(), decl.name_span))
-                .expect("a reserved struct has a surviving declaration");
-            diagnostics.push(value_cycle_diagnostic(&file, span, &info.name, &path));
+            let (file, span) = registry
+                .coordinates
+                .resolve(info.type_id)
+                .ok_or(GenericInvariant::DeclarationCoordinateMissing(info.type_id))?;
+            diagnostics.push(value_cycle_diagnostic(file, span, &info.name, &path));
         }
     }
     for record in &registry.records {
         if let Some(path) = graph.cycle_through(ValueNode::Record(record.type_id)) {
-            #[expect(
-                clippy::expect_used,
-                reason = "lowering bookkeeping: every registered record was reserved from this declaration list, so its declaration survives to be found"
-            )]
-            let (file, span) = resources
-                .iter()
-                .find(|(_, _, decl)| decl.name == record.name)
-                .map(|(_, file, decl)| (file.clone(), decl.name_span))
-                .expect("a reserved record has a surviving declaration");
-            diagnostics.push(value_cycle_diagnostic(&file, span, &record.name, &path));
+            let (file, span) = registry.coordinates.resolve(record.type_id).ok_or(
+                GenericInvariant::DeclarationCoordinateMissing(record.type_id),
+            )?;
+            diagnostics.push(value_cycle_diagnostic(file, span, &record.name, &path));
         }
     }
     // A monomorphized generic type on a cycle (`Tree[int]` containing `Tree[int]`)
@@ -4123,3 +4130,6 @@ mod refusal_join_tests;
 
 #[cfg(test)]
 mod instantiation_state_tests;
+
+#[cfg(test)]
+mod value_cycle_coords_tests;

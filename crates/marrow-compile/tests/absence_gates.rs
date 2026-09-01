@@ -2871,3 +2871,67 @@ fn the_propagating_call_reader_names_a_planted_exit() {
         "a `?` on a value rather than a call is not a propagating callee",
     );
 }
+
+/// The declaration coordinate tables cannot outlive the admission that minted them.
+///
+/// Declaration admission is one-shot: `TypeRegistry::build` returns `Err` on a failed
+/// pass and the partially built registry is dropped with everything it owns, so a
+/// failed admission leaves no coordinate reachable and there is no window in which a
+/// stale row could be read. That property is delivered by ownership rather than by an
+/// inverse, so ownership is what this gate pins — three ways, because any one of them
+/// alone could be satisfied while the property was lost:
+///
+/// 1. the table is a field of the registry, not an independently constructed owner;
+/// 2. it is not `Clone`, so no caller can take a copy that outlives the registry;
+/// 3. no production signature hands one out, by value or by reference.
+///
+/// If declaration admission ever becomes transactional this gate still passes and the
+/// property no longer holds by ownership alone — which is why `decl_coords` carries the
+/// standing note that the rows would then owe the same inverse the generic owners have.
+#[test]
+fn declaration_coordinates_cannot_outlive_their_admission() {
+    let module = production_code_of_module("types");
+
+    assert!(
+        module.contains("coordinates: DeclarationCoordinates,"),
+        "the coordinate table must be an owned field of the registry, not a free owner",
+    );
+
+    let declaration = module
+        .split_once("pub(crate) struct DeclarationCoordinates {")
+        .expect("the coordinate table is declared")
+        .0;
+    let derive = declaration
+        .rsplit_once("#[derive(")
+        .expect("the coordinate table carries a derive list")
+        .1;
+    let derive = derive.split_once(')').expect("the derive list is closed").0;
+    assert!(
+        !derive.contains("Clone"),
+        "the coordinate table must not be `Clone`: a copy would outlive its admission, \
+         which is the stale-row window one-shot ownership exists to rule out (derives: \
+         `{derive}`)",
+    );
+
+    for escape in [
+        "-> DeclarationCoordinates",
+        "-> &DeclarationCoordinates",
+        "-> Option<DeclarationCoordinates>",
+    ] {
+        assert!(
+            !module.contains(escape),
+            "no production signature may hand out the coordinate table (`{escape}`)",
+        );
+    }
+}
+
+/// The gate above reads code, not prose: a commented-out `Clone` or an escape spelled
+/// only in a doc comment must not decide it either way.
+#[test]
+fn the_coordinate_ownership_gate_reads_code_and_not_prose() {
+    let module = production_code_of_module("types");
+    assert!(
+        !module.contains("stale-row window"),
+        "the projection must blank doc comments; a phrase from this module's prose survived",
+    );
+}

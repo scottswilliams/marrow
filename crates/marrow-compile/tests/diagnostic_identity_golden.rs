@@ -1,9 +1,12 @@
-//! Diagnostic identity across a call-graph algorithm change — the pattern of record.
+//! Diagnostic identity across a representation or algorithm change — the pattern of
+//! record.
 //!
 //! Three checks read the direct-call graph to decide what to report: recursion-cycle
 //! membership, the requires-ambient-transaction closure, and the mutate/durable
-//! closure the ownership lattice consumes. Their *answers* are a property of the
-//! graph, but the diagnostics a reader sees are more than the answers: which
+//! closure the ownership lattice consumes. A fourth, the value-containment cycle
+//! report, decides *where* to report from declaration coordinates the declare pass
+//! owns. Their *answers* are a property of the graph, but the diagnostics a reader
+//! sees are more than the answers: which
 //! functions are named, at which spans, with which prose, and above all **in what
 //! order**. An algorithm that computes the same closure while emitting the same rows
 //! in a different sequence has changed the product, because a compiler's first
@@ -27,9 +30,11 @@
 //! than one (so a traversal that reports components in discovery order instead of
 //! function order is caught), cycles of length one, two, and three (so a self-loop
 //! is not conflated with a component), non-participating functions interleaved
-//! between them (so "report everything" passes nothing), and a transitive
-//! transaction requirement three calls deep through a generic instantiation (so a
-//! propagation that stops at depth one is caught).
+//! between them (so "report everything" passes nothing), a transitive transaction
+//! requirement three calls deep through a generic instantiation (so a propagation
+//! that stops at depth one is caught), and — for the coordinate corpus — cycles in
+//! two different modules (so an owner returning one module for every row is caught,
+//! which a single-file corpus cannot see).
 
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::ProjectInput;
@@ -245,5 +250,105 @@ fn the_transaction_heavy_corpus_requires_transitive_propagation() {
             && TRANSACTION_HEAVY.contains("    middle(id, v)")
             && TRANSACTION_HEAVY.contains("    inner(id, v)"),
         "the mutating chain must stay three deep for this corpus to bind",
+    );
+}
+// ---------------------------------------------------------------------------
+// Corpus C — value-containment cycles across two modules.
+// ---------------------------------------------------------------------------
+
+/// The value-cycle report names a declaration, so its artifact is a *coordinate*
+/// artifact: the module the type was written in and the exact name span.
+///
+/// The corpus spans two modules on purpose. The declare pass owns one identity per
+/// module and each declaration's span, and a single-module corpus would keep
+/// passing if that owner returned the wrong module for every row. Acyclic
+/// declarations are interleaved so "report everything" proves nothing, and the
+/// cycle set mixes a self-cycle and a two-step cycle so a walk that conflated a
+/// self-loop with a component is observable, and the second module carries a cycle
+/// of its own so a wrong module coordinate cannot hide behind a single-file corpus.
+///
+/// Only struct cycles appear because a record cycle is not expressible in the
+/// admitted subset: a resource field typed as a resource, and a struct field typed
+/// as a resource, are both `check.unsupported` on the beta line, so the record arm
+/// of the report has no source that reaches it today. That predates this suite.
+const VALUE_CYCLE_MAIN: &str = r#"module main
+
+use shapes
+
+struct Settled {
+    value: int
+}
+
+struct Knot {
+    me: Knot
+}
+
+struct StepA {
+    next: StepB
+}
+
+struct StepB {
+    back: StepA
+}
+
+pub fn driver(n: int): int {
+    return n
+}
+"#;
+
+const VALUE_CYCLE_SHAPES: &str = r#"module shapes
+
+struct Calm {
+    value: int
+}
+
+struct Coil {
+    me: Coil
+}
+"#;
+
+#[test]
+fn the_value_cycle_corpus_reports_its_exact_ordered_artifact() {
+    let project = ids::minted(|ledger| {
+        project_capture::project_with_ids(
+            &[
+                ("src/main.mw", VALUE_CYCLE_MAIN),
+                ("src/shapes.mw", VALUE_CYCLE_SHAPES),
+            ],
+            ledger,
+        )
+    });
+    let diagnostics = refused(&project);
+
+    assert_eq!(
+        artifact(&diagnostics),
+        "src/main.mw:9:8 check.recursion value type `Knot` contains itself through the cycle \
+         Knot -> Knot\n\
+         src/main.mw:13:8 check.recursion value type `StepA` contains itself through the cycle \
+         StepA -> StepB -> StepA\n\
+         src/main.mw:17:8 check.recursion value type `StepB` contains itself through the cycle \
+         StepB -> StepA -> StepB\n\
+         src/shapes.mw:7:8 check.recursion value type `Coil` contains itself through the cycle \
+         Coil -> Coil",
+        "the value-cycle artifact moved",
+    );
+}
+
+/// The corpus earns its name: cycles of two distinct shapes in two distinct
+/// modules, with acyclic declarations in both. A corpus that had drifted to a
+/// single module, or to no acyclic declaration, would keep passing while proving
+/// neither the module coordinate nor the interleaving.
+#[test]
+fn the_value_cycle_corpus_spans_two_modules_and_stays_interleaved() {
+    assert!(
+        VALUE_CYCLE_MAIN.contains("struct Settled")
+            && VALUE_CYCLE_MAIN.contains("struct Knot")
+            && VALUE_CYCLE_MAIN.contains("struct StepA")
+            && VALUE_CYCLE_MAIN.contains("struct StepB"),
+        "the main module must keep an acyclic struct beside its cyclic ones",
+    );
+    assert!(
+        VALUE_CYCLE_SHAPES.contains("struct Calm") && VALUE_CYCLE_SHAPES.contains("struct Coil"),
+        "the second module must keep an acyclic struct beside its cyclic one",
     );
 }

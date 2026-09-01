@@ -1615,9 +1615,7 @@ fn run_semantic(
     if stopped_on_limit {
         return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::BodyLowering);
     }
-    if let Err(invariant) =
-        crate::types::reject_value_cycles(&records, &structs, &resources, &mut diagnostics)
-    {
+    if let Err(invariant) = crate::types::reject_value_cycles(&records, &mut diagnostics) {
         return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
     }
 
