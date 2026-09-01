@@ -2874,29 +2874,22 @@ fn the_propagating_call_reader_names_a_planted_exit() {
 
 /// The declaration coordinate tables cannot outlive the admission that minted them.
 ///
-/// Declaration admission is one-shot: `TypeRegistry::build` returns `Err` on a failed
-/// pass and the partially built registry is dropped with everything it owns, so a
-/// failed admission leaves no coordinate reachable and there is no window in which a
-/// stale row could be read. That property is delivered by ownership rather than by an
-/// inverse, so ownership is what this gate pins — three ways, because any one of them
-/// alone could be satisfied while the property was lost:
-///
-/// 1. the table is a field of the registry, not an independently constructed owner;
-/// 2. it is not `Clone`, so no caller can take a copy that outlives the registry;
-/// 3. no production signature hands one out, by value or by reference.
-///
-/// If declaration admission ever becomes transactional this gate still passes and the
-/// property no longer holds by ownership alone — which is why `decl_coords` carries the
-/// standing note that the rows would then owe the same inverse the generic owners have.
+/// Declaration admission is one-shot: a failed `TypeRegistry::build` drops the
+/// partially built registry with everything it owns, so the stale-coordinate window
+/// is closed by ownership rather than by an inverse. Ownership is what this gate
+/// pins, three ways, because any one alone could be satisfied while the property was
+/// lost. If admission ever becomes transactional, `decl_coords` records that the rows
+/// then owe the same inverse the generic owners carry. The closing probe keeps the
+/// scan honest: a phrase from this module's own prose must be invisible, so a
+/// commented-out `Clone` or an escape spelled in a doc comment can never decide the
+/// gate either way.
 #[test]
 fn declaration_coordinates_cannot_outlive_their_admission() {
     let module = production_code_of_module("types");
-
     assert!(
         module.contains("coordinates: DeclarationCoordinates,"),
         "the coordinate table must be an owned field of the registry, not a free owner",
     );
-
     let declaration = module
         .split_once("pub(crate) struct DeclarationCoordinates {")
         .expect("the coordinate table is declared")
@@ -2908,11 +2901,9 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
     let derive = derive.split_once(')').expect("the derive list is closed").0;
     assert!(
         !derive.contains("Clone"),
-        "the coordinate table must not be `Clone`: a copy would outlive its admission, \
-         which is the stale-row window one-shot ownership exists to rule out (derives: \
-         `{derive}`)",
+        "the coordinate table must not be `Clone`: a copy would outlive its admission \
+         (derives: `{derive}`)",
     );
-
     for escape in [
         "-> DeclarationCoordinates",
         "-> &DeclarationCoordinates",
@@ -2923,16 +2914,9 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
             "no production signature may hand out the coordinate table (`{escape}`)",
         );
     }
-}
-
-/// The gate above reads code, not prose: a commented-out `Clone` or an escape spelled
-/// only in a doc comment must not decide it either way.
-#[test]
-fn the_coordinate_ownership_gate_reads_code_and_not_prose() {
-    let module = production_code_of_module("types");
     assert!(
         !module.contains("stale-row window"),
-        "the projection must blank doc comments; a phrase from this module's prose survived",
+        "the projection must blank doc comments; this module's own prose survived",
     );
 }
 
@@ -2941,15 +2925,14 @@ fn the_coordinate_ownership_gate_reads_code_and_not_prose() {
 /// are deleted rather than left unreachable.
 ///
 /// The invariant existed because two owners answered "which resource is this store
-/// over" — the type registry by name, and the declaration list by name again — and
-/// nothing stopped them disagreeing. Carrying `Accepted(ResourceDeclId)` on the row
-/// makes the disagreement unrepresentable: a store reaches a record only through a row
-/// that already holds the declaration it was built from. Leaving the variant in place
-/// would let a later edit reintroduce the second lookup and have somewhere to report
-/// it, which is how a structural fix decays back into a runtime check.
-///
-/// The scan covers this crate's whole source, test modules included, so the two test
-/// mappers that named the variant cannot keep it alive either.
+/// over" and nothing stopped them disagreeing; carrying `Accepted(ResourceDeclId)` on
+/// the row makes the disagreement unrepresentable, and leaving the variant would give
+/// a reintroduced lookup somewhere to report. The scan covers this crate's whole
+/// source, test modules included, so the two test mappers that named the variant
+/// cannot keep it alive either. The structural half of this family — the builder
+/// naming no index or key syntax, the single key-anchor join, and the raw-slice-free
+/// staging boundary — is enforced beside the identity contract it protects, in
+/// `durable_identity_stability.rs`.
 #[test]
 fn the_durable_resource_disagreement_has_no_invariant_to_report() {
     for deleted in [
@@ -2964,138 +2947,8 @@ fn the_durable_resource_disagreement_has_no_invariant_to_report() {
              exist: {found:?}",
         );
     }
-    // The live subject: the binding that replaced them is present, so the absences
-    // above are the absences of a displaced shape and not of a crate that stopped
-    // building durable graphs.
     assert!(
         !production_occurrences("StoreResourceBinding::Accepted").is_empty(),
         "the typed store binding must be the live subject of this gate",
-    );
-}
-
-/// Managed-index admission reads the index row table, so the durable builder names no
-/// `index` syntax of its own.
-///
-/// Every admission rule — the per-root count cap, the projection width cap, the name
-/// collision, the singleton rejection, the repeated component, the nested-member
-/// component, and the identity-suffix law — used to read the parsed `IndexDecl` and
-/// render each argument's path spelling at the moment it needed one. Rendering a path
-/// where a rule is enforced is what makes "the same component" a per-caller answer: two
-/// rules can disagree about one argument and nothing in the types objects. The table
-/// renders each path once, when the row is taken, and classifies its reach there too,
-/// so a rule can only ask.
-///
-/// The scan is the builder's own file. `rows.rs` is where the syntax is read, and the
-/// live subject below is that reading — without it the absences are the absences of a
-/// module that stopped building indexes.
-#[test]
-fn the_durable_builder_reads_index_rows_and_not_index_syntax() {
-    let builder = production_code_of("durable.rs");
-    for absent in [
-        "IndexDecl",
-        "IndexArg {",
-        "field_path_spelling",
-        "component.segments",
-        "index.args",
-    ] {
-        assert!(
-            !builder.contains(absent),
-            "`{absent}` names index syntax; the durable builder reads `IndexTable` rows",
-        );
-    }
-    let rows = production_code_of("durable/rows.rs");
-    assert!(
-        rows.contains("fn take(indexes: &'a [IndexDecl])") && rows.contains("field_path_spelling"),
-        "the index row table must be the one reader of index syntax",
-    );
-    assert!(
-        builder.contains("IndexArgReach::ThroughMember"),
-        "the nested-member rule must read the row's classified reach",
-    );
-}
-
-/// The staged producer boundary itself carries no raw declaration slice, so the
-/// bridge the row conversion deleted cannot survive in a signature.
-///
-/// `StagedStoreTxn::build_one` and the `durable.rs::build_one` it forwards to once
-/// took `&[(FileRef, FileIdentity, &ResourceDecl)]` and recovered the resource
-/// declaration by name search after row construction. The `.find`/name-recovery gate
-/// above forbids the search; this gate forbids the carrier: the raw slice type may
-/// appear exactly once in the durable builder — the `build` entry point, where it is
-/// row-construction *input* — and never inside the staging wrapper, and the one
-/// carrier may hand it to nothing but the row tables' `take`. Both `build_one`s read
-/// the typed projection instead.
-#[test]
-fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
-    let builder = production_code_of("durable.rs");
-    let staging = production_code_of("durable/staging.rs");
-    let raw = "&[(FileRef, FileIdentity, &ResourceDecl)]";
-
-    assert!(
-        !staging.contains(raw),
-        "the staging wrapper runs after row construction and may carry no raw \
-         declaration slice",
-    );
-    assert_eq!(
-        builder.matches(raw).count(),
-        1,
-        "only the durable build entry may carry the raw declaration slice, as \
-         row-construction input",
-    );
-    assert_eq!(
-        builder.matches("resources").count(),
-        2,
-        "the raw declaration slice is read by exactly two production sites: the \
-         `build` signature that receives it and the `ResourceDirectory::take` call \
-         that turns it into rows",
-    );
-    assert!(
-        builder.contains("ResourceDirectory::take(resources, records)"),
-        "the one consumer of the raw slice must be row construction itself",
-    );
-    for (file, code) in [("durable.rs", &builder), ("durable/staging.rs", &staging)] {
-        assert_eq!(
-            code.matches("directory: &ResourceDirectory<'_>").count(),
-            1,
-            "`{file}` must pass its build_one the typed projection",
-        );
-    }
-}
-
-/// A durable key column's ledger anchor is assembled in exactly one place.
-///
-/// A store root's key tuple and a branch placement's key tuple are the same shape under
-/// the same rules, and each used to spell its own `format!("{path}.{name}")` join — one
-/// in `build_one`, one in `build_branch_keys`. Those anchors are the keys of the
-/// machine-written `.marrow/ids` ledger: a divergence between the two spellings does not
-/// report anything, it silently re-anchors committed durable identity, and
-/// `durable_identity_stability.rs` exists because that is invisible to every diagnostic
-/// gate. One owner for the join is what makes the two spellings unable to diverge.
-///
-/// The counts are exact rather than "at most", because a reintroduced inline join would
-/// leave `identity_path` behind at one site and pass a mere absence check.
-#[test]
-fn a_durable_key_anchor_is_joined_in_one_place() {
-    let builder = production_code_of("durable.rs");
-    for absent in ["KeyParam", "key_param"] {
-        assert!(
-            !builder.contains(absent),
-            "`{absent}` names key syntax; the durable builder reads `KeyTable` rows",
-        );
-    }
-    assert_eq!(
-        builder.matches("IdentityKind::Key,").count(),
-        2,
-        "exactly two sites mint a key anchor: the store root's tuple and a branch's",
-    );
-    assert_eq!(
-        builder.matches("identity_path(").count(),
-        2,
-        "both key-anchor sites must read the one join, and nothing else may",
-    );
-    let rows = production_code_of("durable/rows.rs");
-    assert!(
-        rows.contains("fn identity_path(") && rows.contains("fn over_wide("),
-        "the key row table must own the anchor join and the width cap",
     );
 }

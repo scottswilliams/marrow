@@ -175,3 +175,123 @@ fn the_corpus_reaches_every_identity_kind() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Structural gates over the anchor-minting source itself.
+//
+// The frozen set above catches a changed anchor at the byte; these gates keep the
+// source shape that makes such a change hard to write in the first place. They scan
+// through the shared `source_projection` — the one owner of "what counts as code" —
+// so a needle in a comment or string can never decide them.
+// ---------------------------------------------------------------------------
+
+#[path = "common/source_projection.rs"]
+mod source_projection;
+
+/// The production code of one `marrow-compile` source file, comments, strings, and
+/// `#[cfg(test)]` items blanked by the shared projection.
+fn production_code_of(file: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join(file);
+    source_projection::production_code(&std::fs::read_to_string(path).expect("read source file"))
+}
+
+/// The durable builder reads its declaration row tables, never index or key syntax,
+/// and a key column's ledger anchor is assembled in exactly one place.
+///
+/// Every index admission rule once read the parsed `IndexDecl` and rendered each
+/// argument's path spelling at the moment it needed one, which made "the same
+/// component" a per-caller answer; the `IndexTable` renders each path and classifies
+/// its reach once, when the row is taken, so a rule can only ask. The root's and a
+/// branch's key tuples each used to spell their own `format!("{path}.{name}")` join,
+/// and those anchors are the keys of the ledger this suite freezes: a divergence
+/// between two spellings reports nothing and silently re-anchors committed durable
+/// identity. The join counts are exact rather than "at most", because a reintroduced
+/// inline join would leave `identity_path` behind at one site and pass a mere
+/// absence check.
+#[test]
+fn the_durable_builder_reads_rows_and_joins_each_key_anchor_once() {
+    let builder = production_code_of("durable.rs");
+    for absent in [
+        "IndexDecl",
+        "IndexArg {",
+        "field_path_spelling",
+        "component.segments",
+        "index.args",
+        "KeyParam",
+        "key_param",
+    ] {
+        assert!(
+            !builder.contains(absent),
+            "`{absent}` names declaration syntax; the durable builder reads row tables",
+        );
+    }
+    assert!(
+        builder.contains("IndexArgReach::ThroughMember"),
+        "the nested-member rule must read the row's classified reach",
+    );
+    assert_eq!(
+        builder.matches("IdentityKind::Key,").count(),
+        2,
+        "exactly two sites mint a key anchor: the store root's tuple and a branch's",
+    );
+    assert_eq!(
+        builder.matches("identity_path(").count(),
+        2,
+        "both key-anchor sites must read the one join, and nothing else may",
+    );
+    let rows = production_code_of("durable/rows.rs");
+    assert!(
+        rows.contains("fn take(indexes: &'a [IndexDecl])") && rows.contains("field_path_spelling"),
+        "the index row table must be the one reader of index syntax",
+    );
+    assert!(
+        rows.contains("fn identity_path(") && rows.contains("fn over_wide("),
+        "the key row table must own the anchor join and the width cap",
+    );
+}
+
+/// The staged producer boundary itself carries no raw declaration slice.
+///
+/// `StagedStoreTxn::build_one` and the `durable.rs::build_one` it forwards to once
+/// took `&[(FileRef, FileIdentity, &ResourceDecl)]` and recovered the resource
+/// declaration by name search after row construction. The crate-wide absence gate
+/// forbids the search; this gate forbids the carrier: the raw slice type appears
+/// exactly once in the durable builder — the `build` entry, where it is
+/// row-construction *input* handed to nothing but the row tables' `take` — and never
+/// inside the staging wrapper, while both `build_one`s read the typed projection.
+#[test]
+fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
+    let builder = production_code_of("durable.rs");
+    let staging = production_code_of("durable/staging.rs");
+    let raw = "&[(FileRef, FileIdentity, &ResourceDecl)]";
+    assert!(
+        !staging.contains(raw),
+        "the staging wrapper runs after row construction and may carry no raw \
+         declaration slice",
+    );
+    assert_eq!(
+        builder.matches(raw).count(),
+        1,
+        "only the durable build entry may carry the raw declaration slice, as \
+         row-construction input",
+    );
+    assert_eq!(
+        builder.matches("resources").count(),
+        2,
+        "the raw slice is read by exactly two production sites: the `build` signature \
+         that receives it and the `ResourceDirectory::take` call that turns it into rows",
+    );
+    assert!(
+        builder.contains("ResourceDirectory::take(resources, records)"),
+        "the one consumer of the raw slice must be row construction itself",
+    );
+    for (file, code) in [("durable.rs", &builder), ("durable/staging.rs", &staging)] {
+        assert_eq!(
+            code.matches("directory: &ResourceDirectory<'_>").count(),
+            1,
+            "`{file}` must pass its build_one the typed projection",
+        );
+    }
+}
