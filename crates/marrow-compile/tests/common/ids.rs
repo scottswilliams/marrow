@@ -30,6 +30,21 @@ pub fn ledger(anchors: &[&str]) -> Vec<u8> {
 /// shape declares; this resolves the typed gaps until the compiler reports none, so
 /// the fixture and the compiler cannot disagree about the anchor set.
 pub fn minted(capture: impl Fn(Option<&[u8]>) -> ProjectInput) -> ProjectInput {
+    let minted = converge(&capture);
+    capture(Some(serialize(&minted).as_bytes()))
+}
+
+/// The complete `(kind, path)` anchor set the compiler demands of `capture`'s
+/// project, in the ledger's own canonical order.
+///
+/// Same convergence as [`minted`], reporting the anchors rather than the ledger:
+/// the set a durable declaration mints is committed identity, so a fixture that
+/// compares it is comparing what `.marrow/ids` will hold.
+pub fn minted_anchors(capture: impl Fn(Option<&[u8]>) -> ProjectInput) -> Vec<IdentityAnchor> {
+    converge(&capture).into_keys().collect()
+}
+
+fn converge(capture: &impl Fn(Option<&[u8]>) -> ProjectInput) -> BTreeMap<IdentityAnchor, String> {
     let mut minted: BTreeMap<IdentityAnchor, String> = BTreeMap::new();
     for _ in 0..64 {
         let text = serialize(&minted);
@@ -51,7 +66,7 @@ pub fn minted(capture: impl Fn(Option<&[u8]>) -> ProjectInput) -> ProjectInput {
             }
         }
         if !fresh {
-            return capture(Some(serialize(&minted).as_bytes()));
+            return minted;
         }
     }
     panic!("minting a complete identity ledger did not converge");
