@@ -158,3 +158,53 @@ fn durable_projection_survives_syntax_poison() {
         counts.durable_declaration_scan_steps
     );
 }
+
+/// A repeat for one type keeps the first coordinate, exactly as the table's
+/// contract states.
+///
+/// The declare pass never reserves one image type twice, so this arm is
+/// unreachable through any compile — which is precisely why it is pinned
+/// directly: were the table to start keeping the later coordinate instead, no
+/// corpus could notice, and a caller reporting at a declaration could one day be
+/// steered to a later homonym with nothing standing in the way.
+#[test]
+fn a_repeated_declaration_keeps_its_first_coordinate() {
+    use marrow_image::TypeId;
+    use marrow_syntax::SourceSpan;
+
+    let mut coordinates = super::decl_coords::DeclarationCoordinates::default();
+    let ty = TypeId::from_index(7);
+    let first_file = crate::test_file_identity("src/first.mw");
+    let later_file = crate::test_file_identity("src/later.mw");
+    let first_span = SourceSpan {
+        start_byte: 10,
+        end_byte: 14,
+        line: 2,
+        column: 8,
+    };
+    let later_span = SourceSpan {
+        start_byte: 90,
+        end_byte: 94,
+        line: 9,
+        column: 8,
+    };
+
+    coordinates.declare(
+        ty,
+        crate::analysis::FileRef::admitted(0),
+        &first_file,
+        first_span,
+    );
+    coordinates.declare(
+        ty,
+        crate::analysis::FileRef::admitted(1),
+        &later_file,
+        later_span,
+    );
+
+    let (file, span) = coordinates
+        .resolve(ty)
+        .expect("a declared type has a coordinate");
+    assert_eq!(file, &first_file, "the first module coordinate stands");
+    assert_eq!(span, first_span, "the first name span stands");
+}

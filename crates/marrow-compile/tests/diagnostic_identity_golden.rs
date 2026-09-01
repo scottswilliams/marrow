@@ -688,6 +688,8 @@ resource Plain {
 store ^branchy[id: int]: Slim
 
 store ^wide[k1: int, k2: int, k3: int, k4: int, k5: int, k6: int, k7: int, k8: int, k9: int]: Plain
+
+store ^atCap[c1: int, c2: int, c3: int, c4: int, c5: int, c6: int, c7: int, c8: int]: Plain
 "#;
 
 /// The artifact this corpus reported before the two key tuples became one row table,
@@ -700,7 +702,18 @@ const KEY_WIDTH_ARTIFACT: &str = "src/main.mw:15:7 check.durable_identity durabl
      src/main.mw:15:7 check.durable_identity durable identity for root `Slim.deep` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
      src/main.mw:6:1 check.resource_limit a branch key tuple has 9 columns; the fixed limit is 8\n\
      src/main.mw:15:7 check.durable_identity durable identity for field `Slim.deep.note` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:17:7 check.resource_limit a store root key tuple has 9 columns; the fixed limit is 8";
+     src/main.mw:17:7 check.resource_limit a store root key tuple has 9 columns; the fixed limit is 8\n\
+     src/main.mw:19:7 check.durable_identity durable identity for root `atCap` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for product `Plain` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c1` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c2` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c3` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c4` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c5` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c6` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c7` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c8` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+     src/main.mw:19:7 check.durable_identity durable identity for field `Plain.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)";
 
 #[test]
 fn the_key_width_corpus_reports_its_exact_ordered_artifact() {
@@ -714,8 +727,10 @@ fn the_key_width_corpus_reports_its_exact_ordered_artifact() {
     );
 }
 
-/// Both key-tuple subjects are present, and both tuples really are one column past the
-/// fixed width — so the corpus cannot go vacuous by the limit moving underneath it.
+/// Both key-tuple subjects are present, both over-wide tuples really are one column
+/// past the fixed width, and the admitted tuple sits exactly at the cap — so the
+/// corpus cannot go vacuous by the limit moving underneath it, and an off-by-one that
+/// started refusing the at-cap tuple is caught by the artifact above, not just here.
 #[test]
 fn the_key_width_corpus_carries_both_tuple_subjects() {
     assert_eq!(
@@ -727,5 +742,10 @@ fn the_key_width_corpus_carries_both_tuple_subjects() {
         KEY_WIDTH_ARTIFACT.contains("a branch key tuple has 9 columns")
             && KEY_WIDTH_ARTIFACT.contains("a store root key tuple has 9 columns"),
         "the artifact must carry both key-tuple subjects",
+    );
+    assert!(
+        KEY_WIDTH_ARTIFACT.contains("key `atCap.c8`"),
+        "the at-cap tuple must stay admitted: its eighth column anchors instead of \
+         earning a width refusal",
     );
 }
