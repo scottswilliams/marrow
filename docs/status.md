@@ -363,8 +363,8 @@ unimplemented syntax or exact formats.
 ## Not current
 
 Marrow does not currently provide general-purpose language completeness,
-third-party packages, executable/store binding,
-online schema evolution, logical backup and restore, a supported packaged
+third-party packages, executable/store admission and activation beyond the
+implemented local attach binding, online schema evolution, logical backup and restore, a supported packaged
 desktop application, public path publication, a supported served profile,
 concurrent multi-writer deployment, replication, high availability, signed
 releases, exact detection of out-of-band engine substitution or rollback, or
