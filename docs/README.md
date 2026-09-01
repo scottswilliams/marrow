@@ -38,8 +38,8 @@ It is organized for lookup rather than sequential reading:
 
 - [Tool reference](tools/) covers the thin beta CLI; the prototype tool
   families return through their refounding lanes.
-- [Operations](operations/) holds the place for the refounded durable
-  lifecycle; there are no supported operational procedures yet.
+- [Operations](operations/) covers the implemented local store lifecycle;
+  evolution, backup, and restore procedures remain future.
 - [Machine-readable language facts](tools/ai-legibility.md) index the structured
   facts a tool consumes, with the drift-checked reserved-word and token-kind lists.
 - [Error codes](error-codes.md) is generated from the current toolchain registry.

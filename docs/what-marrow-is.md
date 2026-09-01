@@ -51,8 +51,9 @@ flow — the same way it works with local state.
   typed hierarchy of durable places.
 - It is **not an object database revival.** Transparent persistence hid the
   commit, the disk walk, and the data format. Marrow spells out all three:
-  `transaction` marks the commit, a bounded `for` marks the traversal, and typed
-  backup moves the data.
+  `transaction` marks the commit, a bounded `for` marks the traversal, and data
+  moves in typed form — through the typed importer today, with logical backup
+  and restore as future work.
 - It is **not a UI, service, or identity framework.** HTTP, TLS, identity
   providers, native and Electron UI frameworks, messaging, search, and analytics
   integrate through typed host boundaries when a program needs them; the core
