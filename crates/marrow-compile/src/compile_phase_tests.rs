@@ -482,7 +482,11 @@ fn an_empty_terminal_with_a_withheld_artifact_is_an_invariant() {
         function_bodies: Some(CompleteDeclaredFunctionBodies),
         test_bodies: Some(CompleteDeclaredTestBodies),
         lowered: Some(CompleteLoweredFunctionSet(Vec::new())),
-        call_graph: Some(AcyclicCallGraph),
+        call_graph: Some(AcyclicCallGraph {
+            order: crate::call_graph::analyze(&[])
+                .into_acyclic_order()
+                .expect("an empty graph is acyclic"),
+        }),
         transactions: Some(AmbientTransactionClosure),
     };
     assert!(

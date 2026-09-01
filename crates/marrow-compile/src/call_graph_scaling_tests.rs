@@ -36,6 +36,13 @@ fn chain_source(depth: usize) -> String {
     source
 }
 
+fn chain_counts(depth: usize) -> crate::types::CallGraphCounts {
+    let input = project(chain_source(depth));
+    let (compiled, counts) = capture_call_graph_counts(|| compile(&input));
+    compiled.expect("the acyclic chain compiles");
+    counts
+}
+
 #[test]
 fn c2_algorithmic_work_is_linear_and_output_identical() {
     let mut observed_work = Vec::new();
@@ -56,4 +63,32 @@ fn c2_algorithmic_work_is_linear_and_output_identical() {
         vec![(64, 256, 256), (128, 512, 512)],
         "four semantic relations examine every edge exactly once",
     );
+}
+
+#[test]
+fn the_graph_analysis_takes_each_function_and_edge_exactly_once() {
+    let observed: Vec<_> = [64usize, 128]
+        .into_iter()
+        .map(|depth| {
+            let counts = chain_counts(depth);
+            (depth, counts.graph_vertex_visits, counts.graph_edge_visits)
+        })
+        .collect();
+    assert_eq!(observed, vec![(64, 65, 64), (128, 129, 128)]);
+}
+
+#[test]
+fn each_propagated_relation_takes_each_function_and_edge_exactly_once() {
+    let observed: Vec<_> = [64usize, 128]
+        .into_iter()
+        .map(|depth| {
+            let counts = chain_counts(depth);
+            (
+                depth,
+                counts.propagation_visits,
+                counts.propagation_edge_visits,
+            )
+        })
+        .collect();
+    assert_eq!(observed, vec![(64, 195, 192), (128, 387, 384)]);
 }

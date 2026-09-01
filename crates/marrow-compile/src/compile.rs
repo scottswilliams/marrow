@@ -919,7 +919,15 @@ impl CompleteLoweredFunctionSet {
 /// **The claim is over the MINTED lowered set**, exactly as
 /// [`CompleteLoweredFunctionSet`] defines it: acyclicity is established for the
 /// functions that took an image index, not for reserved-but-undrained instances.
-struct AcyclicCallGraph;
+struct AcyclicCallGraph {
+    order: crate::call_graph::AcyclicCallOrder,
+}
+
+impl AcyclicCallGraph {
+    fn order(&self) -> &crate::call_graph::AcyclicCallOrder {
+        &self.order
+    }
+}
 
 /// Every export entry that mutates durable state owns its transaction region, so the
 /// requires-ambient-transaction fixpoint converged with nothing to report.
@@ -1642,8 +1650,8 @@ fn run_semantic(
     // image (image.flow) as defense in depth. Run once the call graph is acyclic and no
     // requires-ambient-transaction report already stands, so the closures converge and a
     // single mutation cannot cascade into an ownership report.
-    if let (Some(set), Some(closure)) = (&lowered_set, &transactions) {
-        reject_transaction_ownership(set, closure, &mut diagnostics);
+    if let (Some(set), Some(acyclic), Some(closure)) = (&lowered_set, &call_graph, &transactions) {
+        reject_transaction_ownership(set, acyclic, closure, &mut diagnostics);
     }
 
     // A test body reaches durable data in one of two disjoint ways — directly, or by
@@ -2324,9 +2332,9 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
 }
 
 /// Report `check.recursion` for every function that participates in a direct or
-/// mutual recursion cycle. A function is on a cycle exactly when it can reach
-/// itself by following direct calls, so each function is checked for reachability
-/// back to itself over the edge set.
+/// mutual recursion cycle. One SCC analysis answers membership for the whole graph;
+/// diagnostics still walk functions in image-index order, so traversal order cannot
+/// move the byte-stable artifact.
 fn reject_recursion(
     lowered: &CompleteLoweredFunctionSet,
     diagnostics: &mut DiagnosticCollector,
@@ -2340,9 +2348,10 @@ fn reject_recursion(
             callees[function.index as usize] = &function.callees;
         }
     }
+    let analysis = crate::call_graph::analyze(&callees);
     let mut reported = false;
     for function in lowered {
-        if reaches_self(function.index, &callees) {
+        if analysis.on_cycle(function.index) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckRecursion.as_str(),
                 &function.file,
@@ -2352,41 +2361,13 @@ fn reject_recursion(
             reported = true;
         }
     }
-    (!reported).then_some(AcyclicCallGraph)
-}
-
-/// Whether `start` can reach itself by following direct calls.
-fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
-    let mut stack: Vec<u16> = callees
-        .get(start as usize)
-        .map(|targets| {
-            #[cfg(test)]
-            crate::types::bump_call_graph(|counts| {
-                counts.graph_vertex_visits += 1;
-                counts.graph_edge_visits += targets.len();
-            });
-            targets.to_vec()
-        })
-        .unwrap_or_default();
-    let mut visited = vec![false; callees.len()];
-    while let Some(node) = stack.pop() {
-        if node == start {
-            return true;
-        }
-        if (node as usize) >= visited.len() || visited[node as usize] {
-            continue;
-        }
-        visited[node as usize] = true;
-        if let Some(targets) = callees.get(node as usize) {
-            #[cfg(test)]
-            crate::types::bump_call_graph(|counts| {
-                counts.graph_vertex_visits += 1;
-                counts.graph_edge_visits += targets.len();
-            });
-            stack.extend_from_slice(targets);
-        }
+    if reported {
+        None
+    } else {
+        analysis
+            .into_acyclic_order()
+            .map(|order| AcyclicCallGraph { order })
     }
-    false
 }
 
 /// Report `check.requires_transaction` for every durable mutation or mutating call an
@@ -2400,11 +2381,11 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
 /// therefore reported only where a caller cannot satisfy it — at an export entry, at
 /// the specific unwrapped mutation or call-site span. A test entry receives its
 /// ambient transaction from the test harness and is likewise exempt.
-/// `_acyclic` is the prerequisite, not an unused argument: the monotone fixpoint
-/// below terminates only over an acyclic call graph.
+/// `acyclic` owns the callee-before-caller order: every function and relevant edge is
+/// examined once, with no convergence sweep.
 fn reject_missing_transaction(
     lowered: &CompleteLoweredFunctionSet,
-    _acyclic: &AcyclicCallGraph,
+    acyclic: &AcyclicCallGraph,
     diagnostics: &mut DiagnosticCollector,
 ) -> Option<AmbientTransactionClosure> {
     let lowered = lowered.functions();
@@ -2420,32 +2401,21 @@ fn reject_missing_transaction(
     // case is a direct unwrapped mutation; the inductive case is an unwrapped call to a
     // function that itself requires one. Recursion is already rejected, so the boolean
     // fixpoint over the acyclic graph converges.
-    let mut requires: Vec<bool> = by_index
-        .iter()
-        .map(|entry| entry.is_some_and(|f| !f.unwrapped_mutations.is_empty()))
-        .collect();
-    loop {
-        let mut changed = false;
-        for (i, entry) in by_index.iter().enumerate() {
-            let Some(function) = entry else { continue };
-            #[cfg(test)]
-            crate::types::bump_call_graph(|counts| counts.propagation_visits += 1);
-            if requires[i] {
-                continue;
+    let requires = acyclic.order().propagate(
+        |index| {
+            by_index
+                .get(index)
+                .and_then(|entry| *entry)
+                .is_some_and(|function| !function.unwrapped_mutations.is_empty())
+        },
+        |index, visit| {
+            if let Some(Some(function)) = by_index.get(index) {
+                for (callee, _) in &function.unwrapped_calls {
+                    visit(usize::from(*callee));
+                }
             }
-            if function.unwrapped_calls.iter().any(|(callee, _)| {
-                #[cfg(test)]
-                crate::types::bump_call_graph(|counts| counts.propagation_edge_visits += 1);
-                (*callee as usize) < count && requires[*callee as usize]
-            }) {
-                requires[i] = true;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+        },
+    );
 
     // Report at export entries only. Deduplicate by source position so a single write
     // that lowers to several instructions (an upsert's replace and create arms share
@@ -2540,11 +2510,13 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 /// exactly one the verifier would reject at image.flow: the checker is never stricter
 /// than the boundary. The requires-ambient-transaction pass runs first and already
 /// covers a durable mutation outside any region, so this pass need not restate it.
-/// `_closure` is the prerequisite, not an unused argument: an unsatisfied
+/// `closure` is the prerequisite, not an unused argument: an unsatisfied
 /// requires-ambient-transaction report already stands otherwise, and a single
-/// unwrapped mutation would cascade into a second ownership report.
+/// unwrapped mutation would cascade into a second ownership report. `acyclic`
+/// carries the shared callee-before-caller order for the two ownership relations.
 fn reject_transaction_ownership(
     lowered: &CompleteLoweredFunctionSet,
+    acyclic: &AcyclicCallGraph,
     _closure: &AmbientTransactionClosure,
     diagnostics: &mut DiagnosticCollector,
 ) {
@@ -2569,43 +2541,33 @@ fn reject_transaction_ownership(
     // `mutates[f]` / `durable[f]`: `f` or a transitive callee stages a mutation / performs
     // any durable operation. The base case is a direct opcode; the inductive case unions
     // each callee's closure. Recursion is already rejected, so the monotone boolean
-    // fixpoint over the acyclic graph converges. These mirror the verifier's mutate and
-    // non-empty-atom closures the lattice consumes.
-    let mut mutates: Vec<bool> = by_index
-        .iter()
-        .map(|entry| entry.is_some_and(|f| f.code.iter().any(is_mutation_instr)))
-        .collect();
-    let mut durable: Vec<bool> = by_index
-        .iter()
-        .map(|entry| entry.is_some_and(|f| f.code.iter().any(is_durable_place_op)))
-        .collect();
-    loop {
-        let mut changed = false;
-        for (i, entry) in by_index.iter().enumerate() {
-            let Some(function) = entry else { continue };
-            #[cfg(test)]
-            crate::types::bump_call_graph(|counts| counts.propagation_visits += 2);
+    // one callee-before-caller pass over the acyclic graph. These mirror the
+    // verifier's mutate and non-empty-atom closures the lattice consumes.
+    let visit_callees = |index: usize, visit: &mut dyn FnMut(usize)| {
+        if let Some(Some(function)) = by_index.get(index) {
             for &callee in &function.callees {
-                #[cfg(test)]
-                crate::types::bump_call_graph(|counts| counts.propagation_edge_visits += 2);
-                let c = callee as usize;
-                if c >= count {
-                    continue;
-                }
-                if mutates[c] && !mutates[i] {
-                    mutates[i] = true;
-                    changed = true;
-                }
-                if durable[c] && !durable[i] {
-                    durable[i] = true;
-                    changed = true;
-                }
+                visit(usize::from(callee));
             }
         }
-        if !changed {
-            break;
-        }
-    }
+    };
+    let mutates = acyclic.order().propagate(
+        |index| {
+            by_index
+                .get(index)
+                .and_then(|entry| *entry)
+                .is_some_and(|function| function.code.iter().any(is_mutation_instr))
+        },
+        visit_callees,
+    );
+    let durable = acyclic.order().propagate(
+        |index| {
+            by_index
+                .get(index)
+                .and_then(|entry| *entry)
+                .is_some_and(|function| function.code.iter().any(is_durable_place_op))
+        },
+        visit_callees,
+    );
 
     for function in lowered {
         let i = function.index as usize;
