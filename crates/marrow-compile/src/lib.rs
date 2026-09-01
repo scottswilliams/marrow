@@ -29,6 +29,8 @@
 )]
 
 mod analysis;
+#[cfg(test)]
+mod call_graph_scaling_tests;
 mod compile;
 mod decl;
 mod demand;

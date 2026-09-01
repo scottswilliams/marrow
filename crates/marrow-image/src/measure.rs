@@ -1079,7 +1079,19 @@ fn exports_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     }
     for (index, export) in rows.iter().enumerate() {
         for later in &rows[index + 1..] {
-            if export.func() == later.func() || export.id() == later.id() {
+            if {
+                #[cfg(test)]
+                crate::encode::bump_image_algorithm_counts(|counts| {
+                    counts.export_target_uniqueness_probes += 1
+                });
+                export.func() == later.func()
+            } || {
+                #[cfg(test)]
+                crate::encode::bump_image_algorithm_counts(|counts| {
+                    counts.export_id_uniqueness_probes += 1
+                });
+                export.id() == later.id()
+            } {
                 return Err(ImageBuildError::InvalidReference("export table"));
             }
         }
@@ -1116,12 +1128,32 @@ fn test_entry_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     }
     for (index, entry) in entries.iter().enumerate() {
         for later in &entries[index + 1..] {
-            if entry.name() == later.name() || entry.func() == later.func() {
+            if {
+                #[cfg(test)]
+                crate::encode::bump_image_algorithm_counts(|counts| {
+                    counts.test_name_uniqueness_probes += 1
+                });
+                entry.name() == later.name()
+            } || {
+                #[cfg(test)]
+                crate::encode::bump_image_algorithm_counts(|counts| {
+                    counts.test_target_uniqueness_probes += 1
+                });
+                entry.func() == later.func()
+            } {
                 return Err(ImageBuildError::InvalidReference("test table"));
             }
         }
     }
-    let is_test_entry = |func: u16| entries.iter().any(|entry| entry.func() == func);
+    let is_test_entry = |func: u16| {
+        entries.iter().any(|entry| {
+            #[cfg(test)]
+            crate::encode::bump_image_algorithm_counts(|counts| {
+                counts.test_entry_membership_probes += 1
+            });
+            entry.func() == func
+        })
+    };
     for (index, function) in draft.functions().iter().enumerate() {
         let has_assert = function
             .code
@@ -1133,11 +1165,13 @@ fn test_entry_relations(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     }
     for entry in entries {
         let function = &draft.functions()[entry.func() as usize];
-        if draft
-            .export_rows()
-            .iter()
-            .any(|export| export.func() == entry.func())
-        {
+        if draft.export_rows().iter().any(|export| {
+            #[cfg(test)]
+            crate::encode::bump_image_algorithm_counts(|counts| {
+                counts.export_membership_probes += 1
+            });
+            export.func() == entry.func()
+        }) {
             return Err(ImageBuildError::InvalidReference("test table"));
         }
         if !function.params.is_empty() {

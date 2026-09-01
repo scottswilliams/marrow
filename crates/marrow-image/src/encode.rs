@@ -68,6 +68,61 @@ pub struct EncodedImage {
     pub image_id: ImageId,
 }
 
+/// Test-only logical work counts for image relations and canonical constant keys.
+/// The observer is private to this crate and cannot affect a verdict or emitted byte.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ImageAlgorithmCounts {
+    pub(crate) export_target_uniqueness_probes: usize,
+    pub(crate) export_id_uniqueness_probes: usize,
+    pub(crate) test_name_uniqueness_probes: usize,
+    pub(crate) test_target_uniqueness_probes: usize,
+    pub(crate) test_entry_membership_probes: usize,
+    pub(crate) export_membership_probes: usize,
+    pub(crate) constant_key_constructions: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static IMAGE_ALGORITHM_COUNTS: std::cell::Cell<Option<ImageAlgorithmCounts>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+struct ImageAlgorithmCountWindow(Option<ImageAlgorithmCounts>);
+
+#[cfg(test)]
+impl Drop for ImageAlgorithmCountWindow {
+    fn drop(&mut self) {
+        IMAGE_ALGORITHM_COUNTS.with(|cell| cell.set(self.0));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn bump_image_algorithm_counts(update: impl FnOnce(&mut ImageAlgorithmCounts)) {
+    IMAGE_ALGORITHM_COUNTS.with(|cell| {
+        if let Some(mut counts) = cell.get() {
+            update(&mut counts);
+            cell.set(Some(counts));
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn capture_image_algorithm_counts<T>(
+    run: impl FnOnce() -> T,
+) -> (T, ImageAlgorithmCounts) {
+    let previous =
+        IMAGE_ALGORITHM_COUNTS.with(|cell| cell.replace(Some(ImageAlgorithmCounts::default())));
+    let guard = ImageAlgorithmCountWindow(previous);
+    let result = run();
+    let counts = IMAGE_ALGORITHM_COUNTS
+        .with(std::cell::Cell::get)
+        .expect("the image-algorithm observation window is armed");
+    drop(guard);
+    (result, counts)
+}
+
 impl ImageDraft {
     /// Encode the draft into canonical container bytes, or fail with a producer-side
     /// [`ImageBuildError`] when a reference is incoherent, a §E bound is exceeded, or
@@ -98,9 +153,12 @@ impl ImageDraft {
     pub(crate) fn const_permutation(&self, str_map: &[u16]) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.consts().len()).collect();
         order.sort_by(|&a, &b| {
-            self.consts()[a]
-                .sort_key(str_map)
-                .cmp(&self.consts()[b].sort_key(str_map))
+            #[cfg(test)]
+            bump_image_algorithm_counts(|counts| counts.constant_key_constructions += 1);
+            let left = self.consts()[a].sort_key(str_map);
+            #[cfg(test)]
+            bump_image_algorithm_counts(|counts| counts.constant_key_constructions += 1);
+            left.cmp(&self.consts()[b].sort_key(str_map))
         });
         order
     }
@@ -730,7 +788,10 @@ fn push_u32(out: &mut impl ImageByteSink, value: u32) {
 /// remapped operands, spans, exports, and test entries.
 #[cfg(test)]
 mod counted_equals_emitted {
-    use super::{CodeLayout, checked_code_offset, remap_of};
+    use super::{
+        CodeLayout, ImageAlgorithmCounts, capture_image_algorithm_counts, checked_code_offset,
+        remap_of,
+    };
     use crate::draft::{
         AdmittedGraphInputPlan, CollectionTypeDef, FieldDef, FunctionDef, ImageDraft,
         RecordTypeDef, RootOccurrenceDef, SpanEntry, VariantDef,
@@ -930,6 +991,116 @@ mod counted_equals_emitted {
             draft.add_test_entry(name, test_fn);
         }
         draft
+    }
+
+    /// A relation-heavy but coherent draft. Each relation has `rows` distinct input
+    /// rows, and each exported body contributes one call-membership question.
+    fn algorithmic_work_draft(rows: usize) -> ImageDraft {
+        let mut draft = ImageDraft::new();
+        let source = draft
+            .intern_string("src/algorithmic.mw")
+            .expect("a within-domain mint");
+        let helper_name = draft.intern_string("helper").expect("a within-domain mint");
+        let helper = draft
+            .add_function(FunctionDef {
+                name: helper_name,
+                source,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                code: vec![Instr::Return],
+                spans: Vec::new(),
+            })
+            .expect("the helper has no site operand");
+
+        for row in 0..rows {
+            draft
+                .intern_int(row as i64)
+                .expect("the constant population is within domain");
+        }
+        let true_const = draft
+            .intern_bool(true)
+            .expect("the assertion constant is within domain");
+
+        for row in 0..rows {
+            let item = format!("export{row:03}");
+            let name = draft
+                .intern_string(&item)
+                .expect("the export name is within domain");
+            let function = draft
+                .add_function(FunctionDef {
+                    name,
+                    source,
+                    params: Vec::new(),
+                    ret: ImageType::Unit,
+                    local_count: 0,
+                    code: vec![Instr::Call(helper.index()), Instr::Return],
+                    spans: Vec::new(),
+                })
+                .expect("the exported function has no site operand");
+            draft.add_export(
+                crate::export_id::ExportId::of_local("algorithmic", &item),
+                function,
+            );
+        }
+
+        for row in 0..rows {
+            let item = format!("test{row:03}");
+            let name = draft
+                .intern_string(&item)
+                .expect("the test name is within domain");
+            let function = draft
+                .add_function(FunctionDef {
+                    name,
+                    source,
+                    params: Vec::new(),
+                    ret: ImageType::Unit,
+                    local_count: 0,
+                    code: vec![Instr::ConstLoad(true_const), Instr::Assert, Instr::Return],
+                    spans: Vec::new(),
+                })
+                .expect("the test function has no site operand");
+            draft.add_test_entry(name, function);
+        }
+        draft
+    }
+
+    #[test]
+    fn c2_algorithmic_work_is_linear_and_output_identical() {
+        let mut observed_work = Vec::new();
+        for rows in [64usize, 128] {
+            let draft = algorithmic_work_draft(rows);
+            let ordinary = draft.encode().expect("the coherent draft encodes");
+            let (observed, counts) = capture_image_algorithm_counts(|| draft.encode());
+            let observed = observed.expect("observation cannot change acceptance");
+
+            assert_eq!(
+                ordinary.bytes, observed.bytes,
+                "the test-only observer cannot change image bytes for {rows} rows",
+            );
+            observed_work.push((rows, counts));
+        }
+        assert_eq!(
+            observed_work,
+            [64usize, 128]
+                .into_iter()
+                .map(|rows| {
+                    (
+                        rows,
+                        ImageAlgorithmCounts {
+                            export_target_uniqueness_probes: rows,
+                            export_id_uniqueness_probes: rows,
+                            test_name_uniqueness_probes: rows,
+                            test_target_uniqueness_probes: rows,
+                            test_entry_membership_probes: rows * 2,
+                            export_membership_probes: rows,
+                            constant_key_constructions: rows + 1,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+            "every relation and constant row has one logical probe",
+        );
     }
 
     /// A durable draft: a keyed root and an indexed root over one Product whose members

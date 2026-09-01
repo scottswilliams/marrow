@@ -144,6 +144,61 @@ pub(crate) fn capture_scaling_counts<T>(run: impl FnOnce() -> T) -> (T, ScalingC
     (result, counts)
 }
 
+/// Deterministic relation-work counts for the direct-call graph. These observe the
+/// production compile path only in unit tests and cannot change a graph, closure,
+/// diagnostic, or image byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CallGraphCounts {
+    /// Function rows classified by the cycle analysis.
+    pub(crate) graph_vertex_visits: usize,
+    /// Direct-call edges examined by the cycle analysis.
+    pub(crate) graph_edge_visits: usize,
+    /// Function rows classified by the three propagated semantic relations.
+    pub(crate) propagation_visits: usize,
+    /// Direct-call edges examined by the three propagated semantic relations.
+    pub(crate) propagation_edge_visits: usize,
+}
+
+impl CallGraphCounts {
+    pub(crate) fn total_edge_work(self) -> usize {
+        self.graph_edge_visits + self.propagation_edge_visits
+    }
+}
+
+thread_local! {
+    static CALL_GRAPH_COUNTS: Cell<Option<CallGraphCounts>> = const { Cell::new(None) };
+}
+
+struct CallGraphCountWindow(Option<CallGraphCounts>);
+
+impl Drop for CallGraphCountWindow {
+    fn drop(&mut self) {
+        CALL_GRAPH_COUNTS.with(|cell| cell.set(self.0));
+    }
+}
+
+pub(crate) fn bump_call_graph(update: impl FnOnce(&mut CallGraphCounts)) {
+    CALL_GRAPH_COUNTS.with(|cell| {
+        if let Some(mut counts) = cell.get() {
+            update(&mut counts);
+            cell.set(Some(counts));
+        }
+    });
+}
+
+/// Run one production compile with a fresh observation window. Restoring the prior
+/// window through `Drop` keeps nested probes and unwinding isolated.
+pub(crate) fn capture_call_graph_counts<T>(run: impl FnOnce() -> T) -> (T, CallGraphCounts) {
+    let previous = CALL_GRAPH_COUNTS.with(|cell| cell.replace(Some(CallGraphCounts::default())));
+    let guard = CallGraphCountWindow(previous);
+    let result = run();
+    let counts = CALL_GRAPH_COUNTS
+        .with(Cell::get)
+        .expect("the call-graph observation window is armed");
+    drop(guard);
+    (result, counts)
+}
+
 /// Deterministic work counts for alias-cycle classification. These observe the
 /// real alias-table owner only in ordinary test builds and cannot affect graph
 /// state, diagnostics, or accepted programs.

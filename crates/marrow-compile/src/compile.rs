@@ -2359,7 +2359,14 @@ fn reject_recursion(
 fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
     let mut stack: Vec<u16> = callees
         .get(start as usize)
-        .map(|targets| targets.to_vec())
+        .map(|targets| {
+            #[cfg(test)]
+            crate::types::bump_call_graph(|counts| {
+                counts.graph_vertex_visits += 1;
+                counts.graph_edge_visits += targets.len();
+            });
+            targets.to_vec()
+        })
         .unwrap_or_default();
     let mut visited = vec![false; callees.len()];
     while let Some(node) = stack.pop() {
@@ -2371,6 +2378,11 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
         }
         visited[node as usize] = true;
         if let Some(targets) = callees.get(node as usize) {
+            #[cfg(test)]
+            crate::types::bump_call_graph(|counts| {
+                counts.graph_vertex_visits += 1;
+                counts.graph_edge_visits += targets.len();
+            });
             stack.extend_from_slice(targets);
         }
     }
@@ -2416,14 +2428,16 @@ fn reject_missing_transaction(
         let mut changed = false;
         for (i, entry) in by_index.iter().enumerate() {
             let Some(function) = entry else { continue };
+            #[cfg(test)]
+            crate::types::bump_call_graph(|counts| counts.propagation_visits += 1);
             if requires[i] {
                 continue;
             }
-            if function
-                .unwrapped_calls
-                .iter()
-                .any(|(callee, _)| (*callee as usize) < count && requires[*callee as usize])
-            {
+            if function.unwrapped_calls.iter().any(|(callee, _)| {
+                #[cfg(test)]
+                crate::types::bump_call_graph(|counts| counts.propagation_edge_visits += 1);
+                (*callee as usize) < count && requires[*callee as usize]
+            }) {
                 requires[i] = true;
                 changed = true;
             }
@@ -2569,7 +2583,11 @@ fn reject_transaction_ownership(
         let mut changed = false;
         for (i, entry) in by_index.iter().enumerate() {
             let Some(function) = entry else { continue };
+            #[cfg(test)]
+            crate::types::bump_call_graph(|counts| counts.propagation_visits += 2);
             for &callee in &function.callees {
+                #[cfg(test)]
+                crate::types::bump_call_graph(|counts| counts.propagation_edge_visits += 2);
                 let c = callee as usize;
                 if c >= count {
                     continue;
