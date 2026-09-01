@@ -205,13 +205,15 @@ resource; the store is identity-complete, only its operations are deferred. A co
 in a field stays rejected outright — a collection belongs under a keyed `branch`, not
 inline.)
 
-The compiler emits an **operation site** for every node of the whole durable graph
-— a whole-payload site for each keyed placement (the store root and every nested
-`branch`), a whole-group site for each root-level `group`, and a field-leaf site for each
-stored field (top-level, group-scoped, or branch-scoped) — and the verifier seals each one
-by resolving its concrete address against the graph it independently reconstructs. A site
-on the flat executable root (its fields scalar or widened), on one of its root-level
-groups, or on one of its scalar-field branches at any admitted depth, seals as executable; every
+The compiler emits an **operation site** for each keyed placement of the durable
+graph (a whole-payload site for the store root and every nested `branch`) and for
+each root-level `group` (a whole-group site), and a field-leaf site for each stored
+field the code references (top-level, group-scoped, or branch-scoped), minted at the
+field's first reference and deduplicated — and the verifier seals each emitted site
+by resolving its concrete address against the graph it independently reconstructs. A
+site on the flat executable root (its fields scalar or widened), on one of its
+root-level groups, or on one of its scalar-field branches at any admitted depth,
+seals as executable; every
 other site — over a group nested in a branch or another group, or over a non-flat root —
 seals with a complete identity but parks, so its concrete address is checked and recorded
 while its execution waits for the remaining kernel. A nominal source field has a separate
@@ -595,9 +597,9 @@ own members may include further such branches, so a chain of singly keyed scalar
 branches is executable at every admitted level. The member tree is bounded: a top-level
 member sits at level 1, each enclosing `group` or `branch` places its members one level
 deeper, and the tree admits 16 levels — a member past the limit is refused with
-`check.resource_limit` at the first member of the over-deep body. Each level's entries
-are addressed by extending the
-parent's key-path with the branch key — `^root[key].branch[bkey]`,
+`check.resource_limit` at the first member of the over-deep body. Each level's
+entries are addressed by extending the parent's key-path with the branch key —
+`^root[key].branch[bkey]`,
 `^root[key].branch[bkey].sub[skey]` — and the same operations apply at every level:
 
 ```mw
