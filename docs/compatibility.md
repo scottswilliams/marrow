@@ -44,12 +44,15 @@ A persistent store is implemented for the documented local profile. `marrow
 import` provisions a store and populates it, and `marrow run <export> --store
 <dir>` runs a durable export against it; both hand the verified image to a
 release-verified companion runner, and provisioning is the only path that
-creates a store. A store records the program image it is bound to. Presenting
-the identical image opens the store with no write. A code-only image change —
-the durable contract and interface unchanged — atomically rebinds the store to
-the new image and leaves every stored value in place; only the store's binding
-metadata is rewritten. A change to the durable contract or interface is a typed
-refusal that leaves the store intact and the prior program usable. No
+creates a store. A store records the program image it is bound to and the
+authority ceiling it accepted at provision; an image whose demand exceeds that
+ceiling is refused before any engine call. Presenting the identical image opens
+the store with no write. A code-only image change — the durable contract and
+interface unchanged, and the demand within the accepted ceiling — atomically
+rebinds the store to the new image and leaves every stored value in place; only
+the store's binding metadata is rewritten. A change to the durable contract or
+interface is a typed refusal that leaves the store intact and the prior program
+usable. No
 implemented transition rewrites stored data; schema evolution is future work.
 
 Raw native-store files are private implementation data, not an interchange
