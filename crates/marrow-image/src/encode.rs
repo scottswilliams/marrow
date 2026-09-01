@@ -89,16 +89,6 @@ thread_local! {
 }
 
 #[cfg(test)]
-struct ImageAlgorithmCountWindow(Option<ImageAlgorithmCounts>);
-
-#[cfg(test)]
-impl Drop for ImageAlgorithmCountWindow {
-    fn drop(&mut self) {
-        IMAGE_ALGORITHM_COUNTS.with(|cell| cell.set(self.0));
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn bump_image_algorithm_counts(update: impl FnOnce(&mut ImageAlgorithmCounts)) {
     IMAGE_ALGORITHM_COUNTS.with(|cell| {
         if let Some(mut counts) = cell.get() {
@@ -114,13 +104,15 @@ pub(crate) fn capture_image_algorithm_counts<T>(
 ) -> (T, ImageAlgorithmCounts) {
     let previous =
         IMAGE_ALGORITHM_COUNTS.with(|cell| cell.replace(Some(ImageAlgorithmCounts::default())));
-    let guard = ImageAlgorithmCountWindow(previous);
-    let result = run();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
     let counts = IMAGE_ALGORITHM_COUNTS
         .with(std::cell::Cell::get)
         .expect("the image-algorithm observation window is armed");
-    drop(guard);
-    (result, counts)
+    IMAGE_ALGORITHM_COUNTS.with(|cell| cell.set(previous));
+    match result {
+        Ok(value) => (value, counts),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 impl ImageDraft {
