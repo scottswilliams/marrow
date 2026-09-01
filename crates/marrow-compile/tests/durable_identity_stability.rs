@@ -28,7 +28,8 @@ mod ids;
 #[path = "common/project.rs"]
 mod project_capture;
 
-use ids::{minted, minted_anchors};
+use std::sync::LazyLock;
+
 use marrow_compile::compile;
 use marrow_project::{IdentityAnchor, IdentityKind, ProjectInput};
 use project_capture::project_with_ids;
@@ -137,9 +138,15 @@ const FROZEN_ANCHORS: &[&str] = &[
     "index books.byShelf",
 ];
 
+/// One convergence for the whole suite: three tests read one corpus, so the
+/// gap-resolution loop runs once and each test consumes the settled artifacts.
+static CONVERGED: LazyLock<(Vec<IdentityAnchor>, Vec<u8>)> =
+    LazyLock::new(|| ids::converged(corpus));
+
 #[test]
 fn the_minted_identity_anchor_set_is_frozen() {
-    let observed: Vec<String> = minted_anchors(corpus)
+    let observed: Vec<String> = CONVERGED
+        .0
         .iter()
         .map(|anchor| format!("{} {}", anchor.kind.keyword(), anchor.path))
         .collect();
@@ -156,8 +163,8 @@ fn the_minted_identity_anchor_set_is_frozen() {
 /// the comparison above would then freeze that subset.
 #[test]
 fn the_corpus_compiles_once_its_anchors_are_minted() {
-    let ledger = minted(corpus);
-    compile(&ledger)
+    let project = corpus(Some(&CONVERGED.1));
+    compile(&project)
         .unwrap_or_else(|failure| panic!("the identity corpus must compile: {failure:#?}"));
 }
 
@@ -166,10 +173,9 @@ fn the_corpus_compiles_once_its_anchors_are_minted() {
 /// would be edited to agree, with nothing noticing.
 #[test]
 fn the_corpus_reaches_every_identity_kind() {
-    let observed: Vec<IdentityAnchor> = minted_anchors(corpus);
     for kind in IdentityKind::ALL {
         assert!(
-            observed.iter().any(|anchor| anchor.kind == *kind),
+            CONVERGED.0.iter().any(|anchor| anchor.kind == *kind),
             "the corpus mints no `{}` anchor",
             kind.keyword(),
         );

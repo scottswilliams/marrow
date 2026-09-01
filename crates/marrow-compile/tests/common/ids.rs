@@ -44,6 +44,17 @@ pub fn minted_anchors(capture: impl Fn(Option<&[u8]>) -> ProjectInput) -> Vec<Id
     converge(&capture).into_keys().collect()
 }
 
+/// One convergence, both artifacts: the complete anchor set in canonical order and
+/// the serialized ledger bytes that satisfy it. For a suite whose tests share one
+/// corpus, this is the run they share instead of each converging again.
+pub fn converged(
+    capture: impl Fn(Option<&[u8]>) -> ProjectInput,
+) -> (Vec<IdentityAnchor>, Vec<u8>) {
+    let minted = converge(&capture);
+    let ledger = serialize(&minted).into_bytes();
+    (minted.into_keys().collect(), ledger)
+}
+
 fn converge(capture: &impl Fn(Option<&[u8]>) -> ProjectInput) -> BTreeMap<IdentityAnchor, String> {
     let mut minted: BTreeMap<IdentityAnchor, String> = BTreeMap::new();
     for _ in 0..64 {

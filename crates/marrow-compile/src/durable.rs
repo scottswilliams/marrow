@@ -832,7 +832,7 @@ impl DurableRegistry {
                 }
                 if let Some(at) = declare_branches {
                     let branches = std::mem::take(&mut registry.roots[at].branches);
-                    registry.record_branch_declarations(&store.resource, &branches);
+                    registry.record_branch_declarations(row.resource, &branches);
                     registry.roots[at].branches = branches;
                 }
                 registry
@@ -1246,7 +1246,7 @@ fn build_one(
     let built = match draft.product_members(product) {
         Some(members) => Some(ProductDeclarationSource::Held(members)),
         None => resolver
-            .build_product_graph(draft, records, metadata, store, record, group_rows)
+            .build_product_graph(draft, records, metadata, row.resource, record, group_rows)
             .map(ProductDeclarationSource::Built),
     };
     if let Some(invariant) = resolver.invariant {
@@ -1474,7 +1474,7 @@ fn build_one(
         executable: Some(DurableRoot {
             name: store.root.root.clone(),
             root_id,
-            resource: store.resource.clone(),
+            resource: row.resource.to_string(),
             key: key_scalars.clone(),
             record: record.type_id,
             occurrence: admitted.occurrence().clone(),
@@ -1923,17 +1923,14 @@ impl<'a> IdentityResolver<'a> {
         draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
-        store: &StoreDecl,
+        product: &str,
         record: &RecordInfo,
         groups: &[GroupRow<'_>],
     ) -> Option<Vec<DeclarationMemberDef>> {
         let mut nodes: Vec<DeclarationDraftNode> = Vec::new();
         for field in &record.fields {
             let shape = DeclarationMemberShape::Field {
-                id: self.resolve(
-                    IdentityKind::Field,
-                    &format!("{}.{}", store.resource, field.name),
-                ),
+                id: self.resolve(IdentityKind::Field, &format!("{product}.{}", field.name)),
                 required: field.required,
                 value: self.build_field_value(draft, records, metadata, field.ty)?,
             };
@@ -1950,12 +1947,12 @@ impl<'a> IdentityResolver<'a> {
         // it the anchor set narrows exactly where a program is already wrong, and the
         // mint action that consumes these reports would write a ledger that is missing
         // the anchor the corrected program needs.
-        for member in records.refused_members(&store.resource) {
-            self.resolve(IdentityKind::Field, &format!("{}.{member}", store.resource));
+        for member in records.refused_members(product) {
+            self.resolve(IdentityKind::Field, &format!("{product}.{member}"));
         }
         self.build_extras(
             &mut nodes,
-            MemberCursor::top(&store.resource),
+            MemberCursor::top(product),
             draft,
             records,
             groups,
