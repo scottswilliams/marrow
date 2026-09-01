@@ -205,6 +205,7 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         GenericInvariant::DeclarationIndexDrift => "declaration index drift",
         GenericInvariant::FunctionIndexDomain => "function index domain",
         GenericInvariant::DurableConstructionRefused => "durable construction refused",
+        GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
         GenericInvariant::DeclarationCoordinateMissing(_) => "declaration coordinate missing",
     }
 }
@@ -881,5 +882,73 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
         refused_bytes, control_bytes,
         "a store refused after staging must leave the image byte-identical to a build \
          that never declared it",
+    );
+}
+
+/// A drift between the type registry and the declaration slice is the typed
+/// invariant it was on the base line, raised at the directory join — never a
+/// user-facing diagnostic.
+///
+/// The registry drives the join: an admitted resource whose declaration is missing
+/// from the received slice cannot produce a row, so the drift is caught at the one
+/// place the two inputs meet, before any store is built. Reporting it as
+/// `check.type` would charge the user for a compiler inconsistency, which is
+/// exactly what the pre-fix build did.
+#[test]
+fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
+    let source = "module main\n\nresource R {\n    required title: string\n}\n\n\
+                  store ^r[id: int]: R\n\nfn main() {\n}\n";
+    let parsed = marrow_syntax::parse_source(source);
+    assert!(!parsed.has_errors(), "the corpus parses");
+    let file = crate::test_file_identity("src/main.mw");
+    let at = crate::analysis::FileRef::admitted(0);
+    let mut resources = Vec::new();
+    let mut stores = Vec::new();
+    for declaration in &parsed.file.declarations {
+        match declaration {
+            marrow_syntax::Declaration::Resource(d) => resources.push((at, file.clone(), d)),
+            marrow_syntax::Declaration::Store(d) => stores.push((at, file.clone(), d)),
+            _ => {}
+        }
+    }
+    let budget = crate::decl::DeclarationBudget::default();
+    let mut draft_owner = marrow_image::ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let mut diagnostics = DiagnosticCollector::new();
+    let records = crate::types::TypeRegistry::build(
+        &mut draft,
+        &[],
+        &[],
+        &[],
+        &[],
+        &resources,
+        &mut diagnostics,
+        budget.clone(),
+    )
+    .expect("the corpus registry stays within the ledger budget");
+    draft.commit();
+    // The drift: the registry admitted `R`, but the durable build receives an
+    // empty declaration slice.
+    let outcome = crate::durable::DurableRegistry::build(
+        &mut draft_owner,
+        &records,
+        &[],
+        &stores,
+        None,
+        &mut diagnostics,
+        budget,
+    );
+    assert!(
+        matches!(
+            outcome,
+            Err(crate::types::BuildError::Invariant(
+                GenericInvariant::DurableResourceMissing(_)
+            ))
+        ),
+        "registry/slice drift must abort at the invariant boundary",
+    );
+    assert!(
+        diagnostics.finish().expect_complete().is_empty(),
+        "the drift is a compiler fault; no user-facing row may be minted for it",
     );
 }

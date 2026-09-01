@@ -14,8 +14,7 @@ use marrow_project::FileIdentity;
 use marrow_syntax::{IndexDecl, KeyParam, ResourceDecl, SourceSpan, StoreDecl, TypeExpr};
 
 use crate::analysis::FileRef;
-use crate::decl::{Binding, DeclarationIndexDrift};
-use crate::types::{RecordInfo, TypeRegistry};
+use crate::types::{GenericInvariant, RecordInfo, TypeRegistry};
 /// A typed handle to one admitted `resource` declaration, valid only in the
 /// [`ResourceDirectory`] that minted it.
 ///
@@ -36,10 +35,12 @@ pub(super) struct ResourceRow<'a> {
 ///
 /// This is the one join between a resource's two owners — the declaration the parser
 /// wrote and the record the type registry admitted — and it is performed once, before
-/// any store is built. Downstream a store reaches a record only *through* a row that
-/// already holds the declaration it was built from, so the two owners disagreeing
-/// about one name is unrepresentable rather than reported: that is what retires the
-/// invariant a second, declaration-side lookup by name used to raise.
+/// any store is built. The registry drives the join: every row comes from an admitted
+/// record, so which resources exist is decided by exactly one owner, and a store
+/// reaches a record only *through* a row that already holds the declaration it was
+/// built from. An admitted record whose declaration is missing from the received
+/// slice is the two build inputs drifting apart — a compiler coherence failure raised
+/// here, at the single join, and nowhere else.
 pub(super) struct ResourceDirectory<'a> {
     rows: Vec<ResourceRow<'a>>,
     by_spelling: BTreeMap<&'a str, ResourceDeclId>,
@@ -49,21 +50,26 @@ impl<'a> ResourceDirectory<'a> {
     pub(super) fn take(
         resources: &[(FileRef, FileIdentity, &'a ResourceDecl)],
         records: &'a TypeRegistry,
-    ) -> Self {
+    ) -> Result<Self, GenericInvariant> {
+        // A repeated resource name is refused by the declare pass, which keeps the
+        // first declaration; answering the spelling with the first declaration is the
+        // same choice, spelled once. One keyed pass here; the join below is a lookup,
+        // not a scan, so the take is linear-logarithmic in the declaration count.
+        let mut declared: BTreeMap<&str, &'a ResourceDecl> = BTreeMap::new();
+        for (_, _, decl) in resources {
+            declared.entry(decl.name.as_str()).or_insert(decl);
+        }
         let mut rows = Vec::new();
         let mut by_spelling = BTreeMap::new();
-        for (_, _, decl) in resources {
-            let Some(record) = records.by_name(&decl.name) else {
-                continue;
+        for record in records.admitted_resources() {
+            let Some(decl) = declared.get(record.name.as_str()) else {
+                return Err(GenericInvariant::DurableResourceMissing(record.type_id));
             };
             let id = ResourceDeclId(rows.len());
             rows.push(ResourceRow { decl, record });
-            // A repeated resource name is refused by the declare pass, which keeps the
-            // first declaration; answering the spelling with the first row is the same
-            // choice, spelled once.
-            by_spelling.entry(decl.name.as_str()).or_insert(id);
+            by_spelling.insert(record.name.as_str(), id);
         }
-        Self { rows, by_spelling }
+        Ok(Self { rows, by_spelling })
     }
 
     fn lookup(&self, spelling: &str) -> Option<ResourceDeclId> {
@@ -97,35 +103,23 @@ pub(super) struct StoreRow<'a> {
 pub(super) enum StoreResourceBinding {
     /// The spelling names a `resource` declaration the type registry admitted.
     Accepted(ResourceDeclId),
-    /// The spelling names a declaration this project refused, so the name is written
-    /// but binds no admitted shape.
-    ///
-    /// The refusal's own handle is deliberately not carried. The durable build reports
-    /// the refused and the absent case with the same row at the same span, so a handle
-    /// here would be a retained cause no consumer can read — and the moment a steer to
-    /// that cause is wanted, it is the `named_type` lookup below that mints it, one
-    /// line from where this arm is decided.
-    Refused,
-    /// No admitted or refused declaration answers the spelling as a resource — it
-    /// names nothing, or it names a declaration of another kind.
-    Absent,
+    /// No admitted resource answers the spelling: it names nothing, a declaration of
+    /// another kind, or a declaration this project refused. The durable build reports
+    /// all of those with the same row at the same span, so the distinction would be a
+    /// retained cause no consumer reads — and the moment a steer to a refused
+    /// declaration's own cause is wanted, minting it is a diagnostic change, not a
+    /// binding change.
+    Unbound,
 }
 
 impl<'a> StoreRow<'a> {
-    pub(super) fn resolve(
-        directory: &ResourceDirectory<'a>,
-        records: &TypeRegistry,
-        store: &'a StoreDecl,
-    ) -> Result<Self, DeclarationIndexDrift> {
+    pub(super) fn resolve(directory: &ResourceDirectory<'a>, store: &'a StoreDecl) -> Self {
         let resource = store.resource.as_str();
         let binding = match directory.lookup(resource) {
             Some(id) => StoreResourceBinding::Accepted(id),
-            None => match records.named_type(resource)? {
-                Binding::Refused(..) => StoreResourceBinding::Refused,
-                Binding::Accepted(_) | Binding::Absent => StoreResourceBinding::Absent,
-            },
+            None => StoreResourceBinding::Unbound,
         };
-        Ok(Self {
+        Self {
             resource,
             binding,
             indexes: IndexTable::take(&store.indexes),
@@ -136,16 +130,14 @@ impl<'a> StoreRow<'a> {
                 },
                 &store.root.keys,
             ),
-        })
+        }
     }
 
     /// The Product this store is an occurrence of, for the census.
     pub(super) fn product_key(&self) -> ProductKey<'a> {
         match self.binding {
             StoreResourceBinding::Accepted(id) => ProductKey::Bound(id),
-            StoreResourceBinding::Refused | StoreResourceBinding::Absent => {
-                ProductKey::Unbound(self.resource)
-            }
+            StoreResourceBinding::Unbound => ProductKey::Unbound(self.resource),
         }
     }
 }

@@ -504,6 +504,14 @@ pub(crate) enum GenericInvariant {
     },
     ReadyBodyShapeMismatch(TypeInstId),
     ReadyBodyMissing(TypeInstId),
+    /// The type registry admitted a resource whose declaration is not in the
+    /// declaration set the durable build received. The two inputs describe one
+    /// compilation and are joined exactly once, when the resource directory is
+    /// taken, so this is produced at that single join and nowhere else. It is a
+    /// compiler coherence failure, never a fact about the source: reporting it as
+    /// a refusal would charge the user for the drift, and staying silent would
+    /// bind the store to a declaration that does not exist.
+    DurableResourceMissing(marrow_image::TypeId),
     /// A declared value type on a containment cycle has no declaration coordinate.
     ///
     /// The declare pass mints the coordinate in the same statement sequence that
@@ -3178,6 +3186,13 @@ impl TypeRegistry {
         let mut display = DisplayScratch::for_view(&view);
         collection_spelling_for_display(self, &view, idx, None, None, &mut display)
             .unwrap_or_else(|_| "collection".to_string())
+    }
+
+    /// Every admitted `resource` record, in declaration-admission order. The durable
+    /// build's resource directory is taken from this list, so the registry is the one
+    /// source deciding which resources exist.
+    pub(crate) fn admitted_resources(&self) -> &[RecordInfo] {
+        &self.records
     }
 
     pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {

@@ -1470,6 +1470,10 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             let _ = (kind, cache_index, draft_index);
             14
         }
+        GenericInvariant::DurableResourceMissing(type_id) => {
+            let _ = type_id;
+            18
+        }
         GenericInvariant::DeclarationCoordinateMissing(type_id) => {
             let _ = type_id;
             23

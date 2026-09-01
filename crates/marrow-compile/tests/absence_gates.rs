@@ -2920,25 +2920,25 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
     );
 }
 
-/// The durable build reaches a resource only through its `StoreRow` binding, so the
-/// second, declaration-side lookup by name and the invariant its disagreement raised
-/// are deleted rather than left unreachable.
+/// The durable build reaches a resource only through its `StoreRow` binding: the
+/// displaced per-store name lookups are gone, and the registry/slice drift the old
+/// per-store lookup could hit is decided at exactly one place — the directory join —
+/// which is the sole producer of `DurableResourceMissing`.
 ///
-/// The invariant existed because two owners answered "which resource is this store
-/// over" and nothing stopped them disagreeing; carrying `Accepted(ResourceDeclId)` on
-/// the row makes the disagreement unrepresentable, and leaving the variant would give
-/// a reintroduced lookup somewhere to report. The scan covers this crate's whole
-/// source, test modules included, so the two test mappers that named the variant
-/// cannot keep it alive either. The structural half of this family — the builder
-/// naming no index or key syntax, the single key-anchor join, and the raw-slice-free
-/// staging boundary — is enforced beside the identity contract it protects, in
-/// `durable_identity_stability.rs`.
+/// The old shape had two owners answering "which resource is this store over" per
+/// store, with nothing stopping them disagreeing; the row binding leaves one join,
+/// performed once, whose drift arm is a typed invariant rather than a user-facing
+/// diagnostic. The producer count is exact so a second lookup that raises the same
+/// invariant cannot hide behind the variant's continued existence. The structural
+/// half of this family — the builder naming no index or key syntax, the single
+/// key-anchor join, and the raw-slice-free staging boundary — is enforced beside the
+/// identity contract it protects, in `durable_identity_stability.rs`.
 #[test]
-fn the_durable_resource_disagreement_has_no_invariant_to_report() {
+fn the_durable_resource_drift_has_one_deciding_join() {
     for deleted in [
-        "DurableResourceMissing",
         "records.by_name(&store.resource)",
         "decl.name == store.resource",
+        "named_type(resource)",
     ] {
         let found = occurrences(deleted);
         assert!(
@@ -2947,6 +2947,12 @@ fn the_durable_resource_disagreement_has_no_invariant_to_report() {
              exist: {found:?}",
         );
     }
+    let producers = production_occurrences("GenericInvariant::DurableResourceMissing(");
+    assert_eq!(
+        producers.len(),
+        1,
+        "the drift invariant has exactly one producer, the directory join: {producers:?}",
+    );
     assert!(
         !production_occurrences("StoreResourceBinding::Accepted").is_empty(),
         "the typed store binding must be the live subject of this gate",

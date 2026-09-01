@@ -716,11 +716,11 @@ impl DurableRegistry {
         // built, and a per-store decision would give the roots of one Product two policies.
         // Resolve every store's resource spelling once, against both of a resource's
         // owners at the same site, before either the census or the first build reads it.
-        let directory = ResourceDirectory::take(resources, records);
-        let rows = stores
+        let directory = ResourceDirectory::take(resources, records)?;
+        let rows: Vec<StoreRow<'_>> = stores
             .iter()
-            .map(|(_, _, store)| StoreRow::resolve(&directory, records, store))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|(_, _, store)| StoreRow::resolve(&directory, store))
+            .collect();
         let census = ProductOccurrenceCensus::take(stores, &rows);
         // The census is the admission owner for durable graph input: it is the one place
         // that knows the whole declaration set before any of it reaches the draft, so it
@@ -1185,7 +1185,7 @@ fn build_one(
             let bound = directory.row(bound);
             (bound.decl, bound.record)
         }
-        StoreResourceBinding::Refused | StoreResourceBinding::Absent => {
+        StoreResourceBinding::Unbound => {
             return refuse(
                 diagnostics,
                 SourceDiagnostic::at(
