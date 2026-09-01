@@ -313,8 +313,8 @@ never widened or narrowed by accident. Stable inputs yield a byte-identical imag
 
 ## Usage and exit codes
 
-Flags that take values use separate arguments, such as `--check`; the CLI does
-not accept `--flag=value` forms. Dotted diagnostic codes are defined in the
+Flags that take values use separate arguments, such as `--store <dir>`; the CLI
+does not accept `--flag=value` forms. Dotted diagnostic codes are defined in the
 [Error Code Reference](../error-codes.md).
 
 | Code | Meaning |

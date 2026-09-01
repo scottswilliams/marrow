@@ -110,7 +110,8 @@ branches contribute to the [durable-contract
 identity](durable-places.md#durable-identity) exactly as roots do.
 
 A `branch` keyed by one or more columns and holding only scalar fields is part of the
-executable durable graph, and such branches may nest to any depth: their whole entries
+executable durable graph, and such branches may nest within the fixed 16-level
+member-tree depth: their whole entries
 are created, read, replaced, and erased through the key-path address
 `^root[key…].branch[bkey…]…` (see [Durable places](durable-places.md#keyed-branches)).
 A top-level field may also hold a widened value — a dense `struct`/record, a closed

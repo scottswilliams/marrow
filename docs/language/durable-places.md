@@ -194,8 +194,8 @@ plain scalar or a widened value (a dense `struct`/record, a closed `enum`, or an
 widened field value is framed inline in its single field-leaf cell and round-trips as a
 runtime value. Such a root's root-level `group` members (of scalar or widened leaves, see
 [Groups](#groups)) and its `branch` placements, with one or more key components each, are
-executable in the same way; branches nest to any depth (see
-[Keyed branches](#keyed-branches)).
+executable in the same way; branches nest within the fixed 16-level member-tree
+depth (see [Keyed branches](#keyed-branches)).
 A singleton root (no key components), a root whose resource declares a **nominal-typed**
 field, or a group nested in a branch or in another group declares and verifies its full
 identity, but its read and write operations are not yet lowered — an operation over one
@@ -211,7 +211,7 @@ The compiler emits an **operation site** for every node of the whole durable gra
 stored field (top-level, group-scoped, or branch-scoped) — and the verifier seals each one
 by resolving its concrete address against the graph it independently reconstructs. A site
 on the flat executable root (its fields scalar or widened), on one of its root-level
-groups, or on one of its scalar-field branches at any depth, seals as executable; every
+groups, or on one of its scalar-field branches at any admitted depth, seals as executable; every
 other site — over a group nested in a branch or another group, or over a non-flat root —
 seals with a complete identity but parks, so its concrete address is checked and recorded
 while its execution waits for the remaining kernel. A nominal source field has a separate
@@ -592,7 +592,11 @@ A resource may declare a keyed `branch`: a nested keyed subtree with its own key
 component and stored fields (see [Resources](resources.md#groups-and-branches)). A
 `branch` keyed by one component and holding only scalar fields is executable, and its
 own members may include further such branches, so a chain of singly keyed scalar-field
-branches is executable to any depth. Each level's entries are addressed by extending the
+branches is executable at every admitted level. The member tree is bounded: a top-level
+member sits at level 1, each enclosing `group` or `branch` places its members one level
+deeper, and the tree admits 16 levels — a member past the limit is refused with
+`check.resource_limit` at the first member of the over-deep body. Each level's entries
+are addressed by extending the
 parent's key-path with the branch key — `^root[key].branch[bkey]`,
 `^root[key].branch[bkey].sub[skey]` — and the same operations apply at every level:
 

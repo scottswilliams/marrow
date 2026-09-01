@@ -179,10 +179,10 @@ nominal-typed fields stay parked with their owning lanes, and a collection in a 
 rejected. A resource may declare thousands of mostly-sparse fields: a whole-entry read
 is a field-leaf range scan whose engine work is proportional to the present count
 (`O(populated / page + 1)` scan calls), not the declared width. The declared width
-guard admits up to 4096 top-level fields; a durable resource's binding limit is the
-image byte ceiling (~84 bytes per stored field) together with the durable identity
-ledger, which together admit roughly 4090 declared durable fields at ~343 KB within
-the 512 KiB image ceiling. A
+guard admits up to 4096 top-level fields, and a durable resource declaring the full
+4096-field width compiles. Field-leaf operation sites are emitted only for the fields
+the code addresses, so a wide resource's image size tracks its referenced fields
+rather than its declared width; the 512 KiB ceiling bounds the whole image. A
 materialized resource value is an ordinary by-value value: it is named by a
 `const`/`var` annotation (bare or optional), passed to a bare function parameter,
 and returned (bare or optional) from a function, copied by value at each boundary
@@ -239,7 +239,8 @@ compiler fully lowers operations over a keyed root — single-column or a compos
 — whose top-level fields are each a scalar or a widened value (a dense `struct`/record, a
 closed `enum`, or an `Option`/`Result`), together with its root-level `group` members (of
 scalar or widened leaves, read/replaced/erased whole and by leaf) and its `branch`
-placements (with one or more key columns each) nested to any depth; bounded traversal,
+placements (with one or more key columns each) nested within the fixed 16-level
+member-tree depth; bounded traversal,
 however, iterates a single key column, so a `for` head over a composite-keyed layer parks. An entry identity `Id(^root)`
 is a first-class runtime value — constructed with `Id(^root, keys)`, compared, passed and
 returned, and dereferenced with `^root[id]` — but is not a durable field value. A managed
