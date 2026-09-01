@@ -83,7 +83,10 @@ pub struct RebindReceipt {
 pub enum ChangedFact {
     /// The durable contract — the durable graph over ledger ids — changed (an evolution).
     DurableContract,
-    /// The exported interface — the call surface — changed.
+    /// The exported interface changed — today the export *set* (the declaration-path
+    /// fingerprint the head pins), so an added, removed, renamed, or relocated export is
+    /// caught here while a resignatured export is not; the signature-sensitive verified
+    /// interface binding that closes that gap is future work.
     Interface,
 }
 

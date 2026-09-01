@@ -21,10 +21,10 @@ const IMAGE_FORMAT_VERSION: u8 = 0;
 
 /// Derive the active binding a store records for `image`: the active image's byte identity
 /// plus the binding facts a binding-only rebind compares (the durable contract and the
-/// interface fingerprint over the exported call surface). The interface fingerprint is a
-/// runner-free digest over the image's export declaration identities (see
-/// [`interface_fingerprint`]); the durable contract independently catches every durable-graph
-/// change. Authority is *not* a binding fact — the accepted deployment ceiling is a
+/// export-set interface fingerprint). The interface fingerprint is a runner-free digest over
+/// the image's export declaration identities (see [`interface_fingerprint`]) — blind to
+/// signatures, so a resignatured export is not a binding-fact delta today; the durable
+/// contract independently catches every durable-graph change. Authority is *not* a binding fact — the accepted deployment ceiling is a
 /// separately owned standing maximum recorded once at provision (see [`accepted_ceiling`])
 /// and enforced atom-granularly at attach, so a demand change within the ceiling is not a
 /// rebind delta and a demand change beyond it is a distinct, more actionable refusal.

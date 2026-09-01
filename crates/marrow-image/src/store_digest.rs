@@ -31,15 +31,20 @@ pub const STORE_HEAD_KIND: &[u8] = b"marrow.store.head.v0";
 pub const STORE_DATA_KIND: &[u8] = b"marrow.store.data.v0";
 
 /// The digest kind of the store's interface binding fingerprint: a digest over the store's
-/// exported call surface, one of the binding facts a binding-only rebind compares.
+/// export set (declaration identities), one of the binding facts a binding-only rebind
+/// compares.
 pub const STORE_INTERFACE_KIND: &[u8] = b"marrow.store.iface.v0";
 
-/// A runner-free interface binding fingerprint: a domain-separated digest over the sorted
-/// set of the program's export declaration identities (each an
+/// A runner-free **export-set** binding fingerprint: a domain-separated digest over the
+/// sorted set of the program's export declaration identities (each an
 /// [`ExportId`](crate::ExportId)'s 32 bytes). Sorting makes it the export *set* fingerprint,
-/// independent of export order; a body-only edit that preserves every export's declaration
-/// identity preserves it, while adding, removing, or resignaturing an export changes it —
-/// exactly the interface-changed signal a binding-only rebind must catch. It is computed
+/// independent of export order. An [`ExportId`](crate::ExportId) digests only the export's
+/// declaration path, so this fingerprint moves exactly when that set moves:
+/// adding, removing, renaming, or relocating an export changes it, while a body edit — and
+/// equally a *resignatured* export (changed parameters or return type) — preserves it. It is
+/// therefore a declaration-path identity, blind to signatures, and the head slot it fills
+/// pins the export set rather than the full call surface; a signature-sensitive verified
+/// interface identity that closes that gap is future work, not this digest. It is computed
 /// purely from a `VerifiedImage`'s exports, so the store owner needs no dependency on the
 /// runner's interface projection. The count fits its `u32`: it is one entry per verified
 /// export, bounded by `MAX_EXPORTS`.

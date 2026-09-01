@@ -93,7 +93,12 @@ pub struct ActiveBinding {
     /// The durable-contract identity — the durable graph over ledger ids. A binding fact:
     /// a rebind requires it unchanged.
     pub durable_contract: [u8; 32],
-    /// The interface identity — the exported call surface. A binding fact.
+    /// The interface binding fact. Today this slot carries the export-*set* fingerprint
+    /// ([`marrow_image::interface_fingerprint`]): a digest over export declaration
+    /// identities, blind to signatures, so a resignatured export (changed parameters or
+    /// return type) preserves it and is *not* caught as a binding-fact delta. The
+    /// signature-sensitive verified interface identity that closes that gap is future work
+    /// and will occupy this slot under its own rules.
     pub interface: [u8; 32],
 }
 
