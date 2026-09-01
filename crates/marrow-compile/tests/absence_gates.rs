@@ -3013,3 +3013,51 @@ fn the_durable_builder_reads_index_rows_and_not_index_syntax() {
         "the nested-member rule must read the row's classified reach",
     );
 }
+
+/// The staged producer boundary itself carries no raw declaration slice, so the
+/// bridge the row conversion deleted cannot survive in a signature.
+///
+/// `StagedStoreTxn::build_one` and the `durable.rs::build_one` it forwards to once
+/// took `&[(FileRef, FileIdentity, &ResourceDecl)]` and recovered the resource
+/// declaration by name search after row construction. The `.find`/name-recovery gate
+/// above forbids the search; this gate forbids the carrier: the raw slice type may
+/// appear exactly once in the durable builder — the `build` entry point, where it is
+/// row-construction *input* — and never inside the staging wrapper, and the one
+/// carrier may hand it to nothing but the row tables' `take`. Both `build_one`s read
+/// the typed projection instead.
+#[test]
+fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
+    let builder = production_code_of("durable.rs");
+    let staging = production_code_of("durable/staging.rs");
+    let raw = "&[(FileRef, FileIdentity, &ResourceDecl)]";
+
+    assert!(
+        !staging.contains(raw),
+        "the staging wrapper runs after row construction and may carry no raw \
+         declaration slice",
+    );
+    assert_eq!(
+        builder.matches(raw).count(),
+        1,
+        "only the durable build entry may carry the raw declaration slice, as \
+         row-construction input",
+    );
+    assert_eq!(
+        builder.matches("resources").count(),
+        2,
+        "the raw declaration slice is read by exactly two production sites: the \
+         `build` signature that receives it and the `ResourceDirectory::take` call \
+         that turns it into rows",
+    );
+    assert!(
+        builder.contains("ResourceDirectory::take(resources, records)"),
+        "the one consumer of the raw slice must be row construction itself",
+    );
+    for (file, code) in [("durable.rs", &builder), ("durable/staging.rs", &staging)] {
+        assert_eq!(
+            code.matches("directory: &ResourceDirectory<'_>").count(),
+            1,
+            "`{file}` must pass its build_one the typed projection",
+        );
+    }
+}
