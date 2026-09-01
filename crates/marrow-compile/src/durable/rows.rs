@@ -7,9 +7,10 @@
 //! owners disagreeing about one name is unrepresentable rather than reported.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use marrow_project::FileIdentity;
-use marrow_syntax::{ResourceDecl, StoreDecl};
+use marrow_syntax::{IndexDecl, ResourceDecl, SourceSpan, StoreDecl};
 
 use crate::analysis::FileRef;
 use crate::decl::{Binding, DeclarationIndexDrift};
@@ -84,6 +85,9 @@ impl<'a> ResourceDirectory<'a> {
 pub(super) struct StoreRow<'a> {
     pub(super) resource: &'a str,
     pub(super) binding: StoreResourceBinding,
+    /// The root's managed indexes, taken from the declaration with the binding so the
+    /// build reads no `index` syntax of its own.
+    pub(super) indexes: IndexTable<'a>,
 }
 
 /// What a `store` declaration's written resource spelling binds to.
@@ -118,7 +122,11 @@ impl<'a> StoreRow<'a> {
                 Binding::Accepted(_) | Binding::Absent => StoreResourceBinding::Absent,
             },
         };
-        Ok(Self { resource, binding })
+        Ok(Self {
+            resource,
+            binding,
+            indexes: IndexTable::take(&store.indexes),
+        })
     }
 
     /// The Product this store is an occurrence of, for the census.
@@ -144,4 +152,99 @@ impl<'a> StoreRow<'a> {
 pub(super) enum ProductKey<'stores> {
     Bound(ResourceDeclId),
     Unbound(&'stores str),
+}
+/// One `index` declaration of a store root, as the durable build reads it: the name
+/// every admission diagnostic renders, the uniqueness the suffix law turns on, the
+/// declaration span the count and width caps report at, and the range of argument rows
+/// this index projects.
+pub(super) struct IndexRow<'a> {
+    pub(super) name: &'a str,
+    pub(super) unique: bool,
+    pub(super) span: SourceSpan,
+    args: Range<usize>,
+}
+
+/// How far one projection argument reaches.
+///
+/// A managed index projects the root's own leaves, so the only distinction the
+/// admission rules draw over an argument's path is whether it stays at the top level
+/// or reaches through a member. The row states that as the closed fact it is, rather
+/// than leaving a segment count for each consumer to compare against one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum IndexArgReach {
+    /// A single-segment path: one of the root's identity keys or top-level fields.
+    TopLevel,
+    /// A dotted path of more than one segment, which no index may project.
+    ThroughMember,
+}
+
+/// One projection argument of a managed index: the path spelling every diagnostic
+/// about it renders, its own span, and how far it reaches.
+///
+/// The spelling is rendered once, here, from the parsed path segments. Every consumer
+/// downstream compares and reports that one rendering instead of re-rendering the
+/// path, which is what makes "the same component" one answer rather than one per
+/// caller.
+pub(super) struct IndexArgRow {
+    pub(super) spelling: String,
+    pub(super) span: SourceSpan,
+    pub(super) reach: IndexArgReach,
+}
+
+/// One store root's managed indexes and their projection arguments, taken once from
+/// the declaration before the root is built.
+///
+/// The two tables are one owner because an index without its arguments admits nothing:
+/// every rule reads the index row and its argument rows together, and a range into a
+/// single argument vector keeps that pairing a property of the table rather than of
+/// each caller's bookkeeping.
+pub(super) struct IndexTable<'a> {
+    indexes: Vec<IndexRow<'a>>,
+    args: Vec<IndexArgRow>,
+}
+
+impl<'a> IndexTable<'a> {
+    pub(super) fn take(indexes: &'a [IndexDecl]) -> Self {
+        let mut rows = Vec::with_capacity(indexes.len());
+        let mut args = Vec::new();
+        for index in indexes {
+            let start = args.len();
+            for arg in &index.args {
+                args.push(IndexArgRow {
+                    spelling: marrow_syntax::field_path_spelling(&arg.segments),
+                    span: arg.span,
+                    reach: if arg.segments.len() > 1 {
+                        IndexArgReach::ThroughMember
+                    } else {
+                        IndexArgReach::TopLevel
+                    },
+                });
+            }
+            rows.push(IndexRow {
+                name: &index.name,
+                unique: index.unique,
+                span: index.span,
+                args: start..args.len(),
+            });
+        }
+        Self {
+            indexes: rows,
+            args,
+        }
+    }
+
+    pub(super) fn rows(&self) -> &[IndexRow<'a>] {
+        &self.indexes
+    }
+
+    /// Each index row paired with the argument rows it projects, in declaration order.
+    ///
+    /// The pairing is the table's, not the caller's: an index row's argument range
+    /// addresses this table's argument vector and nothing else, so handing out the two
+    /// together is what keeps a row from ever being read against the wrong arguments.
+    pub(super) fn entries(&self) -> impl Iterator<Item = (&IndexRow<'a>, &[IndexArgRow])> {
+        self.indexes
+            .iter()
+            .map(|row| (row, &self.args[row.args.clone()]))
+    }
 }

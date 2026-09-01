@@ -37,6 +37,7 @@
 //! which a single-file corpus cannot see).
 
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
+use marrow_image::bounds;
 use marrow_project::ProjectInput;
 
 #[path = "common/ids.rs"]
@@ -451,4 +452,209 @@ fn the_store_binding_corpus_covers_every_binding_class() {
             && STORE_BINDING_OTHER.contains(": StillNeverDeclared"),
         "the second module must keep an admitted and an undeclared binding of its own",
     );
+}
+// ---------------------------------------------------------------------------
+// Corpus E — managed-index admission.
+// ---------------------------------------------------------------------------
+
+/// Store roots whose managed indexes violate one admission rule each: the per-root
+/// count cap, the projection width cap, a name collision with a stored field, a name
+/// collision with an earlier index, and a singleton root that has no identity to point
+/// at.
+///
+/// Every rule `build_indexes` enforces reads the index's *declaration* — its name, its
+/// argument count, its span — and every one of them renders that name into the row a
+/// reader sees. Admitted indexes are declared first and interleaved between the refused
+/// roots, so an owner that refused every index would not pass, and the count-cap root
+/// carries nine otherwise-valid indexes so the cap is observed on a body that is wrong
+/// only in its length.
+const INDEX_ADMISSION_MAIN: &str = r#"module main
+
+use other
+
+resource Book {
+    required title: string
+    required isbn: string
+    shelf: string
+
+    details {
+        pages: int
+    }
+}
+
+resource Single {
+    required label: string
+}
+
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+    index byShelf[shelf, id]
+}
+
+store ^only: Single {
+    index byLabel[label]
+}
+
+store ^collide[id: int]: Book {
+    index title[isbn] unique
+    index sameName[isbn] unique
+    index sameName[shelf] unique
+}
+
+store ^many[id: int]: Book {
+    index a1[isbn] unique
+    index a2[shelf, id]
+    index a3[title, id]
+    index a4[isbn, id]
+    index a5[shelf, title, id]
+    index a6[title, isbn, id]
+    index a7[isbn, shelf, id]
+    index a8[shelf, isbn, id]
+    index a9[title, shelf, id]
+}
+"#;
+
+/// The component-resolution half of the same surface, in a second module: a component
+/// repeated within one index, a component reaching through a nested member, a component
+/// naming nothing, a component whose stored value is not an orderable durable key, and
+/// a non-unique index that does not end with the root's identity keys.
+///
+/// It is a second module because a table keyed by declaration must answer for the
+/// module its row came from; a single-file corpus would keep passing an owner that
+/// resolved every index against the first module's declarations.
+const INDEX_ADMISSION_OTHER: &str = r#"module other
+
+resource Note {
+    required text: string
+    required tag: string
+    weight: Option<duration>
+
+    body {
+        line: int
+    }
+}
+
+store ^notes[id: int]: Note {
+    index repeatArg[tag, tag, id]
+    index nestedArg[body.line, id]
+    index absentArg[missing, id]
+    index unorderedArg[weight, id]
+    index noSuffix[tag]
+}
+"#;
+
+/// A third module whose single index crosses the fixed projection width, generated
+/// rather than written out: the cap is 72 components and a source that states it
+/// literally would be unreadable. The components deliberately name nothing — the width
+/// is checked before any leaf is resolved, so this reports the width and only the
+/// width.
+fn index_width_module() -> String {
+    let components = (1..=bounds::MAX_INDEX_COMPONENTS + 1)
+        .map(|at| format!("c{at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "module wide\n\nresource Wide {{\n    required label: string\n}}\n\n\
+         store ^wide[id: int]: Wide {{\n    index tooWide[{components}]\n}}\n"
+    )
+}
+
+/// The artifact this corpus reported before the index declarations became typed
+/// rows, captured from the pre-conversion tree and unchanged by it.
+const INDEX_ADMISSION_ARTIFACT: &str = "src/main.mw:19:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for root `books` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for product `Book` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for key `books.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for field `Book.title` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for field `Book.isbn` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for field `Book.shelf` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for group `Book.details` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for field `Book.details.pages` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for index `books.byIsbn` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:19:7 check.durable_identity durable identity for index `books.byShelf` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:24:7 check.durable_identity durable identity for root `only` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:24:7 check.durable_identity durable identity for product `Single` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:24:7 check.durable_identity durable identity for field `Single.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:25:1 check.type index `byLabel` requires a keyed store root\n\
+         src/main.mw:28:7 check.durable_identity durable identity for root `collide` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:28:7 check.durable_identity durable identity for key `collide.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:29:1 check.type index `title` collides with an identity key, a stored field, or another index of `collide`\n\
+         src/main.mw:28:7 check.durable_identity durable identity for index `collide.sameName` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:31:1 check.type index `sameName` collides with an identity key, a stored field, or another index of `collide`\n\
+         src/main.mw:34:7 check.durable_identity durable identity for root `many` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:34:7 check.durable_identity durable identity for key `many.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/main.mw:43:1 check.type store root `many` declares 9 managed indexes; at most 8 are allowed\n\
+         src/other.mw:13:7 check.durable_identity durable identity for root `notes` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for product `Note` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for key `notes.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for field `Note.text` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for field `Note.tag` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for field `Note.weight` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for sum `Option[duration]` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for member `Option[duration].none` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for member `Option[duration].some` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for group `Note.body` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:13:7 check.durable_identity durable identity for field `Note.body.line` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/other.mw:14:26 check.type index `repeatArg` repeats component `tag`; each projection component appears at most once\n\
+         src/other.mw:15:21 check.type index `nestedArg` component `body.line` reaches through a nested member; an index projects only top-level fields and identity keys\n\
+         src/other.mw:16:21 check.type index `absentArg` component `missing` names no identity key or stored field of this root\n\
+         src/other.mw:17:24 check.type index `unorderedArg` component `weight` is not an orderable durable-key scalar\n\
+         src/other.mw:18:1 check.type non-unique index `noSuffix` must end with the store's identity keys in declaration order\n\
+         src/wide.mw:7:7 check.durable_identity durable identity for root `wide` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/wide.mw:7:7 check.durable_identity durable identity for product `Wide` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/wide.mw:7:7 check.durable_identity durable identity for key `wide.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/wide.mw:7:7 check.durable_identity durable identity for field `Wide.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
+         src/wide.mw:8:1 check.resource_limit a managed index projects 73 components; the fixed limit is 72";
+
+#[test]
+fn the_index_admission_corpus_reports_its_exact_ordered_artifact() {
+    let wide = index_width_module();
+    let project = project_capture::project_with_ids(
+        &[
+            ("src/main.mw", INDEX_ADMISSION_MAIN),
+            ("src/other.mw", INDEX_ADMISSION_OTHER),
+            ("src/wide.mw", &wide),
+        ],
+        None,
+    );
+    let diagnostics = refused(&project);
+
+    assert_eq!(
+        artifact(&diagnostics),
+        INDEX_ADMISSION_ARTIFACT,
+        "the index-admission artifact moved",
+    );
+}
+
+/// The corpus earns its name: the pinned artifact carries one row for every managed-
+/// index admission rule the durable builder enforces, and admitted indexes beside them.
+///
+/// A golden over a corpus that had quietly stopped reaching a rule would keep passing
+/// while proving nothing about it, and a corpus with no admitted index would keep
+/// passing an owner that refused every index. Both are asserted rather than assumed.
+#[test]
+fn the_index_admission_corpus_reaches_every_admission_rule() {
+    for rule in [
+        "declares 9 managed indexes; at most 8 are allowed",
+        "a managed index projects 73 components; the fixed limit is 72",
+        "index `title` collides with an identity key, a stored field, or another index",
+        "index `sameName` collides with an identity key, a stored field, or another index",
+        "index `byLabel` requires a keyed store root",
+        "index `repeatArg` repeats component `tag`",
+        "index `nestedArg` component `body.line` reaches through a nested member",
+        "index `absentArg` component `missing` names no identity key or stored field",
+        "index `unorderedArg` component `weight` is not an orderable durable-key scalar",
+        "non-unique index `noSuffix` must end with the store's identity keys",
+    ] {
+        assert!(
+            INDEX_ADMISSION_ARTIFACT.contains(rule),
+            "the corpus no longer reaches this rule: {rule}",
+        );
+    }
+    for admitted in ["index `books.byIsbn`", "index `books.byShelf`"] {
+        assert!(
+            INDEX_ADMISSION_ARTIFACT.contains(admitted),
+            "the corpus must keep admitted indexes beside the refused ones: {admitted}",
+        );
+    }
 }

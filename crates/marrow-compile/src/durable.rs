@@ -38,8 +38,7 @@ use marrow_image::{
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
-    FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
-    TypeExpr,
+    FieldDecl, GroupDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr,
 };
 
 use crate::analysis::FileRef;
@@ -59,7 +58,10 @@ use crate::types::{
 mod rows;
 mod staging;
 
-use rows::{ProductKey, ResourceDirectory, StoreResourceBinding, StoreRow};
+use rows::{
+    IndexArgReach, IndexArgRow, IndexRow, IndexTable, ProductKey, ResourceDirectory,
+    StoreResourceBinding, StoreRow,
+};
 use staging::StagedStoreTxn;
 
 /// The application's fixed ledger anchor path: one local application per
@@ -1329,12 +1331,8 @@ fn build_one(
     for leaf in &field_entries {
         resolver.name_step(leaf.id, PathSigil::Child, &leaf.name);
     }
-    let built_indexes = resolver.build_indexes(
-        &store.root.root,
-        &key_entries,
-        &field_entries,
-        &store.indexes,
-    );
+    let built_indexes =
+        resolver.build_indexes(&store.root.root, &key_entries, &field_entries, &row.indexes);
 
     // Every identity must resolve before the graph enters the image; a single
     // gap already reported precisely leaves the durable graph absent, so an
@@ -2222,37 +2220,38 @@ impl<'a> IdentityResolver<'a> {
         root: &str,
         keys: &[(String, LedgerIdBytes, ScalarType)],
         fields: &[IndexFieldLeaf],
-        indexes: &[IndexDecl],
+        indexes: &IndexTable<'_>,
     ) -> Vec<BuiltIndex> {
         // The checker caps the per-root index count well below the image's structural
         // decode bound (`marrow_image::bounds::MAX_INDEXES`): each declared index is
         // compiler-maintained on every write to the root, so the cap bounds a root's write
         // amplification. The tighter checker limit is a product choice; the image bound
         // remains as headroom for a later increase without an image-format change.
-        if indexes.len() > MAX_STORE_INDEXES {
+        let declared = indexes.rows();
+        if declared.len() > MAX_STORE_INDEXES {
             // The count itself is malformed, so report it and discard the graph rather than
             // validating and minting identities for indexes that cannot all be admitted.
             self.reject_index(
-                indexes[MAX_STORE_INDEXES].span,
+                declared[MAX_STORE_INDEXES].span,
                 format!(
                     "store root `{root}` declares {} managed indexes; at most \
                      {MAX_STORE_INDEXES} are allowed",
-                    indexes.len()
+                    declared.len()
                 ),
             );
             return Vec::new();
         }
-        let mut shapes = Vec::with_capacity(indexes.len());
+        let mut shapes = Vec::with_capacity(declared.len());
         let mut seen_names: Vec<&str> = Vec::new();
-        for index in indexes {
+        for (index, args) in indexes.entries() {
             // The projected component count crosses the fixed image projection width
             // before the index's leaves are resolved or its identity minted.
-            if index.args.len() > bounds::MAX_INDEX_COMPONENTS {
+            if args.len() > bounds::MAX_INDEX_COMPONENTS {
                 self.reject_resource_limit(
                     index.span,
                     format!(
                         "a managed index projects {} components; the fixed limit is {}",
-                        index.args.len(),
+                        args.len(),
                         bounds::MAX_INDEX_COMPONENTS
                     ),
                 );
@@ -2261,9 +2260,9 @@ impl<'a> IdentityResolver<'a> {
             // The index name shares the root's source namespace with the identity keys,
             // the stored fields, and the other indexes; a collision has no unambiguous
             // address.
-            let name_collision = keys.iter().any(|(name, _, _)| name == &index.name)
+            let name_collision = keys.iter().any(|(name, _, _)| name == index.name)
                 || fields.iter().any(|leaf| leaf.name == index.name)
-                || seen_names.contains(&index.name.as_str());
+                || seen_names.contains(&index.name);
             if name_collision {
                 self.reject_index(
                     index.span,
@@ -2275,7 +2274,7 @@ impl<'a> IdentityResolver<'a> {
                 );
                 continue;
             }
-            seen_names.push(&index.name);
+            seen_names.push(index.name);
 
             // An index entry points at one stored identity, so a singleton root (no
             // identity to point to) admits none.
@@ -2287,7 +2286,7 @@ impl<'a> IdentityResolver<'a> {
                 continue;
             }
 
-            let Some(resolved) = self.resolve_index_components(index, keys, fields) else {
+            let Some(resolved) = self.resolve_index_components(index, args, keys, fields) else {
                 continue;
             };
             // The image identity references and lowerer-facing scalar projection are
@@ -2295,14 +2294,14 @@ impl<'a> IdentityResolver<'a> {
             let components = resolved.iter().map(|item| item.component).collect();
             let projection = resolved.iter().map(|item| item.scalar).collect();
             let id = self.resolve(IdentityKind::Index, &format!("{root}.{}", index.name));
-            self.name_step(id, PathSigil::Child, &index.name);
+            self.name_step(id, PathSigil::Child, index.name);
             shapes.push(BuiltIndex {
                 shape: DurableIndexShape {
                     id,
                     unique: index.unique,
                     components,
                 },
-                name: index.name.clone(),
+                name: index.name.to_string(),
                 projection,
             });
         }
@@ -2317,18 +2316,19 @@ impl<'a> IdentityResolver<'a> {
     /// position.
     fn resolve_index_components(
         &mut self,
-        index: &IndexDecl,
+        index: &IndexRow<'_>,
+        args: &[IndexArgRow],
         keys: &[(String, LedgerIdBytes, ScalarType)],
         fields: &[IndexFieldLeaf],
     ) -> Option<Vec<ResolvedIndexComponent>> {
-        let mut components = Vec::with_capacity(index.args.len());
+        let mut components = Vec::with_capacity(args.len());
         let mut leading_key = false;
-        let trailing_start = index.args.len().saturating_sub(keys.len());
+        let trailing_start = args.len().saturating_sub(keys.len());
         let mut ok = true;
-        let mut seen_args: Vec<String> = Vec::with_capacity(index.args.len());
-        for (position, component) in index.args.iter().enumerate() {
+        let mut seen_args: Vec<&str> = Vec::with_capacity(args.len());
+        for (position, component) in args.iter().enumerate() {
             let span = component.span;
-            let arg = marrow_syntax::field_path_spelling(&component.segments);
+            let arg = component.spelling.as_str();
             if seen_args.contains(&arg) {
                 self.reject_index(
                     span,
@@ -2341,10 +2341,10 @@ impl<'a> IdentityResolver<'a> {
                 ok = false;
                 continue;
             }
-            seen_args.push(arg.clone());
-            // A path of more than one segment reaches through a member. The segments are
-            // the path, so this asks the path rather than scanning a rendered spelling.
-            if component.segments.len() > 1 {
+            seen_args.push(arg);
+            // Whether the path reaches through a member is decided when the row is taken,
+            // so this asks the row rather than re-reading or re-scanning the path.
+            if component.reach == IndexArgReach::ThroughMember {
                 self.reject_index(
                     span,
                     format!(
@@ -2356,7 +2356,6 @@ impl<'a> IdentityResolver<'a> {
                 ok = false;
                 continue;
             }
-            let arg = arg.as_str();
             if let Some((_, key_id, scalar)) = keys.iter().find(|(name, _, _)| name == arg) {
                 if !index.unique && position < trailing_start {
                     leading_key = true;
@@ -2399,7 +2398,7 @@ impl<'a> IdentityResolver<'a> {
         // A nonunique index distinguishes rows by ending with the complete identity
         // suffix, in declaration order, with no identity key appearing earlier.
         if !index.unique {
-            let ends_with_identity = index.args.len() >= keys.len()
+            let ends_with_identity = args.len() >= keys.len()
                 && keys.iter().enumerate().all(|(offset, (_, key_id, _))| {
                     matches!(
                         components.get(trailing_start + offset),

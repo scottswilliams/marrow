@@ -2972,3 +2972,44 @@ fn the_durable_resource_disagreement_has_no_invariant_to_report() {
         "the typed store binding must be the live subject of this gate",
     );
 }
+
+/// Managed-index admission reads the index row table, so the durable builder names no
+/// `index` syntax of its own.
+///
+/// Every admission rule — the per-root count cap, the projection width cap, the name
+/// collision, the singleton rejection, the repeated component, the nested-member
+/// component, and the identity-suffix law — used to read the parsed `IndexDecl` and
+/// render each argument's path spelling at the moment it needed one. Rendering a path
+/// where a rule is enforced is what makes "the same component" a per-caller answer: two
+/// rules can disagree about one argument and nothing in the types objects. The table
+/// renders each path once, when the row is taken, and classifies its reach there too,
+/// so a rule can only ask.
+///
+/// The scan is the builder's own file. `rows.rs` is where the syntax is read, and the
+/// live subject below is that reading — without it the absences are the absences of a
+/// module that stopped building indexes.
+#[test]
+fn the_durable_builder_reads_index_rows_and_not_index_syntax() {
+    let builder = production_code_of("durable.rs");
+    for absent in [
+        "IndexDecl",
+        "IndexArg {",
+        "field_path_spelling",
+        "component.segments",
+        "index.args",
+    ] {
+        assert!(
+            !builder.contains(absent),
+            "`{absent}` names index syntax; the durable builder reads `IndexTable` rows",
+        );
+    }
+    let rows = production_code_of("durable/rows.rs");
+    assert!(
+        rows.contains("fn take(indexes: &'a [IndexDecl])") && rows.contains("field_path_spelling"),
+        "the index row table must be the one reader of index syntax",
+    );
+    assert!(
+        builder.contains("IndexArgReach::ThroughMember"),
+        "the nested-member rule must read the row's classified reach",
+    );
+}
