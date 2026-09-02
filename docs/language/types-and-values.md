@@ -1,6 +1,7 @@
 # Types and values
 
-Every Marrow value is copied by value, and absence is one model, `T?`. A scalar,
+Every Marrow value is copied when it is passed, returned, or assigned, and
+absence has one model, `T?`. A scalar,
 a struct, an enum, a list, a map, and a resource all copy on assignment, on a
 call, and on return. A sparse field, a bracket lookup, and a durable read all
 yield `T?`, and one set of forms consumes it.
@@ -121,13 +122,14 @@ parse error, and a struct field holds a bare type. `List<T>?` is an optional
 whose value is a whole list.
 
 A sparse field read, a bracket lookup, a durable read, and a function returning
-`T?` produce an optional. Five forms consume one. `value ?? fallback` selects the
+`T?` produce an optional. Four forms consume one. `value ?? fallback` selects the
 present value or the fallback. `if const name = value` enters its block with
 `name` bound to the present value. A [let-else](control-flow.md#let-else-bindings)
 binding diverges when the value is absent. `value?.field` reads a field through
-an optional struct or resource and yields an optional. `exists(place)` tests a
-durable place and yields a `bool`; it narrows nothing, and the read after it is
-still `T?`.
+an optional struct or resource and yields an optional.
+
+`exists(place)` is not one of them: it tests a durable place and yields a `bool`.
+It narrows nothing, and the read after it is still `T?`.
 
 ```mw
 module docs::types::optionals
@@ -179,7 +181,8 @@ bare. Reading is described under [durable places](durable-places.md#reading).
 ## Structs
 
 A `struct` is a value with named fields, all required. A field holds any value
-type: a scalar, a nominal int, another struct, or an enum.
+type: a scalar, a nominal int, another struct, an enum, an `Option` or `Result`,
+or a `List` or `Map`.
 
 ```mw
 module docs::types::structs
@@ -209,8 +212,8 @@ test "a struct is built by name" {
 
 A struct is constructed by naming every field once, in any order. A field is
 read with `.` and yields the field's type. A `var` binding assigns a field with
-`s.to = Point(x: 1, y: 1)`. A field may name a struct or enum declared later in
-the file. A value type that contains itself, directly or through other types,
+`s.to = Point(x: 1, y: 1)`. A field may name a struct or enum declared anywhere in
+the project, including later in the same file and in another module. A value type that contains itself, directly or through other types,
 is a `check.recursion` naming the cycle. Two structs have no `==`; compare their
 fields.
 
@@ -359,8 +362,7 @@ not reach another. `T` and `V` are any value type, including a nested `List`,
 `string`, `bytes`, `date`, `instant`, and `duration`, or a nominal int type. A
 nominal Map key retains its source type and uses its base scalar for
 representation and ordering. A struct, enum, collection, optional, or entry
-identity is not a Map key. `ErrorCode` is not a local Map key; the type is future
-work.
+identity is not a Map key. `ErrorCode` is not a local Map key.
 
 `List()` and `Map()` construct an empty collection whose type comes from an
 annotation, an argument, or a return type. `List(a, b, c)` constructs a list of
@@ -426,9 +428,8 @@ keyed write and no keyed removal: `xs[i] = value` and `unset xs[i]` are each a
 `check.type` naming `append` or `Map<int, T>`. A nested bracket target
 `outer[k1][k2] = value` is a `check.unsupported`.
 
-A list iterates in insertion order. A map iterates in ascending key order:
-numbers and temporal values ascend, `false` precedes `true`, and strings and
-bytes compare byte by byte. `for k in m` binds each key and `for k, v in m` binds
+A list iterates in insertion order. A map iterates in ascending key order, the
+order described under [key types](#key-types). `for k in m` binds each key and `for k, v in m` binds
 each key with its value, as `keysJoined` shows.
 
 A collection holds at most 65,536 elements and 1 MiB. An `append` or map insert
@@ -485,7 +486,7 @@ A type parameter may carry one constraint, `T supports equality` or
 `T supports order`, spelled as on a
 [generic function](modules-and-functions.md#generic-functions). The constraint
 admits `==` and `!=`, or the comparisons as well, over the parameter. An
-argument that lacks the capability is a `check.type` at the application. An
+argument that lacks the capability is a `check.type` at the construction. An
 unconstrained parameter admits neither.
 
 A payload that resolves to a collection, such as `Option<List<int>>`, is a
@@ -672,13 +673,12 @@ test "string renders a value" {
 }
 ```
 
-An enum renders as `Enum::member`, a `duration` in its canonical `PT…S` form,
-and `bytes` as hexadecimal with a `0x` prefix. Rendering a struct, a
-collection, or an optional is a `check.unsupported`. Text interpolation
+The canonical rendering of each value, and the values `string` refuses, are
+listed under [built-ins](builtins.md#conversion-and-output). Text interpolation
 `$"…{value}…"` uses the same renderings.
 
-Conversion between scalars is not available today; a pair that uses a current
-scalar name is a `check.unsupported`. `int("1")` and `bool(1)` are examples.
+A call pairing two current scalar names is a `check.unsupported`.
+`int("1")` and `bool(1)` are examples.
 `decimal` and `ErrorCode` have no current callable scalar owner, so
 `decimal(1)` and `ErrorCode("run.example")` report `check.type`. The temporal
 names `date`, `instant`, and `duration` construct a value from a literal and
@@ -707,8 +707,8 @@ orders by its first component, then its second, and so on.
 
 ## Entry identity
 
-`Id(^root)` is the type of an entry identity under one store root. `Id(^root)`
-is nominally tied to its store root. `Id(^books)` and `Id(^authors)` are
+`Id(^root)` is the type of an entry identity under one store root, and it is
+tied to that root. `Id(^books)` and `Id(^authors)` are
 different types even if both roots use integer keys. A root with several key
 components still yields one `Id(^root)` value.
 

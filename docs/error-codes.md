@@ -16,7 +16,7 @@ Language-level error behavior is described in
 Tool invocation is described in [`tools/cli.md`](tools/cli.md). This page is
 generated from the code registry and lists every code the current build emits.
 
-## Code Reference
+## Code reference
 
 ### `parse.*`
 
@@ -44,7 +44,7 @@ Refusals raised by the `marrow` command itself.
 |---|---|
 | `cli.command_unsupported` | The command name is reserved and not implemented: `data`, `doctor`, `evolve`, `serve`, `backup`, and `restore`. `marrow --help` lists the implemented commands. |
 | `cli.interface_unbuildable` | An export's signature cannot be projected onto the wire: it expands past the fixed interface budget, or it names a type the image does not declare. `marrow client typescript` and the runner refuse the whole program; the message names the export. |
-| `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. The `marrow` process never opens a store. Run the export against a provisioned one: `marrow run <export> --store <dir>`. A storeless export is unaffected. |
+| `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. `marrow` itself opens no store; the companion runner does. Run the export against a provisioned store: `marrow run <export> --store <dir>`. A storeless export is unaffected. |
 | `cli.installation_damaged` | `marrow run --store` could not use the companion runner: the release manifest beside the toolchain is missing or malformed, names another release, or the runner binary is absent or does not match its recorded identity. The store is untouched. Reinstall the toolchain. |
 | `cli.ceiling_unaccepted` | `marrow image` writes an image only when `--accept-ceiling <id>` names the image's own deployment ceiling. The argument was absent or named a different id, so no image was written. The message prints the id to accept. |
 | `cli.compiler_resource_limit` | Compilation crossed a fixed bound that no single construct is at fault for: an aggregate count across the whole program, or the image byte ceiling. No image or source diagnostic is produced, and the outcome carries no source location. A bound one construct crosses is `check.resource_limit` at that construct. |
@@ -205,7 +205,7 @@ Rejections from the runner that serves a launched program.
 | `runner.durable_unsupported` | A request named a durable export the runner cannot serve: the storeless serve mode has no store, or the program's durable shape is one the runner does not execute today. A storeless export, and a durable export over a provisioned store, are unaffected. |
 | `runner.spawn` | The `marrow` process could not start the companion runner for a persistent run. The store is untouched. |
 
-### Internal Codes
+### Internal codes
 
 These codes guard invariants the surrounding layers already close. An ordinary
 program does not reach them.

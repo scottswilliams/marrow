@@ -413,7 +413,7 @@ fn decorate(value: string): string {
 
     assert!(standard.contains("The current toolchain supplies no `std::` modules."));
     assert!(standard.contains(
-        "An absent module or function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
+        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
     ));
     assert!(
         standard
@@ -422,7 +422,7 @@ fn decorate(value: string): string {
     assert!(!standard.contains("std::text::trim"));
     assert!(!source.contains("declared library names"));
     assert!(source.contains(
-        "An absent module or function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
+        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
     ));
     assert!(!source.contains("std::text::contains"));
     assert!(!functions.contains("`std::` operations"));
@@ -555,9 +555,9 @@ pub fn text(): string {
 
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let builtins = normalize(include_str!("../../../docs/language/builtins.md"));
-    assert!(builtins.contains(
-        "`marrow run` renders every admitted export result through the canonical value renderer."
-    ));
+    assert!(
+        builtins.contains("`marrow run` prints an export's result in this same canonical text.")
+    );
     assert!(builtins.contains(
         "`string(...)` and interpolation use the same scalar, enum, and identity renderings but reject bare aggregates and presence optionals."
     ));

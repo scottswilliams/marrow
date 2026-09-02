@@ -152,7 +152,7 @@ test "a constraint names the operators a body may use" {
 
 The body is checked against its constraints, whether or not the function is called: `==` on an unconstrained parameter is a `check.type` error at the operator. Each call then checks the argument type against the constraint, so `firstBigger` over a `List<bool>` is a `check.type` error at the call.
 
-Structs and enums take the same type parameters and the same constraints ([generic types](types-and-values.md#generic-types)). Resources and store roots are not generic, and neither a resource nor an entry identity can be a type argument. A generic function that calls itself at an ever-larger type, such as `grow(xs)` with `xs: List<T>` inside `grow<T>`, has no finite set of copies; the compiler stops at a fixed bound and reports `check.instantiation_limit`.
+Structs and enums take the same type parameters and the same constraints ([generic types](types-and-values.md#generic-types)). Resources and store roots are not generic, and neither a resource nor an entry identity can be a type argument. A self-call is refused by the recursion rule above. A generic self-call at an ever-larger type, such as `grow(List(xs))` inside `grow<T>`, has no finite set of copies, and the compiler reaches its instantiation bound first: it reports `check.instantiation_limit`.
 
 ## Modules and imports
 
@@ -195,4 +195,4 @@ The value is an `int`, `bool`, or `string` literal, or a negated integer literal
 
 Parameters, `const` and `var` bindings, loop variables, and `if const` bindings are visible to the end of their block. An inner block may declare a name that an outer block already holds. A name is declared once per block.
 
-Inside a function, a local name resolves before a module declaration of the same name. A module cannot declare a [reserved built-in](builtins.md#collections) such as `exists`, `List`, or `trim` (`check.name_conflict`). `append` and `length` are ordinary names; a module that declares one shadows the built-in throughout that module.
+Inside a function, a local name resolves before a module declaration of the same name. A module cannot declare a [reserved built-in](builtins.md) such as `exists`, `List`, or `trim` (`check.name_conflict`). `append` and `length` are ordinary names; a module that declares one shadows the built-in throughout that module.

@@ -53,17 +53,18 @@ test "describe falls back to the title" {
 
 `title` and `author` are required; `subtitle` is sparse. `add` writes the two
 required fields and no subtitle. `describe` reads the whole entry with
-`if const` and falls back with `??`, because a sparse read is a `string?`.
+`if const` and falls back with `??`, because a sparse read is a `string?`
+([optionals](types-and-values.md#optionals)).
 
 A required field is present in every valid value. A constructor names each
-required field, and a missing one is a `check.type` error. A durable entry
-commits only when each required field holds a value; an entry left short rolls
-the block back with `run.required_missing`. A sparse field may be absent, and
-reading one yields `T?`. A sparse field already models absence, so declare a
-field `Option<T>` only when a stored `none` must differ from an unset field
-([Option and Result](types-and-values.md#option-and-result)).
+required field, and a missing one is a `check.type` error. What a required
+field means at commit is in [Writing](durable-places.md#writing). A sparse field
+may be absent, and reading one yields `T?`. A sparse field already models absence, so
+declare a field `Option<T>` only when a stored `none` must differ from an unset
+field ([Option and Result](types-and-values.md#option-and-result)).
 
-A field holds a scalar, a struct, an enum, or an `Option`. A `///` comment may
+The types a field holds are listed in
+[what a field holds](durable-places.md#what-a-field-holds). A `///` comment may
 precede the resource and each member; it carries no meaning to the compiler.
 
 ## Members
@@ -83,10 +84,10 @@ whole tuple in order. A key is an `int`, `string`, `bool`, `bytes`, `date`, or
 `instant` ([Keys](durable-places.md#keys)). Within one layer, key names and
 field names share one namespace.
 
-A branch holds scalar fields and may hold further branches, to a depth of 16
-layers ([Keyed branches](durable-places.md#keyed-branches)). Today, a group
-sits directly under the resource, and its leaves are scalars when the resource
-backs a store. A group inside a group or a branch, and a keyed scalar leaf such
+A branch holds scalar fields and may hold further branches
+([Keyed branches](durable-places.md#keyed-branches)). Today, a group sits
+directly under the resource, and its leaves are scalars when the resource backs
+a store. A group inside a group or a branch, and a keyed scalar leaf such
 as `tags[pos: int]: string`, are future work ([status](../status.md)).
 
 ## Local values
@@ -206,7 +207,7 @@ constructor holds no `notes`, and `Book(title: "t", notes: ...)` is a
 `check.type` error.
 
 The same boundary holds for a durable entry. Reading `^books[id]` yields the
-fields and groups as a `Book`; its notes stay at `^books[id].notes[noteId]`,
+fields and groups as a `Book?`; its notes stay at `^books[id].notes[noteId]`,
 reached one entry at a time or through a
 [bounded traversal](traversal-and-indexes.md#bounded-durable-traversal). There
 is no whole-family read, replace, or delete.

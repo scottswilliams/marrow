@@ -1,8 +1,9 @@
 # Implementation guide
 
-This guide maps the code at the current revision: which crate owns which
-concept, and where to read next. The [language reference](../language/) states
-what a program means; this guide states where that meaning is computed.
+Marrow's implementation is one workspace of small crates, each owning one
+concept and depending only on crates beneath it. The
+[language reference](../language/) states what a program means; this guide
+states where that meaning is computed.
 
 ## Pipeline
 
@@ -29,7 +30,7 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 
 | Crate | Owns | Read next |
 |---|---|---|
-| `marrow` | The CLI: `init`, `fmt`, `check`, `run`, `test`, `import`, `image`, and `client typescript`. A durable export runs with `run --store <dir>`; without a store, a durable export is a `cli.durable_unsupported` error | [CLI](../tools/cli.md) |
+| `marrow` | The CLI: `init`, `fmt`, `check`, `run`, `test`, `import`, `image`, and `client typescript` | [CLI](../tools/cli.md) |
 | `marrow-codes` | The diagnostic-code registry and the generated [error-code reference](../error-codes.md) | [Diagnostic voice](diagnostic-voice.md) |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and the diagnostic types every crate renders | [Syntax](syntax.md) |
 | `marrow-temporal` | The `date`, `instant`, and `duration` domain: calendar, range, canonical text, and arithmetic. Depends on nothing else in the workspace | [Types and values](../language/types-and-values.md) |

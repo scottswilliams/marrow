@@ -10,11 +10,11 @@ task.status = Status::done
 
 The first assignment changes a local value. The second changes durable state.
 The `^` is the whole difference: both lines resolve `status` through the same
-type, and a durable place is read, assigned, and deleted like a local one.
+type, and a durable place is read and assigned like a local one.
 
 ## Example
 
-A module with one durable root and two exports:
+A module with one durable root and two exported functions:
 
 ```mw
 module app::tasks
@@ -56,7 +56,8 @@ gives it a durable root keyed by an `int`. `^tasks[id]` is one entry and
 `transaction`; when the block ends, its writes commit together.
 `exists(^tasks[id])` tests presence, so `complete` returns `false` for an
 absent entry. The caller passes the entry identity as an `Id(^tasks)`, the
-identity type of that root.
+identity type of that root; `Id(^tasks, 7)` builds one from a key, so a caller
+writes `add(Id(^tasks, 7), "write docs")`.
 
 `marrow test` runs a project's tests against a fresh in-memory store, one store
 per test. Running an export against a store on disk needs the companion layout
@@ -72,17 +73,13 @@ states its bound with `at most N` and its overflow behavior with `on more`.
 Related writes belong together, so they share one `transaction` block and
 commit as one. A new program meets data the previous program wrote, so a store
 checks the program's durable shape before it opens. Running code needs authority
-over the places it touches, so `marrow check` reports the durable places each
-export reads and writes.
+over the places it touches, so `marrow check --demand` reports the durable
+places each export reads and writes.
 
 Data is navigated, not queried. A program reads or changes one durable element
 by its path and walks an explicit subtree with an ordinary loop. No mapping
 layer, serializer, or repository stands between the code and the data, and a
 program that uses no durable data needs no store.
-
-Transparent persistence, as in an object database, hides the commit, the disk
-walk, and the data format. Marrow spells out all three: `transaction` marks the
-commit, a bounded `for` marks the walk, and `resource` declares the shape.
 
 ## Status
 

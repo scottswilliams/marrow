@@ -10,7 +10,7 @@ publishes facts the parser owns and defines none of its own.
 
 | Fact | Source | Shape |
 |---|---|---|
-| Command outcomes | `marrow run` and `marrow test` with `--format jsonl` | One canonical JSON object per line; `outcome` is `value`, `diagnostic`, `artifact_rejected`, `fault`, or `error`, keeping the [failure kinds](../language/errors-and-transactions.md#failure-kinds) distinct. |
+| Command outcomes | `marrow run` and `marrow test` with `--format jsonl` | One canonical JSON object per line. A `run` record's `outcome` is `value`, `diagnostic`, `artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a `test` record's is `passed`, `failed`, `errored`, or `incomplete`, followed by one `summary` object. The [failure kinds](../language/errors-and-transactions.md#failure-kinds) stay distinct. |
 | Diagnostics | every command | A dotted code (`check.type`, `parse.syntax`) with a 1-based source span; the closed registry is the [error code reference](../error-codes.md). |
 | Durable access demand | `marrow check` and `marrow check --demand` | The summary groups each export's reads and writes by module. `--demand` prints one line per export naming every durable place its call graph reads and writes, in source spelling: `main.put reads ^books; writes ^books`. |
 | Editor facts | `marrow-lsp` | Diagnostics, formatting, hover, definition, completion, signature help, and document symbols over the Language Server Protocol, from the [language server](lsp.md). |
@@ -62,11 +62,11 @@ Caret
 
 A test in the `marrow-syntax` crate renders the two inventories above from the
 parser's own tables and compares them with the blocks on this page, word for
-word. The reserved-word set comes from the `is_reserved_word` predicate over an
-exhaustive enumeration of the keyword type; the token-kind set comes from an
-exhaustive match over the token-kind type. Adding, removing, or renaming a keyword
-or token kind in the parser fails that test until the block here changes in the
-same commit.
+word. The reserved-word set is rendered from the keyword type's own spellings
+over its exhaustive `ALL` inventory. A companion test proves the lexer reserves
+every spelling rendered. The token-kind set comes from an exhaustive match over
+the token-kind type. Adding, removing, or renaming a keyword or token kind in
+the parser fails that test until the block here changes in the same commit.
 
 ## Grammar
 

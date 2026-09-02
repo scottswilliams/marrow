@@ -84,11 +84,13 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
 }
 ```
 
-`exists(^assets[id])` asks whether the entry is present without reading its
-fields. When the id is already taken, the guard returns before any write. The
-three writes that follow span two roots and commit as one. `??` supplies a
-default for an absent value, so the first catalogued asset reads a prior count
-of `0`.
+`Asset(tag: ..., name: ..., category: ...)` constructs a value of the resource
+by naming its fields, and `Asset.log(...)` constructs a value of the `log`
+branch the same way. `exists(^assets[id])` asks whether the entry is present
+without reading its fields. When the id is already taken, the guard returns
+before any write. The three writes that follow span two roots and commit as
+one. `??` supplies a default for an absent value, so the first catalogued asset
+reads a prior count of `0`.
 
 `recordMove` writes a sparse `location` and advances a counter with no guard:
 
@@ -118,9 +120,10 @@ pub fn location(id: int): string? {
 }
 ```
 
-`string?` says the location may be absent: the entry, or the sparse field alone. The caller handles both with `??`, `if const`, or a let-else
-binding. Binding the whole entry with `if const` proves it present, and its
-required fields become bare, as `label` in the fixture shows.
+`string?` says the location may be absent: the entry, or the sparse field
+alone. The caller handles both with `??`, `if const`, or a let-else binding.
+Binding the whole entry with `if const` proves it present, and its required
+fields become bare, as `label` in the fixture shows.
 
 A `place` names one entry's address and evaluates the key once:
 
@@ -270,12 +273,16 @@ pub fn pinnedCount(): int {
 ```
 
 `for id, asset in ^assets` binds the key and a pin. The pin `asset` is a
-per-iteration address for `^assets[id]`; it reads nothing and proves nothing, so
-`exists(asset)` asks whether the entry is present. `at most 4096` is a bound
-written as an integer literal: the loop freezes the first 4096 keys and runs the
-body once per frozen key in key order. `on more` is mandatory and handles overflow
-explicitly, here by returning `-1` when a further key existed. To go on past the
-bound, a later call passes the last key it saw as `from`
+per-iteration address for `^assets[id]`; it reads nothing and proves nothing.
+The frozen keys are taken before the body runs, and an entry erased by an
+earlier iteration keeps its key, so `exists(asset)` asks whether the entry is
+still present. `at most 4096` is a bound written as an integer literal: the loop
+freezes the first 4096 keys and runs the body once per frozen key in key order.
+`on more` is mandatory and handles overflow explicitly, here by returning `-1`
+when a further key existed. To go on past the
+bound, a later call adds `from k` to the loop head, which starts the walk at `k`
+inclusive, so a continuation begins at the first key the previous call did not
+reach
 ([bounded traversal](language/traversal-and-indexes.md#bounded-durable-traversal)).
 An index walk reads the same way:
 

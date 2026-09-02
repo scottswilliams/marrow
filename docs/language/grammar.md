@@ -4,8 +4,10 @@ This page gives the syntax of a `.mw` source file in EBNF. It describes source
 shape only; the other reference pages define name resolution, types, presence,
 effects, and runtime behavior.
 
-Quoted text is literal. `A?`, `A*`, and `A+` mean optional, zero or more, and one
-or more. `A | B` selects an alternative. The lexer emits `NEWLINE` at each
+Quoted text is literal. Items separated by `,` occur in that order, and `;` ends
+a rule. `A?` is optional, `{A}` is zero or more, `(A)+` is one or more, and
+`A | B` selects an alternative. Parentheses group, and `"A"…"Z"` is a
+character range. The lexer emits `NEWLINE` at each
 significant line break; blocks are delimited by `{` and `}`, and a statement
 terminates at a `NEWLINE` or a closing `}`. [Source and syntax](source-and-syntax.md)
 defines which line breaks are significant.
@@ -51,7 +53,7 @@ const_decl      = "const", identifier, type_annotation?, "=",
 
 alias_decl      = "alias", identifier, "=", type, NEWLINE ;
 
-nominal_decl    = "type", identifier, ":", type,
+nominal_decl    = "type", identifier, ":", "int",
                   "in", range_expr,
                   ("supports", identifier, {",", identifier})?, NEWLINE ;
 ```
@@ -70,9 +72,11 @@ resource_decl   = "resource", identifier, "{", NEWLINE,
 resource_member = {doc_comment}, (field_decl | group_decl | branch_decl) ;
 
 field_decl      = "required"?, identifier, type_annotation ;
-group_decl      = identifier, "{", NEWLINE, {field_decl, NEWLINE}, "}" ;
+group_decl      = identifier, "{", NEWLINE,
+                  {{doc_comment}, field_decl, NEWLINE}, "}" ;
 branch_decl     = identifier, key_params, "{", NEWLINE,
-                  {field_decl, NEWLINE}, "}" ;
+                  {branch_member, NEWLINE}, "}" ;
+branch_member   = {doc_comment}, (field_decl | group_decl | branch_decl) ;
 
 key_params      = "[", key_decl, {",", key_decl}, "]" ;
 key_decl        = identifier, type_annotation ;
@@ -81,23 +85,21 @@ struct_decl     = "struct", identifier, type_params?, "{", NEWLINE,
                   {struct_field, NEWLINE}, "}" ;
 struct_field    = {doc_comment}, identifier, type_annotation ;
 
-store_decl      = "store", saved_root, key_params?, ":", identifier,
+store_decl      = "store", durable_root, key_params?, ":", identifier,
                   ("{", NEWLINE, {index_decl, NEWLINE}, "}")?, NEWLINE ;
 
 index_decl      = {doc_comment}, "index", identifier,
-                  "[", field_path, {",", field_path}, "]", "unique"? ;
-field_path      = identifier, {".", identifier} ;
+                  "[", identifier, {",", identifier}, "]", "unique"? ;
 
-saved_root      = "^", identifier ;
+durable_root    = "^", identifier ;
 ```
 
 Keys are declared with the same brackets that read them:
 `store ^books[id: int]: Book` declares the root and `^books[id]` reads one entry.
 A store with no index is written on its header line alone. A root without
-`key_params` declares a singleton
-([declaring a store](durable-places.md#declaring-a-store)). A group holds
-fields; a branch holds fields under its own keys
-([members](resources.md#members)). Index rules are under
+`key_params` declares a singleton ([durable places](durable-places.md)). A group
+holds fields; a branch holds fields, groups, and further branches under its own
+keys ([members](resources.md#members)). Index rules are under
 [index declarations](traversal-and-indexes.md#index-declarations).
 
 ### Enums
@@ -108,7 +110,7 @@ enum_decl       = "enum", identifier, type_params?, "{", NEWLINE,
 
 enum_member     = {doc_comment}, identifier, payload? ;
 payload         = "(", payload_field, {",", payload_field}, ")" ;
-payload_field   = identifier, ":", type ;
+payload_field   = identifier, ":", base_type ;
 ```
 
 A member is one name per line. A payload member lists named fields, which a
@@ -137,8 +139,9 @@ A `test` takes a string title and a body ([tests](tests.md)).
 ## Types
 
 ```ebnf
-type_annotation = ":", type ;
-type            = base_type, "?"? ;
+type             = base_type, "?"? ;
+type_annotation  = ":", base_type ;
+local_annotation = ":", type ;
 
 base_type       = scalar_type
                 | identifier
@@ -148,8 +151,8 @@ base_type       = scalar_type
 scalar_type     = "int" | "bool" | "string" | "bytes"
                 | "date" | "instant" | "duration" ;
 
-identity_type   = "Id", "(", saved_root, ")" ;
-generic_type    = identifier, "<", type, {",", type}, ">" ;
+identity_type   = "Id", "(", durable_root, ")" ;
+generic_type    = identifier, "<", base_type, {",", base_type}, ">" ;
 ```
 
 A bare `identifier` names a resource, struct, enum, alias, nominal type, or
@@ -182,8 +185,8 @@ statement       = const_stmt
                 | return_stmt
                 | expression_stmt ;
 
-const_stmt      = "const", identifier, type_annotation?, "=", value, let_else? ;
-var_stmt        = "var", identifier, type_annotation?, "=", value, let_else? ;
+const_stmt      = "const", identifier, local_annotation?, "=", value, let_else? ;
+var_stmt        = "var", identifier, local_annotation?, "=", value, let_else? ;
 let_else        = "else", clause_body ;
 
 value           = "try"?, expression ;
@@ -215,7 +218,9 @@ bound value is absent ([let-else bindings](control-flow.md#let-else-bindings)).
 A `clause_body` written as one statement parses; the formatter writes it as a
 block. `require` takes a condition and a bare failure value
 ([require guards](control-flow.md#require-guards)). `assert` is legal inside a
-`test` body.
+`test` body. `delete` clears a durable place and `unset` a local field:
+`unset ^books[id].isbn` reports `check.type`, and `delete` on a local field
+reports `check.unsupported`.
 
 ### Conditionals and loops
 
@@ -223,7 +228,7 @@ block. `require` takes a condition and a bare failure value
 if_stmt         = "if", if_head, block, {else_if}, else_clause? ;
 if_head         = expression
                 | const_binding, {"and", const_binding}, ("and", expression)? ;
-const_binding   = "const", identifier, type_annotation?, "=", expression ;
+const_binding   = "const", identifier, local_annotation?, "=", expression ;
 else_if         = "else", "if", expression, block ;
 else_clause     = "else", clause_body ;
 
@@ -253,7 +258,7 @@ arm_bindings    = "(", identifier, {",", identifier}, ")" ;
 checked_stmt    = checked_bind, "checked", expression, NEWLINE, checked_arm,
                   {checked_arm} ;
 checked_bind    = "return"
-                | ("const" | "var"), identifier, type_annotation?, "=" ;
+                | ("const" | "var"), identifier, local_annotation?, "=" ;
 checked_arm     = "on", ("out_of_range" | "zero_divisor"), clause_body ;
 ```
 
@@ -303,8 +308,9 @@ Membership (`x in lo..hi`, `x not in lo..hi`) sits at the same level with a
 range on its right and shares the rule, so `a in r in s` is a parse error.
 `??` is right-associative. A range names both ends.
 
-Parentheses call or construct; brackets select an entry by positional keys.
-A named argument (`title: t`) belongs to a constructor, and after a named
+Parentheses call or construct. Brackets select a durable entry by its keys, a
+list position, or a map key. A named argument (`title: t`) belongs to a
+constructor, and after a named
 argument every later argument is named. Precedence and operand types are under
 [operators](types-and-values.md#operators).
 
@@ -314,7 +320,7 @@ argument every later argument is named. Precedence and operand types are under
 primary_expr    = literal
                 | "true" | "false" | "absent"
                 | qualified_name
-                | saved_root
+                | durable_root
                 | constructor_call
                 | identity_value
                 | interp_lit
@@ -325,9 +331,9 @@ literal         = integer_lit | string_lit | duration_words ;
 constructor_call = ("string" | "bytes" | "date" | "instant" | "duration"),
                    "(", argument_list?, ")" ;
 
-identity_value  = "Id", "(", saved_root, {",", expression}, ")" ;
+identity_value  = "Id", "(", durable_root, {",", expression}, ")" ;
 
-path_expr       = (saved_root | identifier), {path_suffix} ;
+path_expr       = (durable_root | identifier), {path_suffix} ;
 path_suffix     = "[", expression, {",", expression}, "]"
                 | ".", identifier ;
 ```

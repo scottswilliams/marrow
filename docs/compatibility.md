@@ -28,8 +28,11 @@ Three interfaces are written for machines. A diagnostic carries a dotted code
 such as `check.type`; [error codes](error-codes.md) lists every code, generated
 from the registry. The `marrow` command exits `0`, `1`, or `2` ([exit
 codes](tools/cli.md#exit-codes)). With `--format jsonl`, `run` and `test` print
-one JSON object per outcome with fixed field names: `kind`, `outcome`, `code`,
-`span`, and, for an interrupted invocation, `durable`.
+one JSON object per line with fixed field names. Every object carries `kind`. A
+`run` or `test` outcome carries `outcome`; a returned value carries `data`; a
+failure carries `code`; a test carries `file`, `name`, and `span`; an interrupted
+invocation carries `durable`; and the `test` summary carries `selected`, `total`,
+`passed`, `failed`, and `errored`.
 
 Human-readable message text may change between revisions. Until a release policy
 exists, a structured interface may also change with the implementation; the

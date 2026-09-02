@@ -1,7 +1,8 @@
 # Control flow
 
-Marrow control flow consists of block statements. Conditions are `bool`;
-assignment and branching are not expressions.
+Marrow control flow is written with statements, and every statement that takes
+a body takes a braced block. A condition is a `bool`. Assignment and branching
+are statements, not expressions.
 
 A function that branches, loops, and returns:
 
@@ -52,7 +53,9 @@ and `else` clauses follow the block, and the first true condition wins.
 runs when the subject is present, with `name` bound to the value; the else
 branch runs for `absent`. The subject is any `T?`: a local optional, a
 collection read, a [durable read](durable-places.md#reading), or a function
-result. `else if` may follow an `if const` block.
+result. An `else if condition` clause may follow an `if const` block. An
+`else if const` head is not a form; chain further bindings with `and` in one
+head instead.
 
 An `if const` head chains several bindings, and a trailing condition, with
 `and`:
@@ -60,20 +63,20 @@ An `if const` head chains several bindings, and a trailing condition, with
 ```mw
 module docs::control::chain
 
-pub fn stock(prices: Map<string, int>, counts: Map<string, int>): int {
-    if const price = prices["pen"] and const n = counts["pen"] and n > 0 {
+pub fn shelfValue(prices: Map<int, int>, copies: Map<int, int>, id: int): int {
+    if const price = prices[id] and const n = copies[id] and n > 0 {
         return price * n
     }
     return 0
 }
 
-test "stock needs both bindings and the condition" {
-    var prices: Map<string, int> = Map()
-    var counts: Map<string, int> = Map()
-    prices["pen"] = 3
-    assert stock(prices, counts) == 0
-    counts["pen"] = 4
-    assert stock(prices, counts) == 12
+test "shelfValue needs both bindings and the condition" {
+    var prices: Map<int, int> = Map()
+    var copies: Map<int, int> = Map()
+    prices[1] = 3
+    assert shelfValue(prices, copies, 1) == 0
+    copies[1] = 4
+    assert shelfValue(prices, copies, 1) == 12
 }
 ```
 
@@ -84,24 +87,25 @@ else branch runs when any subject is absent or the trailing condition is false.
 ## Let-else bindings
 
 A `const` or `var` binding may take an `else` block that runs when the subject
-is absent. The else block diverges: every path through it returns or reaches
-`unreachable`. Past the binding the name is in scope with the present value.
+is absent. The else block diverges: every path through it returns, breaks,
+continues, or reaches `unreachable`. Past the binding the name is in scope
+with the present value.
 
 ```mw
 module docs::control::let_else
 
-pub fn priceOf(prices: Map<string, int>, item: string): string {
-    const price = prices[item] else {
+pub fn priceOf(prices: Map<int, int>, id: int): string {
+    const price = prices[id] else {
         return "no price"
     }
     return string(price)
 }
 
 test "priceOf proves the price present" {
-    var prices: Map<string, int> = Map()
-    prices["pen"] = 3
-    assert priceOf(prices, "pen") == "3"
-    assert priceOf(prices, "ink") == "no price"
+    var prices: Map<int, int> = Map()
+    prices[1] = 3
+    assert priceOf(prices, 1) == "3"
+    assert priceOf(prices, 2) == "no price"
 }
 ```
 
@@ -142,10 +146,10 @@ and stops with `run.budget` ([execution limits](execution-limits.md#limits)).
 ```mw
 module docs::control::loops
 
-pub fn total(prices: Map<string, int>): int {
+pub fn totalCopies(copies: Map<int, int>): int {
     var sum = 0
-    for name, price in prices {
-        sum += price
+    for id, count in copies {
+        sum += count
     }
     return sum
 }
@@ -165,10 +169,10 @@ pub fn sumOddBelow(limit: int, stop: int): int {
 }
 
 test "for walks a map and a range" {
-    var prices: Map<string, int> = Map()
-    prices["pen"] = 2
-    prices["ink"] = 5
-    assert total(prices) == 7
+    var copies: Map<int, int> = Map()
+    copies[1] = 2
+    copies[2] = 5
+    assert totalCopies(copies) == 7
     assert sumOddBelow(10, 7) == 9
 }
 ```
@@ -192,9 +196,9 @@ skips even numbers with `continue` and stops at `stop` with `break`; the sum is
 `1 + 3 + 5`. `return` exits the whole function, so a helper function is the
 direct way to leave several nested loops with a result.
 
-A `return` inside a [transaction](errors-and-transactions.md#transactions)
-block commits the block before it returns. `break` and `continue` cannot leave
-a `transaction` block; a loop written inside the block may use them freely.
+`break` and `continue` cannot leave a `transaction` block; a loop written
+inside the block may use them freely
+([transactions](errors-and-transactions.md#transactions)).
 
 ## Divergence
 
@@ -325,7 +329,8 @@ A missing member is `check.match_nonexhaustive`; a malformed arm is
 `check.match_arm`.
 
 `Option` and `Result` are enums and match the same way, with arms `some(v)`
-and `none`, or `ok(v)` and `err(e)`.
+and `none`, or `ok(v)` and `err(e)`. A `T?` is not an enum and does not match;
+prove its presence with `if const` or a let-else binding.
 
 ## Require guards
 
@@ -360,9 +365,10 @@ the body below them runs with both established. `require` originates a
 failure; `try` propagates one. The [guard prelude](idioms.md#guard-prelude)
 shows the guard forms together.
 
-A `require` cannot stand inside a `transaction` block that its own function
-owns, because its failure exit would leave the block without a commit
-([guards inside a block](errors-and-transactions.md#guards-inside-a-block)).
+In an export that owns a `transaction` block, a `require` stands on no path
+before the commit, inside the block or ahead of it; its failure exit carries no
+commit (`check.transaction_uncommitted`,
+[guards inside a block](errors-and-transactions.md#guards-inside-a-block)).
 
 ## Prefix try
 
@@ -375,30 +381,32 @@ the same error type `E`.
 ```mw
 module docs::control::propagation
 
-fn checkPort(n: int): Result<int, string> {
+fn checkShelf(n: int): Result<int, string> {
     if n < 0 {
-        return err("negative port")
+        return err("shelf number is negative")
     }
     return ok(n)
 }
 
-pub fn openTwice(a: int, b: int): Result<int, string> {
-    const x = try checkPort(a)
-    const y = try checkPort(b)
+pub fn spanOfTwo(a: int, b: int): Result<int, string> {
+    const x = try checkShelf(a)
+    const y = try checkShelf(b)
     return ok(x + y)
 }
 
-test "openTwice propagates the first failure" {
-    const opened: Result<int, string> = ok(523)
-    const failed: Result<int, string> = err("negative port")
-    assert openTwice(80, 443) == opened
-    assert openTwice(80, -1) == failed
+test "spanOfTwo propagates the first failure" {
+    const summed: Result<int, string> = ok(7)
+    const failed: Result<int, string> = err("shelf number is negative")
+    assert spanOfTwo(3, 4) == summed
+    assert spanOfTwo(3, -1) == failed
 }
 ```
 
-The second `try` does not run when the first fails: `openTwice(-1, 80)` returns
-`err("negative port")` after one call.
+The second `try` does not run when the first fails: `spanOfTwo(-1, 3)` returns
+`err("shelf number is negative")` after one call.
 
 Inside a `transaction` block, `try` keeps this meaning. Its failure exit
-carries no commit, so a `try` cannot stand inside a block that its own function
-owns ([guards inside a block](errors-and-transactions.md#guards-inside-a-block)).
+carries no commit, so in an export that owns a block a `try` stands on no path
+before the commit, inside the block or ahead of it
+(`check.transaction_uncommitted`,
+[guards inside a block](errors-and-transactions.md#guards-inside-a-block)).

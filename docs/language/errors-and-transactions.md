@@ -54,8 +54,8 @@ and each call is its own invocation.
 A durable write sits inside a `transaction` block, or inside a helper the block
 calls. A write in an export body outside any block is
 `check.requires_transaction`. A helper runs inside the block of the export that
-calls it and carries no block of its own (`check.transaction_misplaced`). Only a
-[test](tests.md) body calls an export that owns a block
+calls it and carries no block of its own (`check.transaction_misplaced`). An
+export that owns a block is called only from a [test](tests.md) body
 (`check.transaction_owner_called`). A read may precede the block.
 
 The block stages its writes. A read inside the block sees writes staged earlier
@@ -153,12 +153,16 @@ pub fn faultAfterCommit(id: int, divisor: int): int {
 }
 ```
 
-Three tests drive these exports with a zero divisor and an absent book:
+Three tests call `faultBeforeCommit(1, 0)`, `faultAtCommit(2, 3)`, and
+`faultAfterCommit(3, 0)` against a fresh store. `marrow test` reports them in
+name order, each with the line and column of the faulting operation in the
+module above:
 
 ```text
-ERROR 1 fault before commit (run.divide_by_zero at 13:20)
-ERROR 2 fault at commit (run.required_missing at 18:17; incomplete, durable known_old)
-ERROR 3 fault after commit (run.divide_by_zero at 27:16; incomplete, durable known_new)
+ERROR fault after commit (run.divide_by_zero at 27:16; incomplete, durable known_new)
+ERROR fault at commit (run.required_missing at 18:17; incomplete, durable known_old)
+ERROR fault before commit (run.divide_by_zero at 13:20)
+0 passed, 0 failed, 3 errored (3/3 selected)
 ```
 
 `faultBeforeCommit` faults on the division before the block commits. The staged

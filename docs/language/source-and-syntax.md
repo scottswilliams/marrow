@@ -36,9 +36,9 @@ The header comes first, then declarations in any order. `resource` and `store`
 describe durable data, `const` names a value, and `pub fn` exports a function.
 `^books[id].shelf` reads one field of one entry; the read is optional because
 either may be absent, and `??` supplies the default. The `test` block runs
-against a fresh in-memory store. A file without a header is a script: it cannot
-be imported, and `marrow run main.run` still runs its export `run`.
-[Modules and functions](modules-and-functions.md) owns the module rules.
+against a fresh in-memory store, and a durable write in a test body is a bare
+statement ([tests](tests.md)). The module rules are in
+[modules and functions](modules-and-functions.md).
 
 ## Comments
 
@@ -52,7 +52,7 @@ Indentation carries no meaning; the formatter writes four spaces.
 A name begins with an ASCII letter or `_` and continues with ASCII letters,
 digits, or `_`. Names are case-sensitive. The reserved words are listed in
 [machine-readable language facts](../tools/ai-legibility.md#reserved-words).
-`by`, `at most`, `from`, `on more`, `category`, and the duration units such as
+`by`, `at most`, `from`, `on more`, and the duration units such as
 `days` are read as keywords only in their own positions; elsewhere they are
 ordinary names. `catch` and `throw` are not keywords; statement-head forms from
 the removed exception channel report `parse.syntax`.
@@ -93,7 +93,7 @@ hexadecimal digits naming a Unicode scalar value. Any other character may appear
 directly. Inside `$"..."`, `{{` and `}}` are literal braces and `\u{H}` stays an
 escape. A hole holds a scalar, an enum value, or an entry identity, rendered as
 `string(...)` renders it; `Option` and `Result` values render as
-`Option::some(1)` and `Result::err(bad)`. A struct, list, map, or optional in a
+`Option::some(1)` and `Result::err(E::bad)`. A struct, list, map, or optional in a
 hole is a `check.unsupported` error.
 
 `bytes("Marrow")` constructs the UTF-8 bytes of a string. **Future:** The parser
@@ -208,9 +208,9 @@ reads and writes.
 ## Declarations and statements
 
 A file declares `module`, `use`, `const`, `fn` and `pub fn`, `alias`, `type`,
-`struct`, `enum`, `resource`, `store` with its indexes, and `test`. An absent
-module or function reports `check.type`; a cross-module call to a non-public
-function reports `check.visibility`. Each form is defined by
+`struct`, `enum`, `resource`, `store` with its indexes, and `test`. An absent module reports
+`check.import` and an absent function reports `check.type`; a cross-module call
+to a non-public function reports `check.visibility`. Each form is defined by
 [modules and functions](modules-and-functions.md), [types and values](types-and-values.md),
 [resources](resources.md), [durable places](durable-places.md),
 [traversal and indexes](traversal-and-indexes.md), or [tests](tests.md).
@@ -219,10 +219,10 @@ A statement is a `const` or `var` binding, an assignment, an expression, `if`
 and `if const`, `while`, `for`, `match`, `break`, `continue`, `return`,
 `require`, prefix `try`, `place`, `transaction`, `delete`, `unset`, and
 `assert`. A binding may take a let-else tail or a `checked` arithmetic form.
-[Control flow](control-flow.md) owns the control statements,
-[errors and transactions](errors-and-transactions.md) owns `transaction` and
-`try`, and [durable places](durable-places.md#named-places) owns `place` and
-`delete`.
+The control statements are defined in [control flow](control-flow.md),
+`transaction` and `try` in
+[errors and transactions](errors-and-transactions.md), and `place` and `delete`
+in [durable places](durable-places.md#named-places).
 
 ## Diagnostics
 

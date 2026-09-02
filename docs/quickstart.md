@@ -122,8 +122,10 @@ test "add and read back" {
 `pinned` is sparse. `store ^notes[id: int]: Note` declares a durable root keyed
 by an `int`; `^notes[id]` is one entry. Every durable write sits inside a
 `transaction` block, and `exists(^notes[id])` inside the block tests presence
-before `add` writes. `place slot = ^notes[id]` in `pin` names the entry once;
-`exists(slot)` proves it is present, and `slot.pinned = true` writes one field.
+before `add` writes. `^notes[id].text = text` creates the entry: assigning a
+field of an absent entry brings it into being, and its required fields must all
+be set when the block ends. `place slot = ^notes[id]` in `pin` names the entry
+once; `exists(slot)` proves it is present, and `slot.pinned = true` writes one field.
 `textOf` returns `string?` because the entry may be absent, and `??` supplies a
 default. The test drives the exports and checks the round trip against a fresh
 in-memory store.
@@ -131,9 +133,9 @@ in-memory store.
 ## Minting identities
 
 Each durable declaration gets a stable identity, recorded in `.marrow/ids`.
-The first `marrow run` writes that file; commit it with the source. Until it
-exists, `marrow check` and `marrow test` report `check.durable_identity`. Run
-any export once to create it:
+The first storeless `marrow run` writes that file; commit it with the source.
+Until it exists, `marrow check` and `marrow test` report
+`check.durable_identity`. Run any export once to create it:
 
 ```sh
 marrow run add -- 1 x
@@ -144,8 +146,16 @@ cli.durable_unsupported
 ```
 
 The run writes `.marrow/ids` and then stops with `cli.durable_unsupported`:
-`add` needs a store and none was given. `marrow check .` is now clean, and
-`--demand` lists the places each export reads and writes:
+`add` needs a store and none was given.
+
+A project whose durable declarations are used only by tests has no export to
+run. `marrow run` mints the ids before it looks the export up, so any name
+works: `marrow run mint` writes `.marrow/ids` and then reports that no such
+export exists.
+
+`marrow check .` is now clean: it groups the three exports under `main` and
+counts the places each one touches. `--demand` names every place, one line per
+export:
 
 ```sh
 marrow check --demand .
@@ -167,15 +177,17 @@ ok    add and read back
 ```
 
 A test that reads or writes durable data runs against a store that exists only
-for that test. `marrow test` starts from an empty store every run.
+for that test.
 
 ## Running against a store
 
 To keep data between runs, an export runs against a store on disk with
-`marrow run <export> --store <dir>`. `marrow import` creates the store and fills
-it from a file of one JSON object per line, each member a scalar named for a
-key or a field of the root. Both commands need the companion layout described
-under [Install](install.md#running-against-a-store).
+`marrow run <export> --store <dir>`. `marrow import` creates the store and
+fills it from a file of one JSON object per line, each member a scalar named
+for a key or a field of the root. Both commands need the companion layout
+described under [Install](install.md#running-against-a-store); a source install
+carries the `marrow` command alone, so the transcripts below come from an
+installation that has it.
 
 ```sh
 printf '{"id": 1, "text": "imported note"}\n{"id": 2, "text": "second"}\n' > seed.jsonl
@@ -190,9 +202,15 @@ provisioned a fresh store at ./store
 The store now holds the two notes. Later runs read and write the same data:
 
 ```sh
-marrow run textOf --store ./store -- 1      # imported note
-marrow run add --store ./store -- 3 "added via run"   # true
-marrow run textOf --store ./store -- 3      # added via run
+marrow run textOf --store ./store -- 1
+marrow run add --store ./store -- 3 "added via run"
+marrow run textOf --store ./store -- 3
+```
+
+```text
+imported note
+true
+added via run
 ```
 
 `marrow run --store` reads `.marrow/ids` and leaves it unchanged; a missing

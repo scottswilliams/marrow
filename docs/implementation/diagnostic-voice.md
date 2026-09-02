@@ -102,11 +102,10 @@ Write `trim(s)`.
 ### Refused declaration
 
 A declaration the compiler refused keeps its name. Its cause is reported once,
-at the declaration, and the first use of the name is steered to that report,
-carrying the *declaring* code so one code leads to one fix; later uses of the
-same name fail silently. The reader can see the name declared, so the message
-does not call it out of scope, and it names a location only where a report
-sits.
+at the declaration. The first use of the name carries the declaring code, so one
+code leads to one fix. Later uses of the same name report nothing. The reader
+can see the name declared, so the message does not call it out of scope, and it
+names a location only where a report sits.
 
 ```text
 check.unsupported: `limit` was declared, but its declaration was refused.

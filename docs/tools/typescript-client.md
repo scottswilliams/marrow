@@ -58,9 +58,10 @@ and `launch` rejects.
 socket, and rejects every outstanding call with its loss class. It also runs on
 process exit. `close()` is the orderly form.
 
-`provision(options)` creates a store for an image. It takes `runner`, `image`,
-and a fresh `store` path, and resolves with a `ProvisionReceipt` naming the store
-instance and path. A store on disk needs the companion layout described under
+`provision(options)` is a module function of `./client/marrow-supervisor.mjs`,
+not a method of `Client`. It creates a store for an image. It takes `runner`,
+`image`, and a `store` path that does not exist yet, and resolves with a
+`ProvisionReceipt` naming the store instance and path. A store on disk needs the companion layout described under
 [install](../install.md#running-against-a-store).
 
 ## Type projection
@@ -75,7 +76,8 @@ The wire carries the closed transfer graph. Its TypeScript projection:
 | `bytes` | `Uint8Array` | `0x`-prefixed lowercase hex |
 | `date`, `instant`, `duration` | `string` | the canonical text spelling |
 | `T?` | `T \| null` | `null` when absent |
-| `struct` | inline `{ field: T; sparse?: T }` | object; an absent sparse field is omitted |
+| `struct` | inline `{ field: T }` | object; every field is present |
+| resource value | inline `{ field: T; sparse?: T }` | object; an absent sparse field is omitted |
 | `enum` (including `Option`/`Result`) | `{ member: "name"; payload: [..] }` union | tagged member and dense payload |
 | `List<T>` | `Array<T>` | JSON array of element values |
 | `Map<K, V>` | `Array<[K, V]>` | JSON array of ordered `[key, value]` pairs, so a non-string key and entry order survive |

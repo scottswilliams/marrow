@@ -72,10 +72,10 @@ An attach whose contract and binding are unchanged rebinds and runs. Any other
 change is one explicit action that reviews, reports in source vocabulary
 (places, presence, demand, stored work), takes acceptance, and activates
 atomically. A metadata-only transition leaves every value in place; an index
-build names the root it reads and the bound on that read. A developer types
-one identifier by hand, the ceiling id accepted when an image is built
-([`marrow image`](../tools/cli.md#marrow-image)). Witnesses and hashes never
-appear.
+build names the root it reads and the bound on that read. A developer types one
+identifier by hand: the ceiling id that `marrow image` prints and asks the owner
+to accept ([`marrow image`](../tools/cli.md#marrow-image)). Witnesses and
+hashes never appear.
 
 ## Evidence
 

@@ -134,9 +134,11 @@ reports `check.durable_identity` until one `marrow run` writes `.marrow/ids`
 
 `marrow run <export>` compiles and verifies the project, then runs one export,
 named bare or by module: `greet` or `docs.cli.shelf.greet`. Arguments after
-`--` are decoded in order against the export's `int`, `bool`, and `string`
-parameters; a wrong count, a value that does not decode, or an unknown export
-is a usage error.
+`--` are decoded in order against the export's scalar parameters: `int`, `bool`,
+`string`, `bytes` as `0x`-prefixed lowercase hexadecimal, and `date`, `instant`,
+and `duration` in canonical text. A struct parameter has no command-line
+spelling. A wrong count, a value that does not decode, or an unknown export is a
+usage error.
 
 ```text
 $ marrow run greet -- Ann
@@ -146,8 +148,9 @@ $ marrow run greet --format jsonl -- Ann
 ```
 
 Text output is the returned value, or `absent` for an absent optional. JSONL
-output is one object whose `outcome` is `value`, `diagnostic`, `fault`,
-`incomplete`, or `error`; a diagnostic or fault carries its code and span
+output is one object whose `outcome` is `value`, `diagnostic`,
+`artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a
+diagnostic or fault carries its code and span
 ([error codes](../error-codes.md)).
 
 A durable export runs against a store on disk named with `--store <dir>`. The
@@ -187,8 +190,8 @@ a usage error. `--format jsonl` prints one object per test and a summary.
 ## marrow import
 
 `marrow import` creates a store and fills it from a file of JSON objects, one
-entry per line. Each member is a scalar named for a key of the root, listed in
-`--keys`, or for one of its fields. The project is compiled and verified first
+entry per line. Each member is a scalar. Its name is either a key component of the root, named
+in `--keys`, or a field of the stored resource. The project is compiled and verified first
 and the new store is bound to it. Like `run --store`, `import` needs the
 companion layout. The transcript is from the quickstart's notes program:
 

@@ -10,27 +10,12 @@ execution, backup, restore, and schema evolution are future work
 
 ## A store on disk
 
-`marrow import` creates a store and fills it from a file of JSON objects, one
-entry per line. Each member is a scalar named for a key or a field of the root.
-The program is the notes program from the [quickstart](../quickstart.md): `store
-^notes[id: int]: Note`, whose `text` field is required.
+A store is created by `marrow import`, which compiles and verifies the project,
+provisions the directory, and binds the new store to that program ([marrow
+import](../tools/cli.md#marrow-import)). The corpus is read and committed in
+bounded batches, so a corpus larger than memory imports the same way.
 
-```sh
-printf '{"id": 1, "text": "imported note"}\n{"id": 2, "text": "second"}\n' > seed.jsonl
-marrow import --store ./store --jsonl seed.jsonl --root notes --keys id
-```
-
-```text
-provisioned a fresh store at ./store
-{"batches_committed":1,"rows_imported":2}
-```
-
-The first line reports that `./store` was created. The second counts what was
-committed. The file is read and committed in bounded batches, so a corpus larger
-than memory imports the same way.
-
-`import` is the only command that creates a store. It compiles and verifies the
-project first and binds the new store to that program. It mints no identity: the
+`import` is the only command that creates a store. It mints no identity: the
 ledger `.marrow/ids` comes from one storeless `marrow run` before the import
 ([identity ledger](../tools/projects.md#identity-ledger)).
 
@@ -38,13 +23,14 @@ Both `import` and `run --store` run the program in a separate runner process,
 `marrow-runner`, installed beside `marrow` together with the `marrow-companions`
 manifest. The `marrow` process itself opens no store. A missing or altered
 runner is `cli.installation_damaged`, and nothing runs.
-[Install](../install.md#running-against-a-store) states how to have that layout
-and which platforms open a store.
+[Install](../install.md#running-against-a-store) names the layout and the
+platforms that open a store; no current command assembles it.
 
 ## Running an export against a store
 
 `marrow run <export> --store <dir>` runs one exported function against the store
-and prints its result:
+and prints its result. The exports below are the notes program from the
+[quickstart](../quickstart.md):
 
 ```sh
 marrow run textOf --store ./store -- 1      # imported note
@@ -97,7 +83,9 @@ facts. An invocation that faults before its block commits rolls back and reports
 the fault; the store is as it was. One whose commit is confirmed and then faults
 later reports `incomplete` with durable state `known_new`: the commit stands.
 One whose commit is aborted reports `incomplete` with `known_old`: nothing
-changed.
+changed. `marrow run` prints the outcome and, for an interrupted invocation, the
+durable state; with `--format jsonl` they are the `outcome` and `durable`
+members of the run record.
 
 When the store cannot say whether a commit completed, the runner reopens the
 store file and audits it. The proposed state on disk is `known_new`, the prior

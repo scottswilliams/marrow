@@ -20,17 +20,18 @@ each behavior.
 | Store lifecycle | `marrow import` provisions a store; `marrow run --store` runs an export against it through the companion runner; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. | [TypeScript client](tools/typescript-client.md) |
 
-A repository test compiles every `mw` example in the reference and runs it
-through `marrow test`. The command names `data`, `doctor`, `evolve`, `serve`,
-`backup`, and `restore` are recognized; each reports `cli.command_unsupported`.
+The command names `data`, `doctor`, `evolve`, `serve`, `backup`, and `restore`
+are recognized; each reports `cli.command_unsupported`.
 
 ## Not yet available
 
 - Third-party packages ([packages](future/packages.md)).
 - Closures ([general-purpose language](future/general-purpose-language.md)).
 - Operations over a singleton root, over a root whose resource declares a
-  nominal field, and over a group inside a group or a branch; each declares and
-  checks today ([durable places](language/durable-places.md)).
+  nominal field, and over a group inside a branch; each declares and checks
+  today ([durable places](language/durable-places.md)). A group inside another
+  group is `check.unsupported` at its declaration
+  ([resources](language/resources.md)).
 - A keyed scalar leaf such as `tags[pos: int]: string`; a branch holds scalar
   fields ([resources](language/resources.md)).
 - `decimal` ([types and values](language/types-and-values.md)).
@@ -70,7 +71,8 @@ has its own platform and layout requirements
 
 The supply chain has a floor:
 
-- The workspace carries no `unsafe` code; CI compiles with `-F unsafe-code`.
+- The workspace carries no `unsafe` code; CI runs `cargo clippy --workspace
+  --all-targets -- -D warnings -F unsafe-code`, which fails on any.
 - An advisory CI job runs `cargo audit` over the committed `Cargo.lock` and
   emits a CycloneDX bill of materials. An advisory is triaged as a finding and
   does not block integration.
@@ -88,13 +90,10 @@ another machine.
 | Clock | Figure | Revision | Method |
 |---|---|---|---|
 | Compile time of a `.mw` program | 12.5 ms median for `marrow check` over a 2,278-line, 2,000-field program; slowest of 31 runs 13.1 ms | `294a6290` (2026-08-31) | Release binary, one fresh process per run, warm filesystem, Apple M5 Pro. The program is `crates/marrow/tests/fixtures/v01/e07_m_corpus/clinical`; the timing harness is not in the repository. |
-| Editor completion | Under 1 ms for a 64 KiB file; 54 ms for a maximum admitted file in its densest shape | Budget test in `crates/marrow-compile/tests/query_local_syntax.rs` | Worst of five after a warm request, three runs, optimized profile. The release CI leg asserts the 10 ms and 150 ms budgets. |
+| Editor completion | Under 1 ms for a 64 KiB file; 54 ms for a maximum admitted file in its densest shape | Not recorded | Worst of five after a warm request, three runs, optimized profile. The figures are recorded with the budgets in `crates/marrow-compile/tests/query_local_syntax.rs`; the release CI leg asserts the 10 ms and 150 ms budgets. |
 | Workspace test wall time | 96.6 s for the unit and integration battery; 12.3 s for a settled doctest battery | `294a6290` (2026-08-31) | `cargo test --workspace --locked`, unoptimized profile, Apple M5 Pro. Two whole-battery runs measured 490 s and 840 s with a stall entering doctests whose cause was not established. |
-| Workspace test wall time | 107 s, 3,439 tests | `4a2df7ce` | Ordinary parallel `cargo test --workspace`, unoptimized profile. |
-| Workspace test wall time | 144.1 s, 197 test binaries, 3,166 tests | `71aa47d3` (2026-08-11) | One test binary at a time, unoptimized profile. A serial figure and a parallel figure are not comparable. |
 | Clean Rust build | 7.4 s | `294a6290` (2026-08-31) | Workspace build into an empty target, unoptimized profile, Apple M5 Pro. |
 | Incremental Rust build | 0.26 s after touching `marrow`; 0.72 s after touching `marrow-compile` | `294a6290` (2026-08-31) | Median over warm mtime-only touches, unoptimized profile. |
-| Clean Rust build | 13 s | `4a2df7ce` | Workspace build into a fresh target directory, unoptimized profile. |
 
 The three clocks and the design rules they impose are described in
 [Compilation and test speed](implementation/speed.md#three-clocks).

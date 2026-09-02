@@ -1,8 +1,9 @@
 # Storage implementation
 
-`marrow-store` orders opaque bytes. It defines a crate-private byte-engine
-contract and the two implementations behind it. Meaning comes from the kernel
-above it: `marrow-kernel` owns the codecs that turn a durable path into key
+`marrow-store` orders opaque bytes. It defines a byte-engine contract, private
+to the workspace because `marrow-kernel` is its only dependent, and the two
+implementations behind it. Meaning comes from the kernel above it:
+`marrow-kernel` owns the codecs that turn a durable path into key
 bytes and a value into cell bytes, and every logical read and write reaches the
 engine through the kernel's sessions.
 
@@ -33,8 +34,10 @@ in reverse, staged inside one engine transaction that commits with the
 `lib.rs` exports the engine contract, `StoreError`, `MemoryEngine`, and the
 native owner's types; the redb adapter itself is private. A compile-time audit
 in `lib.rs` fails if an exported name is removed or renamed. The conformance
-suite runs the same byte-level traces over both engines, including the
-fsync-based durability envelope described in the crate docs.
+suite runs the same byte-level traces over both engines: point reads, writes and
+exact removal, the bounded forward scan at its boundary, consuming transactions,
+batch limits, and the integrity audit. The filesystem durability envelope is
+redb's own and is documented in `redb.rs`.
 
 ## One consumer
 
@@ -57,7 +60,7 @@ excludes cooperating Marrow processes and does not authenticate the engine
 file; recovery cannot detect an out-of-band substitution of `store.redb`. That
 gap is recorded in [project status](../status.md#trust-boundaries).
 
-## Whole-entry materialization law
+## Reading a whole entry
 
 Reading a whole entry or group (`marrow-kernel`'s `read_record_leaves`, the
 single owner shared by the root entry and every group) does engine work

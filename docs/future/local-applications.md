@@ -33,8 +33,6 @@ generated client and renderer assets, the provisioning policy, and the
 application identity. The end user installs neither Rust nor a database.
 Install, first provision, start, code update, authority expansion, backup,
 restore, uninstall, and data retention each have their own tested behavior.
-Backup and restore are future work
-([admission and activation](admission-and-activation.md)).
 
 ## Evidence
 

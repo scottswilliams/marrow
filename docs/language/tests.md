@@ -1,6 +1,7 @@
 # Tests
 
-A `test` is a named body of ordinary statements that `marrow test` runs. Inside it, `assert` checks a condition.
+A `test` is a named body of ordinary statements that `marrow test` runs.
+Inside it, `assert` checks a condition.
 
 ## Tests and assert
 
@@ -20,19 +21,30 @@ test "label joins title and author" {
 }
 ```
 
-The title is the report label. Titles are unique within a project; a second test with the same title is `check.name_conflict`. A test takes no parameters and returns nothing.
+The title is the report label. Titles are unique within a project; a second
+test with the same title is `check.name_conflict`. A test takes no parameters
+and returns nothing.
 
-`assert` evaluates a `bool` expression. A false condition fails the test, and the report names the assertion's source position. A test passes when its body runs to the end with every condition true. Any other runtime fault, such as an overflow, errors it.
+`assert` evaluates a `bool` expression. A false condition fails the test, and
+the report names the assertion's source position. A test passes when its body
+runs to the end with every condition true. Any other runtime fault, such as an
+overflow, errors it.
 
-`assert` belongs only in a `test` body; in a function it is `check.assert_outside_test`. Program code states an invariant with `unreachable("...")` instead.
+`assert` belongs only in a `test` body; in a function it is
+`check.assert_outside_test`. Program code states an invariant with
+`unreachable("...")` instead.
 
-How tests are selected, ordered, and reported is described in [tools/tests](../tools/tests.md).
+How tests are selected, ordered, and reported is described in
+[tools/tests](../tools/tests.md).
 
 ## Durable tests
 
-A test that reads or writes a durable place gets its own empty in-memory store. Nothing carries over from one test to the next, and no test opens a store on disk.
+A test that reads or writes a durable place gets its own empty in-memory
+store. Nothing carries over from one test to the next, and no test opens a
+store on disk.
 
-A durable test works in one of two ways. A direct test reads and writes durable places itself:
+A durable test works in one of two ways. A direct test reads and writes
+durable places itself:
 
 ```mw
 module docs::tests::direct
@@ -52,7 +64,10 @@ test "a written entry reads back" {
 }
 ```
 
-The write is a bare statement; a test body owns no `transaction` block, and one inside it is `check.transaction_misplaced`. A value the body writes is visible to a later read in the same body. A test seeds the data it needs the same way, in its own body first.
+The write is a bare statement; a test body owns no `transaction` block, and
+one inside it is `check.transaction_misplaced`. A value the body writes is
+visible to a later read in the same body. A test seeds the data it needs the
+same way, in its own body first.
 
 A driver test reaches durable data only through the project's exports:
 
@@ -81,6 +96,11 @@ test "add then read back" {
 }
 ```
 
-Each call behaves like a separate `marrow run`. `add` commits its [transaction](errors-and-transactions.md#transactions) to the test's store, and `titleOf` reads the committed value.
+Each call behaves like a separate `marrow run`. `add` commits its
+[transaction](errors-and-transactions.md#transactions) to the test's store,
+and `titleOf` reads the committed value.
 
-A body is either direct or driver. Mixing a direct durable operation with a call to an export that owns a `transaction` is `check.test_driver_mix`; split such a test in two. A direct test may still call an export that opens no `transaction`, such as a reading export.
+A body is either direct or driver. Mixing a direct durable operation with a
+call to an export that owns a `transaction` is `check.test_driver_mix`; split
+such a test in two. A direct test may still call an export that opens no
+`transaction`, such as a reading export.

@@ -45,8 +45,8 @@ on it.
 Today's image is version 0. Each list in the image (types, functions, strings,
 and the rest) records its entry count, and the bytecode records each reference
 into a list, as a 16-bit integer, so one list holds at most 65,535 entries.
-The shipped bounds sit far below that, and the 512 KiB image ceiling binds
-first ([execution limits](../language/execution-limits.md)).
+The shipped bounds sit far below that; the widest is 8,192 entries
+([execution limits](../language/execution-limits.md)).
 Any bound can be raised toward 65,535 without a format change; an older
 toolchain rejects a larger image instead of misreading it.
 

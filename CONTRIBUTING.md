@@ -120,9 +120,6 @@ so that a recurrence is conspicuous.
   bounds, or soundness. They do not narrate what the code does or which change
   introduced it; prefer a better name or a smaller function to a narrating
   comment.
-- Keep current, legacy, and future behavior in their documented sections. A
-  future page defines no implemented behavior, and an example presented as
-  complete parses and checks against the documented version.
 
 ## Filing an issue
 

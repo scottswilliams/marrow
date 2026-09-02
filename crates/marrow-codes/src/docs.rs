@@ -11,7 +11,7 @@ use crate::{Code, Lifecycle};
 
 /// The heading that opens the internal-codes section. `generate` emits it and the
 /// coverage test splits the page on it, so the two cannot disagree.
-pub(crate) const INTERNAL_HEADING: &str = "### Internal Codes";
+pub(crate) const INTERNAL_HEADING: &str = "### Internal codes";
 
 fn rows(codes: &[Code]) -> String {
     codes
@@ -51,7 +51,7 @@ Language-level error behavior is described in
 Tool invocation is described in [`tools/cli.md`](tools/cli.md). This page is
 generated from the code registry and lists every code the current build emits.
 
-## Code Reference
+## Code reference
 
 ### `parse.*`
 

@@ -1,6 +1,8 @@
 # Execution limits
 
-Every bound on a Marrow program is a fixed number. A program that crosses one gets a diagnostic at the construct that crossed it, or a fault at the instruction that did.
+Every bound on a Marrow program is a fixed number. A program that crosses one
+gets a diagnostic at the construct that crossed it, or a fault at the
+instruction that did.
 
 A loop with no bound of its own:
 
@@ -21,7 +23,10 @@ $ marrow run docs.limits.spin.spin
 run.budget at 6:9
 ```
 
-`while` has no iteration limit. The invocation's instruction budget is shared across its whole call tree, so a loop that never terminates exhausts it and faults with `run.budget` at the instruction that ran out. The fault carries a source position and ends the invocation.
+`while` has no iteration limit. The invocation's instruction budget is shared
+across its whole call tree, so a loop that never terminates exhausts it and
+faults with `run.budget` at the instruction that ran out. The fault carries a
+source position and ends the invocation.
 
 A declaration that is too wide is a source diagnostic:
 
@@ -30,7 +35,10 @@ $ marrow check .
 src/main.mw:3:1: check.resource_limit: a function declares 17 parameters; the fixed limit is 16
 ```
 
-The diagnostic points at the declaration. When no single construct is at fault, because a count across the whole program or the compiled program's size crossed a bound, `marrow check` reports `cli.compiler_resource_limit` without a source position.
+The diagnostic points at the declaration. When no single construct is at
+fault, because a count across the whole program or the compiled program's size
+crossed a bound, `marrow check` reports `cli.compiler_resource_limit` without
+a source position.
 
 ## Limits
 
@@ -58,10 +66,22 @@ The diagnostic points at the declaration. When no single construct is at fault, 
 | Runtime | Elements in a list or map | 65,536 | `run.collection_limit` |
 | Runtime | Size of a list or map | 1 MiB | `run.collection_limit` |
 
-The source group is met while a file is parsed and checked. The declarations group is met at a `resource`, `store`, `enum`, or `fn` header, or across the whole project for a count of roots, exports, or tests. The runtime group is met by one invocation of one export.
+The source limits apply while a file is parsed and checked. The declaration
+limits apply at a `resource`, `store`, `enum`, or `fn` header, or across the
+whole project for a count of roots, exports, or tests. The runtime limits
+apply to one invocation of one export.
 
-Source nesting counts every brace and bracket that encloses a construct: a block inside a block, a parenthesis inside a parenthesis, an operand inside an operator. Member nesting counts groups and branches under a resource; value nesting counts structs and enums inside a stored field, with a scalar as level one. A [traversal bound](traversal-and-indexes.md#bounded-durable-traversal) above 65,536 is reported at the number in the `for` head.
+Source nesting counts every brace and bracket that encloses a construct: a
+block inside a block, a parenthesis inside a parenthesis, an operand inside an
+operator. Member nesting counts groups and branches under a resource; value
+nesting counts structs and enums inside a stored field, with a scalar as level
+one. A [traversal bound](traversal-and-indexes.md#bounded-durable-traversal)
+above 65,536 is reported at the number in the `for` head.
 
-Call depth counts active calls in one invocation. Recursion is a compile error, so the depth limit meets only a very deep chain of distinct calls. The text limit applies to a text built by concatenation or `join`. The collection limits apply whenever a list or map grows: `append`, map insertion, `split`, and `lines`.
+Call depth counts active calls in one invocation. Recursion is a compile
+error, so the depth limit is reached only by a very deep chain of distinct
+calls. The text limit applies to a text built by concatenation or `join`. The
+collection limits apply whenever a list or map grows: `append`, map insertion,
+`split`, and `lines`.
 
 These limits are fixed.

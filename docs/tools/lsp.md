@@ -80,10 +80,11 @@ which keeps a session's retained memory bounded by the snapshot alone.
 ## Editor extension
 
 The repository ships a Visual Studio Code extension at `editors/vscode/`. It
-registers the `marrow` language for `.mw` files, starts one bundled `marrow-lsp`
-process per window over standard input and output, and contributes a TextMate
-grammar generated from the parser's [reserved words](ai-legibility.md#reserved-words)
-plus a language configuration for `//` comments and bracket pairing. Every
+registers the `marrow` language for `.mw` files and starts one bundled
+`marrow-lsp` process per window over standard input and output. It contributes a
+TextMate grammar generated from the parser's
+[reserved words](ai-legibility.md#reserved-words) and a language configuration
+for `//` comments and bracket pairing. Every
 language fact comes from the server. The package targets macOS on Apple Silicon
 (`darwin-arm64`) and launches the server from its bundled path with no override
 setting. It supports one workspace folder or none, stays inactive in untrusted or

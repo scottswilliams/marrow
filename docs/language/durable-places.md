@@ -70,15 +70,15 @@ write address ([entry identity](types-and-values.md#entry-identity)).
 
 ## What a field holds
 
-A field holds a scalar, a `struct`, an `enum`, an `Option`, or a `Result`. A
-nominal int is stored as its base `int`. A field holds no list, map, resource,
-place, or function; many values under one entry go in a
-[keyed branch](#keyed-branches). A stored value nests at most 32 levels
+A field holds a scalar, a `struct`, an `enum`, an `Option`, or a `Result`. It
+holds no list, map, resource, place, or function; many values under one entry
+go in a [keyed branch](#keyed-branches). A stored value nests at most 32 levels
 ([limits](execution-limits.md#limits)).
 
 ## Reading
 
-A durable read yields `T?`, because the entry or the field may be absent:
+A durable read yields `T?`, because the entry or the field may be absent
+([optionals](types-and-values.md#optionals)):
 
 ```mw
 module docs::durable::reading
@@ -113,7 +113,7 @@ field. `exists` answers presence with a `bool` and narrows nothing; a read after
 an `exists` guard is still optional.
 
 `exists(^books)` is true when some entry of `^books` has fields of its own, and
-`exists(^books[id].notes)` asks the same of a branch. Each reads one key.
+`exists(^books[id].notes)` asks the same of a branch.
 
 The test writes `^books[1]` with a bare statement. A test body owns no
 transaction: it touches durable data directly, or it drives exports that do,
@@ -204,8 +204,9 @@ test "replacement and delete leave the branch in place" {
 }
 ```
 
-`Book(title: "Pyramids")` names no `subtitle`, so the replacement drops it. The
-note under `notes[1]` stays: a keyed branch is its own node, and a whole-entry
+`Book(title: "Pyramids")` names no `subtitle`, so the replacement drops it.
+`Book.notes(text: "signed")` builds one entry of the `notes` branch. The note
+under `notes[1]` stays: a keyed branch is its own node, and a whole-entry
 assignment touches only the entry's own fields. A constructor that omits a
 required field is a `check.type` error. The last three lines belong to
 [deleting](#deleting).
@@ -260,13 +261,17 @@ A place proves nothing. `exists(book)` proves presence, and the guard returns
 before any write when the entry is absent. `book.subtitle = subtitle` then writes
 one field and reads nothing else.
 
+A branch beneath the entry is addressed through the name, so `book.notes[pos]`
+reads and writes the branch entry that `^books[id].notes[pos]` names.
+
 A place is a constant, and its bare name is not a value: read a field through
 it, bind the whole entry with `if const`, or test it with `exists`. A field
 address or another place on the right-hand side is a `check.type` error.
 
-Two bindings to the same entry keep separate proofs. A write through a binding
-whose proof is stale, because the entry was deleted through the other, faults
-with `run.corruption`. Prove presence, delete, and write through one binding.
+Two bindings to the same entry keep separate proofs. Deleting through one leaves
+the other's proof stale: a sparse field written through it leaves the entry short
+of a required field, so the block rolls back with `run.required_missing`. Prove
+presence, delete, and write through one binding.
 
 ## Groups
 
@@ -304,7 +309,8 @@ test "a group is one value of the entry" {
 is addressed by the entry's key. `^books[id].details.pages` reads one leaf and
 yields `int?`. The test writes one leaf and keeps `language`, then assigns the
 whole group exactly, so the omitted `pages` is dropped. `title` is untouched
-either way. A leaf write over an absent entry writes nothing.
+either way. A group leaf write over an absent entry writes nothing, while a
+field write stages the field and creates the entry at commit.
 
 ## Keyed branches
 
@@ -328,6 +334,10 @@ resource Book {
 
 store ^books[id: int]: Book
 
+pub fn noteText(id: int, pos: int): string? {
+    return ^books[id].notes[pos].text
+}
+
 test "a branch entry is its own node" {
     ^books[1].notes[1].tags["gift"] = Book.notes.tags(weight: 2)
     assert ^books[1].notes[1].tags["gift"].weight ?? 0 == 2
@@ -340,10 +350,9 @@ test "a branch entry is its own node" {
 ```
 
 `^books[id].notes[pos]` extends the entry's key with the branch key, and
-`.tags[tag]` extends it again. `Book.notes(text: "signed")` constructs a branch
-entry, one level down per branch. A branch holds scalar fields and further
-branches, nested at most 16 levels. Every operation on an entry applies to a
-branch entry at its own address.
+`.tags[tag]` extends it again, one level down per branch. A branch holds scalar
+fields and further branches, nested at most 16 levels. Every operation on an
+entry applies to a branch entry at its own address.
 
 The test writes a tag under a note and a book that do not exist. The write is
 admitted. Each ancestor is then descendant-only: it has keyed descendants and no
@@ -410,11 +419,12 @@ test "purge empties the subtree" {
 }
 ```
 
-The inner loop deletes each tag through its pin, the outer loop deletes each
-note, and the last statement deletes the book. Each `for` head states its bound,
-so one transaction removes as much as its bounds admit and `on more` observes the
-rest ([traversal](traversal-and-indexes.md#bounded-durable-traversal)). There is
-no whole-subtree delete.
+The inner loop deletes each tag through the entry binding its loop head
+declares, the outer loop deletes each note, and the last statement deletes the
+book. Each `for` head states its bound, so one transaction removes as much as
+its bounds admit and `on more` observes the rest
+([traversal](traversal-and-indexes.md#bounded-durable-traversal)). There is no
+whole-subtree delete.
 
 ## Access demand
 

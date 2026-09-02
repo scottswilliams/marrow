@@ -1,7 +1,8 @@
 # Future direction
 
-This directory records direction that follows from the [vision](../vision.md)
-and is unimplemented today. Nothing here is current behavior. The
+This directory records direction that follows from the [vision](../vision.md).
+Each page opens with what the toolchain does today, then the direction that is
+not implemented and the evidence that would make it current. The
 [language reference](../language/README.md) defines current behavior, and
 [status](../status.md) separates current work from future work.
 
@@ -28,9 +29,8 @@ Applications and serving:
 - [Local applications](local-applications.md): the runner, client, and bundle for one machine.
 - [Served execution](served-execution.md): several terminals, public paths, and concurrent writers.
 
-A future page states what is current today with a link, the direction, and the
-evidence that would make the direction current. It contains no proposed `.mw`
-syntax, manifest field, instruction format, protocol schema, or diagnostic
-catalog. When working code makes a behavior current, its rule moves into the
-reference and the future page is deleted or reduced to what remains
-unimplemented. Git history preserves abandoned proposals.
+A future page contains no proposed `.mw` syntax, manifest field, instruction
+format, protocol schema, or diagnostic catalog. When working code makes a
+behavior current, its rule moves into the reference and the future page is
+deleted or reduced to what remains unimplemented. Git history preserves
+abandoned proposals.

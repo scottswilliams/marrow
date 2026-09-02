@@ -6,7 +6,9 @@ documentation you are reading.
 
 ## Requirements
 
-Linux or macOS, Rust 1.89, and Git.
+Rust 1.89 and Git, on Linux or macOS. A build for another target runs the
+storeless commands; [Running against a store](#running-against-a-store) states
+what a store on disk needs.
 
 ## Install
 
@@ -43,8 +45,9 @@ marrow 0.1.0
 
 ## Running against a store
 
-This install runs every storeless command, and `marrow test` runs durable
-tests against a fresh in-memory store. A store on disk needs two more things.
+A source install runs every storeless command, and `marrow test` runs durable
+tests against a fresh in-memory store. A store on disk also needs a supported
+platform and the companion layout.
 
 Opening a store on disk works on macOS, and on Linux on x86_64 and aarch64. A
 build for another target runs storeless commands and `marrow test`; an attempt

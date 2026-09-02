@@ -40,6 +40,7 @@ test "a task reads back by its key" {
 ```
 
 `resource Task` declares a shape with one required field and one sparse field.
+The sparse field `done` is absent until a program assigns it.
 `store ^tasks[id: int]: Task` gives that shape a durable root keyed by an
 `int`, so `^tasks[id]` is one entry and `^tasks[id].title` is one field of it.
 `add` writes inside a `transaction`, and the write commits when the block ends.
@@ -131,8 +132,9 @@ test "each add advances the tally" {
 `add` writes to two roots, and either both writes become durable or neither
 does. A fault before the block ends rolls back every write in it. A `return`
 inside the block commits what was written before it, so `add` in the first look
-leaves a duplicate key untouched. A durable write outside a block is a compile
-error, `check.requires_transaction`.
+leaves a duplicate key untouched. A durable write in an export body outside a
+`transaction` block is a compile error, `check.requires_transaction`; a test
+body writes durable data directly ([tests](tests.md)).
 
 ## Traversal states its bound
 
@@ -203,13 +205,16 @@ ok    this test starts empty
 
 A mark means consequence. `^` is the one spelling of a durable place,
 `transaction {` of a commit, `at most` of a bound, and `delete` of removal.
-Grep `\^` and you have every durable touch in a program; grep `transaction {`
-and you have every commit. [Marks](idioms.md#marks) lists the whole set.
+Grep `\^` and you have every point where durable data enters the code; grep
+`transaction {` and you have every commit. [Marks](idioms.md#marks) lists the
+whole set.
 
 ## Core terms
 
 A place is a location a program reads by naming it: a variable, a field of a
-local value, a collection element, or a durable path. A list element is
+local value, a collection element, or a durable path. The keyword `place`
+binds a name to one durable entry address
+([named places](durable-places.md#named-places)). A list element is
 read-only; every other place is also assigned by naming it. A resource is a
 declared value shape whose fields are sparse unless marked `required`. A durable
 place is a path that begins with a declared store root. An entry identity,

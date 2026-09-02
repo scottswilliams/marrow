@@ -1,8 +1,7 @@
 # Idioms
 
 Marrow code is arranged so that each consequence is visible on the line where
-it happens. This page shows the marks that carry those consequences and the
-conventional shape of a file, a guard prelude, a counter, and an example test.
+it happens.
 
 ## Marks
 
@@ -30,8 +29,8 @@ pattern finds every use in a module. `\^` lists every point where durable data
 enters the code. `transaction {` lists every commit. `at most` lists every
 durable walk and `\bwhile\b` every loop without one. `\brequire ` and
 `\btry ` together list every failure exit that is not a spelled `return`. A
-pattern may also hit a comment or a string; those are discounted by reading,
-and a real use is never missed.
+pattern may also hit a comment or a string, so a search can over-report; it
+never under-reports.
 
 Two marks rest on rules other pages state. A read or write through a `place`
 carries no `^` on its own line, but the name was bound from a `^` address on
@@ -82,10 +81,11 @@ pub fn onShelf(shelf: string): int {
 ```
 
 `shelve` has one `transaction {` and one `place`; the write `book.shelf = shelf`
-carries no `^` because `book` was bound from `^books[id]` two lines above.
-`onShelf` has one `at most` and one `on more`. Searching this file for `\^`
-finds every durable touch: the store declaration, the `place` binding, and the
-two reads in `onShelf`.
+carries no `^` because `book` was bound from `^books[id]` at the top of the
+block. `onShelf` has one `at most` and one `on more`. Searching this file for
+`\^` finds every point where durable data enters the code: the store
+declaration, the `place` binding, and the two reads in `onShelf`. The write
+through `book` is reached from its binding line.
 
 ## File skeleton
 
@@ -169,8 +169,6 @@ A mutating export puts its guards at the top of its block and its writes
 below them, as `shelve` does above. Each guard returns before the first write,
 so a rejected call commits nothing
 ([guards inside a block](errors-and-transactions.md#guards-inside-a-block)).
-`require` and `try` do not stand in a function that owns a block, ahead of the
-block or inside it; the spelled `if` is the guard form there.
 
 ## Validation chain
 
@@ -185,7 +183,6 @@ module docs::idioms::validation
 resource Book {
     required title: string
     required revision: int
-    shelf: string
 }
 
 store ^books[id: int]: Book
@@ -200,9 +197,7 @@ pub fn validateMove(id: int, expected: int, shelf: string): Result<bool, string>
         return err("unknown book")
     }
     try revisionMatches(book.revision, expected)
-    const current = book.shelf ?? ""
     require not isEmpty(shelf) else "shelf is empty"
-    require shelf != current else "already on that shelf"
     return ok(true)
 }
 
@@ -215,7 +210,7 @@ test "example: validateMove" {
 }
 ```
 
-Searching the module for `\brequire ` lists its three preconditions, and
+Searching the module for `\brequire ` lists its preconditions, and
 `\btry ` the one point that forwards a shared guard's failure. The validator
 opens no `transaction`; the export that calls it does.
 
@@ -270,7 +265,7 @@ block, so they commit or roll back together: a key is never advanced without
 its entry. `Id(^books, next)` constructs the [entry identity](types-and-values.md#entry-identity)
 from the allocated key without reading the store, and the returned `Id(^books)`
 is the key of a later read. The program keeps the counter in step with
-`^books`; the language only holds the two writes to one block.
+`^books`; the language guarantees only that the two writes commit together.
 
 ## Named steps
 
@@ -307,9 +302,9 @@ test "example: slug and total" {
 once per element. Closures, and with them `fold`, `map`, and `filter`, are
 future work ([general-purpose language](../future/general-purpose-language.md)).
 
-A list starts from its constructor, `List(10, 20, 12)`, and `append` returns
-the grown list: `xs = append(xs, extra)`. A map starts empty with `Map()` and
-is filled with `m[k] = v`.
+`append` returns the grown list, so a loop that builds one rebinds it:
+`xs = append(xs, extra)`
+([lists and maps](types-and-values.md#lists-and-maps)).
 
 ## Building text
 

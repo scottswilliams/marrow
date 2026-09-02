@@ -76,7 +76,7 @@ A source file's module name comes from its path under `src`: directory separator
 | `src/main.mw` | `main` | `module main` |
 | `src/shelf/books.mw` | `shelf.books` | `module shelf::books` |
 
-A file that carries a matching `module` declaration is importable with `use`. A file with no `module` line is a script: it is checked under its path-derived name and other files cannot import it, but its exports are still addressable from the command line, as in `marrow run main`. Names are relative to the project root, so moving the project changes nothing. Two files with the same module name, including paths that differ only in case, are a `project.module_collision` error. [Modules and functions](../language/modules-and-functions.md#modules-and-imports) defines imports, visibility, and exports.
+A file that carries a matching `module` declaration is importable with `use`. A file with no `module` line is a script. It is checked under its path-derived name and no other file can import it, but its exports stay addressable from the command line, as in `marrow run main`. Names are relative to the project root, so moving the project changes nothing. Two files with the same module name, including paths that differ only in case, are a `project.module_collision` error. [Modules and functions](../language/modules-and-functions.md#modules-and-imports) defines imports, visibility, and exports.
 
 ## Identity ledger
 
@@ -109,7 +109,7 @@ $ marrow check .
 
 The run mints and then stops, because a durable export needs a store; `marrow run --store` runs it against one and never mints ([operations](../operations/README.md)). Inside a Git repository whose index lacks `.marrow/ids`, the mint prints a one-line reminder to commit it.
 
-The mint is additive. It adds a line for each missing declaration and keeps every existing line. Renaming a field mints a new id for the new name, and the old line stays. Deleting a declaration and adding it back under the same name readopts its old id. Today, a retired id is kept as a live line. Recording a retirement as a tombstone that is never reissued is future work ([status](../status.md)).
+The mint is additive. It adds a line for each missing declaration and keeps every existing line. Renaming a field mints a new id for the new name, and the old line stays. Deleting a declaration and adding it back under the same name readopts its old id. A `retired` line and the retirement high-water are part of the ledger's grammar and are enforced when the ledger is read. No command writes one today.
 
 The ledger has exactly one home. A file at the project root named `marrow.ids` is a `project.ids_location` error naming the move.
 
