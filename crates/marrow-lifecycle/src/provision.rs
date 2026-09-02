@@ -357,7 +357,7 @@ pub(crate) enum AdmitError<R> {
 pub fn open(dir: &Path, projection: StoreProjection) -> Result<OpenStore, OpenError> {
     open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
         match error {
-            AdmitError::Open(open) => open,
+            AdmitError::Open(error) => error,
             // The no-op admit never refuses.
             AdmitError::Refused(never) => match never {},
         }

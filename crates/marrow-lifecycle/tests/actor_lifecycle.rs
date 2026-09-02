@@ -487,7 +487,7 @@ fn _pin_family_covers_every_serving_outcome(outcome: AttachOutcome) {
     }
 }
 
-/// The head-map pin bites (FR01 §3): a store is never served under a numbering that
+/// The head-map pin bites (FR01 §3): a store is never attached under a numbering that
 /// disagrees with its persisted ledger-id ↔ cell-number bijection. A permuted bijection —
 /// the exact readdressing hazard where ledger id X's bytes would be served as id Y's value —
 /// is refused at attach with a typed fail-closed error naming the pin's first disagreeing
@@ -703,6 +703,120 @@ fn a_drifted_projection_derivation_is_refused_by_the_pin() {
     }
 }
 
+/// The image whose one group makes a kind swap numbering-neutral: `details` is the last
+/// (only) group and there is no branch, so a projection that respells it as a keyed branch
+/// numbers every node identically (root 0, title 1, details 2, pages 3) and matches every
+/// path — only the node KIND differs.
+const GROUPSWAP_SOURCE: &str = r#"resource Book {
+    required title: string
+
+    details {
+        pages: int
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn readTitle(id: int): string {
+    return ^books[id].title ?? "?"
+}
+"#;
+
+const GROUPSWAP_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id group Book.details 20202020202020202020202020202020\n\
+     id field Book.details.pages 21212121212121212121212121212121\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+/// The pairing binds node KIND, not just names and numbers: a supplied projection that
+/// respells the image's `details` group as a keyed branch — same paths, same dense
+/// numbers, different physical layout — is refused at attach with a typed kind
+/// disagreement. No production caller reaches this today (the runner derives its
+/// projection from the same image it attaches), so this fence is hardening of the
+/// attach seam, proven through the production entry itself.
+#[test]
+fn a_group_respelled_as_a_branch_projection_is_refused_by_kind() {
+    use marrow_kernel::codec::value::ScalarKind;
+
+    let scratch = Scratch::new("pin-kind-swap");
+    let image = compile(GROUPSWAP_SOURCE, GROUPSWAP_IDS);
+    provision_from(scratch.dir(), &image);
+
+    // The substituted projection: `details` as a keyed branch instead of a group.
+    let mut builder =
+        marrow_kernel::durable::StoreSchemaBuilder::root("books", vec![ScalarKind::Int]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_branch("details", vec![ScalarKind::Int]);
+    builder.scalar_field("pages", ScalarKind::Int, false);
+    builder.close_branch();
+    let schema = builder.finish().expect("the branch respelling builds");
+    let mut projection = marrow_kernel::durable::StoreProjection::builder();
+    projection.root(schema);
+    let swapped = projection.finish().expect("the projection builds");
+
+    match attach(scratch.dir(), &image, swapped) {
+        Err(LifecycleError::HeadMapPin(refusal)) => assert_eq!(
+            refusal.disagreement,
+            PinDisagreement::Kind {
+                place: "^books.details".to_string(),
+                image: marrow_verify::SemanticNodeKind::Group,
+                store: marrow_verify::SemanticNodeKind::Branch,
+            },
+        ),
+        Err(other) => panic!("expected the kind refusal, got code {}", other.code()),
+        Ok(_) => panic!(
+            "a branch projection over group bytecode has a different physical layout and \
+             must be refused, but attach served it"
+        ),
+    }
+}
+
+/// The pairing consumes every image-side durable node: a projection that under-covers the
+/// image (here: the group and its field missing entirely) is refused as uncovered during
+/// derivation itself — independent of the persisted map, so a correspondingly truncated
+/// and resealed head cannot make the omission invisible. The persisted map handed in here
+/// is exactly such a truncation, and the refusal still names the first uncovered node.
+#[test]
+fn a_projection_that_under_covers_the_image_is_refused_as_uncovered() {
+    use marrow_kernel::codec::value::ScalarKind;
+
+    let image = compile(GROUPSWAP_SOURCE, GROUPSWAP_IDS);
+    let mut builder =
+        marrow_kernel::durable::StoreSchemaBuilder::root("books", vec![ScalarKind::Int]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    let schema = builder.finish().expect("the truncated schema builds");
+    let mut projection = marrow_kernel::durable::StoreProjection::builder();
+    projection.root(schema);
+    let truncated = projection.finish().expect("the projection builds");
+
+    // A persisted map truncated to the same two nodes, validly assigned.
+    let map = head_map(&image).expect("head map");
+    let truncated_ids: Vec<marrow_image::LedgerIdBytes> = map
+        .entries()
+        .iter()
+        .take(2)
+        .map(|entry| entry.ledger_id)
+        .collect();
+    let truncated_map =
+        marrow_lifecycle::HeadMap::assign(&truncated_ids).expect("a truncated map assigns");
+    match marrow_lifecycle::verify_head_map_pin(&image, &truncated, &truncated_map) {
+        Err(refusal) => assert_eq!(
+            refusal.disagreement,
+            PinDisagreement::Uncovered {
+                ledger_id: marrow_image::LedgerIdBytes::from_bytes([0x20; 16]),
+                place: Some("^books.details".to_string()),
+            },
+        ),
+        Ok(()) => panic!("an under-covering projection must refuse"),
+    }
+}
+
 /// A store-schema node the image does not name is a typed fail-closed refusal: no ledger
 /// identity can be paired with its kernel number, so no pin can be derived at all.
 #[test]
@@ -841,12 +955,26 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
 }
 
 /// The contracted absence/tidy check over the open paths: plain `open` is the one public
-/// `OpenStore` constructor that runs no head-map pin comparison, and its production caller
-/// set is pinned here. Today that set is exactly the trusted bulk importer `import_jsonl`
-/// (a WRITE path; the follow-on row threads the image into it so it can be fenced), and no
+/// `OpenStore` constructor that runs no head-map pin comparison, so its production caller
+/// set is pinned here to exactly one call, inside the body of `import_jsonl` (the trusted
+/// bulk importer, a WRITE path the follow-on row fences by threading the image in), and no
 /// crate outside `marrow-lifecycle` names lifecycle `open` at all — every other production
-/// route to a served store goes through `attach`, which runs the pin. A new caller turns up
-/// in this listing and must either go through `attach` or extend the pin family.
+/// route to an attached store goes through `attach`, which runs the pin. A new caller turns
+/// up here and must either go through `attach` or extend the pin family.
+///
+/// The scan is lexical over the shared production projection (comments, string and char
+/// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
+/// around it into the closed set [`OpenReference`] enumerates. Rather than following an
+/// alias, the gate refuses any `use` that would let a new spelling name the function — an
+/// `as` alias of `open`, `provision`, or the crate's own path roots, a glob import of them —
+/// and any dependency rename of `marrow-lifecycle`, so every legal spelling of a call is one
+/// the classifier sees. Every scanned file's last production item header must survive
+/// blanking at its own byte offset, so a runaway blank cannot erase a call. Limitation: the
+/// shared projection carries no cfg context — a test-only module included as
+/// `#[cfg(test)] mod name;` from its parent (only `*_tests.rs` files are recognised as
+/// test-only) and an item under a compound marker such as `#[cfg(all(test, unix))]` are
+/// scanned as production code; no such region names `open` today, so nothing is falsely
+/// rejected.
 #[test]
 fn plain_open_has_exactly_the_documented_unfenced_callers() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -856,8 +984,12 @@ fn plain_open_has_exactly_the_documented_unfenced_callers() {
         "workspace layout moved; rescope this scan"
     );
 
-    let mut lifecycle_callers: Vec<(String, usize)> = Vec::new();
-    let mut foreign_references: Vec<String> = Vec::new();
+    let mut calls: Vec<(String, usize)> = Vec::new();
+    let mut definitions: Vec<String> = Vec::new();
+    let mut other_references: Vec<(String, usize)> = Vec::new();
+    let mut alias_uses: Vec<(String, String)> = Vec::new();
+    let mut foreign_references: Vec<(String, usize)> = Vec::new();
+    let mut import_body: Option<std::ops::Range<usize>> = None;
     let mut scanned = 0usize;
     let mut saw = (false, false); // (import.rs, provision.rs) — the scan reached its subjects
     for crate_dir in std::fs::read_dir(&crates).expect("list crates") {
@@ -866,9 +998,25 @@ fn plain_open_has_exactly_the_documented_unfenced_callers() {
         if !source_root.is_dir() {
             continue;
         }
-        let in_lifecycle = crate_dir
+        let crate_name = crate_dir
             .file_name()
-            .is_some_and(|name| name == "marrow-lifecycle");
+            .expect("a crate directory has a name")
+            .to_string_lossy()
+            .into_owned();
+        let scope = if crate_name == "marrow-lifecycle" {
+            Scope::Lifecycle
+        } else {
+            Scope::Foreign
+        };
+        if let Ok(manifest) = std::fs::read_to_string(crate_dir.join("Cargo.toml")) {
+            assert!(
+                !manifest
+                    .lines()
+                    .any(|line| line.contains("marrow-lifecycle") && line.contains("package")),
+                "{crate_name} renames its marrow-lifecycle dependency, which this scan cannot \
+                 follow",
+            );
+        }
         let mut stack = vec![source_root];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).expect("list sources") {
@@ -877,30 +1025,54 @@ fn plain_open_has_exactly_the_documented_unfenced_callers() {
                     stack.push(path);
                     continue;
                 }
-                if path.extension().is_none_or(|extension| extension != "rs") {
+                if path.extension().is_none_or(|extension| extension != "rs")
+                    || source_projection::is_test_only_file(&path)
+                {
                     continue;
                 }
-                // Production projection: comments, string/char literals, and #[cfg(test)]
-                // items blanked, so a spelling inside prose, a literal, or a unit test can
-                // neither trip nor silently satisfy the gate.
-                let code = source_projection::production_code(
-                    &std::fs::read_to_string(&path).expect("read source"),
-                );
+                let source = std::fs::read_to_string(&path).expect("read source");
+                let code = source_projection::production_code(&source);
+                assert_projection_reaches_the_end(&path, &source, &code);
                 scanned += 1;
                 let name = path
                     .file_name()
                     .expect("a source file has a name")
                     .to_string_lossy()
                     .into_owned();
-                if in_lifecycle {
+                let uses = use_statements(&code);
+                let references = classify_open_references(&code, &uses, scope);
+                let binds_open = references.iter().any(|reference| {
+                    matches!(reference, OpenReference::Definition | OpenReference::Import)
+                });
+                for statement in &uses {
+                    if introduces_alias(&code[statement.clone()], scope, binds_open) {
+                        alias_uses.push((name.clone(), code[statement.clone()].to_string()));
+                    }
+                }
+                for reference in references {
+                    match reference {
+                        OpenReference::Method | OpenReference::Foreign | OpenReference::Import => {}
+                        OpenReference::Definition if scope == Scope::Lifecycle => {
+                            definitions.push(name.clone());
+                        }
+                        OpenReference::Definition => {}
+                        OpenReference::Call { at } if scope == Scope::Lifecycle => {
+                            calls.push((name.clone(), at));
+                        }
+                        OpenReference::Other { at } if scope == Scope::Lifecycle => {
+                            other_references.push((name.clone(), at));
+                        }
+                        OpenReference::Call { at } | OpenReference::Other { at } => {
+                            foreign_references.push((name.clone(), at));
+                        }
+                    }
+                }
+                if scope == Scope::Lifecycle {
                     saw.0 |= name == "import.rs";
                     saw.1 |= name == "provision.rs";
-                    let calls = free_open_calls(&code);
-                    if calls > 0 {
-                        lifecycle_callers.push((name, calls));
+                    if name == "import.rs" {
+                        import_body = Some(function_body(&code, "import_jsonl"));
                     }
-                } else if names_lifecycle_open(&code) {
-                    foreign_references.push(name);
                 }
             }
         }
@@ -913,130 +1085,433 @@ fn plain_open_has_exactly_the_documented_unfenced_callers() {
         saw.0 && saw.1,
         "the scan did not reach the open owner and its caller"
     );
-    lifecycle_callers.sort();
     assert_eq!(
-        lifecycle_callers,
-        vec![("import.rs".to_string(), 1)],
-        "plain `open` (no pin comparison) gained or lost a production caller",
+        alias_uses,
+        Vec::<(String, String)>::new(),
+        "a `use` introduces a spelling of lifecycle `open` this scan does not follow",
+    );
+    assert_eq!(
+        definitions,
+        vec!["provision.rs".to_string()],
+        "lifecycle `open` is defined exactly once, in provision.rs",
+    );
+    assert_eq!(
+        other_references,
+        Vec::<(String, usize)>::new(),
+        "lifecycle `open` is named without being called (a function pointer, a re-export \
+         alias, a parenthesised callee), which this scan refuses to follow",
+    );
+    let body = import_body.expect("import.rs was scanned");
+    assert_eq!(
+        calls.len(),
+        1,
+        "plain `open` (no pin comparison) gained or lost a production caller: {calls:?}",
+    );
+    let (file, at) = &calls[0];
+    assert!(
+        file == "import.rs" && body.contains(at),
+        "the one permitted plain `open` call sits inside the body of `import_jsonl` \
+         (bytes {body:?} of import.rs); found it at {file}:{at}",
     );
     assert_eq!(
         foreign_references,
-        Vec::<String>::new(),
+        Vec::<(String, usize)>::new(),
         "a crate outside marrow-lifecycle names lifecycle `open`, which would serve a store \
          without the head-map pin comparison",
     );
 }
 
-/// Count calls of lifecycle's plain `open(` in a literal-stripped projection: the bare
-/// token (not `reopen(`, not a method call `.open(`, not `open_admitted(`, not the
-/// `fn open(` definition, and not a foreign qualified call such as `File::open(`) plus the
-/// crate's own qualified spelling `provision::open(`.
-fn free_open_calls(code: &str) -> usize {
-    let bytes = code.as_bytes();
-    let mut count = 0;
-    let mut from = 0;
-    while let Some(found) = code[from..].find("open(") {
-        let at = from + found;
-        let bare = at
-            .checked_sub(1)
-            .map(|before| bytes[before])
-            .is_none_or(|byte| {
-                !source_projection::is_ident_byte(byte) && byte != b'.' && byte != b':'
-            });
-        let crate_qualified = code[..at].ends_with("provision::");
-        let is_definition = code[..at].trim_end().ends_with("fn");
-        if (bare || crate_qualified) && !is_definition {
-            count += 1;
-        }
-        from = at + "open(".len();
-    }
-    count
+/// Which crate a projection belongs to, which decides what an unqualified or
+/// crate-relative `open` resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Inside `marrow-lifecycle`: a bare `open`, or one qualified by `crate`, `self`,
+    /// `super`, `provision`, or `marrow_lifecycle`, is the lifecycle function.
+    Lifecycle,
+    /// Any other crate: only a `marrow_lifecycle`-qualified `open` is the lifecycle
+    /// function; a bare `open` is that crate's own unless a `use` imports lifecycle's
+    /// (which the alias rule refuses).
+    Foreign,
 }
 
-/// Whether a foreign crate's projection names lifecycle `open`: a direct
-/// `marrow_lifecycle::open` path at a token boundary, or a `use marrow_lifecycle::…;`
-/// import whose item list carries the bare token `open`.
-fn names_lifecycle_open(code: &str) -> bool {
-    let bytes = code.as_bytes();
-    let mut from = 0;
-    while let Some(found) = code[from..].find("marrow_lifecycle::open") {
-        let at = from + found;
-        let end = at + "marrow_lifecycle::open".len();
-        let before_ok = at
-            .checked_sub(1)
-            .map(|before| bytes[before])
-            .is_none_or(|byte| !source_projection::is_ident_byte(byte));
-        let after_ok = bytes
-            .get(end)
-            .is_none_or(|&byte| !source_projection::is_ident_byte(byte));
-        if before_ok && after_ok {
-            return true;
+impl Scope {
+    /// Whether a path qualifier immediately before `::open` names this crate's function.
+    fn qualifies(self, qualifier: &str) -> bool {
+        match self {
+            Scope::Lifecycle => matches!(
+                qualifier,
+                "crate" | "self" | "super" | "provision" | "marrow_lifecycle"
+            ),
+            Scope::Foreign => qualifier == "marrow_lifecycle",
         }
-        from = end;
     }
-    let mut from = 0;
-    while let Some(found) = code[from..].find("use marrow_lifecycle::") {
-        let start = from + found;
-        let end = code[start..]
-            .find(';')
-            .map_or(code.len(), |semi| start + semi);
-        if has_bare_open_token(&code[start..end]) {
-            return true;
-        }
-        from = end;
-    }
-    false
 }
 
-/// Whether `text` carries the bare token `open` (exact, token-bounded).
-fn has_bare_open_token(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut from = 0;
-    while let Some(found) = text[from..].find("open") {
-        let at = from + found;
+/// How one `open` token in a production projection resolves, decided by the tokens around
+/// it. The set is closed: a token that is none of the foreign shapes is the lifecycle
+/// function, and a lifecycle reference that is not a call is refused rather than followed.
+#[derive(Debug, PartialEq, Eq)]
+enum OpenReference {
+    /// `.open` — a method or field, never this crate's function.
+    Method,
+    /// `<qualifier>::open` with a qualifier that does not name this crate's function
+    /// (`File::open`, a foreign crate's own `open`), or a bare `open` outside the crate.
+    Foreign,
+    /// `fn open` — a definition.
+    Definition,
+    /// The token inside a `use` statement — the binding a call resolves through, which the
+    /// alias rule inspects separately.
+    Import,
+    /// This crate's function, called: `open(`, `open (`, `open::<…>(`, in any of the
+    /// qualifications [`Scope::qualifies`] admits with any spacing around `::`.
+    Call { at: usize },
+    /// This crate's function named without a call — a function pointer, a parenthesised
+    /// callee `(open)(…)`, a re-export alias target.
+    Other { at: usize },
+}
+
+/// Classify every `open` token in `code` (a production projection), given the byte spans
+/// of its `use` statements.
+fn classify_open_references(
+    code: &str,
+    uses: &[std::ops::Range<usize>],
+    scope: Scope,
+) -> Vec<OpenReference> {
+    let mut references = Vec::new();
+    for at in ident_token_offsets(code, "open") {
         let end = at + "open".len();
+        if uses.iter().any(|span| span.contains(&at)) {
+            references.push(OpenReference::Import);
+            continue;
+        }
+        let before = token_before(code, at);
+        let lifecycle = match before {
+            Some((_, ".")) => {
+                references.push(OpenReference::Method);
+                continue;
+            }
+            Some((_, "fn")) => {
+                references.push(OpenReference::Definition);
+                continue;
+            }
+            Some((colons, "::")) => match token_before(code, colons) {
+                Some((_, qualifier)) => scope.qualifies(qualifier),
+                None => scope == Scope::Lifecycle,
+            },
+            _ => scope == Scope::Lifecycle,
+        };
+        if !lifecycle {
+            references.push(OpenReference::Foreign);
+            continue;
+        }
+        let called = match token_after(code, end) {
+            Some((_, "(")) => true,
+            Some((colons, "::")) => matches!(token_after(code, colons + 2), Some((_, "<"))),
+            _ => false,
+        };
+        references.push(if called {
+            OpenReference::Call { at }
+        } else {
+            OpenReference::Other { at }
+        });
+    }
+    references
+}
+
+/// The byte spans of every `use` and `extern crate` statement in `code`, each from its
+/// keyword to its terminating `;`.
+fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    for keyword in ["use", "extern"] {
+        for at in ident_token_offsets(code, keyword) {
+            let end = code[at..]
+                .find(';')
+                .map_or(code.len(), |semi| at + semi + 1);
+            spans.push(at..end);
+        }
+    }
+    spans
+}
+
+/// Whether one `use` statement introduces a spelling of lifecycle `open` this scan does
+/// not follow: an `as` alias whose subject is `open`, `provision`, `marrow_lifecycle`, or —
+/// inside the crate, in a statement rooted at its own module tree — `crate`, `self`, or
+/// `super`; a glob import from `provision`, `marrow_lifecycle`, or the crate root (which
+/// re-exports `open`); or, when the enclosing file itself binds `open` (`binds_open`: it
+/// defines or imports it, so a child module's `super::*` reaches it), any glob rooted at
+/// the file's own module tree.
+fn introduces_alias(statement: &str, scope: Scope, binds_open: bool) -> bool {
+    let rooted = ["crate", "self", "super"].iter().any(|root| {
+        ident_token_offsets(statement, root)
+            .any(|at| matches!(token_after(statement, at + root.len()), Some((_, "::"))))
+    });
+    let mentions_lifecycle = has_ident_token(statement, "marrow_lifecycle");
+    if scope == Scope::Foreign {
+        return mentions_lifecycle
+            && (has_ident_token(statement, "open")
+                || statement.contains('*')
+                || ident_token_offsets(statement, "as").any(|at| {
+                    matches!(
+                        token_before(statement, at),
+                        Some((_, "marrow_lifecycle" | "self" | "open"))
+                    )
+                }));
+    }
+    let aliases = ident_token_offsets(statement, "as").any(|at| {
+        matches!(token_before(statement, at), Some((_, subject))
+            if matches!(subject, "open" | "provision" | "marrow_lifecycle")
+                || (rooted && matches!(subject, "crate" | "self" | "super")))
+    });
+    let globs = statement.match_indices('*').any(|(at, _)| {
+        let subject = match token_before(statement, at) {
+            Some((colons, "::")) => token_before(statement, colons).map(|(_, subject)| subject),
+            _ => None,
+        };
+        matches!(subject, Some("provision" | "marrow_lifecycle" | "crate"))
+            || (rooted && binds_open)
+    });
+    aliases || globs
+}
+
+/// The byte span of the body of `fn <name>` in `code`: from its opening brace to just past
+/// its closing brace. Exactly one such definition must exist.
+fn function_body(code: &str, name: &str) -> std::ops::Range<usize> {
+    let mut definitions = ident_token_offsets(code, name)
+        .filter(|&at| matches!(token_before(code, at), Some((_, "fn"))));
+    let at = definitions.next().expect("the function is defined");
+    assert!(
+        definitions.next().is_none(),
+        "`fn {name}` is defined more than once"
+    );
+    let open = at + code[at..].find('{').expect("the function has a body");
+    let mut depth = 0usize;
+    for (offset, byte) in code.bytes().enumerate().skip(open) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return open..offset + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("the body of `fn {name}` is unterminated")
+}
+
+/// The projection reaches the END of `path`: its last production item header — or, for a
+/// file with none (a module list), its last production line free of literal and comment
+/// text — survives blanking at the byte offset it has in the source with only the test
+/// items removed. The sentinel is derived per file, so every scanned file is covered
+/// without a list to maintain, and a file offering no sentinel at all fails loudly.
+fn assert_projection_reaches_the_end(path: &Path, source: &str, code: &str) {
+    let production = source_projection::without_cfg_test_items(source);
+    let sentinel = source_projection::last_production_item(source)
+        .or_else(|| {
+            production
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|line| {
+                    !line.is_empty()
+                        && !line.contains('"')
+                        && !line.contains('\'')
+                        && !line.contains("//")
+                        && !line.contains("/*")
+                })
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{} offers no tail sentinel this gate can follow to its end",
+                path.display()
+            )
+        });
+    assert_eq!(
+        code.rfind(&sentinel),
+        production.rfind(&sentinel),
+        "the projection lost or moved the tail of {}: `{sentinel}`",
+        path.display()
+    );
+}
+
+/// The byte offsets of every occurrence of the identifier `needle` in `text` as a whole
+/// token (not part of a longer identifier).
+fn ident_token_offsets<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let bytes = text.as_bytes();
+    text.match_indices(needle).filter_map(move |(at, _)| {
+        let end = at + needle.len();
         let before_ok = at
             .checked_sub(1)
-            .map(|before| bytes[before])
-            .is_none_or(|byte| !source_projection::is_ident_byte(byte));
+            .is_none_or(|before| !source_projection::is_ident_byte(bytes[before]));
         let after_ok = bytes
             .get(end)
             .is_none_or(|&byte| !source_projection::is_ident_byte(byte));
-        if before_ok && after_ok {
-            return true;
-        }
-        from = end;
-    }
-    false
+        (before_ok && after_ok).then_some(at)
+    })
 }
 
-/// The plant probes for the caller scan: the scanner sees a real call and stays blind to
-/// methods, other tokens, definitions, and spellings inside literals.
+fn has_ident_token(text: &str, needle: &str) -> bool {
+    ident_token_offsets(text, needle).next().is_some()
+}
+
+/// The token ending just before byte `end` of `text`, skipping whitespace: an identifier,
+/// `::`, or one other byte, with its start offset.
+fn token_before(text: &str, end: usize) -> Option<(usize, &str)> {
+    let bytes = text.as_bytes();
+    let mut end = end;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let start = if source_projection::is_ident_byte(bytes[end - 1]) {
+        let mut start = end;
+        while start > 0 && source_projection::is_ident_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        start
+    } else if bytes[..end].ends_with(b"::") {
+        end - 2
+    } else {
+        end - 1
+    };
+    Some((start, text.get(start..end).unwrap_or("\u{fffd}")))
+}
+
+/// The token starting at or after byte `start` of `text`, skipping whitespace: an
+/// identifier, `::`, or one other byte, with its start offset.
+fn token_after(text: &str, start: usize) -> Option<(usize, &str)> {
+    let bytes = text.as_bytes();
+    let mut start = start;
+    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    if start == bytes.len() {
+        return None;
+    }
+    let end = if source_projection::is_ident_byte(bytes[start]) {
+        let mut end = start;
+        while end < bytes.len() && source_projection::is_ident_byte(bytes[end]) {
+            end += 1;
+        }
+        end
+    } else if bytes[start..].starts_with(b"::") {
+        start + 2
+    } else {
+        start + 1
+    };
+    Some((start, text.get(start..end).unwrap_or("\u{fffd}")))
+}
+
+/// The plant probes for the caller scan: every spelling that can legally name the lifecycle
+/// function is either classified as a call or refused as an alias, and every foreign shape
+/// stays invisible.
 #[test]
-fn the_open_caller_scanner_sees_calls_and_ignores_literals_and_methods() {
-    assert_eq!(free_open_calls("let store = open(dir, projection);"), 1);
-    assert_eq!(free_open_calls("open_admitted(dir, projection, admit)"), 0);
-    assert_eq!(free_open_calls("engine.open(path)"), 0);
-    assert_eq!(free_open_calls("reopen(dir)"), 0);
-    assert_eq!(free_open_calls("File::open(path)"), 0);
+fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() {
+    use OpenReference::{Call, Definition, Foreign, Import, Method, Other};
+    let classify = |code: &str, scope: Scope| {
+        let code = source_projection::production_code(code);
+        classify_open_references(&code, &use_statements(&code), scope)
+    };
+    let lifecycle = |code: &str| classify(code, Scope::Lifecycle);
+
     assert_eq!(
-        free_open_calls("crate::provision::open(dir, projection)"),
-        1
+        lifecycle("let store = open(dir, projection);"),
+        [Call { at: 12 }]
     );
-    assert_eq!(free_open_calls("pub fn open(dir: &Path) {"), 0);
+    assert_eq!(lifecycle("crate::open(dir, projection)"), [Call { at: 7 }]);
     assert_eq!(
-        free_open_calls(&source_projection::production_code("let s = \"open(\";")),
-        0,
-        "a spelling inside a string literal is not a call",
+        lifecycle("crate::provision::open(dir, p)"),
+        [Call { at: 18 }]
     );
-    assert!(names_lifecycle_open(
-        "use marrow_lifecycle::{OpenError, open};"
+    assert_eq!(
+        lifecycle("marrow_lifecycle :: open(dir, p)"),
+        [Call { at: 20 }]
+    );
+    assert_eq!(lifecycle("open (dir, projection)"), [Call { at: 0 }]);
+    assert_eq!(lifecycle("open::<Store>(dir)"), [Call { at: 0 }]);
+    assert_eq!(lifecycle("(open)(dir, projection)"), [Other { at: 1 }]);
+    assert_eq!(lifecycle("let f = open;"), [Other { at: 8 }]);
+    assert_eq!(lifecycle("pub fn open(dir: &Path) {"), [Definition]);
+    assert_eq!(lifecycle("engine.open(path)"), [Method]);
+    assert_eq!(lifecycle("File::open(path)"), [Foreign]);
+    assert_eq!(
+        lifecycle("use crate::provision::{OpenError, open};"),
+        [Import]
+    );
+    assert!(lifecycle("open_admitted(dir, p, admit); reopen(dir)").is_empty());
+    assert!(
+        lifecycle("let s = \"open(\"; // open(\n").is_empty(),
+        "literals are not code"
+    );
+    assert!(lifecycle("#[cfg(test)]\nmod t {\n fn f() { open(d, p); }\n}\n").is_empty());
+
+    assert_eq!(classify("open(dir, projection)", Scope::Foreign), [Foreign]);
+    assert_eq!(
+        classify("marrow_lifecycle::open(dir, p)", Scope::Foreign),
+        [Call { at: 18 }]
+    );
+    assert_eq!(classify("crate::open(dir)", Scope::Foreign), [Foreign]);
+
+    for alias in [
+        "use crate::open as raw_open;",
+        "use crate::provision as p;",
+        "use crate::provision::{self as p};",
+        "use crate::provision::*;",
+        "use crate::*;",
+        "use marrow_lifecycle as life;",
+        "use marrow_lifecycle::*;",
+        "extern crate marrow_lifecycle as life;",
+    ] {
+        assert!(introduces_alias(alias, Scope::Lifecycle, false), "{alias}");
+    }
+    // A glob rooted at the file's own module tree reaches `open` exactly when the file
+    // binds it.
+    assert!(introduces_alias("use super::*;", Scope::Lifecycle, true));
+    assert!(introduces_alias(
+        "use self::helpers::*;",
+        Scope::Lifecycle,
+        true
     ));
-    assert!(names_lifecycle_open(
-        "marrow_lifecycle::open(dir, projection)"
-    ));
-    assert!(!names_lifecycle_open("use marrow_lifecycle::OpenStore;"));
-    assert!(!names_lifecycle_open(&source_projection::production_code(
-        "let s = \"marrow_lifecycle::open\";"
-    )));
+    for plain in [
+        "use crate::provision::{OpenError, open};",
+        "use std::io::{self as io};",
+        "use marrow_lifecycle::OpenStore;",
+        "use super::*;",
+    ] {
+        assert!(!introduces_alias(plain, Scope::Lifecycle, false), "{plain}");
+    }
+    for foreign_alias in [
+        "use marrow_lifecycle::{OpenError, open};",
+        "use marrow_lifecycle as life;",
+        "use marrow_lifecycle::*;",
+        "use marrow_lifecycle::{self as life};",
+    ] {
+        assert!(
+            introduces_alias(foreign_alias, Scope::Foreign, true),
+            "{foreign_alias}"
+        );
+    }
+    for foreign_plain in [
+        "use marrow_lifecycle::OpenStore;",
+        "use crate::provision as p;",
+        "use self::builtins::*;",
+        "use super::*;",
+    ] {
+        assert!(
+            !introduces_alias(foreign_plain, Scope::Foreign, true),
+            "{foreign_plain}"
+        );
+    }
+
+    let sample = "fn a() { }\npub fn import_jsonl(d: &Path) -> R {\n  open(d)\n}\n";
+    let body = function_body(sample, "import_jsonl");
+    assert_eq!(
+        body,
+        sample.find("{\n").expect("body opens")..sample.rfind('}').expect("body closes") + 1
+    );
+    assert!(body.contains(&sample.find("open(").expect("the call")));
 }

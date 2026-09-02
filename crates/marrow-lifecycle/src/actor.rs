@@ -14,12 +14,14 @@
 //! - **Head-map pin disagreement** — the persisted ledger-id ↔ cell-number bijection
 //!   (FR01 §3) disagrees with the (ledger id → cell number) binding this toolchain would
 //!   actually serve the store under: the kernel's numbering of the exact projection this
-//!   open installs, paired to the image's durable identities by source name
+//!   open installs, paired to the image's durable identities by source name and node kind
 //!   (`crate::image::derive_head_map_pin`). Checked with the admission gate, before any
-//!   engine call: a store is never served under a numbering that disagrees with its
+//!   engine call: a store is never attached under a numbering that disagrees with its
 //!   persisted pin, because serving it would readdress durable cells. Fail-closed and
 //!   recovery-shaped; the head, envelope, and engine data are unchanged (acquisition has
-//!   already rewritten the lock's owner marker, so the next successful open audits).
+//!   already rewritten the lock's owner marker, so the next successful open audits). The
+//!   pin guards this attach path; `crate::open` runs no pin comparison and its production
+//!   caller set is pinned by the lifecycle test battery.
 //! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
 //!   image's code (its byte identity) differs. The actor atomically rewrites the envelope and
 //!   head to the new image and issues a receipt *after* the commit confirms. The receipt
@@ -61,7 +63,7 @@ enum AdmissionRefusal {
     /// The persisted accepted-ceiling payload did not decode — store corruption.
     CeilingCorrupt,
     /// The persisted head-map pin disagrees with the numbering this toolchain derives —
-    /// fail-closed, the store is never served under a disagreeing numbering.
+    /// fail-closed, the store is never attached under a disagreeing numbering.
     Pin(HeadMapPinMismatch),
 }
 

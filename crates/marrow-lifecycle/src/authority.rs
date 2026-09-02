@@ -183,11 +183,15 @@ struct Naming {
 }
 
 /// One durable node of the verified image, named by its path-qualified source spelling: the
-/// store root's name followed by each member name down to the node, beside the ledger id its
-/// semantic node carries. Produced only by [`named_durable_nodes`], the single owner of the
-/// sealed↔semantic correspondence.
+/// store root's name followed by each member name down to the node, beside the ledger id
+/// and kind its semantic node carries. Produced only by [`named_durable_nodes`], the single
+/// owner of the sealed↔semantic correspondence.
 pub(crate) struct NamedDurableNode {
     pub(crate) ledger_id: LedgerIdBytes,
+    /// The node's kind, which decides its physical layout (a group is part of its entry's
+    /// payload; a branch is a keyed child node), so a consumer pairing store nodes with
+    /// image nodes by name binds the kind too.
+    pub(crate) kind: SemanticNodeKind,
     /// The node's name path: `["books"]` for a root, `["books", "notes", "body"]` for a
     /// member. Never empty.
     pub(crate) path: Vec<String>,
@@ -228,6 +232,7 @@ pub(crate) fn named_durable_nodes(image: &VerifiedImage) -> Vec<NamedDurableNode
             let mut path = vec![sealed.name().to_string()];
             named.push(NamedDurableNode {
                 ledger_id: nodes[node_index].path.node_id(),
+                kind: SemanticNodeKind::Root,
                 path: path.clone(),
             });
             walk_members(
@@ -389,6 +394,7 @@ fn walk_members(
             path.push(name);
             named.push(NamedDurableNode {
                 ledger_id: nodes[index].path.node_id(),
+                kind: nodes[index].kind,
                 path: path.clone(),
             });
         };
