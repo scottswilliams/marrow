@@ -749,3 +749,117 @@ fn the_key_width_corpus_carries_both_tuple_subjects() {
          earning a width refusal",
     );
 }
+// ---------------------------------------------------------------------------
+// Corpus G — declaration attribution.
+// ---------------------------------------------------------------------------
+
+/// A branch key column whose type is not a durable-key scalar, declared in one
+/// module and occurred by a store in another.
+///
+/// The refusal is about the branch declaration, so it is attributed to the module
+/// that declares it. Before the key tuple became a row of its resource, the refusal
+/// borrowed the file of whichever store first built the resource's graph — a
+/// declaration-side error reported in a store-side file, and a different file
+/// depending on store order. The two modules are what make the attribution
+/// observable: a single-file corpus would agree either way.
+const BRANCH_KEY_MODEL: &str = r#"module model
+
+resource R {
+    required title: string
+
+    items[k: duration] {
+        required v: string
+    }
+}
+"#;
+
+const BRANCH_KEY_MAIN: &str = r#"module main
+
+use model
+
+store ^r[id: int]: R
+
+pub fn driver(n: int): int {
+    return n
+}
+"#;
+
+#[test]
+fn a_branch_key_refusal_is_attributed_to_the_declaring_module() {
+    let project = ids::minted(|ledger| {
+        project_capture::project_with_ids(
+            &[
+                ("src/main.mw", BRANCH_KEY_MAIN),
+                ("src/model.mw", BRANCH_KEY_MODEL),
+            ],
+            ledger,
+        )
+    });
+    let diagnostics = refused(&project);
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![(
+            "src/model.mw".to_string(),
+            "check.type".to_string(),
+            6,
+            1,
+            "a durable key column must be an orderable durable-key scalar (int, string, \
+             bool, bytes, date, or instant)"
+                .to_string(),
+        )],
+        "the branch key refusal is reported in the module that declares the branch, at \
+         the branch's own span",
+    );
+}
+
+/// A generic template and a concrete struct sharing one name, the template first,
+/// the concrete one containing itself.
+///
+/// The value-cycle report names the declaration whose coordinate the declare pass
+/// reserved — the concrete struct, which is the one on the cycle. Before the report
+/// read that coordinate it searched the raw declaration list by name and took the
+/// first match, which here is the generic template: a cycle through the concrete
+/// declaration reported at the template's span. The template is declared first on
+/// purpose; declared second, the name search and the coordinate agree.
+const HOMONYM_CYCLE: &str = r#"module main
+
+struct A<T> {
+    value: T
+}
+
+struct A {
+    me: A
+}
+
+pub fn driver(n: int): int {
+    return n
+}
+"#;
+
+#[test]
+fn a_value_cycle_is_reported_at_the_concrete_declaration_not_a_homonym_template() {
+    let project = project_capture::project(&[("src/main.mw", HOMONYM_CYCLE)]);
+    let diagnostics = refused(&project);
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            (
+                "src/main.mw".to_string(),
+                "check.name_conflict".to_string(),
+                3,
+                8,
+                "`A` is already declared as a type".to_string(),
+            ),
+            (
+                "src/main.mw".to_string(),
+                "check.recursion".to_string(),
+                7,
+                8,
+                "value type `A` contains itself through the cycle A -> A".to_string(),
+            ),
+        ],
+        "the cycle is reported at the concrete declaration's own name span",
+    );
+}
