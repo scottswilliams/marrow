@@ -37,7 +37,7 @@ use marrow_image::{
     SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
-use marrow_syntax::{FieldDecl, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr};
+use marrow_syntax::{FieldDecl, ResourceDecl, SourceSpan, StoreDecl, TypeExpr};
 
 use crate::analysis::FileRef;
 use crate::compile::admitted;
@@ -57,8 +57,8 @@ mod rows;
 mod staging;
 
 use rows::{
-    BranchKeyRows, GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyTable,
-    ProductKey, ResourceDirectory, StoreResourceBinding, StoreRow,
+    BranchKeyRows, GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, ProductKey,
+    ResourceDirectory, StoreResourceBinding, StoreRow,
 };
 use staging::StagedStoreTxn;
 
@@ -713,7 +713,7 @@ impl DurableRegistry {
         let directory = ResourceDirectory::take(resources, records)?;
         let rows: Vec<StoreRow<'_>> = stores
             .iter()
-            .map(|(_, _, store)| StoreRow::resolve(&directory, store))
+            .map(|(_, file, store)| StoreRow::resolve(&directory, store, records, file))
             .collect();
         let census = ProductOccurrenceCensus::take(stores, &rows);
         // The census is the admission owner for durable graph input: it is the one place
@@ -1160,11 +1160,12 @@ fn build_one(
     if let Some(message) = keys.over_wide() {
         return refuse(diagnostics, resource_limit(file, keys.span(), message));
     }
-    // Resolve each root key column's scalar in declared tuple order. A singleton
+    // The root tuple's scalars were resolved once, when the store's row was taken;
+    // a refusal is rendered here, at the same position it always held. A singleton
     // root has no columns.
-    let key_scalars = match resolve_key_scalars(file, keys, records) {
-        Ok(scalars) => scalars,
-        Err(row) => return refuse(diagnostics, *row),
+    let key_scalars = match &row.scalars {
+        Ok(scalars) => scalars.clone(),
+        Err(refused_row) => return refuse(diagnostics, refused_row.as_ref().clone()),
     };
     // The declaration and the record it was built from are read from one row, so a
     // store cannot reach a record whose declaration the durable build does not hold.
@@ -1485,51 +1486,6 @@ fn build_one(
             indexes: lowered_indexes,
         }),
     }))
-}
-
-/// Resolve each key column's scalar in declared tuple order, rejecting a key type
-/// outside the closed orderable durable-key set. A singleton placement has no columns
-/// and yields an empty vector. Shared by root and branch key tuples.
-///
-/// The rejection row is returned rather than pushed: both callers refuse a store with
-/// it, and a refusal is summarized from the row that reports it in one statement, so
-/// the row cannot be spent here and the summary invented separately. It is boxed
-/// because a diagnostic is wide next to a key-scalar vector and this path runs once
-/// per refused store, never per admitted column.
-fn resolve_key_scalars(
-    file: &FileIdentity,
-    keys: &KeyTable<'_>,
-    records: &TypeRegistry,
-) -> Result<Vec<ScalarType>, Box<SourceDiagnostic>> {
-    let span = keys.span();
-    let mut scalars = Vec::with_capacity(keys.rows().len());
-    for column in keys.rows() {
-        let Some(key) = scalar_of(&records.expand(&column.ty)) else {
-            return Err(Box::new(unsupported(file, span, "this key type")));
-        };
-        // The closed orderable durable-key scalar set (frozen at C04): int, string,
-        // bool, bytes, date, and instant. `duration` is a span, not an identity, so
-        // it is not a durable key.
-        if !matches!(
-            key,
-            ScalarType::Int
-                | ScalarType::Text
-                | ScalarType::Bool
-                | ScalarType::Bytes
-                | ScalarType::Date
-                | ScalarType::Instant
-        ) {
-            return Err(Box::new(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                file,
-                span,
-                "a durable key column must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"
-                    .to_string(),
-            )));
-        }
-        scalars.push(key);
-    }
-    Ok(scalars)
 }
 
 /// Resolves durable `(kind, path)` anchors against the committed ledger, pushing a
@@ -1980,14 +1936,13 @@ impl<'a> IdentityResolver<'a> {
         groups: &[GroupRow<'_>],
     ) {
         for row in groups {
-            let group = row.group;
             let path = row.path.as_str();
             let Some(branch_keys) = &row.keys else {
                 // A `group`: an unkeyed static field-path namespace. Its direct fields
                 // flatten into the containing resource's namespace, so it mints no
                 // record type of its own.
                 let id = self.resolve(IdentityKind::Group, path);
-                self.name_step(id, PathSigil::Child, &group.name);
+                self.name_step(id, PathSigil::Child, row.name);
                 let at = nodes.len();
                 nodes.push(DeclarationDraftNode::declared(
                     cursor.parent,
@@ -2006,7 +1961,7 @@ impl<'a> IdentityResolver<'a> {
                 // spelling; the branch's own `name` is the simple member name the
                 // physical layer keys its family by.
                 let placement = self.resolve(IdentityKind::Root, path);
-                self.name_step(placement, PathSigil::Child, &group.name);
+                self.name_step(placement, PathSigil::Child, row.name);
                 let keys = self.build_branch_keys(branch_keys);
                 // The branch's slot is reserved before its members are walked: its own
                 // members declare it as their parent, and its entry record type is minted
@@ -2029,7 +1984,7 @@ impl<'a> IdentityResolver<'a> {
                 let Some(record) = self.checked_mint(minted) else {
                     return;
                 };
-                let minted = draft.intern_string(&group.name);
+                let minted = draft.intern_string(row.name);
                 let Some(name) = self.checked_mint(minted) else {
                     return;
                 };
@@ -2092,18 +2047,14 @@ impl<'a> IdentityResolver<'a> {
         records: &TypeRegistry,
         row: &GroupRow<'_>,
     ) -> Vec<FieldDef> {
-        let group = row.group;
         if cursor.depth > bounds::MAX_DURABLE_DEPTH {
-            if let Some(member) = group.members.first() {
-                self.reject_resource_limit(member.span(), over_deep_member_message());
+            if let Some(span) = row.first_member_span {
+                self.reject_resource_limit(span, over_deep_member_message());
             }
             return Vec::new();
         }
         let mut record_fields = Vec::new();
-        for member in &group.members {
-            let ResourceMember::Field(field) = member else {
-                continue;
-            };
+        for field in &row.fields {
             if let Some((shape, record_field)) =
                 self.build_field(draft, records, field, cursor.container)
             {
@@ -2749,18 +2700,13 @@ fn build_branches(
         .filter_map(|row| row.keys.as_ref().map(|keys| (row, keys)))
         .zip(sites)
         .map(|((row, keys), sites)| {
-            let group = row.group;
             // The key scalars were resolved once, when the row was taken; the graph
             // build consumed a refusal as this branch's own diagnostic, so a branch
             // reaching the executable derivation reads the settled tuple.
             let key = keys.resolved()?.to_vec();
-            let fields = group
-                .members
+            let fields = row
+                .fields
                 .iter()
-                .filter_map(|member| match member {
-                    ResourceMember::Field(field) => Some(field),
-                    _ => None,
-                })
                 .zip(&sites.fields)
                 .map(|(field, path)| {
                     #[expect(
@@ -2779,7 +2725,7 @@ fn build_branches(
                 .collect();
             let branches = build_branches(records, &row.groups, &sites.branches)?;
             Ok(DurableBranch {
-                name: group.name.clone(),
+                name: row.name.to_string(),
                 key,
                 record: sites.record,
                 path: sites.path.clone(),

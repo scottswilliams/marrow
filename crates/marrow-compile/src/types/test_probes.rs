@@ -92,14 +92,14 @@ pub(crate) struct ScalingCounts {
     /// On a divergent-monomorphization program the pre-repair per-instance render made
     /// this Σ O(depth) = O(instances²); the repair holds it to the monomorphic baseline.
     pub(crate) hover_spelling_chars: usize,
-    /// Branch key rows constructed by the durable declaration projection.
+    /// Durable key tables constructed, charged inside `KeyTable::take` itself.
     ///
-    /// A branch's key tuple is a fact of its resource declaration, so the projection
-    /// constructs its row exactly once per compile, however many stores occur the
-    /// resource and however many of them stage and roll back. The production
-    /// projection charges each construction here, so a row family that drifted back
-    /// to per-store construction is caught at the count.
-    pub(crate) branch_key_row_constructions: usize,
+    /// A key tuple is a fact of its declaration: one table per store root and one
+    /// per keyed branch, per compile, however many stores occur a resource and
+    /// however many attempts stage and roll back. Charging the constructor rather
+    /// than one canonical call site means a reconstruction spelled anywhere still
+    /// moves this exact count.
+    pub(crate) key_table_constructions: usize,
     /// Template-body declaration entries a fill copied out of the template — one per
     /// declared field for a struct fill, and one per declared variant plus one per
     /// declared payload leaf for an enum fill.
@@ -124,7 +124,7 @@ thread_local! {
         template_proofs: 0,
         template_proof_rows: 0,
         hover_spelling_chars: 0,
-        branch_key_row_constructions: 0,
+        key_table_constructions: 0,
         template_body_clone_entries: 0,
     }) };
 }
@@ -135,10 +135,10 @@ pub(crate) fn bump_hover_spelling_chars(chars: usize) {
     bump_scaling(|counts| counts.hover_spelling_chars += chars);
 }
 
-/// Observe one branch key row construction in the durable declaration projection.
-/// A no-op outside the scaling-count test window.
-pub(crate) fn bump_branch_key_row_construction() {
-    bump_scaling(|counts| counts.branch_key_row_constructions += 1);
+/// Observe one durable key-table construction. A no-op outside the scaling-count
+/// test window.
+pub(crate) fn bump_key_table_construction() {
+    bump_scaling(|counts| counts.key_table_constructions += 1);
 }
 
 pub(super) fn bump_scaling(update: impl FnOnce(&mut ScalingCounts)) {

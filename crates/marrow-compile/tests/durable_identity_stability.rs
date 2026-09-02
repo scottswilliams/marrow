@@ -339,13 +339,16 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
                 "pub(super) binding: StoreResourceBinding,",
                 "pub(super) indexes: IndexTable<'a>,",
                 "pub(super) keys: KeyTable<'a>,",
+                "pub(super) scalars: Result<Vec<ScalarType>, Box<SourceDiagnostic>>,",
             ],
         ),
         (
             "GroupRow<'a>",
             &[
-                "pub(super) group: &'a GroupDecl,",
+                "pub(super) name: &'a str,",
                 "pub(super) path: String,",
+                "pub(super) fields: Vec<&'a FieldDecl>,",
+                "pub(super) first_member_span: Option<SourceSpan>,",
                 "pub(super) keys: Option<BranchKeyRows<'a>>,",
                 "pub(super) groups: Vec<GroupRow<'a>>,",
             ],

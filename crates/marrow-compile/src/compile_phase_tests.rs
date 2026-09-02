@@ -954,18 +954,18 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
     );
 }
 
-/// A branch's key row is constructed exactly once per compile, however many stores
-/// occur its resource and whatever those stores' fates.
+/// A key table is constructed exactly once per declared tuple, per compile — and
+/// the count is charged inside `KeyTable::take` itself, so a reconstruction spelled
+/// at any call site still moves it.
 ///
-/// Before the directory owned the branch projection, each store attempt constructed
-/// the branch key rows afresh — a store refused on identity gaps rolled back and the
-/// next store re-resolved the same declaration, so "resolved once into a typed row"
-/// held per attempt rather than per compile. The corpus is the review's own: two
-/// stores over one keyed-branch resource with no identity ledger, so the first store
-/// refuses after staging and the second walks the same product. The count is exact:
-/// one keyed branch, one construction.
+/// The corpus is the round-1 review's own: two stores over one keyed-branch
+/// resource with no identity ledger, so the first store refuses after staging and
+/// the second walks the same product. Three declared tuples — one root tuple per
+/// store row and one branch tuple in the shared resource projection — mean exactly
+/// three constructions; a drift back to per-attempt branch construction, or any
+/// consumer minting its own table from retained raw material, adds to the count.
 #[test]
-fn a_branch_key_row_is_constructed_once_per_compile() {
+fn a_key_table_is_constructed_once_per_declared_tuple() {
     let source = "module main\n\nresource R {\n    required title: string\n\n    \
                   items[itemId: string] {\n        required value: string\n    }\n}\n\n\
                   store ^a[id: int]: R\n\nstore ^b[id: int]: R\n\nfn main() {\n}\n";
@@ -988,7 +988,8 @@ fn a_branch_key_row_is_constructed_once_per_compile() {
         "the unminted corpus is refused; both stores reach the durable build"
     );
     assert_eq!(
-        counts.branch_key_row_constructions, 1,
-        "one keyed branch must mean one key-row construction, store count independent",
+        counts.key_table_constructions, 3,
+        "two root tuples and one branch tuple mean exactly three key-table \
+         constructions, store-attempt independent",
     );
 }

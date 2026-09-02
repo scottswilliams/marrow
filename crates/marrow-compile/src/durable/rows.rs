@@ -12,7 +12,7 @@ use std::ops::Range;
 use marrow_image::bounds;
 use marrow_project::FileIdentity;
 use marrow_syntax::{
-    GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
+    FieldDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
 };
 
 use crate::analysis::FileRef;
@@ -109,6 +109,9 @@ pub(super) struct StoreRow<'a> {
     pub(super) indexes: IndexTable<'a>,
     /// The root's identity key tuple, taken with the same reading.
     pub(super) keys: KeyTable<'a>,
+    /// The tuple's scalar resolution, settled once with the row. The build renders a
+    /// refusal at the position it always held; it re-resolves nothing.
+    pub(super) scalars: Result<Vec<ScalarType>, Box<SourceDiagnostic>>,
 }
 
 /// What a `store` declaration's written resource spelling binds to.
@@ -125,23 +128,31 @@ pub(super) enum StoreResourceBinding {
 }
 
 impl<'a> StoreRow<'a> {
-    pub(super) fn resolve(directory: &ResourceDirectory<'a>, store: &'a StoreDecl) -> Self {
+    pub(super) fn resolve(
+        directory: &ResourceDirectory<'a>,
+        store: &'a StoreDecl,
+        records: &TypeRegistry,
+        file: &FileIdentity,
+    ) -> Self {
         let resource = store.resource.as_str();
         let binding = match directory.lookup(resource) {
             Some(id) => StoreResourceBinding::Accepted(id),
             None => StoreResourceBinding::Unbound,
         };
+        let keys = KeyTable::take(
+            KeyOwner::Store {
+                root: &store.root.root,
+                span: store.root.span,
+            },
+            &store.root.keys,
+        );
+        let scalars = resolve_key_scalars(file, &keys, records);
         Self {
             resource,
             binding,
             indexes: IndexTable::take(&store.indexes),
-            keys: KeyTable::take(
-                KeyOwner::Store {
-                    root: &store.root.root,
-                    span: store.root.span,
-                },
-                &store.root.keys,
-            ),
+            keys,
+            scalars,
         }
     }
 
@@ -315,7 +326,12 @@ pub(super) struct KeyTable<'a> {
 }
 
 impl<'a> KeyTable<'a> {
+    /// Every key-table construction — root or branch, wherever it is spelled —
+    /// charges the once-per-compile counter here, so a reconstruction cannot avoid
+    /// the count by living at a different call site.
     pub(super) fn take(owner: KeyOwner<'a>, keys: &'a [KeyParam]) -> Self {
+        #[cfg(test)]
+        crate::types::bump_key_table_construction();
         Self { owner, rows: keys }
     }
 
@@ -363,10 +379,18 @@ impl<'a> KeyTable<'a> {
 /// once per compile, with the directory: a store attempt that stages and rolls back
 /// consumes the same rows a later attempt does.
 pub(super) struct GroupRow<'a> {
-    pub(super) group: &'a GroupDecl,
+    /// The member's simple name — what the physical layer keys a branch family by,
+    /// and the segment its path ends with.
+    pub(super) name: &'a str,
     /// The qualified member path, the branch-path and key-anchor prefix. Assembled
     /// here and nowhere else.
     pub(super) path: String,
+    /// The member's directly declared stored fields, in declaration order. The raw
+    /// declaration — and with it the raw key tuple — is deliberately NOT retained:
+    /// a consumer holding this row has nothing to reconstruct a key table from.
+    pub(super) fields: Vec<&'a FieldDecl>,
+    /// The span of the first declared member, for the depth-cap refusal.
+    pub(super) first_member_span: Option<SourceSpan>,
     /// `Some` for a keyed `branch` placement, `None` for a static `group`.
     pub(super) keys: Option<BranchKeyRows<'a>>,
     pub(super) groups: Vec<GroupRow<'a>>,
@@ -412,8 +436,6 @@ fn group_rows<'a>(
         };
         let path = format!("{container}.{}", group.name);
         let keys = (!group.keys.is_empty()).then(|| {
-            #[cfg(test)]
-            crate::types::bump_branch_key_row_construction();
             let table = KeyTable::take(
                 KeyOwner::Member {
                     path: path.clone(),
@@ -421,16 +443,73 @@ fn group_rows<'a>(
                 },
                 &group.keys,
             );
-            let scalars = super::resolve_key_scalars(file, &table, records);
+            let scalars = resolve_key_scalars(file, &table, records);
             BranchKeyRows { table, scalars }
         });
         let groups = group_rows(file, records, &path, &group.members);
         rows.push(GroupRow {
-            group,
+            name: &group.name,
+            fields: group
+                .members
+                .iter()
+                .filter_map(|member| match member {
+                    ResourceMember::Field(field) => Some(field),
+                    _ => None,
+                })
+                .collect(),
+            first_member_span: group
+                .members
+                .first()
+                .map(marrow_syntax::ResourceMember::span),
             path,
             keys,
             groups,
         });
     }
     rows
+}
+/// Resolve each key column's scalar in declared tuple order, rejecting a key type
+/// outside the closed orderable durable-key set. A singleton placement has no columns
+/// and yields an empty vector. Shared by root and branch key tuples, and called only
+/// where their rows are taken — resolution is a fact of the row, settled once.
+///
+/// The rejection row is returned rather than pushed: the build refuses a store with
+/// it at the position the refusal always held, and a refusal is summarized from the
+/// row that reports it in one statement. It is boxed because a diagnostic is wide
+/// next to a key-scalar vector and this path is the refused arm, never the admitted
+/// column loop.
+fn resolve_key_scalars(
+    file: &FileIdentity,
+    keys: &KeyTable<'_>,
+    records: &TypeRegistry,
+) -> Result<Vec<ScalarType>, Box<SourceDiagnostic>> {
+    let span = keys.span();
+    let mut scalars = Vec::with_capacity(keys.rows().len());
+    for column in keys.rows() {
+        let Some(key) = super::scalar_of(&records.expand(&column.ty)) else {
+            return Err(Box::new(super::unsupported(file, span, "this key type")));
+        };
+        // The closed orderable durable-key scalar set (frozen at C04): int, string,
+        // bool, bytes, date, and instant. `duration` is a span, not an identity, so
+        // it is not a durable key.
+        if !matches!(
+            key,
+            ScalarType::Int
+                | ScalarType::Text
+                | ScalarType::Bool
+                | ScalarType::Bytes
+                | ScalarType::Date
+                | ScalarType::Instant
+        ) {
+            return Err(Box::new(SourceDiagnostic::at(
+                marrow_codes::Code::CheckType.as_str(),
+                file,
+                span,
+                "a durable key column must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"
+                    .to_string(),
+            )));
+        }
+        scalars.push(key);
+    }
+    Ok(scalars)
 }
