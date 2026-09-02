@@ -1,324 +1,253 @@
-# CLI Reference
+# CLI
 
-The installed command is `marrow`. A bare invocation and an unknown command are
-usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
-current binary; `marrow --version` prints the package version.
-
-The beta line's CLI is deliberately thin. `init`, `fmt`, `check`, `run`, `test`,
-`import`, `client typescript`, `image`, `--help`, and `--version` are the
-available commands; every other recognized
-command name belongs to a capability being refounded and reports the typed code
-`cli.command_unsupported` with exit `1`, so a script never mistakes absence for
-success. [Project status](../status.md) states what returns through which
-direction.
-
-## Command index
-
-| Command | Behavior today |
-|---|---|
-| `init` | Create a new project directory (this page). |
-| `fmt` | Format a `.mw` file or every captured source file in a project (this page). |
-| `check` | Check a project and describe each export's durable access demand (this page). |
-| `run` | Compile, verify, and run an exported function, storeless or against a provisioned store (this page). |
-| `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
-| `import` | Populate and provision a native store from a flat-scalar JSONL corpus (this page). |
-| `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
-| `image` | Emit the verified program image a deployment ships, against an accepted ceiling id (this page). |
-| `data`, `doctor`, `evolve`, `serve`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
-
-## `marrow init`
+`marrow` creates, formats, checks, runs, and tests a [project](projects.md),
+and it writes the artifacts a deployment ships.
 
 ```text
 marrow init <projectdir>
-```
-
-Creates a new [project](projects.md): a `marrow.toml` manifest declaring the
-current edition and a contained `src` tree with a headerless `src/main.mw`
-script. The target directory must not already exist — `init` claims it with an
-exclusive create, so two concurrent runs cannot both win, and an existing
-directory reports `config.invalid`. `init` creates no store.
-
-## `marrow fmt`
-
-```text
 marrow fmt [--check | --write] <file.mw | projectdir>
-```
-
-Formats Marrow source to canonical layout through the retained formatter. The
-target is either a single `.mw` file or a [project](projects.md) directory, in
-which case every captured source file is formatted through the project input.
-
-With no flag on a single file, the formatted source is printed to stdout; on a
-project directory, no flag checks without writing. `--check` leaves files
-unchanged and exits nonzero when any is not canonical; `--write` replaces changed
-source in place through a temporary file that preserves the original permissions.
-`marrow fmt` does not read from stdin.
-
-Source that does not parse is left untouched and reported with located
-`parse.syntax` diagnostics. A file whose parse produces more diagnostics than the
-bounded per-file collector retains is refused with `fmt.diagnostic_limit`, since no
-complete parse exists to format against. Formatting that would drop a retained
-comment is refused with `fmt.comment_loss` rather than published lossily. The
-per-file byte limits differ by owner, and a different owner refuses each and
-reports it differently. The project owner captures a file of up to 1 MiB; the
-compiler admits the shorter length its own parse-heap ceiling buys, so a file
-between the two is captured and then refused by the compiler:
-
-| Target | Code | Path reported | Byte count reported |
-|---|---|---|---|
-| A single `.mw` file | `cli.compiler_resource_limit` | the path as written on the command line | the file's exact size |
-| A project directory | `project.capture_limit` | the project-relative path | one byte past the limit |
-
-A single file is refused from its size alone, before it is read, under the same
-code the compiler's module-size admission reports — having never opened the file,
-that owner reports the size the filesystem gave it. Inside a project directory
-the bound is reached during capture, whose bounded read stops one byte past the
-limit and so reports that figure rather than the file's true size. A directory
-whose manifest or source tree is invalid reports the matching `config.invalid` or
-`project.*` code.
-
-## `marrow check`
-
-```text
 marrow check [--demand] [projectdir]
+marrow run <export> [--store <dir>] [--format text | jsonl] [-- <args>...]
+marrow test [--format text | jsonl] [--filter <substring>]
+marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
+marrow image --out <dir> --accept-ceiling <id>
+marrow client typescript [--out <dir>]
+marrow --version
+marrow --help
 ```
 
-Captures and checks the [project](projects.md) at `projectdir` (the working
-directory by default) and reports every diagnostic, each with its source file and
-1-based line and column. `check` opens no store and runs no code. Diagnostics are
-written to standard error; the command exits `0` when the project checks clean, `1`
-when any diagnostic is reported or a fixed compiler bound is reached, and `2` on a
-usage error. Diagnostic retention is itself bounded: a project whose diagnostics
-cross a fixed retention ceiling (4096 diagnostics or 1 MiB of retained diagnostic
-text per compile stage) is reported as a single `cli.compiler_resource_limit` line
-rather than a truncated diagnostic listing.
+A flag takes its value as the next argument, as in `--store ./store`;
+`--store=./store` is a usage error. `marrow --version` prints `marrow 0.1.0`.
+The transcripts below come from one project holding this file at
+`src/docs/cli/shelf.mw`:
 
-A fixed image bound is separate from a diagnostic. A project can check clean and
-still exceed what the program image admits — more than 256 exported functions, for
-instance. `check` then reports no diagnostic at all and prints one
-`cli.compiler_resource_limit` line naming the exhausted bound, in the same words
-`run`, `test`, and `client` use for it, and exits `1`.
+```mw
+module docs::cli::shelf
 
-A project that checks clean is compiled and independently verified, and `check`
-summarizes each exported (`pub fn`) function's durable
-[access demand](../language/durable-places.md#access-demand) — the durable places
-its whole call graph reads and writes, in source spelling — to standard output. The
-default summary is grouped by module: exports that share an identical demand are
-listed once, each demand names its touched **roots** with a count of the distinct
-child places under each, and exports that touch no durable data collapse to one
-storeless note per module. Modules and exports are ordered deterministically, so the
-output is byte-stable across runs.
+resource Book {
+    required title: string
+    required isbn: string
+}
+
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+}
+
+pub fn put(id: int, title: string, isbn: string) {
+    transaction {
+        ^books[id] = Book(title: title, isbn: isbn)
+    }
+}
+
+pub fn lookup(isbn: string): string? {
+    if const id = ^books.byIsbn[isbn] {
+        return ^books[id].title
+    }
+    return absent
+}
+
+pub fn greet(name: string): string {
+    return $"Hello, {name}!"
+}
+
+test "put then lookup" {
+    put(1, "Small Gods", "978-0552152976")
+    assert lookup("978-0552152976") ?? "" == "Small Gods"
+}
+```
+
+`greet` touches no durable place. `put` and `lookup` are durable exports.
+
+## marrow init
+
+`marrow init <projectdir>` creates a project: a `marrow.toml` manifest and a
+`src/main.mw` script holding an empty `main`.
 
 ```text
-2 exports across 1 module
+$ marrow init shelf
+created shelf
+next steps:
+  cd shelf
+  marrow fmt --check shelf
+```
 
-bookstore: 2 exports
+A directory that already exists is `config.invalid`. `init` creates no store.
+
+## marrow fmt
+
+`marrow fmt` puts source in canonical form. With no flag it prints one file
+formatted, or checks a project without writing. `--check` names each file that
+is not canonical and exits `1`. `--write` rewrites those files in place.
+
+```text
+$ marrow fmt --check messy.mw
+messy.mw: not formatted; run marrow fmt --write messy.mw to format it
+$ marrow fmt --write messy.mw
+$ cat messy.mw
+pub fn add(a: int, b: int): int {
+    return a + b
+}
+```
+
+A file that does not parse is left as it is and reported with `parse.syntax`.
+`fmt` does not read standard input.
+
+## marrow check
+
+`marrow check` type-checks the project and prints every diagnostic with its
+file, 1-based line, and column, as in `src/docs/cli/shelf.mw:26:12: check.type:
+found int where string is required`. It opens no store and runs no code.
+
+A project that checks clean prints its access demand: the durable places each
+export reads and writes ([access
+demand](../language/durable-places.md#access-demand)). The default form groups
+exports by module and counts the places under each root:
+
+```text
+$ marrow check .
+3 exports across 1 module
+
+docs.cli.shelf: 3 exports
   lookup
-    reads ^books (+1 place)
+    reads ^books (+2 places)
   put
     reads ^books
     writes ^books
+  storeless: greet
 ```
 
-A count such as `(+1 place)` is the number of distinct child places — stored fields,
-managed indexes, static groups, or keyed branches — the export touches under that
-root; here `lookup`'s one place is the `^books.byIsbn` index the `--demand` form names
-exactly. The unit is spelled on the first root that carries a count and abbreviated to
-`(+N)` after. A root a read-modify-write export both reads and writes appears under
-both `reads` and `writes`.
-
-### `marrow check --demand`
-
-`--demand` prints the full per-export form instead of the summary: one line per
-exported function to standard output, in `module.item` order, naming every durable
-place the export reads and writes rather than rolling children up to their roots.
+`--demand` names every place, one line per export:
 
 ```text
-bookstore.lookup reads ^books and ^books.byIsbn
-bookstore.put reads ^books; writes ^books
+$ marrow check --demand .
+docs.cli.shelf.greet reads or writes no durable data
+docs.cli.shelf.lookup reads ^books.byIsbn and ^books.title
+docs.cli.shelf.put reads ^books; writes ^books
 ```
 
-Each place is named by its durable path (`^root`, `^root.field`, `^root.index`) and
-grouped by whether the export reads or writes it. A presence probe, a field or entry
-read, and an ordered index or family traversal are reads; a write and an erase are
-writes; a place a read-modify-write export both reads and writes is named in both
-clauses. An export that touches no durable data is reported as reading or writing no
-durable data. Under either form the demand *describes* the access a program requires
-and never grants it.
+The two places `lookup` reads are the index and one field. Demand describes
+the access a program requires; it grants nothing. A fresh durable project
+reports `check.durable_identity` until one `marrow run` writes `.marrow/ids`
+([identity ledger](projects.md#identity-ledger)).
 
-## `marrow run`
+## marrow run
+
+`marrow run <export>` compiles and verifies the project, then runs one export,
+named bare or by module: `greet` or `docs.cli.shelf.greet`. Arguments after
+`--` are decoded in order against the export's `int`, `bool`, and `string`
+parameters; a wrong count, a value that does not decode, or an unknown export
+is a usage error.
 
 ```text
-marrow run <export> [--store <dir>] [--format text | jsonl] [-- <args>...]
+$ marrow run greet -- Ann
+Hello, Ann!
+$ marrow run greet --format jsonl -- Ann
+{"data":"Hello, Ann!","kind":"run","outcome":"value"}
 ```
 
-Runs one exported (`pub fn`) function of the [project](projects.md) at the
-working directory. The project is captured, compiled to a reproducible program
-image, and independently verified into a sealed image before the VM runs the
-export; the compiler opens no store and cannot mint a verified image. Arguments
-after `--` are decoded positionally against the export's scalar parameter types
-(`int`, `bool`, `string`).
+Text output is the returned value, or `absent` for an absent optional. JSONL
+output is one object whose `outcome` is `value`, `diagnostic`, `fault`,
+`incomplete`, or `error`; a diagnostic or fault carries its code and span
+([error codes](../error-codes.md)).
 
-A storeless export runs directly. A durable export — one whose verified demand
-reads or writes durable data — runs against a provisioned store named with
-`--store <dir>`: the terminal never opens the store itself but runs the verified
-image in a release-verified companion runner attached to the store, submits the
-call, and renders the result. The companion runner and its release manifest must be
-installed beside `marrow` (the stock install layout); a missing or altered
-companion is reported as `cli.installation_damaged`. A durable export run **without**
-`--store` has no store to act on and reports the typed `cli.durable_unsupported`
-outcome (exit `1`). Durable execution also runs under source tests against a fresh
-ephemeral attachment, needing no store or companion (see [`marrow test`](#marrow-test)).
-
-Opening a store is narrower than the build. The commands that open one —
-`run --store` and [`import`](#marrow-import) — require macOS, or Linux on
-`x86_64` or `aarch64`; every other command runs on any target the source builds
-for. A build for any other target refuses the open at run time with `store.io`,
-naming the operating system and architecture it refused on, and creates nothing
-in the store directory. See [Install from source](../install.md).
-
-When a fresh durable declaration has no identity in the project's
-[identity ledger](projects.md#the-identity-ledger), `run` still mints one from OS
-entropy and publishes the updated `.marrow/ids` through the serialized
-crash-recoverable publication protocol before compiling again — commit that
-file — and then parks the durable export. `run` settles any interrupted
-publication before it captures the project or draws entropy; every other command
-reports `project.ids_publication_pending` while a publication marker is live. Because an identity
-is durable once minted, `run` mints and persists it even when the program still
-has unrelated errors: the mint is not gated on an otherwise-clean compile, and
-the recompile then reports whatever genuinely remains. This convenience is
-`run`-only (every other command fails precisely with `check.durable_identity`)
-and is superseded by the accepted change-review `apply` action when that lane
-lands; a retired identity is never minted over.
-
-Output is text by default — the returned value, or `absent` for a vacant
-optional. `--format jsonl` prints one canonical JSON object: an outcome of
-`value`, `diagnostic`, `artifact_rejected`, `fault`, `incomplete`,
-`outcome_unknown`, or `error`,
-keeping the failure families distinct. A source diagnostic (`check.*`,
-`parse.*`), an image rejection (`image.*`), a source-mapped runtime fault
-(`run.*`), and an operational error (`store.*`, `io.*`) never collapse into one
-another. An `incomplete` run carries the source-mapped `run.*` code plus a
-separate `durable` field: `known_old`, `known_new`, or `unknown`. It says the
-invocation did not return; the durable field says only whether its proposed
-commit is proven absent, proven installed, or unclassified. No form supplies a
-return value or triggers an automatic retry.
-
-An `outcome_unknown` run means the request was completely dispatched but no
-exact valid correlated reply could be accepted. Its `cause` field distinguishes
-transport, wire, turn mismatch, unsolicited message, and value decode; the
-associated `cause_code` retains the stable diagnostic code. The call is never
-retried automatically.
-
-Exit `0` carries the value; exit `1` is any failure family (including a durable
-export parked in the trough); exit `2` is a usage error (an unknown export or a
-bad argument).
-
-## `marrow test`
+A durable export runs against a store on disk named with `--store <dir>`. The
+store is opened by the companion runner installed beside `marrow`; without that
+layout the command stops with `cli.installation_damaged`
+([install](../install.md#running-against-a-store)). A durable export run with
+no `--store` prints `cli.durable_unsupported` and exits `1`. This transcript
+is from an install with the layout, on the notes program of the
+[quickstart](../quickstart.md); [operations](../operations/README.md) covers
+the store between runs:
 
 ```text
-marrow test [--format text | jsonl] [--filter <substring>]
+$ marrow run textOf --store ./store -- 1
+imported note
+$ marrow run add --store ./store -- 3 "added via run"
+true
 ```
 
-Discovers every `test "name"` declaration in the [project](projects.md) at the
-working directory, compiles them into a separately verified image carrying a
-closed test-entry table, and runs each one through the VM. A test
-whose every `assert` holds passes; a false `assert` (`run.assert`) fails it; any
-other runtime fault errors it. A test that touches no durable data runs storeless;
-a test that reads or writes durable data runs against its own fresh ephemeral
-attachment, so no test opens a persistent store or observes another test's writes.
-If a driven export reaches a commit boundary but the enclosing test does not
-complete, JSONL reports `outcome: "incomplete"` and the same closed `durable`
-classification as `run`; the test counts as errored, never passed.
+The first storeless `marrow run` of a project with durable declarations also
+writes `.marrow/ids`; commit that file. `marrow run --store` leaves it as it is.
 
-`--filter` selects tests whose name contains the given substring and fails when
-none match. Output is human text by default — one line per test and a summary —
-or, with `--format jsonl`, one `kind: "test"` object per test and a final
-`kind: "summary"` object. The command exits `0` when every selected test passes,
-`1` when any fails or errors, and `2` on a usage error. See
-[Tests](tests.md) for the report grammar and the `test`/`assert` language.
+## marrow test
 
-## `marrow import`
+`marrow test` runs every `test` declaration in the project and reports each
+outcome. A test that touches a durable place runs against a fresh in-memory
+store of its own ([tests](tests.md)).
 
 ```text
-marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
+$ marrow test
+ok    put then lookup
+1 passed, 0 failed, 0 errored (1/1 selected)
 ```
 
-Populates a native store from a flat-scalar JSONL corpus through the trusted
-importer, provisioning the store on first use. The project at the working directory
-is compiled and independently verified first; import is not a mint path, so a
-missing durable identity is reported and the developer runs `marrow check` before
-importing. Like `marrow run --store`, the terminal never opens the store: it hands
-the verified image and the corpus to the release-verified companion runner, which
-is the sole opener of the store, so the stock install layout is required. Opening
-the store carries the same platform requirement `run --store` does: macOS, or
-Linux on `x86_64` or `aarch64` (see [Install from source](../install.md)).
+`--filter <substring>` selects tests by title; a filter that matches nothing is
+a usage error. `--format jsonl` prints one object per test and a summary.
 
-The corpus is one JSON object per line, each member a scalar (string, integer, or
-boolean) named exactly as a key column (`--keys`) or a field of the target
-`--root`; a member may be `null` or absent for a sparse field. Every row is created
-through the path kernel — no command receives a raw storage key, engine handle, or
-transaction object — and a store that denies writes refuses the import. The command
-reports the store provisioning (on first use) and a final `rows_imported` count;
-input is read and committed in bounded batches rather than materialized whole.
-An engine-aborted batch is known not to have landed. An indeterminate batch is
-classified from the store witness under the continuously held owner lock and
-reported as incomplete with `known_old`, `known_new`, or `unknown`; earlier
-confirmed batches remain counted, and the importer never retries the uncertain
-batch.
+## marrow import
 
-## `marrow client`
+`marrow import` creates a store and fills it from a file of JSON objects, one
+entry per line. Each member is a scalar named for a key of the root, listed in
+`--keys`, or for one of its fields. The project is compiled and verified first
+and the new store is bound to it. Like `run --store`, `import` needs the
+companion layout. The transcript is from the quickstart's notes program:
 
 ```text
-marrow client typescript [--out <dir>]
+$ marrow import --store ./store --jsonl seed.jsonl --root notes --keys id
+provisioned a fresh store at ./store
+{"batches_committed":1,"rows_imported":2}
 ```
 
-Compiles and verifies the [project](projects.md) at the working directory,
-reconstructs its wire interface from the verified image, and writes three files
-into the output directory (default `client`): the generated `client.mts` — one
-named `async` method per exported function with exact transfer types and
-runtime validation — and the pinned Node supervision module
-(`marrow-supervisor.mjs` plus its type declarations). Stable inputs yield
-byte-identical output. The wire transfer graph is closed over every value type
-(the seven scalars, records, sums, `List`, `Map`, and entry identities), so a
-verified program's interface always projects; a signature too complex for the
-fixed interface budget or naming an unknown type row refuses the whole generation
-with `cli.interface_unbuildable`. Unlike `run`, the generator never mints durable
-identities. See
-[TypeScript client](typescript-client.md) for the generated API, the
-supervision law, and the loss classification.
+The file is read and committed in bounded batches. `import` writes no
+identity: a missing one is `check.durable_identity`.
 
-## `marrow image`
+## marrow image
+
+`marrow image` compiles and verifies the project and writes `program.image`, the
+artifact a deployment ships, into `--out <dir>`. The image's demand is its
+deployment ceiling, and `--accept-ceiling` names that ceiling's id. Without the
+right id, the command prints the id and the demand and writes nothing:
 
 ```text
-marrow image --out <dir> --accept-ceiling <id>
+$ marrow image --out img
+cli.ceiling_unaccepted: this image's deployment ceiling id is b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691; re-run with --accept-ceiling b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691 to compose the deployment image after reviewing the demand printed below
+docs.cli.shelf.greet reads or writes no durable data
+docs.cli.shelf.lookup reads ^books.byIsbn and ^books.title
+docs.cli.shelf.put reads ^books; writes ^books
+$ marrow image --out img --accept-ceiling b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691
+image a2b66a14727361b285a0099c7f279fceb07f17a40f684d6e7708f31b13e611ef
+ceiling b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691
+img/program.image
 ```
 
-Compiles and independently verifies the [project](projects.md) at the working
-directory and writes the verified `program.image` into the output directory — the
-durable artifact a packaged application's deployment pins beside its
-release-verified runner. Unlike `run`, `image` never mints durable identities and
-opens no store.
+The same source yields the same image and the same ids. `image` opens no store
+and writes no identity.
 
-An image's exports have a durable **demand**, and the store an application
-provisions under the image records the union of that demand as the maximum authority
-it will ever admit — its deployment ceiling (the `marrow check` section above
-describes the demand it prints, and the ceiling identity). So the
-command renders each export's demand and requires the owner to name the accepted
-ceiling id: `--accept-ceiling` must equal the image's own demand-union ceiling id
-before any image is written. When the argument is absent or names a different id, no
-image is written and the command reports `cli.ceiling_unaccepted` with the actual
-ceiling id to accept, so a deployment's durable authority is named deliberately and
-never widened or narrowed by accident. Stable inputs yield a byte-identical image.
+## marrow client typescript
 
-## Usage and exit codes
+`marrow client typescript` compiles and verifies the project and writes a
+TypeScript client for its exports into `--out <dir>`, `client` by default.
 
-Flags that take values use separate arguments, such as `--store <dir>`; the CLI
-does not accept `--flag=value` forms. Dotted diagnostic codes are defined in the
-[Error Code Reference](../error-codes.md).
+```text
+$ marrow client typescript
+client/client.mts
+client/marrow-supervisor.mjs
+client/marrow-supervisor.d.mts
+```
+
+`client.mts` has one `async` method per export with exact types. The other two
+files are the Node module that starts and supervises the runner
+([TypeScript client](typescript-client.md)). Every Marrow value type has a
+transfer type, so a project that verifies also generates.
+
+## Exit codes
 
 | Code | Meaning |
 |---:|---|
-| `0` | Command completed successfully. |
-| `1` | Typed failure: a diagnostic was reported, or the command is not yet available on this line. |
-| `2` | Command-line usage failed before the command body ran. |
+| `0` | The command completed. |
+| `1` | A diagnostic, fault, or operational error was reported, or the command has no implementation today. |
+| `2` | The command line was wrong: a bare `marrow`, an unknown command or export, a bad flag or argument, or a filter that matches nothing. |
+
+`data`, `doctor`, `evolve`, `serve`, `backup`, and `restore` are recognized
+names with no implementation today; each reports `cli.command_unsupported` and
+exits `1` ([status](../status.md)).

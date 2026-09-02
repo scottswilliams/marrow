@@ -508,22 +508,57 @@ fn future_pages_have_no_current_source_fences() {
     }
 }
 
-/// A complete source file does not need a `module` header. The two standalone
-/// declarations in the values reference are moduleless scripts and belong to
-/// the production-path corpus.
+/// A complete source file does not need a `module` header. A moduleless script
+/// (the quickstart programs) belongs to the production-path corpus like a module.
 #[test]
 fn complete_moduleless_reference_fences_are_gated() {
     let fences = documented_fences();
     assert!(
         fences
             .iter()
-            .any(|fence| fence.source.trim_start().starts_with("struct Point")),
-        "the complete moduleless Point declaration must be gated",
+            .any(|fence| matches!(fence.kind, FenceKind::Script)),
+        "at least one complete moduleless script must be gated",
     );
+}
+
+/// The narrated walkthrough quotes the workshop fixture. Every declaration group
+/// (blank-line separated) inside a `text` fence in `docs/walkthrough.md` is an exact
+/// excerpt of that program's source, so the page cannot drift from the program whose
+/// own tests prove its behavior; a fence may stitch declarations the fixture keeps apart.
+#[test]
+fn walkthrough_excerpts_are_verbatim_fixture_source() {
+    let root = repo_root();
+    let page = fs::read_to_string(root.join("docs/walkthrough.md")).expect("read walkthrough");
+    let fixture = fs::read_to_string(root.join("fixtures/v01/conformance/workshop/src/main.mw"))
+        .expect("read workshop fixture");
+
+    let mut excerpts = 0usize;
+    let mut in_block = false;
+    let mut block = String::new();
+    for line in page.lines() {
+        if line.trim() == "```text" {
+            in_block = true;
+            block.clear();
+            continue;
+        }
+        if line.trim() == "```" && in_block {
+            in_block = false;
+            excerpts += 1;
+            for chunk in block.split("\n\n").filter(|chunk| !chunk.trim().is_empty()) {
+                assert!(
+                    fixture.contains(chunk.trim_end_matches('\n')),
+                    "walkthrough excerpt #{excerpts} is not verbatim fixture source:\n{chunk}"
+                );
+            }
+            continue;
+        }
+        if in_block {
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
     assert!(
-        fences
-            .iter()
-            .any(|fence| fence.source.trim_start().starts_with("struct Pair")),
-        "the complete moduleless generic declarations must be gated",
+        excerpts >= 8,
+        "the walkthrough quotes at least eight fixture excerpts, found {excerpts}"
     );
 }

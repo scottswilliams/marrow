@@ -1,9 +1,13 @@
 # Resources
 
-A resource declaration defines a typed hierarchical value. The same declaration
-is used for local resource values and for entries attached to a durable store.
+A resource declares the shape of a hierarchical value: its fields, its groups,
+and its keyed branches. One declaration serves both a local value and the
+entries of a durable store.
 
 ## Fields
+
+A field is written `name: Type`. A field is sparse unless it is marked
+`required`:
 
 ```mw
 module docs::resources
@@ -39,101 +43,56 @@ pub fn describe(id: int): string {
     }
     return "(absent)"
 }
+
+test "describe falls back to the title" {
+    add(1, "Small Gods", "Terry Pratchett")
+    assert describe(1) == "Small Gods"
+    assert describe(2) == "(absent)"
+}
 ```
 
-A scalar member has `name: Type` form. Fields are sparse by default: the member
-may be absent. `required` makes the containing resource invalid while that
-member is absent.
+`title` and `author` are required; `subtitle` is sparse. `add` writes the two
+required fields and no subtitle. `describe` reads the whole entry with
+`if const` and falls back with `??`, because a sparse read is a `string?`.
 
-Because a sparse field already models absence — an unset field reads `absent` —
-declare a field `Option<T>` only when a stored `none` must be distinguishable from
-the field being unset. That three-state field (`absent`, present `none`, present
-`some`) is read by proving presence and then matching the stored `Option`; see
-[Option and Result](types-and-values.md#option-and-result).
+A required field is present in every valid value. A constructor names each
+required field, and a missing one is a `check.type` error. A durable entry
+commits only when each required field holds a value; an entry left short rolls
+the block back with `run.required_missing`. A sparse field may be absent, and
+reading one yields `T?`. A sparse field already models absence, so declare a
+field `Option<T>` only when a stored `none` must differ from an unset field
+([Option and Result](types-and-values.md#option-and-result)).
 
-The `details` block is an unkeyed group. Its members extend the containing
-resource hierarchy. A required descendant of an unkeyed group is a required
-member of the containing resource. The read of that descendant is nevertheless
-optional while any ancestor resource path may be absent.
+A field holds a scalar, a struct, an enum, or an `Option`. A `///` comment may
+precede the resource and each member; it carries no meaning to the compiler.
 
-## Keyed Layers
+## Members
 
-A member with parameters is a keyed child layer:
+A block without a key list is a group. A block with a bracketed key list is a
+branch. In the declaration above, `details` is a group: a named layer of the
+resource that travels with the value. `notes` is a branch: a keyed family of
+entries beneath each `Book`, addressed one entry at a time as
+`^books[id].notes[noteId]`.
 
-```text
-tags(pos: int): string
+A required field inside a group is a required field of the resource, so a
+constructor that omits `details` when it holds a required leaf is a `check.type`
+error. A required field inside a branch applies to each entry of the branch, and
+declaring the branch creates no entry. A branch may take several key
+components, `loans[borrower: string, day: date]`, and is then addressed by the
+whole tuple in order. A key is an `int`, `string`, `bool`, `bytes`, `date`, or
+`instant` ([Keys](durable-places.md#keys)). Within one layer, key names and
+field names share one namespace.
 
-notes(noteId: string)
-    required text: string
-    createdAt: instant
-```
+A branch holds scalar fields and may hold further branches, to a depth of 16
+layers ([Keyed branches](durable-places.md#keyed-branches)). Today, a group
+sits directly under the resource, and its leaves are scalars when the resource
+backs a store. A group inside a group or a branch, and a keyed scalar leaf such
+as `tags[pos: int]: string`, are future work ([status](../status.md)).
 
-`tags` is a keyed scalar leaf. `notes` is a keyed resource-entry layer. A keyed
-entry is subject to its own required-member validation when that entry exists.
-No entry is required merely because the layer is declared.
+## Local values
 
-Several key components are allowed:
-
-```text
-cells(row: int, column: int): decimal
-```
-
-Keys must be supported ordered scalar types. Optional, decimal, resource,
-collection, and entry-identity types are not accepted as resource key components.
-Key parameter names share the member namespace at their layer.
-
-A one-component `int` leaf such as `tags(pos: int): string` has positional
-behavior: positive integer positions, 1-based append, and holes. Other key
-shapes are ordinary ordered keyed layers.
-
-## Groups And Branches
-
-An unkeyed block (`details` above) is a **group**: a static field-path namespace
-inside a resource. A block with key parameters (`notes(noteId: string)` above) is
-a **branch**: a keyed subtree, a distinct durable graph node with its own key
-tuple, nested under its containing resource. A group or branch may itself hold
-fields, groups, and branches.
-
-A resource may back more than one store root (see [Durable
-places](durable-places.md#store-declarations)). Its group and branch declarations
-belong to the resource, not to a root: the entry record of a declared branch is materialized
-once for the resource, and every root that projects the resource binds that one
-record. Two roots over one resource are admitted only when both claim the identical
-member and value graph and the identical branch entry records.
-
-When a resource backs a store, its group and branch declarations are part of the
-durable graph. Each group has its own durable identity (a `group` identity), and
-each branch has its own placement identity, one identity per key component, and one
-per stored field — anchored at a group- or branch-qualified path
-(`Book.details.pages`, `Book.notes.noteId`, `Book.notes.text`). Groups and
-branches contribute to the [durable-contract
-identity](durable-places.md#durable-identity) exactly as roots do.
-
-A `branch` keyed by one or more key components and holding only scalar fields is
-part of the executable durable graph, and such branches may nest within the fixed
-16-level member-tree depth: their whole entries are created, read, replaced, and
-erased through the key-path address
-`^root[key…].branch[bkey…]…` (see [Durable places](durable-places.md#keyed-branches)).
-A top-level field may also hold a widened value — a dense `struct`/record, a closed
-`enum`, or an `Option`/`Result` — stored inline in its field cell and read whole or by
-field; `branch` fields stay scalar-only.
-A root-level `group` of scalar or widened leaves is part of the executable durable graph:
-its leaves join the containing entry's materialized value, and the group is read,
-replaced, and erased whole through `^root[key…].group`, with each leaf read and rewritten
-through `^root[key…].group.leaf` (see
-[Durable places](durable-places.md#groups)).
-Other durable shapes are not yet executable: a resource declaring a nominal-typed field,
-or a group nested in a branch or in another group, declares and verifies its complete
-durable identity, but an operation over it is the typed `check.unsupported` rejection
-rather than a silent drop, until its lane lands. A keyed scalar leaf such as
-`tags(pos: int): string` is likewise not yet part of the executable durable graph.
-
-## Local Resource Values
-
-A resource type names an ordinary by-value value. A constructor supplies named
-members; a `const` or `var` annotation may name the resource type (bare or
-optional); and a resource value is passed to a bare parameter and returned from a
-function, sharing the record representation.
+A resource is an ordinary value. Build one with its constructor, bind it with
+`const` or `var`, pass it to a function, and return it:
 
 ```mw
 module docs::resources::values
@@ -142,14 +101,6 @@ resource Book {
     required title: string
     required author: string
     subtitle: string
-}
-
-pub fn small(): Book {
-    return Book(
-        title: "Small Gods",
-        author: "Terry Pratchett",
-        subtitle: "A Discworld novel",
-    )
 }
 
 pub fn drafted(title: string, author: string): Book {
@@ -164,59 +115,45 @@ pub fn describe(book: Book): string {
 
 pub fn lookup(found: bool): Book? {
     if found {
-        return Book(title: "Small Gods", author: "Terry Pratchett")
+        return drafted("Small Gods", "Terry Pratchett")
     }
     return absent
 }
 
-pub fn lookedUpTitle(found: bool): string {
-    if const book = lookup(found) {
-        return book.title
-    }
-    return "(absent)"
-}
-
-pub fn independentCopy(): string {
-    var a = Book(title: "a", author: "x")
+test "values copy" {
+    var a = drafted("a", "x")
     var b = a
-    b.subtitle = "changed"
-    return a.subtitle ?? "a-untouched"
+    unset b.subtitle
+    assert describe(a) == "draft"
+    assert describe(b) == "a"
+    assert lookup(true)?.title ?? "(absent)" == "Small Gods"
+    assert lookup(false)?.title ?? "(absent)" == "(absent)"
 }
 ```
 
-A resource value begins from a complete constructor: every required field must
-be present. A `var` binding may then set additional sparse members before the
-value is returned, passed, or written. An uninitialized `var book: Book` is a
-`check.unsupported` rejection; there is no empty resource to fill in.
+`drafted` builds a `Book` from its required fields, then sets a sparse field on
+the `var`. `describe` takes a `Book` by value. `lookup` returns `Book?`, and the
+test reads through it with `?.` and `??`. `var b = a` takes a copy, so
+`unset b.subtitle` clears the copy and leaves `a` as it was.
 
-Sparse local member reads have type `T?`. Required members are bare once the
-containing local resource is valid and present.
+A `var` starts from a constructor and sets or clears sparse fields afterward.
+Every resource value is copied on assignment, on a call, and on return, so a
+callee that changes its parameter leaves the caller's value unchanged.
 
-Resource values are copied by value. Passing a resource to a parameter and
-returning one both copy: a callee that mutates its own binding leaves the
-caller's value unchanged, and assigning one local resource to another does not
-create a reference to the first binding.
+A binding or a return type may be `Book?`, proven present with `if const`. A
+parameter is a bare value, so `book: Book?` reports `check.unsupported`, like
+any optional parameter. A resource is not accepted as a type argument today:
+`Option<Book>` and `List<Book>` report `check.unsupported`.
 
-An optional resource value (`Book?`) behaves like any other optional record. A
-`const`/`var` binding and a function return may have type `Book?`, read through
-`?.` and `??` or proven present with `if const`, exactly as an optional `struct`
-is. A `Book?` parameter is refused under the general rule that a parameter is a
-bare value — an optional parameter of any type is `check.unsupported` — not for a
-resource-specific reason.
+A resource name is used bare from any module of the project and takes no
+`pub`. It shares one namespace with struct, enum, and built-in names
+(`check.name_conflict`).
 
-The generic forms `Option<Book>` and `List<Book>` are a separate matter: a
-resource type is not a value argument to a built-in generic, so those spellings
-are a `check.unsupported` rejection in every position — binding, parameter, and
-return — until generic composition over resources lands.
+## Group values
 
-## Group Values
-
-An unkeyed group is part of the materialized resource value as a nested value.
-Its leaves are read and assigned through the group name, and the whole group is a
-value unit read, assigned, and copied whole. The qualified constructor
-`Resource.group(field: value, …)` builds a group value, symmetric with the branch
-entry constructor, and it is supplied to the resource constructor as a named
-argument.
+A group is part of the value it belongs to. Its leaves are read and assigned
+through the group name, and the whole group is assigned and copied as one unit.
+`Book.details(pages: 384)` builds a group value for the constructor:
 
 ```mw
 module docs::resources::groups
@@ -231,12 +168,6 @@ resource Book {
     }
 }
 
-pub fn pagesAfterSet(): int {
-    var book = Book(title: "Small Gods", author: "Terry Pratchett")
-    book.details.pages = 384
-    return book.details.pages ?? 0
-}
-
 pub fn constructedPages(): int {
     const book = Book(
         title: "Small Gods",
@@ -246,83 +177,41 @@ pub fn constructedPages(): int {
     return book.details.pages ?? 0
 }
 
-pub fn copiedGroup(): int {
+test "groups copy" {
+    assert constructedPages() == 384
     var a = Book(title: "a", author: "x")
     a.details.pages = 7
     var b = Book(title: "b", author: "y")
     b.details = a.details
-    return b.details.pages ?? 0
+    unset a.details.pages
+    assert b.details.pages ?? 0 == 7
 }
 ```
 
-A group leaf follows the same presence rule as a top-level member: a sparse leaf
-reads `T?` and a `required` leaf is bare once the containing resource is valid and
-present. Assigning a leaf sets it present; `unset book.details.pages` clears a
-sparse leaf back to absent. A group leaf assignment reads its containing group,
-updates the leaf, and writes the group back, so the group is not aliased. A group
-value is copied by value: assigning one group into another carries its leaves
-without aliasing the source.
+`constructedPages` supplies the group in the constructor. The test sets one
+leaf of a group the constructor left vacant, assigns the group into another
+value, and clears the source leaf; `b` still holds `7`.
 
-An omitted group whose leaves are all sparse defaults to present with vacant
-leaves. A group with a `required` leaf must be supplied, because a required
-descendant of an unkeyed group is a required member of the containing resource;
-omitting it is the same completeness rejection as an omitted required field.
+A group leaf follows the field rules. An omitted group whose leaves are all
+sparse is present with every leaf absent; a group with a required leaf is
+supplied in the constructor. A group has no type name of its own:
+`Book.details(...)` builds one, and no binding or parameter is annotated with
+it.
 
-A group value has no type annotation of its own: it is the round-trip unit produced
-and consumed at construction, assignment, and member access, not a named type a
-binding or parameter may declare. A group nested inside another group is not yet
-part of the materialized value.
+## What a value carries
 
-## Materialization Boundary
+A resource value carries its fields and its groups. Keyed children stay
+addressed by key: a `Book` read into a binding, passed, returned, or built by a
+constructor holds no `notes`, and `Book(title: "t", notes: ...)` is a
+`check.type` error.
 
-Unkeyed fields and groups are part of a materialized resource value. Keyed
-children are addressed collections and are not included when a resource is read
-into a local binding, passed to a function, returned, or constructed.
+The same boundary holds for a durable entry. Reading `^books[id]` yields the
+fields and groups as a `Book`; its notes stay at `^books[id].notes[noteId]`,
+reached one entry at a time or through a
+[bounded traversal](traversal-and-indexes.md#bounded-durable-traversal). There
+is no whole-family read, replace, or delete.
 
-This distinction applies to durable entries as well. Reading `^books[id]`
-materializes its top-level fields and its root-level groups as `Book`; it can never
-package `^books[id].tags` or `^books[id].notes` into that value. Traverse keyed children
-at their paths.
-
-A keyed family is navigated, never materialized as a whole: the language spells no
-construct that reads, replaces, merges, or clears a whole `branch` family in one
-operation. Change a family by updating each entry at its own key-path in place, or,
-when a local working copy is needed, by a bounded traversal that copies the entries
-and an explicit per-key write-back that reconciles each one. There is no
-family-level merge or subtree-replace.
-
-Whole assignment replaces the entry's own payload — its marker and stored fields —
-and leaves its keyed children in place. Assigning a materialized resource back to the
-same entry therefore rewrites the fields exactly (dropping any omitted sparse field)
-without disturbing the entry's keyed `branch` descendants. See
-[Durable places](durable-places.md#whole-resource-assignment).
-
-This exact-replacement rule is a footgun for the read-modify-write habit:
-assigning a *partially* constructed value — one built from only a few of the
-entry's fields — erases every sparse field the constructed value omits, not only
-the fields being changed. This applies to group leaves as well: a whole value that
-supplies a group with fewer leaves, or defaults an omitted all-sparse group to its
-vacant form, replaces the group and drops every leaf the assigned value omits. To
-change a subset of members without disturbing the rest, assign each at its own path
-(`book.subtitle = …`, `book.details.pages = …`) rather than whole-assigning a
-partial value. The round trip is safe only when the value
-written back carries every field that must survive, which a whole-entry read
-into a local guarantees. There is no checker lint: a partial constructor in
-whole-assignment position is indistinguishable from a deliberate replacement.
-
-## Resource Names
-
-Resources belong to modules and may be named through the module path where the
-project type environment is available. They do not use `pub`. A resource name
-may not collide with another declaration or built-in in the same source
-namespace.
-
-Documentation comments beginning with `///` may precede resource declarations
-and members. They do not affect type, path, presence, or runtime value.
-
-## Project Requirement
-
-A project containing a resource declaration currently requires a native store
-configuration during project checking, even if a particular resource is used
-only as a local value. This is a current project-checking requirement rather
-than a semantic difference between local and durable resource values.
+Whole assignment stores exactly the fields the value carries. Assigning a `Book`
+to `^books[id]` rewrites the entry's fields, drops every sparse field and group
+leaf the value omits, and leaves the `notes` entries in place. To change one
+field, assign it at its own path ([Writing](durable-places.md#writing)).

@@ -284,13 +284,13 @@ pub fn value(): int {
 
     let reference = include_str!("../../../docs/language/types-and-values.md");
     let (_, lists_and_maps) = reference
-        .split_once("## Lists And Maps")
+        .split_once("## Lists and maps")
         .expect("Lists And Maps section");
     let (lists_and_maps, key_types) = lists_and_maps
-        .split_once("## Key Types")
+        .split_once("## Key types")
         .expect("Key Types section");
     let (key_types, _) = key_types
-        .split_once("## Entry Identity")
+        .split_once("## Entry identity")
         .expect("Entry Identity section");
     let lists_and_maps = lists_and_maps
         .split_whitespace()

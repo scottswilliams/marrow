@@ -1,393 +1,100 @@
 # Project status
 
-Marrow is unreleased and on a v0.1 beta line. This page describes the repository
-at the same Git revision and separates current behavior from direction.
+Marrow is unreleased. The tables below say what the toolchain does at this
+revision and what is future work; the [language reference](language/README.md) defines
+each behavior.
 
-The beta line began at lane B00 with a deliberate capability trough: the
-entangled prototype semantic owners were deleted, and the trustworthy decoupled
-parts were retained to be built on. The verticals listed under Future are being
-refounded lane by lane; a feature is absent until its lane lands it.
+## What works
 
-| State | Meaning |
-|---|---|
-| Current | Implemented behavior documented by the current reference and tests. |
-| Future | Unimplemented direction under `docs/future/`; it is not current syntax or a guarantee. |
+| Area | Today | Page |
+|---|---|---|
+| Language core | Modules, functions, generics, `const` and `var`, `if` and `if const`, `match`, `while`, bounded `for`, let-else, `require`, prefix `try`, checked arithmetic, and `test` blocks. Braces delimit blocks. | [Source and syntax](language/source-and-syntax.md), [Control flow](language/control-flow.md) |
+| Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums, `Option` and `Result`, lists and maps, aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
+| Resources | Required and sparse fields, groups, keyed branches nested to 16 levels, and local resource values. | [Resources](language/resources.md) |
+| Durable places | Keyed store roots with one or several key components, and several roots per project. Field and whole-entry reads and writes, `exists`, `place`, `delete`, entry identity `Id(^root)`, and each export's access demand from `marrow check`. | [Durable places](language/durable-places.md) |
+| Transactions | One `transaction` block per mutating export. Every `return` inside it commits; a fault rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
+| Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
+| Tests | `marrow test` runs every `test` block; a durable test runs against a fresh in-memory store. | [Tests](language/tests.md) |
+| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
+| Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. | [Language server](tools/lsp.md) |
+| Store lifecycle | `marrow import` provisions a store; `marrow run --store` runs an export against it through the companion runner; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`. | [Operations](operations/README.md) |
+| TypeScript client | A generated strict client and a Node supervision module over a private local channel. | [TypeScript client](tools/typescript-client.md) |
 
-## Current
+A repository test compiles every `mw` example in the reference and runs it
+through `marrow test`. The command names `data`, `doctor`, `evolve`, `serve`,
+`backup`, and `restore` are recognized; each reports `cli.command_unsupported`.
 
-The beta workspace is seventeen crates: the retained diagnostic-code registry
-(`marrow-codes`), syntax owner (`marrow-syntax`), ordered-byte storage engine
-(`marrow-store`), pure project-input owner (`marrow-project`), bounded physical
-project-input adapter (`marrow-project-fs`), and temporal-domain owner
-(`marrow-temporal`); the refounded compiler pipeline (`marrow-compile`,
-`marrow-image`, `marrow-verify`, `marrow-vm`) and path kernel (`marrow-kernel`);
-the sole descriptor-rooted filesystem publication and pending-journal owner
-(`marrow-fs-journal`);
-the native store lifecycle owner (`marrow-lifecycle`), pure local-wire protocol
-owner (`marrow-local-wire`), and attached runner (`marrow-runner`); the language
-server (`marrow-lsp`); and the `marrow` CLI. The
-[implementation map](implementation/README.md) describes each.
+## Not yet available
 
-### Language and tooling
+- Third-party packages ([packages](future/packages.md)).
+- Closures ([general-purpose language](future/general-purpose-language.md)).
+- Operations over a singleton root, over a root whose resource declares a
+  nominal field, and over a group inside a group or a branch; each declares and
+  checks today ([durable places](language/durable-places.md)).
+- A keyed scalar leaf such as `tags[pos: int]: string`; a branch holds scalar
+  fields ([resources](language/resources.md)).
+- `decimal` ([types and values](language/types-and-values.md)).
+- Index rename and retirement ([traversal and indexes](language/traversal-and-indexes.md)).
+- Schema evolution. Today a changed durable contract is a
+  `store.contract_changed` refusal and the prior program stays usable
+  ([admission and activation](future/admission-and-activation.md)).
+- Backup and restore ([local applications](future/local-applications.md)).
+- Served execution: several terminals, public paths, and concurrent writers
+  ([served execution](future/served-execution.md)).
+- Path authority: principals and grants finer than read and write
+  ([path effects and authority](future/path-effects-and-authority.md)).
+- Signed releases and a release promise ([compatibility](compatibility.md)).
 
-- Native lexer, parser, and formatter for `.mw` source, with typed parse
-  diagnostics.
-- Diagnostic retention is bounded end to end: syntax and compiler collectors cap
-  at 4096 rows and 1 MiB of retained text, and an over-ceiling project is a typed
-  resource-limit refusal, never a truncated listing.
-- The `.mw` block surface uses mandatory curly braces (statements terminate at a
-  line break or `}`), square-bracket keyed access and key declarations, and
-  angle-bracket generics; `//`/`///` are the comment leaders. This replaced the
-  earlier layout/indentation surface on 2026-07-16; the decision records are the
-  `2026-07-16-block-syntax-evaluation.md` and `2026-07-16-surface-coherence-evaluation.md`
-  memos.
-- One pure project-input owner (`marrow-project`): the closed `marrow.toml`
-  manifest schema (required explicit `edition`), deterministic contained
-  discovery over caller-supplied listings, path-derived module identity, and an
-  immutable project input that privately retains the validated identity ledger's
-  absent/present state and exact present bytes. The owner admits each nonempty
-  identity mutation through one bounded, canonical planner before candidate
-  supply and produces a non-cloneable publication plan binding the captured
-  state to its successor. One bounded physical adapter (`marrow-project-fs`)
-  admits the project root, manifest, source tree, and identity ledger through
-  opened handles under fixed byte, visited-entry, and depth bounds and feeds
-  that owner; the CLI consumes it with an empty overlay. The current physical
-  publisher consumes the plan but does not yet compare its expected state with
-  the filesystem. See [Projects](tools/projects.md).
-- `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
-  or every captured source file in a project directory (`--check`/`--write`);
-  `marrow check` checks a project and describes each export's durable access
-  demand in source spelling; `run`, `test`, `import`, and `image` drive their
-  current bounded paths; `marrow client typescript` generates the strict
-  TypeScript client and the pinned Node supervision module; `marrow --version`
-  and `marrow --help`. The standalone `marrow-lsp` command serves editor facts
-  over stdio. Other recognized command names report
-  `cli.command_unsupported` until their refounding lanes land.
-- The formatter canonicalizes a left-anchored self-update to compound assignment
-  (`x = x + e` becomes `x += e`) and owns the `use` block (sorted, deduplicated,
-  one import per line); it never reorders declarations.
-- A declaration the compiler refuses keeps its name: no use of a declared name is
-  reported as a name that is not in scope, and the cause is reported once at the
-  declaration. For modules, types, generic templates, resource members, store roots,
-  constants, and function signatures, the first use of the name is additionally
-  steered to that report under the declaring code, and later uses fail silently. A
-  refused parameter or local binding reports at its declaration only; each of its
-  uses fails silently and adds no row. A refused declaration also occupies its name, so a
-  redeclaration is a name conflict in either order. Structs and enums are refused as
-  whole declarations rather than per member, so a construction of a refused struct
-  reports the declaration's cause and does not additionally report an undeclared
-  field ([Refused declarations](language/modules-and-functions.md#refused-declarations)).
-- Reference pages state how idiomatic Marrow is written
-  ([Idioms](language/idioms.md)) and the closed surface laws — the sigil economy,
-  the grep contract, and the no-synonym law
-  ([the surface laws](language/surface-laws.md)). The normative message-prose standard
-  for the one diagnostic renderer is
-  [Diagnostic voice](implementation/diagnostic-voice.md).
-- Every complete `mw` source example in the current reference is production-gated:
-  a docs-corpus test extracts each module or moduleless script to a correctly
-  pathed project, then compiles and independently verifies it through `marrow
-  test`. A source diagnostic or artifact rejection fails CI. Contextual and
-  deliberately future examples use `text` fences. The `marrow-syntax` corpus
-  proves the same complete sources parse and format.
-- Linux and macOS source builds with the pinned Rust toolchain. Opening a
-  persistent store additionally requires macOS, or Linux on `x86_64` or
-  `aarch64`; any other target builds, runs storeless commands, and refuses a
-  store open at run time naming its platform.
+## Bounds and platform
 
-### Storage engine
+Every limit is a fixed number: source nesting, declaration counts, key
+components, indexes per root, member and value depth, the instruction budget,
+and text and collection sizes ([Execution limits](language/execution-limits.md#limits)).
+The toolchain builds on Linux and macOS with Rust 1.89; opening a store on disk
+has its own platform and layout requirements
+([Running against a store](install.md#running-against-a-store)).
 
-- A private ordered-byte engine contract with in-memory and redb backends under
-  one conformance suite. The engine orders opaque bytes; the logical
-  key/value codecs that give those bytes meaning are owned by the
-  path kernel (`marrow-kernel`), which is the engine's source-language consumer
-  through a narrow byte seam.
-
-### Compiler, image, verifier, VM, and path kernel
-
-A small typed program travels the full production path. The storeless compiler
-(`marrow-compile`) checks a growing subset and lowers to a reproducible program
-image (`marrow-image`); it opens no store and cannot mint a verified image. One
-dependency-resilient driver also backs an editor analysis floor: a revisioned
-immutable `AnalysisSnapshot` carrying the complete per-file diagnostic set and
-selective hover, definition, checked-format, completion, signature-help, and
-document-symbol queries as typed present, absent, or syntax/dependency-unavailable
-facts. Every editor fact is admitted against the snapshot's fact count and byte
-ceilings at the push that produced it — no producer stages its own — so a project
-whose facts would exceed a public snapshot bound is refused as a typed resource
-limit rather than materialized and then rejected; the snapshot retains no parse
-tree, and completion and signature-help queries re-parse the one file they name.
-The independent verifier (`marrow-verify`) is the only image decoder and rejects a
-malformed or hostile image in bounded phases — envelope, table closure,
-per-function structure and types, call/effect closure with all-cycle rejection,
-and transaction-flow validation — before sealing a `VerifiedImage`. The stack VM
-(`marrow-vm`) runs only a sealed image, with source-mapped runtime faults under
-private bounds. Durable operations pass the narrow path kernel (`marrow-kernel`),
-which resolves effective authority (verifier-derived demand intersected with a
-deployment ceiling and an invocation grant, before the first engine call),
-carries the durable operation algebra, and drives the ordered-byte engine over a
-versioned store profile with an in-transaction checked-generation commit
-witness. An indeterminate engine commit produces one opaque affine recovery fact
-containing the exact before/proposed-after witness states and lifecycle scope;
-classification consumes it after a fresh open and full audit under the
-continuously held store-owner lock. Provisioning is the only create-and-stamp
-path. Ordinary and recovery opens are existing-only and write-capable; missing or
-invalid engine files are refused without creation or adoption. The open native
-engine and owner lock remain one private session-host capability.
-
-A function that mutates durable state carries a checked requires-ambient-transaction
-effect: the compiler refuses a durable mutation, or a call to a mutating function,
-that reaches an export body outside a `transaction` block (`check.requires_transaction`,
-at the mutation or call site), and propagates the requirement transitively along the
-acyclic call graph. The verifier independently reconstructs the same mutation closure
-from the image and rejects a violating or tampered image at `image.flow`. A `return`
-inside an owned region is a commit site: it commits the region's staged writes, then
-returns (evaluate expression, commit, return). The region's commit sites are its exits
-— each in-region `return` and the closing brace — so a guard that returns early commits
-and exits without threading an accumulator flag; only the owning export's returns
-commit. Prefix `try` may not cross an owned region: its implicit `err` exit carries no
-commit and is refused at `image.flow`.
-
-`marrow run <export>` drives this path end to end for a storeless export. A
-durable program — a keyed resource, a store root, its transactions, reads, and
-bounded iteration — compiles, independently verifies, and completes its durable
-identity. Durable execution has returned for source tests (E01): a `test` whose
-body reads or writes durable data runs against a fresh in-memory ephemeral
-attachment, minted from the verified test image with a ceiling equal to the
-test-image demand union, so the read kernel drives the store under `marrow test`
-without any raw seeder. A test either performs those durable operations directly
-or **drives** the application's exports, where each export call is its own
-invocation boundary — a mutating export commits to the attachment and a later
-reading export observes it, and a faulting export rolls back without disturbing a
-prior commit. A body may not combine the two styles (`check.test_driver_mix`). The flat single-component scalar root — entry and field
-presence, field reads and coalesce, required and sparse field writes — executes
-this way, together with its single-level single-component-keyed scalar-field `branch`
-placements, whose whole entries create, read, replace, and erase through the
-two-component address `^root(key).branch(bkey)` (a branch entry is a distinct node one
-level down, so its create leaves the root descendant-only and a whole-entry root
-replace or erase preserves it). Bounded nested `for` traversal executes over a root
-entry family or a single-level branch family: `for k in <place> at most N [from f]`
-freezes the first `N` immediate keys after an optional inclusive `from`, runs the
-body once per frozen key in ascending order, and runs the mandatory `on more` block
-when a further key existed and the frozen bodies completed normally — the frozen
-keys are immune to writes the bodies perform. Durable traversal is always bounded:
-the earlier unbounded durable `for k in ^root`, its value-binding `for k, v` durable
-form, and `reversed` durable iteration were removed with the unbounded next-key
-cursor family (opcode, kernel op, and neighbor `next`/`prev` built-ins) and have no
-owner. Widened field values — a dense `struct`/record, a closed `enum`, and
-`Option`/`Result` — are stored inline in a field-leaf cell and execute end to end;
-nominal-typed fields stay parked with their owning lanes, and a collection in a field is
-rejected. A resource may declare thousands of mostly-sparse fields: a whole-entry read
-is a field-leaf range scan whose engine work is proportional to the present count
-(`O(populated / page + 1)` scan calls), not the declared width. The declared width
-guard admits up to 4096 top-level fields, and a durable resource declaring the full
-4096-field width compiles. Field-leaf operation sites are emitted only for the fields
-the code addresses, so a wide resource's image size tracks its referenced fields
-rather than its declared width; the 512 KiB ceiling bounds the whole image. A
-materialized resource value is an ordinary by-value value: it is named by a
-`const`/`var` annotation (bare or optional), passed to a bare function parameter,
-and returned (bare or optional) from a function, copied by value at each boundary
-so a callee's mutation never reaches the caller — the copy-part-and-save-back
-journey written through ordinary functions. An optional resource behaves like any
-optional record; only a resource composed under a generic (`Option<Book>`,
-`List<Book>`) is refused, since a resource is not a value argument to a built-in
-generic. Persistent
-execution runs over a companion runner: `marrow run <export> --store <dir>` runs a
-durable export against a provisioned store by launching a release-verified
-companion runner attached to the store, and `marrow import` populates and
-provisions a store the same way; the CLI itself never opens a store. A durable
-`run` without `--store` has no store to act on and reports the typed
-`cli.durable_unsupported` outcome. Durable execution keeps function completion
-separate from commit state: an invocation that does not return can report
-`known_old`, `known_new`, or `unknown` without becoming a value or an ordinary
-retryable fault. An already classified known outcome leaves the owner usable; a
-known result from indeterminate-commit recovery returns a freshly opened usable
-owner only inside that process. Recovery quarantine is irreversible: dropping a
-known owner, reaching unknown, or losing the opaque recovery fact leaves the
-descriptor unclean and retains the advisory lock until process exit. No path
-replays application code. A store root is a
-singleton (no key), a single-component keyed root, or a composite keyed tuple of
-up to eight ordered components; each key component is a scalar in the closed
-orderable durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`).
-Every root — and each of its key components — is a distinct durable graph node with a
-complete entropy-minted identity in the committed machine-written `.marrow/ids`
-ledger. Storeless `marrow run` receives each compiler-owned missing anchor once
-per project, admits the whole bounded request before entropy, and publishes the
-canonical successor; every other path requires complete identities. Tombstones
-are parsed and preserved, while the production retirement action remains
-future. The program's durable graph carries a stable 32-byte
-durable-contract identity computed over those ledger ids and the graph shape
-(including key-component order) — so an anchor move preserves durable identity (the
-ledger-model property; a rename becomes an anchor move under the future apply
-action, while the additive-only `run` mint does not) — which the verifier
-independently recomputes from the image and rejects on mismatch. A project may
-declare more than one store root; each is a distinct durable graph node with its own
-name-keyed cell family and its own kernel schema, and the read/write kernel executes
-over all of them. A single `transaction` region may read and write several roots and
-commits — or, on a fault, rolls back — as one atomic unit. An entry identity is
-root-local: `Id(^assets)` addresses `^assets` and only `^assets`, and using it against
-another root is rejected both at the checker and, for a forged image, at the verifier;
-two store roots may not share a name (which would share a physical cell family), but
-they may name the same resource — a resource is a declaration and a root is an
-occurrence of it, so two roots over one resource are independent durable places that
-share the declaration's members, identities, and branch entry records, and are
-admitted only when both claim the identical graph. Such a project compiles, verifies,
-and executes ephemerally; provisioning a persistent store from it is refused, because
-the head identity map is a bijection over every root's node identities and one
-declaration under two roots presents each member identity twice. That refusal is the
-named hold on the physical layout for a shared declaration. The
-compiler fully lowers operations over a keyed root — single-component or a composite tuple
-— whose top-level fields are each a scalar or a widened value (a dense `struct`/record, a
-closed `enum`, or an `Option`/`Result`), together with its root-level `group` members (of
-scalar or widened leaves, read/replaced/erased whole and by leaf) and its `branch`
-placements (with one or more key components each) nested within the fixed
-16-level member-tree depth; bounded traversal, however, iterates a single key
-component, so a `for` head over a composite-keyed layer parks. An entry identity `Id(^root)`
-is a first-class runtime value — constructed with `Id(^root, keys)`, compared, passed and
-returned, and dereferenced with `^root[id]` — but is not a durable field value. A managed
-index read executes: a non-unique index is scanned with a bounded `for` head binding the
-source `Id(^root)`, and a unique index is an exact `^root.index[keys]` lookup yielding the
-optional `Id(^root)`; the scan requires a single-component-identity root and binds the
-trailing identity component. Singleton and nominal-field roots, and a group nested in a
-branch or in another group, declare and verify their identity but their operations are not
-yet lowered, and a collection in a field is rejected. The admitted subset is narrow and grows
-lane by lane; a well-formed construct outside it is a typed `check.unsupported` diagnostic.
-
-### Local wire and TypeScript client
-
-A program's exported functions form a host-neutral wire interface reconstructed
-from the verified image (never serialized into it), with a deterministic
-32-byte `InterfaceId`; the closed transfer graph carries unit, the seven
-scalars, optionals, products, and sums, and excludes finite collections until
-the earned transfer extension. One pure wire owner (`marrow-local-wire`)
-defines the framed protocol — bounded frames, canonical JSON, a closed
-handshake/request/response/fault/incomplete grammar, and the closed
-`not_started`/`interrupted`/`outcome_unknown` loss classification with no
-replay. An incomplete reply carries the source condition and the separate closed
-`known_old`/`known_new`/`unknown` durable state, never witness bytes. The stock
-runner (`marrow-runner`) serves storeless, ephemeral-durable, and native-durable exports over a
-private Unix socket under the supervised-channel law (mode-0700 directory,
-listener bound before the handshake, launch nonce, poll-based deadlines,
-exact monotonically increasing request/reply turns without wrap, and explicit
-fail-closed teardown). After dispatch, every failure to accept one exact valid
-reply is outcome-unknown with a distinct typed cause. A durable shape not yet supported by the path
-kernel is rejected with `runner.durable_unsupported`. `marrow client typescript`
-emits the generated strict client and the pinned Node supervision module; see
-[TypeScript client](tools/typescript-client.md).
-
-### Deleted at B00
-
-The prototype's entangled owners were deleted on the beta line and must not
-shape the replacement architecture. Each returns only through its refounding
-lane, rebuilt as a new owner:
-
-- the `surface` stack (declarations, generated CRUD/collection/action families,
-  operation-tag HTTP routes, experimental serving, and the generated TypeScript
-  client), and the user-facing storage-cost model;
-- the tree-walking interpreter, the composed project-session owner, the
-  resource/schema split, the
-  store-projected catalog and current evolution lifecycle, managed indexes and
-  `nextId`, and the mixed compiler/runtime/store JSON model;
-- the `check`/`run`/`test`/`data`/`doctor`/`evolve`/`serve`/`client`/`backup`/
-  `restore` command families and the store's logical/admission/catalog/
-  backup layers (the byte engine and its codecs are retained; `init` returns
-  refounded at B01 as a pure-project-owner scaffold with no store); and
-- the redb page-level recovery probe and the process-global panic-hook swap.
-
-## Compilation and test speed
-
-[Vision](vision.md#compilation-and-test-speed) states compilation and test speed
-as a design constraint, and [Compilation and test
-speed](implementation/speed.md) states the rules that follow from it. This
-section records what has been measured against each of the three ranked clocks
-and what has not. Every figure names the revision and method it was taken with;
-a figure taken at one revision is not restated as current at another.
-
-- **Marrow compile time over `.mw` programs: no end-to-end baseline.** No
-  measurement of a whole source-to-image compile over a `.mw` program of any
-  size is recorded, so no statement about that interval — including a statement
-  that it is adequate — has evidence. One segment of it is measured separately:
-  the editor re-parse path that answers a completion query costs under a
-  millisecond for a 64 KiB file and 54 ms for a file at the admission ceiling in
-  its densest shape, on the recorded host and in the optimized profile the
-  server ships in, pinned by budget tests ([Language server](tools/lsp.md),
-  [Bounded analysis facts](implementation/README.md#bounded-analysis-facts)).
-  Defining a whole-compile workload and taking its first baseline is outstanding
-  work.
-- **Workspace test wall time: 144.1 s serial, measured 2026-08-11 at
-  `71aa47d3`.** That sweep ran the battery serially — one test binary at a time,
-  unoptimized profile, on the recorded host — over 197 test binaries and 3,166
-  tests with none failing. Serial is the sweep's method and not a contributor's
-  cost: the ordinary parallel `cargo test --workspace` is faster, and measured
-  107 s at `4a2df7ce`, where the battery had grown to 3,439 tests. A serial
-  figure and a parallel figure are not comparable, and neither transfers to
-  another machine.
-- **Rust build time: 13 s clean at `4a2df7ce`; incremental not recorded.** A
-  clean workspace build into a fresh target directory measured 13 seconds on the
-  recorded host in the unoptimized profile. No incremental-rebuild figure is
-  recorded.
-
-A broad gate records all three clocks. A change that materially increases one
-names the cause; an unexplained increase is a finding rather than an accepted
-new baseline.
-
-## Future: v0.1 beta
-
-The planned beta direction includes:
-
-- an ordinary storeless language floor with algebraic data types, exhaustive
-  patterns, real rank-1 parametric functions and types, generic local
-  collections, modules, source tests, formatting, and editor facts; closures are
-  deferred until a maintained program needs them;
-- `marrow.toml` with exact path and Git dependency edges, a separate
-  stable-identity ledger, and a verified offline cache; no dependency lock or
-  vendoring unless a moving-resolution case earns one;
-- one reproducible ProgramImage, an independent bounded verifier, and a bytecode
-  VM qualified on one target;
-- closed value and durable representations — dense products and sparse resources
-  — with typed ordered durable trees, separate root and branch topology, narrow
-  compiler-maintained nonunique and unique indexes, explicit transactions,
-  application-owned counters and secondary trees, and bounded nested traversal;
-- compiler-described effects, exact accepted execution binding, and one
-  authority-checking path kernel;
-- one qualified private native engine with no public backend choice;
-- StoreId, durable-contract and executable-binding generations, read-only
-  admission, crash-recoverable activation, metadata-only additive activation with
-  one bounded add-index transition, logical backup, and fresh-store restore; and
-- a personal local application whose durable model is proven terminal-first and
-  whose release gate is a generated strict TypeScript client supervised by an
-  Electron/Node process.
-
-[Future direction](future/) records goals and boundaries without defining
-unimplemented syntax or exact formats.
-
-## Not current
-
-Marrow does not currently provide general-purpose language completeness,
-third-party packages, executable/store admission and activation beyond the
-implemented local attach binding, online schema evolution, logical backup and restore, a supported packaged
-desktop application, public path publication, a supported served profile,
-concurrent multi-writer deployment, replication, high availability, signed
-releases, exact detection of out-of-band engine substitution or rollback, or
-institutional protocol/compliance evidence. The compiler, program image,
-verifier, VM, and path kernel are present but early, and their admitted language
-subset is narrow. Persistent identity, provision/open/import, the local
-commit-recovery slice, and execution-time demand/ceiling/grant attenuation are
-implemented for the documented local profile. Broader executable/store
-admission and activation, evolution, backup/restore, and authority administration
-remain stubs with named refounding points.
-
-## Current trust boundaries
+## Trust boundaries
 
 - Filesystem permissions and the host process protect local store files.
 - Commit recovery assumes that no structurally valid foreign store or prior
-  snapshot is substituted out of band while the advisory owner lock is held.
-  The current redb boundary cannot establish engine-file identity; path or file
-  metadata approximations are not used. Adversarial substitution and rollback
-  detection remains a release veto, not a current guarantee.
+  snapshot is substituted while the owner lock is held. Substitution or
+  rollback of a store file under the lock is not detected.
 - Checksums and structural checks detect selected corruption; they do not
-  authenticate hostile storage or prove full application validity.
+  authenticate hostile storage or prove application validity.
 - Encryption at rest is delegated to the filesystem or substrate.
 - TLS, authentication, identity providers, operator credentials, and hardware
   durability are deployment responsibilities.
 - Static checking cannot establish application intent, correct policy design,
   regulatory compliance, or absence of external side channels.
+
+The supply chain has a floor:
+
+- The workspace carries no `unsafe` code; CI compiles with `-F unsafe-code`.
+- An advisory CI job runs `cargo audit` over the committed `Cargo.lock` and
+  emits a CycloneDX bill of materials. An advisory is triaged as a finding and
+  does not block integration.
+- A new dependency requires maintainer approval and a license review
+  ([contributing](../CONTRIBUTING.md)).
+- Tamper evidence, an audit trail, encryption at rest, and image authenticity
+  are future work ([served execution](future/served-execution.md)).
+
+## Measurements
+
+Each figure names the revision and method it was taken with. A figure taken at
+one revision is not restated as current at another, and no figure transfers to
+another machine.
+
+| Clock | Figure | Revision | Method |
+|---|---|---|---|
+| Compile time of a `.mw` program | 12.5 ms median for `marrow check` over a 2,278-line, 2,000-field program; slowest of 31 runs 13.1 ms | `294a6290` (2026-08-31) | Release binary, one fresh process per run, warm filesystem, Apple M5 Pro. The program is `crates/marrow/tests/fixtures/v01/e07_m_corpus/clinical`; the timing harness is not in the repository. |
+| Editor completion | Under 1 ms for a 64 KiB file; 54 ms for a maximum admitted file in its densest shape | Budget test in `crates/marrow-compile/tests/query_local_syntax.rs` | Worst of five after a warm request, three runs, optimized profile. The release CI leg asserts the 10 ms and 150 ms budgets. |
+| Workspace test wall time | 96.6 s for the unit and integration battery; 12.3 s for a settled doctest battery | `294a6290` (2026-08-31) | `cargo test --workspace --locked`, unoptimized profile, Apple M5 Pro. Two whole-battery runs measured 490 s and 840 s with a stall entering doctests whose cause was not established. |
+| Workspace test wall time | 107 s, 3,439 tests | `4a2df7ce` | Ordinary parallel `cargo test --workspace`, unoptimized profile. |
+| Workspace test wall time | 144.1 s, 197 test binaries, 3,166 tests | `71aa47d3` (2026-08-11) | One test binary at a time, unoptimized profile. A serial figure and a parallel figure are not comparable. |
+| Clean Rust build | 7.4 s | `294a6290` (2026-08-31) | Workspace build into an empty target, unoptimized profile, Apple M5 Pro. |
+| Incremental Rust build | 0.26 s after touching `marrow`; 0.72 s after touching `marrow-compile` | `294a6290` (2026-08-31) | Median over warm mtime-only touches, unoptimized profile. |
+| Clean Rust build | 13 s | `4a2df7ce` | Workspace build into a fresh target directory, unoptimized profile. |
+
+The three clocks and the design rules they impose are described in
+[Compilation and test speed](implementation/speed.md#three-clocks).

@@ -402,7 +402,7 @@ fn decorate(value: string): string {
     );
 
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let standard = normalize(include_str!("../../../docs/language/standard-library.md"));
+    let standard = normalize(include_str!("../../../docs/language/builtins.md"));
     let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
     let functions = normalize(include_str!(
         "../../../docs/language/modules-and-functions.md"
@@ -682,7 +682,7 @@ pub fn run(): int {
 
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let readme = normalize(include_str!("../../../docs/language/README.md"));
-    let standard = normalize(include_str!("../../../docs/language/standard-library.md"));
+    let standard = normalize(include_str!("../../../docs/language/builtins.md"));
     let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
     let functions = normalize(include_str!(
         "../../../docs/language/modules-and-functions.md"

@@ -1,9 +1,7 @@
 # Marrow
 
-Marrow is a general-purpose statically typed compiled language for programs that
-work with durable data. Its distinctive model is that hierarchical durable
-locations are typed language places rather than tables, queries, repository
-objects, or string-keyed storage calls.
+Marrow is a statically typed compiled language in which durable data is
+ordinary program state.
 
 ```text
 task.status = Status::done
@@ -11,30 +9,12 @@ task.status = Status::done
 ```
 
 The first assignment changes a local value. The second changes durable state.
-Both resolve `status` through the language's type system; `^` makes the durable
-effect visible. Durable code still has additional rules for presence, keyed
-children, transactions, bounded traversal, and failure.
-
-Marrow is language- and compiler-first, and is designed to be built with
-production at scale in mind: its architecture, representations, and semantics are
-judged against what a widely used general-purpose language and its largest
-deployments require, not against what a prototype or demo can get away with. It
-is not a query engine and has no supported public serving profile.
-
-The language is unreleased and on a v0.1 beta line. The project is refounding an
-entangled prototype: at lane B00 the prototype's compiler, interpreter, and
-durable owners were deleted, leaving a retained core (the syntax owner, the
-diagnostic-code registry, and an ordered-byte storage engine) plus a thin CLI.
-The verticals below — a reproducible program image, an independent verifier, a
-bytecode VM, a path kernel, and the durable model — are being rebuilt lane by
-lane. A feature is absent until its lane lands it. Current bounds and capability
-gaps are honest waypoints on that path, not the design bar.
+The `^` is the whole difference: both lines resolve `status` through the same
+type, and a durable place is read, assigned, and deleted like a local one.
 
 ## Example
 
-This example shows the durable model. It checks on the beta line, runs under
-`marrow test` through a fresh ephemeral attachment, and — against a provisioned
-store with the companion runner installed — runs under `marrow run --store`.
+A module with one durable root and two exports:
 
 ```mw
 module app::tasks
@@ -70,121 +50,58 @@ pub fn complete(id: Id(^tasks)): bool {
 }
 ```
 
-Every durable write occurs in an explicit `transaction`. The caller supplies the
-entry identity as an `Id(^tasks)` rather than the store minting one.
-[Project status](docs/status.md) identifies current and future work precisely.
+`resource Task` is an ordinary value shape, and `store ^tasks[id: int]: Task`
+gives it a durable root keyed by an `int`. `^tasks[id]` is one entry and
+`^tasks[id].title` is one field of it. Every durable write sits inside a
+`transaction`; when the block ends, its writes commit together.
+`exists(^tasks[id])` tests presence, so `complete` returns `false` for an
+absent entry. The caller passes the entry identity as an `Id(^tasks)`, the
+identity type of that root.
 
-## Purpose
+`marrow test` runs a project's tests against a fresh in-memory store, one store
+per test. Running an export against a store on disk needs the companion layout
+described in [Installation](docs/install.md#running-against-a-store).
 
-Applications commonly repeat the meaning of durable state across source types,
-serialization, database access, migrations, external interfaces, and
-authorization code. Marrow is designed so that one compiler-owned semantic model
-can remove much of that seam while keeping the realities of durable data
-explicit:
+## Why
 
-- point reads and writes can fail;
-- collections may be larger than memory and require bounded traversal;
-- related writes need visible atomicity;
-- code changes must account for existing data; and
-- executing code needs authority independent of the accesses it happens to
-  contain.
+Durable data differs from local data in five ways, and Marrow keeps each one
+visible in the source. A read may find nothing, so a durable read yields an
+optional such as `string?` and the program says what happens when the value is
+absent. A collection may be larger than memory, so a loop over a durable root
+states its bound with `at most N` and its overflow behavior with `on more`.
+Related writes belong together, so they share one `transaction` block and
+commit as one. A new program meets data the previous program wrote, so a store
+checks the program's durable shape before it opens. Running code needs authority
+over the places it touches, so `marrow check` reports the durable places each
+export reads and writes.
 
-The intended language is useful without a store. Ordinary modules, functions,
-algebraic data types, generics, collections, packages, formatting, testing, and
-editor support are language foundations, with closures deferred until a
-maintained program needs them. Direct durable state is the differentiator, not a
-substitute for those foundations.
+Data is navigated, not queried. A program reads or changes one durable element
+by its path and walks an explicit subtree with an ordinary loop. No mapping
+layer, serializer, or repository stands between the code and the data, and a
+program that uses no durable data needs no store.
 
-## Current implementation
+Transparent persistence, as in an object database, hides the commit, the disk
+walk, and the data format. Marrow spells out all three: `transaction` marks the
+commit, a bounded `for` marks the walk, and `resource` declares the shape.
 
-Marrow is early and unreleased. The beta line began at lane B00 with a
-deliberate capability trough: the entangled prototype owners were deleted and
-the trustworthy decoupled parts retained.
+## Status
 
-| Area | Current implementation |
-|---|---|
-| Front end | Native lexer, parser, and formatter for `.mw` source with typed parse diagnostics |
-| CLI | `marrow init`, `marrow fmt` (a single file or a project directory, `--check`/`--write`), `marrow check` (check a project and describe each export's durable access demand), `marrow run` (storeless, or a durable export with `--store`), `marrow test`, `marrow import` (provision and populate a native store from JSONL), `marrow image` (write the verified program image against an accepted ceiling id), and `marrow client typescript`, plus `--version`/`--help`; the refounding command names (`data`, `doctor`, `evolve`, `serve`, `backup`, `restore`) report `cli.command_unsupported` until they land |
-| Language server | The standalone `marrow-lsp` command runs an in-tree LSP server over stdio, serving diagnostics, whole-document formatting, hover, definition, completion, signature help, and document symbols from the compiler's published analysis facts; it reconstructs no language semantics and opens no store |
-| Compiler pipeline | The storeless compiler, reproducible program image, independent verifier, bytecode VM, and typed path kernel run a narrow, growing language subset end to end; a well-formed construct outside the admitted subset is a typed `check.unsupported` diagnostic |
-| Storage engine | A private ordered-byte engine contract with in-memory and redb backends under one conformance suite, plus the logical key/value/civil-date codecs; the path kernel is the engine's source-language consumer through a narrow byte seam |
+Marrow is unreleased; today, keyed durable roots, transactions, bounded
+traversal, indexes, and durable tests run end to end. Packages, schema
+evolution, and path authority are future work ([status](docs/status.md)).
 
-The prototype checker, tree-walking interpreter, catalog, durable lifecycle, and
-the `surface`/server/client families were deleted at B00 and are being rebuilt
-as new owners. [Project status](docs/status.md) lists what returns through which
-lane.
+## Documentation
 
-## v0.1 direction
-
-The beta is planned as one canonical distribution with:
-
-- an ordinary storeless language demonstrated by a useful command-line program;
-- a light Git/path package workflow with exact pinned dependency edges, a
-  separate stable-identity ledger, and a verified offline cache, with no
-  dependency lock file or vendoring;
-- canonical, independently verified program images and a portable VM;
-- direct durable trees over ordinary language values, explicit transactions,
-  and bounded ordered traversal;
-- compiler-described durable effects intersected with independently accepted
-  execution authority at one path kernel;
-- one private qualified native storage substrate rather than a public backend
-  matrix;
-- exact executable/store binding, narrow activation, logical backup, and
-  fresh-store restore; and
-- a terminal-first local application followed by generated TypeScript bindings
-  and a supervised local sidecar.
-
-Unimplemented details are indexed through the [documentation map](docs/) and
-are not current syntax or guarantees. The repository deliberately has no parallel
-specification or ADR archive; implemented code, tests, and concise current
-reference pages move together.
-
-## Scope
-
-Marrow does not currently provide a query language, planner, ORM, general CRUD
-generator, compiler-integrated path authorization, a supported
-desktop bundle or public serving profile, replication, high availability, or
-institutional application certification.
-
-In the target architecture, storage engines supply ordered bytes, atomic
-transactions, durability, and native recovery beneath a private boundary.
-Analytical search, messaging, HTTP, identity providers, and other systems
-integrate through typed boundaries when a program needs them. Marrow source
-should not inherit their physical concepts.
-
-## Lineage
-
-MUMPS demonstrates the usefulness of direct hierarchical durable state in
-long-lived transactional systems. It is product evidence and inspiration, not a
-compatibility target. Marrow does not inherit M syntax, dynamic typing,
-schema-by-convention, implementation architecture, or historical tooling limits.
-
-Hierarchical and orthogonal persistence, effect systems, capability systems,
-content-addressed code, typed routing, and integrated databases all have prior
-art. Marrow's direction combines selected ideas around a compiler-owned model;
-novelty and benefit must be established by working software and measured
-evidence rather than asserted in the README.
-
-## Build and documentation
-
-Installation currently requires the pinned Rust toolchain and a source build.
-Start with [Installation](docs/install.md), then the
-[Quickstart](docs/quickstart.md) — checkout to a running durable program.
-
-- [What Marrow is and is not](docs/what-marrow-is.md) states the scope in one page.
-- [Documentation map](docs/) explains authority and navigation.
+- [Installation](docs/install.md) builds `marrow` from source.
+- [Quickstart](docs/quickstart.md) goes from `marrow init` to a durable program.
+- [Walkthrough](docs/walkthrough.md) reads one durable application line by line.
 - [Language reference](docs/language/) defines current `.mw` behavior.
-- [Tool reference](docs/tools/) and [Operations](docs/operations/) document the
-  current CLI and store.
-- [Project status](docs/status.md) separates current and future work.
-- [Vision](docs/vision.md) states the product direction and boundaries.
-- [Implementation guide](docs/implementation/) maps the Rust code that exists.
-- The documentation map links unimplemented direction without treating it as
-  proposed syntax.
-- [Security policy](SECURITY.md) gives the reporting channel and current trust
-  boundary.
-- [Contributing](CONTRIBUTING.md) gives the development and verification
-  workflow.
+- [Tool reference](docs/tools/) covers `marrow` and the `marrow-lsp` editor server.
+- [Operations](docs/operations/) covers a store on disk.
+- [Project status](docs/status.md) lists what is implemented.
+- [Vision](docs/vision.md) states the product direction.
+- [Contributing](CONTRIBUTING.md) gives the checks and the documentation rules.
+- [Security policy](SECURITY.md) gives the reporting channel.
 
 ## License
 

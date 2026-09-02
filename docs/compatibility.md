@@ -1,76 +1,48 @@
 # Compatibility
 
-Marrow is experimental and unreleased. Compatibility statements on this page
-describe the current repository revision; they are not a v0.1 release promise.
-A future release must identify both its version and source revision.
+Marrow is unreleased. This revision promises the interfaces below and nothing
+beyond them.
 
-## Current Build Boundary
+## Versioning
 
-The workspace package version is `0.1.0`, uses Rust 1.89, and currently supports
-source builds on Linux and macOS. Opening a persistent store is narrower than
-the build: the descriptor-rooted filesystem operations a store open performs are
-provided on macOS, and on Linux for `x86_64` and `aarch64`. Any other target
-builds and runs storeless commands, and refuses a store open at run time naming
-the operating system and architecture. There is no `v0.1.0` release tag,
-crates.io publication, signed binary, or prebuilt distribution.
+The package version is `0.1.0`. `marrow --version` prints it:
 
-`marrow --version` prints the package version and an engine-profile tuple. The
-tuple identifies storage layout facts used by the current binary; it is not a
-claim that arbitrary builds with the same package version are interchangeable.
+```text
+marrow 0.1.0
+```
 
-## Current Tooling Interfaces
+There is no release tag, crates.io package, signed binary, or prebuilt
+distribution. A build is identified by the source revision it was built from. A
+store records the format version it was provisioned with, and a build that does
+not support that version refuses to open it (`store.format_version`).
 
-The current CLI uses three exit classes:
+## Platforms
 
-| Exit | Meaning |
-|---:|---|
-| `0` | The command completed successfully. |
-| `1` | The command reached a project, language, runtime, storage, or tooling failure. |
-| `2` | Command-line usage failed before the command body ran. |
+The source builds on Linux and macOS with Rust 1.89. Opening a store on disk is
+narrower than the build; [install](install.md#running-against-a-store) names the
+platforms.
 
-Dotted diagnostic codes and structured report fields are the current
-machine-readable interfaces. Human-readable message prose may change. The
-[Error Code Reference](error-codes.md) is generated from the code registry.
-Before a release policy is adopted, even structured interfaces may change with
-the implementation and its documentation.
+## Stable interfaces
 
-## Projects And Durable Data
+Three interfaces are written for machines. A diagnostic carries a dotted code
+such as `check.type`; [error codes](error-codes.md) lists every code, generated
+from the registry. The `marrow` command exits `0`, `1`, or `2` ([exit
+codes](tools/cli.md#exit-codes)). With `--format jsonl`, `run` and `test` print
+one JSON object per outcome with fixed field names: `kind`, `outcome`, `code`,
+`span`, and, for an interrupted invocation, `durable`.
 
-`marrow.toml` is the current project manifest: a closed-schema TOML file whose
-only key is a required `edition`. Its schema and the path-derived module identity
-it anchors are described in [Projects](tools/projects.md).
+Human-readable message text may change between revisions. Until a release policy
+exists, a structured interface may also change with the implementation; the
+reference records the change in the same revision.
 
-A persistent store is implemented for the documented local profile. `marrow
-import` provisions a store and populates it, and `marrow run <export> --store
-<dir>` runs a durable export against it; both hand the verified image to a
-release-verified companion runner, and provisioning is the only path that
-creates a store. A store records the program image it is bound to and the
-authority ceiling it accepted at provision; an image whose demand exceeds that
-ceiling is refused before any engine call. Presenting the identical image opens
-the store with no write. A code-only image change — the durable contract and
-interface unchanged, and the demand within the accepted ceiling — atomically
-rebinds the store to the new image and leaves every stored value in place; only
-the store's binding metadata is rewritten. A change to the durable contract or
-interface is a typed refusal that leaves the store intact and the prior program
-usable. No
-implemented transition rewrites stored data; schema evolution is future work.
+## Unstable interfaces
 
-Raw native-store files are private implementation data, not an interchange
-format. Logical backup and restore are future work: the `backup` and `restore`
-command names report `cli.command_unsupported`, and there is no implemented
-procedure for moving durable data between stores.
+The Rust crates are internal. The public interface is the `marrow` command line,
+its exit codes, its JSONL records, and the dotted diagnostic codes. A program
+that links a crate directly has no compatibility promise.
 
-The native redb store is the only current persistent storage substrate. The
-in-memory implementation supports tests and development. The repository does
-not establish portability across multiple persistent substrates; a future
-adapter would have to implement and pass the same storage contract before such
-a claim could be made.
-
-## Unstable Interfaces
-
-The Rust crates in the workspace are internal implementation APIs. Linked-Rust
-entry invocation, runtime sessions, storage types, and JSON DTO modules are not
-stable embedding interfaces.
-
-The prototype surface/client/serve stack was deleted at B00 and has no
-compatibility commitment. See [Project Status](status.md).
+Raw store files are private implementation data with no documented format. A
+store is bound to one program;
+[operations](operations/README.md#changing-the-program) states which program
+changes it accepts. Backup, restore, and schema evolution are future work
+([status](status.md#not-yet-available)).

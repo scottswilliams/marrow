@@ -1,169 +1,96 @@
-# Language Server
+# Language server
 
-`marrow-lsp` is the standalone in-tree language-server command. It reads and
-writes JSON-RPC 2.0 with Language Server Protocol (LSP) message framing over
-standard input and output, takes no arguments, and is normally launched by an
-editor rather than run by hand. It is not a `marrow` subcommand.
+`marrow-lsp` is the editor-facing language server. It speaks JSON-RPC 2.0 with
+Language Server Protocol framing over standard input and output, takes no
+arguments, and is normally launched by an editor. It is a separate executable,
+not a `marrow` subcommand.
 
-The server reconstructs no language semantics. Diagnostics, formatting, hover,
-definition, completion, signature help, and document symbols come only from the
-compiler's editor-analysis fact floor (the revisioned `AnalysisSnapshot`) and the
-shared physical project adapter; the server derives no types, paths, or diagnostics of
-its own and opens no store.
+Every fact the server serves comes from the compiler. Diagnostics, formatting,
+hover, definition, completion, signature help, and document symbols are read from
+the compiler's analysis snapshot for the project. The server derives no types,
+paths, or diagnostics of its own and opens no store.
 
 ## Transport
 
-The server reads and writes LSP-framed messages: each message is a
-`Content-Length` header, a blank line, and a JSON-RPC 2.0 body. Message bodies and
-header blocks are bounded; an oversized or malformed frame is a framing fault. The
-server uses a bounded standard-library transport with no third-party language-server
+Each message is a `Content-Length` header, a blank line, and a JSON-RPC 2.0 body.
+Header blocks and bodies are bounded; an oversized or malformed frame is a framing
+fault. The transport is the standard library alone, with no language-server
 framework, asynchronous runtime, or channel library.
 
-Batch requests (a top-level JSON array) are not supported: the server rejects every
-array as one `-32600` error under the current LSP profile. Invalid JSON is a single
-`-32700` error.
+A batch request (a top-level JSON array) is a single `-32600` error. Invalid JSON
+is a single `-32700` error.
 
 ## Lifecycle
 
 The server follows the standard LSP lifecycle. It answers `initialize`, then
 enters normal operation after the `initialized` notification. Before
-initialization every other request receives `-32002` (server not initialized).
-`shutdown` followed by `exit` terminates with exit code `0`; an `exit` before
-`shutdown`, or end of input without `exit`, terminates with a nonzero code.
+initialization every other request receives `-32002`. `shutdown` followed by
+`exit` terminates with exit code `0`; an `exit` before `shutdown`, or end of input
+without `exit`, terminates with a nonzero code.
 
-At initialization the server selects at most one workspace root: a single
-`workspaceFolders` entry, or `rootUri` when no folder is given. Two or more folders,
-or a malformed root, are rejected with `-32602` and do not complete initialization.
+At initialization the server takes one workspace root: a single
+`workspaceFolders` entry, or `rootUri` when no folder is given. Two or more
+folders, or a malformed root, are a `-32602` error and initialization does not
+complete.
 
 ## Capabilities
 
-In normal operation the server advertises:
+The server advertises these capabilities:
 
-- **Text document sync** — open/close notifications and full-document change sync.
-  A change carries the whole document body; incremental (range) changes are not
-  used.
-- **Diagnostics** — published per file. Opening or changing a document recomputes
-  the whole project and publishes the complete diagnostic list for each file,
-  including an empty list for a clean file. A file removed from the project is
-  cleared with an empty publication.
-- **Formatting** — `textDocument/formatting` returns a single whole-document edit
-  with the canonically formatted source, or no result when formatting is refused
-  (unparsed source, or a rewrite that would drop a retained comment).
-- **Hover** — `textDocument/hover` returns the compiler's canonical type display at
-  a resolved local, parameter, or call site.
-- **Definition** — `textDocument/definition` returns the source location of a
-  resolved function callee. A call to a generic function targets its source
-  template.
-- **Completion** — `textDocument/completion` returns the complete in-scope candidate
-  set for the position class the checker resolves: expression names (locals,
-  parameters, module functions, consts, built-ins, imported modules, and enum type
-  names), struct fields after `.`, enum members after `::`, or type names in a type
-  annotation. The set is a complete list the editor filters; the server applies no
-  prefix or fuzzy filter, ranking, sort key, snippet, or commit character, and offers
-  no `completionItem/resolve`. The position class is derived purely from the checker's
-  resolution model — never from the trigger character or a scan of the document text.
-  An in-progress edit that does not yet parse (a bare `Enum::`, a `receiver.`, an open
-  call argument) still classifies, through the parser's bounded recovery.
-- **Signature help** — `textDocument/signatureHelp` returns the innermost enclosing
-  call's callee signature, its parameter pieces, and the active argument index. A call
-  to a generic function presents its source template signature. The active parameter
-  and the parameter pieces come from the compiler, so no consumer searches the rendered
-  signature text.
-- **Document symbols** — `textDocument/documentSymbol` returns the file's declaration
-  hierarchy: its top-level declarations in source order, each enum's members nested
-  beneath it. It is a projection of the parsed declarations, computed for every
-  parseable file.
+| Capability | Request | Result |
+|---|---|---|
+| Document sync | `didOpen`, `didChange`, `didClose` | Full-document sync; each change carries the whole body. |
+| Diagnostics | published on open and change | The complete list per file, including an empty list for a clean file; a file removed from the project is cleared with an empty publication. |
+| Formatting | `textDocument/formatting` | One whole-document edit with the canonical source, or no result when the source does not parse or a rewrite would drop a retained comment. |
+| Hover | `textDocument/hover` | The canonical type display at a resolved local, parameter, or call site. |
+| Definition | `textDocument/definition` | The source location of a resolved function callee; a generic callee resolves to its source template. |
+| Completion | `textDocument/completion` | The complete in-scope candidate set for the position: expression names, struct fields after `.`, enum members after `::`, or type names in an annotation. |
+| Signature help | `textDocument/signatureHelp` | The innermost enclosing call's signature, its parameter pieces, and the active argument index. |
+| Document symbols | `textDocument/documentSymbol` | The file's top-level declarations in source order, with each enum's members nested beneath it. |
 
-Positions are exchanged in the LSP UTF-16 encoding; the server maps them to and from
-the compiler's UTF-8 source spans. Advertised completion and signature-help trigger
-characters (`.`, `:`, `(`, `,`) are an editor-ergonomics hint only; classification is
-positional in the checker and never inspects the trigger character.
+A completion result is a complete list the editor filters. The server applies no
+prefix filter, ranking, snippet, or commit character, and offers no
+`completionItem/resolve`. The position class comes from the checker's resolution
+of the offset. An unfinished edit (a bare `Enum::`, a `receiver.`, an open call
+argument) still classifies through the parser's recovery.
 
-## Documents and overlays
+Positions are exchanged in the LSP UTF-16 encoding; the server maps them to and
+from the compiler's UTF-8 spans. The advertised trigger characters (`.`, `:`, `(`,
+`,`) are an editor hint; classification is positional.
+
+## Overlays and staleness
 
 While a document is open, the server analyzes the project with the open buffer's
 text overlaid on the file on disk, so diagnostics and facts reflect unsaved edits.
-When a background capture fails — for example, a malformed `marrow.toml` — the failure
-is surfaced once per episode as an error `window/showMessage`, and no diagnostics are
-fabricated; requests are not answered `-32803` on this path. A `-32803` (request failed)
-response is instead keyed to overlay unavailability — an open buffer whose last edit was
-refused by overlay admission — and to analysis resource-limit exhaustion, whether a held
-query's whole snapshot exceeded its bounds or a completion or signature-help query's
-in-scope candidate set or rendered display exceeded its per-query cap. A capped query is
-refused whole, never returned as a truncated candidate list or signature.
+A failed background capture, such as a malformed `marrow.toml`, is reported once as
+an error `window/showMessage`; no diagnostics are invented for it.
 
-A held snapshot retains no parse tree: completion and signature-help queries
-re-parse the single file they name from the snapshot's own retained bytes. The
-measured cost on the recorded host is under a millisecond for a 64 KiB file and
-54 ms for a file at the admission ceiling in its densest shape — single-byte
-statement lines, which build one statement node per two source bytes. The
-compiler pins both with budget tests that assert in the optimized profile the
-server ships in and record the measurement in either profile, because the
-unoptimized profile runs the same code about an order of magnitude slower.
+A request answers `-32803` in two cases: the open buffer's last edit was refused
+by overlay admission, or an analysis limit was exhausted. A completion or
+signature-help request whose candidate set or rendered display exceeds its cap is
+refused whole; the server returns no truncated list.
 
-**A maximum admitted file in that shape still does not answer inside the roughly
-100 ms at which a response reads as immediate**, on a machine meaningfully slower
-than the recorded host; the ordinary-file figure is the one a session meets. The
-54 ms follows a shrink of the parsed representation from 112 ms and a narrowed
-admission ceiling from 70 ms, which is an improvement and not immediacy: a smaller
-tree and a shorter file are each cheaper to parse, but the worst-shape case is
-closed by parsing less of the file, not by parsing it more cheaply, and that is not
-implemented. Earlier passes recorded 49 ms at the wider ceiling, measured on a
-comment-padded file, which is not the worst shape.
+A snapshot answers about the exact source it was computed from. Every fact and
+coordinate resolves against those bytes, and an offset outside them is a
+coordinate error. A stale snapshot therefore describes an older revision of the
+document; the editor's revision tracking reconciles the two. Completion and
+signature help re-parse the one file they name from the snapshot's retained bytes,
+which keeps a session's retained memory bounded by the snapshot alone.
 
-Parse results are not cached — a cache would be a second retention owner — so a
-session's retained memory stays bounded by the snapshot's own accounted footprint
-rather than by how many files have been queried. The transient cost of a parse is
-separate and is not bounded by that footprint; the compiler publishes it as an
-accounted term, and that term is larger than the retained footprint by two orders
-of magnitude. A file whose accounted parse charge exceeds that term is refused at
-admission, before any file is parsed, rather than parsed and found to be too
-large.
+## Editor extension
 
-A snapshot answers about its own retained bytes. Every fact and every coordinate
-resolves against the exact source the snapshot was computed from, and a query
-whose offset falls outside those bytes is a typed coordinate error rather than an
-absent fact. Agreement between those bytes and the editor's live document text is
-**not** established here: the server maps positions against its own overlay text,
-and reconciling the two is the revision and document owner's obligation. A stale
-snapshot therefore answers truthfully about an older revision, not about what the
-user is currently looking at.
-
-## Installed editor artifact
-
-An installed Visual Studio Code extension packages this server for editor use. It lives
-in the repository at `editors/vscode/`. The extension is a thin host: it registers the
-`marrow` language for the `.mw` extension and starts one bundled `marrow-lsp` process
-per window over standard input and output. It contributes a static TextMate grammar for
-syntax highlighting and a language configuration for `//` comment toggling and bracket
-pairing; the grammar is generated from the parser's reserved-word inventory and
-drift-checked, not hand-written. It contributes no snippets, on-type formatting, or
-indentation rules, and it derives no deeper language meaning of its own: diagnostics,
-formatting, hover, definition, completion, signature help, and document symbols come
-from the server.
-
-The packaged extension targets macOS on Apple Silicon (`darwin-arm64`) and bundles the
-matching `server/marrow-lsp` release binary. The server is launched from that bundled
-absolute path with an empty argument list, never from a search path, and there is no
-setting to override it. The extension activates when a `.mw` file is opened. It supports a single
-workspace folder or none; two or more folders are refused with a message, matching the
-server's own single-root rule, and recovery is available through a restart command. The
-extension does not activate in untrusted (Restricted Mode) or virtual workspaces, and it
-performs no telemetry, network access, crash reporting, or updates.
-
-The packaging is reproducible: two clean release builds from the exact asserted source
-postimage produce byte-identical `marrow-lsp` executables, and each independently built
-executable feeds a disjoint stage, VSIX, and installed-extension chain. The two packages
-have an identical sorted per-entry (path, hash, executable bit) manifest and contain
-exactly one native executable (the server). These properties are checked by
-`editors/vscode/gate/verify-vsix.mjs` and the real-host gate that constructs the two
-source builds.
+The repository ships a Visual Studio Code extension at `editors/vscode/`. It
+registers the `marrow` language for `.mw` files, starts one bundled `marrow-lsp`
+process per window over standard input and output, and contributes a TextMate
+grammar generated from the parser's [reserved words](ai-legibility.md#reserved-words)
+plus a language configuration for `//` comments and bracket pairing. Every
+language fact comes from the server. The package targets macOS on Apple Silicon
+(`darwin-arm64`) and launches the server from its bundled path with no override
+setting. It supports one workspace folder or none, stays inactive in untrusted or
+virtual workspaces, and performs no telemetry, network access, or updates.
 
 ## Scope
 
-This is a focused semantic server. It does not provide references, rename, workspace
-symbols, semantic tokens, inlay hints, code actions, a data browser, or any durable
-place, effect, or authority facts; those are future editor capabilities that depend on
-compiler facts not yet published. Completion offers no keyword candidates: the syntax
-owner publishes no enumerable keyword inventory, and the server reconstructs none. The
-server owns no telemetry, network client, or updater.
+Today, the server serves the eight capabilities above. References, rename,
+workspace symbols, semantic tokens, inlay hints, code actions, keyword completion,
+and durable place or authority facts are future work ([status](../status.md)).

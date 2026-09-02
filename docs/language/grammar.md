@@ -1,65 +1,363 @@
 # Grammar
 
-This page gives an EBNF summary of the current non-legacy `.mw` language. It
-describes source shape only; the other reference pages define name resolution,
-types, presence, effects, and runtime behavior. The prototype `surface`
-syntax was deleted at B00 and is intentionally excluded.
+This page gives the syntax of a `.mw` source file in EBNF. It describes source
+shape only; the other reference pages define name resolution, types, presence,
+effects, and runtime behavior.
 
 Quoted text is literal. `A?`, `A*`, and `A+` mean optional, zero or more, and one
 or more. `A | B` selects an alternative. The lexer emits `NEWLINE` at each
 significant line break; blocks are delimited by `{` and `}`, and a statement
-terminates at a `NEWLINE` or a closing `}`.
+terminates at a `NEWLINE` or a closing `}`. [Source and syntax](source-and-syntax.md)
+defines which line breaks are significant.
 
-## Blocks And Lines
+Every production below is accepted by the parser and by `marrow check`. A form
+the parser reads and `marrow check` reports as `check.unsupported` is not listed.
 
-Every block is a brace-delimited statement sequence. A block opens with `{` at
-the end of its header line (one-true-brace) and closes with `}`. The closing `}`
-either stands on its own line or is immediately followed by a cuddled trailing
-clause (`else`, `else if`, `on more`, a `checked` fault arm). Braces are
-mandatory for every block, including a single-statement body; there is no
-brace-free block and no statement separator.
+## Source file
 
 ```ebnf
-block           = "{", [ NEWLINE ], { statement, NEWLINE }, [ statement ], "}" ;
+source_file     = module_decl?, {use_decl | declaration}, EOF ;
+
+module_decl     = "module", qualified_name, NEWLINE ;
+use_decl        = "use", qualified_name, NEWLINE ;
+qualified_name  = identifier, {"::", identifier} ;
+
+declaration     = {doc_comment},
+                  ( const_decl
+                  | alias_decl
+                  | nominal_decl
+                  | resource_decl
+                  | struct_decl
+                  | store_decl
+                  | enum_decl
+                  | function_decl
+                  | test_decl ) ;
+
+block           = "{", NEWLINE?, {statement, NEWLINE}, "}" ;
 ```
 
-An empty body (`{}`) and an inline single-statement body (`{ statement }`) are
-both admitted: the opening `{` is followed by an optional `NEWLINE`, any number
-of `NEWLINE`-terminated statements, and an optional final statement before `}`.
+A `module_decl` is the first line of a file that has one. A `use_decl` names a
+module and may follow a declaration. A `doc_comment` run documents the
+declaration, member, or parameter directly below it.
 
-A statement terminates at a `NEWLINE` or the block's closing `}`; there is no
-`;` separator. A header line may continue across a physical line break after a
-trailing `and`, `or`, `,`, or `=`, and continuation is also implicit inside an
-open `(` or `[`; the header ends at its opening `{`. Indentation carries no
-meaning and is pure formatter output.
+## Declarations
 
-## Lexical Tokens
+### Constants and type names
+
+```ebnf
+const_decl      = "const", identifier, type_annotation?, "=",
+                  "-"?, (integer_lit | string_lit | "true" | "false"),
+                  NEWLINE ;
+
+alias_decl      = "alias", identifier, "=", type, NEWLINE ;
+
+nominal_decl    = "type", identifier, ":", type,
+                  "in", range_expr,
+                  ("supports", identifier, {",", identifier})?, NEWLINE ;
+```
+
+A top-level constant holds one scalar literal, optionally negated
+([constants](modules-and-functions.md#constants)). The `supports` words of a
+nominal type are listed under
+[aliases and nominal ints](types-and-values.md#aliases-and-nominal-ints).
+
+### Resources, structs, and stores
+
+```ebnf
+resource_decl   = "resource", identifier, "{", NEWLINE,
+                  {resource_member, NEWLINE}, "}" ;
+
+resource_member = {doc_comment}, (field_decl | group_decl | branch_decl) ;
+
+field_decl      = "required"?, identifier, type_annotation ;
+group_decl      = identifier, "{", NEWLINE, {field_decl, NEWLINE}, "}" ;
+branch_decl     = identifier, key_params, "{", NEWLINE,
+                  {field_decl, NEWLINE}, "}" ;
+
+key_params      = "[", key_decl, {",", key_decl}, "]" ;
+key_decl        = identifier, type_annotation ;
+
+struct_decl     = "struct", identifier, type_params?, "{", NEWLINE,
+                  {struct_field, NEWLINE}, "}" ;
+struct_field    = {doc_comment}, identifier, type_annotation ;
+
+store_decl      = "store", saved_root, key_params?, ":", identifier,
+                  ("{", NEWLINE, {index_decl, NEWLINE}, "}")?, NEWLINE ;
+
+index_decl      = {doc_comment}, "index", identifier,
+                  "[", field_path, {",", field_path}, "]", "unique"? ;
+field_path      = identifier, {".", identifier} ;
+
+saved_root      = "^", identifier ;
+```
+
+Keys are declared with the same brackets that read them:
+`store ^books[id: int]: Book` declares the root and `^books[id]` reads one entry.
+A store with no index is written on its header line alone. A root without
+`key_params` declares a singleton
+([declaring a store](durable-places.md#declaring-a-store)). A group holds
+fields; a branch holds fields under its own keys
+([members](resources.md#members)). Index rules are under
+[index declarations](traversal-and-indexes.md#index-declarations).
+
+### Enums
+
+```ebnf
+enum_decl       = "enum", identifier, type_params?, "{", NEWLINE,
+                  (enum_member, NEWLINE)+, "}" ;
+
+enum_member     = {doc_comment}, identifier, payload? ;
+payload         = "(", payload_field, {",", payload_field}, ")" ;
+payload_field   = identifier, ":", type ;
+```
+
+A member is one name per line. A payload member lists named fields, which a
+constructor supplies by name: `Shape::rect(w: 2, h: 3)`.
+
+### Functions and tests
+
+```ebnf
+function_decl   = "pub"?, "fn", identifier, type_params?,
+                  "(", param_list?, ")", return_type?, block ;
+
+type_params     = "<", type_param, {",", type_param}, ">" ;
+type_param      = identifier, ("supports", ("equality" | "order"))? ;
+param_list      = param_decl, {",", param_decl}, ","? ;
+param_decl      = {doc_comment}, identifier, type_annotation ;
+return_type     = ":", type ;
+
+test_decl       = "test", string_lit, block ;
+```
+
+`pub` marks an export. A type parameter carries at most one constraint
+([generic functions](modules-and-functions.md#generic-functions)). In a
+multi-line parameter list a line break separates parameters as a comma does.
+A `test` takes a string title and a body ([tests](tests.md)).
+
+## Types
+
+```ebnf
+type_annotation = ":", type ;
+type            = base_type, "?"? ;
+
+base_type       = scalar_type
+                | identifier
+                | identity_type
+                | generic_type ;
+
+scalar_type     = "int" | "bool" | "string" | "bytes"
+                | "date" | "instant" | "duration" ;
+
+identity_type   = "Id", "(", saved_root, ")" ;
+generic_type    = identifier, "<", type, {",", type}, ">" ;
+```
+
+A bare `identifier` names a resource, struct, enum, alias, nominal type, or
+type parameter. `generic_type` applies `Option`, `Result`, `List`, `Map`, or a
+generic struct or enum to its arguments; arity is checked after parsing. In an
+expression `<` and `>` are comparison operators; a type-argument list appears
+only in a type position. The `?` suffix composes after the close:
+`Option<string>?`.
+
+## Statements
+
+```ebnf
+statement       = const_stmt
+                | var_stmt
+                | assignment_stmt
+                | compound_assignment_stmt
+                | place_stmt
+                | delete_stmt
+                | unset_stmt
+                | if_stmt
+                | while_stmt
+                | for_stmt
+                | match_stmt
+                | checked_stmt
+                | require_stmt
+                | assert_stmt
+                | transaction_stmt
+                | break_stmt
+                | continue_stmt
+                | return_stmt
+                | expression_stmt ;
+
+const_stmt      = "const", identifier, type_annotation?, "=", value, let_else? ;
+var_stmt        = "var", identifier, type_annotation?, "=", value, let_else? ;
+let_else        = "else", clause_body ;
+
+value           = "try"?, expression ;
+clause_body     = block | statement ;
+
+assignable      = identifier | path_expr ;
+assignment_stmt = assignable, "=", expression ;
+compound_assignment_stmt =
+                  assignable, ("+=" | "-=" | "*=" | "/=" | "%="), expression ;
+
+place_stmt      = "place", identifier, "=", expression ;
+delete_stmt     = "delete", path_expr ;
+unset_stmt      = "unset", path_expr ;
+
+require_stmt    = "require", expression, "else", expression ;
+assert_stmt     = "assert", expression ;
+transaction_stmt = "transaction", block ;
+
+break_stmt      = "break" ;
+continue_stmt   = "continue" ;
+return_stmt     = "return", value? ;
+expression_stmt = value ;
+```
+
+Prefix `try` is a statement-level value: it stands at the top of a `const`,
+`var`, `return`, or expression statement
+([prefix try](control-flow.md#prefix-try)). A `let_else` tail runs when the
+bound value is absent ([let-else bindings](control-flow.md#let-else-bindings)).
+A `clause_body` written as one statement parses; the formatter writes it as a
+block. `require` takes a condition and a bare failure value
+([require guards](control-flow.md#require-guards)). `assert` is legal inside a
+`test` body.
+
+### Conditionals and loops
+
+```ebnf
+if_stmt         = "if", if_head, block, {else_if}, else_clause? ;
+if_head         = expression
+                | const_binding, {"and", const_binding}, ("and", expression)? ;
+const_binding   = "const", identifier, type_annotation?, "=", expression ;
+else_if         = "else", "if", expression, block ;
+else_clause     = "else", clause_body ;
+
+while_stmt      = "while", expression, block ;
+
+for_stmt        = "for", identifier, {",", identifier}, "in",
+                  ( expression, ("by", expression)?, block
+                  | expression, "at", "most", expression,
+                    ("from", expression)?, block, "on", "more", clause_body ) ;
+```
+
+A trailing clause cuddles the closing brace before it: `} else {`,
+`} else if c {`, `} on more {`. An `if const` head chains bindings with `and`
+and may end with a condition. `by` steps a range. `at most`, `from`, and
+`on more` belong to a bounded durable traversal
+([bounded durable traversal](traversal-and-indexes.md#bounded-durable-traversal));
+the words `by`, `at`, `most`, `from`, `on`, and `more` are contextual and stay
+ordinary names elsewhere.
+
+### Match and checked arithmetic
+
+```ebnf
+match_stmt      = "match", expression, "{", NEWLINE, (match_arm, NEWLINE)+, "}" ;
+match_arm       = identifier, arm_bindings?, "=>", clause_body ;
+arm_bindings    = "(", identifier, {",", identifier}, ")" ;
+
+checked_stmt    = checked_bind, "checked", expression, NEWLINE, checked_arm,
+                  {checked_arm} ;
+checked_bind    = "return"
+                | ("const" | "var"), identifier, type_annotation?, "=" ;
+checked_arm     = "on", ("out_of_range" | "zero_divisor"), clause_body ;
+```
+
+A match arm names a member of the matched enum and binds its payload
+positionally ([match](control-flow.md#match)). A `checked` form wraps one
+arithmetic operation; its first `on` arm starts a new line and later arms
+cuddle the brace before them
+([checked arithmetic](control-flow.md#checked-arithmetic)).
+
+## Expressions
+
+```ebnf
+expression      = or_expr ;
+
+or_expr         = and_expr, {"or", and_expr} ;
+and_expr        = equality_expr, {"and", equality_expr} ;
+
+equality_expr   = comparison_expr, (("==" | "!="), comparison_expr)? ;
+
+comparison_expr = range_expr,
+                  ( ("<" | "<=" | ">" | ">="), range_expr
+                  | ("in" | "not", "in"), range_expr )? ;
+
+range_expr      = coalesce_expr,
+                  ((".." | "..="), coalesce_expr, ("by", coalesce_expr)?)? ;
+
+coalesce_expr   = additive_expr, ("??", coalesce_expr)? ;
+additive_expr   = multiplicative_expr, {("+" | "-"), multiplicative_expr} ;
+multiplicative_expr =
+                  unary_expr, {("*" | "/" | "%"), unary_expr} ;
+
+unary_expr      = ("-" | "not"), unary_expr
+                | postfix_expr ;
+
+postfix_expr    = primary_expr, {postfix} ;
+postfix         = "(", argument_list?, ")"
+                | "[", expression, {",", expression}, ","?, "]"
+                | ".", identifier
+                | "?.", identifier ;
+
+argument_list   = argument, {",", argument}, ","? ;
+argument        = (identifier, ":")?, expression ;
+```
+
+A comparison is single and non-associative: `a < b > c` is a parse error.
+Membership (`x in lo..hi`, `x not in lo..hi`) sits at the same level with a
+range on its right and shares the rule, so `a in r in s` is a parse error.
+`??` is right-associative. A range names both ends.
+
+Parentheses call or construct; brackets select an entry by positional keys.
+A named argument (`title: t`) belongs to a constructor, and after a named
+argument every later argument is named. Precedence and operand types are under
+[operators](types-and-values.md#operators).
+
+### Primary expressions and paths
+
+```ebnf
+primary_expr    = literal
+                | "true" | "false" | "absent"
+                | qualified_name
+                | saved_root
+                | constructor_call
+                | identity_value
+                | interp_lit
+                | "(", expression, ")" ;
+
+literal         = integer_lit | string_lit | duration_words ;
+
+constructor_call = ("string" | "bytes" | "date" | "instant" | "duration"),
+                   "(", argument_list?, ")" ;
+
+identity_value  = "Id", "(", saved_root, {",", expression}, ")" ;
+
+path_expr       = (saved_root | identifier), {path_suffix} ;
+path_suffix     = "[", expression, {",", expression}, "]"
+                | ".", identifier ;
+```
+
+A `qualified_name` is a local name, a function path (`shelf::books::add`), or
+an enum member (`Color::red`); a constructor is a name followed by a
+parenthesized argument list. `^books[id].title` is a durable path and
+`book.title` a local one. `Id(^books)` in a type position is an identity type;
+`Id(^books, id)` in an expression is an identity value
+([entry identity](types-and-values.md#entry-identity)).
+
+## Lexical tokens
 
 ```ebnf
 identifier      = (letter | "_"), {letter | digit | "_"} ;
-qualified_name  = identifier, {"::", identifier} ;
 
 integer_lit     = digit, {digit} ;
-decimal_lit     = digit, {digit}, ".", digit, {digit} ;
-duration_word_lit = integer_lit, duration_unit ;
-duration_unit   = "second" | "seconds"
-                | "minute" | "minutes"
-                | "hour" | "hours"
-                | "day" | "days"
+duration_words  = integer_lit, duration_unit ;
+duration_unit   = "second" | "seconds" | "minute" | "minutes"
+                | "hour" | "hours" | "day" | "days"
                 | "week" | "weeks" ;
 
 string_lit      = '"', {string_char}, '"' ;
-bytes_lit       = 'b"', {byte_char}, '"' ;
-interp_lit      = '$"', {interp_part}, '"' ;
-
 string_char     = string_text | string_escape ;
 string_escape   = "\", ('"' | "\" | "n" | "r" | "t")
-                | unicode_escape ;
-unicode_escape  = "\u{", hex_digit, {hex_digit}, "}" ;
-byte_char       = byte_text | string_escape | hex_escape ;
-hex_escape      = "\x", hex_digit, hex_digit ;
-interp_part     = interp_text | "{{" | "}}"
-                | unicode_escape | "{", expression, "}" ;
+                | "\u{", hex_digit, {hex_digit}, "}" ;
+
+interp_lit      = '$"', {interp_part}, '"' ;
+interp_part     = interp_text | string_escape | "{{" | "}}"
+                | "{", expression, "}" ;
 
 comment         = "//", {not_newline} ;
 doc_comment     = "///", {not_newline} ;
@@ -69,407 +367,8 @@ digit           = "0"…"9" ;
 hex_digit       = digit | "A"…"F" | "a"…"f" ;
 ```
 
-`string_text` excludes `"`, `\`, and newline. `byte_text` has the same source
-shape and contributes its UTF-8 bytes. Interpolation text additionally excludes
-an unescaped `{`. A `unicode_escape` carries one to six hexadecimal digits
-naming a Unicode scalar value; it is admitted in `string_lit` and the text parts
-of `interp_lit`, where it is recognized before the `{`-hole detection so its
-braces never open an expression. It is not a byte escape: `bytes_lit` spells
-non-ASCII bytes with `hex_escape` only. A `//` line is a comment and a `///`
-line is a documentation comment for the following declaration; both run to the
-end of the line.
-
-## Source File
-
-```ebnf
-source_file     = module_decl?, {use_decl}, {top_level_decl}, EOF ;
-
-module_decl     = "module", qualified_name, NEWLINE ;
-use_decl        = "use", qualified_name, NEWLINE ;
-
-top_level_decl  = {doc_comment},
-                  (alias_decl
-                 | nominal_decl
-                 | const_decl
-                 | resource_decl
-                 | struct_decl
-                 | store_decl
-                 | enum_decl
-                 | function_decl) ;
-
-alias_decl      = "alias", identifier, "=", type, NEWLINE ;
-
-nominal_decl    = "type", identifier, ":", type,
-                  "in", expression,
-                  ("supports", identifier, {",", identifier})?, NEWLINE ;
-
-const_decl      = "const", identifier, type_annotation?,
-                  "=", expression, NEWLINE ;
-```
-
-## Resources And Stores
-
-```ebnf
-resource_decl   = "resource", identifier, "{", NEWLINE,
-                  resource_member+, "}" ;
-
-resource_member = {doc_comment},
-                  (field_decl | keyed_field_decl | group_decl) ;
-
-field_decl      = required_marker?, identifier,
-                  type_annotation, NEWLINE ;
-
-keyed_field_decl = identifier, key_params,
-                   type_annotation, NEWLINE ;
-
-group_decl      = identifier, key_params?, "{", NEWLINE,
-                  resource_member+, "}" ;
-
-required_marker = "required" ;
-
-store_decl      = "store", saved_root, key_params?,
-                  ":", identifier,
-                  ("{", NEWLINE, store_member+, "}")?, NEWLINE ;
-
-store_member    = {doc_comment}, index_decl ;
-index_decl      = "index", identifier, "[",
-                  index_arg_list, "]", "unique"?, NEWLINE ;
-
-key_params      = "[", key_decl, {",", key_decl}, ","?, "]" ;
-key_decl        = identifier, type_annotation ;
-
-index_arg_list  = field_path, {",", field_path}, ","? ;
-field_path      = identifier, {".", identifier} ;
-
-saved_root      = "^", identifier ;
-```
-
-Key declarations use square brackets — `store ^books[id: int]: Book`,
-`notes[noteId: string]`, `tags[pos: int]: string` — mirroring the bracketed key
-access that reads them (the declaration-mirrors-access law). A store with no
-index members is written header-alone, without a `{}` body.
-
-A dense product value type shares the resource member syntax, but a struct field
-is the bare `identifier, type_annotation` form; the `required` marker, key
-parameters, and groups are rejected by the checker.
-
-```ebnf
-struct_decl     = "struct", identifier, type_params?, "{", NEWLINE,
-                  struct_field+, "}" ;
-
-struct_field    = {doc_comment}, identifier, type_annotation, NEWLINE ;
-```
-
-## Enums
-
-```ebnf
-enum_decl       = visibility?, "enum", identifier, type_params?, "{", NEWLINE,
-                  enum_member+, "}" ;
-
-enum_member     = {doc_comment}, "category"?, identifier, payload?, NEWLINE,
-                  ("{", NEWLINE, enum_member+, "}")? ;
-
-payload         = "(", payload_field, {",", payload_field}, ","?, ")" ;
-payload_field   = identifier, ":", type ;
-```
-
-Members are newline-separated, one per line; there is no separator token. A
-member with a `payload` is a payload variant; a bare member carries no payload. A
-payload is a parenthesized field list — a constructor parameter list matched by
-name at construction, not a key tuple. The `category` modifier and nested
-members are parsed but currently rejected by the checker (`check.unsupported`):
-the flat enum is the current form and hierarchical enums are future.
-
-## Functions
-
-```ebnf
-function_decl   = visibility?, "fn", identifier, type_params?,
-                  "(", param_list?, ")", return_type?, block ;
-
-visibility      = "pub" ;
-type_params     = "<", type_param, {",", type_param}, ","?, ">" ;
-type_param      = identifier, ("supports", ("equality" | "order"))? ;
-param_list      = param_decl, {",", param_decl}, ","? ;
-param_decl      = {doc_comment}, identifier, key_params?,
-                  type_annotation ;
-return_type     = ":", type ;
-```
-
-Line breaks may separate parameters in a multiline list. A keyed parameter uses
-the same `key_params` shape as a keyed local declaration. An optional
-`type_params` list declares rank-1 generic type parameters between angle
-brackets, each usable as a type in the body and optionally carrying one closed
-`supports equality`/`supports order` constraint; see
-[functions](modules-and-functions.md#generic-functions).
-
-## Types
-
-```ebnf
-type_annotation = ":", type ;
-type             = base_type, optional_suffix? ;
-optional_suffix  = "?" ;
-
-base_type        = scalar_type
-                 | qualified_name
-                 | "Error"
-                 | identity_type
-                 | generic_type ;
-
-scalar_type      = "int" | "bool" | "string" | "bytes"
-                 | "decimal" | "date" | "instant" | "duration"
-                 | "ErrorCode" | "unknown" ;
-
-identity_type    = "Id", "(", saved_root, ")" ;
-generic_type     = identifier, "<", type, {",", type}, ","?, ">" ;
-```
-
-`generic_type` is a generic type application between angle brackets: any
-identifier head carrying a comma-separated type-argument list. The head is either
-a reserved toolchain generic — the value types `Option<T>` and `Result<T, E>` and
-the finite collection types `List<T>` and `Map<K, V>` — or a user-declared generic
-`struct`/`enum` template. The parser accepts any head; the checker resolves it and
-enforces argument arity (`Option` and `List` take one type, `Result` and `Map`
-take two; a user template takes its declared number). Angle brackets are
-unambiguous because Marrow has no expression-position type application: within an
-expression `<` and `>` are always comparison operators, and a type-argument list
-is reached only through an anchored type position. When the type parser needs a
-closing `>` and the next token is the glued `>=` (as in `Map<string, int>= Map()`),
-it splits that token into `>` and `=`; this is the only such split, since no `>>`
-token exists. An optional suffix composes after the close: `Option<string>?`.
-
-Keyed local-collection shapes are written on declarations, not as standalone
-type annotations.
-
-## Statements
-
-```ebnf
-statement       = const_stmt
-                | var_stmt
-                | place_stmt
-                | assignment_stmt
-                | compound_assignment_stmt
-                | delete_stmt
-                | if_stmt
-                | if_const_stmt
-                | while_stmt
-                | for_stmt
-                | match_stmt
-                | break_stmt
-                | continue_stmt
-                | return_stmt
-                | require_stmt
-                | transaction_stmt
-                | expression_stmt ;
-
-const_stmt      = "const", identifier, type_annotation?,
-                  "=", (try_value | expression), let_else_tail?, NEWLINE ;
-
-var_stmt        = "var", identifier, key_params?,
-                  type_annotation?, ("=", (try_value | expression))?,
-                  let_else_tail?, NEWLINE ;
-
-assignment_stmt = assignable, "=", expression, NEWLINE ;
-
-compound_assignment_stmt =
-                  assignable, compound_op, expression, NEWLINE ;
-compound_op     = "+=" | "-=" | "*=" | "/=" | "%=" ;
-
-place_stmt      = "place", identifier, "=", expression, NEWLINE ;
-
-delete_stmt     = "delete", path_expr, NEWLINE ;
-break_stmt      = "break", NEWLINE ;
-continue_stmt   = "continue", NEWLINE ;
-return_stmt     = "return", (try_value | expression)?, NEWLINE ;
-require_stmt    = "require", expression, "else", expression, NEWLINE ;
-expression_stmt = (try_value | expression), NEWLINE ;
-
-let_else_tail   = "else", (statement | block) ;
-```
-
-A `let_else_tail` is the let-else form: a `const`/`var` binding may carry an
-`else` clause that runs a diverging statement or block when the bound value is
-absent (see [Control flow](control-flow.md#let-else-bindings)). A `require_stmt`
-is the boolean guard: the first expression is a `bool` condition ending at the
-first top-level `else`, and the second is the bare failure value of the
-enclosing function's `Result` error type (see
-[Control flow](control-flow.md#require-guards)).
-
-## Conditionals, Loops, And Match
-
-```ebnf
-if_stmt         = "if", expression, block,
-                  else_if_clause*, else_clause? ;
-
-if_const_stmt   = "if", "const", identifier, type_annotation?,
-                  "=", expression,
-                  {"and", if_const_chain_part}, block,
-                  else_if_clause*, else_clause? ;
-
-if_const_chain_part = "const", identifier, type_annotation?, "=", expression
-                    | expression ;
-
-else_if_clause  = "else", "if", expression, block ;
-else_clause     = "else", block ;
-
-while_stmt      = "while", expression, block ;
-
-for_stmt        = "for", for_binding, "in", "reversed"?,
-                  expression, ("by", expression)?,
-                  ("at", "most", expression, ("from", expression)?)?,
-                  block, on_more_clause? ;
-
-on_more_clause  = "on", "more", block ;
-
-for_binding     = identifier, {",", identifier} ;
-
-match_stmt      = "match", expression, "{", NEWLINE, match_arm+, "}" ;
-match_arm       = identifier, {"::", identifier}, arm_bindings?,
-                  "=>", (statement | block) ;
-arm_bindings    = "(", identifier, {",", identifier}, ","?, ")" ;
-```
-
-A trailing clause cuddles the closing brace of the block before it: `} else {`,
-`} else if c {`, `} on more { … }`. The B5 `if const` chaining form — one or
-more `and`-joined existence bindings followed by an optional trailing condition
-— is parsed so the grammar is complete but rejected by the checker
-(`check.unsupported`) until adopted. A `match` arm is a member pattern, an
-optional positional binding group, `=>`, and then one statement or a braced
-block; the formatter renders every arm body as a braced multiline block cuddled
-after `=>`. `by`, `at most`, `from`, and the trailing `on more` are
-contextual in a `for` head and its bounded durable-traversal clause. `category`
-is contextual in an enum body.
-
-## Transactions And `try`
-
-```ebnf
-transaction_stmt = "transaction", block ;
-
-try_value        = "try", expression ;
-```
-
-Prefix `try_value` propagates a `Result<T, E>` failure. It is a statement-level
-value form only: it may stand as the top-level right-hand side of a `const_stmt`,
-`var_stmt`, `return_stmt`, or `expression_stmt`, but never nested inside a larger
-expression. The throw/catch channel was removed; a `throw`, block `try`/`catch`,
-or `finally` is a rejected removed form.
-
-## Expressions
-
-```ebnf
-expression      = or_expr ;
-
-or_expr         = and_expr, {"or", and_expr} ;
-and_expr        = is_expr, {"and", is_expr} ;
-is_expr         = equality_expr, ("is", equality_expr)? ;
-
-equality_expr   = comparison_expr,
-                  (("==" | "!="), comparison_expr)? ;
-
-comparison_expr = range_expr,
-                  ( ("<" | "<=" | ">" | ">="), range_expr
-                  | ("in" | "not", "in"), range_expr )? ;
-
-range_expr      = coalesce_expr, range_tail?
-                | open_range ;
-range_tail      = ("..", coalesce_expr?
-                 | "..=", coalesce_expr), range_step? ;
-open_range      = ("..", coalesce_expr?
-                 | "..=", coalesce_expr), range_step? ;
-range_step      = "by", coalesce_expr ;
-
-coalesce_expr   = additive_expr, ("??", coalesce_expr)? ;
-additive_expr   = multiplicative_expr,
-                  {("+" | "-"), multiplicative_expr} ;
-multiplicative_expr =
-                  unary_expr, {("*" | "/" | "%"), unary_expr} ;
-
-unary_expr      = ("-" | "not"), unary_expr
-                | postfix_expr ;
-
-postfix_expr    = primary_expr, {postfix_op} ;
-postfix_op      = paren_suffix
-                | key_suffix
-                | field_suffix
-                | optional_field_suffix ;
-
-paren_suffix    = "(", argument_list?, ")" ;
-key_suffix      = "[", expression, {",", expression}, ","?, "]" ;
-field_suffix    = ".", identifier ;
-optional_field_suffix = "?.", identifier ;
-```
-
-A comparison is single and non-associative — the `?` on `comparison_expr` admits
-at most one operator — so `a < b > c` is a parse error and `<`/`>` never chain.
-Interval membership (`value in lo..hi`, `value not in lo..hi`) sits at this level
-with a range right operand and shares the non-association: `a in r in s` and
-`a in r < b` are parse errors. Because the `in` here is a comparison operator, an
-expression-level `in` never appears at the top level of a `for` head's iterable or
-a nominal-type interval — those heads split on their leading `in` before the
-expression grammar runs.
-A `paren_suffix` is invocation or construction; a `key_suffix` is keyed address —
-an ordered tuple of positional key values selecting an entry (`^books[id]`,
-`^grid[a, b]`, `visit.obs[oid]`). The two never mix: a bracket group holds
-positional expressions and never a named argument, and a parenthesized group is a
-call or constructor and never an address.
-
-## Primary Expressions And Paths
-
-```ebnf
-primary_expr    = literal
-                | "true"
-                | "false"
-                | "absent"
-                | identifier
-                | qualified_name
-                | saved_path
-                | conversion_call
-                | identity_constructor
-                | resource_constructor
-                | "(", expression, ")" ;
-
-literal         = integer_lit | decimal_lit | duration_word_lit
-                | string_lit | bytes_lit | interp_lit ;
-
-conversion_call = conversion_type, "(", argument_list?, ")" ;
-conversion_type = "int" | "bool" | "string" | "bytes" | "decimal"
-                | "date" | "instant" | "duration" | "ErrorCode" ;
-
-identity_constructor = "Id", "(", saved_root,
-                       {",", expression}, ")" ;
-
-resource_constructor =
-                  qualified_name, "(", named_argument_list?, ")"
-                | "Error", "(", named_argument_list?, ")" ;
-
-struct_literal  = identifier, "(", named_argument_list?, ")" ;
-
-path_expr       = saved_path | local_path ;
-saved_path      = "^", identifier, {path_suffix} ;
-local_path      = identifier, path_suffix, {path_suffix} ;
-path_suffix     = key_suffix | field_suffix ;
-assignable      = identifier | path_expr ;
-```
-
-Keyed address is carried by the parse: a `key_suffix` builds a keyed-access node
-directly. The checker distinguishes a function call, resource constructor, struct
-literal, conversion, and entry-identity constructor from the common parenthesized
-call shape after parsing.
-
-In `duration_word_lit`, the `duration_unit` is contextual: it is read as a unit only
-immediately after an integer literal, a position where an identifier is otherwise a
-parse error, so an ordinary name spelling a unit (`const seconds = 5`) is unaffected.
-The unit set is the fixed spans only; `month` and `year` in that position are a parse
-error, since their span is not fixed. The dotted `NUMBER.UNIT` form (`1.day`) is not a
-duration literal — it is refused (`check.unsupported`), and a fractional-second span
-uses the `duration("PT…")` constructor.
-
-## Arguments
-
-```ebnf
-argument_list       = argument, {",", argument}, ","? ;
-named_argument_list = named_argument, {",", named_argument}, ","? ;
-argument            = expression | named_argument ;
-named_argument      = identifier, ":", expression ;
-```
-
-After a named argument, later arguments are also named.
+`string_text` excludes `"`, `\`, and a line break; `interp_text` also excludes
+a bare `{`. A `duration_unit` is read as a unit only directly after an integer
+literal, so `const seconds = 5` is an ordinary name. Escape rules and literal
+values are under [literals](source-and-syntax.md). Reserved words are listed in
+[AI legibility](../tools/ai-legibility.md).

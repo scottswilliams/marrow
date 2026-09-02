@@ -1,102 +1,55 @@
 # Path effects and authority
 
-This page is future direction. The current host checks and Bearer-authenticated
-experimental serving do not implement compiler-integrated durable authority.
+An export's authority over durable data is the intersection of what its code
+demands, what its store accepted, and what the invocation is granted. Demand
+describes need and grants nothing.
 
-## Goal
+## Today
 
-The compiler describes each function's direct and transitive durable access
-demand as typed operations over stable semantic regions. Demand is not
-permission. Effective runtime access is the intersection of four independently
-owned facts:
+Every export has a demand: the durable places it reads and writes, through
+every function it calls ([access demand](../language/durable-places.md#access-demand)).
+Demand is the union along the call graph, which has no cycles. Index
+maintenance is part of a write's demand
+([traversal and indexes](../language/traversal-and-indexes.md)).
 
-- verifier-reconstructed demand for the exact image;
-- acceptance of the exact executable image and its changes;
-- a separately owned maximum deployment ceiling; and
-- an attenuated invocation grant.
+A program image carries its demand as its deployment ceiling, and `marrow
+image` writes the image once that ceiling's id is accepted
+([`marrow image`](../tools/cli.md#marrow-image)). A store keeps the ceiling it
+was provisioned with. An export that demands a place outside that ceiling is
+`store.demand_exceeds_ceiling` before any durable work begins
+([changing the program](../operations/README.md#changing-the-program)). This is
+the whole of authority today: one local owner, one store, and read and write as
+the two kinds of access. Grants finer than read and write are future work
+([status](../status.md#not-yet-available)).
 
-One path kernel checks the instruction, binding, grant, operation, region,
-contract, and transaction before it constructs a physical key or calls the
-private engine. Every application durable instruction names a verifier-validated
-effect site plus typed key operands. Demand describes need; it never grants the
-access it discovers.
+## Direction
 
-The compiler-described effects include compiler-derived index maintenance. The
-beta's narrow compiler-maintained nonunique and unique indexes are maintained
-atomically with their primary payload, and application code cannot write an
-index; the maintenance an operation implies is part of the demand the verifier
-reconstructs, not a separate application-issued write.
+A grant names one image, one export, and one store together. It holds the
+places the export demands, intersected with the store's ceiling, and nothing
+more. A later authenticated principal can only further intersect an address or
+a context predicate. It can narrow an already-granted reach; it can never add a
+place the grant did not carry.
 
-## Grants
+Demand records an operation on a place: a read, a create, a replace, an erase,
+or a traversal with its bound. A grant covers a subset of those operations over
+a region of the tree, so an export that reads one entry is not thereby allowed
+to walk its root.
 
-A grant is export-scoped. It binds the exact image, export, and attachment
-together with the export's reachable effect-site set and the stable demand atoms
-that set implies, each intersected with the deployment ceiling. A grant carries
-no atom the accepted image and export do not already demand.
+Stored users, credentials, and rotation records are inert data. They cannot be
+decoded into an authenticated context or a grant; the trust anchor for
+authentication stays outside application durable state. Maintenance,
+activation, backup, restore, and physical recovery use authority that
+application code cannot hold.
 
-A later externally authenticated principal can only further intersect a typed
-address or context predicate at the kernel. It can narrow an already-granted
-reach; it can never add an atom the grant did not carry.
+Three things are deferred. Closures and recursion need effect variables and a
+demand over indirect calls. Key provenance would record which key values an
+export may address. Principals, roles, and served enforcement belong to
+[served execution](served-execution.md).
 
-## Host phase
+## Evidence
 
-A durable invocation has a host phase that ends and does not reopen. The host
-phase closes at mutating-transaction entry or at the first read-only durable
-opcode, whichever occurs first; the closed state (HostClosed) persists for the
-rest of the invocation. Any host work an invocation performs occurs before that
-point, so no host effect runs from the first durable access onward.
-
-## Beta scope
-
-The beta establishes structural containment for a local owner: exact bindings,
-closed named exports, operation-specific effects over stable semantic regions,
-visible conservative broadening, process-local unforgeable grants, and zero
-engine calls for rejected images or invocations. Ordinary source does not repeat
-inferred effect rows, authority clauses, ceilings, grants, store identities, or
-proof witnesses.
-
-The beta durable effect lattice uses a finite coarse reach for each operation
-and stable semantic region: exact place, keyed layer, or subtree. Demand closes
-over resolved direct calls by monotone fixed point. Keys derived from loaded
-data widen visibly. Bounded operations carry compiler-known positive site
-maxima; dynamic requested counts are checked at runtime rather than introducing
-symbolic arithmetic into the effect lattice.
-
-Beta authority is structural containment for a single local owner. It does not
-provide users, passwords, roles, OAuth, application policy functions, public
-clients, or a principal-level authorization product.
-
-## Constraints
-
-- Effect inference never grants the access it discovers.
-- Imports grant nothing, and storeless host effects use a separate exact runner
-  grant.
-- Maintenance, activation, backup, restore, inspection, and physical recovery
-  use authority types unavailable to application bytecode.
-- Stored users, clients, credential verifiers, and rotation records are inert
-  data, not authority. They cannot be decoded or restored into an authenticated
-  context or invocation grant; any later authentication trust anchor remains
-  outside application durable state.
-
-Path enforcement alone does not prove noninterference, correct business policy,
-confidential errors, regulatory compliance, or absence of timing channels.
-
-## Deferred
-
-The following remain later work and are not part of the beta floor:
-
-- higher-order effect variables and closure capture of effects;
-- recursive call-demand and indirect-call demand; the beta reconstructs demand
-  over resolved direct calls only;
-- fine argument-derived key provenance and public generic functions over places;
-- authentication, principal and role systems, application policy language, and
-  served enforcement.
-
-## Evidence target
-
-Compiler hover and update review must show direct and transitive operation,
-region, coarse reach, traversal bound, and call-chain witnesses for Graph Report
-and Club Locker. A harmless refactor must not silently grant access, and an
-effect-broadening edit must remain inactive until independent deployment and
-invocation authority covers it. Forged images, sites, paths, and grants must
-reach zero engine calls.
+Hover and the change review show, for each export, the operation and place it
+demands, the traversal bound, and the call that carries the demand. A refactor
+that changes no demand changes no authority. An edit that widens demand runs
+only after the store's ceiling and the invocation's grant cover it. A forged
+image, path, or grant reaches zero engine calls.

@@ -1,215 +1,141 @@
-# Traversal And Indexes
+# Traversal and indexes
 
-`for` traverses an integer range, a local collection, or a durable root or
-branch family. Durable traversal is always bounded: it visits at most a declared
-number of immediate keys and states, at the traversal head, what to do when more
-remain.
+`for` walks four things: an integer range, a local list or map, a durable root or branch, and an index. A durable walk states its bound at the loop head and says what happens when more entries remain.
 
-## Bounded Durable Traversal
+A root, a branch beneath a pin, a branch beneath a named place, and a `from` key:
 
-A durable `for` head names a store root or a single-level keyed branch, an
-`at most N` bound, an optional inclusive `from` key, and a mandatory `on more`
-clause cuddled after the loop body like an `else`:
+```mw
+module docs::traversal::walk
+
+resource Book {
+    required title: string
+
+    notes[pos: int] {
+        required text: string
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn noteTotal(): Result<int, string> {
+    var total = 0
+    for id, book in ^books at most 100 {
+        for pos in book.notes at most 100 {
+            total += 1
+        } on more {
+            return err("more than 100 notes")
+        }
+    } on more {
+        return err("more than 100 books")
+    }
+    return ok(total)
+}
+
+pub fn notesFrom(id: int, first: int): string {
+    var text = ""
+    place book = ^books[id]
+    for pos in book.notes at most 2 from first {
+        text += book.notes[pos].text ?? ""
+    } on more {
+        text += "..."
+    }
+    return text
+}
+
+test "walks" {
+    ^books[1] = Book(title: "Small Gods")
+    ^books[1].notes[1] = Book.notes(text: "a")
+    ^books[1].notes[2] = Book.notes(text: "b")
+    ^books[1].notes[3] = Book.notes(text: "c")
+    ^books[2] = Book(title: "Pyramids")
+    match noteTotal() {
+        ok(total) => {
+            assert total == 3
+        }
+        err(reason) => {
+            unreachable("two books hold three notes")
+        }
+    }
+    assert notesFrom(1, 2) == "bc"
+    assert notesFrom(1, 1) == "ab..."
+}
+
+test "the visited keys are frozen before the body runs" {
+    ^books[1] = Book(title: "a")
+    ^books[2] = Book(title: "b")
+    var visited = 0
+    var absentAtTwo = false
+    for id in ^books at most 10 {
+        visited += 1
+        if id == 1 {
+            delete ^books[2]
+            ^books[3] = Book(title: "c")
+        }
+        if id == 2 {
+            absentAtTwo = not exists(^books[id])
+        }
+    } on more {
+        unreachable("no more")
+    }
+    assert visited == 2
+    assert absentAtTwo
+}
+```
+
+`for id, book in ^books at most 100` visits at most 100 books. `id` is the key of each entry and `book` is a pin, an address for the entry at that key. `for pos in book.notes` walks the notes beneath the pinned book. In `notesFrom`, a named [place](durable-places.md#named-places) is the base instead, and `from first` starts the walk at that position. Each `on more` block says what the function does when the bound is reached.
+
+## Bounded durable traversal
+
+A durable `for` head names a root or a keyed branch, a bound, an optional starting key, and an `on more` block:
 
 ```text
-for k[, p] in <place> at most N [from f] {
+for k[, p] in <base> at most N [from f] {
     statements
 } on more {
     statements
 }
 ```
 
-`<place>` is a store root such as `^books` (the root entry family), a keyed
-branch such as `^books[id].notes` (the branch family beneath one fixed parent
-entry, at any nesting depth), or a bare branch selection on a [named
-`place`](durable-places.md#named-places) or a per-iteration pin — `b.notes`, where
-`b` already addresses an entry. A place base reuses the entry the place already
-addresses as the traversal's fixed parent, so its key-path is evaluated once at the
-place binding rather than re-spelled at the head. The first loop variable `k` binds
-each immediate key in ascending [typed key order](types-and-values.md#key-types); the
-value at that key is read separately inside the body. `N` is a positive integer literal
-no larger than the traversal ceiling (65536). An inclusive `from f` starts the walk at
-or after the key `f`.
+The base is a root such as `^books`, a branch beneath one entry such as `^books[id].notes`, or a branch beneath a place or a pin such as `book.notes`. `k` binds each key in ascending [key order](types-and-values.md#key-types). The body reads the entry through the key or the pin. `N` is a positive integer literal of at most 65,536. A durable `for` without `at most` or without `on more` is a `check.type` error.
 
-A bare `place`/pin name is one durable entry, not a family, so it is not itself a
-traversal base: iterate a keyed branch beneath it (`for k in b.notes …`), or iterate
-the store root directly (`for k in ^books …`).
+The loop freezes the first `N` keys before the body runs, then runs the body once per frozen key. `on more` runs when an `(N + 1)`th key exists and every body ran to completion. A `break`, a `return`, or a fault leaves the loop without running it. `from f` starts the frozen set at `f`, inclusive.
 
-An optional second variable `p` binds a per-iteration address pin: a
-[`place`](durable-places.md#named-places) over the entry at the current key,
-scoped to the loop body. It reads nothing on its own and establishes no presence
-fact — the frozen key names an entry an earlier iteration may already have erased —
-so a read or write through `p` is an ordinary durable access whose presence must be
-established the usual way (an `if exists(p)` test dominates a present-entry write).
+A pin `p` is a [place](durable-places.md#named-places) over the entry at the current key, scoped to the body. It reads nothing on its own. A read through the pin is optional like any durable read, and a write through it sits inside a `transaction`; `if exists(p)` proves the entry is present before a write.
 
-The traversed layer must be keyed by a single column: the loop binds one immediate key
-and takes one inclusive `from`. A `for` head over a composite-keyed root or branch layer
-is the typed `check.unsupported` rejection, since the language spells no composite-key
-iteration.
+Writes in the body do not change the frozen set. An entry created in the body is not visited. An entry erased by an earlier iteration keeps its frozen key, and a read through that key finds nothing, as the second test above shows.
 
-This shapes the data model: model each level you iterate as its own
-single-column keyed branch, nesting one branch per level, so every level is
-traversable. Reserve a composite key for a tuple that is one indivisible identity
-— one whose components are never enumerated on their own — since a composite-keyed
-layer is addressed by a full key but is not iterated.
+The walk costs work proportional to `N`. An entry that holds only branch descendants and no fields of its own is not visited; the loop passes it in one step and reads nothing beneath it. The frozen keys are held as one list and count against the collection limit, so a walk over wide keys can reach `run.collection_limit` before `N` keys.
 
-```mw
-module docs::traversal
+`for` iterates one key component. A composite-keyed root or branch, such as `store ^cells[x: int, y: int]: Cell`, is addressed by its whole tuple and is not iterated; a `for` head over it is a `check.unsupported` error. Give each layer a program walks its own single-key branch.
 
-resource Book {
-    required title: string
-
-    notes[pos: int] {
-        required text: string
-    }
-}
-
-store ^books[id: int]: Book
-
-pub fn sumFirstIds(): int {
-    var sum = 0
-    for id in ^books at most 100 {
-        sum += id
-    } on more {
-        sum = -1
-    }
-    return sum
-}
-
-pub fn sumNoteKeys(id: int): int {
-    var sum = 0
-    for pos in ^books[id].notes at most 100 from 1 {
-        sum += pos
-    } on more {
-        sum = -1
-    }
-    return sum
-}
-```
-
-A named `place` or a per-iteration pin can stand in for the fixed parent. `place b =
-^books[id]` addresses one book; `for pos in b.notes` then traverses the notes beneath
-it, and an outer pin `book` is itself an inner base:
-
-```mw
-module docs::place_traversal
-
-resource Book {
-    required title: string
-
-    notes[pos: int] {
-        required text: string
-    }
-}
-
-store ^books[id: int]: Book
-
-pub fn sumNoteKeysViaPlace(id: int): int {
-    var sum = 0
-    place b = ^books[id]
-    for pos in b.notes at most 100 {
-        sum += pos
-    } on more {
-        sum = -1
-    }
-    return sum
-}
-
-pub fn sumAllNoteKeys(): int {
-    var sum = 0
-    for id, book in ^books at most 100 {
-        for pos in book.notes at most 100 {
-            sum += pos
-        } on more {
-            sum = -1
-        }
-    } on more {
-        sum = -1
-    }
-    return sum
-}
-```
-
-The traversal freezes the first `N` immediate keys — acquiring at most one key
-beyond them to decide the `on more` arm — and then runs the body once per frozen
-key in order. The `on more` block runs exactly when an `(N + 1)`th key existed
-beyond the frozen set **and** every frozen body completed normally. A `break`,
-`return`, or fault out of a body leaves the loop without running `on more`.
-
-### Frozen-Set Isolation
-
-The frozen key set is captured before any loop body runs, so writes a body
-performs to the traversed family — creating, erasing, or replacing entries,
-including through a called helper — cannot change which keys the loop visits or
-the `on more` decision. Traversal is freeze-then-run, not interleaved. Because a
-key is frozen rather than re-proven present, the loop variable names a key whose
-entry an earlier body iteration may already have erased: a read of that entry
-inside the body is an ordinary read that may be absent, not a guaranteed-present
-access.
-
-### Bounded Work
-
-The walk costs work proportional to `N` regardless of how many descendants sit
-beneath skipped siblings: a child that carries branch descendants but no payload
-of its own is passed in one seek, and its own fan-out is never read. The frozen
-keys materialize as one ordinary `List<K>` value and are therefore subject to the
-same aggregate-byte ceiling every collection obeys; a traversal over wide keys can
-reach that ceiling — a `run.collection_limit` fault — at fewer than `N` keys.
-There is one collection ceiling, not a separate traversal-specific one.
+A place names one entry, so `for k in b` over a place is a `check.type` error. Walk a branch beneath the place, `for k in b.notes`, or walk the root.
 
 ## Ranges
 
-A `for` head over an integer range binds one name to each integer the range
-covers, in ascending order. `..` marks an excluded end and `..=` an included
-end; both endpoints are `int` expressions, evaluated once. An optional `by step`
-advances the counter by a positive integer literal each iteration, defaulting to
-`1`. A range takes no `at most N` bound — its length is determined by its
-endpoints.
+A `for` head over an integer range binds one name to each integer in ascending order. `..` excludes the end and `..=` includes it. Both ends are `int` expressions, evaluated once. `by step` advances by a positive integer literal each iteration:
 
-```mw
-module docs::ranges
-
-pub fn sumTo(n: int): int {
-    var s = 0
-    for i in 1..=n {
-        s += i
-    }
-    return s
+```text
+for i in 1..=n {
+    sum += i
 }
 
-pub fn evens(): int {
-    var count = 0
-    for value in 0..10 by 2 {
-        count += 1
-    }
-    return count
+for value in 0..10 by 2 {
+    count += 1
 }
 ```
 
-A dead or empty range runs the body zero times: `for i in 5..3` and
-`for i in 5..=4` never enter. The step must be a positive integer literal; `by 0`,
-a negative step, and a computed step are refused at compile time. A range that
-reaches the integer domain boundary ends the loop rather than faulting. Range
-iteration is over integers only; a temporal range is not current behavior.
+The first loop runs `n` times. The second runs five times, for `0`, `2`, `4`, `6`, and `8`. A range whose start is past its end, such as `5..3` or `5..=4`, runs zero times. A range that reaches `maxInt` ends the loop. A range takes no `at most`; its length is fixed by its ends. `by 0`, a negative step, and a computed step are `check.type` errors. A range covers integers only.
 
-## Local Collections
+## Local collections
 
-A `for` head over a local `List` or `Map` walks it positionally. A list yields
-its elements in insertion order under one variable; a map yields its keys under
-one variable, or its keys and values under two, in
-[`CollectionKeyOrder`](types-and-values.md#lists-and-maps). A local collection
-takes no `at most` bound — its length is already finite and known.
+A `for` head over a local [list or map](types-and-values.md#lists-and-maps) walks every element. A list yields its elements in order under one name. A map yields its keys under one name, or its keys and values under two, in key order. A local collection takes no `at most`; its length is already known.
 
-## Index Declarations
+## Index declarations
 
-A keyed `store` root may declare narrow compiler-maintained ordered indexes. An
-index is an ordered projection of the root's identity keys and top-level fields;
-it stores no data of its own and has no application write operation. A non-unique
-index distinguishes each row by ending with the complete store identity suffix; a
-`unique` index may omit it.
+A keyed root declares an index inside its `store` block. An index is an ordered path to the root's entries by one or more of their fields; it holds no data of its own and has no write operation. A non-unique index ends with the root's key. A `unique` index leaves the key out and admits one entry per value:
 
 ```mw
-module docs::indexes
+module docs::traversal::indexes
 
 resource Book {
     required title: string
@@ -222,88 +148,25 @@ store ^books[id: int]: Book {
     index byIsbn[isbn] unique
 }
 
-pub fn label(): string {
-    return "books"
-}
-```
-
-Each index argument names either one store identity column or one plain top-level
-field of the stored resource, in projection order, and no component may repeat. A
-non-unique index must end with
-every identity key in declaration order, with no identity key in a leading position;
-a `unique` index may omit the identity keys. A field reached through an unkeyed
-group, a keyed child layer, or a keyed positional leaf cannot be an index component.
-Each projected field must store an orderable durable-key scalar (`int`, `string`,
-`bool`, `bytes`, `date`, or `instant`; a nominal erases to its base scalar). An index
-name shares the root's source namespace with the identity keys and stored fields, so
-it may not collide with either or with another index. An index requires a keyed root:
-a singleton store admits none.
-
-Each index carries its own stable durable identity in the machine-written
-`.marrow/ids` ledger (an `index` anchor at `<root>.<index name>`), distinct from every
-other durable identity; renaming an index preserves it, and a retired index name is
-never reused. The compiler maintains every index — assignment, clearing, whole
-replacement, and deletion keep the affected indexes coherent; source has no
-operation that writes an index, so an index can never be left incoherent by
-application code.
-
-## Reading An Index
-
-A source program reads a managed index through the store root that declares it,
-`^root.indexName`. The read shape follows the index kind.
-
-A **non-unique** index is scanned with a bounded `for` head, holding its leading
-field components as a bracket prefix and binding the source-root identity `Id(^root)`
-of each matching entry:
-
-```mw
-module docs::index_scan
-
-resource Book {
-    required title: string
-    required shelf: string
+struct ShelfCount {
+    count: int
+    truncated: bool
 }
 
-store ^books[id: int]: Book {
-    index byShelf[shelf, id]
+pub fn add(id: int, title: string, shelf: string, isbn: string) {
+    transaction {
+        ^books[id] = Book(title: title, shelf: shelf, isbn: isbn)
+    }
 }
 
-pub fn countOnShelf(shelf: string): int {
+pub fn countOnShelf(shelf: string): ShelfCount {
     var count = 0
     for bookId in ^books.byShelf[shelf] at most 100 {
-        if const b = ^books[bookId] {
-            count += 1
-        }
+        count += 1
     } on more {
-        count = -1
+        return ShelfCount(count: count, truncated: true)
     }
-    return count
-}
-```
-
-The scan is bounded exactly like a durable traversal (`at most N`, a mandatory
-`on more`, freeze-then-run over the frozen identities). It holds every leading field
-component of the projection and yields the trailing identity component, so the loop
-variable is the `Id(^root)` of each entry — dereference it with `^root[id]` to read the
-entry. The store root's identity is a single key column, so the yielded component is a
-whole identity; a composite-identity root, a `from` cursor, and a per-iteration address
-pin are not admitted on a scan.
-
-A **unique** index is read with a complete-key bracket access `^root.indexName[keys]`,
-supplying the whole projection and yielding the optional matching identity — present
-with exactly the one `Id(^root)`, or absent, never a sibling. An `if const` head binds
-the present identity:
-
-```mw
-module docs::index_lookup
-
-resource Book {
-    required title: string
-    required isbn: string
-}
-
-store ^books[id: int]: Book {
-    index byIsbn[isbn] unique
+    return ShelfCount(count: count, truncated: false)
 }
 
 pub fn titleByIsbn(isbn: string): string? {
@@ -312,41 +175,66 @@ pub fn titleByIsbn(isbn: string): string? {
     }
     return absent
 }
-```
-
-A non-unique index read is a progressive typed-prefix refinement (an incomplete prefix
-yields the next distinct component; the complete projection yields the source-root key),
-and a `unique` index read is a complete-key exact lookup that yields exactly the one
-matching `Id(^root)` or absent — never a sibling.
-
-The presence of a matching entry is asked directly with `exists(^root.indexName[keys])`,
-supplying the whole projection and yielding a `bool` without binding the identity — the
-presence half of the lookup:
-
-```mw
-module docs::index_exists
-
-resource Book {
-    required title: string
-    required isbn: string
-}
-
-store ^books[id: int]: Book {
-    index byIsbn[isbn] unique
-}
 
 pub fn isbnTaken(isbn: string): bool {
     return exists(^books.byIsbn[isbn])
 }
+
+pub fn moveByIsbn(isbn: string, shelf: string): bool {
+    transaction {
+        if const found = ^books.byIsbn[isbn] {
+            ^books[found].shelf = shelf
+            return true
+        }
+        return false
+    }
+}
+
+test "indexes" {
+    add(1, "Small Gods", "top", "111")
+    add(2, "Pyramids", "top", "222")
+    add(3, "Mort", "low", "333")
+    assert countOnShelf("top").count == 2
+    assert titleByIsbn("333") ?? "" == "Mort"
+    assert isbnTaken("222")
+    assert not isbnTaken("999")
+    assert moveByIsbn("333", "top")
+    assert countOnShelf("top").count == 3
+    assert countOnShelf("low").count == 0
+}
 ```
 
-A non-unique index is scan-only and has no `exists` probe (see [Built-ins](builtins.md#presence)).
+`byShelf[shelf, id]` orders books by shelf, then by key, so two books on one shelf stay distinct. `byIsbn[isbn] unique` maps each ISBN to one book. `add` writes the entry once; both indexes follow. `moveByIsbn` changes `shelf`, and the last two assertions show `byShelf` moved with it.
 
-A bound `Id(^root)` addresses the whole entry: dereferencing it with `^root[id]` reads
-the entry, and inside a transaction the same address is written or replaced — for
-example `^root[found] = Resource(...)` updates the entry the lookup found — exactly as an
-inline key address is.
+Each component names one key of the root or one top-level field of the resource, and no component repeats. A component is an `int`, `string`, `bool`, `bytes`, `date`, or `instant` field ([key types](types-and-values.md#key-types)). A field inside a group or a branch is not a component. A non-unique index ends with every key of the root in declaration order and puts no key first. A `unique` index may omit the keys. An index name shares the root's namespace with its keys and its fields. A root declares at most 8 indexes. A singleton root declares no index. Each of these rules is a `check.type` error at the declaration.
 
-**Future.** A scan that binds an intermediate distinct component (rather than the
-trailing identity), a composite-identity scan, and a `from` cursor on a scan are not yet
-spelled; a source read of those shapes reports a precise not-yet-supported diagnostic.
+The compiler maintains every index. A field assignment, a field clear, a whole-entry replacement, and a `delete` each keep the affected indexes in step with the entry; no source operation writes an index. A commit that would put two entries under one `unique` value faults with `run.unique_index` and rolls the whole transaction back:
+
+```text
+ERROR duplicate isbn (run.unique_index at 20:9)
+0 passed, 0 failed, 1 errored (1/1 selected)
+```
+
+Each index has its own line in the [identity ledger](../tools/projects.md#identity-ledger), `index books.byShelf`, minted with the root's other identities. Today, renaming an index mints a new identity. Rename and retirement that keep an index's identity are future work ([status](../status.md)).
+
+## Reading an index
+
+A program reads an index through its root, `^books.byShelf`. The read shape follows the index kind.
+
+A non-unique index is walked with a bounded `for` head. The brackets hold every field component, and the loop variable binds the [entry identity](types-and-values.md#entry-identity) `Id(^books)` of each entry, in ascending order of the index:
+
+```text
+for bookId in ^books.byShelf[shelf] at most 100 {
+    count += 1
+} on more {
+    return ShelfCount(count: count, truncated: true)
+}
+```
+
+`^books[bookId]` reads the entry the identity names. The walk freezes its identities and runs `on more` exactly as a root walk does. The root's key is one component, and the walk takes no `from` and no pin; each of those forms is a `check.unsupported` error.
+
+A `unique` index is read with brackets holding the whole value, `^books.byIsbn[isbn]`. The result is `Id(^books)?`: the one matching entry's identity, or absent. `if const found = ^books.byIsbn[isbn]` binds the identity when it is present, and `^books[found].title` reads through it.
+
+`exists(^books.byIsbn[isbn])` answers presence alone and yields a `bool` ([presence and identity](builtins.md#presence-and-identity)). A non-unique index has no `exists`; the `for` head is its only read, and `exists` over it is a `check.type` error.
+
+A found identity is an address. Inside a `transaction`, `^books[found].shelf = shelf` writes one field of the entry the lookup found, and `^books[found] = Book(...)` replaces it, exactly as a key in brackets would.

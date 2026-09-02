@@ -1,26 +1,17 @@
 # Tools
 
-The beta line ships a thin command-line tool while the prototype command
-families are refounded lane by lane. Tools consume parser and syntax facts;
-they do not define a second language or saved-data model.
+The `marrow` command builds, checks, runs, and tests a project. `marrow-lsp`
+serves editors.
 
-- [CLI Reference](cli.md) covers `init`, `fmt`, `check`, `run`, `test`,
-  `import`, `image`, `client typescript`, `--version`, `--help`, and the typed
-  not-yet-supported response every refounding command name reports.
-- [Tests](tests.md) covers `marrow test`: discovering and running `test`
-  declarations and reading its report.
-- [Projects](projects.md) covers the project layout, the `marrow.toml` manifest
-  contract, and path-derived module identity.
-- [TypeScript client](typescript-client.md) covers `marrow client typescript`:
-  the generated strict client, the pinned Node supervision module, and the
-  closed loss classification for calls whose reply is lost.
-- [Language server](lsp.md) covers `marrow-lsp`: the standalone editor-facing server that
-  serves diagnostics, formatting, hover, and definition over the compiler's
-  published analysis facts.
+- [CLI](cli.md): every command, its output, and the exit codes.
+- [Tests](tests.md): `marrow test` and how to read its report.
+- [Projects](projects.md): the project layout, the manifest, module names, and
+  the identity ledger.
+- [TypeScript client](typescript-client.md): the client `marrow client
+  typescript` generates and the Node module that supervises it.
+- [Language server](lsp.md): `marrow-lsp`, the editor server.
+- [AI legibility](ai-legibility.md): the reserved words, token kinds, and
+  structured outputs a tool consumes.
 
-The prototype check/data/doctor/evolve/backup/restore tooling and the
-surface/client/serve commands were deleted at B00. `check`, `run`, `test`, and
-`client typescript` have been refounded on the new pipeline, and `import` and
-`image` are new commands on it; `data`, `doctor`, `evolve`, `serve`, `backup`,
-and `restore` report the typed not-yet-supported response until their
-refounding lanes land. See [Project status](../status.md).
+`data`, `doctor`, `evolve`, `serve`, `backup`, and `restore` are recognized
+command names with no implementation today ([status](../status.md)).

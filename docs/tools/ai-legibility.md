@@ -1,44 +1,34 @@
-# Machine-Readable Language Facts
+# Machine-readable language facts
 
-Marrow exposes its language surface as structured facts a program can consume
-without reconstructing the language. A tool — an editor extension, a code
-generator, or a program that reads or writes `.mw` source — reads these facts
-rather than reimplementing the lexer, parser, type system, or path model. This
-page indexes those facts and gives the two lexical inventories a machine most
-often needs: the reserved words and the token kinds. Both inventories are
-**drift-checked against the parser**: a test in `marrow-syntax` renders each list
-from the parser's own tables and fails when the committed list here no longer
-matches, so this page cannot silently fall behind the compiler.
+Marrow publishes its language surface as structured facts a program can consume.
+An editor extension, a code generator, or a program that reads or writes `.mw`
+source reads these facts instead of reimplementing the lexer, parser, type
+system, or path model. The parser is the single authority for syntax; this page
+publishes facts the parser owns and defines none of its own.
 
-The parser is the single authority for syntax. This page publishes facts the
-parser owns; it does not define syntax, and nothing here overrides the
-[grammar](../language/grammar.md) or any other reference page.
+## Structured outputs
 
-## Structured outputs a tool consumes
-
-| Fact | Where it comes from | Shape |
+| Fact | Source | Shape |
 |---|---|---|
-| Command outcomes | `marrow run`/`marrow test` with `--format jsonl` | One canonical JSON object per line; `outcome` is one of `value`, `diagnostic`, `artifact_rejected`, `fault`, or `error`, keeping the [four failure families](../language/errors-and-transactions.md) distinct. |
-| Diagnostics | every command | A typed dotted code (`check.unsupported`, `parse.syntax`, …) with a 1-based source span; the closed registry is the [Error Code Reference](../error-codes.md). |
-| Durable access demand | `marrow check` (summary), `marrow check --demand` (full) | The default summary groups each export's read/write durable demand by module, rolled up to roots. `--demand` prints one line per exported function naming every durable place its whole call graph reads and writes, in source spelling (`bookstore.put reads ^books; writes ^books`). |
-| Editor facts | `marrow-lsp` | Diagnostics, whole-document formatting, hover, and go-to-definition, served from the compiler's published analysis facts over the Language Server Protocol; see the [language server](lsp.md). |
-| Wire interface | `marrow client typescript` | A generated strict client whose method signatures and transfer types are reconstructed from the verified image; see the [TypeScript client](typescript-client.md). |
+| Command outcomes | `marrow run` and `marrow test` with `--format jsonl` | One canonical JSON object per line; `outcome` is `value`, `diagnostic`, `artifact_rejected`, `fault`, or `error`, keeping the [failure kinds](../language/errors-and-transactions.md#failure-kinds) distinct. |
+| Diagnostics | every command | A dotted code (`check.type`, `parse.syntax`) with a 1-based source span; the closed registry is the [error code reference](../error-codes.md). |
+| Durable access demand | `marrow check` and `marrow check --demand` | The summary groups each export's reads and writes by module. `--demand` prints one line per export naming every durable place its call graph reads and writes, in source spelling: `main.put reads ^books; writes ^books`. |
+| Editor facts | `marrow-lsp` | Diagnostics, formatting, hover, definition, completion, signature help, and document symbols over the Language Server Protocol, from the [language server](lsp.md). |
+| Wire interface | `marrow client typescript` | A generated strict client whose method signatures and transfer types come from the verified image, described under [TypeScript client](typescript-client.md). |
 
-Each of these is a projection of one compiler-owned model. A tool that needs a
-fact Marrow does not yet publish asks for the fact to be added to the compiler
-rather than recomputing it from source text.
+Each of these is a projection of one compiler model. A tool that needs a fact
+Marrow does not publish asks for the fact to be added to the compiler.
 
 ## Reserved words
 
-The following words are reserved: the lexer classifies each as a keyword, so none
-is available as an identifier. The set is case-sensitive — `Error`, `ErrorCode`,
-and `Id` are reserved with their capitalization, and a lowercase `error` is an
-ordinary identifier. Some words are contextual in the grammar (`category`, `by`,
-`at most`, `from`, `on more`, and the duration units are read as keywords only in
-specific positions and are not in this set), and some reserved words are held for
-a future clause and are not yet grammar (`writes`, `reads`, `merge`, `journal`,
-`sensitive`, `declassify`, `lock`). A word being reserved means only that the
-lexer will not treat it as an identifier.
+The lexer classifies each of the following words as a keyword, so none is
+available as an identifier. The set is case-sensitive: `Error`, `ErrorCode`, and
+`Id` are reserved with their capitalization, and a lowercase `error` is an
+ordinary identifier. Some words are contextual in the grammar: `by`, `at most`,
+`from`, `on more`, and the duration units are read as keywords only in specific
+positions and are outside this set. Some reserved words are held for a future
+clause: `writes`, `reads`, `merge`, `journal`, `sensitive`, `declassify`, `lock`.
+A reserved word means only that the lexer treats it as a keyword.
 
 <!-- BEGIN reserved-words -->
 ```text
@@ -68,29 +58,21 @@ Caret
 ```
 <!-- END token-kinds -->
 
+## Drift checks
+
+A test in the `marrow-syntax` crate renders the two inventories above from the
+parser's own tables and compares them with the blocks on this page, word for
+word. The reserved-word set comes from the `is_reserved_word` predicate over an
+exhaustive enumeration of the keyword type; the token-kind set comes from an
+exhaustive match over the token-kind type. Adding, removing, or renaming a keyword
+or token kind in the parser fails that test until the block here changes in the
+same commit.
+
 ## Grammar
 
-The current EBNF summary of the `.mw` surface is the [grammar](../language/grammar.md)
-page. That grammar is **hand-maintained** against the recursive-descent parser and
-verified two ways: every complete `mw` example in the reference is compiled and
-independently verified by the documentation gate, and the syntax corpus proves the
-same sources parse and format. The parser is a recursive-descent implementation
-and exposes no production table to render a full grammar from, so the production
-bodies on the grammar page are not mechanically derived from the parser the way
-the two lexical inventories above are. This is the one recorded gap between the
-published grammar and a fully generated artifact; the reserved-word and
-token-kind inventories close the part of that gap that changes most often and is
-most error-prone to restate by hand.
-
-## Drift enforcement
-
-The reserved-word and token-kind blocks above are read back by a test in the
-`marrow-syntax` test tree. The test derives the same two sets from the parser —
-the reserved-word set through the public `is_reserved_word` predicate over an
-exhaustive enumeration of the keyword type, and the token-kind set through an
-exhaustive match over the token-kind type — and asserts they equal the sets
-parsed out of this page. Adding, removing, or renaming a keyword or token kind in
-the parser makes that exhaustive match fail to compile, and changing the set makes
-the comparison fail, so a parser change that outpaces this page fails a check
-rather than passing silently. When the parser changes, update the block here in
-the same change.
+The [grammar](../language/grammar.md) page is the EBNF summary of the `.mw`
+surface. It is maintained by hand against the recursive-descent parser, which
+has no production listing to render it from. It is checked two ways: every
+complete `mw` example in the reference compiles and passes `marrow test`, and the
+syntax corpus proves the same sources parse and format. The two inventories above
+are the mechanically derived part of the published grammar.

@@ -1,120 +1,86 @@
 # Tests
 
-A `test` declaration is a named, zero-argument body that `marrow test` runs. Its
-statements are ordinary Marrow, plus one construct legal only here: the `assert`
-statement. A test that touches no durable data runs storeless; a test that reads
-or writes durable data runs against its own fresh in-memory ephemeral attachment
-(see [durable places](durable-places.md) and [tools/tests](../tools/tests.md)), so
-no test opens a persistent store or observes another test's writes.
+A `test` is a named body of ordinary statements that `marrow test` runs. Inside it, `assert` checks a condition.
 
-## Declaring a test
+## Tests and assert
 
-A test is the keyword `test`, a string-literal title, and an indented body:
+A test is the keyword `test`, a string title, and a block:
 
 ```mw
-module app::math
+module docs::tests::pure
 
-pub fn double(n: int): int {
-    return n + n
+pub fn label(title: string, author: string): string {
+    return $"{title} by {author}"
 }
 
-test "double doubles its argument" {
-    const four = double(2)
-    assert four == 4
+test "label joins title and author" {
+    const text = label("Small Gods", "Terry Pratchett")
+    assert text == "Small Gods by Terry Pratchett"
+    assert not isEmpty(text)
 }
 ```
 
-The title is a human report label. It is unique within a project and is not an
-export, an entry identity, or any other stable identity. A test takes no
-parameters and returns nothing.
+The title is the report label. Titles are unique within a project; a second test with the same title is `check.name_conflict`. A test takes no parameters and returns nothing.
 
-## The assert statement
+`assert` evaluates a `bool` expression. A false condition fails the test, and the report names the assertion's source position. A test passes when its body runs to the end with every condition true. Any other runtime fault, such as an overflow, errors it.
 
-`assert <condition>` evaluates a `bool` expression. When the condition is false
-the test fails, and `marrow test` reports the failure at the assertion's source
-position. `assert` is legal only inside a `test` body; an `assert` in an ordinary
-function is the compile error `check.assert_outside_test`. For an invariant fault
-in program code, use `unreachable("...")` instead.
+`assert` belongs only in a `test` body; in a function it is `check.assert_outside_test`. Program code states an invariant with `unreachable("...")` instead.
 
-```mw
-module app::text
-
-pub fn shout(word: string): string {
-    return word + "!"
-}
-
-test "shout appends one mark" {
-    assert shout("hi") == "hi!"
-    assert not isEmpty(shout(""))
-}
-```
-
-A test that runs to completion with every assertion holding passes. A false
-assertion fails it; any other runtime fault errors it. How `marrow test`
-discovers, selects, and reports tests is described in
-[tools/tests.md](../tools/tests.md).
+How tests are selected, ordered, and reported is described in [tools/tests](../tools/tests.md).
 
 ## Durable tests
 
-A test that touches durable data does so in one of two ways, and a single test
-body uses only one of them.
+A test that reads or writes a durable place gets its own empty in-memory store. Nothing carries over from one test to the next, and no test opens a store on disk.
 
-A **direct** durable test reads and writes durable places itself. Its operations
-run against one session over the test's fresh attachment, so a value it writes is
-visible to a later read in the same body:
+A durable test works in one of two ways. A direct test reads and writes durable places itself:
 
 ```mw
-module docs::direct_test
+module docs::tests::direct
 
-resource Counter {
-    required value: int
+resource Book {
+    required title: string
+    shelf: string
 }
 
-store ^counters[id: int]: Counter
+store ^books[id: int]: Book
 
-test "a written field reads back" {
-    ^counters[1].value = 7
-    assert ^counters[1].value ?? 0 == 7
+test "a written entry reads back" {
+    ^books[1] = Book(title: "Small Gods")
+    assert exists(^books[1])
+    assert ^books[1].title ?? "" == "Small Gods"
+    assert not exists(^books[2])
 }
 ```
 
-A **driver** test reaches durable data only by calling the application's exports.
-Each such call is its own invocation boundary, exactly as a separate terminal
-invocation is: a mutating export commits to the test's attachment, and a later
-reading export observes the committed value. A driver test seeds and inspects
-durable state through exports rather than raw writes, and its assertions read
-through reading exports:
+The write is a bare statement; a test body owns no `transaction` block, and one inside it is `check.transaction_misplaced`. A value the body writes is visible to a later read in the same body. A test seeds the data it needs the same way, in its own body first.
+
+A driver test reaches durable data only through the project's exports:
 
 ```mw
-module docs::driver_test
+module docs::tests::driver
 
-resource Counter {
-    required value: int
+resource Book {
+    required title: string
 }
 
-store ^counters[id: int]: Counter
+store ^books[id: int]: Book
 
-pub fn set(id: int, v: int) {
+pub fn add(id: int, title: string) {
     transaction {
-        ^counters[id] = Counter(value: v)
+        ^books[id] = Book(title: title)
     }
 }
 
-pub fn valueOf(id: int): int? {
-    return ^counters[id].value
+pub fn titleOf(id: int): string? {
+    return ^books[id].title
 }
 
-test "set then read back" {
-    set(1, 42)
-    assert valueOf(1) ?? 0 == 42
+test "add then read back" {
+    add(1, "Small Gods")
+    assert titleOf(1) ?? "" == "Small Gods"
 }
 ```
 
-A test body may not combine the two: performing a durable operation directly and
-also calling an export that owns a `transaction` is the compile error
-`check.test_driver_mix`. The two invocation models cannot share a body — the
-driven export's commit would consume the session the direct operation needs — so
-split the body into a direct test and a driver test, or reach the durable data
-through the exports the test drives. Only driving an export that owns a
-`transaction` is restricted this way; calling a reading export that opens no
-`transaction` block alongside direct durable operations is not.
+Each call behaves like a separate `marrow run`. `add` commits its [transaction](errors-and-transactions.md#transactions) to the test's store, and `titleOf` reads the committed value.
+
+A body is either direct or driver. Mixing a direct durable operation with a call to an export that owns a `transaction` is `check.test_driver_mix`; split such a test in two. A direct test may still call an export that opens no `transaction`, such as a reading export.

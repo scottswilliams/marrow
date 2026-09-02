@@ -1,70 +1,50 @@
 # Testing implementation
 
-Marrow uses several evidence layers. A green layer proves only its own scope;
-unit tests do not substitute for production-pipeline or crash tests.
+Marrow tests at six layers. Each proves its own scope.
 
 | Layer | Purpose |
 |---|---|
 | Unit tests | Local parser, formatter, codec, and engine invariants. |
-| Source-driven parser tests | `.mw` source through the production lexer/parser/formatter. |
-| Source tests (`marrow test`) | `test`/`assert` declarations run through the compiled pipeline (capture → compile → verify → VM); a durable test runs against its own fresh ephemeral attachment, a storeless test with no session. |
-| Engine conformance laws | Identical byte-level traces over the memory and redb backends. |
-| Differential-oracle harness | Hash-verified invocation of the frozen prototype binary over preserved-semantics fixtures (skeleton at B00; comparison arrives with the tracer lane). |
-| Architecture/absence tests | Workspace membership, forbidden legacy families, and generated drift. |
+| Source-driven parser tests | `.mw` source through the lexer, parser, and formatter. |
+| Source tests (`marrow test`) | `test` and `assert` declarations run through the whole pipeline (compile, verify, VM); a durable test runs against its own fresh in-memory store, a storeless test with no session. |
+| Engine conformance laws | Identical byte-level traces over the memory and redb engines. |
+| Differential oracle | The current stack and the archived prototype binary each run `marrow test --format jsonl` over the tracer fixtures, and the harness compares them test by test; the tests that invoke the binary are `#[ignore]`d. |
+| Architecture and absence tests | Workspace membership, forbidden legacy families, and generated drift. |
 
-Refounding lanes re-add the compiler, runtime, store-lifecycle, and crash layers
-with their owners. Tests should assert typed codes, spans, values, and facts
-rather than prose messages. CLI tests remain thin when the same behavior can be
-exercised below process rendering.
-
-The battery's wall time is a design constraint rather than a cleanup task, so a
-test takes the cheapest layer above that proves its invariant, and a test whose
-cost is out of proportion to the rest of the battery is `#[ignore]`d with a
-reason stating that cost and run explicitly with `--ignored`. [Compilation and
-test speed](speed.md) states the rules; [project
-status](../status.md#compilation-and-test-speed) records what each clock has
-measured.
+A test asserts codes, spans, values, and facts, never message text. A CLI test
+stays thin when the same behavior is reachable below process rendering. A test
+takes the cheapest layer that proves its invariant; [compilation and test
+speed](speed.md) states the rule and the opt-in for slow tests, and [project
+status](../status.md#measurements) records what each clock has measured.
 
 ## Release-profile performance leg
 
-The query-local latency budgets assert only when `debug_assertions` is off: the
-unoptimized profile records its measurement and returns before comparing it, so
-a green default battery establishes the measurement and not the budget. The
-`Rust (release perf)` job in `.github/workflows/ci.yml` is where the comparison
-happens. It builds `marrow-compile`'s `query_local_syntax` test target at the
-release profile and runs exactly the two tests that assert there — one query
-over a maximum admitted file and one over an ordinary-sized file — then prints
-the leg's wall time. Each run's summary line is checked, so a renamed or
-`#[ignore]`d budget fails the job instead of passing as a green run of no tests.
-The job is configured to gate like the ordinary Rust matrix rather than as an
-advisory one. It runs in CI rather than in the default local battery because an
-optimized build is long and the developer's edit-test clock does not pay it; the
-budgets and the measurements behind them live with the tests.
-
-The figure the first run on `main` prints is the baseline for that runner class.
-A red is triaged as a measurement finding — a regression, a runner change, or a
-budget that was never right — and is not suppressed as flake. To reproduce the
-leg locally, run the job's `cargo test --release` invocation with an out-of-tree
-`CARGO_TARGET_DIR`, which keeps the optimized artifacts out of the lane's
-unoptimized directory.
+The latency budgets in `crates/marrow-compile/tests/query_local_syntax.rs`
+assert only when `debug_assertions` is off; the unoptimized profile records
+its measurement and returns. The `Rust (release perf)` job in
+`.github/workflows/ci.yml` builds that test target at the release profile, runs
+the two budget tests by exact name, checks each summary line so a renamed or
+ignored budget fails the job, and prints the leg's wall time. A failure is
+triaged as a measurement finding. To reproduce it locally, run the job's
+`cargo test --release` invocation with an out-of-tree `CARGO_TARGET_DIR`.
 
 ## Fixtures
 
-`fixtures/v01/` is the preserved-semantics corpus extracted from the prototype:
-complete fixture projects and `.mw` sources whose expected typed outcomes the
-refounding lanes replay through the production path as their behavior returns.
+`fixtures/v01/` is the preserved-semantics corpus: complete fixture projects
+and `.mw` sources with their expected outcomes, replayed through the pipeline
+by the source tests and the differential oracle.
 
 ## Documentation
 
 `docs/error-codes.md` is generated byte-exactly from `marrow-codes`. The
-project-pipeline documentation gate compiles and independently verifies every
-complete current `mw` fence, and runs any source tests it declares. The syntax
-corpus parses and formats the same inventory. Documentation changes also take
-fresh link and terminology sweeps.
+documentation test compiles and verifies every complete `mw` fence outside
+`docs/future/` and runs the source tests it declares; the syntax corpus parses
+and formats the same inventory. Documentation changes also take link,
+anchor, and terminology checks.
 
-## Gate order
+## Check order
 
-Run focused tests first, followed by full workspace tests, formatter, Clippy
-with warnings denied, zero-unsafe checks, generated artifact drift, and the
-standing tidy/absence gate. Cargo commands on the shared build host always use
-the lane's explicit external `CARGO_TARGET_DIR`.
+Run focused tests first, then the full workspace tests, formatter, Clippy with
+warnings denied, the zero-unsafe check, generated-artifact drift, and the tidy
+and absence tests. [Contributing](../../CONTRIBUTING.md#checks) gives the
+commands and the target-directory convention.

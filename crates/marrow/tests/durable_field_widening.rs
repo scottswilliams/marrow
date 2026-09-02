@@ -187,7 +187,7 @@ fn nominal_durable_positions_and_reference_agree() {
     let durable = normalize(include_str!("../../../docs/language/durable-places.md"));
 
     assert!(types.contains(
-        "A nominal int type is admitted as a resource field. It retains its nominal source type, while its image record and durable stored shape use base `int`; sparse requiredness is recorded separately."
+        "A nominal int type is admitted as a resource field and is stored as its base `int`."
     ));
     assert!(types.contains(
         "Operations over a root containing a nominal field remain unimplemented and report `check.unsupported`."

@@ -1,29 +1,8 @@
 # Quickstart
 
-This page takes a developer who has not seen Marrow before from a source
-checkout to a running durable program. Every command below is run exactly as
-shown. Marrow is unreleased and its admitted language subset is narrow and
-growing; the [status](status.md) page states what is current.
-
-## Build the commands
-
-Marrow builds from source with the pinned Rust toolchain (Rust 1.89) on Linux or
-macOS. The durable half of this page — provisioning and opening a store —
-additionally requires macOS, or Linux on `x86_64` or `aarch64`. See
-[Install from source](install.md) for the requirements.
-
-```sh
-git clone https://github.com/scottswilliams/marrow
-cd marrow
-cargo install --locked --path crates/marrow
-cargo install --locked --path crates/marrow-lsp
-marrow --version
-marrow-lsp --help
-```
-
-The two install commands provide the `marrow` CLI and the standalone
-`marrow-lsp` editor server. `marrow --version` prints the package version of the
-CLI binary. Installing them starts no service and creates no data directory.
+Two programs, run from the terminal: one without a store, then one that keeps
+notes in a durable place. [Install](install.md) `marrow` first; `marrow
+--version` prints `marrow 0.1.0`.
 
 ## Create a project
 
@@ -32,8 +11,8 @@ marrow init hello
 cd hello
 ```
 
-`marrow init` writes a [project](tools/projects.md): a `marrow.toml` manifest and
-a `src/main.mw` starter script.
+`marrow init` writes a [project](tools/projects.md): a `marrow.toml` manifest
+and a `src/main.mw` starter script.
 
 ```text
 hello/
@@ -41,15 +20,14 @@ hello/
   src/main.mw      a pub fn main() starter script
 ```
 
-Source lives under `src`. A file's name is derived from its path
-(`src/main.mw` is `main`, `src/shelf/books.mw` is `shelf.books`), and a file with
-no `module` header is a script whose exported functions are still addressable from
-the command line.
+A file's name comes from its path: `src/main.mw` is `main`, and
+`src/shelf/books.mw` is `shelf.books`. A file with no `module` header is a
+script; its exported functions are still addressable from the command line.
 
-## A first program without a store
+## A first program
 
-Replace `src/main.mw` with a small function and a test. This program uses no
-durable data, so it needs no store.
+Replace `src/main.mw` with a function and a test. This program touches no
+durable data, so it needs no store. Check, run, and test it:
 
 ```mw
 pub fn greet(name: string): string {
@@ -61,18 +39,18 @@ test "greet names the caller" {
 }
 ```
 
-Check, run, and test it:
-
 ```sh
 marrow check .
 ```
 
 ```text
-main.greet reads or writes no durable data
+1 export across 1 module
+
+main: 1 export, all storeless
 ```
 
-`marrow check` captures and type-checks the project, then prints one line per
-exported (`pub fn`) function describing the durable data it touches — here, none.
+`marrow check` type-checks the project and reports, per module, which durable
+places its exported functions read and write. `greet` touches none.
 
 ```sh
 marrow run greet -- world
@@ -82,9 +60,8 @@ marrow run greet -- world
 Hello, world!
 ```
 
-`marrow run` compiles the project to a reproducible program image, an independent
-verifier seals that image, and the bytecode VM runs the named export. Arguments
-after `--` are decoded against the export's scalar parameters.
+`marrow run` compiles and verifies the project, then runs the named export.
+Arguments after `--` are decoded against the export's scalar parameters.
 
 ```sh
 marrow test
@@ -95,15 +72,11 @@ ok    greet names the caller
 1 passed, 0 failed, 0 errored (1/1 selected)
 ```
 
-`marrow test` runs every `test` declaration through the same compile-and-verify
-path.
+`marrow test` runs every `test` declaration and reports each outcome by name.
 
 ## A durable program
 
-Durable data is written and read as ordinary typed program state. Replace
-`src/main.mw` with a store of notes. A `resource` declares the stored shape; a
-`store` declares a durable root keyed by an `int`; each write happens inside an
-explicit `transaction`; and `exists` and `?.` make presence visible.
+Replace `src/main.mw` with a store of notes:
 
 ```mw
 resource Note {
@@ -145,10 +118,22 @@ test "add and read back" {
 }
 ```
 
-A durable declaration has a stable identity recorded in a machine-written ledger
-(`.marrow/ids`). The first storeless `marrow run` mints any missing identities and
-writes the ledger; commit that file with the source. Mint the identities by
-running any export once:
+`resource Note` declares the shape of a stored value: `text` is required and
+`pinned` is sparse. `store ^notes[id: int]: Note` declares a durable root keyed
+by an `int`; `^notes[id]` is one entry. Every durable write sits inside a
+`transaction` block, and `exists(^notes[id])` inside the block tests presence
+before `add` writes. `place slot = ^notes[id]` in `pin` names the entry once;
+`exists(slot)` proves it is present, and `slot.pinned = true` writes one field.
+`textOf` returns `string?` because the entry may be absent, and `??` supplies a
+default. The test drives the exports and checks the round trip against a fresh
+in-memory store.
+
+## Minting identities
+
+Each durable declaration gets a stable identity, recorded in `.marrow/ids`.
+The first `marrow run` writes that file; commit it with the source. Until it
+exists, `marrow check` and `marrow test` report `check.durable_identity`. Run
+any export once to create it:
 
 ```sh
 marrow run add -- 1 x
@@ -158,13 +143,12 @@ marrow run add -- 1 x
 cli.durable_unsupported
 ```
 
-This first run mints `.marrow/ids` (commit it) and then reports
-`cli.durable_unsupported`, because a durable export run without a store has no
-store to act on. With the ledger in place, `marrow check` is clean and prints
-each export's durable demand:
+The run writes `.marrow/ids` and then stops with `cli.durable_unsupported`:
+`add` needs a store and none was given. `marrow check .` is now clean, and
+`--demand` lists the places each export reads and writes:
 
 ```sh
-marrow check .
+marrow check --demand .
 ```
 
 ```text
@@ -172,11 +156,6 @@ main.add reads ^notes; writes ^notes.text
 main.pin reads ^notes; writes ^notes.pinned
 main.textOf reads ^notes.text
 ```
-
-The durable model runs end to end under `marrow test`: a `test` that reads or
-writes durable data runs against its own fresh in-memory attachment, so the
-transaction, the presence check, and the read-back all execute through the real
-compiler, verifier, VM, and path kernel.
 
 ```sh
 marrow test
@@ -187,26 +166,16 @@ ok    add and read back
 1 passed, 0 failed, 0 errored (1/1 selected)
 ```
 
-## Running against a persistent store
+A test that reads or writes durable data runs against a store that exists only
+for that test. `marrow test` starts from an empty store every run.
 
-`marrow test` proves the durable program against a fresh attachment each run. To
-keep data between runs, an export runs against a provisioned store on disk with
-`marrow run <export> --store <dir>`, and a store is populated and provisioned from
-a flat-scalar export with `marrow import`.
+## Running against a store
 
-The persistent path runs the program in a separate companion runner attached to
-the store; the terminal never opens the store itself. This requires the **stock
-install layout**: the `marrow-runner` binary and the `marrow-companions` release
-manifest installed in the same directory as `marrow`. The two source-install
-commands above install the CLI and editor server, but do not assemble that
-companion layout. They provide the storeless and `marrow test` paths above. The
-worked applications [`apps/emr`](../apps/emr/README.md) and
-[`apps/club-locker`](../apps/club-locker/README.md) carry their own build tooling
-that assembles the layout and runs against a native store.
-
-With the stock layout present, provisioning and running against a store looks like
-this. `import` reads one JSON object per line, each member a scalar named exactly
-as a key column or field, and provisions the store on first use:
+To keep data between runs, an export runs against a store on disk with
+`marrow run <export> --store <dir>`. `marrow import` creates the store and fills
+it from a file of one JSON object per line, each member a scalar named for a
+key or a field of the root. Both commands need the companion layout described
+under [Install](install.md#running-against-a-store).
 
 ```sh
 printf '{"id": 1, "text": "imported note"}\n{"id": 2, "text": "second"}\n' > seed.jsonl
@@ -218,8 +187,7 @@ provisioned a fresh store at ./store
 {"batches_committed":1,"rows_imported":2}
 ```
 
-The store now holds the imported notes, and later runs read and write the same
-data:
+The store now holds the two notes. Later runs read and write the same data:
 
 ```sh
 marrow run textOf --store ./store -- 1      # imported note
@@ -227,18 +195,13 @@ marrow run add --store ./store -- 3 "added via run"   # true
 marrow run textOf --store ./store -- 3      # added via run
 ```
 
-Every imported entry and every write is created through the compiler-checked path
-kernel; no command receives a raw storage key, an engine handle, or a transaction
-object. The `run` mint convenience is storeless only — a durable declaration with
-no identity is a precise `check.durable_identity` failure against a store, never a
-silent mint.
+`marrow run --store` reads `.marrow/ids` and leaves it unchanged; a missing
+identity is reported as `check.durable_identity`.
 
-## Where to go next
+## Where next
 
-- [The durable model, narrated](walkthrough.md) walks a complete durable
-  application line by line.
-- [Language reference](language/) defines current `.mw` behavior; start with
-  [durable places](language/durable-places.md) and [idioms](language/idioms.md).
-- [CLI reference](tools/cli.md) documents every command.
-- [What Marrow is and is not](what-marrow-is.md) states the scope in one page.
-- [Project status](status.md) separates current, and future work.
+The [walkthrough](walkthrough.md) reads a complete durable application line by
+line. The [language reference](language/) defines current `.mw` behavior;
+[durable places](language/durable-places.md) is the chapter to start with. The
+[CLI reference](tools/cli.md) documents every command, and
+[status](status.md) separates current from future work.

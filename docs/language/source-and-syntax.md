@@ -1,250 +1,156 @@
-# Source And Syntax
+# Source and syntax
 
-Marrow source files are UTF-8 text with the `.mw` extension. Curly braces `{`
-and `}` delimit blocks and a line break terminates a statement. A tab in leading
-whitespace is an error; the formatter emits four-space indentation, which carries
-no meaning of its own.
+A Marrow program is UTF-8 text in `.mw` files. Braces delimit blocks, a line
+break ends a statement, and `^` marks a durable place.
 
-## Files And Modules
+## Files and modules
 
-Project source lives beneath the fixed `src` root. Each `.mw` path derives its
-namespace: for example, `src/shelf/books.mw` derives `shelf::books`. A reusable
-module begins with one `module` declaration that exactly matches that derived
-path. A headerless file is a script. It is checked in its path-derived namespace
-and cannot be imported with `use`; its command-line exports remain addressable
-under the corresponding dot-separated name.
+A file under `src/` is a module named by its path. `src/docs/syntax/file.mw`
+begins with `module docs::syntax::file`:
 
 ```mw
-module docs::source
+module docs::syntax::file
 
-const greeting = "hello"
-
-fn label(value: int): string {
-    return $"{greeting} {value}"
+// A shelf keyed by an integer id.
+resource Book {
+    required title: string
+    shelf: string
 }
 
-pub fn main(): string {
-    var count: int = 1
-    if count == 1 {
-        return label(count)
-    }
-    return label(0)
+store ^books[id: int]: Book
+
+const defaultShelf = "unsorted"
+
+/// The shelf a book sits on, or the default.
+pub fn shelfOf(id: int): string {
+    return ^books[id].shelf ?? defaultShelf
 }
-```
 
-A line beginning with `//` is a comment. `///` begins a documentation comment for
-the following declaration. Comments continue to the end of the line.
-
-## Identifiers And Keywords
-
-Identifiers begin with an ASCII letter or `_` and continue with ASCII letters,
-digits, or `_`. Names are case-sensitive. The current language reference uses
-these reserved or contextual words:
-
-```text
-module use pub const var fn return alias type supports resource struct required store index unique test assert
-enum category match is
-if else while for in reversed by at most from on more
-break continue transaction place checked try require delete unset
-and or not true false absent
-int bool string bytes decimal date instant duration unknown Error ErrorCode Id
-```
-
-`catch` and `throw` are not keywords; statement-head forms from the removed
-exception channel report `parse.syntax`.
-
-`surface` begins a reachable legacy declaration and is intentionally outside
-the main reference. `merge` and `lock` are reserved statement heads that produce
-parser diagnostics. `journal`, `sensitive`, and `declassify` are held keywords,
-not current statement forms; `writes` and `reads` are held for a future
-effect-signature clause. These spellings are unavailable as ordinary
-identifiers.
-
-A path beginning with `std::` follows ordinary project-module resolution. An
-absent module or function reports `check.type`; a cross-module call to a
-non-public function reports `check.visibility`. The current toolchain supplies
-no ambient `std::` namespace.
-
-## Blocks
-
-A header line ends with `{`, and the block it opens closes with `}` (one-true-
-brace). Braces are mandatory for every block, including a single-statement body,
-and a statement terminates at a line break or the block's closing `}`. There is
-no statement separator.
-
-```text
-if condition {
-    first()
-    if nested {
-        second()
-    }
-    third()
-} else {
-    fourth()
+test "an unshelved book" {
+    ^books[1].title = "Small Gods"
+    assert shelfOf(1) == "unsorted"
 }
 ```
 
-A trailing clause cuddles the closing brace of the block before it — `} else {`,
-`} else if c {`, `} on more {`. A trailing comma is allowed in multiline
-argument lists, key groups, and constructors.
+The header comes first, then declarations in any order. `resource` and `store`
+describe durable data, `const` names a value, and `pub fn` exports a function.
+`^books[id].shelf` reads one field of one entry; the read is optional because
+either may be absent, and `??` supplies the default. The `test` block runs
+against a fresh in-memory store. A file without a header is a script: it cannot
+be imported, and `marrow run main.run` still runs its export `run`.
+[Modules and functions](modules-and-functions.md) owns the module rules.
 
-The formatter renders every braced statement block across multiple lines: the
-header ends the line with `{`, each body statement sits on its own indented line,
-and the closing `}` stands on its own line. A single-statement body is written
-the same way, and only an empty body renders as `{}` on the header line. The
-grammar still accepts a single statement written inline, but the formatter
-normalizes it to the multiline form.
+## Comments
 
-## Line Continuation
+`//` starts a comment that runs to the end of the line. `///` starts a
+documentation comment and precedes a declaration, member, or parameter. A tab
+is an error anywhere in a file, including inside a string or a comment.
+Indentation carries no meaning; the formatter writes four spaces.
 
-A line break ends a statement, and a header ends at its `{`. A logical line continues
-across a physical line break in exactly two cases: while inside an open `(` or `[`, and
-after a trailing `and`, `or`, `,`, or `=`. These are the only continuations; there is no
-line-continuation character, and a break outside these cases ends the statement. This
-closed set keeps statement boundaries readable without a trailing sigil.
+## Names and keywords
 
-To spread a long expression across several lines, wrap it in parentheses — the break
-inside `(` continues the line — and break a long condition after `and` or `or`:
-
-```mw
-module docs::continuation
-
-pub fn score(a: int, b: int, c: int): int {
-    return a * 100 + b * 10 + c
-}
-
-pub fn eligible(active: bool, verified: bool, member: bool): bool {
-    return active and verified and member
-}
-```
-
-## Declarations
-
-The top-level declaration forms are:
-
-```text
-module path
-use path
-const name = expression
-const name: Type = expression
-fn name(parameters): Type
-pub fn name(parameters): Type
-resource Name { ... }
-store ^name: Resource
-store ^name[keys]: Resource
-enum Name { ... }
-```
-
-See [Modules and functions](modules-and-functions.md),
-[Resources](resources.md), and [Durable places](durable-places.md) for their
-semantic rules.
-
-## Bindings And Assignment
-
-`const` creates a binding that cannot be reassigned. `var` creates a mutable
-binding. A top-level `const` is evaluated as a compile-time constant; a local
-binding is evaluated when control reaches it.
-
-```mw
-module docs::bindings
-
-pub fn total(base: int): int {
-    const increment = 2
-    var result: int = base
-    result += increment
-    return result
-}
-```
-
-Assignment is a statement, not an expression. The simple and compound forms are:
-
-```text
-place = expression
-place += expression
-place -= expression
-place *= expression
-place /= expression
-place %= expression
-```
-
-Equality uses `==`; `=` is never equality. Only `var` bindings and assignable
-member or collection places may appear on the left of assignment.
+A name begins with an ASCII letter or `_` and continues with ASCII letters,
+digits, or `_`. Names are case-sensitive. The reserved words are listed in
+[machine-readable language facts](../tools/ai-legibility.md#reserved-words).
+`by`, `at most`, `from`, `on more`, `category`, and the duration units such as
+`days` are read as keywords only in their own positions; elsewhere they are
+ordinary names. `catch` and `throw` are not keywords; statement-head forms from
+the removed exception channel report `parse.syntax`.
 
 ## Literals
 
 | Kind | Examples | Notes |
 |---|---|---|
-| Integer | `0`, `-12`, `1000` | Signed decimal integer |
-| Decimal (**future**) | `12.50`, `-0.25` | Parser-recognized; current compilation reports `check.unsupported` |
+| Integer | `0`, `-12`, `1000` | Signed decimal |
+| Decimal (**future**) | `12.50` | Parses; reports `check.unsupported` |
 | Boolean | `true`, `false` | |
 | String | `"text"`, `"line\n"` | UTF-8 text with escapes |
-| Interpolated string | `$"id: {id}"` | Expressions occur inside `{...}` |
-| Duration | `duration("PT600S")` | Canonical text constructor (see [temporal types](types-and-values.md#temporal-types)) |
-| Absence | `absent` | The missing case of an optional value |
-
-`bytes("Marrow")` constructs the UTF-8 bytes of a string. **Future:** The parser
-recognizes direct byte-literal spelling such as `b"Marrow"`, but that spelling is
-not currently an executable value form and reports a typed `check.unsupported`
-diagnostic.
-
-String escapes are `\\`, `\"`, `\n`, `\r`, `\t`, and `\u{H}`, where `H` is one to
-six hexadecimal digits naming a Unicode scalar value (at most `10FFFF` and not a
-surrogate); other Unicode characters may appear directly in UTF-8 source. In an
-interpolated string the `\u{H}` escape is recognized as text, so its braces do not
-open an expression hole, and a doubled `{{` or `}}` is one literal brace. Each
-`{...}` hole holds one expression whose value is rendered into the string through
-the same canonical conversions `string(...)` provides. An interpolable hole is any
-canonically renderable value: a scalar (`string`, `int`, `bool`, `bytes`, `date`,
-`instant`, `duration`), an enum member (`Enum::member`, with a payload as
-`Enum::member(a, b)`), or an entry identity (`Id(...)`). A bare `struct`, `List`,
-`Map`, or presence-optional (`T?`) is not a hole and is refused at check. `Option<T>`
-and `Result<T, E>` are enums, so they interpolate as `Option::some(v)`/`Option::none`
-and `Result::ok(v)`/`Result::err(e)`, rendering their payload whatever its shape.
-Date and instant values are constructed from one canonical text literal each —
-`date("YYYY-MM-DD")` and `instant("YYYY-MM-DDTHH:MM:SSZ")`; there is no clock
-builtin.
-
-Duration units are `second`, `minute`, `hour`, `day`, and `week`, with singular
-and plural spellings. Months and years are not fixed durations.
-
-## Collection And Value Construction
-
-Lists and maps are introduced by `var` declarations, constructed with `List()`
-or `Map()`, and grown with `append`; because collections are values, each `append`
-yields an updated collection that the binding is reassigned to. A map value is set
-with the bracket assignment `m[k] = value` and both are read with bracket lookup
-(`xs[i]`, `m[k]`).
-A struct constructor names the struct and uses named members to build a local
-value. A resource constructor uses the same call form to write a whole durable
-entry (see [Durable places](durable-places.md)); a resource is not a local value.
+| Interpolated string | `$"id: {id}"` | One expression per `{...}` hole |
+| Duration | `3 days`, `10 minutes`, `duration("PT600S")` | Units: `second`, `minute`, `hour`, `day`, `week` |
+| Date | `date("2026-03-01")` | One canonical form |
+| Instant | `instant("2026-03-01T09:00:00Z")` | One canonical form |
+| Absence | `absent` | The absent case of an optional |
 
 ```mw
-module docs::literals
+module docs::syntax::literals
 
-struct Point {
-    x: int
-    y: int
-}
-
-pub fn origin(): Point {
-    var xs: List<int> = List()
-    xs = append(xs, 1)
-    xs = append(xs, 2)
-    xs = append(xs, 3)
-    return Point(x: 0, y: 0)
+test "literal forms" {
+    const count = 12
+    const title = "Small Gods"
+    const due = date("2026-03-01")
+    const grace = 3 days
+    assert $"{title}: {count}" == "Small Gods: 12"
+    assert string(grace) == "PT259200S"
+    assert addDays(due, 3) == date("2026-03-04")
 }
 ```
 
-Nested keyed layers are declared through resources, not with a deeper literal
-type syntax.
+`3 days` folds to a duration at compile time. A month or a year has no fixed
+length and is not a unit.
 
-## Expressions
+String escapes are `\\`, `\"`, `\n`, `\r`, `\t`, and `\u{H}` with one to six
+hexadecimal digits naming a Unicode scalar value. Any other character may appear
+directly. Inside `$"..."`, `{{` and `}}` are literal braces and `\u{H}` stays an
+escape. A hole holds a scalar, an enum value, or an entry identity, rendered as
+`string(...)` renders it; `Option` and `Result` values render as
+`Option::some(1)` and `Result::err(bad)`. A struct, list, map, or optional in a
+hole is a `check.unsupported` error.
 
-Primary expressions include literals, names, paths, calls, constructors, and
-parenthesized expressions. Postfix operations include member access, keyed or
-positional access, calls, and optional member access.
+`bytes("Marrow")` constructs the UTF-8 bytes of a string. **Future:** The parser
+recognizes direct byte-literal spelling such as `b"Marrow"`; today it reports
+`check.unsupported`. [Types and values](types-and-values.md) defines each value.
 
-Operators, from tighter to looser binding, are summarized here:
+## Blocks and lines
+
+A header line ends with `{`, the block closes with `}` on its own line, and a
+trailing clause cuddles the closing brace: `} else {`, `} else if c {`,
+`} on more {`. Every block takes braces, including a single statement. There is
+no statement separator, so a `;` is a syntax error.
+
+A line break ends a statement. A logical line continues across a physical line
+break in exactly two cases: while inside an open `(` or `[`, and after a
+trailing `and`, `or`, `,`, or `=`. There is no continuation character; any other
+break ends the statement.
+
+```mw
+module docs::syntax::lines
+
+fn describe(title: string, author: string, shelf: string): string {
+    return $"{title} by {author} on {shelf}"
+}
+
+test "a call spans lines" {
+    const text = describe(
+        "Small Gods",
+        "Terry Pratchett",
+        "fantasy",
+    )
+    assert text == "Small Gods by Terry Pratchett on fantasy"
+}
+```
+
+The open `(` carries the call across four lines, and a trailing comma is
+accepted. This is the one layout the formatter keeps; `marrow fmt` puts a
+condition broken after `and` back onto one line.
+
+## Bindings and assignment
+
+`const` creates a binding that cannot be reassigned. `var` creates a mutable
+binding. A top-level `const` holds one scalar literal. A local `const` is
+evaluated when control reaches it. Reassigning a `const` is a `check.type`
+error.
+
+Assignment is a statement. The forms are `place = expression` and the compound
+`+=`, `-=`, `*=`, `/=`, and `%=`. Equality uses `==`; `=` is never equality.
+Only a `var` binding or an assignable member, collection, or durable place
+appears on the left.
+
+## Expressions and operators
+
+Primary expressions are literals, names, paths, calls, constructors, and
+parenthesized expressions. Postfix forms are member access `.`, key access
+`[...]`, a call `(...)`, and optional member access `?.`. Operators bind from
+tighter to looser in this order:
 
 ```text
 -value  not value
@@ -252,105 +158,80 @@ Operators, from tighter to looser binding, are summarized here:
 +  -
 optional ?? fallback
 ..  ..=
-<  <=  >  >=
+<  <=  >  >=  in  not in
 ==  !=
-is
 and
 or
 ```
 
-The optional member operator `?.` reads a member through an optional composite
-value, yielding `absent` when the value is absent and the member wrapped optional
-otherwise. Numeric binary operators require matching numeric types; there are no
-implicit numeric conversions. String and temporal operator combinations are
-listed in [Types and values](types-and-values.md#operators). Division and
-remainder by zero are runtime faults.
+```mw
+module docs::syntax::expressions
 
-## Calls
+struct Loan {
+    days: int
+}
 
-Calls use positional arguments or named constructor fields, depending on the
-callee. A trailing comma is accepted. Project and generic functions take
-positional arguments. The toolchain-defined `Option` and `Result` constructor
-forms, current conversions, `Id`, and built-ins are also positional. Struct and
-resource constructors and user-declared enum payloads name fields. A call using
-the wrong form reports `check.type`.
-
-```text
-Point(x: 0, y: 0)
-contains("Draft", "aft")
+test "operators" {
+    const open: Loan? = Loan(days: 10)
+    const closed: Loan? = absent
+    assert open?.days ?? 0 > 3
+    assert closed?.days ?? 0 == 0
+    assert 2 + 3 * 4 == 14
+    assert 5 in 1..=5 and 6 not in 1..=5
+}
 ```
 
-Function declarations and call rules are defined in
-[Modules and functions](modules-and-functions.md).
+`?.` reads a member through an optional value: `absent` when the value is
+absent, the member as an optional otherwise. `??` binds tighter than a
+comparison, so `open?.days ?? 0 > 3` compares the fallback result. `not` is
+unary, so negated membership is spelled `6 not in 1..=5`. The operand rules and
+division by zero are in [types and values](types-and-values.md#operators).
+Project and generic functions take positional arguments. A struct constructor
+names its fields: `Loan(days: 10)`.
 
 ## Paths
 
-Local paths begin with a binding. Durable paths begin with `^` and a store name.
-The same member and key syntax extends either form; keyed access uses square
-brackets and member access uses `.`:
+A local path begins with a binding. A durable path begins with `^` and a store
+name. Both use `.` for a member and `[...]` for a key:
 
 ```text
 book.title
-booksByName["Marrow"].author
+shelves["fantasy"].count
 ^books[id].title
-^books[id].notes[noteId].text
+^books[id].notes[pos].text
 ```
 
-Key arguments on local collections, durable layers, and indexes are positional:
-a bracket group holds an ordered tuple of key values and never a named argument.
+Keys are positional: `^grid[a, b]`. An `Id(^books)` may stand directly in
+`^books[id]`. [Durable places](durable-places.md) defines what a durable path
+reads and writes.
 
-An `Id(^books)` may be placed directly in `^books[id]`; explicit raw key
-arguments are also accepted at the store boundary. Path presence and write
-behavior are defined in [Durable places](durable-places.md).
+## Declarations and statements
 
-## Statements
+A file declares `module`, `use`, `const`, `fn` and `pub fn`, `alias`, `type`,
+`struct`, `enum`, `resource`, `store` with its indexes, and `test`. An absent
+module or function reports `check.type`; a cross-module call to a non-public
+function reports `check.visibility`. Each form is defined by
+[modules and functions](modules-and-functions.md), [types and values](types-and-values.md),
+[resources](resources.md), [durable places](durable-places.md),
+[traversal and indexes](traversal-and-indexes.md), or [tests](tests.md).
 
-The statement grammar includes:
-
-```text
-const and var bindings
-assignment and compound assignment
-expression statements
-if, if const, and else
-while and for
-match
-break and continue
-return
-delete
-transaction
-prefix try in bindings and return
-```
-
-The control statements are described in [Control flow](control-flow.md) and
-[Errors and transactions](errors-and-transactions.md).
+A statement is a `const` or `var` binding, an assignment, an expression, `if`
+and `if const`, `while`, `for`, `match`, `break`, `continue`, `return`,
+`require`, prefix `try`, `place`, `transaction`, `delete`, `unset`, and
+`assert`. A binding may take a let-else tail or a `checked` arithmetic form.
+[Control flow](control-flow.md) owns the control statements,
+[errors and transactions](errors-and-transactions.md) owns `transaction` and
+`try`, and [durable places](durable-places.md#named-places) owns `place` and
+`delete`.
 
 ## Diagnostics
 
-A syntax problem is reported as a located diagnostic — `parse.syntax`, or
-`check.nesting_limit` at the fixed nesting bound — with a 1-based line and
-column. Parsing is total: a failure becomes an error node plus a diagnostic
-rather than dropped syntax, and every syntax diagnostic is an error; parsing
-reports no warnings. A source file that is not valid UTF-8 is not parsed; it is
-refused with one diagnostic at the start of the file.
+A syntax error is `parse.syntax`, reported with a 1-based line and column:
 
-Diagnostic retention is bounded. A single file's parse retains at most 4096
-diagnostics and at most 1 MiB of diagnostic text, and a project check retains
-the same ceilings per compile stage; when one row crosses both ceilings at
-once, the count ceiling is the one reported. Source that overflows a ceiling is
-refused with a typed resource-limit outcome — `marrow check` reports
-`cli.compiler_resource_limit` and `marrow fmt` reports `fmt.diagnostic_limit` —
-never a truncated or partial diagnostic listing.
+```text
+src/main.mw:4:16: parse.syntax: unexpected character `;`
+```
 
-Reported diagnostics are deterministic and byte-stable across runs. They are
-grouped by the stage that produced them, in this order: invalid-UTF-8 refusals,
-then parse diagnostics, then the later checks. Within the first two groups the
-files appear in the order capture assigns them — [ordered by
-identity](../tools/projects.md#discovery-bounds-and-faults), not by the order the
-filesystem reports them — and a file's own parse diagnostics appear in source
-order.
-
-Diagnostics from the later checks — name resolution, types, and durable
-identity — are reported in the order the checker traverses declarations. That
-order is neither source order within a file nor identity order across files: an
-alias error later in a file can precede a type error earlier in it, and a
-diagnostic in a later-sorting file can precede one in an earlier-sorting file.
+A file that is not valid UTF-8 reports one diagnostic at its first position.
+Source nested deeper than 256 levels is `check.nesting_limit`. The nesting bound
+and the diagnostic ceilings are in [execution limits](execution-limits.md#limits).

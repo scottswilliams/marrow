@@ -1,66 +1,55 @@
-# Modules And Functions
+# Modules and functions
 
-Modules provide source namespaces. Functions are typed, by-value calls that may
-operate on local values and durable places.
+A module is one source file with a name. A function takes its arguments by value and may read or write durable places.
 
-## Module Files
-
-A reusable file starts with:
+A shelf module and a program that imports it:
 
 ```text
+// src/shelf/books.mw
 module shelf::books
-```
 
-The module path is the source-root-relative file path with `/` replaced by
-`::` and `.mw` removed. The declaration in `shelf/books.mw` must therefore be
-`module shelf::books`. The matching header makes the file importable as that
-module.
+resource Book {
+    required title: string
+}
 
-A file without a `module` declaration is a single-file script. It is checked in
-its path-derived namespace and is not imported by module path.
+store ^books[id: int]: Book
 
-## Imports
+pub fn add(id: int, title: string) {
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+}
 
-`use` imports a module path and binds its final segment as the local module
-name:
+pub fn title(id: int): string? {
+    return ^books[id].title
+}
 
-```text
+// src/main.mw
+module main
+
 use shelf::books
 
-fn example()
-    const id = books::add("Small Gods")
-    const due = addDays(date("2026-07-15"), 10)
+pub fn label(id: int): string {
+    return books::title(id) ?? "(no book)"
+}
+
+test "label reads through the import" {
+    books::add(1, "Small Gods")
+    assert label(1) == "Small Gods"
+    assert label(2) == "(no book)"
+}
 ```
 
-The import does not place individual declarations into the local namespace.
-Fully qualified calls such as `shelf::books::titleOf(id)` remain valid. There are no
-wildcard or explicitly renamed imports. Two imports with the same final segment
-are ambiguous.
+`module shelf::books` names the file at `src/shelf/books.mw`. `use shelf::books` lets `main` call its public functions as `books::add` and `books::title`. `label` reads through the import and takes a default with `??`. The test drives both exports and passes under `marrow test`.
 
-## Visibility
-
-A function without `pub` is callable only within its module. `pub fn` is
-callable from other modules and host entry boundaries. Top-level constants are
-module-private. Resource declarations participate in the project type
-namespace and do not take a visibility marker. Enum declarations may be public
-when their members appear across a module boundary.
-
-Function visibility controls calls; it does not grant or restrict access to a
-durable root. Current store declarations are project-wide.
-
-On the command line an export is addressed by its dot-separated declaration
-path — `marrow run shelf.books.add` for the path source spells
-`shelf::books::add` — and a headerless script's exports stay addressable by its
-path-derived name even though the script is not importable.
-
-## Declarations And Returns
+A function returns one value or nothing:
 
 ```mw
-module docs::functions
+module docs::modules::title
 
 fn maybeTitle(show: bool): string? {
     if show {
-        return "Marrow"
+        return "Small Gods"
     }
     return absent
 }
@@ -68,30 +57,54 @@ fn maybeTitle(show: bool): string? {
 pub fn title(show: bool): string {
     return maybeTitle(show) ?? "(hidden)"
 }
+
+test "an optional return takes a default" {
+    assert title(true) == "Small Gods"
+    assert title(false) == "(hidden)"
+}
 ```
 
-Parameters are named and typed. An omitted return type means the function
-returns no value. Every reachable path of a value-returning function must
-return. An optional return `T?` may return either `T` or `absent`.
+`maybeTitle` returns `string?`, so each path returns a `string` or `absent`. `title` consumes the optional with `??`. `pub` makes `title` an export; `maybeTitle` is visible inside the module only.
 
-Marrow does not overload functions. A module has at most one function with a
-given name. Recursion is not admitted: a function may not call itself, directly
-or through a cycle of other functions; the direct-call graph is acyclic.
+## Functions
 
-A function may not reuse a reserved built-in name (`List`, `Map`, the text floor,
-and the value constructors); the common collection verbs `append` and `length`
-are not reserved, so declaring one shadows the corresponding built-in throughout
-that module (see [Built-ins](builtins.md#collections)).
+Parameters are named and typed. An omitted return type means the function returns no value. Every reachable path of a value-returning function returns (`check.type`). A function with no return type is called as a statement. A value-returning function may also be called as a statement when its result is unused.
 
-## Generic Functions
+Project and generic functions take positional arguments. A named argument to a function is a `check.type` error; struct and resource constructors name their fields ([source and syntax](source-and-syntax.md)).
 
-A function may declare rank-1 generic type parameters in a bracket list after its
-name, written with the same bracket convention type applications use
-(`List<T>`). Each parameter names a type usable in the parameter, return, and
-local annotations of the body.
+Scalars, structs, resources, lists, and maps are passed by value. A parameter is a constant inside the body. A helper that changes a local resource or collection returns the replacement value:
 
 ```mw
-module docs::generics
+module docs::modules::parameters
+
+fn increment(count: int): int {
+    return count + 1
+}
+
+pub fn twice(): int {
+    var count = 0
+    count = increment(count)
+    count = increment(count)
+    return count
+}
+
+test "a helper returns the replacement value" {
+    assert twice() == 2
+}
+```
+
+`increment` receives a copy of `count` and returns a new value. `twice` assigns the result back each time. A durable root or branch is addressed in place; it is walked with a [bounded traversal](traversal-and-indexes.md#bounded-durable-traversal) or copied entry by entry into a local collection.
+
+A module has one function per name (`check.name_conflict`). A function cannot call itself, directly or through other functions (`check.recursion`).
+
+There is one kind of function. Any body may read or write a durable place. A function that writes runs inside a `transaction` block, its own or a caller's; a call outside one is a `check.requires_transaction` error ([errors and transactions](errors-and-transactions.md#transactions)). A handled failure is an ordinary `Result<T, E>` value ([Option and Result](types-and-values.md#option-and-result)).
+
+## Generic functions
+
+A function may take type parameters in angle brackets after its name. Each parameter names a type usable in the signature and in the body's annotations:
+
+```mw
+module docs::modules::generics
 
 fn identity<T>(x: T): T {
     return x
@@ -103,35 +116,24 @@ fn first<T>(xs: List<T>): T? {
     }
     return absent
 }
+
+test "type arguments are inferred" {
+    assert identity("Small Gods") == "Small Gods"
+    assert first(List(3, 4)) ?? 0 == 3
+}
 ```
 
-Type arguments are inferred from the call's arguments; there is no explicit
-instantiation syntax. A type parameter that no argument determines cannot be
-inferred and is a `check.type` error at the call site. Each distinct set of
-inferred type arguments produces one monomorphized instance; instances are
-internal image functions with no stable identity, and a generic function is not
-itself an invocable export.
+Type arguments are inferred from the call's arguments. There is no explicit instantiation syntax, and a parameter that no argument determines is a `check.type` error at the call. Each distinct set of type arguments compiles to its own copy of the function. A generic function is not an export: `marrow run` names only functions whose parameter types are concrete.
 
-A bare type parameter is opaque: the body may pass it, return it, bind it, and
-store it in a `List`/`Map`, but it admits no operators of its own. A parameter may
-carry one closed constraint that licenses a family of operators over it:
+A bare type parameter is opaque. The body may pass it, return it, bind it, and hold it in a `List` or `Map`, and nothing else. A constraint after the parameter names the operators the body may use:
 
-| Constraint | Licenses | Concrete types that satisfy it |
+| Constraint | Operators | Types that satisfy it |
 |---|---|---|
-| `supports equality` | `==` and `!=` | `int`, `bool`, `string`, `bytes`, nominal types, enums |
-| `supports order` | `<`, `<=`, `>`, `>=` (and equality) | `int`, `string`, `bytes`, nominal types |
+| `supports equality` | `==`, `!=` | `int`, `bool`, `string`, `bytes`, `date`, `instant`, `duration`, nominal ints, enums |
+| `supports order` | `<`, `<=`, `>`, `>=`, and equality | `int`, `string`, `bytes`, `date`, `instant`, `duration`, nominal ints |
 
 ```mw
-module docs::constrained
-
-fn includes<T supports equality>(xs: List<T>, target: T): bool {
-    for x in xs {
-        if x == target {
-            return true
-        }
-    }
-    return false
-}
+module docs::modules::constrained
 
 fn firstBigger<T supports order>(xs: List<T>, threshold: T): T? {
     for x in xs {
@@ -141,134 +143,56 @@ fn firstBigger<T supports order>(xs: List<T>, threshold: T): T? {
     }
     return absent
 }
+
+test "a constraint names the operators a body may use" {
+    assert firstBigger(List(1, 5, 9), 4) ?? 0 == 5
+    assert firstBigger(List("a", "c"), "b") ?? "" == "c"
+}
 ```
 
-A generic body is checked once against its parameters' constraints, so using an
-operator a parameter does not support — `==` on an unconstrained parameter, or
-`<` on one constrained only by equality — is a `check.type` error whether or not
-the function is ever called. Each application then revalidates that the concrete
-type actually supports the constraint, so instantiating an order-constrained
-parameter with a type that has no order (such as `bool`) is a `check.type` error
-at the call site.
+The body is checked against its constraints, whether or not the function is called: `==` on an unconstrained parameter is a `check.type` error at the operator. Each call then checks the argument type against the constraint, so `firstBigger` over a `List<bool>` is a `check.type` error at the call.
 
-Type parameters also apply to `struct` and `enum` value types (see
-[Generic types](types-and-values.md#generic-types)); a function and a value type
-share one monomorphization mechanism and the same `supports` constraints. There are
-no generic resources, places, or host imports, and a type parameter may not be a
-`Map` key. Because the call and value-containment graphs are acyclic,
-monomorphization always terminates; a bound (`check.instantiation_limit`) fails a
-program whose monomorphization would otherwise diverge.
+Structs and enums take the same type parameters and the same constraints ([generic types](types-and-values.md#generic-types)). Resources and store roots are not generic, and neither a resource nor an entry identity can be a type argument. A generic function that calls itself at an ever-larger type, such as `grow(xs)` with `xs: List<T>` inside `grow<T>`, has no finite set of copies; the compiler stops at a fixed bound and reports `check.instantiation_limit`.
 
-## Parameters Are By Value
+## Modules and imports
 
-Scalars, structs, resources, lists, and maps are passed by value. Parameters
-cannot be assigned. A helper that changes a local resource or collection returns
-the replacement value.
+A module's name is its file path under `src`, with `::` for `/` and no extension: `src/shelf/books.mw` declares `module shelf::books`. A header that names another path is a `check.module_path` error.
+
+`use` imports a module path and binds its final segment as the local module name. Afterwards `books::add(...)` calls `shelf::books::add`. `use` is optional: the full path `shelf::books::add(...)` is valid in every module. `use` shortens function paths only; types need no import. There are no wildcard or explicitly renamed imports. Two imports with the same final segment are a `check.import` error.
+
+A file without a `module` header is a script. It is checked under its path-derived name and cannot be imported.
+
+On the command line an export is named with dots: `marrow run shelf.books.add` runs `shelf::books::add`, and a script's exports are named the same way. Running an export that touches a store needs a store and the companion layout ([install](../install.md#running-against-a-store)).
+
+## Visibility
+
+`pub fn` is callable from every module and from the command line. A function without `pub` is callable inside its own module; a call from another module is a `check.visibility` error. A top-level constant is visible inside its own module.
+
+Types are project-wide. A resource, struct, or enum declared in any module is used by its bare name everywhere, and two modules cannot declare the same type name. `pub` applies to functions only. A store root is likewise project-wide: any module may read or write `^books`, and `marrow check` reports which exports do.
+
+## Constants
+
+A top-level `const` binds one scalar value for the whole module:
 
 ```mw
-module docs::parameters
+module docs::modules::constants
 
-fn increment(count: int): int {
-    return count + 1
+const shelfCapacity = 12
+
+pub fn hasRoom(count: int): bool {
+    return count < shelfCapacity
 }
 
-pub fn example(): int {
-    var count = 0
-    count = increment(count)
-    count = increment(count)
-    return count
+test "a constant folds into its uses" {
+    assert hasRoom(11)
+    assert not hasRoom(12)
 }
 ```
 
-A durable root, durable child layer, or index branch is not a by-value
-collection. Traverse it at its address, or copy selected entries into a local
-collection.
+The value is an `int`, `bool`, or `string` literal, or a negated integer literal, and it is folded into every use. A type annotation names that scalar type, or an alias of it; a mismatch is a `check.type` error. An expression, a call, or a `bytes` or temporal value in a constant is a `check.unsupported` error.
 
-## Arguments
+## Scope and names
 
-Project and generic functions take positional arguments.
+Parameters, `const` and `var` bindings, loop variables, and `if const` bindings are visible to the end of their block. An inner block may declare a name that an outer block already holds. A name is declared once per block.
 
-```text
-add("Small Gods", "Terry Pratchett")
-```
-
-A named project-function argument reports `check.type`. Struct and resource
-constructors and user-declared enum payloads name fields. The toolchain-defined
-`Option` and `Result` constructor forms, current conversions, `Id`, and
-language built-ins are positional. A trailing comma is accepted in a multiline
-call.
-
-Calls are evaluated from left to right. A value-returning function may also be
-called as a statement when its result is intentionally ignored. A no-return
-function is called only as a statement.
-
-## Local Scope
-
-Parameters, local `const` bindings, local `var` bindings, loop variables, and
-`if const` bindings have lexical block scope. A name cannot be declared twice
-in one scope. An inner block may shadow an outer local name.
-
-A top-level constant binds a scalar value and is module-private: it is referred
-to by name only within its own module, and it is folded into its uses at compile
-time. Its value is a scalar literal (`int`, `bool`, or `string`) or a negated
-integer literal, and an optional type annotation must name that scalar type. A
-constant performs no durable read, call, or host operation. Richer constant
-expressions over other constants, operators, interpolation, and range shapes are
-a later addition.
-
-## Effects
-
-The function syntax does not divide calls into separate function and procedure
-categories. A body may read or write durable places. The checker records durable
-effects and propagates the requirement for an ambient transaction through calls.
-A handled failure is an ordinary `Result<T, E>` value; a runtime fault is not a
-source value.
-
-An optional-producing user call is still a valid subject for `if const` or
-`??`. Effect restrictions are applied where the expression is used; optionality
-alone does not make a call pure or impure.
-
-A function that mutates durable state carries a checked *requires an ambient
-transaction* effect: it is callable only inside a `transaction` block or from a
-function that carries the effect in turn. Calling such a function, or performing
-a durable mutation, in an export body with no enclosing `transaction` is a
-`check.requires_transaction` error. See
-[Errors and transactions](errors-and-transactions.md#transactions).
-
-## Name Resolution
-
-Within a function, local declarations and parameters resolve before module
-declarations. Imported module short names and declarations in the current
-module share the file namespace. Built-in names resolve when not shadowed by an
-allowed local binding.
-
-Module-level declarations cannot redefine built-ins such as `exists`, `Id`, or
-`string`.
-
-## Refused Declarations
-
-A declaration the compiler refuses still occupies its name. The refusal is reported
-once, at the declaration; a later declaration of the same name is a name conflict
-whether or not the earlier one was accepted; and no use of the name is reported as a
-name that is not in scope. This holds for every declared name — modules, types,
-generic templates, resource members, store roots, constants, function signatures,
-parameters, and local bindings.
-
-The use site is treated two ways. For a module, type, generic template, resource
-member, store root, constant, or function signature, the first use of the refused
-name carries a row of its own that names the declaration's cause and reuses its
-diagnostic code; every later use of the same name fails silently. For a parameter or
-a local binding, the declaration's row is the only one: each use fails silently and
-adds nothing.
-
-A module is refused when its `module` header disagrees with its source-root-relative
-path, and when the file did not decode as UTF-8 or did not parse. A `use` of a
-refused module reports the refusal rather than reporting that the project has no such
-module, and a qualified call into it is reported against the same cause. A file with
-no `module` header is a script rather than a module: naming it in a `use` is a
-genuine absence.
-
-A resource member is refused on its own, so the resource keeps its other members and
-a use of the refused member names its cause. A struct or an enum is refused as a
-whole declaration, so a construction of one reports the declaration's refusal and
-does not additionally report a field the type never declared.
+Inside a function, a local name resolves before a module declaration of the same name. A module cannot declare a [reserved built-in](builtins.md#collections) such as `exists`, `List`, or `trim` (`check.name_conflict`). `append` and `length` are ordinary names; a module that declares one shadows the built-in throughout that module.

@@ -1,243 +1,153 @@
 # Errors
 
-Marrow diagnostics use typed dotted codes. Human-readable messages explain
-what happened, where it happened, and what to try next when Marrow knows.
+Every Marrow diagnostic carries a dotted code such as `check.type`. The code is
+the stable part. The message beside it says what happened, where, and what to
+try; its wording is not a machine contract.
+
+A code's first segment names its family. `parse.*` and `check.*` are source
+diagnostics, reported at a line and column. `image.*` rejects a program image
+before it runs. `run.*` and `value.*` are runtime faults: a fault stops the
+invocation at the source span of the operation, and a program cannot catch it.
+The remaining families are operational errors from the store, the command line,
+the project, and the runner.
 
 Language-level error behavior is described in
 [`language/errors-and-transactions.md`](language/errors-and-transactions.md).
 Tool invocation is described in [`tools/cli.md`](tools/cli.md). This page is
-generated from the code registry and lists every current code.
-
-## CLI Exit Codes
-
-| Code | Meaning |
-|---:|---|
-| `0` | Command completed successfully. |
-| `1` | Recoverable parse, check, runtime, storage, or tool failure. |
-| `2` | Command-line usage failed before the command body ran. |
-
-## Error Envelope
-
-Machine-readable commands use this envelope where their selected format calls
-for a single diagnostic object:
-
-```json
-{
-  "code": "parse.syntax",
-  "kind": "parse",
-  "message": "expected expression",
-  "help": "Add an expression after return.",
-  "source_span": {
-    "file": "src/app.mw",
-    "line": 12,
-    "column": 16
-  }
-}
-```
-
-The envelope is a tooling representation of a failure. Source Marrow has no
-throwable error-value channel; runtime faults terminate the invocation. Tools
-may add fields such as `kind` and `source_span` when reporting a failure.
-
-Common fields:
-
-- `code`: typed machine code;
-- `kind`: broad category such as `parse`, `check`, `runtime`, `storage`,
-  `io`, `usage`, or `tooling`;
-- `message`: short human summary;
-- `help`: optional repair guidance;
-- `source_span`: optional source location;
-- `data`: optional structured facts for tools.
-
-Marrow error codes use lowercase dotted text such as `parse.syntax`. Segments
-use lowercase letters, digits, and underscores.
-
-Only the dotted `code` is machine-stable for storage errors. Details such as the
-operation, path, limit name, or invalid state may appear only in the current
-human-readable message; their wording is not a machine contract. The store
-reports a `store.*` code:
-`store.io`, `store.permission_denied`, `store.locked`, `store.format_version`,
-`store.corruption`, `store.recovery_required`, `store.limit`, `store.cursor`,
-`store.transaction`, `store.read_only`, and `store.contract_changed`.
-`store.limit` reports an exhausted finite representation bound: a store framing
-length/count that does not fit its `u32` field, a record/problem/index count
-overflow, or exhaustion of the tagged `u128` commit-witness generation.
-
-A command run against a project whose `marrow.toml` is unreadable reports
-`io.read`; an invalid `marrow.toml` reports `config.invalid`, and a
-contained-discovery fault reports a `project.*` code.
-
-## How `kind` Is Assigned
-
-Tools derive `kind` from the first dotted segment of `code`:
-
-| First segment | `kind` |
-|---|---|
-| `parse` | `parse` |
-| `check` | `check` |
-| `image` | `artifact` |
-| `run` | `runtime` |
-| `value` | `runtime` |
-| `store` | `storage` |
-| `io` | `io` |
-| everything else (`cli`, `config`, `fmt`, `project`, `wire`, `runner`) | `tooling` |
+generated from the code registry and lists every code the current build emits.
 
 ## Code Reference
 
-The family sections below list codes emitted by the current build. Internal
-codes are separate from ordinary user-facing diagnostics.
+### `parse.*`
 
-### `parse.*` — kind `parse`
-
-Syntax errors from the lexer and parser. Reported by project `check` and by any
-command that parses sources before running.
+Syntax errors from the lexer and parser, reported by every command that reads
+source.
 
 | Code | Meaning |
 |---|---|
-| `parse.syntax` | The source is not well-formed Marrow: a bad token, a missing piece of a declaration, or an unexpected construct. The only `parse.*` code; the `message` says what was expected. |
+| `parse.syntax` | The source is not well-formed Marrow: a bad token, a missing piece of a declaration, or an unexpected construct. The only `parse.*` code; the message says what was expected. |
 
-### `fmt.*` — kind `tooling`
+### `fmt.*`
 
-Formatter refusals.
-
-| Code | Meaning |
-|---|---|
-| `fmt.comment_loss` | `marrow fmt` would drop a retained comment while rewriting the source, so the command refuses instead of publishing lossy formatted output. |
-| `fmt.diagnostic_limit` | `marrow fmt` requires a complete parse, but the file produced more parse diagnostics than the bounded collector retains — its row-count or owned-byte ceiling discarded them — so the command refuses without formatted output. Repair the source's parse errors before formatting. |
-
-### `cli.*` — kind `tooling`
-
-Capabilities the CLI recognizes but cannot yet serve on this beta line: a command
-whose owning capability is being refounded, and a durable `marrow run` whose
-execution is in the trough.
+Refusals from `marrow fmt`.
 
 | Code | Meaning |
 |---|---|
-| `cli.command_unsupported` | A command name is recognized but not yet available on this beta line: its owning capability is being refounded and returns through a later lane. `marrow init`, `marrow fmt`, `marrow check`, `marrow run`, `marrow test`, `marrow client typescript`, and `marrow image` are the currently available commands. |
-| `cli.interface_unbuildable` | An export's signature cannot be projected into the wire transfer graph: it expands to more structural nodes than the fixed interface budget admits, or it names a type table row that does not exist. The transfer graph is closed over every value type — the seven scalars, records, sums, `List`, `Map`, and entry identities — so a verified program never triggers this; it defends a malformed or over-complex signature set. `marrow client typescript` and the stock runner refuse the whole program rather than serving a partial interface; the message names the offending export. |
-| `cli.durable_unsupported` | `marrow run` resolved a durable export — one whose verified demand reads or writes durable data — without a persistent store to run it against. The export compiled, independently verified, and completed its durable identity, but the CLI never opens a store in process (T01's in-process open ended at D00). Run it against a provisioned store with `marrow run <export> --store <dir>`, which spawns the companion attached session. A storeless export is unaffected. |
-| `cli.installation_damaged` | A persistent `marrow run --store` could not use the companion runner: the release manifest beside the toolchain is missing or malformed, names a different release, or the companion runner binary is absent or does not match its recorded release identity. The terminal refuses to spawn an unverified companion; the store is untouched. Reinstall the toolchain so the terminal and its companion match. |
-| `cli.ceiling_unaccepted` | `marrow image` composes a deployment image only against the exact accepted ceiling the owner names: the image's demand union defines its own deployment ceiling, and the command requires `--accept-ceiling <id>` to equal that ceiling's stable id before it writes the image. The argument was absent or named a different id, so no image was written — a mismatch would silently widen or narrow the durable authority a provisioned store admits. The message prints the image's actual ceiling id to accept. |
-| `cli.compiler_resource_limit` | Compilation exhausted a fixed compiler-owned resource bound that no single source construct is at fault for — an aggregate count across the whole program, or the whole-image byte ceiling. No program image or source diagnostic is produced, and the outcome carries no source location. A bound one construct crosses is reported instead as a `check.resource_limit` source diagnostic at that construct. |
+| `fmt.comment_loss` | `marrow fmt` would drop a comment while rewriting the file, so it writes nothing. |
+| `fmt.diagnostic_limit` | `marrow fmt` needs a complete parse, and the file produced more parse diagnostics than the collector keeps (4096 diagnostics or 1 MiB of text), so it writes nothing. Fix the parse errors, then format. |
 
-### `check.*` — kind `check`
+### `cli.*`
+
+Refusals raised by the `marrow` command itself.
+
+| Code | Meaning |
+|---|---|
+| `cli.command_unsupported` | The command name is reserved and not implemented: `data`, `doctor`, `evolve`, `serve`, `backup`, and `restore`. `marrow --help` lists the implemented commands. |
+| `cli.interface_unbuildable` | An export's signature cannot be projected onto the wire: it expands past the fixed interface budget, or it names a type the image does not declare. `marrow client typescript` and the runner refuse the whole program; the message names the export. |
+| `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. The `marrow` process never opens a store. Run the export against a provisioned one: `marrow run <export> --store <dir>`. A storeless export is unaffected. |
+| `cli.installation_damaged` | `marrow run --store` could not use the companion runner: the release manifest beside the toolchain is missing or malformed, names another release, or the runner binary is absent or does not match its recorded identity. The store is untouched. Reinstall the toolchain. |
+| `cli.ceiling_unaccepted` | `marrow image` writes an image only when `--accept-ceiling <id>` names the image's own deployment ceiling. The argument was absent or named a different id, so no image was written. The message prints the id to accept. |
+| `cli.compiler_resource_limit` | Compilation crossed a fixed bound that no single construct is at fault for: an aggregate count across the whole program, or the image byte ceiling. No image or source diagnostic is produced, and the outcome carries no source location. A bound one construct crosses is `check.resource_limit` at that construct. |
+
+### `check.*`
 
 Static errors found while checking source.
 
 | Code | Meaning |
 |---|---|
-| `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md). |
-| `check.unsupported` | A parsed construct is well-formed Marrow but outside the subset the beta line currently compiles. Its owning language capability is being refounded lane by lane and returns through a later one; until then the construct is absent by the capability trough, and the checker reports this at its span. |
-| `check.type` | An expression or declaration is not well-typed in the compiled subset: a return value whose type does not match the declared return type, an operator applied to the wrong operand type, a use of a name that is not in scope, or a value used where a different type is required. |
-| `check.name_conflict` | Two declarations collide on a name the compiler must resolve uniquely: two functions in one module share a name, or two declarations share an identifier in the same scope. The message names the colliding declarations. |
-| `check.module_path` | A file's `module` header does not match the module name derived from its source-root-relative path. The path is the authority for module identity, so `src/shelf/books.mw` must declare `module shelf::books`; the message names the expected path. |
-| `check.import` | A `use` import cannot be resolved: it names a module the project does not contain, or two imports in one module bind the same final segment and are ambiguous. The message names the offending import. |
-| `check.visibility` | A call from one module names a function in another module that is not `pub`. A function without `pub` is callable only within its own module; mark it `pub` to expose it across the module boundary. |
-| `check.recursion` | A definition is part of a cycle the language requires to be acyclic: a function on a direct or mutual recursion cycle (the compiled subset does not admit recursion), a type alias whose expansion reaches itself, or a value type (struct, record, or enum) that contains itself directly or transitively (an infinite value; recursive nominal values are deferred). The message names the cycle. This is reported at check time so the source, not the image, carries the diagnostic. |
-| `check.requires_transaction` | A durable mutation runs where no ambient transaction is available. A durable write, replacement, or erase executes only inside a `transaction` block: an export that mutates owns one block around its mutations, and a helper that mutates is callable only from within a caller's transaction. The requirement propagates transitively — a function that calls a mutating function itself requires an ambient transaction — so calling a mutating helper, or performing a durable mutation, directly in an export body outside a `transaction` block is refused at check time at the mutation or call-site span. Wrap the mutation or the call in a `transaction` block. |
-| `check.transaction_owner_called` | A function calls an export that owns a `transaction` block. A transaction owner is an invocation boundary: its region begins and commits within its own frame and may not nest inside a caller's. Only a `test` body may drive an owner, where each call is its own transaction. Inline the durable work into the calling export's own `transaction` block, or move it into a helper — a function with no `transaction` block — that the export calls inside its region. Reported at the call site; the verifier reconstructs the same call graph and rejects a tampered image (image.flow). |
-| `check.transaction_empty` | A `transaction` block performs no durable operation — no durable read, write, replacement, erase, presence probe, or traversal, directly or through a call. Such a region commits nothing and opens no store session, so it cannot run. Remove the empty block, or perform the durable work the transaction is meant to group. Reported at the `transaction` block; the verifier reconstructs the region's durable closure and rejects a tampered image (image.flow). |
-| `check.transaction_reopened` | A mutating export opens more than one `transaction` region. An owning export begins its region exactly once and commits it on every path; a second `transaction` block reopens a region the export already owns. Combine the durable work into one `transaction` block. Reported at the reopening block; the verifier reconstructs the ownership lattice and rejects a tampered image (image.flow). |
-| `check.transaction_uncommitted` | A path leaves a `transaction` region without committing it. A region's commit sites are its exits — each `return` written inside the block and the block's closing brace — so an exit that bypasses them leaves staged writes uncommitted: a `return` reached before the region commits, or a prefix `try` or `require` guard whose implicit `err` exit would return from inside the region (`try` and `require` are ordinary control flow, not a transaction abort, and carry no commit). Spell a deliberate failure as an in-region `return` (a commit site), and place a guard that must not commit before the `transaction` block. Reported at the uncommitted exit; the verifier reconstructs the same flow and rejects a tampered image (image.flow). |
-| `check.durable_after_commit` | A durable operation follows a `transaction` region's commit on some path. The commit consumes the region's store session, so no durable read or write — direct or through a call — may run after it: a mutating export observes durable data inside its region and returns values it captured there. Move the operation inside the `transaction` block, or capture the value into a local before the block closes and return the local. Reported at the operation after the commit; the verifier reconstructs the same flow and rejects a tampered image (image.flow). |
-| `check.transaction_misplaced` | A `transaction` block appears outside an export that owns it — in a non-`pub` helper, or in a `test` body. Only an export owns a transaction region: a mutating helper runs inside its caller's region and carries no `transaction` block of its own, and a `test` drives owning exports or performs direct durable operations against the harness session rather than owning a region. Move the `transaction` block to the export that owns the durable work, and let the helper run inside it. Reported at the misplaced block; the verifier reconstructs the ownership lattice and rejects a tampered image (image.flow). |
-| `check.assert_outside_test` | An `assert` statement appears outside a `test` declaration. `assert` is the test-owned assertion: it is legal only inside a `test "name"` body, never in an ordinary function. Move the assertion into a test, or use `unreachable("...")` for an in-program invariant fault. |
-| `check.test_driver_mix` | A `test` body both performs a durable operation directly and drives a transaction-owning export. A test body is one of two kinds: it performs durable reads and writes directly, running against the harness session, or it drives the application's exports, where each export call is its own invocation boundary — a mutating export commits and a later reading export observes the committed state. The two cannot be combined in one body, because the driven export's commit would consume the harness session the direct operation needs. Split the direct durable operations and the export driving into separate tests, or reach the durable data through the exports the test drives. |
-| `check.match_nonexhaustive` | A `match` over an enum does not cover every selectable member of that enum. A flat enum's `match` must have exactly one arm per member and no wildcard arm; the message names the missing members. Add an arm for each uncovered member. |
-| `check.match_arm` | A `match` arm is not well-formed against its scrutinee enum: it names a member the enum does not declare, repeats a member another arm already covers, binds a number of payload names that does not match the member's payload, or the scrutinee is not an enum value. The message names the offending arm. |
-| `check.instantiation_limit` | Monomorphizing a program requires more distinct generic instantiations, or deeper generic type nesting, than the fixed limit. A well-typed program with acyclic call and value-containment graphs mints finitely many instances; this bound (campaign law 9) fails a divergent monomorphization — a generic function that calls itself, or a generic type that nests inside itself, over an ever-growing type — with a typed error before the instantiation worklist or the minting recursion grows unboundedly. |
-| `check.resource_limit` | One source construct crosses a fixed compiler-owned resource bound that the program image cannot represent: a declaration wider, a stored value or member tree deeper, a key tuple or index projection longer, or a function body or interned string larger than the image admits. Reported at the offending construct's span, before the construct enters the image, so the source carries the diagnostic. Reduce that construct below the bound. An aggregate exhaustion with no single construct at fault is `cli.compiler_resource_limit` instead. |
-| `check.durable_identity` | A durable declaration lacks its complete ledger identity: the store root, key column, stored resource, one of its fields, or the application itself has no matching entry in the machine-written `.marrow/ids` identity artifact — or its `(kind, path)` names a retired identity that can never be reused. The message names the identity kind and path. `marrow run` mints missing identities into `.marrow/ids` (commit that file); a retired path stays refused. `.marrow/ids` is machine-written only and is never edited by hand. |
+| `check.nesting_limit` | Source nests expressions or blocks deeper than the parser limit (256). Reported at the offending span. The limit is listed under [execution limits](language/execution-limits.md). |
+| `check.unsupported` | The construct is well-formed Marrow that this compiler does not implement today. Reported at the construct's span. [Status](status.md) lists what is available. |
+| `check.type` | An expression or declaration is not well-typed: a return value of the wrong type, an operator applied to the wrong operand type, a name that is not in scope, or a value used where another type is required. |
+| `check.name_conflict` | Two declarations share a name in one scope: two functions in one module, or two declarations with one identifier. The message names both. |
+| `check.module_path` | A file's `module` header does not match the name derived from its path under `src`. `src/shelf/books.mw` declares `module shelf::books`; the message names the expected path. |
+| `check.import` | A `use` import names a module the project does not contain, or two imports in one module bind the same final segment. The message names the import. |
+| `check.visibility` | A call from one module names a function in another module that is not `pub`. A function without `pub` is callable only within its own module; mark it `pub` to call it from elsewhere. |
+| `check.recursion` | A definition is part of a cycle: a function that calls itself directly or through other functions, a type alias that expands to itself, or a struct, resource, or enum that contains itself. Marrow admits none of these. The message names the cycle. |
+| `check.requires_transaction` | A durable write, replacement, or delete runs outside a `transaction` block. A mutating export owns one block around its writes. A mutating helper is called only from inside a caller's block, and a function that calls one needs a block in turn. Reported at the write or the call; wrap it in a `transaction` block. |
+| `check.transaction_owner_called` | A function calls an export that owns a `transaction` block. An owner's block begins and commits in its own frame and does not nest inside a caller's. Only a `test` body drives an owner, one transaction per call. Move the durable work into a helper without a block and call it inside the export's own block. |
+| `check.transaction_empty` | A `transaction` block performs no durable operation, directly or through a call. Such a block commits nothing. Remove it, or move the durable work inside it. |
+| `check.transaction_reopened` | A mutating export opens a second `transaction` block. An export owns exactly one block and commits it on every path. Combine the durable work into one block. |
+| `check.transaction_uncommitted` | A path leaves a `transaction` block without committing it. The block commits at each `return` written inside it and at its closing brace. A `try` or `require` guard whose `err` exit would return from inside the block bypasses both. Spell a deliberate failure as a `return` inside the block, and place a guard that fails without committing before the block. |
+| `check.durable_after_commit` | A durable read or write follows the commit of a `transaction` block on some path, directly or through a call. Move the operation inside the block, or capture the value into a local before the block closes and return the local. |
+| `check.transaction_misplaced` | A `transaction` block appears in a helper that is not `pub` or in a `test` body. Only an export owns a block: a helper runs inside its caller's block, and a test drives exports or touches durable data directly. Move the block to the export that owns the durable work. |
+| `check.assert_outside_test` | An `assert` statement appears outside a `test` body. Move it into a test, or use `unreachable("...")` for an invariant inside a function. |
+| `check.test_driver_mix` | A `test` body both touches durable data directly and calls an export that owns a `transaction` block. A body does one or the other: it reads and writes `^` places itself, or it drives exports, where each call commits on its own. Split the two into separate tests, or reach the data through the exports. |
+| `check.match_nonexhaustive` | A `match` over an enum does not cover every member. A `match` has exactly one arm per member and no wildcard arm. The message names the missing members. |
+| `check.match_arm` | A `match` arm names a member the enum does not declare, repeats a member another arm covers, or binds the wrong number of payload names; or the value matched is not an enum. The message names the arm. |
+| `check.instantiation_limit` | Instantiating the program's generic functions and types needs more distinct instances, or deeper type nesting, than the fixed limit. A generic function that calls itself, or a generic type that nests inside itself, over an ever-growing type reaches it. |
+| `check.resource_limit` | One construct crosses a fixed bound of the program image: a declaration too wide, a stored value or member tree too deep, a key tuple or index too long, or a function body or string too large. Reported at the construct; the bounds are listed under [execution limits](language/execution-limits.md). An aggregate exhaustion with no single construct at fault is `cli.compiler_resource_limit`. |
+| `check.durable_identity` | A durable declaration has no identity in `.marrow/ids`: the store root, a key component, the stored resource, one of its fields, or the application itself has no entry there, or names a retired one. The message names the kind and path. `marrow run` mints missing identities into `.marrow/ids`; commit that file. A retired path stays refused. The file is machine-written. |
 
-### `image.*` — kind `artifact`
+### `image.*`
 
-Program-image decode and verification rejections, one per verifier phase. A
-compiled image travels `bytes → verify → sealed image`; a hostile or malformed
-image is rejected at the earliest phase whose invariant it violates, before the
-VM can run it.
-
-| Code | Meaning |
-|---|---|
-| `image.envelope` | A program image failed envelope verification (phase 1): a bad magic or version, a digest that does not match the image bytes, a malformed or misordered section frame, a declared length past the input, or trailing bytes. The image is rejected before any table is read. |
-| `image.table` | A program image failed table verification (phase 2): a string, type, durable, constant, function, export, or span table violates its grammar — a duplicate or unsorted entry, an out-of-range index, a bad type tag or flag, or an operation site that does not resolve against the declared roots and records. |
-| `image.function` | A program image failed per-function verification (phase 3): the bytecode does not decode to instruction boundaries, a jump leaves the function or lands off a boundary, an instruction is unreachable or a path falls off the end without returning, the typed operand stack does not agree at a merge or a return, a local is read before it is initialized, or a per-opcode rule is violated. |
-| `image.closure` | A program image failed call/effect-closure verification (phase 4): the call graph contains a cycle (recursion is not admitted), or a recorded call or effect does not close consistently across the function set. |
-| `image.flow` | A program image failed transaction-flow verification (phase 5): a transaction is begun outside an export entry, a mutation or mutating call sits outside the single owned transaction region, the region is not opened exactly once and closed on every path, or a read-only export contains a mutation. |
-| `image.test_entry` | A program image failed test-entry verification: the closed non-wire TEST-ENTRY table is malformed (an out-of-range or duplicate/unsorted name or function index), an `assert` instruction sits in a function that is not a test entry, or a test entry is also an export, takes parameters, does not return unit, reads or writes durable data, or is called by another function. A test entry is a storeless zero-argument entry point, never an export or durable identity. |
-
-### `run.*` — kind `runtime`
-
-Source-mapped runtime faults raised by the VM and the path kernel while running a
-verified program: checked-arithmetic overflow, a zero division or remainder
-divisor, a text bound, a reached `unreachable` invariant or `todo` deferral, call depth, an
-execution budget, a nominal-interval violation, a temporal-domain overflow, an
-authority denial, a required field left unset at commit, a unique-index
-collision, an unconfirmed commit, a dispatched call for which no exact valid
-reply could be accepted (outcome unknown with a typed cause, never retried), and durable corruption. These
-are not catchable inside the program.
+Program-image verification failures. An image is verified in phases before it
+runs, and a malformed or altered image is rejected at the first phase that finds
+a fault.
 
 | Code | Meaning |
 |---|---|
-| `run.overflow` | A checked integer operation overflowed the 64-bit range at runtime: an add, subtract, multiply, negate, or the `i64::MIN / -1` division and `i64::MIN % -1` remainder cases whose result is unrepresentable. The fault is mapped to the source span of the operation and is not catchable inside the program. |
-| `run.divide_by_zero` | A division or remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program. |
-| `run.text_limit` | A text concatenation would exceed the fixed 64 KiB result bound, so the operation faults rather than allocating unboundedly. Mapped to the source span of the concatenation and not catchable inside the program. |
-| `run.unreachable` | A program reached an `unreachable("...")` statement, the sole application-declared invariant fault. The static text records the invariant the author believed held; reaching the statement means it did not. The fault is mapped to the statement's source span and is not catchable inside the program. |
-| `run.todo` | A program reached a `todo("...")` statement, an unfinished path the author marked as not yet implemented. The static text names the deferred work. Like `unreachable`, `todo` diverges and satisfies return-path analysis; reaching it maps the fault to the statement's source span and is not catchable inside the program. |
-| `run.assert` | A `test`'s `assert` condition was false at runtime, so the test fails. `marrow test` reports the test as failed and maps the fault to the assertion's source span. Only a `test` body can produce this fault; it is not catchable inside the program. |
-| `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
-| `run.budget` | A running program exhausted the fixed per-invocation instruction budget, shared across the whole call tree so total work stays bounded regardless of loop or call structure. A non-terminating loop faults here rather than running forever. The fault stops execution and is not catchable inside the program. |
-| `run.range` | A value outside a nominal type's declared interval reached a construction or arithmetic result at runtime: `Age(n)` or a `supports`-unlocked operation produced an int the type's `in` range does not admit. The fault is mapped to the source span of the operation and is not catchable inside the program; use `Type.checked(n)` for a fault-free range test. |
-| `run.authority` | An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program. |
-| `run.required_missing` | A durable transaction reached its commit with an entry it created or staged that still leaves a required field unset. Reconciliation aborts before the engine commit, so the transaction is known not to have changed durable state. The invocation reports `incomplete` with durable state `known_old`, mapped to the transaction's source span. Not catchable inside the program. |
-| `run.unique_index` | A durable write would place two distinct entries into one `unique` managed index — two rows whose unique projection is equal but which name different store identities. Managed-index maintenance detects the collision when it stages the row and faults, rolling the whole transaction back without poisoning the store. The fault is mapped to the operation's source span and is not catchable inside the program. |
-| `run.commit` | A durable transaction commit did not complete normally. A confirmed engine abort reports `incomplete` with `known_old` and leaves the store owner usable. An indeterminate engine result poisons that handle and produces one opaque affine recovery fact; while continuously holding the owner lock, the lifecycle closes the engine, freshly reopens the existing file at the retained path, audits it, and consumes the fact to classify the exact witness state as `known_old`, `known_new`, or `unknown`. Missing or invalid engine files are not created or adopted and classify as `unknown`. A known result preserves a usable freshly opened owner only in that process; irreversible quarantine retains its nonempty owner descriptor and advisory lock through owner drop until process exit. `unknown` retires the owner under the same quarantine. The owner lock does not prove engine-file identity against out-of-band substitution of a structurally valid store or prior snapshot; that remains outside the current guarantee. The invocation never resumes or fabricates a return value, and no case is retried automatically. The code is mapped to the transaction's source span and is not catchable inside the program. |
-| `run.outcome_unknown` | A call was completely dispatched to the attached runner, but the caller could not accept one exact valid reply, so the call's outcome is unknowable from that side: it may have run, wholly or partly. Socket-read failure, malformed wire, a mismatched turn, an unsolicited message, and reply-value decode failure all preserve this outcome and retain their distinct typed cause. The call is never automatically retried — a mutating call whose outcome is unknown must not run twice. Run a read-only export to observe durable state before deciding whether to act again. An ordinary runtime fault remains distinct because it is a valid correlated reply. |
-| `run.corruption` | A verified program hit an internally inconsistent artifact and failed closed rather than reading past it. The path kernel found the durable store inconsistent — a field leaf with no entry marker (an orphan leaf), a cell it could not decode as its typed value, or a stored schema descriptor that does not match the program image — or a bytecode positional collection read (a list element or a map key/value at an index) addressed a position past the collection's length. The compiler keeps every positional read in bounds, so an ordinary compiled program never reaches the collection case; it guards a hand-built or corrupted image whose index the verifier's type check does not bound. The fault is mapped to the operation's source span and is not catchable inside the program. |
-| `run.collection_limit` | A `List` append or `Map` insert would grow a collection past a fixed representational bound: more than 65536 elements, or an aggregate value size over 1 MiB. The operation faults rather than allocating unboundedly, mapped to its source span, and is not catchable inside the program. |
-| `run.temporal_overflow` | A temporal operation produced a result outside its supported domain at runtime: `addDays` or `instant +/- duration` left the supported calendar range (years 0001-9999), or `duration +/- duration` overflowed the signed-nanosecond `i128` range. The fault is mapped to the source span of the operation and is not catchable inside the program. Every `.mw` temporal path shares this 0001-9999 / `i128` envelope, so an out-of-range value never escapes into a stored value or key. |
+| `image.envelope` | A program image failed envelope verification (phase 1): a bad magic or version, a digest that does not match the bytes, a malformed or misordered section, a length past the input, or trailing bytes. Nothing else is read. |
+| `image.table` | A program image failed table verification (phase 2): the string, type, durable, constant, function, export, or span table breaks its grammar with a duplicate or unsorted entry, an out-of-range index, a bad type tag or flag, or a durable operation that does not resolve against the declared roots. |
+| `image.function` | A program image failed function verification (phase 3): bytecode that does not decode to instruction boundaries, a jump that leaves the function or targets a non-boundary, an unreachable instruction, a path that falls off the end, an operand stack that disagrees at a merge or return, a local read before it is set, or a broken per-opcode rule. |
+| `image.closure` | A program image failed call and effect closure (phase 4): the call graph contains a cycle, or a recorded call or effect does not close consistently across the functions. |
+| `image.flow` | A program image failed transaction-flow verification (phase 5): a transaction begun outside an export, a write outside the export's one owned block, a block not opened once and closed on every path, or a read-only export that writes. These are the rules `check.transaction_*` reports at source. |
+| `image.test_entry` | A program image failed test-entry verification: the test-entry table is malformed, an `assert` sits in a function that is not a test, a test entry is an export, takes parameters, returns a value, or is called by another function, or a test body both touches durable data directly and drives a transaction-owning export. |
 
-### `value.*` — kind `runtime`
+### `run.*`
 
-Value codec range faults raised while encoding a runtime value to its canonical
-saved bytes for a durable write. Read-side decode and index-projection failures
-are corruption faults instead. These terminate the invocation and are not source
-values.
+Runtime faults raised while running a verified program.
 
 | Code | Meaning |
 |---|---|
-| `value.range` | A durable value could not be represented by the canonical store codec. Ordinary checked source can reach this at a durable write when a composite field's individually bounded scalar leaves exceed the dynamic 1 MiB aggregate encoded-value limit. The fault is mapped to the write span and is not catchable inside the program; encoding completes before any store write, so the rejected operation has no store effect. The same code also closes defense-in-depth codec range arms, including a date or instant outside years 0001-9999, although checked temporal source cannot produce those values. |
+| `run.overflow` | A checked integer operation overflowed 64 bits: an add, subtract, multiply, or negate, or the `i64::MIN / -1` division and `i64::MIN % -1` remainder. |
+| `run.divide_by_zero` | A division or remainder had a zero divisor. |
+| `run.text_limit` | A text concatenation would exceed the 64 KiB result bound. |
+| `run.unreachable` | The program reached an `unreachable("...")` statement. The text records the invariant the author believed held. |
+| `run.todo` | The program reached a `todo("...")` statement. The text names the deferred work. |
+| `run.assert` | A `test`'s `assert` condition was false, so the test fails. Only a test body produces this fault. |
+| `run.call_depth` | The call chain grew deeper than the fixed limit (64). Recursion is refused at check time, so this guards a very deep chain of distinct calls. |
+| `run.budget` | The invocation exhausted its fixed instruction budget (2^26 instructions), which is shared across the whole call tree. A loop that never terminates faults here. |
+| `run.range` | A value outside a nominal type's declared interval reached a construction or arithmetic result: `Age(n)` or a `supports` operation produced an int the type's `in` range does not admit. `Age.checked(n)` tests the range without faulting. |
+| `run.authority` | An export's durable demand is not covered by the store's ceiling intersected with the invocation grant, so the call is denied before the first store access. Demand never grants access; it is only checked against it. |
+| `run.required_missing` | A `transaction` block reached its commit with an entry it created or staged that still has a required field unset. The block rolls back before any store write. The invocation reports `incomplete` with durable state `known_old`, at the block's span. |
+| `run.unique_index` | A write would place two entries whose indexed values are equal but whose identities differ into one `unique` index. The whole transaction rolls back and the store is unchanged. |
+| `run.commit` | A commit did not complete. A confirmed abort leaves durable state unchanged (`known_old`). An indeterminate result is classified after the store is reopened and audited as `known_old`, `known_new`, or `unknown`. The invocation returns no value and is never retried. Reported at the block's span. |
+| `run.outcome_unknown` | A call was dispatched to the runner, but the caller could not accept one exact valid reply: a socket-read failure, a malformed frame, a mismatched turn, an unsolicited message, or a reply that did not decode. The call may have run, wholly or partly, and is never retried. Run a read-only export to observe durable state before acting again. |
+| `run.corruption` | A verified program found the store or the image inconsistent and stopped: a field leaf with no entry marker, a cell that does not decode as its type, a stored schema that does not match the image, or a positional collection read past the collection's length. The compiler keeps every positional read in bounds, so the last case guards a hand-built or corrupted image. |
+| `run.collection_limit` | A `List` append or `Map` insert would grow a collection past 65,536 elements or 1 MiB. |
+| `run.temporal_overflow` | A temporal operation left its supported domain: `addDays` or an `instant` plus or minus a `duration` left the years 0001-9999, or a `duration` sum overflowed the signed nanosecond range. Every temporal value shares this envelope, so an out-of-range value never reaches a stored value or key. |
 
-### `store.*` — kind `storage`
+### `value.*`
 
-Store faults. The tree-cell facade produces `store.corruption` for malformed
-tree-cell metadata, value codecs, index cells, or accepted catalog rows. A
-persistent backend can also produce the I/O, locking, format, corruption,
-recovery, limit, and read-only variants. Opening a damaged native store fails
-closed with a typed code — never a process crash: a truncated or torn body is
-`store.corruption`, and a store left needing repair by an unclean shutdown is
-`store.recovery_required`.
+Faults raised while encoding a value for a durable write.
 
 | Code | Meaning |
 |---|---|
-| `store.io` | An I/O operation on a persistent backend failed. |
+| `value.range` | A durable value cannot be represented by the store codec: at a durable write, a composite field's individually bounded scalar leaves exceed the dynamic 1 MiB aggregate encoded-value limit. Encoding completes before any store write, so the rejected write has no store effect. The same code closes codec range arms, such as a date outside 0001-9999, that checked source cannot produce. |
+
+### `store.*`
+
+Faults from a store. The message names the store path or operation; only the
+code is stable.
+
+| Code | Meaning |
+|---|---|
+| `store.io` | An I/O operation on a store failed. |
 | `store.permission_denied` | The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry. |
 | `store.locked` | The store file is held open by another process (a writer or a read-only inspection). Close the other process, then retry. |
-| `store.format_version` | The store's recorded format version is not the one this build supports. |
-| `store.corruption` | The store file or a tree-cell record is corrupt and could not be opened or decoded, including a truncated or torn store body. |
-| `store.recovery_required` | The redb engine found unclean state that its read-only opener cannot repair. A write-capable engine open may perform redb's internal log recovery; this does not replay Marrow bytecode or retry an invocation. If engine recovery cannot produce an openable store, the open fails with `store.corruption`. |
-| `store.limit` | Marrow exhausted a fixed representational bound: a store framing length/count did not fit its `u32` field, a record/problem/index count overflowed, or the tagged `u128` commit-witness generation was exhausted. |
-| `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
+| `store.format_version` | The store records a format version this build does not support. |
+| `store.corruption` | The store file or one of its cells is corrupt and could not be opened or decoded, including a truncated or torn store body. |
+| `store.recovery_required` | The store was left unclean by an interrupted shutdown, and a read-only open cannot repair it. A writing open recovers it; recovery replays no Marrow code and retries no invocation. If recovery cannot produce an openable store, the open reports `store.corruption`. |
+| `store.limit` | A fixed bound of the store's representation is exhausted: a framing length or count that does not fit its field, an entry, problem, or index count that overflowed, or an exhausted commit-witness generation. |
+| `store.cursor` | A traversal cursor does not belong to the traversal being resumed. |
 | `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |
-| `store.read_only` | A write-capability operation was requested through a read-only store handle. |
-| `store.contract_changed` | An attach presented a program image whose durable contract or exported interface differs from the store's active binding, so it is not a binding-only code update. This is not corruption: the store is intact and the prior program remains usable. Run `marrow apply` to review and accept the change (an evolution of the durable contract or the interface) before activating the new program against this store. |
-| `store.demand_exceeds_ceiling` | An attach presented a program image whose verified durable demand exceeds the store's accepted authority ceiling — the separately owned standing maximum the store was provisioned under. The refusal names, for each atom beyond the ceiling, the export that demands it, the new effect (read, write, presence, erase, or iterate), and the durable place, in source vocabulary. Zero engine calls occur and the store is intact: a broadened effect is refused until the deployment authority covers it, rather than the access silently landing. Consciously expand the store's accepted ceiling to admit exactly the named demand before activating the new program against this store. |
+| `store.read_only` | A write was requested through a read-only store handle. |
+| `store.contract_changed` | The program image changes the durable contract or the exported interface versus the store's active binding, so it is not a code-only update. The store is intact and the prior program remains usable. Accepting a changed contract is future work; today a new store is provisioned from the new program. [Changing the program](operations/README.md#changing-the-program) describes the outcomes. |
+| `store.demand_exceeds_ceiling` | The program image's durable demand exceeds the ceiling the store was provisioned under. The message names, for each place beyond the ceiling, the export, the effect (read, write, presence, delete, or iterate), and the place. No store call is made and the store is intact. Expand the store's accepted ceiling to cover the named demand before running the new program. |
 
-### `io.*` — kind `io`
+### `io.*`
 
-Operational I/O faults from the CLI and runner. The CLI reports `io.read` when
-it cannot read a project file (for example `marrow.toml`) and `io.thread` when
-it cannot start its worker thread. Runner framing and output paths retain the
-same read/write codes. Source Marrow exposes no I/O module or error-value channel.
+Operational I/O faults from the command line and the runner.
 
 | Code | Meaning |
 |---|---|
@@ -245,73 +155,63 @@ same read/write codes. Source Marrow exposes no I/O module or error-value channe
 | `io.thread` | The CLI could not spawn the worker thread it uses for parsing, checking, and running. |
 | `io.write` | An operational write failed, such as creating an initialized project file, publishing a generated client or identity artifact, writing command output, or writing a runner protocol frame. |
 
-### `config.*` — kind `tooling`
+### `config.*`
 
-Configuration faults, including an invalid project manifest (`marrow.toml`) and
-a non-UTF-8 command argument.
-
-| Code | Meaning |
-|---|---|
-| `config.invalid` | A configuration input or project-setup precondition is invalid: the project manifest `marrow.toml` is malformed TOML, declares an unknown key, or declares no supported `edition`; a command argument is not valid UTF-8; or `marrow init` targets a directory that already exists. A malformed-manifest fault carries its `marrow.toml` line and column in `source_span`; a validation fault with no single source point carries none. |
-
-### `project.*` — kind `tooling`
-
-Project-capture faults raised while discovering a project's source under `src`
-and reading its committed `.marrow/ids` identity artifact: an invalid contained
-path, a module-identity collision, an exceeded capture bound, a corrupt or
-misplaced identity artifact, a failed identity mint, or a live identity-artifact
-publication marker that makes the committed ledger indeterminate.
+Configuration faults, including an invalid project manifest.
 
 | Code | Meaning |
 |---|---|
-| `project.source_path` | A captured source file path is not a valid contained module identity: it is absolute, escapes the source root with `..`, is not a canonical forward-slash path, contains a NUL or ASCII control character, lives outside the fixed `src` source root, is not a `.mw` file with a non-empty name, or exceeds the 4096-byte canonical-identity limit. A project whose `src` root is itself a symlink is refused with this code before discovery. |
-| `project.module_collision` | Two captured source files collide on module identity: they derive the same module name, or their paths differ only in case and would name the same file on a case-insensitive filesystem. The message names both files. |
-| `project.capture_limit` | A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. The bound guards the compiler against an unbounded project tree. |
-| `project.ids_corrupt` | The committed `.marrow/ids` identity artifact is corrupt and is rejected whole, never half-read: unresolved Git conflict markers, a malformed or duplicate row, two rows claiming one `(kind, path)` anchor or one id (the signature of a conflicting double-mint on parallel branches), a retired id reissued by a live row, an inconsistent retirement high-water, a truncated (torn) file missing its end marker, or a size past the fixed artifact bound. `.marrow/ids` is machine-written only: restore it from version control rather than editing it. |
-| `project.ids_mint` | `marrow run` could not admit missing durable identities: a requested anchor was invalid, duplicated, already live, or retired; the successor exceeded the fixed row or canonical-byte bound; the OS entropy source failed; the candidate supplier disagreed with the admitted count; or a candidate collided with a live, retired, or earlier candidate. The `.marrow/ids` artifact is left byte-for-byte unchanged. Correct source, state, capacity, or tool faults before running again; only an entropy-source failure, a candidate collision, or a concurrent change to `.marrow/ids` between admission and publication may differ on another attempt. |
-| `project.ids_location` | The durable-identity ledger was found at its retired project-root path `marrow.ids`. The ledger's home is `.marrow/ids`: move the file (`git mv marrow.ids .marrow/ids`) and commit the move. When files exist at both paths, keep the correct ledger at `.marrow/ids` and delete the root `marrow.ids` — a project has exactly one ledger, and capture fails closed rather than choosing between two. |
-| `project.ids_publication_pending` | A `.marrow/ids` publication marker is live, so the committed identity ledger is indeterminate and no command reads it. `.marrow/ids.pending` means a publication was durably claimed and interrupted: `marrow run` recovers it before it captures the project or draws entropy, and recovery either completes the interrupted publication or settles it without installing. `.marrow/ids.pending.create` alone means a publication was created and never durably claimed: the ledger is untouched, and because nothing can prove that entry belongs to an interrupted run, it is retained rather than removed — delete it and `.marrow/ids.publish.stage` to continue. A publication state outside the protocol's closed map is retained the same way: the committed ledger is left unchanged and no cooperating writer's distinguishable content is removed. Recovery may first put back an entry an interrupted cleanup had moved aside, or finish a removal its own durable record already authorized, so the directory is not necessarily byte-identical — but the state it leaves is one a later command can still settle. |
+| `config.invalid` | The project manifest `marrow.toml` is malformed TOML, declares an unknown key, or declares no supported `edition`; a command argument is not valid UTF-8; or `marrow init` targets a directory that already exists. A malformed manifest reports its line and column. |
 
-### `wire.*` — kind `tooling`
+### `project.*`
 
-Local-wire protocol rejections raised by the single wire owner while framing or
-decoding a message between the generated client and the runner. A frame is
-rejected at the earliest bound or grammar rule it violates — an oversized frame,
-a too-deep or too-long value, an unrecognized protocol version, a malformed
-body, or a non-canonical encoding — before its content is acted on.
+Faults from discovering a project's sources under `src` and reading its
+identity ledger `.marrow/ids`.
 
 | Code | Meaning |
 |---|---|
-| `wire.frame_too_large` | A local-wire frame declared a payload longer than the fixed maximum frame size, so the framed message is rejected before its body is read or allocated (campaign law 9). The single wire owner rejects an oversized frame rather than buffering unbounded bytes off the socket. |
-| `wire.depth_limit` | A local-wire message's canonical JSON nests arrays or objects deeper than the fixed maximum depth, so decoding is refused before the structure is fully materialized (campaign law 9). The bound fails a pathologically nested payload closed rather than recursing unboundedly. |
-| `wire.string_limit` | A local-wire message's canonical JSON contains a string longer than the fixed maximum string size (campaign law 9). The bound fails an oversized string closed rather than allocating it. |
-| `wire.unsupported_version` | A local-wire frame carried a protocol version byte this build does not speak. The runner and the generated client are a matched release pair; a version this build does not recognize is rejected at the frame boundary before the body is interpreted. |
-| `wire.malformed` | A local-wire frame body is not a well-formed protocol message: its bytes are not valid JSON, carry a fractional or exponent number Marrow has no value for, name an unknown message kind, omit a required field, use a field of the wrong JSON type, or leave trailing bytes after the value. The single wire owner rejects it rather than acting on a partially understood message. |
-| `wire.noncanonical` | A local-wire frame body is valid JSON but not in canonical form: it carries insignificant whitespace, object keys that are unsorted or duplicated, a non-minimal number spelling, or a non-canonical string escape. The single wire owner accepts only the one canonical encoding so a message has exactly one byte spelling. |
+| `project.source_path` | A source file path is not a valid module identity: it is absolute, escapes `src` with `..`, is not a canonical forward-slash path, contains a NUL or control character, lives outside `src`, is not a `.mw` file with a non-empty name, or exceeds 4096 bytes. A project whose `src` is a symlink reports this before discovery. |
+| `project.module_collision` | Two source files collide on module identity: they derive the same module name, or their paths differ only in case and would name the same file on a case-insensitive filesystem. The message names both files. |
+| `project.capture_limit` | A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. |
+| `project.ids_corrupt` | `.marrow/ids` is corrupt and is rejected whole: unresolved Git conflict markers, a malformed or duplicate line, two lines claiming one `(kind, path)` or one id (a double mint on parallel branches), a retired id reissued, an inconsistent retirement high-water, a truncated file missing its end marker, or a size past the fixed bound. Restore the file from version control. |
+| `project.ids_mint` | `marrow run` could not mint missing identities: an anchor was invalid, duplicated, live, or retired; the ledger would exceed its fixed size; the entropy source failed; or a candidate id collided. `.marrow/ids` is unchanged. Fix the source or the ledger state, then run again; an entropy failure or a collision may pass on another attempt. |
+| `project.ids_location` | The identity ledger was found at the retired path `marrow.ids`. Its home is `.marrow/ids`: move it with `git mv marrow.ids .marrow/ids` and commit the move. When both exist, keep `.marrow/ids` and delete the root file; a project has exactly one ledger. |
+| `project.ids_publication_pending` | A `.marrow/ids` publication marker is live, so no command reads the ledger. `.marrow/ids.pending` means a publication was interrupted; `marrow run` settles it before it reads the project. A stray `.marrow/ids.pending.create` is not settled automatically: delete it and `.marrow/ids.publish.stage`, then run again. |
 
-### `runner.*` — kind `tooling`
+### `wire.*`
 
-Runner request rejections raised while admitting a local-wire connection and
-serving a request against the launched program image: a failed handshake, a
-request naming an unknown export, arguments that do not match the export
-signature, or a durable export the stock runner cannot yet execute.
+Rejections of a message between the generated client and the runner. A frame is
+rejected at the first bound or grammar rule it breaks, before its content is
+acted on.
 
 | Code | Meaning |
 |---|---|
-| `runner.handshake` | A local-wire connection failed the runner handshake and was closed fail-closed: the connecting peer did not present the expected launch nonce, spoke an unsupported protocol version, or sent a malformed hello. No session is established and no request is served over the connection. |
-| `runner.unknown_export` | A local-wire request named an export identity the served program image does not carry. The runner dispatches only on a verified export id present in the image it was launched with; an unknown id is rejected without running anything. |
-| `runner.arg_mismatch` | A local-wire request's arguments do not match the target export's verified signature: the argument count differs, or an argument value does not decode into the declared parameter type. The runner rejects the request before running rather than coercing a mismatched value. |
-| `runner.durable_unsupported` | A local-wire request named a durable export the runner cannot serve as attached: the storeless serve mode has no store, or the persistent attached session found the program's durable shape not yet executable by the native kernel (a parked shape). A storeless export, and a durable export whose shape the kernel serves over a provisioned store, are unaffected. |
-| `runner.spawn` | The terminal could not spawn the companion runner for a persistent run: the release-verified stock runner binary could not be executed. The store is untouched; no session was established. |
+| `wire.frame_too_large` | A frame declared a payload longer than the maximum frame size. It is rejected before its body is read. |
+| `wire.depth_limit` | A message's JSON nests deeper than the maximum depth. Decoding stops before the structure is built. |
+| `wire.string_limit` | A message's JSON contains a string longer than the maximum string size. |
+| `wire.unsupported_version` | A frame carried a protocol version this build does not speak. The runner and the generated client are a matched release pair. |
+| `wire.malformed` | A frame body is not a well-formed message: not valid JSON, a fractional or exponent number, an unknown message kind, a missing or mistyped field, or trailing bytes. |
+| `wire.noncanonical` | A frame body is valid JSON but not canonical: insignificant whitespace, unsorted or duplicate keys, a non-minimal number, or a non-canonical escape. A message has exactly one byte spelling. |
+
+### `runner.*`
+
+Rejections from the runner that serves a launched program.
+
+| Code | Meaning |
+|---|---|
+| `runner.handshake` | A connection failed the handshake: the peer did not present the launch nonce, spoke an unsupported version, or sent a malformed hello. No session is established. |
+| `runner.unknown_export` | A request named an export the served image does not carry. Nothing runs. |
+| `runner.arg_mismatch` | A request's arguments do not match the export's signature: the count differs, or a value does not decode as the parameter type. Nothing runs. |
+| `runner.durable_unsupported` | A request named a durable export the runner cannot serve: the storeless serve mode has no store, or the program's durable shape is one the runner does not execute today. A storeless export, and a durable export over a provisioned store, are unaffected. |
+| `runner.spawn` | The `marrow` process could not start the companion runner for a persistent run. The store is untouched. |
 
 ### Internal Codes
 
-These codes are emitted only by implementation-maintainer surfaces or as
-defense-in-depth fail-closed guards over invariants the surrounding layers
-already close. They are not ordinary user-facing diagnostics.
+These codes guard invariants the surrounding layers already close. An ordinary
+program does not reach them.
 
 | Code | Meaning |
 |---|---|
 | `cli.compiler_invariant` | The compiler detected an internal state inconsistency and failed closed without producing a program image or source diagnostic. |
-| `run.enum_variant` | A defense-in-depth guard: a bytecode enum-payload read named a variant the running enum value did not select. The compiler dispatches on the enum tag before extracting a variant's payload, so ordinary compiled programs never reach this; it fails an image closed rather than reading a differently-typed payload leaf when a hand-built or corrupted image extracts the wrong variant. Mapped to the operation's source span and not catchable inside the program. |
-| `runner.reply_encode` | A defense-in-depth guard: a served export's return value failed to encode for the wire. Interface build excludes an export whose return shape is not transferable, so ordinary served programs never reach this; the runner fails the request closed rather than emitting a partial reply. |
+| `run.enum_variant` | A bytecode enum-payload read named a member the value did not select. The compiler dispatches on the tag before reading a payload, so a compiled program does not reach this; it guards a hand-built or corrupted image. |
+| `runner.reply_encode` | A served export's return value failed to encode for the wire. Interface build excludes an export whose return shape is not transferable, so a served program does not reach this; the request fails closed. |

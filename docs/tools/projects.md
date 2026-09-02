@@ -1,278 +1,130 @@
 # Projects
 
-A Marrow project is a directory holding a manifest and a contained source tree.
-The command-line tools capture a project into a single immutable project input
-before doing any work with it, so file discovery, canonical file identity, and
-path-derived source names have one owner and one meaning.
+A Marrow project is a directory with a `marrow.toml` manifest and a `src` tree of `.mw` files. Every command takes the whole project as its input.
+
+A file under `src` names its own module:
+
+```mw
+module docs::projects::books
+
+resource Book {
+    required title: string
+}
+
+store ^books[id: int]: Book
+
+pub fn add(id: int, title: string) {
+    transaction {
+        ^books[id].title = title
+    }
+}
+
+pub fn title(id: int): string? {
+    return ^books[id].title
+}
+
+test "add then read" {
+    add(1, "Small Gods")
+    assert title(1) ?? "" == "Small Gods"
+}
+```
+
+This file lives at `src/docs/projects/books.mw`. The path gives the module its name, and the `module` line matches it. `marrow run docs.projects.books.add -- 1 x` addresses the export from the command line, and `marrow test` runs its test against a fresh in-memory store.
 
 ## Layout
 
 ```text
 my_app/
-  marrow.toml      manifest (required)
-  .marrow/         project metadata (machine-written)
-    ids            durable-identity ledger, committed (present only when the
-                   project declares durable data)
-    publish.lock   zero-byte entry the tools lock while writing metadata;
-                   machine-local, never committed
-    .gitignore     keeps the lock and the transient publication entries
-                   untracked; written by the tools
-  src/             source root (required for any source file)
-    main.mw        path-derived name `main`
+  marrow.toml      manifest
+  .marrow/
+    ids            identity ledger, committed with the source
+  src/
+    main.mw        module `main`
     shelf/
-      books.mw     path-derived name `shelf.books`
+      books.mw     module `shelf.books`
 ```
 
-`.marrow` is the project's behind-the-scenes metadata directory. It holds
-machine-written artifacts only, and developers do not read or edit its contents.
-The identity ledger `.marrow/ids` is part of the program and travels with the
-source; it is the only entry a checkout carries.
+`src` holds every source file the tools read. A file outside `src` is not part of the program. A project with no `src` directory has no source files.
 
-The zero-byte `publish.lock` the tools lock while writing metadata is
-machine-local runtime state. The four transient entries a publication passes
-through — `ids.publish.stage`, `ids.publish.quarantine`, which holds an object
-while a removal validates it, `ids.pending`, and `ids.pending.create` — are either a publication in flight or the debris an
-interrupted one left. No checkout carries any of the five, and the write owner
-keeps them untracked
-itself: when it takes the lock it writes `.marrow/.gitignore` naming every one
-of them, so a project adds no ignore line by hand and a clone that carries
-neither the lock nor the ignore entry is still correct — the next publication
-writes both. A project whose ignore entry predates a name gains exactly that
-name on the next publication, appended under the comment already there rather
-than under a second one.
+`.marrow` holds files the tools write for themselves. The identity ledger `.marrow/ids` is the one file there that belongs in version control. The tools write `.marrow/.gitignore` to keep their own working entries out of Git. A project with no durable declarations has no `.marrow` directory.
 
-The entry is not a convenience. Every removal the publication protocol performs
-relies on these names never being tracked: a committed transient is recreated by
-every checkout, and a checkout writing one while a publication is running can
-lose it. So the tools refuse to acquire the project-metadata write owner — and
-therefore refuse to publish or recover — when they cannot establish that the
-entry keeps them untracked. Four states refuse, with `io.write` and a message
-naming the repair:
-
-- The entry cannot be read. Its contents decide the question and were never
-  seen.
-- The entry is larger than the 4 KiB the owner reads. Same reason: the deciding
-  part was never read.
-- The entry is missing names and cannot be written. It cannot be completed.
-- The entry negates one of these names with a `!` line. Git takes the last
-  matching line, so the name is tracked whatever else the file says, and the
-  tools do not rewrite a line a developer wrote.
-
-Make the entry readable, small enough to inspect, and free of negations
-covering these names — or remove it and let the next acquisition write its own.
-An entry that already names every one of them is fine exactly as it is, mode
-included: nothing needs writing.
-
-One state is outside what the entry can fix, and the tools cannot detect it
-because they never run Git: a transient that is **already in the index**. That
-happens two ways — it was tracked before this contract existed, in a project
-published by an older build, or it was added with `git add -f`. `.gitignore`
-never untracks a file already in the index, so no ignore line repairs it.
-
-An ignore file elsewhere is not such a state. Git gives the rule in the lower
-directory higher precedence, so a negation in a parent `.gitignore` or in the
-global excludes file cannot re-include a name that `.marrow/.gitignore` covers.
-Only a negation in `.marrow/.gitignore` itself can, and acquisition refuses on
-that.
-
-The remedy for an indexed transient is `git rm --cached -- .marrow/<entry>`,
-then confirm a positive ignore line covers it. Until that is done the project
-is outside the cooperative contract the removal bounds assume.
-
-A write that fails on the environment — a full disk, a read-only filesystem —
-refuses as it always did, because it breaks the durable write the publication
-needs anyway. Committing the ignore entry alongside the ledger is the tidier
-habit, and leaving it untracked changes nothing about how these entries are
-treated.
-
-A lock that travelled with a checkout would be worse than absent: an ordinary
-Git operation that deletes and recreates a tracked entry replaces the inode, and
-a holder of the replaced inode would exclude nobody. Being untracked narrows
-that to deliberate removal — `git clean -x` and a plain `rm` still unlink an
-ignored entry, and a lock unlinked while it is held excludes nobody either.
-Caches and stores never live in `.marrow`. The directory appears when a command
-first writes project metadata; a project that has published no ledger and taken
-no metadata lock has no `.marrow` directory at all.
-
-Source lives under the fixed `src` directory. Every `.mw` file under `src` is
-captured; nothing outside `src` is captured. A project needs no `src` directory
-to be valid — it simply has no source files.
+[`marrow init`](cli.md#marrow-init) creates a project with a manifest and a `src/main.mw` script.
 
 ## Manifest
 
-`marrow.toml` is a small closed-schema TOML file. Its only key is a required
-`edition`, which fixes the language edition the project targets so parsing never
-inherits a moving toolchain default.
+`marrow.toml` holds one required key, `edition`, which fixes the language edition the project targets:
 
 ```toml
 edition = "2026"
 ```
 
-The schema is closed: an unknown key, a missing `edition`, a non-string
-`edition`, an unsupported edition, or malformed TOML each reject with
-`config.invalid`. A malformed-TOML fault reports the offending line and column;
-`2026` is the only edition this build supports.
+The schema is closed. An unknown key, a missing or non-string `edition`, an edition other than `2026`, or malformed TOML is a `config.invalid` error:
 
-The manifest holds project choices only. There is no store, backend, entry
-point, source-root, test, or client configuration; those are not part of the
-current schema.
+```text
+$ marrow check .
+config.invalid: unknown manifest key `name`; the only supported key is `edition`
+```
 
-## Source identity and modules
+The manifest carries no store, entry point, source root, test, or client settings.
 
-Each captured source file receives a name derived once from its path under
-`src`, with the directory separators written as dots and the `.mw` extension
-removed:
+## Modules
 
-| Source path | Derived name | Matching module declaration |
+A source file's module name comes from its path under `src`: directory separators become dots and the `.mw` extension is dropped.
+
+| Source path | Module name | Declaration |
 |---|---|---|
 | `src/main.mw` | `main` | `module main` |
 | `src/shelf/books.mw` | `shelf.books` | `module shelf::books` |
 
-The path-derived name identifies the source independently of its contents. To be
-importable with `use`, a file carries a `module` declaration that matches that
-name, using `::` between segments. A headerless file is a script: it is checked
-in its path-derived namespace and is not importable, while its command-line
-exports remain addressable under the dot-separated derived name. Because names
-are relative to the project root, moving a project to a new location does not
-change them. [Modules and functions](../language/modules-and-functions.md)
-defines the import, visibility, and command-line export rules.
+A file that carries a matching `module` declaration is importable with `use`. A file with no `module` line is a script: it is checked under its path-derived name and other files cannot import it, but its exports are still addressable from the command line, as in `marrow run main`. Names are relative to the project root, so moving the project changes nothing. Two files with the same module name, including paths that differ only in case, are a `project.module_collision` error. [Modules and functions](../language/modules-and-functions.md#modules-and-imports) defines imports, visibility, and exports.
 
-## Discovery bounds and faults
+## Identity ledger
 
-Discovery is deterministic — the captured source files are ordered by identity
-regardless of the order the filesystem reports them — and physically bounded. The
-project root, `marrow.toml`, `src`, and `.marrow/ids` are each admitted through an
-opened handle whose observed kind and identity are checked before and after use;
-capture never trusts path metadata and then reopens the path. A symbolic link is
-refused rather than followed, wherever it appears within a project: at `src`, `marrow.toml`, or
-`.marrow/ids`, on a component leading to one, or anywhere below `src`
-(`project.source_path` for the source root, `project.ids_corrupt` for the ledger,
-`io.read` elsewhere). The refusal names the link itself, so a project keeps no
-source the walk cannot open, and the walk can neither cycle nor escape the tree.
-A required file — the manifest, the identity ledger, or a selected source — that
-is a special file (a FIFO, socket, or device) or a hard link with more than one
-link count is refused before its body is read. A special file below `src` whose
-name is a `.mw` file is a selected source and is refused with it; one that names
-no module is ignored like any other non-`.mw` entry.
+A project that declares durable data carries `.marrow/ids`. Each line binds one durable declaration (the application, a resource, a field, a store root, a key, an index) to a random 128-bit id:
 
-The walk is bounded before retention: `marrow.toml` and `.marrow/ids` are each read
-to a fixed byte ceiling plus one; the total number of directory entries visited
-below `src` (65,536) and the source directory depth (64) are fixed; and a project
-that exceeds a source capture bound (4,096 source files, 1 MiB per file, or 64 MiB
-of source in total) reports `project.capture_limit`. These bounds are enforced by
-the bounded physical adapter (`marrow-project-fs`) and conformance-tested through
-the command-line capture path.
+```text
+marrow ids v0
+machine-written by marrow; do not edit
+id application . f5dd8d6b36a729b4e07cf416234a7874
+id product Book 9e70f27c3cc9d8b8f0c368b58ce2ceba
+id field Book.title fcf399ce0cb2622ce3819e50c5521165
+id root books 18a30fc1d6b9901b118dfd5bbb3ada57
+id key books.id 6a1a29b9d923efee77527b7750a3f4c4
+high-water 0
+end
+```
 
-Two source files that resolve to the same module identity — the same derived
-name, or paths differing only in case — report `project.module_collision`. A
-path that cannot name a contained module reports `project.source_path`. These
-codes are listed in the [Error Code Reference](../error-codes.md).
+Stored data is bound to these ids, so a declaration keeps its identity through edits, moves, and clones as long as the ledger travels with the source. Commit the file. The tools write it; a developer never edits, copies, or cites its contents. The file is line-diffable, and parallel branches merge it textually. A merge that leaves two lines claiming one identity, a truncated file, or any other damage is a `project.ids_corrupt` error; restore the file from version control.
 
-## The identity ledger
+The first storeless [`marrow run`](cli.md) of an export mints every missing id and writes the ledger. Until then, `marrow check` and `marrow test` report `check.durable_identity` for each missing declaration:
 
-A project that declares durable data carries `.marrow/ids`: the durable-identity
-ledger binding each durable declaration (the application, a store root, its key
-column, the stored resource, and each stored field) to an opaque entropy-minted
-id. **Commit it with the source** — the ledger is part of the program: a clone
-or relocated checkout then reuses the committed identities exactly, and parallel
-branches merge it line by line. The file is **machine-written only**; never
-edit, copy, or cite its contents. After a mint inside a Git repository whose
-index does not yet hold `.marrow/ids`, `marrow run` prints a one-line reminder
-to commit it.
+```text
+$ marrow check .
+src/docs/projects/books.mw:7:7: check.durable_identity: durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)
+$ marrow run docs.projects.books.add -- 1 x
+cli.durable_unsupported
+$ marrow check .
+3 exports across 2 modules
+```
 
-The ledger is a compile- and apply-time artifact and is never on the runtime
-path: it scales with the declared schema — one row per durable declaration,
-none per data row — so a store of any size leaves it unchanged. Its size is
-bounded (8,192 rows, 1 MiB); parsing a full-bound 8,192-row artifact is
-measured at about 2 ms, and an oversized file is rejected at the bound without
-being read.
+The run mints and then stops, because a durable export needs a store; `marrow run --store` runs it against one and never mints ([operations](../operations/README.md)). Inside a Git repository whose index lacks `.marrow/ids`, the mint prints a one-line reminder to commit it.
 
-Project capture validates the ledger once and privately retains both its
-read-only semantic form and whether the artifact was absent or present. When it
-was present, capture also retains the exact validated bytes. Identity mutation
-is available only as one structurally nonempty admission against that captured
-state. Before requesting entropy, the project owner validates the anchor
-grammar, duplicate and live/retired state, resulting row count, and exact
-canonical successor length, in that order. It then requires exactly one
-candidate per request, rejects candidates already present in a live row,
-tombstone, or earlier candidate, and serializes the admitted successor once.
-A planning refusal has no entropy or metadata effect; a later candidate or
-binding refusal still has no metadata effect. Each reports `project.ids_mint`.
+The mint is additive. It adds a line for each missing declaration and keeps every existing line. Renaming a field mints a new id for the new name, and the old line stays. Deleting a declaration and adding it back under the same name readopts its old id. Today, a retired id is kept as a live line. Recording a retirement as a tombstone that is never reissued is future work ([status](../status.md)).
 
-The resulting one-use publication plan binds the exact captured artifact state
-to the canonical successor and cannot be constructed from raw byte slices. One
-publication owner consumes that plan as a unit: under an exclusive
-project-metadata write lock it re-reads `.marrow/ids` and requires it to be
-byte-for-byte the state the plan was admitted against, then publishes through a
-crash-recoverable protocol. A plan admitted against a generation another writer
-has since replaced is refused without installing anything, so the binding is a
-stale-publication refusal.
+The ledger has exactly one home. A file at the project root named `marrow.ids` is a `project.ids_location` error naming the move.
 
-Because `publish.lock` is never committed, a fresh clone reaches its first
-publication with the lock absent, which is the ordinary case: taking the write
-lock creates `.marrow`, the lock entry, and the `.marrow/.gitignore` lines that
-keep the untracked entries untracked when any of them is missing. Two commands
-racing that first publication are still serialized — the lock entry is opened
-rather than exclusively created, so the process that loses the race locks the
-same entry the winner created and reports `io.write` naming the contended write
-lock, never a half-published ledger. The ignore entry is written under that lock
-and only for the names it does not already carry, so repeated publications leave
-it unchanged and a race writes it once.
+## Bounds
 
-Publication is serialized and crash-recoverable. The successor is written and
-synced to the fixed `.marrow/ids.publish.stage`, a durable marker is claimed at
-`.marrow/ids.pending`, the successor is linked or atomically exchanged into
-place, and the marker is removed last. While a marker exists the committed
-ledger is indeterminate, so every read-only command reports
-`project.ids_publication_pending` rather than reading a generation recovery may
-replace; `marrow run` — the one command that writes the ledger — settles the
-interrupted publication before it captures the project or draws entropy. A state the protocol cannot have produced, and a publication that was created
-but never durably claimed, leave the committed ledger unchanged and remove no
-cooperating writer's distinguishable content from `.marrow`. That is not the same as
-byte-identical: recovery may first put back an entry an interrupted cleanup had
-moved aside, or finish a removal the durable record already authorized. No
-command removes an entry unless that record says which run it is removing and
-the entry carries exactly that run, and there is no sweep of temporary files.
-Matching bytes at a matching inode number establish that an entry is equivalent
-to what the record bound, not that it is the same object — an inode number
-freed by `unlink` is reused, and no check after a crash can tell a
-byte-identical replacement from the original. Removing the named entries by
-hand is the documented way out.
+Source discovery is deterministic: files are ordered by their names, whatever order the filesystem reports them in. A symbolic link anywhere in the project is refused (`project.source_path` at `src`, `project.ids_corrupt` at the ledger, `io.read` elsewhere).
 
-The established durability is atomic publication plus process- and
-operating-system-crash recovery within a file-and-directory-`fsync` envelope.
-Sudden-power-loss durability is not established, on any platform.
+| Limit | Value | Diagnostic |
+|---|---|---|
+| Source files | 4,096 | `project.capture_limit` |
+| One source file | 1 MiB | `project.capture_limit` |
+| Source in total | 64 MiB | `project.capture_limit` |
+| Directory entries visited under `src` | 65,536 | `io.read` |
+| Directory depth under `src` | 64 | `io.read` |
+| Manifest | 1 MiB | `io.read` |
+| Identity ledger | 8,192 lines, 1 MiB | `project.ids_corrupt` |
 
-A merge that leaves conflict markers, two rows claiming one identity (the
-signature of the same declaration minted independently on two branches), a
-truncated file, or any other damage is rejected whole with
-`project.ids_corrupt`; restore the file from version control rather than
-repairing it by hand. The ledger has exactly one home: a ledger found at the
-retired project-root path `marrow.ids` is refused with `project.ids_location`
-and a one-line steer (`git mv marrow.ids .marrow/ids`), and a project with
-files at both paths fails closed until they are reconciled.
-
-In the ledger model the ledger is append-only about the past: a retired identity
-is recorded as a tombstone and is never reissued, so removing a durable
-declaration and re-adding its name yields a fresh identity rather than silently
-adopting old data. Recording a removal as a tombstone is the accepted apply
-action's job (future). The one mint today is **storeless** [`marrow run`](cli.md)
-— run without `--store`: it is additive-only, adding a row for each missing anchor
-and never tombstoning, so deleting a declaration and re-adding the same path
-readopts the old id, and a rename leaves the old row live and orphaned. This is
-bounded to development before a store exists. A persistent
-[`marrow run … --store <dir>`](cli.md) does **not** mint: once a store is bindable
-the additive mint could readopt an orphaned id or diverge from the store's
-committed ledger, so a missing identity there is a precise `check.durable_identity`
-failure the developer resolves deliberately (the tombstone-aware mint is the
-accepted apply action's job). In ordinary development the ledger is invisible —
-storeless `marrow run` receives each compiler-owned missing anchor once per
-project, admits the complete nonempty request, and mints the identities
-automatically; every other command requires them to be present and fails
-precisely with `check.durable_identity` when one is missing. A storeless project
-with no durable declarations has no `.marrow/ids`.
-
-## Creating a project
-
-[`marrow init`](cli.md) creates a fresh project directory with a manifest and a
-starter headerless `src/main.mw` script. It creates no store.
+These limits are fixed. Every code is listed in the [error code reference](../error-codes.md).

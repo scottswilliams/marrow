@@ -1,65 +1,67 @@
-# Execution Limits
+# Execution limits
 
-Marrow enforces fixed limits at three layers, each with a distinct owner: the
-parser bounds source nesting, the independent verifier bounds the program image
-before it allocates, and the virtual machine bounds one invocation's dynamic work.
-None of these limits is configurable, and no runner, environment variable, or
-caller can raise them.
+Every bound on a Marrow program is a fixed number. A program that crosses one gets a diagnostic at the construct that crossed it, or a fault at the instruction that did.
 
-## Source Nesting
+A loop with no bound of its own:
 
-| Limit | Value | Result when exceeded |
-|---|---:|---|
-| Source nesting | 256 levels | `check.nesting_limit` at the offending span |
+```mw
+module docs::limits::spin
 
-Source nesting counts braced blocks — a function body, a loop or conditional
-body, a transaction region — and expression nesting such as parentheses, unary
-expressions, and binary operands. Each enclosing brace or bracket deepens the
-count by one. The parser fails closed before native stack overflow.
+pub fn spin(): int {
+    var n = 0
+    while true {
+        n += 1
+    }
+    return n
+}
+```
 
-## Program-Image Bounds
+```text
+$ marrow run docs.limits.spin.spin
+run.budget at 6:9
+```
 
-The verifier rechecks every representational bound against the received bytes
-before it allocates, so a hostile or malformed image cannot drive unbounded work.
-A violation is an `image.table` or `image.function` rejection.
+`while` has no iteration limit. The invocation's instruction budget is shared across its whole call tree, so a loop that never terminates exhausts it and faults with `run.budget` at the instruction that ran out. The fault carries a source position and ends the invocation.
 
-| Limit | Value |
-|---|---:|
-| Whole image | 512 KiB |
-| Record / enum / collection types | 4096 each |
-| Durable roots | 4096 |
-| Top-level fields per record | 4096 |
-| Durable member-tree nesting | 16 levels |
-| Durable field value nesting | 32 levels |
-| Leaves per stored `struct` value | 64 |
-| String-pool entries / bytes per entry | 8192 / 4 KiB |
-| Constant-pool entries | 1024 |
-| Functions / params per function | 4096 / 16 |
-| Exported functions | 256 |
-| Test entries | 256 |
-| Locals per frame | 256 |
-| Code bytes per function | 64 KiB |
-| Operand-stack depth | 256 |
+A declaration that is too wide is a source diagnostic:
 
-The operand-stack depth is computed and sealed by the verifier, never read from
-the image. These bounds size the current subset; widening any of them is a later
-decision recorded with its own coverage.
+```text
+$ marrow check .
+src/main.mw:3:1: check.resource_limit: a function declares 17 parameters; the fixed limit is 16
+```
 
-## Per-Invocation Runtime Limits
+The diagnostic points at the declaration. When no single construct is at fault, because a count across the whole program or the compiled program's size crossed a bound, `marrow check` reports `cli.compiler_resource_limit` without a source position.
 
-The virtual machine owns the dynamic limits of one invocation. They are private
-constants with no override path.
+## Limits
 
-| Limit | Value | Result when exceeded |
-|---|---:|---|
-| Instruction budget | 67,108,864 (2^26) steps | `run.budget` |
-| Call depth | 64 active calls | `run.call_depth` |
-| Text-concatenation result | 64 KiB | `run.text_limit` |
+| Group | Limit | Value | Diagnostic |
+|---|---|---:|---|
+| Source | Nesting of expressions and blocks | 256 levels | `check.nesting_limit` |
+| Source | Diagnostics retained by one run | 4096, or 1 MiB of text | `cli.compiler_resource_limit` (`fmt.diagnostic_limit` under `marrow fmt`) |
+| Source | Traversal bound `at most N` | 65,536 | `check.type` |
+| Declarations | Store roots in a project | 4096 | `cli.compiler_resource_limit` |
+| Declarations | Fields in one resource | 4096 | `check.resource_limit` |
+| Declarations | Key components of a root or branch | 8 | `check.resource_limit` |
+| Declarations | Indexes on one root | 8 | `check.type` |
+| Declarations | Member nesting (groups and branches) | 16 levels | `check.resource_limit` |
+| Declarations | Value nesting in a stored field | 32 levels | `check.resource_limit` |
+| Declarations | Leaves in a stored struct value | 64 | `check.resource_limit` |
+| Declarations | Members of one enum | 256 | `check.resource_limit` |
+| Declarations | Payload fields of one enum member | 64 | `check.resource_limit` |
+| Declarations | Parameters of one function | 16 | `check.resource_limit` |
+| Declarations | Exported functions in a project | 256 | `cli.compiler_resource_limit` |
+| Declarations | Tests in a project | 256 | `cli.compiler_resource_limit` |
+| Declarations | Compiled program size | 512 KiB | `cli.compiler_resource_limit` |
+| Runtime | Instruction budget per invocation | 2^26 | `run.budget` |
+| Runtime | Call depth | 64 | `run.call_depth` |
+| Runtime | Text value | 64 KiB | `run.text_limit` |
+| Runtime | Elements in a list or map | 65,536 | `run.collection_limit` |
+| Runtime | Size of a list or map | 1 MiB | `run.collection_limit` |
 
-The instruction budget is shared across the whole call tree of one invocation, so
-total work stays bounded regardless of loop or call structure. A `while` or `for`
-loop has no separate iteration limit, but a non-terminating loop still exhausts
-the instruction budget and faults with `run.budget` rather than running forever.
-Static recursion is rejected at verification, so the call-depth limit guards a
-pathologically deep non-recursive call chain. Each faulting instruction maps to
-its source span, and none of these faults is catchable inside the program.
+The source group is met while a file is parsed and checked. The declarations group is met at a `resource`, `store`, `enum`, or `fn` header, or across the whole project for a count of roots, exports, or tests. The runtime group is met by one invocation of one export.
+
+Source nesting counts every brace and bracket that encloses a construct: a block inside a block, a parenthesis inside a parenthesis, an operand inside an operator. Member nesting counts groups and branches under a resource; value nesting counts structs and enums inside a stored field, with a scalar as level one. A [traversal bound](traversal-and-indexes.md#bounded-durable-traversal) above 65,536 is reported at the number in the `for` head.
+
+Call depth counts active calls in one invocation. Recursion is a compile error, so the depth limit meets only a very deep chain of distinct calls. The text limit applies to a text built by concatenation or `join`. The collection limits apply whenever a list or map grows: `append`, map insertion, `split`, and `lines`.
+
+These limits are fixed.

@@ -1,219 +1,182 @@
-# Built-Ins
+# Built-ins
 
-Built-ins are available without `use`. They cover presence, local collections,
-text, durable identities, temporal arithmetic, conversion, and canonical output.
+A built-in is a function or value available in every module without `use`. There are few of them, and each does one thing.
 
-## Presence
+| Group | Form | Result |
+|---|---|---|
+| Collections | `List()`, `List(a, b, c)`, `Map()` | An empty or filled collection |
+| | `append(xs, x): List<T>` | `xs` with `x` added at the end |
+| | `length(xs): int` | The element count of a list or map |
+| | `isEmpty(xs): bool` | Whether a list, map, or string is empty |
+| Text | `contains(text, part): bool` | Whether `part` occurs in `text` |
+| | `trim(text): string` | `text` without leading and trailing whitespace |
+| | `split(text, separator): List<string>` | The pieces of `text` between separators |
+| | `lines(text): List<string>` | The lines of `text` |
+| | `join(parts, separator): string` | `parts` concatenated with `separator` between them |
+| Numbers | `maxInt`, `minInt` | The largest and smallest `int` |
+| Dates and times | `date("…")`, `instant("…")`, `duration("…")` | A temporal value from its canonical text |
+| | `addDays(d, n): date` | The date `n` days after `d` |
+| | `daysBetween(a, b): int` | The signed number of days from `a` to `b` |
+| Presence and identity | `exists(place): bool` | Whether a durable place is present |
+| | `Id(^root, key): Id(^root)` | The identity of an entry under `^root` |
+| Conversion and output | `string(value): string` | The canonical text of a scalar, enum value, or identity |
+| | `bytes(text): bytes` | The UTF-8 bytes of `text` |
+| Faults | `unreachable("…")`, `todo("…")` | A statement that stops the program |
+| Option and Result | `some(v)`, `none`, `ok(v)`, `err(e)` | A member of `Option<T>` or `Result<T, E>` |
 
-`exists(place): bool` reports whether a durable path read that may be absent is
-present. Its subject is a durable path, not an arbitrary optional value: an
-optional value — a local optional, a local collection read, or a user-function
-result — is resolved with `if const`, `??`, or `?.` instead. A true branch
-narrows a stable durable path read.
-
-A complete-key read of a `unique` managed index, `exists(^root.uidx[keys])`, is
-also a presence subject: it reports whether the index holds a matching entry,
-the presence half of the [`if const` lookup](traversal-and-indexes.md#reading-an-index)
-without binding the found identity. A non-unique index is scan-only and has no
-`exists` probe.
-
-`if const`, `??`, and `?.` are language constructs rather than calls; they
-resolve any optional value:
-
-```mw
-module docs::builtins_presence
-
-fn maybeNumber(enabled: bool): int? {
-    if enabled {
-        return 4
-    }
-    return absent
-}
-
-pub fn number(enabled: bool): int {
-    if const n = maybeNumber(enabled) {
-        return n
-    }
-    return maybeNumber(enabled) ?? 0
-}
-```
-
-A direct optional-producing call may have effects. When presence resolution
-guards a path read, effects cannot be hidden in the read base or key
-expressions. Bind an effectful result first, then read a sparse member from the
-stable binding.
-
-Presence handling does not suppress a type mismatch, invalid required data, or
-decoding failure.
-
-## Local Collection Views
-
-`length(collection): int` reports a `List` or `Map` element count. `isEmpty` also
-accepts a `string` (the text floor form below).
-
-Additional collection projections and scalar-length operations are not current
-built-ins.
-
-## Numeric Bounds
-
-`maxInt` and `minInt` are argument-free value built-ins that name the inclusive
-bounds of the `int` domain: `maxInt` is `9223372036854775807` (2^63 - 1) and
-`minInt` is `-9223372036854775808` (-2^63). They are ordinary `int` values — used
-in arithmetic, comparison, a constant, or any value position — so no source spells
-the 64-bit bound as a literal.
-
-```mw
-module docs::numeric_bounds
-
-const CAPACITY = maxInt
-
-pub fn atCeiling(n: int): bool {
-    return n == maxInt
-}
-```
-
-A bound is a value, not a call: it takes no arguments, and `maxInt(...)` is
-rejected. Both names are reserved, so a `fn`, `const`, parameter, or local binding
-may not redeclare them; a bare `maxInt`/`minInt` always resolves to the bound. A
-constant may fold a bound (`const CAPACITY = maxInt`) even though a constant is
-otherwise restricted to a scalar literal.
-
-## Text
-
-A small closed set of pure text built-ins is available without `use`. This is the
-whole text floor; there is no general string library.
-
-| Form | Result |
-|---|---|
-| `isEmpty(text): bool` | Whether `text` is the empty string |
-| `contains(haystack, needle): bool` | Whether `haystack` contains `needle` as a substring |
-| `trim(text): string` | `text` with leading and trailing Unicode whitespace removed |
-| `split(text, separator): List<string>` | The substrings of `text` separated by each non-overlapping occurrence of `separator`, in order; an empty separator yields the single-element list `[text]` |
-| `lines(text): List<string>` | The lines of `text`, split on line feeds with a carriage return before a line feed removed; a final line terminator adds no trailing empty line |
-| `join(parts: List<string>, separator): string` | The `parts` concatenated in order with `separator` between adjacent elements |
-
-`split` and `lines` return a `List<string>`; the result honors the same length and
-aggregate-size bounds as any list (see [Execution limits](execution-limits.md)). `join`
-honors the string concatenation ceiling.
-
-```mw
-module docs::text_floor
-
-pub fn isBlank(s: string): bool {
-    return isEmpty(trim(s))
-}
-
-pub fn partCount(text: string): int {
-    return length(split(text, ","))
-}
-
-pub fn rejoin(text: string): string {
-    return join(split(text, ","), ";")
-}
-```
+Every name in the table except `append` and `length` is reserved; a function, constant, parameter, or local with one of these names is a `check.name_conflict` error. A module may declare its own `append` or `length`, and that function is used throughout the module.
 
 ## Collections
 
-The finite collection types `List<T>` and `Map<K, V>` are built through a closed
-set of procedural built-ins — there is no method syntax. `List()`/`Map()`
-construct an empty collection of the expected type; `append` adds an element and
-yields the updated list (collections are values); `length`/`isEmpty` report size.
-A collection is read with bracket lookup (`xs[i]`, `m[k]`, each yielding the
-presence-typed optional) and a map is written with bracket assignment (`m[k] =
-value`). See [Lists and maps](types-and-values.md#lists-and-maps) for the current
-operation list, the 1-based list positions, and value semantics.
+`List` and `Map` are values. `append` yields a new list and leaves its argument unchanged, so the result is assigned back:
 
 ```mw
-module docs::collection_builtins
+module docs::builtins::collections
 
-pub fn size(): int {
-    var xs: List<int> = List()
-    xs = append(xs, 1)
-    xs = append(xs, 2)
-    return length(xs)
+pub fn shelves(): List<string> {
+    var names = List("fiction", "history")
+    names = append(names, "travel")
+    return names
+}
+
+test "collections are values" {
+    const names = shelves()
+    assert length(names) == 3
+    assert names[3] ?? "" == "travel"
+    assert not isEmpty(names)
 }
 ```
 
-`isEmpty` also accepts a `string` (the text floor form above). `length` reports a
-collection's element or entry count.
+`List("fiction", "history")` takes its element type from the first argument. `names[3]` is the third element, because positions start at 1, and it is a `string?` because the position may be past the end. A `Map()` starts empty and is filled with `m[k] = v`. The rest of the collection rules are under [lists and maps](types-and-values.md#lists-and-maps).
 
-The collection constructors `List` and `Map`, together with the text floor names
-`isEmpty`, `contains`, `trim`, `split`, `lines`, and `join`, are reserved: a
-`fn`, `const`, parameter, or local binding may not redeclare them, because a bare
-use of one of these names always resolves to the built-in. The collection
-operations `append` and `length` are deliberately *not* reserved — they are common
-verbs — so a same-module function of one of those names is admitted, wins at every
-call site in that module, and totally shadows the built-in collection operation
-there.
+## Text
 
-## Positional Append
+Six text functions are built in. There is no string library beyond them.
 
-The `append` above grows a local `List` and yields the updated list. A durable
-positional `append` that writes to a keyed scalar leaf (`name[pos: int]: T`) and
-returns the written 1-based position is **future**: the current compiler does not
-check a keyed scalar leaf, so no durable form of `append` is current.
+```mw
+module docs::builtins::text
 
-## Entry Identities
+pub fn authors(line: string): List<string> {
+    return split(trim(line), ", ")
+}
 
-`Id(^root, key...): Id(^root)` constructs an identity from explicit declared
-keys without reading the store.
-
-`nextId` and `key` are not current built-ins. A caller supplies an identity
-directly as an `Id(^root)`. An application that needs a fresh monotonically
-increasing key maintains its own durable counter root and allocates from it in
-the same transaction as the create; see
-[Counter allocation](idioms.md#counter-allocation).
-
-## Output
-
-`marrow run` renders every admitted export result through the canonical value
-renderer. Bytes use `0x`-prefixed lowercase hexadecimal, temporal values use
-canonical text, and enums use `Enum::member`. `string(...)` and interpolation
-use the same scalar, enum, and identity renderings but reject bare aggregates
-and presence optionals.
-
-The current language has no streaming output statement.
-
-## Conversion
-
-Two scalar conversion forms are current:
-
-- `string(value): string` renders a current bare scalar, enum value, or entry
-  identity through the canonical rendering owner.
-- `bytes(text): bytes` encodes a `string` as UTF-8 bytes.
-
-No conversion is implicit, and no current conversion decodes bytes as text.
-[Types and values](types-and-values.md#explicit-conversion) gives the exact
-rejected-call boundary.
-
-## Temporal
-
-The temporal types `date`, `instant`, and `duration` are constructed from a
-static canonical text literal (`date("2026-07-15")`,
-`instant("2026-07-15T17:00:00Z")`, `duration("PT3600S")`), validated at compile
-time. Two named functions provide date arithmetic:
-
-```text
-addDays(d: date, n: int): date
-daysBetween(a: date, b: date): int
+test "text functions" {
+    const names = authors(" Pratchett, Gaiman ")
+    assert length(names) == 2
+    assert join(names, " & ") == "Pratchett & Gaiman"
+    assert contains(names[1] ?? "", "chett")
+    assert length(lines("a\r\nb\n")) == 2
+    assert isEmpty(trim("   "))
+}
 ```
 
-`addDays` returns the date `n` days after `d`; `daysBetween` returns
-the signed number of days from `a` to `b`. A result outside years 0001-9999
-faults `run.temporal_overflow`. `duration` sums and differences and `instant`
-shifts by a `duration` use the `+`/`-` operators. There is no clock builtin: the
-current day or instant is passed in as an argument. See
-[Temporal Types](types-and-values.md#temporal-types) for the full contract.
+`trim` removes Unicode whitespace at both ends. `split` cuts at each non-overlapping occurrence of the separator, in order; an empty separator yields the one-element list `[text]`. `lines` cuts at each line feed, drops a carriage return before a line feed, and adds no empty line after a final line terminator. `join` concatenates a `List<string>` with the separator between adjacent elements. `isEmpty` accepts a string as well as a collection; `length` takes a list or map only. A result honors the same [text and collection limits](execution-limits.md) as any other value.
 
-## Errors
+## Numbers
 
-A recoverable failure a program handles is an ordinary `Result<T, E>` value (see
-[Types and values](types-and-values.md)), returned with `err(...)` and propagated
-with prefix `try`. There is no throwable error value and no `throw`/`catch`
-channel; the distinct failure kinds are described in
-[Errors and transactions](errors-and-transactions.md).
+`maxInt` is `9223372036854775807` and `minInt` is `-9223372036854775808`. Both are ordinary `int` values and take no arguments; a source file names the bound instead of spelling the literal.
 
-## Deletion
+```mw
+module docs::builtins::bounds
 
-`delete place` is a statement, not a call. It removes the addressed durable value
-and descendants under the rules in [Durable places](durable-places.md#deletion).
+const capacity = maxInt
+
+pub fn hasRoom(count: int): bool {
+    return count < capacity
+}
+
+test "a bound is a value" {
+    assert hasRoom(0)
+    assert not hasRoom(maxInt)
+    assert minInt + maxInt == -1
+}
+```
+
+`const capacity = maxInt` is accepted where a constant otherwise holds one literal. `maxInt(1)` is a `check.type` error.
+
+## Dates and times
+
+`date("…")`, `instant("…")`, and `duration("…")` construct a value from a literal in its canonical text, described under [temporal values](types-and-values.md#temporal-values). Date arithmetic is two named functions:
+
+```mw
+module docs::builtins::dates
+
+pub fn dueDate(loaned: date): date {
+    return addDays(loaned, 14)
+}
+
+test "loan arithmetic" {
+    const due = dueDate(date("2026-03-01"))
+    assert due == date("2026-03-15")
+    assert daysBetween(due, date("2026-03-20")) == 5
+    assert daysBetween(due, date("2026-03-10")) == -5
+}
+```
+
+`addDays` takes a signed count, and `daysBetween` returns a signed count. A result outside years 0001 through 9999 faults `run.temporal_overflow`. There is no clock built-in: the current day or instant is passed in as an argument.
+
+## Presence and identity
+
+`exists(place)` reports whether a durable place is present and yields a `bool`. Its argument is a `^` path: an entry, a field, or a complete key of a `unique` index. A local optional is resolved with `??`, `if const`, or `?.` instead, described under [optionals](types-and-values.md#optionals).
+
+```mw
+module docs::builtins::presence
+
+resource Book {
+    required title: string
+    subtitle: string
+}
+
+store ^books[id: int]: Book
+
+pub fn add(id: Id(^books), title: string) {
+    transaction {
+        ^books[id].title = title
+    }
+}
+
+pub fn known(id: Id(^books)): bool {
+    return exists(^books[id])
+}
+
+test "presence" {
+    const id = Id(^books, 7)
+    assert not known(id)
+    add(id, "Small Gods")
+    assert known(id)
+}
+```
+
+`Id(^books, 7)` wraps a key as an identity and reads nothing: the entry is absent until `add` commits. `exists(^books[id].subtitle)` asks about one sparse field. `exists(^books.byIsbn[isbn])` asks a unique index whether some entry carries that key. `exists` narrows nothing; a read after it is still optional. Identity as a type is described under [entry identity](types-and-values.md#entry-identity) and index reads under [reading an index](traversal-and-indexes.md#reading-an-index). An application that needs a fresh key keeps its own durable counter ([counter allocation](idioms.md#counter-allocation)).
+
+## Conversion and output
+
+`string(value)` renders a scalar, an enum value, or an entry identity as its canonical text. `bytes(text)` encodes a string as UTF-8. There are no implicit conversions.
+
+An enum renders as `Enum::member`, bytes as lowercase hexadecimal with a `0x` prefix, a temporal value as its canonical text, and an identity as `Id(7)`, without its root. `string(bytes("hi"))` is `"0x6869"`. `marrow run` renders every admitted export result through the canonical value renderer. `string(...)` and interpolation use the same scalar, enum, and identity renderings but reject bare aggregates and presence optionals. Rendering a list, map, struct, or optional is not available today ([status](../status.md)). Three exports returning a `Shelf` enum value, an `Id(^books)`, and a `date` print:
+
+```text
+$ marrow run shelf
+Shelf::history
+$ marrow run ident
+Id(7)
+$ marrow run due
+2026-03-15
+```
+
+## Faults
+
+`unreachable("…")` and `todo("…")` are statements that stop the program with `run.unreachable` or `run.todo`, carrying their text. Each takes one string literal, described under [divergence](control-flow.md#divergence).
+
+```text
+$ marrow run never
+run.unreachable at 23:5: no path reaches here
+```
+
+A recoverable failure is a value. `ok(v)` and `err(e)` construct a `Result<T, E>`, and `some(v)` and `none` construct an `Option<T>`; a `match` takes them apart, described under [Option and Result](types-and-values.md#option-and-result).
+
+A `return err($"unknown shelf {name}")` in a function returning `Result<int, string>` takes its type from the return type. The caller matches on the result or propagates it with [prefix try](control-flow.md#prefix-try). The four failure kinds a program can meet are described under [errors and transactions](errors-and-transactions.md#failure-kinds).
+
+## No standard library
+
+The current toolchain supplies no `std::` modules. An absent module or function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`. A project-declared `std::` path is project code, not an ambient library. A source standard library is future work ([source standard library](../future/source-standard-library.md)).

@@ -1,42 +1,507 @@
-# Types And Values
+# Types and values
 
-Marrow is statically typed. A checked expression has one type, and assignment,
-arguments, and return values require compatible types. The language does not
-perform implicit numeric or text conversions.
+Every Marrow value is copied by value, and absence is one model, `T?`. A scalar,
+a struct, an enum, a list, a map, and a resource all copy on assignment, on a
+call, and on return. A sparse field, a bracket lookup, and a durable read all
+yield `T?`, and one set of forms consumes it.
 
-## Primitive Scalar Types
+Two values and two absences:
+
+```mw
+module docs::types::first
+
+struct Pos {
+    x: int
+    y: int
+}
+
+fn shifted(p: Pos): Pos {
+    var moved = p
+    moved.x = moved.x + 1
+    return moved
+}
+
+test "a value is copied" {
+    const p = Pos(x: 1, y: 2)
+    const q = shifted(p)
+    assert p.x == 1
+    assert q.x == 2
+}
+
+test "absence is one model" {
+    const xs = List(10, 20)
+    const third = xs[3] ?? 0
+    assert third == 0
+}
+```
+
+`shifted` changes its own copy of `p`; the caller's `p` keeps `x == 1`. `xs[3]`
+names a position the list does not hold, so it is an `int?` and `?? 0` supplies
+the value. A durable read `^books[id].title` has the same shape and the same
+optional result; the `^` marks the durable one.
+
+Marrow is statically typed. An expression has one type, and assignment,
+arguments, and return values take that type exactly. There is no implicit
+numeric or text conversion.
+
+## Scalars
 
 | Type | Values |
 |---|---|
-| `int` | Signed 64-bit integers |
+| `int` | signed 64-bit integers |
 | `bool` | `true` or `false` |
 | `string` | UTF-8 text |
-| `bytes` | Byte sequences |
-| `date` | Proleptic-Gregorian calendar days in years 0001 through 9999 |
-| `instant` | UTC nanosecond instants in years 0001 through 9999 |
-| `duration` | Signed elapsed nanoseconds over the `i128` range |
-| `decimal` | Exact base-10 values (future) |
+| `bytes` | byte sequences |
+| `date` | calendar days in years 0001 through 9999 |
+| `instant` | UTC instants in years 0001 through 9999, to the nanosecond |
+| `duration` | signed elapsed nanoseconds |
 
-The implemented scalar floor is `int`, `bool`, `string`, `bytes`, and the temporal
-types `date`, `instant`, and `duration` (see [Temporal Types](#temporal-types)).
-`decimal` is recorded here as direction and is not yet accepted by the compiler; a
-program that uses it reports `check.unsupported` until its lane lands.
+The bounds of `int` are the built-in values `maxInt` and `minInt`. Literal forms
+for every scalar are on the [syntax](source-and-syntax.md) page. Today, these
+seven scalars are the whole set. `decimal` is future work
+([status](../status.md)).
 
-The bounds of the `int` domain are named by the value built-ins `maxInt`
-(`9223372036854775807`) and `minInt` (`-9223372036854775808`); see
-[Numeric bounds](builtins.md#numeric-bounds). Source spells the bound by name
-rather than as a 64-bit literal.
+## Temporal values
 
-## Type Aliases
+`date`, `instant`, and `duration` are plain values with a fixed representation
+and a total order. They depend on no clock, time zone, or locale.
 
-`alias Name = Type` declares a transparent alias: the name denotes exactly its
-target type wherever a type annotation is written. An alias mints no new type
-identity and no constructor — `alias Count = int` makes `Count` and `int` the
-same type, and a `Count` value is an `int` value. Alias names are unique across
-the project alongside resource names.
+A temporal value is constructed from one string literal in its canonical form:
+
+| Constructor | Canonical text | Example |
+|---|---|---|
+| `date("…")` | `YYYY-MM-DD` | `date("2026-07-15")` |
+| `instant("…")` | `YYYY-MM-DDTHH:MM:SS[.fraction]Z` | `instant("2026-07-15T17:00:00Z")` |
+| `duration("…")` | `[-]PT<seconds>[.fraction]S` | `duration("PT3600S")` |
+
+A whole-unit `duration` also has a word literal: an integer followed by
+`second`, `minute`, `hour`, `day`, or `week`, singular or plural. `3 days` is
+`duration("PT259200S")`. Months and years have no fixed span, so `1 month` is a
+parse error. A malformed form, an impossible date such as `date("2021-02-29")`,
+and a year outside 0001 through 9999 are each a `check.type` at the literal. The
+argument is a literal; a computed argument is a `check.unsupported`.
+
+Temporal arithmetic is a short list. Two values of one temporal type compare with
+`==`, `!=`, `<`, `<=`, `>`, and `>=`. A `duration` adds to or subtracts from a
+`duration` or an `instant`. `addDays(d, n)` and `daysBetween(a, b)` are the
+`date` operations, described under [builtins](builtins.md#dates-and-times).
 
 ```mw
-module docs::aliases
+module docs::types::temporal
+
+pub fn dueDate(assigned: date, leadDays: int): date {
+    return addDays(assigned, leadDays)
+}
+
+pub fn isOverdue(due: date, onDay: date): bool {
+    return due < onDay
+}
+
+pub fn reminderAt(deadline: instant, lead: duration): instant {
+    return deadline - lead
+}
+
+test "temporal values" {
+    assert dueDate(date("2026-07-15"), 10) == date("2026-07-25")
+    assert isOverdue(date("2026-07-15"), date("2026-08-01"))
+    assert 3 days == duration("PT259200S")
+    const start = instant("2026-07-15T17:00:00Z")
+    assert reminderAt(start, 1 hour) == instant("2026-07-15T16:00:00Z")
+}
+```
+
+`isOverdue` takes the current day as an argument. There is no clock in the
+language, so a program receives the day or instant it reasons about. A result
+outside the type's range faults `run.temporal_overflow`.
+
+## Optionals
+
+`T?` holds a present `T` or `absent`. Optional types do not nest: `int??` is a
+parse error, and a struct field holds a bare type. `List<T>?` is an optional
+whose value is a whole list.
+
+A sparse field read, a bracket lookup, a durable read, and a function returning
+`T?` produce an optional. Five forms consume one. `value ?? fallback` selects the
+present value or the fallback. `if const name = value` enters its block with
+`name` bound to the present value. A [let-else](control-flow.md#let-else-bindings)
+binding diverges when the value is absent. `value?.field` reads a field through
+an optional struct or resource and yields an optional. `exists(place)` tests a
+durable place and yields a `bool`; it narrows nothing, and the read after it is
+still `T?`.
+
+```mw
+module docs::types::optionals
+
+struct Pos {
+    x: int
+    y: int
+}
+
+fn origin(present: bool): Pos? {
+    if present {
+        return Pos(x: 0, y: 0)
+    }
+    return absent
+}
+
+pub fn describe(present: bool): string {
+    if const p = origin(present) {
+        return $"at {p.x}"
+    }
+    return "nowhere"
+}
+
+pub fn xOr(present: bool, fallback: int): int {
+    const p = origin(present) else {
+        return fallback
+    }
+    return p.x
+}
+
+test "optionals" {
+    assert describe(true) == "at 0"
+    assert xOr(false, 9) == 9
+    const x = origin(false)?.x
+    assert x ?? 9 == 9
+}
+```
+
+`describe` binds `p` as a bare `Pos` inside the `if const` block. `xOr` binds
+`p` for the rest of the function because the `else` block returns. `?.` on an
+absent `origin(false)` yields an absent `int?` without faulting. The
+optional-producing call runs once in each form.
+
+A durable read is optional even when the field is `required`, because the entry
+itself may be absent. `^books[id].title` is a `string?`, and
+`if const book = ^books[id]` binds a whole `Book` whose required fields are
+bare. Reading is described under [durable places](durable-places.md#reading).
+
+## Structs
+
+A `struct` is a value with named fields, all required. A field holds any value
+type: a scalar, a nominal int, another struct, or an enum.
+
+```mw
+module docs::types::structs
+
+struct Point {
+    x: int
+    y: int
+}
+
+struct Segment {
+    from: Point
+    to: Point
+}
+
+fn length(s: Segment): int {
+    return s.to.x - s.from.x
+}
+
+test "a struct is built by name" {
+    const p = Point(x: 3, y: 4)
+    const q = Point(y: 4, x: 3)
+    assert p.x == q.x
+    const s = Segment(from: p, to: Point(x: 10, y: 4))
+    assert length(s) == 7
+}
+```
+
+A struct is constructed by naming every field once, in any order. A field is
+read with `.` and yields the field's type. A `var` binding assigns a field with
+`s.to = Point(x: 1, y: 1)`. A field may name a struct or enum declared later in
+the file. A value type that contains itself, directly or through other types,
+is a `check.recursion` naming the cycle. Two structs have no `==`; compare their
+fields.
+
+A struct name is project-wide and is written bare from any module. A resource
+is the durable counterpart: it adds sparse fields, groups, and keyed branches,
+and a store may declare it as a root. Resource values are described under
+[resources](resources.md#local-values).
+
+## Enums
+
+An `enum` declares a closed set of members. A member is bare or carries named
+payload fields.
+
+```mw
+module docs::types::enums
+
+enum Shape {
+    dot
+    circle(radius: int)
+    rect(width: int, height: int)
+}
+
+pub fn area(s: Shape): int {
+    match s {
+        dot => {
+            return 0
+        }
+        circle(r) => {
+            return 3 * r * r
+        }
+        rect(w, h) => {
+            return w * h
+        }
+    }
+}
+
+test "enum values" {
+    assert area(Shape::rect(width: 2, height: 5)) == 10
+    assert Shape::circle(radius: 3) == Shape::circle(radius: 3)
+    assert Shape::circle(radius: 3) != Shape::dot
+}
+```
+
+A value is written `Shape::dot` for a bare member and
+`Shape::circle(radius: 3)` for a payload member, with the payload fields named.
+`==` and `!=` compare the member and its payload. A `match` names every member
+once and binds a payload positionally; it is described under
+[control flow](control-flow.md#match).
+
+A declared payload field is a scalar. A struct or enum reaches a payload through
+a type parameter of a [generic enum](#generic-types). An enum name is
+project-wide, like a struct name.
+
+## Option and Result
+
+`Option<T>` and `Result<T, E>` are ordinary generic enums the toolchain declares.
+`Option<T>` has the members `none` and `some(v)`. `Result<T, E>` has `ok(v)` and
+`err(e)`. The four member names are reserved: a function, constant, parameter, or
+local that reuses one is a `check.name_conflict`.
+
+`some(v)` infers `Option<T>` from `v`. `none`, `ok(v)`, and `err(e)` take their
+type from where they are used: an annotation, an argument, or a return type. A
+`match` over `some(v)` and `none` binds the payload positionally, as any enum
+does.
+
+`Result<T, E>` models a recoverable failure. `err(e)` carries a value of the
+program's own error type, usually an enum. Prefix `try` unwraps an `ok` and
+returns an `err` from the enclosing function, as described under
+[control flow](control-flow.md#prefix-try).
+
+```mw
+module docs::types::result
+
+enum NameError {
+    empty
+}
+
+fn checkName(name: string): Result<string, NameError> {
+    if name == "" {
+        return err(NameError::empty)
+    }
+    return ok(trim(name))
+}
+
+pub fn greeting(name: string): Result<string, NameError> {
+    const clean = try checkName(name)
+    return ok($"hello {clean}")
+}
+
+test "result values" {
+    const expected: Result<string, NameError> = ok("hello ada")
+    assert greeting(" ada ") == expected
+    const failed: Result<string, NameError> = err(NameError::empty)
+    assert greeting("") == failed
+}
+```
+
+`try checkName(name)` binds `clean` to the `ok` payload or returns the `err`.
+The test annotates `expected` so that `ok("hello ada")` has a type to take.
+`==` compares two values of one instantiation exactly. Nested `Option` is
+distinct: `none`, `some(none)`, and `some(some(v))` are three values of
+`Option<Option<int>>`.
+
+`T?` and `Option<T>` answer different questions. Use `T?` for the presence of a
+place, and `Option<T>` when absence is a value the program passes around or
+stores in a structure. A sparse field already models absence: an unset field
+reads `absent`. Declare a field `Option<T>` only when a stored `none` must be
+distinguishable from the field being unset. Such a field reads as
+`Option<T>?`, and the program proves presence and then matches:
+
+```mw
+module docs::types::three_state
+
+resource Reading {
+    measured: Option<int>
+}
+
+pub fn describe(r: Reading): string {
+    if const stored = r.measured {
+        match stored {
+            some(v) => {
+                return $"measured {v}"
+            }
+            none => {
+                return "recorded as unmeasurable"
+            }
+        }
+    }
+    return "not recorded"
+}
+
+test "three states" {
+    assert describe(Reading(measured: some(7))) == "measured 7"
+    assert describe(Reading(measured: none)) == "recorded as unmeasurable"
+    assert describe(Reading()) == "not recorded"
+}
+```
+
+## Lists and maps
+
+`List<T>` is an ordered collection of values of type `T`. `Map<K, V>` is an
+ordered mapping from keys of type `K` to values of type `V`. Both are values:
+passing, returning, or reassigning one copies it, and a change to one copy does
+not reach another. `T` and `V` are any value type, including a nested `List`,
+`Map`, struct, enum, or `Option`/`Result`. A map key `K` is `int`, `bool`,
+`string`, `bytes`, `date`, `instant`, and `duration`, or a nominal int type. A
+nominal Map key retains its source type and uses its base scalar for
+representation and ordering. A struct, enum, collection, optional, or entry
+identity is not a Map key. `ErrorCode` is not a local Map key; the type is future
+work.
+
+`List()` and `Map()` construct an empty collection whose type comes from an
+annotation, an argument, or a return type. `List(a, b, c)` constructs a list of
+those elements, taking `T` from the first and checking the rest against it. A
+map is filled with `m[k] = v`. The operations are `append`, `length`, and
+`isEmpty`, described under [builtins](builtins.md#collections); there is no
+method syntax.
+
+```mw
+module docs::types::collections
+
+pub fn total(xs: List<int>): int {
+    var sum = 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+pub fn scoreOf(name: string): int {
+    var scores: Map<string, int> = Map()
+    scores["ada"] = 10
+    scores["bob"] = 7
+    unset scores["bob"]
+    return scores[name] ?? 0
+}
+
+pub fn keysJoined(): string {
+    var m: Map<string, int> = Map()
+    m["b"] = 2
+    m["a"] = 1
+    var out = ""
+    for k, v in m {
+        out += $"{k}{v}"
+    }
+    return out
+}
+
+test "lists and maps are values" {
+    const xs = List(10, 20)
+    const ys = append(xs, 12)
+    assert length(xs) == 2
+    assert total(ys) == 42
+    assert xs[1] ?? 0 == 10
+    assert xs[3] ?? 0 == 0
+    assert scoreOf("ada") == 10
+    assert scoreOf("bob") == 0
+    assert keysJoined() == "a1b2"
+}
+```
+
+`append(xs, 12)` yields a new list and leaves `xs` at two elements. A bracket
+read yields `T?`, and there is no out-of-bounds fault. `xs[i]` is the element at
+position `i`, and positions are 1-based: `xs[1]` is the first element and
+`xs[length(xs)]` the last. A position outside `1..=length(xs)` reads `absent`.
+The literal indexes `xs[0]` and `xs[-1]` name no position and are a `check.type`.
+`m[k]` is the value at key `k`, typed `V?`, and a `Map<int, V>` key of `0` is an
+ordinary key.
+
+`m[k] = value` on a `var` map creates or replaces the value at `k`. `unset m[k]`
+removes the entry at `k`, and removing an absent key does nothing. A list has no
+keyed write and no keyed removal: `xs[i] = value` and `unset xs[i]` are each a
+`check.type` naming `append` or `Map<int, T>`. A nested bracket target
+`outer[k1][k2] = value` is a `check.unsupported`.
+
+A list iterates in insertion order. A map iterates in ascending key order:
+numbers and temporal values ascend, `false` precedes `true`, and strings and
+bytes compare byte by byte. `for k in m` binds each key and `for k, v in m` binds
+each key with its value, as `keysJoined` shows.
+
+A collection holds at most 65,536 elements and 1 MiB. An `append` or map insert
+beyond either bound faults `run.collection_limit`. A collection is a local
+value: a resource field and a store key hold no `List` or `Map`, and a keyed
+[branch](durable-places.md#keyed-branches) is the durable shape for many
+children.
+
+## Generic types
+
+A `struct` or `enum` declares type parameters in angle brackets after its name.
+Each application `Name<Args>` is a distinct type: `Pair<int, string>` and
+`Pair<string, int>` are different, and two applications with the same arguments
+are the same type.
+
+```mw
+module docs::types::generics
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+enum Box<T> {
+    empty
+    full(value: T)
+}
+
+fn unbox(b: Box<int>): int {
+    match b {
+        empty => {
+            return 0
+        }
+        full(v) => {
+            return v
+        }
+    }
+}
+
+test "type arguments are inferred" {
+    const p = Pair(first: 7, second: "hello")
+    assert p.first == 7
+    const b = Box::full(value: 9)
+    assert unbox(b) == 9
+}
+```
+
+A generic value is constructed with the ordinary spelling, and the type arguments
+are inferred from the field or payload values. A parameter that no value
+determines is a `check.type` at the construction. An annotation names an
+application directly: `Pair<int, string>`, `Box<int>`.
+
+A type parameter may carry one constraint, `T supports equality` or
+`T supports order`, spelled as on a
+[generic function](modules-and-functions.md#generic-functions). The constraint
+admits `==` and `!=`, or the comparisons as well, over the parameter. An
+argument that lacks the capability is a `check.type` at the application. An
+unconstrained parameter admits neither.
+
+A payload that resolves to a collection, such as `Option<List<int>>`, is a
+`check.unsupported`; wrap the collection in a struct. Acyclicity applies per
+application: `Tree<int>` whose `child` is a `Tree<int>` is a `check.recursion`,
+and `kids: List<Tree<T>>` is finite. `Option`, `Result`, `List`, and `Map` are
+the toolchain's generic types over this mechanism, and their names are reserved.
+
+## Aliases and nominal ints
+
+`alias Name = Type` declares a transparent alias. The name denotes exactly its
+target wherever a type is written. `alias Count = int` makes `Count` and `int`
+the same type.
+
+```mw
+module docs::types::aliases
 
 alias Count = int
 
@@ -50,51 +515,35 @@ fn maybe(present: bool): MaybeCount {
 }
 
 pub fn firstOr(present: bool, fallback: Count): Count {
-    if const value = maybe(present) {
-        return value
-    }
-    return fallback
+    return maybe(present) ?? fallback
+}
+
+test "an alias is its target" {
+    const n: Count = 4
+    assert n + 1 == 5
+    assert firstOr(false, 9) == 9
 }
 ```
 
-Aliases may chain; a cyclic chain reports `check.recursion` at each alias on
-the cycle. An alias whose target names no known type reports `check.type`, even
-when the alias is unused. Expansion happens before every other type rule, so an
-alias cannot express anything its expansion could not — in particular `M?`
-where `M` is itself optional is still a rejected nested optional. Alias names
-are type annotations only: they are not conversion or constructor names in
-expressions.
-
-## Nominal Int Types
+Aliases chain, and a cycle is a `check.recursion` at each alias on it. An alias
+whose target names no type is a `check.type`, even when unused. An alias is a
+type annotation only and has no constructor.
 
 `type Name: int in lo..hi` declares a nominal type over `int`: a distinct type
 whose every value lies in the declared interval. Unlike a transparent `alias`,
-the name mints its own identity and constructor — an `int` is not a `Name` and
-a `Name` is not an `int`; each conversion point is explicit in the source.
+the name mints its own identity and constructor. An `int` is not a `Name` and a
+`Name` is not an `int`; each conversion point is explicit in the source.
 
-The interval follows the language's range operators: `in 0..150` admits `0`
-through `149` (the end is excluded), and `in 0..=150` admits `0` through `150`.
-The lower bound is always included. Both bounds are int literals (a leading `-`
-is allowed), the range takes no step, and the interval must admit at least one
-value; an empty interval reports `check.type`. The base type is `int` only;
-a nominal over another scalar reports `check.unsupported`.
+The interval follows the range operators: `in 0..150` admits `0` through `149`,
+and `in 0..=150` admits `0` through `150`. Both bounds are `int` literals, and
+the interval admits at least one value. `Name(n)` constructs a value and faults
+`run.range` when `n` lies outside the interval. `Name.checked(n)` yields a
+`Name?` instead. A parameter of nominal type revalidates the interval on entry,
+so an export called from the terminal with an out-of-interval `int` faults
+`run.range`.
 
-`Name(n)` constructs a value from an int expression. Construction validates the
-interval at runtime: an out-of-interval value faults `run.range` at the
-construction's source span, and the fault is not catchable inside the program.
-`Name.checked(n)` is the fault-free form: it returns `Name?`, present exactly
-when `n` lies in the interval and `absent` otherwise.
-
-A function parameter declared with a nominal type revalidates the interval on
-entry: in-language callers must already pass a value of the type, and a
-terminal caller supplying an export's argument as a plain int faults
-`run.range` when it lies outside the interval.
-
-The optional `supports` clause draws from the closed capability set `add`,
-`subtract`, `step`, `scale`. Each capability admits operators over the type;
-every operator that produces a value of the type revalidates the interval the
-same way construction does, so no expressible path yields an out-of-interval
-value:
+The `supports` clause admits operators over the type. Every operator that yields
+a `Name` revalidates the interval:
 
 | Capability | Admits | Result |
 |---|---|---|
@@ -104,17 +553,13 @@ value:
 | `step` | `Name + 1`, `Name - 1` (the literal `1`) | `Name`, revalidated |
 | `scale` | `Name * int`, `int * Name` | `Name`, revalidated |
 
-A difference of two values (`Name - Name`) is a count, not a value of the
-type, so it is a plain `int` and needs no interval. Comparisons between two
-values of the same nominal type (`==`, `!=`, `<`, `<=`, `>`, `>=`) are always
-admitted and need no capability: they compare the int representations and
-construct nothing. Applying an operator the type does not support, or mixing a
-nominal with a plain `int` in a comparison, reports `check.type` naming the
-missing capability or the operand types. A nominal type without a `supports`
-clause admits construction, `.checked`, and same-type comparisons only.
+Comparisons between two values of one nominal type need no capability. An
+operator the type does not support, or a comparison mixing a nominal with a
+plain `int`, is a `check.type` naming the capability it lacks or the operand
+types.
 
 ```mw
-module docs::nominal
+module docs::types::nominal
 
 type Age: int in 0..=150 supports add, subtract
 
@@ -129,171 +574,58 @@ pub fn gap(a: Age, b: Age): int {
 pub fn tryAge(n: int): Age? {
     return Age.checked(n)
 }
-```
 
-Nominal values are ordinary copied values with the same value semantics as
-`int`. Nominal type names share the project-wide type namespace with aliases
-and resource names; a collision reports `check.name_conflict`. `Name?` is an
-ordinary optional. A nominal int type is admitted as a resource field. It retains
-its nominal source type, while its image record and durable stored shape use base
-`int`; sparse requiredness is recorded separately. Operations over a root containing
-a nominal field remain unimplemented and report `check.unsupported`. Nominal types
-are not admitted as store-root keys, branch keys, or module-constant types; each
-position reports `check.unsupported`.
-
-## Temporal Types
-
-Marrow has three temporal value types. Each is a pure value: it has a fixed
-integer representation, deterministic parse, format, and order, and no dependence
-on a clock, timezone, or locale.
-
-| Type | Representation | Range |
-|---|---|---|
-| `date` | proleptic-Gregorian days since 1970-01-01 | years 0001-9999 |
-| `instant` | signed nanoseconds since 1970-01-01T00:00:00Z, in UTC | years 0001-9999 |
-| `duration` | signed nanoseconds | the `i128` range |
-
-### Construction
-
-A temporal value is constructed from exactly one static string literal in the
-type's canonical text form, validated and folded at compile time. There is no
-dotted suffix literal (the prototype's `1.second` form reports
-`check.unsupported`), no ambient `today`/`now`, and no runtime string parse in the
-language floor.
-
-| Constructor | Canonical text | Example |
-|---|---|---|
-| `date("…")` | `YYYY-MM-DD` (fixed width) | `date("2026-07-15")` |
-| `instant("…")` | `YYYY-MM-DDTHH:MM:SS[.fraction]Z` (UTC, `Z` required) | `instant("2026-07-15T17:00:00Z")` |
-| `duration("…")` | `[-]PT<seconds>[.fraction]S` (zero is `PT0S`) | `duration("PT3600S")` |
-
-A `duration` of whole units also has a word literal: an integer count immediately
-followed by a fixed unit word — `second`(s), `minute`(s), `hour`(s), `day`(s), or
-`week`(s) — folds at compile time to the same `duration` value, so `3 days` equals
-`duration("PT259200S")`. The unit word is read as a unit only in that position,
-directly after an integer literal, so an ordinary name spelling a unit (`const
-seconds = 5`) is unaffected. Months and years have no fixed span, so `1 month` and
-`2 years` are a compile-time parse error rather than a duration. The formatter
-writes the unit in agreement with its count (`1 day`, `2 days`). Scaling a literal
-by a variable is not expressible: `n * 1 minute` folds `1 minute` first and then
-rejects `int * duration`; use `duration("…")` for a computed span. The
-`duration("…")` form remains the way to write a fractional-second span.
-
-The forms are strict and canonical: a field must have its fixed width, an
-optional sub-second `fraction` is one to nine digits with no trailing zero, whole
-seconds carry no leading zero, and `-PT0S` is not a duration (zero is `PT0S`). A
-malformed form, an impossible date such as `date("2021-02-29")`, or a `date`/
-`instant` outside years 0001-9999 is a compile-time `check.type` diagnostic at the
-literal, so no ordinary program produces an out-of-range temporal value. The
-constructor argument must be a literal; a non-literal argument reports
-`check.unsupported`.
-
-### Operations
-
-The closed operation floor:
-
-- comparison and equality (`==`, `!=`, `<`, `<=`, `>`, `>=`) between two values of
-  the same temporal type;
-- `duration + duration` and `duration - duration`, yielding a `duration`;
-- `instant + duration` and `instant - duration`, yielding an `instant`;
-- `addDays(d: date, n: int): date` — the date `n` days after `d`;
-- `daysBetween(a: date, b: date): int` — the signed number of days from `a`
-  to `b`.
-
-An arithmetic result outside the type's domain (a `date` or `instant` past years
-0001-9999, or a `duration` beyond the `i128` range) faults `run.temporal_overflow`
-at runtime, mapped to the operation's span and not catchable inside the program.
-There is no other temporal arithmetic: no `date` operator, no `instant - instant`,
-no scaling a `duration` by an `int`, and no calendar-month or calendar-year unit.
-
-```mw
-module docs::temporal
-
-pub fn dueDate(assigned: date, leadDays: int): date {
-    return addDays(assigned, leadDays)
-}
-
-pub fn isOverdue(due: date, onDay: date): bool {
-    return due < onDay
-}
-
-pub fn reminderAt(deadline: instant, lead: duration): instant {
-    return deadline - lead
+test "a nominal int keeps its interval" {
+    assert older(Age(40), 2) == Age(42)
+    assert gap(Age(42), Age(40)) == 2
+    const missing = tryAge(200) ?? Age(0)
+    assert missing == Age(0)
 }
 ```
 
-### Order and keys
-
-Each temporal type is orderable: `date` and `instant` by their instant on the
-timeline, `duration` by signed length. The order is total and agrees with the
-order-preserving durable key encoding, so a temporal type is a key type — a
-`Map<date, V>` is admitted and iterates in ascending date order (see
-[Key Types](#key-types)).
-
-A clock is not part of the language. Reading the current instant or day is a
-host effect a future lane introduces explicitly; until then a program takes the
-relevant day or instant as an argument.
-
-## Nominal Values
-
-An enum value belongs to one declared closed enum and selects one of its
-members. A member is bare (`Color::red`) or carries a dense typed payload
-(`Shape::circle(radius: 3)`); the payload fields are named at construction and
-bound positionally by a `match`. `==` and `!=` are exact enum equality (the same
-member with equal payload), and a `match` covers every member exactly once with
-no wildcard arm. Enums are described under
-[Enum matching](control-flow.md#enum-matching); hierarchical `category` enums and
-the `is` operator are future. `Id(^root)` identifies an entry under one declared
-store root. These are nominal values rather than primitive scalars: values from
-different enum declarations or store roots are different types even when their
-stored representations have the same shape.
-
-`unknown` is an explicit dynamic boundary. A local `unknown` binding can carry a
-value whose static shape is unresolved, but operations that require a concrete
-type still reject it until a checked conversion or boundary supplies one.
-Durable fields, keys, and collection elements cannot use `unknown`.
+Alias, nominal, struct, enum, and resource names share one project-wide
+namespace; a collision is a `check.name_conflict`. A nominal int type is
+admitted as a resource field and is stored as its base `int`. Operations over a
+root containing a nominal field remain unimplemented and report
+`check.unsupported`. Nominal types are not admitted as store-root keys, branch
+keys, or module-constant types; each position reports `check.unsupported`.
 
 ## Operators
 
-Operators require the operand combinations below; Marrow does not widen or mix
-numeric types implicitly.
+Operands take the combinations below; there is no implicit widening.
 
-| Form | Accepted operands | Result |
+| Form | Operands | Result |
 |---|---|---|
 | `-value` | `int` | `int` |
 | `not value` | `bool` | `bool` |
-| `a + b` | `int`; `string`; `duration + duration`; `instant + duration` | matching type, or `instant` |
-| `a - b` | `int`; `duration - duration`; `instant - duration` | matching type, or `instant` |
-| `a * b` | `int` and `int` | `int` |
-| `a / b` | `int` and `int` | `int` |
-| `a % b` | `int` and `int` | `int` |
+| `a + b` | `int`; `string`; `duration + duration`; `instant + duration` | the operand type, or `instant` |
+| `a - b` | `int`; `duration - duration`; `instant - duration` | the operand type, or `instant` |
+| `a * b`, `a / b`, `a % b` | `int` and `int` | `int` |
 | `<`, `<=`, `>`, `>=` | matching `int`, `string`, `bytes`, `date`, `instant`, or `duration` | `bool` |
-| `==`, `!=` | matching scalars, the same enum type, or identities for the same store root | `bool` |
-| `value in lo..hi`, `value not in lo..hi` | `int` value and an `int` range | `bool` |
+| `==`, `!=` | matching scalars, nominal ints, enums, or identities of one root | `bool` |
+| `value in lo..hi`, `value not in lo..hi` | an `int` and an `int` range | `bool` |
 | `and`, `or` | `bool` and `bool` | `bool` |
-| `optional ?? fallback` | compatible present-arm types | presence follows the fallback |
+| `optional ?? fallback` | a `T?` and a `T` | `T` |
 
-The temporal operators are a closed set: a `duration` sums or differs with a
-`duration`, and a `duration` shifts an `instant`. There is no `date` operator (use
-`addDays`/`daysBetween`), no `instant - instant`, no `duration * int`,
-and no calendar-month or calendar-year arithmetic. See
-[Temporal Types](#temporal-types).
+Structs, resources, lists, and maps have no `==`. `+` on two strings
+concatenates, and `<` on strings and bytes compares byte by byte. `and`, `or`,
+and `??` evaluate their right operand only when the left leaves the answer open.
 
-`int / int` is integer division truncated toward zero, paired with the `int % int`
-remainder so that `a == (a / b) * b + a % b`. A zero divisor raises
-`run.divide_by_zero`, and `i64::MIN / -1` (like `i64::MIN % -1`) raises
-`run.overflow` because its result is unrepresentable.
+`int / int` is integer division truncated toward zero, paired with the
+`int % int` remainder so that `a == (a / b) * b + a % b`. A zero divisor faults
+`run.divide_by_zero`. `minInt / -1` and `minInt % -1` fault `run.overflow`
+because the result is unrepresentable, as does any `int` operation whose
+result leaves the 64-bit range. [Checked arithmetic](control-flow.md#checked-arithmetic)
+handles those cases as arms.
 
-Interval membership tests whether an integer lies within a range: `value in lo..hi`
-is `true` when `lo <= value` and `value < hi`, and `value in lo..=hi` includes the
-upper bound. `not in` is the negation. It reads the range's half-open or inclusive
-end exactly as range iteration does, evaluates the value once, and is a
-`bool`-valued expression usable anywhere a condition is. Like the comparisons it
-sits beside, it is non-associative: `a in r in s` and `a in r < b` are parse errors.
-The range endpoints are integers — a temporal range is not current behavior.
+`value in lo..hi` is `true` when `lo <= value` and `value < hi`; `in lo..=hi`
+includes the upper bound, and `not in` is the negation. The value is evaluated
+once. `in` does not chain: `a in r in s` is a parse error. The endpoints are
+`int` values; range forms are described under
+[traversal](traversal-and-indexes.md#ranges).
 
 ```mw
-module docs::membership
+module docs::types::operators
 
 pub fn grade(score: int): string {
     if score not in 0..=100 {
@@ -304,539 +636,109 @@ pub fn grade(score: int): string {
     }
     return "below A"
 }
-```
 
-Whole resources, lists, and maps have no top-level equality
-operator, though a list or map reached inside a compared struct or enum
-participates in that aggregate's structural equality. Arithmetic overflow,
-invalid division, and invalid temporal
-arithmetic raise typed runtime faults. Range endpoint and step combinations are
-defined under [Traversal and indexes](traversal-and-indexes.md#ranges).
-
-## Explicit Conversion
-
-Conversion is explicit and uses call syntax. The implemented forms are:
-
-| Form | Accepted input and result |
-|---|---|
-| `string(value)` | A current bare scalar, enum value, or entry identity, rendered canonically as `string` |
-| `bytes(text)` | A `string`, encoded as UTF-8 `bytes` |
-
-Unsupported pairs that use a current scalar name report `check.unsupported`:
-`int("1")` and `bool(1)` are examples. `decimal` and `ErrorCode` have no current
-callable scalar owner, so `decimal(1)` and `ErrorCode("run.example")` report
-`check.type`.
-
-The temporal names `date`, `instant`, and `duration` are compile-time literal
-constructors rather than runtime conversions.
-
-## Optional Values
-
-`T?` contains either a present `T` or `absent`. Optional types do not nest.
-Fields, key components, and keyed leaf declarations cannot themselves be optional;
-`List<T>?` is valid because the optionality applies to the collection value.
-
-Optional values arise from sparse reads, lookup operations, and optional returns.
-Four constructs consume them:
-
-- `value ?? fallback` selects the present value or a fallback.
-- `if const name = value` enters its block and binds `name` only when the value
-  is present.
-- `exists(place)` tests path presence and narrows the guarded path.
-- `value?.member` reads a member through an optional composite (`resource` or
-  `struct`) value: an absent value yields `absent`, and a present value yields the
-  member wrapped optional, so the read never faults on absence and its result is
-  itself optional.
-
-`if const` accepts any optional expression. It is not limited to durable reads.
-
-```mw
-module docs::optionals
-
-fn maybeLabel(enabled: bool): string? {
-    if enabled {
-        return "enabled"
-    }
-    return absent
-}
-
-pub fn show(enabled: bool): string {
-    if const label = maybeLabel(enabled) {
-        return label
-    } else {
-        return "disabled"
-    }
+test "operators" {
+    assert grade(95) == "A"
+    assert grade(101) == "out of range"
+    assert 7 / 2 == 3
+    assert -7 / 2 == -3
+    assert -7 % 2 == -1
+    assert "ab" + "c" == "abc"
+    assert "ab" < "b"
 }
 ```
 
-The optional-producing call is evaluated once. An optional expression used as
-a key, address base, or durable read address must still satisfy the checker
-rules for that context; a call is not rejected merely because it is a
-user-defined function.
+## Conversion
 
-## Presence And Narrowing
-
-A durable resource read is optional until the path is known present. A required
-member is guaranteed only after its containing resource is present. For
-example, `^books[id].title` has type `string?` if `^books[id]` might be absent,
-even when `title` is declared `required`.
+Conversion is explicit and uses call syntax. `string(value)` renders a scalar,
+an enum value, or an entry identity in its canonical text. `bytes(text)`
+encodes a `string` as UTF-8.
 
 ```mw
-module docs::presence
+module docs::types::conversion
+
+enum Color {
+    red
+    green
+}
+
+test "string renders a value" {
+    assert string(42) == "42"
+    assert string(true) == "true"
+    assert string(Color::red) == "Color::red"
+    assert string(3 days) == "PT259200S"
+    assert string(date("2026-07-15")) == "2026-07-15"
+    assert string(bytes("a")) == "0x61"
+}
+```
+
+An enum renders as `Enum::member`, a `duration` in its canonical `PT…S` form,
+and `bytes` as hexadecimal with a `0x` prefix. Rendering a struct, a
+collection, or an optional is a `check.unsupported`. Text interpolation
+`$"…{value}…"` uses the same renderings.
+
+Conversion between scalars is not available today; a pair that uses a current
+scalar name is a `check.unsupported`. `int("1")` and `bool(1)` are examples.
+`decimal` and `ErrorCode` have no current callable scalar owner, so
+`decimal(1)` and `ErrorCode("run.example")` report `check.type`. The temporal
+names `date`, `instant`, and `duration` construct a value from a literal and
+convert nothing at run time.
+
+## Key types
+
+A key names one element of a collection or a durable place. Local `Map<K, V>`
+keys use `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration`, or
+a nominal int type. A nominal Map key retains its source type and uses its base
+scalar for representation and ordering. `ErrorCode` is not a local Map key.
+
+Durable key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`;
+`duration` and nominal source types are not durable keys. A root or branch may
+take several key components, up to 8, and every component is one of those
+scalars, as described under [durable places](durable-places.md#keys).
+
+Managed-index key positions use `int`, `bool`, `string`, `bytes`, `date`, or
+`instant`, drawn from a root's identity keys or its top-level scalar fields. A
+nominal stored field projects through its base scalar. Index declarations are
+described under [traversal and indexes](traversal-and-indexes.md#index-declarations).
+
+Key order is the same everywhere: numbers and temporal values ascend, `false`
+precedes `true`, and strings and bytes compare byte by byte. A composite key
+orders by its first component, then its second, and so on.
+
+## Entry identity
+
+`Id(^root)` is the type of an entry identity under one store root. `Id(^root)`
+is nominally tied to its store root. `Id(^books)` and `Id(^authors)` are
+different types even if both roots use integer keys. A root with several key
+components still yields one `Id(^root)` value.
+
+```mw
+module docs::types::identity
 
 resource Book {
     required title: string
-    subtitle: string
 }
 
 store ^books[id: int]: Book
 
-pub fn subtitle(id: int): string {
-    if exists(^books[id].subtitle) {
-        return ^books[id].subtitle ?? "(no subtitle)"
-    }
-    return "(no subtitle)"
+pub fn titleOf(id: Id(^books)): string {
+    return ^books[id].title ?? "(absent)"
 }
 
-pub fn describe(id: int): string {
-    if const book = ^books[id] {
-        return book.subtitle ?? book.title
-    }
-    return "(absent)"
+test "an identity addresses an entry" {
+    ^books[7] = Book(title: "Small Gods")
+    const id = Id(^books, 7)
+    assert titleOf(id) == "Small Gods"
+    assert string(id) == "Id(7)"
+    assert not exists(^books[Id(^books, 8)])
 }
 ```
 
-`exists` tests presence and guards the branch; a durable read is still typed
-optional, so it is resolved with `??` or `if const`. Materializing the entry with
-`if const book = ^books[id]` binds a `Book` whose required `title` is bare and
-whose sparse `subtitle` is optional.
-
-Presence knowledge is invalidated when code may change the relevant address or
-data. This includes mutation of a key expression, a write to the guarded durable
-path, or a helper call whose effects may write it. Code must test presence again
-after invalidation.
-
-## Option And Result
-
-`Option<T>` and `Result<T, E>` are ordinary generic enums the toolchain defines
-(see [Generic types](#generic-types)); they are not a built-in special case. Each is
-monomorphized by its type arguments through the same machinery a user generic enum
-uses — constructed, matched, and compared by value — and their type arguments may be
-any value type, including nested `Option` and `Result`. `Option<T>` has the members
-`none` and `some(v)`; `Result<T, E>` has `ok(v)` and `err(e)`. `Option` and `Result`
-are reserved type names that cannot be redeclared. Their constructors `some`,
-`none`, `ok`, and `err` are reserved value names that resolve to those enums'
-variants: a function, constant, parameter, or local binding that reuses one is a
-`check.name_conflict` at the declaration, so the constructor is never silently
-shadowed.
-
-A value is constructed with its member: `some(v)`, `none`, `ok(v)`, or `err(e)`.
-`some(v)` infers its `Option<T>` from `v`; `none`, `ok(v)`, and `err(e)` cannot
-infer the whole type argument set, so they need an expected type — an annotation, a
-call argument, a return type, or the other side of a coercion. A `match` covers the
-members exactly, binding the payload positionally:
-
-```mw
-module docs::optionvalue
-
-fn firstEven(a: int, b: int): Option<int> {
-    if a % 2 == 0 {
-        return some(a)
-    }
-    if b % 2 == 0 {
-        return some(b)
-    }
-    return none
-}
-
-pub fn describe(o: Option<int>): string {
-    match o {
-        some(v) => {
-            return "some"
-        }
-        none => {
-            return "none"
-        }
-    }
-}
-```
-
-Nested `Option` is distinct: `none`, `some(none)`, and `some(some(v))` are three
-different values of `Option<Option<int>>`. `==` and `!=` are exact equality — the
-same member with equal payload, compared over the same instantiation.
-
-`Result<T, E>` models a recoverable failure. Prefix `try <expr>` propagates it (see
-[Control flow](control-flow.md#prefix-try-and-transaction)): on `ok(v)` it yields
-`v`, and on `err(e)` it returns `err(e)` from the enclosing `Result<U, E>`-returning
-function, with the same error type `E`.
-
-`Option<T>` is distinct from the presence primitive `T?`. A `T?` place is absent or
-present and is produced by sparse reads, lookups, and optional returns; `??`,
-`if const`, `exists`, and `?.` consume it. An `Option<T>` is an ordinary value you
-build with `some`/`none`, pass, return, and `match`. Use `T?` for the presence of a
-place, and `Option<T>` when absence is a value the program passes around or stores
-in a structure. A sparse field whose type is `Option<string>` reads as
-`Option<string>?` — absent (the field is unset) versus a present `Option` that is
-itself `none` or `some`.
-
-A sparse field already models absence: an unset field reads `absent`. Declare a
-field `Option<T>` only when a stored `none` must be distinguishable from the field
-being unset — the three-state case. Such a field is read by proving presence and
-then matching the stored `Option`:
-
-```mw
-module docs::three_state
-
-resource Reading {
-    measured: Option<int>
-}
-
-store ^readings[id: int]: Reading
-
-pub fn describe(): string {
-    const r = Reading(measured: some(7))
-    if const stored = r.measured {
-        match stored {
-            some(v) => {
-                return "measured"
-            }
-            none => {
-                return "recorded as unmeasurable"
-            }
-        }
-    }
-    return "not recorded"
-}
-```
-
-## Resources
-
-A resource value has the declared resource type. Required fields are bare in a
-materialized resource; sparse fields remain optional. Unkeyed nested groups are
-members of the containing value. Keyed child layers are collections addressed
-separately and are not materialized as part of a local resource value.
-
-Resource values are copied by value through local bindings, parameters, and
-returns. See [Resources](resources.md).
-
-A resource value held in a local can be read and, when the binding is a `var`,
-mutated field by field. Reading a required field yields its bare value; reading a
-sparse field yields `T?` — present when the field holds a value, absent otherwise.
-Assigning a field, required or sparse, sets it present to the assigned value.
-`unset place` clears a sparse field back to absent, where `place` is a field
-access on a local product (`r.note`); a required field cannot be unset, and a
-durable place is erased with `delete`, not `unset`. Because a sparse field is
-absent or a present value — never a stored empty — a sparse field typed
-`Option<string>` keeps its three states distinct: absent (unset), a present
-`Option` `none`, and a present `Option` `some(v)`.
-
-```mw
-module docs::sparselocal
-
-resource Box {
-    required id: int
-    note: string
-}
-
-pub fn label(): string {
-    var b = Box(id: 1)
-    b.note = "draft"
-    unset b.note
-    return b.note ?? "unlabeled"
-}
-```
-
-A field type is a scalar, a nominal int type, a dense `struct`, a closed enum value
-type (a user `enum` or a built-in `Option`/`Result`), or an alias that expands to one.
-A user-enum field holds a local enum value, so a `match` may dispatch on a field read.
-A resource backing a `store` may hold a scalar or nominal field, or a widened value
-field — a dense `struct`/record, a closed `enum`, or an `Option`/`Result` — each stored
-inline in its field-leaf cell and round-tripped as a runtime value. A nominal field
-retains its source type while its image record and durable stored shape use base
-`int`. Operations over a root containing one remain unimplemented and report
-`check.unsupported`. A collection is never stored inline in a field — a collection
-belongs under a keyed `branch`, so a collection field is rejected.
-
-## Structs
-
-A `struct` declares a dense product value type. Every field is required, held
-inline, and named `name: Type` over any value type. Unlike a resource, a struct is
-not durable and has no keyed layers, groups, or sparse fields.
-
-```mw
-struct Point {
-    x: int
-    y: int
-}
-```
-
-A struct value is built with a named-only literal that provides every field
-exactly once; the field arguments may appear in any order and are evaluated in
-field declaration order:
-
-```text
-const p = Point(x: 3, y: 4)
-
-const q = Point(y: 4, x: 3)
-```
-
-Fields are read with `.`, yielding the field's scalar type. Struct values are
-copied by value through local bindings, assignments, parameters, and returns, like
-every other value. A struct name is project-global and is written without a module
-qualifier.
-
-A struct is admitted as a parameter type and as a return type: a value travels by
-value into and out of ordinary functions. A returned struct is rendered by
-`marrow run` as a JSON object under `--format jsonl` (field names as keys, in
-ascending byte order) and as `{field: value, ...}` in text; a struct has no
-command-line argument spelling, so an export taking a struct parameter cannot be
-invoked from the terminal.
-
-A field type is any value type (or an alias that expands to one): a scalar, a
-nominal, another struct, or a closed enum (a user `enum` or a built-in
-`Option`/`Result`). A struct field may name a struct or enum declared later in the
-file, and two structs may reference each other, because every value type is
-declared before any field type is resolved. The only nesting restriction is
-acyclicity: a value type that contains itself directly or transitively — a
-`struct Node` with a `next: Node` field, or a `some(Self)` field — is an infinite
-value and is a `check.recursion` diagnostic naming the cycle (the independent
-verifier re-rejects any such cycle in the image). An unknown field type name is a
-`check.unsupported` diagnostic. A missing, unknown, duplicated, or wrong-typed
-field argument, and an unnamed (positional) argument, are `check.type`
-diagnostics; a struct name that collides with another declared type is a
-`check.name_conflict`.
-
-## Generic Types
-
-A `struct` or `enum` may declare rank-1 type parameters in brackets after its name,
-making it a generic value type. Each distinct application `Name<Args>` is a separate
-monomorphized value type; the type arguments substitute for the parameters in the
-fields (a struct) or variant payloads (an enum).
-
-A substituted enum variant payload leaf is a scalar, a `struct`, or another enum; a
-collection (`List` or `Map`) is not a payload type. A generic enum whose payload
-resolves to a collection — including `Option<List<int>>` and `Result<Map<K, V>, E>`
-through the reserved generic enums — is a `check.unsupported` at the construction or
-annotation site. Wrap the collection in a `struct` and carry that struct as the
-payload.
-
-```mw
-struct Pair<A, B> {
-    first: A
-    second: B
-}
-
-enum Box<T> {
-    empty
-    full(value: T)
-}
-```
-
-A type parameter is a bare name, optionally carrying one closed constraint —
-`T supports equality` or `T supports order` — spelled the same way as on a
-[generic function](modules-and-functions.md#generic-functions). The constraint
-licenses `==`/`!=` (equality) or `<`/`>` and equality (order) over the parameter,
-and every application revalidates that the concrete argument supports it; an
-argument that does not is a `check.type`. An unconstrained parameter admits neither
-operator over its values.
-
-A generic value is constructed with the ordinary literal spelling; there is no
-explicit `Name<Args>` construction form. The type arguments are inferred from the
-field or payload values, so every parameter must appear in a value the construction
-supplies:
-
-```text
-const p = Pair(first: 7, second: "hello") // Pair<int, string>
-
-const b = Box::full(value: 9) // Box<int>
-```
-
-A parameter that no value determines cannot be inferred at the construction site and
-is a `check.type`. A generic type is also written in a type annotation
-(`Pair<int, string>`, `Box<int>`), which drives the same monomorphization; a field,
-parameter, return, or local may name one.
-
-`Option<T>`, `Result<T, E>`, `List<T>`, and `Map<K, V>` are the toolchain's own
-generic types over this one mechanism: `Option` and `Result` are generic enums (see
-[Option and Result](#option-and-result)), and `List`/`Map` are the compiler
-collections. Their names are reserved and cannot be redeclared.
-
-A monomorphized instantiation is a private, image-local value type with no stable
-identity; two applications with the same arguments are the same type, and
-`Pair<int, string>` and `Pair<string, int>` are distinct. Acyclicity applies per
-instantiation: a generic type whose instantiation contains itself — `struct Tree<T>`
-with a `child: Tree<T>` field — is an infinite value and a `check.recursion` at the
-template, while a self-reference broken by a collection (`kids: List<Tree<T>>`) is
-finite and admitted. A program monomorphizes finitely many instantiations; a
-divergent generic that nests inside itself over an ever-growing argument exceeds the
-fixed instantiation bound and is a `check.instantiation_limit`.
-
-## Lists And Maps
-
-`List<T>` is a finite ordered collection of values of type `T`, and `Map<K, V>`
-is a finite ordered map from keys of type `K` to values of type `V`. Both are
-ordinary copied values with the same value semantics as every other type: passing,
-returning, or reassigning one copies it, and there is no aliasing or shared
-mutation. The element type `T` and the value type `V` may be any value type,
-including a nested `List`, `Map`, `struct`, `enum`, or `Option`/`Result`. A map key
-`K` is `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration`, or a
-nominal int type. A nominal Map key retains its source type and uses its base
-scalar for representation and ordering. Structs, enums, collections, optionals,
-entry identities, resources, `decimal`, `unknown`, and unresolved generic
-parameters are not Map keys and report `check.unsupported`.
-`ErrorCode` is not a local Map key and likewise reports `check.unsupported`.
-Collections are values, never durable storage: a resource field or store key is
-not a `List` or `Map`.
-
-An empty collection is constructed with `List()` or `Map()`, whose element and
-key/value types come from the expected type (an annotation, argument, return type,
-or coercion). A list's literal contents are written variadically: `List(a, b, c)`
-constructs a list of those elements in order, inferring `T` from the first argument
-and checking every element against it, so `const xs = List(10, 20, 12)` needs no
-annotation. An expected `List<T>` position instead directs the element type, so an
-annotated `var xs: List<T> = List(...)` checks each element against `T`. Because the
-unannotated form takes `T` from the first argument, a present/absent mix of
-optionals is inferred from that element alone; a presence-aware least-upper-bound
-over mixed elements is a precondition of any future optional-list-element work, not
-current behavior. The variadic form states literal contents; `append` adds later
-growth.
-A map literal is not yet available — a `Map` is constructed empty and filled with
-`m[k] = v`. The closed set of procedural collection operations is small — there is
-no method syntax:
-
-| Form | Result |
-|---|---|
-| `List()` / `Map()` | an empty collection of the expected type |
-| `List(a, b, c)` | a list of the given elements, `T` inferred from them |
-| `append(list, value)` | the list with `value` added after the last element |
-| `length(collection)` | the element or entry count as an `int` |
-| `isEmpty(collection)` | whether the collection has no elements |
-
-Because collections are values, `append` yields an updated collection rather than
-mutating in place; a `var` binding is reassigned to keep it.
-
-### Bracket lookup and assignment
-
-A collection is read and a map is written with bracket syntax, the same keyed
-spelling as a durable place — local and durable data obey one presence algebra,
-and the `^` alone marks which touches the store. A bracket read yields the
-presence-typed optional consumed by `??`, `if const`, let-else, and an `else`
-clause; there is no out-of-bounds fault class.
-
-- `xs[i]` is the element at list position `i`, typed `T?`. List positions are
-  1-based: `xs[1]` is the first element and `xs[length(xs)]` is the last. A
-  position outside `1..=length(xs)` reads `absent`. The literal dead indexes
-  `xs[0]` and `xs[-1]` are refused at check time with a `check.type` diagnostic,
-  because a literal `0` or negative names no position.
-- `m[k]` is the value stored at key `k`, typed `V?` — present when the key is in
-  the map, `absent` otherwise. A `Map<int, V>` key of `0` is an ordinary key, not a
-  dead index.
-- `m[k] = value` on a `var` map binding creates or replaces the value at `k`. It is
-  total except the `run.collection_limit` growth bound, and lowers as a
-  read-modify-write with value semantics. A `const` binding is not reassignable.
-  A list has no keyed write: `xs[i] = value` is a `check.type` diagnostic naming
-  `append(xs, value)` for growth and `Map<int, T>` for replacement at a position.
-- `unset m[k]` on a `var` map binding removes the entry at `k`. It is idempotent —
-  removing an absent key leaves the map unchanged — never faults, and lowers as a
-  read-modify-write with value semantics, so removing a key from one map does not
-  affect a copy. `unset` here is the same local absence verb that clears a sparse
-  field (a durable place is instead erased with `delete`). A `const` binding cannot
-  be modified. A list has no keyed removal — a dense list holds no positional holes —
-  so `unset xs[i]` is a `check.type` diagnostic naming `Map<int, T>` for a keyed
-  collection whose positions may be removed.
-
-A nested bracket target (`outer[k1][k2] = value`) is not yet admitted.
-
-```mw
-module docs::collections
-
-pub fn total(): int {
-    var xs: List<int> = List()
-    xs = append(xs, 10)
-    xs = append(xs, 20)
-    var sum: int = 0
-    for x in xs {
-        sum += x
-    }
-    return sum
-}
-
-pub fn firstOr(xs: List<string>, fallback: string): string {
-    return xs[1] ?? fallback
-}
-
-pub fn lookup(name: string): int {
-    var scores: Map<string, int> = Map()
-    scores["ada"] = 10
-    return scores[name] ?? 0
-}
-
-pub fn withdrawn(name: string): bool {
-    var scores: Map<string, int> = Map()
-    scores["ada"] = 10
-    unset scores["ada"]
-    unset scores[name]
-    return isEmpty(scores)
-}
-```
-
-A `List` iterates its elements in insertion order. A `Map` iterates in ascending
-key order: `for key in map` binds each key, and `for key, value in map` binds each
-key and its value. Map keys use the same typed order as durable traversal —
-numeric keys ascend, `false` precedes `true`, and strings and bytes use
-lexicographic order.
-
-A collection has fixed representational bounds: at most 65536 elements and at most
-1 MiB of aggregate value size. An `append` or a `m[k] = value` insert that would
-exceed either faults `run.collection_limit` rather than allocating unboundedly.
-
-## Key Types
-
-Local `Map<K, V>` keys use `int`, `bool`, `string`, `bytes`, `date`, `instant`,
-and `duration`, or a nominal int type. A nominal Map key retains its source type
-and uses its base scalar for representation and ordering. Structs, enums,
-collections, optionals, entry identities, resources, `decimal`, `unknown`, and
-unresolved generic parameters are not local Map keys and report `check.unsupported`.
-`ErrorCode` is not a local Map key and likewise reports `check.unsupported`.
-
-Durable key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`;
-`duration` and nominal source types are not durable keys. Managed-index key
-positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant` when they
-project a durable identity key or a plain top-level stored field. A nominal stored
-field projects through its base scalar. Enums, entry identities stored in fields,
-`decimal`, and every non-scalar or nested field are not index-eligible.
-
-Key order is part of observable traversal behavior. Numeric and temporal keys
-use their natural order, `false` precedes `true`, and strings and bytes use
-lexicographic order. Composite key tuples are ordered lexicographically by
-position.
-
-## Entry Identity
-
-`Id(^root)` is nominally tied to its store root. `Id(^books)` and
-`Id(^authors)` are different types even if both roots use integer keys.
-Composite store keys still produce one `Id(^root)` value.
-
-`Id(^root, keys...)` wraps explicit key values as an entry identity. It does not
-read the store and does not establish that the entry exists. Stored identity
-values do not create a cascading relationship: deleting the addressed entry
-does not rewrite other values that contain its identity. `marrow data integrity`
-can report such dangling identities.
-
-A bound entry identity is a durable key operand. Wherever a durable address names
-its root with a full key, a single `Id(^root)` value supplies that whole root key in
-place of the per-component operands — including a composite root's several key
-components. This
-holds for a whole-entry read, write, replacement, presence test, or deletion
-(`^root[id]`), a field or group access (`^root[id].field`, `^root[id].group.leaf`), a
-branch address whose root position it fills (`^root[id].branch[bkey]`), and a
-[`place`](durable-places.md#named-places) binding (`place p = ^root[id]`). The
-identity addresses the same entry the equivalent per-component key names; the operand
-must be an identity of that same root, or the access is a `check.type` mismatch.
-
-## Mutability
-
-Type and mutability are separate. `const` prevents reassignment of its binding;
-`var` permits reassignment. A local resource held by `var` permits member
-assignment. Durable places are assigned directly and are not made mutable by a
-local binding.
+`Id(^books, 7)` wraps a key as an identity. It reads nothing and proves nothing:
+`Id(^books, 8)` names an entry that is absent. An identity stands in for a
+root's whole key: `^books[id]`, `^books[id].title`, `^books[id].notes[pos]`, and
+`place p = ^books[id]` all take one. An identity of another root in that
+position is a `check.type`. Two identities of one root compare with `==`, and
+`string(id)` renders `Id(7)`. A [unique index](traversal-and-indexes.md#reading-an-index)
+yields an identity, and a stored identity keeps addressing its entry after the
+entry is deleted.
