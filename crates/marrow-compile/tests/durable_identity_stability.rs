@@ -194,7 +194,98 @@ fn the_corpus_reaches_every_identity_kind() {
 #[path = "common/source_projection.rs"]
 mod source_projection;
 
-use source_projection::production_code_of;
+use std::path::{Path, PathBuf};
+
+use source_projection::{is_test_only_file, production_code, production_code_of};
+
+/// The production code of every source file under this crate's `src`,
+/// concatenated in path order: the search space of a census that must hold
+/// crate-wide, because a shape minted in a file the per-file censuses never read
+/// is still that shape.
+fn production_code_of_crate() -> String {
+    fn walk(dir: &Path, code: &mut String) {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .expect("read src dir")
+            .map(|entry| entry.expect("dir entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, code);
+            } else if path.extension().is_some_and(|ext| ext == "rs") && !is_test_only_file(&path) {
+                code.push_str(&production_code(
+                    &std::fs::read_to_string(&path).expect("read source file"),
+                ));
+                code.push('\n');
+            }
+        }
+    }
+    let mut code = String::new();
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut code,
+    );
+    assert!(!code.is_empty(), "the source tree is scanned");
+    code
+}
+
+/// The registry/slice drift has one deciding seam, and the raw declaration slice
+/// has no alias anywhere in the crate.
+///
+/// Round 2 named two evasions of per-file censuses: a factory holding the sole
+/// counted `DurableResourceMissing` construction, reached from several deciding
+/// seams; and a raw-slice alias minted in a file the durable censuses never read,
+/// carried beside the directory and consumed by a filter. Both are closed by
+/// counting the seams, crate-wide: the invariant has one constructor and one
+/// deciding call chain (`compile` -> `DurableRegistry::build` ->
+/// `ResourceDirectory::take`), and the raw tuple type and the declaration type it
+/// carries are exact censuses over the whole tree, so an alias spelled in any file
+/// moves a count.
+#[test]
+fn the_durable_resource_drift_has_one_deciding_join() {
+    let code = production_code_of_crate();
+    for deleted in [
+        "records.by_name(&store.resource)",
+        "decl.name == store.resource",
+        "named_type(resource)",
+    ] {
+        assert!(!code.contains(deleted), "`{deleted}` is displaced by rows");
+    }
+    assert_eq!(
+        code.matches("GenericInvariant::DurableResourceMissing(")
+            .count(),
+        1,
+        "the drift invariant has exactly one constructor, at the directory join",
+    );
+    assert_eq!(
+        code.matches("ResourceDirectory::take(").count(),
+        1,
+        "the join is decided at exactly one call site, the durable build entry",
+    );
+    assert_eq!(
+        code.matches("DurableRegistry::build(").count(),
+        1,
+        "the durable build has exactly one production caller, the compile driver",
+    );
+    assert!(
+        code.contains("StoreResourceBinding::Accepted"),
+        "the typed store binding must be the live subject of this gate",
+    );
+    assert_eq!(
+        code.matches("(FileRef, FileIdentity, &ResourceDecl)")
+            .count(),
+        11,
+        "the raw declaration tuple is spelled by the declaration passes' parameters, the \
+         compile driver's collection, and the durable build entry, and by nothing else",
+    );
+    assert_eq!(
+        code.matches("ResourceDecl").count() - code.matches("ResourceDeclId").count(),
+        19,
+        "the raw declaration type's crate-wide census moved — its imports, the eleven \
+         tuple spellings, the declare pass's per-declaration reader, and the row-table \
+         join own every mention; an alias or a new carrier is a lease-and-review event",
+    );
+}
 
 /// The durable builder reads its declaration row tables, never index or key syntax,
 /// and a key column's ledger anchor is assembled in exactly one place.

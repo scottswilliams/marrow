@@ -2925,43 +2925,29 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
     );
 }
 
-/// The durable build reaches a resource only through its `StoreRow` binding: the
-/// displaced per-store name lookups are gone, and the registry/slice drift they
-/// could hit is decided at exactly one place — the directory join — which is the
-/// sole producer of `DurableResourceMissing`, its count exact so a second lookup
-/// cannot hide behind the variant's continued existence. The structural half of
-/// this family is enforced beside the identity contract it protects, in
-/// `durable_identity_stability.rs`.
-#[test]
-fn the_durable_resource_drift_has_one_deciding_join() {
-    for deleted in [
-        "records.by_name(&store.resource)",
-        "decl.name == store.resource",
-        "named_type(resource)",
-    ] {
-        let found = occurrences(deleted);
-        assert!(
-            found.is_empty(),
-            "`{deleted}` is displaced by rows: {found:?}"
-        );
-    }
-    let producers = production_occurrences("GenericInvariant::DurableResourceMissing(");
-    assert_eq!(
-        producers.len(),
-        1,
-        "the drift invariant has exactly one producer, the directory join: {producers:?}",
-    );
-    assert!(
-        !production_occurrences("StoreResourceBinding::Accepted").is_empty(),
-        "the typed store binding must be the live subject of this gate",
-    );
+/// The names `body` calls: every identifier immediately before a `(`.
+fn callees(body: &str) -> Vec<String> {
+    let bytes = body.as_bytes();
+    body.match_indices('(')
+        .map(|(at, _)| {
+            let start = (0..at)
+                .rev()
+                .take_while(|index| is_ident_byte(bytes[*index]))
+                .last()
+                .unwrap_or(at);
+            body[start..at].to_string()
+        })
+        .filter(|name| name.starts_with(|first: char| first.is_alphabetic() || first == '_'))
+        .collect()
 }
-/// Reporting a value cycle reads no syntax declaration — held at the signature and
-/// body, since review round 1 proved a lexical counter pins nothing: the pass reads
-/// only what its parameters carry; the body needles catch a smuggled scan.
+
+/// Reporting a value cycle reads no syntax declaration — held at the signature, the
+/// body, the one production call site, and every function the body reaches inside
+/// the types module. Review round 1 proved a lexical counter pins nothing; round 2
+/// that a signature alone admits a dead wrapper kept beside a redirected caller.
 #[test]
 fn reporting_a_value_cycle_reads_no_syntax_declaration() {
-    let code = production_code_of("types/mod.rs");
+    let module = production_code_of_module("types");
     let signature = concat!(
         "pub(crate) fn reject_value_cycles(\n",
         "    registry: &TypeRegistry,\n",
@@ -2969,27 +2955,45 @@ fn reporting_a_value_cycle_reads_no_syntax_declaration() {
         ") -> Result<(), GenericInvariant> {"
     );
     assert_eq!(
-        code.matches(signature).count(),
+        module.matches(signature).count(),
         1,
         "the value-cycle pass takes the registry and the collector, and nothing else",
     );
-    let body = function_bodies(&code)
-        .into_iter()
+    let spelled = production_occurrences("reject_value_cycles(");
+    assert_eq!(
+        spelled.len(),
+        2,
+        "the pass is spelled at its definition and at its one call site: {spelled:?}",
+    );
+    assert!(
+        production_code_of("compile.rs")
+            .contains("reject_value_cycles(&records, &mut diagnostics)"),
+        "the compile driver is the one caller, and it passes the registry and the collector",
+    );
+    let bodies = function_bodies(&module);
+    let body = bodies
+        .iter()
         .find(|(name, _)| name == "reject_value_cycles")
-        .map(|(_, body)| body)
+        .map(|(_, body)| body.clone())
         .expect("the value-cycle pass is present, so this gate has a live subject");
-    for forbidden in [
-        "StructDecl",
-        "ResourceDecl",
-        "FileIdentity",
-        ".find(",
-        "decl.name",
-    ] {
-        assert!(
-            !body.contains(forbidden),
-            "`{forbidden}` inside the value-cycle pass is a reintroduced declaration read",
-        );
+    assert!(
+        body.contains("coordinates.resolve("),
+        "the coordinate table is the live source of positions",
+    );
+    let mut pending = vec![("reject_value_cycles".to_string(), body)];
+    let mut reached = std::collections::BTreeSet::new();
+    while let Some((name, body)) = pending.pop() {
+        for forbidden in ["StructDecl", "ResourceDecl", "EnumDecl", "decl.name"] {
+            assert!(
+                !body.contains(forbidden),
+                "`{forbidden}` inside `{name}`, reached from the value-cycle pass, is a \
+                 reintroduced declaration read",
+            );
+        }
+        for callee in callees(&body) {
+            if reached.insert(callee.clone()) {
+                pending.extend(bodies.iter().filter(|(n, _)| *n == callee).cloned());
+            }
+        }
     }
-    let live = body.contains("coordinates.resolve(");
-    assert!(live, "the coordinate table is the live source of positions");
 }
