@@ -293,10 +293,13 @@ fn the_durable_resource_drift_seams_are_spelled_once() {
     );
     assert_eq!(
         code.matches("ResourceDecl").count() - code.matches("ResourceDeclId").count(),
-        19,
+        18,
         "the raw declaration type's crate-wide census moved — its imports, the eleven \
-         tuple spellings, the declare pass's per-declaration reader, and the row-table \
-         join own every mention; an alias or a new carrier is a lease-and-review event",
+         tuple spellings, the declare pass's per-declaration reader, and the row table's \
+         ordinal read own every mention; an alias or a new carrier is a lease-and-review \
+         event. It fell from nineteen when the row table stopped keeping a map keyed on \
+         resource spellings: that map named the raw type once, and the ordinal that \
+         replaced it names nothing.",
     );
 }
 
@@ -543,9 +546,11 @@ fn the_declaration_search_census_is_closed_at_its_spellings() {
     );
     assert_eq!(
         mentions(&rows),
-        3,
-        "rows.rs names the raw declaration type only at its import, take signature, \
-         and declaration map",
+        2,
+        "rows.rs names the raw declaration type only at its import and take signature. \
+         The third mention was the spelling-keyed declaration map, and it went with the \
+         name join: the pairing is read from the ordinal the declare pass recorded, so \
+         there is no map to key and no third place to name the raw type",
     );
     assert_eq!(
         mentions(&staging),
