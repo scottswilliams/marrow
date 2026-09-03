@@ -102,9 +102,12 @@ pub enum PinDisagreement {
     Unnamed { place: String },
     /// A store-schema node and the image node at the same `^root.member` place are of
     /// different kinds — a group respelled as a keyed branch, say — so they share a name
-    /// and a cell number but not a physical layout. Refused during derivation, independent
-    /// of the persisted map, because same-kind numbering agreement says nothing about the
-    /// layout the bytecode will address.
+    /// but not a physical layout. Refused during derivation, independent of the persisted
+    /// map, because the numbering answers a different question: the walk numbers a root's
+    /// groups before its branches, so respelling the first of the sibling groups
+    /// `details, meta` as a branch moves `details` out of the group run and renumbers both.
+    /// A kind change may therefore hold the numbers or move them, and neither outcome says
+    /// anything about the layout the bytecode will address.
     Kind {
         place: String,
         image: SemanticNodeKind,
@@ -263,7 +266,7 @@ impl std::error::Error for HeadMapPinMismatch {}
 /// the name pairing turns that drift into different (id, number) pairs and a refusal. The
 /// kind and coverage checks close what a name-and-number match alone leaves open: a store
 /// shape that respells a node as another kind, or reaches only part of the program's graph,
-/// numbers identically and is refused for its layout rather than its numbers.
+/// can number identically and is refused for its layout rather than its numbers.
 ///
 /// Not bound here: a node's key arity and key scalar kinds, its field value shapes, and its
 /// required flags. The image carries those facts, but their projection into the kernel's
@@ -282,8 +285,10 @@ pub(crate) struct DerivedPin {
 /// Derive the pin this toolchain would serve `image` under `projection` with, or the typed
 /// refusal when the store shape and the image do not pair node for node: a store node the
 /// image does not name, a node the two declare with different kinds, or an image node the
-/// store shape never reaches. Pure over its inputs: no store access, one `number_store`
-/// call, one hash map over the image's named nodes, one pass over its semantic nodes.
+/// store shape never reaches. Pure over its inputs: no store access, one `number_store` call, one
+/// hash map over the image's named nodes, and a constant number of linear sweeps of its semantic
+/// nodes — `named_durable_nodes` walks them to index each container's children and again to
+/// collect the roots, and the coverage check below walks them once more.
 pub(crate) fn derive_head_map_pin(
     image: &VerifiedImage,
     projection: &StoreProjection,

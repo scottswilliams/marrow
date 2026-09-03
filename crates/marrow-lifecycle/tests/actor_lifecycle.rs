@@ -656,12 +656,12 @@ fn a_rebind_over_a_permuted_pin_is_refused_without_a_write() {
     assert_eq!(
         std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head"),
         before_head,
-        "the refusal rewrites nothing",
+        "the refusal rewrote the head it refused",
     );
     assert_eq!(
         std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE)).expect("read envelope"),
         before_envelope,
-        "the refusal rewrites nothing",
+        "the refusal rewrote the envelope",
     );
 
     // The refusal released the lock: with the true pin restored, the same rebind commits.
@@ -851,7 +851,9 @@ fn a_group_respelled_as_a_branch_projection_is_refused_by_kind() {
     }
 }
 
-/// The pairing consumes every image-side durable node: a projection that under-covers the
+/// The pairing consumes every image-side durable node the walk numbers — every semantic node but
+/// a managed `Index`, which is neither named nor claimed because its cell keys carry an identity
+/// rather than a number. A projection that under-covers the
 /// image (here: the group and its field missing entirely) is refused as uncovered during
 /// derivation itself — independent of the persisted map, so a correspondingly truncated
 /// and resealed head cannot make the omission invisible. The persisted map handed in here
@@ -1171,9 +1173,11 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
 /// root's for every root would carry the same identity under all four of these changes, and
 /// a one-root fixture cannot tell the two walks apart.
 ///
-/// Every recompile keeps every ledger id, every durable node name, and every node kind, so
-/// the pin itself would pair and agree — only the contract moves. A refusal writes nothing,
-/// so one provisioned store serves them all.
+/// Every recompile keeps every ledger id, every durable node name, and every node kind, so the
+/// pin itself would pair and agree — only the contract moves. What the loop below reads back is
+/// the head, and a refusal leaves those bytes exactly as provisioned, which is why one provisioned
+/// store serves every case. The store's owner marker is outside that: taking the lock binds this
+/// process into it and releasing the lock truncates it, on a refusal as on a success.
 #[test]
 fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     let scratch = Scratch::new("schema-fact");
@@ -1184,8 +1188,7 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     let required = GRAPH_SOURCE.replace("required name: string", "name: string");
     let key_scalar = GRAPH_SOURCE.replace("^tags[id: int]", "^tags[id: string]");
     // A second key column, which moves both the count and the id set at once. The isolated
-    // count case is separate, below: arity IS separable from the ledger, in the drop
-    // direction, and an earlier note here claimed it was not.
+    // count case is separate, below: arity is separable from the ledger in the drop direction.
     let key_arity = GRAPH_SOURCE.replace("^tags[id: int]", "^tags[id: int, part: int]");
     let arity_ids = GRAPH_IDS.replace(
         "id key tags.id",
@@ -1228,19 +1231,17 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
 /// A key tuple's arity is a durable-contract fact in its own right, separable from the
 /// ledger ids of its columns.
 ///
-/// Round 4 recorded that it was NOT separable — that no case could change the arity while
-/// preserving every column's ledger id — and skipped the pin on that ground. The claim is
-/// false in the DROP direction: provision a two-column root, then attach a one-column one
-/// against the identical ledger. Every ledger byte survives and the dropped column's id is
-/// simply orphaned, so the ids are untouched and only the arity moved.
+/// Separability holds in the DROP direction: provision a two-column root, then attach a
+/// one-column one against the identical ledger. Every ledger byte survives and the dropped
+/// column's id is simply orphaned, so the ids are untouched and only the arity moved.
 ///
-/// What makes the contract move is the shorter `(scalar, id)` run, not the `u16_be(count)`
-/// that precedes it — removing that count leaves this case still refusing, because a
-/// dropped column withdraws its own bytes from the preimage. Established by mutation
-/// rather than by reading: the count looks like the mechanism and is not. The count is
-/// pinned in its own right by the `durable_contract_id_*` known-answer tests beside
-/// `push_keys`, which freeze the preimage byte for byte; this case pins the end-to-end
-/// refusal, and the two together are why an arity change cannot be served.
+/// What makes the contract move is the shorter `(scalar, id)` run, not the `u16_be(count)` that
+/// precedes it — removing that count leaves this case still refusing, because a dropped column
+/// withdraws its own bytes from the preimage. Established by mutation rather than by reading: the
+/// count looks like the mechanism and is not. The count is pinned in its own right by the
+/// `durable_contract_id_*` known-answer tests beside `push_keys`, which freeze the preimage byte
+/// for byte; this case pins the end-to-end refusal, and the two together are why an arity change
+/// cannot be served.
 #[test]
 fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
     let two_columns = BASE_SOURCE
@@ -1288,18 +1289,17 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// qualified, raw-identifier, turbofished). Its caller set is pinned to exactly one call,
 /// inside the body of `import_jsonl` — the trusted bulk importer, a WRITE path the follow-on
 /// row owns, and the same row owns removing this permitted call by threading the image in —
-/// and no crate outside `marrow-lifecycle` may name lifecycle `open` at all. A new caller of
-/// that spelling therefore turns up here and must either go through `attach`, which runs the
-/// pin, or extend the pin family — provided that caller is spelled the ordinary way. The
-/// spellings this scan does not reach are listed at [`continues_identifier`], and a root
-/// alias (`use crate as life; life::open(...)`) is among them: direct, entirely ASCII, and
-/// missed, because the alias refusal recognises `crate` only immediately before `::`.
+/// and no crate outside `marrow-lifecycle` names lifecycle `open` in a spelling the classifier
+/// resolves. A new caller so spelled therefore turns up here and must either go through
+/// `attach`, which runs the pin, or extend the pin family. The spellings this scan does not
+/// reach — a root alias among them, direct and entirely ASCII — are listed at
+/// [`continues_identifier`].
 ///
 /// That is a census over one spelling, not a claim that `attach` is the only place an image
 /// and a store meet: a caller holding an `OpenStore` can pair any verified image with it
 /// through the runner's public `AttachedService::new`, which compares no pin. This scan
-/// pins who may PRODUCE an unpinned `OpenStore`; the follow-on row owns what may be done
-/// with one.
+/// records who PRODUCES an unpinned `OpenStore` in the spellings it reaches; the follow-on
+/// row owns turning that census into a guarantee, and owns what may be done with one.
 ///
 /// What it does not detect: a second unfenced public constructor that reaches an `OpenStore`
 /// under another name. `open_admitted` is `pub(crate)` and takes an arbitrary admit closure,
@@ -1312,13 +1312,13 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// unrepresentable is the follow-on row's, alongside the `import.rs` change; this check is a
 /// caller census over one spelling, not a structural guarantee about the API.
 ///
-/// Two shapes it reads imprecisely, and both fail the census rather than passing unseen, so
-/// neither hides a caller. A foreign `open` declared inside an `extern` block
+/// Two shapes it reads imprecisely inside the crate, and both fail the census rather than
+/// passing unseen, so neither hides a caller. A foreign `open` declared inside an `extern` block
 /// (`extern "C" { fn open(); }`) reads as this crate's definition, because the block is not
-/// tracked and only the ABI marker immediately before `fn` is. An identifier carrying a
-/// non-ASCII character (`r#opené`, `opené`) is split at `open`, because the shared
-/// projection's identifier-byte test is ASCII-only, and the fragment is then reported as a
-/// reference that is named without being called. Those two fail the census loudly.
+/// tracked and only the ABI marker immediately before `fn` is. An identifier carrying a non-ASCII
+/// character is split at `open` by the shared projection's ASCII identifier-byte test, and the
+/// fragment reads by what surrounds it — `opené(dir)` as a reference named without being called,
+/// `éopen(dir)` as a call this census does not permit.
 ///
 /// Shapes read imprecisely in the SILENT direction also exist, and are holes rather than
 /// documented limits until named — so they are named, at [`continues_identifier`]. The
@@ -1327,15 +1327,15 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 ///
 /// The scan is lexical over the shared production projection (comments, string and char
 /// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
-/// around it into the closed set [`OpenReference`] enumerates. Rather than following an
-/// alias, the gate refuses the `use` shapes [`introduces_alias`] defines — an `as` alias of
-/// `open`, `provision`, or `marrow_lifecycle`, a glob import of those or of the crate root,
-/// an `as` alias of `crate`, `self`, or `super` in a statement that also spells one of them
-/// before a `::` — and any dependency rename of `marrow-lifecycle` a crate's own manifest
-/// declares. Every scanned file's tail sentinel ([`assert_projection_reaches_the_end`])
-/// survives blanking at its own byte offset, so a blank running to a file's end cannot
-/// erase a call unseen. Limitation: the shared projection carries no cfg context — a
-/// test-only module included as `#[cfg(test)] mod name;` from its parent (only `*_tests.rs`
+/// around it into the set [`OpenReference`] enumerates. Rather than following an alias, the gate
+/// refuses the `use` shapes [`introduces_alias`] defines — an `as` alias of `open`, `provision`,
+/// or `marrow_lifecycle`, a glob import of those or of the crate root, an `as` alias of `crate`,
+/// `self`, or `super` in a statement that also spells one of them before a `::` — and a
+/// dependency rename of `marrow-lifecycle` a crate's own manifest declares. Each refusal reads its
+/// subject lexically, with the limits [`continues_identifier`] lists. What
+/// [`assert_projection_reaches_the_end`] carries against a blank running to a file's end, and
+/// what it does not, is stated there. Limitation: the shared projection carries no cfg context —
+/// a test-only module included as `#[cfg(test)] mod name;` from its parent (only `*_tests.rs`
 /// files are recognised as test-only) and an item under a compound marker such as
 /// `#[cfg(all(test, unix))]` are scanned as production code; no such region names `open`
 /// today, so nothing is falsely rejected.
@@ -1462,8 +1462,8 @@ fn plain_open_has_exactly_the_documented_unfenced_callers() {
     assert_eq!(
         other_references,
         Vec::<(String, usize)>::new(),
-        "lifecycle `open` is named without being called (a function pointer, a re-export \
-         alias, a parenthesised callee), which this scan refuses to follow",
+        "lifecycle `open` is named without being called (a function pointer, a parenthesised \
+         callee, an identifier fragment), which this scan refuses to follow",
     );
     let body = import_body.expect("import.rs was scanned");
     assert_eq!(
@@ -1512,8 +1512,11 @@ impl Scope {
 }
 
 /// How one `open` token in a production projection resolves, decided by the tokens around
-/// it. The set is closed: a token that is none of the foreign shapes is the lifecycle
-/// function, and a lifecycle reference that is not a call is refused rather than followed.
+/// it. Every token gets one of these readings; what the census does with each differs. A `Method`,
+/// a `Foreign`, and an `Import` are passed over — the `use` statement an `Import` sits in is judged
+/// by the alias rule instead. The crate's one `Definition` is expected, in `provision.rs`. A
+/// `Call` must be the permitted one, and an `Other` — a lifecycle reference that is not a call —
+/// is refused rather than followed.
 #[derive(Debug, PartialEq, Eq)]
 enum OpenReference {
     /// `.open` — a method or field, never this crate's function.
@@ -1531,7 +1534,8 @@ enum OpenReference {
     /// qualifications [`Scope::qualifies`] admits with ASCII spacing around `::`.
     Call { at: usize },
     /// This crate's function named without a call — a function pointer, a parenthesised
-    /// callee `(open)(…)`, a re-export alias target.
+    /// callee `(open)(…)`, an `open` fragment split out of a longer non-ASCII name. A
+    /// re-export is not here: its token sits inside a `use` statement and reads as `Import`.
     Other { at: usize },
 }
 
@@ -1604,27 +1608,25 @@ fn classify_open_references(
 /// (`extern "Rust" fn f() { … }`, or an `extern` block) it introduces an item whose body is
 /// ordinary code, and a span running to the first `;` would swallow it.
 ///
-/// A raw identifier is NOT the keyword it spells. `r#use` and `r#extern` are ordinary
-/// names, so they open no statement — and the distinction is the opposite of the one the
-/// call scan needs, which is why the two are handled in different places. `open` is an
-/// identifier, so `r#open` names the same function and the call scan steps over the
-/// prefix to see it. `use` is a keyword, so `r#use` names something else entirely and
-/// this scan must not see it. Reading a raw identifier as the keyword opens a span to the
-/// next `;` over code that is not an import, and a call inside that span disappears:
-/// `#[cfg_attr(any(), r#use)] let leaked = r#open(dir, projection);` hid its call from
-/// every assertion here.
+/// A raw identifier is NOT the keyword it spells, and the distinction is the opposite of the one
+/// the call scan needs, which is why the two are handled in different places: `open` is an
+/// identifier, so `r#open` names the same function and the call scan steps over the prefix to see
+/// it, while `use` is a keyword, so `r#use` names something else and opens no statement. Reading a
+/// raw identifier as the keyword opens a span to the next `;` over code that is not an import, and
+/// a call inside it disappears — `#[cfg_attr(any(), r#use)] let leaked = r#open(dir, projection);`
+/// hid its call from every assertion here.
 ///
-/// Nor is a keyword the keyword when it is only the ASCII prefix or suffix of an ordinary
-/// name: `let useé = open(dir, projection);` binds a variable, and reading its `use` prefix
-/// as the keyword swallows the call the same silent way. So the keyword boundary here is
-/// [`continues_identifier`], asked of decoded characters: a non-ASCII letter continues the
-/// name around a keyword, and a non-ASCII space still separates tokens.
+/// Nor is a keyword the keyword when it is only the ASCII prefix or suffix of an ordinary name:
+/// `let useé = open(dir, projection);` binds a variable, and reading its `use` prefix as the
+/// keyword swallows the call the same silent way. So the keyword boundary here is
+/// [`continues_identifier`], asked of decoded characters: a non-ASCII letter continues the name
+/// around a keyword, and a non-ASCII space still separates tokens.
 ///
 /// A span that swallowed a DIRECT call would carry the call's parentheses, and no `use` or
-/// `extern crate` statement contains any, so the assertion below turns that misreading into
-/// a failure rather than a vanished call. It does not catch an INDIRECT one: binding the
-/// function first and calling the binding leaves both false spans parenthesis-free, which
-/// the decomposed-accent case at [`continues_identifier`] demonstrates.
+/// `extern crate` statement contains any, so the assertion below turns that misreading into a
+/// failure rather than a vanished call. It does not catch an INDIRECT one: binding the function
+/// first and calling the binding leaves both false spans parenthesis-free, which the
+/// decomposed-accent case at [`continues_identifier`] demonstrates.
 fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     for keyword in ["use", "extern"] {
@@ -1660,8 +1662,10 @@ fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
 /// subject is `open`, `provision`, `marrow_lifecycle`, or — inside the crate, and only when
 /// the statement also spells `crate`, `self`, or `super` before a `::` — one of those three;
 /// a glob import from `provision`, `marrow_lifecycle`, or the crate root (re-exporting it);
-/// or, when the enclosing file itself binds `open` (`binds_open`: it defines or imports it,
-/// so a child module's `super::*` reaches it), any glob rooted at the file's own module tree.
+/// or, when the enclosing file binds `open` anywhere in it (`binds_open`: the file defines
+/// or imports it, so a child module's `super::*` reaches it), any glob rooted at the file's
+/// own module tree — a file-wide fact, so a glob naming a module the binding is not in is
+/// refused too.
 ///
 /// Not every `use` that introduces a new spelling of lifecycle `open`: `use crate as life;`
 /// spells no `crate::` path, so it matches no shape here and its `life::open` calls then
@@ -1726,12 +1730,29 @@ fn function_body(code: &str, name: &str) -> std::ops::Range<usize> {
     panic!("the body of `fn {name}` is unterminated")
 }
 
-/// The projection reaches the END of `path`: its last production item header — or, for a
-/// file with none (a module list), its last production line free of literal and comment
-/// text — survives blanking at the byte offset it has in the source with only the test
-/// items removed. The sentinel is derived per file, so every scanned file is covered
-/// without a list to maintain, and a file offering no sentinel at all fails loudly.
+/// The projection reaches the END of `path`, by two facts. Blanking the literals leaves as many
+/// `{` as `}`, counted to the file's last byte. A mis-lexed literal blanks past its own end — to
+/// the file's end, which is how an unrecognised raw string swallows the rest — and a blank
+/// beginning inside any block takes that block's closing brace while its opening brace stands, so
+/// the counts part. Every call sits inside a block, so the count reaches past every call the scan
+/// must see. And the file's last production item header —
+/// or, for a file with none (a module list), its last production line free of literal and comment
+/// text — survives blanking at the byte offset it has in the source with only the test items
+/// removed, which catches a blank beginning before that header, where the counts alone would not:
+/// erasing a whole item takes its braces in pairs. A file offering no sentinel fails loudly.
+///
+/// Unreached: a blank beginning at a file's top level AFTER the last item header, erasing whole
+/// items that open and close inside it. Deciding that needs name resolution rather than a third
+/// sentinel, and the follow-on row retires this scan.
 fn assert_projection_reaches_the_end(path: &Path, source: &str, code: &str) {
+    let braces = source_projection::without_literals(source);
+    assert_eq!(
+        braces.matches('{').count(),
+        braces.matches('}').count(),
+        "blanking the literals of {} left its braces unpaired, so one was blanked past its \
+         own end",
+        path.display()
+    );
     let production = source_projection::without_cfg_test_items(source);
     let sentinel = source_projection::last_production_item(source)
         .or_else(|| {
@@ -1762,9 +1783,9 @@ fn assert_projection_reaches_the_end(path: &Path, source: &str, code: &str) {
     );
 }
 
-/// The byte offsets of every occurrence of the identifier `needle` in `text` as a whole
-/// token, under the shared projection's ASCII identifier bytes: a longer name carrying a
-/// non-ASCII character is split at `needle`, which [`continues_identifier`] reads loudly.
+/// The byte offsets of every occurrence of the identifier `needle` in `text` as a whole token,
+/// under the shared projection's ASCII identifier bytes: a longer name carrying a non-ASCII
+/// character is split at `needle`, a boundary [`continues_identifier`] weighs for both directions.
 fn ident_token_offsets<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
     let bytes = text.as_bytes();
     text.match_indices(needle).filter_map(move |(at, _)| {
@@ -1786,48 +1807,47 @@ fn has_ident_token(text: &str, needle: &str) -> bool {
 /// Whether `ch` continues a Rust identifier, as the keyword scan needs the question
 /// answered.
 ///
-/// The shared projection's [`source_projection::is_ident_byte`] is ASCII-only, which is the
-/// right boundary for finding the identifier `open` — a fragment split out of a longer
-/// non-ASCII name is then reported as an uncalled reference, and the census fails loudly.
-/// It is the wrong boundary for a KEYWORD, where the same split is silent: `useé` is an
-/// ordinary binding whose `use` prefix, read as the keyword, opens an import span to the
-/// next `;` and hides every call inside it.
+/// The shared projection's [`source_projection::is_ident_byte`] is ASCII-only, which is the right
+/// boundary for finding the identifier `open`: a fragment split out of a longer non-ASCII name is
+/// read by what surrounds the fragment — `opené(dir)` as an uncalled reference, `éopen(dir)` as a
+/// call — and the census fails loudly either way. It is the wrong boundary for a KEYWORD, where
+/// the same split is silent: `useé` is an ordinary binding whose `use` prefix, read as the
+/// keyword, opens an import span to the next `;` and hides every call inside it.
 ///
-/// The question is asked of a decoded CHARACTER, not of a byte, because the two mistakes
-/// are mirror images and both are silent. Admitting every byte `>= 0x80` closes `useé` and
-/// opens the reverse hole: Rust separates tokens on non-ASCII whitespace, so
-/// `use\u{85}crate::provision as p;` would stop being an import, its alias would go
-/// unrefused, and the `p::open` calls it introduces would read as another crate's. A
-/// character is alphanumeric or `_`, or it is not: `é` continues a name, U+0085 and the
-/// rest of the whitespace set do not, and no table is needed for either direction.
+/// The question is asked of a decoded CHARACTER, not of a byte, because the two mistakes are
+/// mirror images and both are silent. Admitting every byte `>= 0x80` closes `useé` and opens the
+/// reverse hole: Rust separates tokens on non-ASCII whitespace, so
+/// `use\u{85}crate::provision as p;` would stop being an import, its alias would go unrefused, and
+/// the `p::open` calls it introduces would read as another crate's. A character is alphanumeric or
+/// `_`, or it is not, and no table is needed for either direction.
 ///
 /// `char::is_alphanumeric` is not literally `XID_Continue` — a combining mark or connector
-/// punctuation continues a Rust identifier and is not alphanumeric — so a name spelled with
-/// a decomposed accent can still read as the keyword. **That residual can hide a call**,
-/// and an earlier version of this comment said it could not. The paren guard only refuses a
-/// span containing `(`, so an indirect binding evades it:
-/// `let use\u{301} = open; let escape = use\u{301}; escape(dir, projection);` opens two
-/// paren-free false spans and `open` reads as an `Import`.
+/// punctuation continues a Rust identifier and is not alphanumeric — so a name spelled with a
+/// decomposed accent can still read as the keyword. **That residual can hide a call.** The paren
+/// guard only refuses a span containing `(`, so an indirect binding evades it:
+/// `let use\u{301} = open; let escape = use\u{301}; escape(dir, projection);` opens two paren-free
+/// false spans and `open` reads as an `Import`.
 ///
-/// Three further spellings are outside this scan, each verified by review rather than
-/// assumed:
+/// Five further spellings are outside this scan, each verified by review rather than assumed:
 ///
-/// - **Non-ASCII whitespace between tokens.** The token helpers skip ASCII whitespace only,
-///   so `marrow_lifecycle\u{85}::open(dir, projection)` classifies as another crate's, and
+/// - **Non-ASCII whitespace between tokens.** The token helpers skip ASCII whitespace only, so
+///   `marrow_lifecycle\u{85}::open(dir, projection)` classifies as another crate's, and
 ///   `extern\u{85}crate marrow_lifecycle as life;` is not seen as an import.
-/// - **A root alias.** `use crate as life; life::open(...)` passes, because the alias
-///   refusal recognises `crate` only immediately before `::`.
-/// - **`use\u{85}<>`**, which evades the precise-capturing exclusion for the same reason as
-///   the first.
+/// - **A root alias.** `use crate as life; life::open(...)` passes, because the alias refusal
+///   recognises `crate` only immediately before `::`.
+/// - **`use\u{85}<>`**, which evades the precise-capturing exclusion for the same reason as the
+///   first.
+/// - **Non-ASCII spacing before `as`.** `use crate::open\u{85}as p;` is spanned as an import, but
+///   [`introduces_alias`] reads the token before `as` with ASCII spacing and refuses nothing.
+/// - **A manifest rename spelled with a TOML escape.** The `Cargo.toml` scan matches the raw text
+///   `marrow-lifecycle` on a line, which a TOML `-` escape of the hyphen does not carry.
 ///
-/// These are not defects to be patched one at a time. This scan is a lexical stand-in for
-/// name resolution, and nine rounds of closing named spellings have each been met by the
-/// next; a check of this shape cannot carry a guarantee about every legal spelling, and
-/// saying so is worth more than another spelling closed. What it does carry: an ASCII call
-/// spelled bare or under a qualifier [`Scope::qualifies`] admits turns up here; one reached
-/// through any other binding does not. The structural answer — making `open` unavailable
-/// outside a fenced entry, so no census is needed — belongs to the follow-on row, and
-/// retires this check rather than hardening it.
+/// These are not defects to be patched one at a time. This scan is a lexical stand-in for name
+/// resolution; a check of this shape cannot carry a guarantee about every legal spelling, and
+/// saying so is worth more than another spelling closed. What it does carry: an ASCII call spelled
+/// bare or under a qualifier [`Scope::qualifies`] admits turns up here; one reached through any
+/// other binding does not. The structural answer — making `open` unavailable outside a fenced
+/// entry, so no census is needed — belongs to the follow-on row, and retires this check.
 fn continues_identifier(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
@@ -1911,8 +1931,9 @@ fn token_after(text: &str, start: usize) -> Option<(usize, &str)> {
 }
 
 /// The plant probes for the caller scan: each spelling BELOW gets the reading the census
-/// rests on — a call, an alias refusal, a foreign shape that stays invisible, or a lifecycle
-/// reference that is not a call and fails the census loudly. Not every spelling that can
+/// rests on — a call, the crate's one definition, an import the alias rule judges instead,
+/// an alias refusal, a foreign shape that stays invisible, or a lifecycle reference that is
+/// not a call and fails the census loudly. Not every spelling that can
 /// legally name the function — [`continues_identifier`] lists those this scan does not
 /// reach, and they are absent here because they are not caught, not because they cannot
 /// occur.
@@ -2049,11 +2070,14 @@ fn the_open_caller_scanner_gives_each_planted_spelling_its_documented_reading() 
     // so it is not the definition this census counts.
     assert_eq!(lifecycle("pub extern \"C\" fn open() {}"), [Foreign]);
     // The two documented imprecisions, each pinned to the loud reading it actually has: a
-    // declaration inside an `extern` block reads as this crate's definition, and a raw
-    // identifier carrying a non-ASCII character is split at `open` and reported as a
-    // reference that is never called. Both fail the census; neither hides a caller.
+    // declaration inside an `extern` block reads as this crate's definition, and an
+    // identifier carrying a non-ASCII character is split at `open` and read by what
+    // surrounds the fragment — an uncalled reference when the character follows it, a call
+    // when it precedes it. Inside the crate all four fail the census; none hides a caller.
     assert_eq!(lifecycle("extern \"C\" { fn open(); }"), [Definition]);
     assert_eq!(lifecycle("r#open\u{e9}(dir)"), [Other { at: 2 }]);
+    assert_eq!(lifecycle("\u{e9}open(dir)"), [Call { at: 2 }]);
+    assert_eq!(lifecycle("r#\u{e9}open(dir)"), [Call { at: 4 }]);
     assert!(
         lifecycle("let s = \"open(\"; // open(\n").is_empty(),
         "literals are not code"
@@ -2083,8 +2107,11 @@ fn the_open_caller_scanner_gives_each_planted_spelling_its_documented_reading() 
     ] {
         assert!(introduces_alias(alias, Scope::Lifecycle, false), "{alias}");
     }
-    // A glob rooted at the file's own module tree reaches `open` exactly when the file
-    // binds it.
+    // A glob rooted at the file's own module tree is refused whenever the file binds `open`
+    // anywhere in it. `binds_open` is a fact about the whole file, not about the module the
+    // glob names, so `use self::helpers::*` is refused although that glob cannot reach a
+    // binding outside `helpers`. Refusing more than can reach is a loud census failure, not
+    // a caller passing unseen.
     assert!(introduces_alias("use super::*;", Scope::Lifecycle, true));
     assert!(introduces_alias(
         "use self::helpers::*;",
