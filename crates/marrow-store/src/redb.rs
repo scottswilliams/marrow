@@ -217,10 +217,10 @@ fn contain_panic<T>(
 /// one cause. Two candidates fit every observation: the kernel's release trailing the
 /// close the drop performs, and a concurrently spawned child inheriting the descriptor
 /// until its exec. Both are absorbed by the same wait, so the retry does not depend on
-/// choosing between them. A genuine CONFLICTING holder keeps the lock for the whole
-/// budget — conflicting, not merely concurrent, because two read-only handles take
-/// compatible shared locks and the second simply succeeds —
-/// budget and surfaces as [`StoreError::Locked`], as does a transient window longer than
+/// choosing between them. A genuine CONFLICTING holder — conflicting rather than merely
+/// concurrent, since two read-only handles take compatible shared locks and the second
+/// simply succeeds — keeps the lock for the whole budget and surfaces as
+/// [`StoreError::Locked`], as does a transient window longer than
 /// the budget. Bounded here means the retry sleeps are bounded — 1, 2, 4 and 8 ms — which
 /// is the only part this function controls; it does not bound the filesystem or database
 /// open it is retrying.
@@ -1110,10 +1110,12 @@ mod tests {
     /// before it. An earlier draft tested only for the raw marker at a boundary and so
     /// missed the byte-prefixed form, whose raw marker is preceded by the byte marker.
     ///
-    /// It still reports true for a cooked literal whose content is exactly the raw marker:
-    /// the closing quote of such a literal is indistinguishable from a raw opener without
-    /// tracking whether the scan is inside a string, which is the state this function
-    /// exists to avoid needing. The caller documents that as a loud false failure.
+    /// It still reports true for a cooked literal ENDING in a boundary-delimited raw-marker
+    /// suffix — not only one whose whole content is the marker, so a literal reading
+    /// `prefix r` trips it too. Such a suffix plus the literal's own closing quote is
+    /// indistinguishable from a raw opener without tracking whether the scan is inside a
+    /// string, which is the state this function exists to avoid needing. The caller
+    /// documents that as a loud false failure.
     ///
     /// This reads raw bytes, comments included, because a reliable comment projection
     /// would need the string handling this function exists to guard. So a doc comment here

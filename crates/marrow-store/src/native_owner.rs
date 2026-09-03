@@ -744,8 +744,10 @@ mod tests {
     // That is tidiness, NOT enforcement, and an earlier version of this comment claimed
     // otherwise. Opening directly still needs no import — `::redb::Database::create(...)`
     // works as written, and inside `redb.rs` so does `super::Database::open(...)`. Only
-    // the bare spelling would need the import back. The guard beside `open_past_lock_release`
-    // is what checks this; a missing import merely means nobody has done it yet.
+    // the bare spelling would need the import back. Nor does the guard beside
+    // `open_past_lock_release` cover it: that guard reads `redb.rs` only, so a direct
+    // `::redb::Database::create(...)` written HERE bypasses the retry and leaves it green.
+    // What holds in this file is that nothing does so today, checked by reading it.
     use ::redb::{ReadableDatabase, TableDefinition};
 
     use crate::redb::{create_raw, reopen_raw};
