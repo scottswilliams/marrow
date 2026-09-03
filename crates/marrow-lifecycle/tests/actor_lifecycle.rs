@@ -1790,9 +1790,30 @@ fn has_ident_token(text: &str, needle: &str) -> bool {
 ///
 /// `char::is_alphanumeric` is not literally `XID_Continue` — a combining mark or connector
 /// punctuation continues a Rust identifier and is not alphanumeric — so a name spelled with
-/// a decomposed accent can still read as the keyword. That residual cannot hide a call:
-/// [`use_statements`] refuses any span it opens that contains `(`, and a swallowed call
-/// carries its own parentheses.
+/// a decomposed accent can still read as the keyword. **That residual can hide a call**,
+/// and an earlier version of this comment said it could not. The paren guard only refuses a
+/// span containing `(`, so an indirect binding evades it:
+/// `let use\u{301} = open; let escape = use\u{301}; escape(dir, projection);` opens two
+/// paren-free false spans and `open` reads as an `Import`.
+///
+/// Three further spellings are outside this scan, each verified by review rather than
+/// assumed:
+///
+/// - **Non-ASCII whitespace between tokens.** The token helpers skip ASCII whitespace only,
+///   so `marrow_lifecycle\u{85}::open(dir, projection)` classifies as another crate's, and
+///   `extern\u{85}crate marrow_lifecycle as life;` is not seen as an import.
+/// - **A root alias.** `use crate as life; life::open(...)` passes, because the alias
+///   refusal recognises `crate` only immediately before `::`.
+/// - **`use\u{85}<>`**, which evades the precise-capturing exclusion for the same reason as
+///   the first.
+///
+/// These are not defects to be patched one at a time. This scan is a lexical stand-in for
+/// name resolution, and nine rounds of closing named spellings have each been met by the
+/// next; a check of this shape cannot carry a guarantee about every legal spelling, and
+/// saying so is worth more than another spelling closed. What it does carry: a direct,
+/// ASCII-spelled production call to `open` turns up here. The structural answer — making
+/// `open` unavailable outside a fenced entry, so no census is needed — belongs to the
+/// follow-on row, and retires this check rather than hardening it.
 fn continues_identifier(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }

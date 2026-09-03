@@ -49,11 +49,15 @@
 //! `AttachedService::new`, which executes that image against that store. Closing that
 //! composition belongs to the follow-on row, together with threading an image through
 //! `import_jsonl`. Here, the lifecycle test battery censuses the production callers of the
-//! `open` *spelling*, so a new direct call turns up; the census also records the spellings it
-//! does not reach — a submodule re-export called under another path, a public wrapper over
-//! `open_admitted`, a dependency rename inherited from the workspace manifest, and a call a
-//! macro emits — each of which can still produce an unpinned `OpenStore` unseen. An
-//! unfenced pairing is therefore fenced against the direct route only. An `OpenStore` holds the store's
+//! `open` *spelling* as it is ordinarily written, so a new direct ASCII-spelled call turns
+//! up. It does not reach a submodule re-export called under another path, a public wrapper
+//! over `open_admitted`, a dependency rename inherited from the workspace manifest, a call a
+//! macro emits, a root alias (`use crate as life`), a call separated by non-ASCII
+//! whitespace, or a binding whose name uses a decomposed accent — each of which can still
+//! produce an unpinned `OpenStore` unseen, and each of which is listed at the census itself.
+//! An unfenced pairing is therefore fenced against the ordinary direct route only, and this
+//! census is a stand-in until the follow-on row makes `open` unavailable outside a fenced
+//! entry, at which point it retires rather than hardens. An `OpenStore` holds the store's
 //! owner lock, which is non-`Clone` and non-serializable, so no session, bytecode, or client
 //! path can enter or forge a lifecycle state — nothing below this crate depends on it (the
 //! Cargo trust boundary), and there is no serialized form to reconstruct one from.
