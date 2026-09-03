@@ -504,22 +504,24 @@ pub(crate) enum GenericInvariant {
     },
     ReadyBodyShapeMismatch(TypeInstId),
     ReadyBodyMissing(TypeInstId),
-    /// The type registry admitted a resource whose declaration is not in the
-    /// declaration set the durable build received. The two inputs describe one
-    /// compilation and are joined exactly once, when the resource directory is
-    /// taken, so this is produced at that single join and nowhere else. It is a
-    /// compiler coherence failure, never a fact about the source: reporting it as
-    /// a refusal would charge the user for the drift, and staying silent would
-    /// bind the store to a declaration that does not exist.
+    /// The type registry admitted a resource the declaration set the durable build
+    /// received does not answer for: the ordinal the record cites holds no
+    /// declaration, the record carries no declaration coordinate, or the declaration
+    /// at that ordinal sits at a different module position or name span than the
+    /// declare pass recorded. The two inputs are joined exactly once, when the
+    /// resource directory is taken, so this is produced at that single join and
+    /// nowhere else. It is a compiler coherence failure, never a fact about the
+    /// source: reporting it as a refusal would charge the user for the drift, and
+    /// staying silent would bind the store to a declaration that does not exist.
     DurableResourceMissing(marrow_image::TypeId),
-    /// A store's executable derivation read a branch key tuple whose scalar
-    /// resolution the directory recorded as refused. The graph build consumes that
-    /// refusal as the branch's own diagnostic and a refused branch refuses its
-    /// store, so a store that reaches the executable derivation proved every branch
-    /// resolved — this arm is the compiler disagreeing with its own admission
-    /// ordering, never a fact about the source.
+    /// A store's executable derivation read a branch key tuple the directory had
+    /// already refused — for its declared width, or for a column outside the
+    /// durable-key scalar set. The graph build consumes either refusal as the
+    /// branch's own diagnostic and a refused branch refuses its store, so a store
+    /// that reaches the executable derivation proved every branch admitted — this arm
+    /// is the compiler disagreeing with its own admission ordering, not the source.
     DurableBranchKeyUnresolved,
-    /// A declared value type on a containment cycle has no declaration coordinate.
+    /// A `struct` or `resource` on a containment cycle has no declaration coordinate.
     ///
     /// The declare pass mints the coordinate in the same statement sequence that
     /// pushes the registry row, so a miss is those two owners disagreeing about one
@@ -1338,9 +1340,9 @@ pub(crate) struct TypeRegistry {
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
     /// The project's `resource` record types, in source order, each with the position
-    /// of the declaration it was built from. Each is a value record type; at most one
-    /// backs a durable store this line. Names are unique (a duplicate is rejected at
-    /// declare), so a name selects at most one.
+    /// of the declaration it was built from. Each is a value record type, and any
+    /// number of `store` declarations may bind one. Names are unique (a duplicate is
+    /// rejected at declare), so a name selects at most one.
     ///
     /// The ordinal travels with the record because the durable build was rebuilding
     /// that pairing from resource name strings — a fact settled at declaration time,
@@ -1372,7 +1374,7 @@ pub(crate) struct TypeRegistry {
     /// projection of the append-only owners, never a mint/dedup authority; a caller that
     /// mutates an already-classified row out of the append order must invalidate it.
     row_directory: RefCell<Option<RowDirectory>>,
-    /// Where each declared value type was written.
+    /// Where each declared `struct` and `resource` was written.
     ///
     /// Owned here rather than beside the pass that reports at a declaration:
     /// declaration admission is one-shot, so this table lives and dies with the
@@ -3215,8 +3217,8 @@ impl TypeRegistry {
         self.records.ordinals()
     }
 
-    /// The module position and span `type_id` was declared at, for a consumer proving that
-    /// a declaration it holds is the one a record was built from.
+    /// The module position and span `type_id` was declared at, for a consumer checking
+    /// that a declaration it holds sits where the record's declaration was written.
     pub(crate) fn declaration_module(
         &self,
         type_id: TypeId,

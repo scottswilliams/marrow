@@ -97,8 +97,8 @@ pub(crate) struct ScalingCounts {
     /// A key tuple is a fact of its declaration: one table per store root and one
     /// per keyed branch, per compile, however many stores occur a resource and
     /// however many attempts stage and roll back. Charging the constructor rather
-    /// than one canonical call site means a reconstruction spelled anywhere still
-    /// moves this exact count.
+    /// than one canonical call site means a reconstruction spelled at any call site
+    /// still moves this exact count.
     pub(crate) key_table_constructions: usize,
     /// Template-body declaration entries a fill copied out of the template — one per
     /// declared field for a struct fill, and one per declared variant plus one per

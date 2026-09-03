@@ -100,7 +100,7 @@ impl Deref for AdmittedRecords {
     }
 }
 
-/// Where one declared value type was written: its module and its name span.
+/// Where one declared `struct` or `resource` was written: its module and name span.
 ///
 /// The module is the existing [`FileRef`] coordinate rather than a second module
 /// ordinal invented here — the compiler already has one owner for "which module",
@@ -120,8 +120,8 @@ struct DeclarationCoordinate {
 /// window the one-shot ownership above rules out.
 #[derive(Default)]
 pub(crate) struct DeclarationCoordinates {
-    /// One owned identity per module that declared a value type, not one per
-    /// declaration. Keyed rather than appended because the declare pass is not
+    /// One owned identity per module that declared a `struct` or `resource`, not one
+    /// per declaration. Keyed rather than appended because the declare pass is not
     /// required to finish one module's declarations before starting the next.
     files: BTreeMap<FileRef, FileIdentity>,
     declarations: BTreeMap<TypeId, DeclarationCoordinate>,
@@ -150,16 +150,16 @@ impl DeclarationCoordinates {
     /// minted no coordinate for it.
     ///
     /// Distinct from [`resolve`](Self::resolve), which answers with the module's SPELLING
-    /// for a diagnostic to print. This answers with its position, which is what a consumer
-    /// checking that two references denote one declaration needs: a spelling can repeat
-    /// across two parses of a project, a position within one admitted project cannot.
+    /// for a diagnostic to print. This answers with its position, which is unique within
+    /// one admitted project where a spelling need not be. Two parses of one project
+    /// repeat every position, so it locates a declaration; it does not authenticate one.
     pub(super) fn module_of(&self, type_id: TypeId) -> Option<(FileRef, SourceSpan)> {
         let coordinate = self.declarations.get(&type_id)?;
         Some((coordinate.at, coordinate.span))
     }
 
-    /// Where `type_id` was declared, or `None` for a type this pass minted no
-    /// coordinate for — a reserved toolchain template has no source declaration.
+    /// Where `type_id` was declared, or `None` for a type this pass minted no coordinate
+    /// for — an enum, or a reserved toolchain template with no source declaration.
     pub(super) fn resolve(&self, type_id: TypeId) -> Option<(&FileIdentity, SourceSpan)> {
         let coordinate = self.declarations.get(&type_id)?;
         let file = self.files.get(&coordinate.at)?;
