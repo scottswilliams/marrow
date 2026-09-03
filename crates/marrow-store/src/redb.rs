@@ -198,8 +198,14 @@ fn contain_panic<T>(
     }
 }
 
-/// Open a redb database with write capability, retrying briefly past a transient
-/// advisory-lock release lag.
+/// Open a redb database, waiting briefly past a lock that a dropped handle may still hold.
+///
+/// Generic over the opened type because a read-only open meets the same wait: redb takes
+/// the file lock for `ReadOnlyDatabase::open` too, so a read-only inspection issued right
+/// after a failed write-capable open — which drops the writer it acquired — can observe
+/// the lock and surface as [`StoreError::Locked`] instead of the corruption or
+/// format-version verdict the caller was testing for. That sequence is real and appears
+/// twice in this file's own tests, which is how it was found.
 ///
 /// redb guards a store with an OS file lock (`flock` on Unix) acquired on open and
 /// released when the handle drops. A write-capable open issued just after another handle
@@ -213,10 +219,10 @@ fn contain_panic<T>(
 /// choosing between them. A genuine concurrent holder keeps the lock for the whole
 /// budget and still surfaces promptly as [`StoreError::Locked`] rather than hanging, and
 /// so does a transient window longer than the budget.
-fn open_write_capable(
+fn open_past_lock_release<T>(
     path: &Path,
-    open: impl Fn() -> Result<Database, DatabaseError>,
-) -> Result<Database, StoreError> {
+    open: impl Fn() -> Result<T, DatabaseError>,
+) -> Result<T, StoreError> {
     const LOCK_RELEASE_BACKOFF: [u64; 4] = [1, 2, 4, 8];
     let mut attempt = 0;
     loop {
@@ -607,7 +613,7 @@ impl NativeEngine {
                     message: "the native store file already exists".into(),
                 });
             };
-            let db = open_write_capable(path, || Database::create(path))?;
+            let db = open_past_lock_release(path, || Database::create(path))?;
             stamp_or_verify_format_version(Some(&created_path), &db)?;
             Ok(Self {
                 db: Some(DatabaseHandle::ReadWrite(db)),
@@ -628,7 +634,7 @@ impl NativeEngine {
         contain_panic("open", || {
             guard_regular_store_file(path)?;
             let sync_parent_after_commit = prepare_new_store_file(path)?;
-            let db = open_write_capable(path, || Database::create(path))?;
+            let db = open_past_lock_release(path, || Database::create(path))?;
             stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
             Ok(Self {
                 db: Some(DatabaseHandle::ReadWrite(db)),
@@ -645,7 +651,7 @@ impl NativeEngine {
         contain_panic("open", || {
             let db = open_tolerating_creation_race(path, || {
                 guard_regular_store_file(path)?;
-                let db = open_write_capable(path, || Database::open(path))?;
+                let db = open_past_lock_release(path, || Database::open(path))?;
                 verify_existing_store_shape(&db)?;
                 Ok(DatabaseHandle::ReadWrite(db))
             })?;
@@ -666,8 +672,7 @@ impl NativeEngine {
         contain_panic("open", || {
             let db = open_tolerating_creation_race(path, || {
                 guard_regular_store_file(path)?;
-                let db =
-                    ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
+                let db = open_past_lock_release(path, || ReadOnlyDatabase::open(path))?;
                 verify_existing_store_shape(&db)?;
                 Ok(DatabaseHandle::ReadOnly(db))
             })?;
@@ -846,16 +851,20 @@ where
 /// a concurrently spawned child transiently inherited the descriptor before its exec. The
 /// cause is not established; both produce the same observation, a `DatabaseAlreadyOpen`
 /// for a path whose Marrow handle is gone, and both are absorbed by the same wait.
-/// [`open_write_capable`] is where the production path absorbs it. A test that opens
-/// directly reintroduces the hazard and reports it as a store defect, so every raw reopen
-/// in this crate's tests comes through here.
+/// [`open_past_lock_release`] is where every opener in this file absorbs it. A test that
+/// opens directly reintroduces the hazard and reports it as a store defect, so every raw
+/// reopen in this crate's tests comes through here.
 ///
-/// The wait is bounded rather than indefinite: a genuinely held lock exhausts the backoff
-/// and this helper then panics carrying the typed [`StoreError`], which is how a test
-/// surfaces it. It never hangs, and it never reports a held lock as success.
+/// The retry is bounded rather than indefinite: a genuinely held lock exhausts the backoff
+/// and this helper then panics with that [`StoreError`] rendered into the message — a
+/// `Locked` for an exhausted wait — so a test sees the reason rather than a bare failure.
+/// The value itself is not retained; the panic payload is a string. Bounded means the
+/// retry sleeps are bounded, which is the only part this helper controls: it does not
+/// bound the filesystem or database open it is retrying. It never reports a held lock as
+/// success.
 #[cfg(test)]
 pub(crate) fn reopen_raw(path: &Path, subject: &str) -> Database {
-    open_write_capable(path, || Database::open(path))
+    open_past_lock_release(path, || Database::open(path))
         .unwrap_or_else(|error| panic!("reopen {subject}: {error:?}"))
 }
 
@@ -913,63 +922,59 @@ mod tests {
         }
     }
 
-    /// Every raw reopen in this crate's tests goes through [`reopen_raw`], so no test races
-    /// the lock interval that [`super::open_write_capable`] waits out.
+    /// Every function in this crate that opens a redb database waits out a lock a dropped
+    /// handle may still hold, by routing through [`super::open_past_lock_release`].
     ///
-    /// What this detects, across `redb.rs` and `native_owner.rs`: a direct open call whose
-    /// receiver is exactly `Database`, in code with comments and string/char literals
-    /// blanked, outside the two places that own it — plus a [`reopen_raw`] whose own body
-    /// stops routing through the production wait at an identifier boundary.
+    /// The check is a positive presence in a known span, not a census over a file: for each
+    /// opener named below, its brace-matched body must call the tolerance at an identifier
+    /// boundary. That shape is what closes the hole an earlier draft had — counting direct
+    /// opens globally, a production opener could drop the tolerance and open directly while
+    /// the total stayed at two and every assertion passed, which is a production regression
+    /// the guard was blind to. Checking each body cannot miss that.
     ///
-    /// What it does NOT detect: `Database::builder().open(...)`, `<Database>::open(...)`,
-    /// a spelling broken across tokens or lines, a call reached through a macro, an
-    /// aliased import of either function, a reopen written against `ReadOnlyDatabase`, and
-    /// the same hazard spelled as a create.
-    ///
-    /// It also has a false-positive mode worth knowing: it counts direct opens, so a third
-    /// one fails this check even when that third call is correctly wrapped. Adding a
-    /// legitimate direct open therefore means updating this check deliberately, which is
-    /// the intended friction and not a bug.
-    ///
-    /// It is a spelling check at a site, not a call-graph boundary. It earns its keep
-    /// because the failure it prevents is intermittent and costs a whole battery to
-    /// observe, and its limits are written here rather than implied by its name — four
-    /// drafts of it were wrong, each in the same way, a scanner that could not see itself.
+    /// What it does NOT detect: a NEW opener function nobody added to this list. That is the
+    /// price of checking presence rather than absence, and it is the right trade — an
+    /// unlisted opener is a visible act by its author, whereas a silently dropped tolerance
+    /// inside a listed one is not. It also does not follow a call graph: an opener that
+    /// calls the tolerance and then opens directly as well would pass.
     #[test]
-    fn every_raw_reopen_goes_through_the_lock_release_tolerance() {
+    fn every_redb_open_waits_out_the_lock_release() {
         // Split so these assertions do not match themselves.
-        let spelling = ["Database", "::open("].concat();
-        let tolerance = ["open", "_write_capable("].concat();
+        let tolerance = ["open", "_past_lock_release("].concat();
+        let code = code_only(include_str!("redb.rs"));
 
-        let mut direct = 0;
-        for source in [include_str!("redb.rs"), include_str!("native_owner.rs")] {
-            // The blanker's stated precondition, enforced rather than assumed: a raw
-            // string would be mis-blanked and could hide a call or invent one. Adding the
-            // first raw string to either file fails here instead of silently weakening
-            // the scan.
+        for opener in [
+            "fn create_new(",
+            "fn open(",
+            "fn open_existing(",
+            "fn open_read_only(",
+            "fn reopen_raw(",
+        ] {
+            let body = brace_matched_body(&code, opener)
+                .unwrap_or_else(|| panic!("{opener} is present in this file"));
+            assert_eq!(
+                count_receiver_calls(&body, &tolerance),
+                1,
+                "{opener} must open through `{tolerance}`, once, at an identifier boundary; \
+                 opening directly reintroduces the intermittent `DatabaseAlreadyOpen`",
+            );
+        }
+    }
+
+    /// The projection this file's checks read cannot blank a raw string, so its absence is
+    /// asserted rather than assumed. Introducing the first raw string to either scanned
+    /// file fails here instead of quietly desynchronising the scan.
+    #[test]
+    fn the_scanned_sources_contain_no_raw_string() {
+        for (name, source) in [
+            ("redb.rs", include_str!("redb.rs")),
+            ("native_owner.rs", include_str!("native_owner.rs")),
+        ] {
             assert!(
                 !has_raw_string(source),
-                "this scan cannot blank raw strings; teach `code_only` the form before \
-                 introducing one",
+                "{name} introduced a raw string; teach `code_only` the form first",
             );
-            let code = code_only(source);
-            direct += count_receiver_calls(&code, &spelling);
         }
-        assert_eq!(
-            direct, 2,
-            "a direct `{spelling}` belongs to `open_write_capable` and `reopen_raw` only; \
-             a third reopens a just-dropped path with no wait and fails intermittently",
-        );
-
-        let code = code_only(include_str!("redb.rs"));
-        let body = brace_matched_body(&code, "fn reopen_raw(")
-            .expect("the shared reopen helper is present");
-        assert_eq!(
-            count_receiver_calls(&body, &tolerance),
-            1,
-            "`reopen_raw`'s own body must call the production wait at an identifier \
-             boundary; a name merely containing that spelling is not a call to it",
-        );
     }
 
     /// Blank comments and string/char literals, preserving byte length so a span found in
@@ -1057,29 +1062,50 @@ mod tests {
     /// the unblanked content of a char literal is one character, which cannot spell a
     /// call.
     fn is_char_literal(src: &[u8], start: usize) -> bool {
-        match (src.get(start + 1), src.get(start + 2)) {
-            (Some(b'\\'), _) => true,
-            (Some(_), Some(b'\'')) => true,
-            _ => false,
-        }
+        matches!(
+            (src.get(start + 1), src.get(start + 2)),
+            (Some(b'\\'), _) | (Some(_), Some(b'\''))
+        )
     }
 
-    /// Whether `source` contains a raw string literal, in any of its prefixed forms, at a
-    /// token boundary. [`code_only`] cannot blank these, so its caller refuses rather than
-    /// scanning a projection it knows is wrong.
+    /// Whether `source` contains a raw string literal, in any of its prefixed forms.
+    /// [`code_only`] cannot blank those, so its caller refuses rather than scanning a
+    /// projection it knows is wrong.
+    ///
+    /// The prefix is matched as a whole token: an optional byte or C marker, then the raw
+    /// marker, then any run of hash marks, then the quote, with a non-identifier byte
+    /// before it. An earlier draft tested only for the raw marker at a boundary, so it
+    /// missed the byte-prefixed form — whose raw marker is preceded by the byte marker —
+    /// and it separately flagged ordinary one-letter strings, which would fail the build
+    /// for prose.
+    ///
+    /// This reads raw bytes, comments included, because a reliable comment projection
+    /// would need the string handling this function exists to guard. So a doc comment here
+    /// must describe the prefixes rather than spell them — and the first version of this
+    /// very comment spelled them and failed the check, which is the behaviour working
+    /// rather than a defect in it.
     fn has_raw_string(source: &str) -> bool {
         let src = source.as_bytes();
-        src.iter().enumerate().any(|(i, byte)| {
-            *byte == b'r'
-                && !src[..i]
-                    .last()
-                    .is_some_and(|before| before.is_ascii_alphanumeric() || *before == b'_')
-                && src[i + 1..]
-                    .iter()
-                    .position(|next| *next != b'#')
-                    .is_some_and(|offset| src[i + 1 + offset] == b'"')
-        }) || source.contains("br\"")
-            || source.contains("cr\"")
+        (0..src.len()).any(|i| {
+            let mut at = i;
+            if matches!(src.get(at), Some(b'b' | b'c')) {
+                at += 1;
+            }
+            if src.get(at) != Some(&b'r') {
+                return false;
+            }
+            let before_is_ident = i
+                .checked_sub(1)
+                .is_some_and(|before| src[before].is_ascii_alphanumeric() || src[before] == b'_');
+            if before_is_ident {
+                return false;
+            }
+            let mut hashes = at + 1;
+            while src.get(hashes) == Some(&b'#') {
+                hashes += 1;
+            }
+            src.get(hashes) == Some(&b'"')
+        })
     }
 
     /// Occurrences of `call` whose receiver is exactly that identifier, so a longer name
