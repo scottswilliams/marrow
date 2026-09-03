@@ -1741,9 +1741,18 @@ fn function_body(code: &str, name: &str) -> std::ops::Range<usize> {
 /// removed, which catches a blank beginning before that header, where the counts alone would not:
 /// erasing a whole item takes its braces in pairs. A file offering no sentinel fails loudly.
 ///
-/// Unreached: a blank beginning at a file's top level AFTER the last item header, erasing whole
-/// items that open and close inside it. Deciding that needs name resolution rather than a third
-/// sentinel, and the follow-on row retires this scan.
+/// Unreached, in two shapes, and the brace fact is weaker than "any blank inside a block":
+/// it detects a blank whose consumed closing brace has no matching opener left standing, so a
+/// blank that happens to REBALANCE escapes. A missed raw opener does exactly that — for
+/// `let _ = r#"x" }"#;` inside a function, the ordinary-string scanner exposes the literal's `}`,
+/// which balances the function's `{` while the blank runs to the file's end and takes a call with
+/// it, and the header comparison passes too. The second shape is a blank beginning at a file's
+/// top level AFTER the last item header, erasing whole items that open and close inside it.
+/// Separately, `without_cfg_test_items` can blank a `#[cfg(test)]` match arm through the file's
+/// end by its `{`/`;` search, and it runs after this brace count rather than under it.
+///
+/// Closing these needs a lexer rather than a third sentinel, and the follow-on row retires this
+/// scan by making the function it guards unavailable outside a fenced entry.
 fn assert_projection_reaches_the_end(path: &Path, source: &str, code: &str) {
     let braces = source_projection::without_literals(source);
     assert_eq!(
