@@ -737,9 +737,14 @@ fn sync_dir(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::redb::{Database, ReadableDatabase, TableDefinition};
+    // `Database` is deliberately NOT imported here. Every redb open in this crate goes
+    // through `create_raw` or `reopen_raw`, so nothing in these tests names the type — and
+    // naming it again to open directly is now a visible act, an added import rather than a
+    // line that blends in. The unused-import lint noticed the moment the last direct call
+    // went, which is the structural half of what the guard checks lexically.
+    use ::redb::{ReadableDatabase, TableDefinition};
 
-    use crate::redb::reopen_raw;
+    use crate::redb::{create_raw, reopen_raw};
 
     struct Scratch(PathBuf);
 
@@ -1137,7 +1142,7 @@ mod tests {
 
         let unstamped = Scratch::new("unstamped-existing");
         let path = unstamped.0.join(NATIVE_ENGINE_FILE);
-        drop(Database::create(&path).expect("create an unstamped redb database"));
+        drop(create_raw(&path, "an unstamped redb database"));
         assert!(matches!(
             open_existing(&unstamped.0, [0x23; 16]),
             Err(NativeOwnerOpenError::Store(_))

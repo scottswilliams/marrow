@@ -207,7 +207,8 @@ fn contain_panic<T>(
 /// format-version verdict the caller was testing for. That sequence is real and appears
 /// twice in this file's own tests, which is how it was found.
 ///
-/// redb guards a store with an OS file lock (`flock` on Unix) acquired on open and
+/// redb guards a store with an OS file lock — `flock` on Unix targets that support it,
+/// and redb proceeds unlocked where the platform reports locking unsupported — acquired on open and
 /// released when the handle drops. A write-capable open issued just after another handle
 /// on the same path was dropped can still observe that lock held and fail with
 /// `DatabaseAlreadyOpen`, and the window widens with machine load.
@@ -217,8 +218,10 @@ fn contain_panic<T>(
 /// close the drop performs, and a concurrently spawned child inheriting the descriptor
 /// until its exec. Both are absorbed by the same wait, so the retry does not depend on
 /// choosing between them. A genuine concurrent holder keeps the lock for the whole
-/// budget and still surfaces promptly as [`StoreError::Locked`] rather than hanging, and
-/// so does a transient window longer than the budget.
+/// budget and surfaces as [`StoreError::Locked`], as does a transient window longer than
+/// the budget. Bounded here means the retry sleeps are bounded — 1, 2, 4 and 8 ms — which
+/// is the only part this function controls; it does not bound the filesystem or database
+/// open it is retrying.
 fn open_past_lock_release<T>(
     path: &Path,
     open: impl Fn() -> Result<T, DatabaseError>,
@@ -862,6 +865,19 @@ where
 /// retry sleeps are bounded, which is the only part this helper controls: it does not
 /// bound the filesystem or database open it is retrying. It never reports a held lock as
 /// success.
+/// Create, as a raw redb handle, a database for a test to seed or inspect.
+///
+/// The paths these tests create on are fresh, so none races a preceding drop today. It
+/// waits anyway, because the alternative is a claim with four exceptions: every open of a
+/// redb database in this crate goes through [`open_past_lock_release`], full stop, and a
+/// reader checking that does not have to hold four sites in mind. The wait costs nothing
+/// on a path nobody holds.
+#[cfg(test)]
+pub(crate) fn create_raw(path: &Path, subject: &str) -> Database {
+    open_past_lock_release(path, || Database::create(path))
+        .unwrap_or_else(|error| panic!("create {subject}: {error:?}"))
+}
+
 #[cfg(test)]
 pub(crate) fn reopen_raw(path: &Path, subject: &str) -> Database {
     open_past_lock_release(path, || Database::open(path))
@@ -874,9 +890,13 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use redb::{Database, ReadableDatabase, TableDefinition};
+    // See `native_owner.rs`: `Database` is not imported into the test module, so opening
+    // directly requires adding the import back.
+    use redb::{ReadableDatabase, TableDefinition};
 
-    use super::{FORMAT_VERSION, META, NativeEngine, TABLE, map_open_error, reopen_raw};
+    use super::{
+        FORMAT_VERSION, META, NativeEngine, TABLE, create_raw, map_open_error, reopen_raw,
+    };
     use crate::conformance;
     use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn};
     use crate::error::StoreError;
@@ -926,17 +946,20 @@ mod tests {
     /// handle may still hold, by routing through [`super::open_past_lock_release`].
     ///
     /// The check is a positive presence in a known span, not a census over a file: for each
-    /// opener named below, its brace-matched body must call the tolerance at an identifier
-    /// boundary. That shape is what closes the hole an earlier draft had — counting direct
-    /// opens globally, a production opener could drop the tolerance and open directly while
-    /// the total stayed at two and every assertion passed, which is a production regression
-    /// the guard was blind to. Checking each body cannot miss that.
+    /// opener named below, the tolerance's spelling must appear once in its brace-matched
+    /// body at an identifier boundary. That shape is what closes the hole an earlier draft
+    /// had — counting direct opens globally, a production opener could drop the tolerance
+    /// and open directly while the total stayed at two and every assertion passed, which is
+    /// a production regression the guard was blind to.
     ///
-    /// What it does NOT detect: a NEW opener function nobody added to this list. That is the
-    /// price of checking presence rather than absence, and it is the right trade — an
-    /// unlisted opener is a visible act by its author, whereas a silently dropped tolerance
-    /// inside a listed one is not. It also does not follow a call graph: an opener that
-    /// calls the tolerance and then opens directly as well would pass.
+    /// Read that as a spelling in a span, which is all it is. It does not prove the
+    /// tolerance is CALLED: the spelling inside `stringify!`, or a shadowed local of the
+    /// same name, satisfies it while the body opens directly. It does not detect a NEW
+    /// opener nobody added to this list — the price of checking presence rather than
+    /// absence, and the right trade, since an unlisted opener is a visible act by its
+    /// author while a silently dropped tolerance inside a listed one is not. And it does
+    /// not follow a call graph: an opener that calls the tolerance and then also opens
+    /// directly passes.
     #[test]
     fn every_redb_open_waits_out_the_lock_release() {
         // Split so these assertions do not match themselves.
@@ -949,6 +972,7 @@ mod tests {
             "fn open_existing(",
             "fn open_read_only(",
             "fn reopen_raw(",
+            "fn create_raw(",
         ] {
             let body = brace_matched_body(&code, opener)
                 .unwrap_or_else(|| panic!("{opener} is present in this file"));
@@ -961,20 +985,26 @@ mod tests {
         }
     }
 
-    /// The projection this file's checks read cannot blank a raw string, so its absence is
-    /// asserted rather than assumed. Introducing the first raw string to either scanned
-    /// file fails here instead of quietly desynchronising the scan.
+    /// [`code_only`] cannot blank a raw string, so its absence from the one file that
+    /// projection reads is asserted rather than assumed. Introducing the first raw string
+    /// here fails loudly instead of quietly desynchronising the scan.
+    ///
+    /// Scoped to this file alone. An earlier version also scanned `native_owner.rs`, which
+    /// no projection reads — a failure there would have sent a reader to teach a projection
+    /// that never looks at it.
+    ///
+    /// It also fails on a cooked one-letter string whose content is the raw marker, such as
+    /// a literal holding just `r`, because that content is byte-for-byte a raw opener and
+    /// telling the two apart needs the very lexer this stands in for. That is a loud false
+    /// failure in the safe direction, and the remedy is to spell such a literal differently
+    /// or teach `code_only` the raw forms.
     #[test]
-    fn the_scanned_sources_contain_no_raw_string() {
-        for (name, source) in [
-            ("redb.rs", include_str!("redb.rs")),
-            ("native_owner.rs", include_str!("native_owner.rs")),
-        ] {
-            assert!(
-                !has_raw_string(source),
-                "{name} introduced a raw string; teach `code_only` the form first",
-            );
-        }
+    fn the_projected_source_contains_no_raw_string() {
+        assert!(
+            !has_raw_string(include_str!("redb.rs")),
+            "redb.rs introduced a raw string, or a cooked literal shaped like one; teach \
+             `code_only` the form first",
+        );
     }
 
     /// Blank comments and string/char literals, preserving byte length so a span found in
@@ -1074,10 +1104,13 @@ mod tests {
     ///
     /// The prefix is matched as a whole token: an optional byte or C marker, then the raw
     /// marker, then any run of hash marks, then the quote, with a non-identifier byte
-    /// before it. An earlier draft tested only for the raw marker at a boundary, so it
-    /// missed the byte-prefixed form — whose raw marker is preceded by the byte marker —
-    /// and it separately flagged ordinary one-letter strings, which would fail the build
-    /// for prose.
+    /// before it. An earlier draft tested only for the raw marker at a boundary and so
+    /// missed the byte-prefixed form, whose raw marker is preceded by the byte marker.
+    ///
+    /// It still reports true for a cooked literal whose content is exactly the raw marker:
+    /// the closing quote of such a literal is indistinguishable from a raw opener without
+    /// tracking whether the scan is inside a string, which is the state this function
+    /// exists to avoid needing. The caller documents that as a loud false failure.
     ///
     /// This reads raw bytes, comments included, because a reliable comment projection
     /// would need the string handling this function exists to guard. So a doc comment here
@@ -1622,7 +1655,7 @@ mod tests {
 
         // Build a non-empty redb file with some other table and no `marrow.meta`.
         {
-            let db = Database::create(&path).expect("create foreign db");
+            let db = create_raw(&path, "foreign db");
             let write = db.begin_write().expect("begin");
             const OTHER: TableDefinition<&str, u32> = TableDefinition::new("not.marrow");
             write.open_table(OTHER).expect("open foreign table");
@@ -1674,7 +1707,7 @@ mod tests {
         }
 
         let unstamped = dir.path().join("unstamped.redb");
-        drop(Database::create(&unstamped).expect("create valid unstamped redb database"));
+        drop(create_raw(&unstamped, "valid unstamped redb database"));
         assert!(
             NativeEngine::open_existing(&unstamped).is_err(),
             "a valid but unstamped redb database is not a Marrow store",
@@ -1697,7 +1730,7 @@ mod tests {
         let unsupported = FORMAT_VERSION + 1;
 
         {
-            let db = Database::create(&path).expect("create redb file");
+            let db = create_raw(&path, "redb file");
             let write = db.begin_write().expect("begin");
             {
                 let mut meta = write.open_table(META).expect("open meta table");
