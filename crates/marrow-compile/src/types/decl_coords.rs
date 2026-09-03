@@ -49,10 +49,10 @@ use crate::analysis::FileRef;
 /// holding one declaration's record beside another's ordinal.
 ///
 /// The sole PRODUCTION caller — `build.rs`'s fill pass — fills a reserved record from its
-/// own surviving declaration and never replaces one. The two test callers do not fill at
-/// all; one rewrites a group's `type_id` to manufacture a `TypeIdentityCollision`, which
-/// is the point of that fixture. Structural here means stable positions, not
-/// authenticated contents.
+/// own surviving declaration and never replaces one. Neither test caller replaces a record
+/// either: one pushes a group onto an admitted record, the other rewrites a group's
+/// `type_id` to manufacture a `TypeIdentityCollision`, which is the point of that fixture.
+/// Structural here means stable positions, not authenticated contents.
 ///
 /// The durable build reads this pairing rather than rebuilding one from resource name
 /// spellings. Reading is the record slice itself; the ordinals are read through

@@ -85,8 +85,10 @@ impl<'a> ResourceDirectory<'a> {
         // handed the same slice — an exact record-to-declaration pairing, derived once and
         // never again. What the coordinate check below adds, exactly this: at each ordinal
         // an admitted record cites, the declaration found there sits at the module position
-        // and name span the declare pass recorded, so a cited declaration that moved or was
-        // replaced is refused rather than paired with whatever now sits at that index.
+        // and name span the declare pass recorded, so a cited declaration that MOVED is
+        // refused rather than paired with whatever now sits at that index. A replacement is
+        // caught only when it moved something: neither declaration text nor `FileIdentity`
+        // is compared, so a same-length resource declared at the same position passes.
         //
         // What it does not reach: an ordinal no record cites. A slice carrying declarations
         // appended past the last cited one, or altered at an uncited one, passes untouched.

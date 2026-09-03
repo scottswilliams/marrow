@@ -204,7 +204,9 @@ use source_projection::{is_test_only_file, production_code, production_code_of};
 /// crate-wide, because a shape minted in a file the per-file censuses never read
 /// is still that shape.
 ///
-/// One check below reads this whole text; the other four read named files, one to three each.
+/// Two checks below read a whole-crate text — this one and the record/ordinal pairing census
+/// at the end of the file, which builds its own; the other four read named files, one to
+/// three each.
 /// All of them decide the same kind of thing: whether a spelling occurs at a site,
 /// and how often, in the source as written. None binds a call graph. A renamed
 /// function, a call through an alias or a function value, a wrapper that forwards,
@@ -253,7 +255,8 @@ fn production_code_of_crate() -> String {
 /// every number here intact. Nor does it say the pairing is *authenticated*:
 /// `ResourceDirectory` checks, at each ordinal an admitted record cites, that the
 /// declaration found there sits at the module position and name span the declare pass
-/// recorded — so a cited declaration that moved or was replaced is refused, while an
+/// recorded — so a cited declaration that MOVED is refused, while a replacement that did
+/// not move is not (neither declaration text nor `FileIdentity` is compared), an
 /// ordinal no record cites goes unread, and a re-parse repeating those positions and
 /// spans with its members mutated is accepted, `FileRef` being snapshot-local and
 /// `FileIdentity` uncompared. Closing that means carrying the declare pass's pairing out
@@ -574,11 +577,25 @@ fn the_declaration_search_census_is_closed_at_its_spellings() {
 /// prose.
 #[test]
 fn the_admitted_record_pairing_hands_out_no_mutable_slice() {
-    let module = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/types/decl_coords.rs"),
-    )
-    .expect("read the coordinate module");
-    let code = source_projection::production_code(&module);
+    // Every production file of the crate, not the one that declares the type: a child module
+    // can implement `DerefMut` for it and reach the parent's private field, and reading only
+    // the declaring file would not see that. Moving this census here weakened it that way
+    // once already.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut code = String::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read a source directory") {
+            let path = entry.expect("read a directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("read a source file");
+                code.push_str(&source_projection::production_code(&text));
+                code.push('\n');
+            }
+        }
+    }
     assert_eq!(
         code.matches("Deref for AdmittedRecords").count(),
         1,
