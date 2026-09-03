@@ -1,10 +1,10 @@
 //! The declaration-side row tables the durable build reads instead of syntax.
 //!
-//! Each table is taken once, before the first store is built, from the two owners a
-//! durable declaration has: the declaration the parser wrote, and the fact the type
-//! registry admitted for it. Member paths, key widths, key columns, and index
-//! arguments are settled here, so a consumer is handed validated projections rather
-//! than a question it could answer a second way.
+//! Each table is taken once, before the first store is built, from the owners its own
+//! subject has: the declaration the parser wrote, and, where a type must resolve, the
+//! fact the type registry admitted for it — `IndexTable` reads syntax alone. Member
+//! paths, key widths, key columns, and index arguments are settled here, so a consumer
+//! is handed validated projections rather than a question it could answer a second way.
 //!
 //! Declaration syntax stays reachable through these tables, and that is the state of
 //! the build today rather than an oversight. `DurableRegistry::build` still receives
@@ -191,7 +191,7 @@ impl<'a> StoreRow<'a> {
         }
     }
 
-    /// The Product this store is an occurrence of, for the census.
+    /// The census key this store counts under: the Product it binds, or its written spelling.
     pub(super) fn product_key(&self) -> ProductKey<'a> {
         match self.binding {
             StoreResourceBinding::Accepted(id) => ProductKey::Bound(id),
@@ -200,7 +200,7 @@ impl<'a> StoreRow<'a> {
     }
 }
 
-/// The Product a store declaration counts as an occurrence of.
+/// What a store declaration counts as an occurrence under: a Product, or an unbound spelling.
 ///
 /// A bound store counts under the resolved declaration it binds; an unbound one counts
 /// under its written spelling, because that is all an unbound store has. Keying the
@@ -226,13 +226,13 @@ pub(super) struct IndexRow<'a> {
 
 /// How far one projection argument reaches.
 ///
-/// A managed index projects the root's own leaves, so the only distinction the
-/// admission rules draw over an argument's path is whether it stays at the top level
-/// or reaches through a member. The row states that as the closed fact it is, rather
-/// than leaving a segment count for each consumer to compare against one.
+/// A managed index projects the root's own leaves, so an argument's path shape decides
+/// only whether it stays at the top level or reaches through a member; which leaf a
+/// top-level name reaches is resolved later. The row states the shape as the closed fact
+/// it is, rather than leaving a segment count for each consumer to compare against one.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum IndexArgReach {
-    /// A single-segment path: one of the root's identity keys or top-level fields.
+    /// A single-segment path: resolution later admits it as a key or a field, or rejects it.
     TopLevel,
     /// A dotted path of more than one segment, which no index may project.
     ThroughMember,
@@ -254,10 +254,10 @@ pub(super) struct IndexArgRow {
 /// One store root's managed indexes and their projection arguments, taken once from
 /// the declaration before the root is built.
 ///
-/// The two tables are one owner because an index without its arguments admits nothing:
-/// every rule past the per-root count cap reads the index row and its argument rows
-/// together, and a range into a single argument vector keeps that pairing a property of
-/// the table rather than of each caller's bookkeeping.
+/// The two tables are one owner because an index's admission ends in its arguments: the
+/// width cap and component resolution read the index row and its argument rows together,
+/// while the name-collision and keyed-root rules read the row alone. A range into a single
+/// argument vector keeps that pairing a property of the table, not of each caller.
 pub(super) struct IndexTable<'a> {
     indexes: Vec<IndexRow<'a>>,
     args: Vec<IndexArgRow>,
@@ -501,8 +501,8 @@ impl<'a> KeyTable<'a> {
     /// returns are the keys of the machine-written `.marrow/ids` ledger, so a second
     /// spelling of this join re-anchors durable identity: the compiler reports the new
     /// anchor as a missing-identity gap and the mint action commits it beside the id the
-    /// old spelling still owns. It is private because a column is: [`Self::columns`] is
-    /// the only way to reach an anchor, so no caller can spell the join a second time.
+    /// old spelling still owns. It is private so no consumer needs to assemble one — not
+    /// because none could: `pub(super)` spellings and a held anchor leave the join writable.
     fn identity_path(&self, spelling: &str) -> String {
         format!("{}.{}", self.owner.anchor(), spelling)
     }

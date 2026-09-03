@@ -505,14 +505,14 @@ pub(crate) enum GenericInvariant {
     ReadyBodyShapeMismatch(TypeInstId),
     ReadyBodyMissing(TypeInstId),
     /// The type registry admitted a resource the declaration set the durable build
-    /// received does not answer for: the ordinal the record cites holds no
-    /// declaration, the record carries no declaration coordinate, or the declaration
-    /// at that ordinal sits at a different module position or name span than the
-    /// declare pass recorded. The two inputs are joined exactly once, when the
-    /// resource directory is taken, so this is produced at that single join and
-    /// nowhere else. It is a compiler coherence failure, never a fact about the
-    /// source: reporting it as a refusal would charge the user for the drift, and
-    /// staying silent would bind the store to a declaration that does not exist.
+    /// received does not answer for: the ordinal the record cites holds no declaration,
+    /// the record carries no declaration coordinate, or the declaration at that ordinal
+    /// sits at a different module position or name span than the declare pass recorded.
+    /// The two inputs are joined exactly once, when the resource directory is taken, so
+    /// this is produced at that single join and nowhere else. It is a compiler coherence
+    /// failure, never a fact about the source: reporting it as a refusal would charge the
+    /// user for the drift, and staying silent would bind the store to whatever sits at
+    /// the cited ordinal — nothing, or another resource's declaration.
     DurableResourceMissing(marrow_image::TypeId),
     /// A store's executable derivation read a branch key tuple the directory had
     /// already refused — for its declared width, or for a column outside the

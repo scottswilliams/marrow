@@ -245,8 +245,8 @@ pub fn last_production_item(source: &str) -> Option<String> {
 }
 
 /// The production code of one source file under this crate's `src`, read and
-/// projected in one step. The suites that scan a single named file share this
-/// wrapper so the path join and the projection call have one spelling.
+/// projected in one step, so the path join and the projection call have one spelling
+/// wherever a suite uses it. Some named-file scanners still read and project inline.
 pub fn production_code_of(file: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
     production_code(&std::fs::read_to_string(path).expect("read source file"))
@@ -254,9 +254,9 @@ pub fn production_code_of(file: &str) -> String {
 
 /// The names `body` calls: every identifier immediately before a `(`.
 ///
-/// A method call yields its method name, `receiver.resolve(` giving `resolve`. A call
-/// through a function value or a macro yields nothing, and a call through an alias
-/// yields the alias — a walker driven by this reader follows only names it can match.
+/// A method call yields its method name, `receiver.resolve(` giving `resolve`. A macro
+/// call yields nothing; a function value or an alias yields the name it is called by, so
+/// a walker driven by this reader follows a binding that shadows a function name.
 pub fn callees(body: &str) -> Vec<String> {
     let bytes = body.as_bytes();
     body.match_indices('(')

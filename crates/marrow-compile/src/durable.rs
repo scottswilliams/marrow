@@ -1036,12 +1036,12 @@ enum ProductOccurrenceMultiplicity {
 /// So for every image that is produced, this census is the accepted root/Product census,
 /// and a Product's multiplicity is decided once, before its first occurrence emits a site.
 struct ProductOccurrenceCensus<'stores> {
-    /// The Products named by more than one admissible store declaration.
+    /// The keys named by more than one admissible store declaration; only a bound key is a Product.
     repeated: BTreeSet<ProductKey<'stores>>,
-    /// Distinct resources named by an admissible store declaration: the Product
-    /// declarations this compile can admit.
+    /// Distinct keys named by an admissible store declaration: an upper bound on the
+    /// Product declarations this compile can admit.
     products: usize,
-    /// Admissible store declarations: the root occurrences this compile can append.
+    /// Admissible store declarations: an upper bound on the root occurrences this compile appends.
     roots: usize,
 }
 

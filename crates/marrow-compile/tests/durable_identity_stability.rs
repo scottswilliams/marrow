@@ -5,8 +5,8 @@
 //! stable id, and a store keeps its data under the id that anchor resolved to.
 //! A changed anchor spelling therefore reports a missing identity rather than a
 //! rename: `check.durable_identity` names the new anchor as a `.marrow/ids` gap, and
-//! the mint action commits it beside the id the old spelling still owns, so every
-//! existing store's data hangs off an id nothing asks for any more and the
+//! the mint action commits it beside the id the old spelling still owns, so the data
+//! stored under that anchor hangs off an id nothing asks for any more and the
 //! rename-preserves-identity law (`docs/language/traversal-and-indexes.md`) breaks.
 //!
 //! That makes the anchor set a durable contract rather than a diagnostic
@@ -204,7 +204,7 @@ use source_projection::{is_test_only_file, production_code, production_code_of};
 /// crate-wide, because a shape minted in a file the per-file censuses never read
 /// is still that shape.
 ///
-/// One check below reads this whole text; the other three read one named file each.
+/// One check below reads this whole text; the other four read named files, one to three each.
 /// All of them decide the same kind of thing: whether a spelling occurs at a site,
 /// and how often, in the source as written. None binds a call graph. A renamed
 /// function, a call through an alias or a function value, a wrapper that forwards,
@@ -318,9 +318,9 @@ fn the_durable_resource_drift_seams_are_spelled_once() {
 ///
 /// The anchor join itself is no longer this gate's subject. `KeyTable` retains no
 /// declared key column and `identity_path` is private to `durable/rows.rs`, so the
-/// builder is handed rendered anchors and is not in a position to spell the join a
-/// second time off a row — a visibility fact, which is why the census that stood in
-/// for it is gone.
+/// builder is handed rendered anchors and needs no join of its own — but it is not
+/// barred from one: `AdmittedKeyColumn::spelling` is `pub(super)` and the anchor's own
+/// text is in the builder's hands, so a second spelling is unchecked here.
 ///
 /// Not claimed: that the builder reads no key syntax. `build_field` takes a member
 /// `FieldDecl` from `GroupRow::fields` and reads `field.keys` to refuse a keyed field,
@@ -411,7 +411,7 @@ fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
     }
 }
 
-/// Each row table's field lines are exactly as written here, visibility included.
+/// The six row tables pinned here hold exactly these field lines, visibility included.
 ///
 /// The round-1 review constructed a bridge the lexical needles missed: a type alias
 /// for the raw declaration slice, carried as an extra directory field and consumed by
@@ -420,9 +420,9 @@ fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
 /// whatever its type is spelled as, and a field opened to the durable builder changes
 /// the line's `pub(super)`.
 ///
-/// It reads the field lines of six named structs in one file. A carrier reached
-/// through a type these rows already hold, or added to a struct not pinned here, is
-/// outside its reach.
+/// It reads the field lines of six named structs in one file. `IndexTable`, `IndexRow`,
+/// `IndexArgRow`, and `KeyColumnRow` are unpinned, and a carrier reached through a type
+/// these rows already hold is outside its reach.
 #[test]
 fn the_row_tables_hold_exactly_their_typed_fields() {
     let rows = production_code_of("durable/rows.rs");
