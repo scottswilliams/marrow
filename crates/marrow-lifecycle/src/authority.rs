@@ -192,6 +192,13 @@ pub(crate) struct NamedDurableNode {
     /// payload; a branch is a keyed child node), so a consumer pairing store nodes with
     /// image nodes by name binds the kind too.
     pub(crate) kind: SemanticNodeKind,
+    /// The node's index into [`VerifiedImage::semantic_nodes`] — its occurrence identity.
+    /// A ledger id is the identity of a *declaration*, so two roots of one resource give
+    /// their like-named members the same ledger id; only the whole kind-tagged semantic
+    /// path distinguishes the occurrences, and this index stands for that path. A consumer
+    /// that must be injective over occurrences (the head-map pin's coverage check) keys on
+    /// this, never on the ledger id.
+    pub(crate) semantic_index: usize,
     /// The node's name path: `["books"]` for a root, `["books", "notes", "body"]` for a
     /// member. Never empty.
     pub(crate) path: Vec<String>,
@@ -233,6 +240,7 @@ pub(crate) fn named_durable_nodes(image: &VerifiedImage) -> Vec<NamedDurableNode
             named.push(NamedDurableNode {
                 ledger_id: nodes[node_index].path.node_id(),
                 kind: SemanticNodeKind::Root,
+                semantic_index: node_index,
                 path: path.clone(),
             });
             walk_members(
@@ -395,6 +403,7 @@ fn walk_members(
             named.push(NamedDurableNode {
                 ledger_id: nodes[index].path.node_id(),
                 kind: nodes[index].kind,
+                semantic_index: index,
                 path: path.clone(),
             });
         };

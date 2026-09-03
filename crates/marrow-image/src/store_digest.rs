@@ -168,6 +168,60 @@ mod tests {
         }
     }
 
+    /// The documented sensitivity of [`interface_fingerprint`], as a known answer: it moves
+    /// exactly when the export set moves — an export added, removed, renamed, or relocated —
+    /// and stands still under a reordering and under a resignature.
+    ///
+    /// The resignature half is the one a reader cannot check by inspection here. It holds
+    /// because the fingerprint's inputs are [`ExportId`](crate::ExportId)s, which digest the
+    /// declaration path alone: `of_local(module, item)` has nowhere to put a parameter or
+    /// return type, so recompiling a resignatured export mints the same input. The frozen hex
+    /// below pins that payload end to end — an `ExportId` widened to carry a signature would
+    /// change these bytes, and this test would fail rather than the head's interface slot
+    /// silently becoming signature-sensitive.
+    #[test]
+    fn interface_fingerprint_moves_exactly_with_the_export_set() {
+        let export = |module: &str, item: &str| *crate::ExportId::of_local(module, item).bytes();
+        let read = export("a.b", "read");
+        let write = export("a.b", "write");
+        let baseline = interface_fingerprint(&[read, write]);
+
+        for (moved, changed) in [
+            (
+                "an export added",
+                interface_fingerprint(&[read, write, export("a.b", "erase")]),
+            ),
+            ("an export removed", interface_fingerprint(&[read])),
+            (
+                "an export renamed",
+                interface_fingerprint(&[read, export("a.b", "store")]),
+            ),
+            (
+                "an export relocated",
+                interface_fingerprint(&[read, export("a.c", "write")]),
+            ),
+        ] {
+            assert_ne!(baseline, changed, "{moved} must move the fingerprint");
+        }
+
+        assert_eq!(
+            baseline,
+            interface_fingerprint(&[write, read]),
+            "the digest is over the sorted set, so export order does not move it",
+        );
+        assert_eq!(
+            baseline,
+            interface_fingerprint(&[export("a.b", "read"), export("a.b", "write")]),
+            "a resignature mints the same declaration-path ids, so it does not move it",
+        );
+        assert_eq!(
+            to_hex(&baseline),
+            "296d18e25d7808ac8d15c9809151052549877216a56ceb21632f53b125072b03",
+            "the export-set fingerprint payload is frozen; a change here moves every store's \
+             persisted interface slot",
+        );
+    }
+
     /// The digest is a stable, deterministic function of the payload: two computations agree,
     /// a changed payload changes the digest, and a round trip through `from_bytes` preserves
     /// it. A frozen known-answer vector pins the exact bytes so the framing can never drift.

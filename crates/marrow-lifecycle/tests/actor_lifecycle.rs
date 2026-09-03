@@ -817,6 +817,80 @@ fn a_projection_that_under_covers_the_image_is_refused_as_uncovered() {
     }
 }
 
+/// Two store roots of one resource: `^a.v` and `^b.v` are distinct durable nodes whose
+/// ledger ids — the identity of the *declaration* `Entry.v` — are equal. A head map is a
+/// bijection over ledger ids, so this program cannot be provisioned today, but the pin's
+/// coverage check must still be injective over occurrences rather than over declarations.
+const SHARED_PRODUCT_SOURCE: &str = r#"resource Entry {
+    required v: int
+}
+
+store ^a[id: int]: Entry
+store ^b[id: int]: Entry
+
+pub fn readA(id: int): int {
+    return ^a[id].v ?? 0
+}
+"#;
+
+const SHARED_PRODUCT_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Entry 50505050505050505050505050505050\n\
+     id field Entry.v 51515151515151515151515151515151\n\
+     id root a 52525252525252525252525252525252\n\
+     id key a.id 53535353535353535353535353535353\n\
+     id root b 54545454545454545454545454545454\n\
+     id key b.id 55555555555555555555555555555555\n\
+     high-water 0\n\
+     end\n";
+
+/// Coverage is decided over occurrence identity, not declaration identity. A projection
+/// covering `^a` and its field but reaching `^b` without one leaves `^b.v` unaddressed;
+/// because `^a.v` and `^b.v` share the ledger id of `Entry.v`, a check keyed on ledger ids
+/// would count the first as covering the second and serve a store whose numbering omits a
+/// node the program addresses. The persisted map handed in binds exactly the three nodes the
+/// projection does reach, so nothing else can refuse it.
+#[test]
+fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
+    use marrow_kernel::codec::value::ScalarKind;
+
+    let image = compile(SHARED_PRODUCT_SOURCE, SHARED_PRODUCT_IDS);
+    let entry_v = marrow_image::LedgerIdBytes::from_bytes([0x51; 16]);
+
+    let mut with_field =
+        marrow_kernel::durable::StoreSchemaBuilder::root("a", vec![ScalarKind::Int]);
+    with_field.scalar_field("v", ScalarKind::Int, true);
+    let mut projection = marrow_kernel::durable::StoreProjection::builder();
+    projection.root(with_field.finish().expect("the covered root builds"));
+    projection.root(
+        marrow_kernel::durable::StoreSchemaBuilder::root("b", vec![ScalarKind::Int])
+            .finish()
+            .expect("the fieldless root builds"),
+    );
+    let partial = projection.finish().expect("the projection builds");
+
+    // Numbers 0, 1, 2 for `a`, `a.v`, `b` — the three nodes the projection reaches, validly
+    // assigned, so the binding and high-water comparisons both agree.
+    let map = marrow_lifecycle::HeadMap::assign(&[
+        marrow_image::LedgerIdBytes::from_bytes([0x52; 16]),
+        entry_v,
+        marrow_image::LedgerIdBytes::from_bytes([0x54; 16]),
+    ])
+    .expect("the partial map assigns");
+
+    match marrow_lifecycle::verify_head_map_pin(&image, &partial, &map) {
+        Err(refusal) => assert_eq!(
+            refusal.disagreement,
+            PinDisagreement::Uncovered {
+                ledger_id: entry_v,
+                place: Some("^b.v".to_string()),
+            },
+        ),
+        Ok(()) => panic!("the second root's field is unreached and must refuse"),
+    }
+}
+
 /// A store-schema node the image does not name is a typed fail-closed refusal: no ledger
 /// identity can be paired with its kernel number, so no pin can be derived at all.
 #[test]
@@ -954,27 +1028,100 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
     }
 }
 
-/// The contracted absence/tidy check over the open paths: plain `open` is the one public
-/// `OpenStore` constructor that runs no head-map pin comparison, so its production caller
-/// set is pinned here to exactly one call, inside the body of `import_jsonl` (the trusted
-/// bulk importer, a WRITE path the follow-on row fences by threading the image in), and no
-/// crate outside `marrow-lifecycle` names lifecycle `open` at all — every other production
-/// route to an attached store goes through `attach`, which runs the pin. A new caller turns
-/// up here and must either go through `attach` or extend the pin family.
+/// The head-map pin pairs durable nodes by name and kind and says nothing about their
+/// schema; the durable contract is the layer that binds the rest. `DurableContractId`'s
+/// preimage carries each key column's scalar kind and the column count
+/// (`marrow-image`'s `push_keys`) and each field's `required` flag and value shape
+/// (`push_members`), so a recompiled program that changes any of them moves the contract and
+/// is refused before the store is served. The boundary is recorded here so a later widening
+/// or narrowing of either layer has evidence to move against; the fourth such fact, a
+/// field's `required` flag, is pinned by `changing_the_durable_contract_is_a_typed_refusal`
+/// above.
+///
+/// Every recompile below keeps every ledger id, every durable node name, and every node
+/// kind, so the pin itself would pair and agree — only the contract moves. A refusal writes
+/// nothing, so one provisioned store serves all three.
+#[test]
+fn a_changed_schema_fact_is_a_durable_contract_refusal() {
+    let scratch = Scratch::new("schema-fact");
+    let image = compile(BASE_SOURCE, BASE_IDS);
+    provision_from(scratch.dir(), &image);
+
+    let value_shape = BASE_SOURCE.replace("    label: string\n", "    label: int\n");
+    // A key column's scalar kind, over the same key ledger id. The export's parameter type
+    // follows the key; a resignature alone is not a binding-fact delta, so the refusal below
+    // is the contract's, not the interface's.
+    let key_scalar = BASE_SOURCE
+        .replace("^counters[id: int]", "^counters[id: string]")
+        .replace("readValue(n: int)", "readValue(n: string)");
+    // A second key column. Arity is not separable from the columns themselves — the added
+    // column carries its own ledger id — so this records that the key tuple is bound, not
+    // that the count alone is.
+    let key_arity = BASE_SOURCE
+        .replace("^counters[id: int]", "^counters[id: int, part: int]")
+        .replace("readValue(n: int)", "readValue(n: int, p: int)")
+        .replace("^counters[n]", "^counters[n, p]");
+    let arity_ids = BASE_IDS.replace(
+        "id key counters.id",
+        "id key counters.part 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c\nid key counters.id",
+    );
+
+    for (fact, source, ids) in [
+        ("a field's value shape", value_shape, BASE_IDS),
+        ("a key column's scalar kind", key_scalar, BASE_IDS),
+        ("a key tuple's arity", key_arity, arity_ids.as_str()),
+    ] {
+        let changed = compile(&source, ids);
+        let projection = projection_of(&changed);
+        match attach(scratch.dir(), &changed, projection) {
+            Err(LifecycleError::ContractChanged(refusal)) => {
+                assert_eq!(refusal.changed, ChangedFact::DurableContract, "{fact}");
+                assert_eq!(refusal.code(), "store.contract_changed", "{fact}");
+            }
+            Err(other) => panic!(
+                "{fact}: expected a durable-contract refusal, got code {}",
+                other.code()
+            ),
+            Ok(_) => panic!("{fact} changed but the store was served"),
+        }
+    }
+}
+
+/// The absence/tidy check over the callers of lifecycle `open` — the one *spelling* of a
+/// public `OpenStore` constructor that runs no head-map pin comparison.
+///
+/// What it detects: every production reference to that spelling, in any qualification the
+/// classifier resolves (bare, `crate`/`self`/`super`/`provision`/`marrow_lifecycle`-
+/// qualified, raw-identifier, turbofished). Its caller set is pinned to exactly one call,
+/// inside the body of `import_jsonl` — the trusted bulk importer, a WRITE path the follow-on
+/// row owns, and the same row owns removing this permitted call by threading the image in —
+/// and no crate outside `marrow-lifecycle` may name lifecycle `open` at all. Every other
+/// production route to an attached store goes through `attach`, which runs the pin, so a new
+/// caller turns up here and must either go through `attach` or extend the pin family.
+///
+/// What it does not detect: a second unfenced public constructor that reaches an `OpenStore`
+/// under another name. `open_admitted` is `pub(crate)` and takes an arbitrary admit closure,
+/// so a public wrapper calling it with a no-op admit passes this scan unseen; so do a
+/// re-export in a submodule (`mod raw { pub use crate::open; }`, called as `raw::open`), a
+/// dependency rename declared in the *workspace* manifest and inherited as
+/// `life.workspace = true` (only each crate's own `Cargo.toml` is read here), and an item a
+/// macro emits from an argument the lexical projection erased — the tail sentinel compares
+/// the same stripped source, so it does not catch that one either. Making those
+/// unrepresentable is the follow-on row's, alongside the `import.rs` change; this check is a
+/// caller census over one spelling, not a structural guarantee about the API.
 ///
 /// The scan is lexical over the shared production projection (comments, string and char
 /// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
 /// around it into the closed set [`OpenReference`] enumerates. Rather than following an
 /// alias, the gate refuses any `use` that would let a new spelling name the function — an
 /// `as` alias of `open`, `provision`, or the crate's own path roots, a glob import of them —
-/// and any dependency rename of `marrow-lifecycle`, so every legal spelling of a call is one
-/// the classifier sees. Every scanned file's last production item header must survive
-/// blanking at its own byte offset, so a runaway blank cannot erase a call. Limitation: the
-/// shared projection carries no cfg context — a test-only module included as
-/// `#[cfg(test)] mod name;` from its parent (only `*_tests.rs` files are recognised as
-/// test-only) and an item under a compound marker such as `#[cfg(all(test, unix))]` are
-/// scanned as production code; no such region names `open` today, so nothing is falsely
-/// rejected.
+/// and any dependency rename of `marrow-lifecycle` a crate's own manifest declares. Every
+/// scanned file's last production item header must survive blanking at its own byte offset,
+/// so a runaway blank cannot erase a call. Limitation: the shared projection carries no cfg
+/// context — a test-only module included as `#[cfg(test)] mod name;` from its parent (only
+/// `*_tests.rs` files are recognised as test-only) and an item under a compound marker such
+/// as `#[cfg(all(test, unix))]` are scanned as production code; no such region names `open`
+/// today, so nothing is falsely rejected.
 #[test]
 fn plain_open_has_exactly_the_documented_unfenced_callers() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1184,7 +1331,15 @@ fn classify_open_references(
             references.push(OpenReference::Import);
             continue;
         }
-        let before = token_before(code, at);
+        // A raw identifier is the same function under a different spelling, so step over the
+        // `r#` prefix and let whatever qualifies it decide, exactly as for a bare `open`.
+        let before = match token_before(code, at) {
+            Some((hash, "#")) if hash + 1 == at => match token_before(code, hash) {
+                Some((raw, "r")) if raw + 1 == hash => token_before(code, raw),
+                _ => Some((hash, "#")),
+            },
+            other => other,
+        };
         let lifecycle = match before {
             Some((_, ".")) => {
                 references.push(OpenReference::Method);
@@ -1219,11 +1374,18 @@ fn classify_open_references(
 }
 
 /// The byte spans of every `use` and `extern crate` statement in `code`, each from its
-/// keyword to its terminating `;`.
+/// keyword to its terminating `;`. `extern` opens a statement only in `extern crate`: as an
+/// ABI marker (`extern "Rust" fn f() { … }`, or an `extern` block) it introduces an item
+/// whose body is ordinary code, and a span running to the first `;` would swallow it.
 fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     for keyword in ["use", "extern"] {
         for at in ident_token_offsets(code, keyword) {
+            if keyword == "extern"
+                && !matches!(token_after(code, at + keyword.len()), Some((_, "crate")))
+            {
+                continue;
+            }
             let end = code[at..]
                 .find(';')
                 .map_or(code.len(), |semi| at + semi + 1);
@@ -1443,6 +1605,16 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
         [Import]
     );
     assert!(lifecycle("open_admitted(dir, p, admit); reopen(dir)").is_empty());
+    // A raw identifier names the same function, in every qualification.
+    assert_eq!(lifecycle("r#open(dir, projection)"), [Call { at: 2 }]);
+    assert_eq!(lifecycle("crate::r#open(dir, p)"), [Call { at: 9 }]);
+    // An ABI `extern` marks an item, not an import: its body stays visible to the scan.
+    assert_eq!(
+        lifecycle(
+            "pub extern \"Rust\" fn resume(d: &Path) -> R {\n  let r = open(d, p);\n  r\n}\n"
+        ),
+        [Call { at: 55 }]
+    );
     assert!(
         lifecycle("let s = \"open(\"; // open(\n").is_empty(),
         "literals are not code"
@@ -1455,6 +1627,10 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
         [Call { at: 18 }]
     );
     assert_eq!(classify("crate::open(dir)", Scope::Foreign), [Foreign]);
+    assert_eq!(
+        classify("marrow_lifecycle::r#open(dir, p)", Scope::Foreign),
+        [Call { at: 20 }]
+    );
 
     for alias in [
         "use crate::open as raw_open;",

@@ -8,7 +8,7 @@
 //! the projection an open installs, so the numbers it compares are the numbers that will
 //! address cells.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use marrow_image::{LedgerIdBytes, interface_fingerprint};
 use marrow_kernel::durable::{
@@ -65,7 +65,10 @@ pub fn accepted_ceiling(image: &VerifiedImage) -> Vec<u8> {
 /// kernel's canonical split pre-order (see [`split_order`]). A projection of that one walk:
 /// number `i` binds to the ledger id of the `i`-th walked node.
 ///
-/// Returns a [`FormatError`] only if the node count exceeds the head map's bound.
+/// Returns a [`FormatError`] when the node count exceeds the head map's bound, and when the
+/// walk yields one ledger id twice — the map is a bijection over declaration identities, so
+/// a program whose durable nodes do not carry distinct ids (two store roots of one resource
+/// share their members' ids) has no head map and cannot be provisioned today.
 pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
     let (nodes, order) = split_order(image);
     let ledger_ids: Vec<LedgerIdBytes> = order.iter().map(|&i| nodes[i].path.node_id()).collect();
@@ -110,9 +113,11 @@ pub enum PinDisagreement {
     /// A durable node of the image the store shape never reaches, so the pairing consumed
     /// only part of the image: the numbering that was compared covers fewer nodes than the
     /// program addresses. Refused during derivation, independent of the persisted map, so
-    /// a persisted map truncated to match cannot make the omission invisible. Reported by
-    /// ledger id, with its `^root.member` spelling when the image's sealed structure names
-    /// the node (it always does for a flat-executable root).
+    /// a persisted map truncated to match cannot make the omission invisible. Coverage is
+    /// decided over occurrence identity — the node's own semantic path — so a like-named
+    /// member of a second root sharing the reported declaration identity is uncovered on
+    /// its own account. Reported by ledger id, with its `^root.member` spelling when the
+    /// image's sealed structure names the node (it always does for a flat-executable root).
     Uncovered {
         ledger_id: LedgerIdBytes,
         place: Option<String>,
@@ -144,9 +149,10 @@ impl HeadMapPinMismatch {
     /// The stable dotted code a tool reports. The pin is part of the store's durable
     /// addressing, so a disagreement is recovery-shaped: whether the head bytes drifted or
     /// the toolchain's numbering did, the store's cells cannot be addressed under this
-    /// pairing. The two causes have different remedies (see [`std::fmt::Display`]) but one
-    /// code today; whether toolchain-numbering drift deserves its own code family distinct
-    /// from `store.corruption` is a codes-registry question outside this crate.
+    /// pairing. The remedy is conditional on which it was (see [`std::fmt::Display`]) and
+    /// one code covers both today; the store on a numbering-drift disagreement is healthy
+    /// and decoded, so whether that cause deserves its own code family distinct from
+    /// `store.corruption` is a codes-registry question outside this crate.
     pub fn code(&self) -> &'static str {
         marrow_codes::Code::StoreCorruption.as_str()
     }
@@ -228,10 +234,10 @@ impl std::fmt::Display for HeadMapPinMismatch {
         write!(
             f,
             ". The store is refused before any engine call: attaching it would address durable \
-             cells under the wrong identities. If this toolchain's numbering drifted from the \
-             one that provisioned the store, a toolchain matching that one still serves it; if \
-             the persisted map itself changed (corrupted or permuted), no toolchain does and \
-             the store needs recovery, for which no repair or migration path exists today"
+             cells under the wrong identities. Retry with the exact provisioning toolchain and \
+             an image-derived projection. If that same derivation also disagrees, treat the \
+             persisted head map as corrupt and stop; recovery requires known-good state, \
+             because Marrow has no repair or migration path today"
         )
     }
 }
@@ -283,7 +289,10 @@ pub(crate) fn derive_head_map_pin(
         if by_path.insert(&node.path, index).is_some() {
             // Two image nodes under one spelling: the name join is ambiguous, so no pairing
             // is trustworthy. The compiler rejects duplicate member names, so this is reachable
-            // only through correspondence drift — refused, never guessed.
+            // only through correspondence drift — refused, never guessed. Payload precision,
+            // not the refusal: without this the second node stays unpaired and the coverage
+            // check below refuses the same store as `Uncovered`, so removing it changes only
+            // which typed disagreement is reported.
             return Err(unnamed(&node.path));
         }
     }
@@ -319,20 +328,34 @@ pub(crate) fn derive_head_map_pin(
     // index, whose cell keys carry an identity rather than a number) was consumed by the
     // walk above. Checked over the image's own node list rather than the named join, so a
     // node the join could not name is uncovered too, never silently absent.
-    let paired: HashSet<LedgerIdBytes> = pairing.pairs.iter().map(|&(id, _)| id).collect();
-    if let Some(node) = image
+    //
+    // Coverage is keyed on occurrence identity — the node's index into `semantic_nodes`,
+    // standing for its whole kind-tagged semantic path — never on its ledger id. A ledger
+    // id names a declaration, so two roots of one resource give their like-named members
+    // one id; keying on the id would let a projection that covers `^a.v` silently cover
+    // `^b.v` as well.
+    let mut covered = vec![false; image.semantic_nodes().len()];
+    for (index, &claimed) in pairing.consumed.iter().enumerate() {
+        if claimed {
+            covered[named[index].semantic_index] = true;
+        }
+    }
+    if let Some((index, node)) = image
         .semantic_nodes()
         .iter()
-        .filter(|node| node.kind != SemanticNodeKind::Index)
-        .find(|node| !paired.contains(&node.path.node_id()))
+        .enumerate()
+        .filter(|(_, node)| node.kind != SemanticNodeKind::Index)
+        .find(|&(index, _)| !covered[index])
     {
-        let ledger_id = node.path.node_id();
         let place = named
             .iter()
-            .find(|named| named.ledger_id == ledger_id)
+            .find(|named| named.semantic_index == index)
             .map(|named| spell_place(&named.path));
         return Err(HeadMapPinMismatch {
-            disagreement: PinDisagreement::Uncovered { ledger_id, place },
+            disagreement: PinDisagreement::Uncovered {
+                ledger_id: node.path.node_id(),
+                place,
+            },
         });
     }
 
@@ -377,6 +400,10 @@ impl Pairing<'_> {
         let Some(&index) = self.by_path.get(self.path.as_slice()) else {
             return Err(unnamed(&self.path));
         };
+        // Payload precision, not the refusal: a second claim would pair one ledger id with
+        // two numbers, and `DerivedPin::verify` refuses that pair anyway (the persisted
+        // entry is removed by the first, so the second reports a `Binding` disagreement).
+        // Removing this guard changes only which typed disagreement is reported.
         if std::mem::replace(&mut self.consumed[index], true) {
             return Err(unnamed(&self.path));
         }
@@ -472,7 +499,10 @@ impl DerivedPin {
             }
         }
         // A pin-only binding: an id the persisted map carries that the derivation never
-        // pairs.
+        // pairs. Payload precision, not the refusal: a decoded map forbids a duplicate
+        // number and one at or above its high-water, so a map with an extra entry after
+        // every derived pair matched necessarily carries a higher high-water and the check
+        // below refuses it. Removing this branch reports `HighWater` instead, never `Ok`.
         if let Some(entry) = persisted
             .entries()
             .iter()

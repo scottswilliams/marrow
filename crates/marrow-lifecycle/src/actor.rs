@@ -32,13 +32,19 @@
 //!   the interface). This is a typed refusal, *not* corruption: the store is intact and the
 //!   prior program remains usable. It names the changed fact category and points at `marrow
 //!   apply`, which owns the typed change review (F03a) that names the exact changed source
-//!   places; F02a names the category.
+//!   places; F02a names the category. The classification runs after the engine's physical
+//!   open, so it is what a *changed contract over a healthy engine* yields; an engine that
+//!   fails to open surfaces as its own open error instead. Either way the store is not
+//!   served.
 //!
-//! The actor is the sole constructor of a lifecycle transition: it returns a live
-//! [`OpenStore`] holding the store's owner lock, which is non-`Clone` and non-serializable, so
-//! no session, bytecode, or client path can enter or forge a lifecycle state — nothing below
-//! this crate depends on it (the Cargo trust boundary), and there is no serialized form to
-//! reconstruct one from.
+//! The actor is the sole constructor of an *attached* lifecycle transition: `attach` is the
+//! only entry that pairs a store with a verified image, and the pin guards it. `crate::open`
+//! also returns an [`OpenStore`], without an image and without a pin comparison; its
+//! production caller set is pinned by the lifecycle test battery, and the follow-on row that
+//! threads an image through `import_jsonl` owns closing it. An `OpenStore` holds the store's
+//! owner lock, which is non-`Clone` and non-serializable, so no session, bytecode, or client
+//! path can enter or forge a lifecycle state — nothing below this crate depends on it (the
+//! Cargo trust boundary), and there is no serialized form to reconstruct one from.
 
 use std::path::Path;
 
