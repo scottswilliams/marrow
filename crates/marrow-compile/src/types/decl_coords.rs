@@ -3,9 +3,9 @@
 //!
 //! Those are the families a later pass reports at. The value-containment cycle check
 //! reports each struct and record on a cycle at its own declaration; a cyclic generic
-//! instantiation is reported at its template's own span instead, and an enum payload
-//! naming an enum is outside the admitted subset today. So `declare_enums` records no
-//! coordinate, and an enum has no row here.
+//! instantiation is reported at its template's own span instead, and a declared enum's
+//! payload is a bare scalar, so a non-generic payload cannot name an enum. So
+//! `declare_enums` records no coordinate, and an enum has no row here.
 //!
 //! A pass that must report at a declaration reads the coordinate from here instead of
 //! scanning the syntax tree for a declaration whose name matches. That scan was linear

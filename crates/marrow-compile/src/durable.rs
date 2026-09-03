@@ -1170,8 +1170,8 @@ fn build_one(
         KeyColumns::Admitted(columns) => columns,
     };
     let key_scalars: Vec<ScalarType> = key_columns.iter().map(|column| column.scalar).collect();
-    // The declaration and the record it was built from are read from one row, so a
-    // store cannot reach a record whose declaration the durable build does not hold.
+    // The record and its projected member rows are read from one row the directory join
+    // built, so a store cannot reach a record the join paired with no declaration.
     // The refused and absent arms report the same row at the same span: a name that is
     // written but binds no admitted resource is not a resource of this project either
     // way, and steering the refused case to its own cause is a separate change.

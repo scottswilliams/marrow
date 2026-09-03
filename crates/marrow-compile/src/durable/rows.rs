@@ -27,11 +27,12 @@ use crate::analysis::FileRef;
 use crate::diag::SourceDiagnostic;
 use crate::scalar::ScalarType;
 use crate::types::{GenericInvariant, RecordInfo, TypeRegistry};
-/// A typed handle to one admitted `resource` declaration, valid only in the
-/// [`ResourceDirectory`] that minted it.
+/// A typed handle to one admitted `resource` declaration: a row index into the
+/// [`ResourceDirectory`] that minted it, rather than a narrowed ordinal, and never on
+/// the wire.
 ///
-/// A row index rather than a narrowed ordinal: it addresses this compile's
-/// declaration list and never reaches the wire.
+/// The handle carries no brand for its directory, so a second directory would accept it;
+/// the build takes one directory per compile, so there is no second one to reach.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ResourceDeclId(usize);
 
@@ -55,7 +56,7 @@ pub(super) struct ResourceRow<'a> {
 /// wrote and the record the type registry admitted — and it is performed once, before
 /// any store is built. The registry drives the join: every row comes from an admitted
 /// record, so which resources exist is decided by exactly one owner, and a store
-/// reaches a record only *through* a row that already holds a declaration. An
+/// reaches a record only *through* a row this join built from a declaration. An
 /// admitted record no declaration in the received slice answers is the two build
 /// inputs drifting apart — a compiler coherence failure raised here, at the single
 /// join, and nowhere else.
@@ -392,8 +393,8 @@ pub(super) struct AdmittedKeyColumn<'a> {
 /// The three arms are the whole answer, so a consumer cannot read the columns without
 /// having been handed the refusal that would have made them wrong. Both readings of a
 /// table rank through [`KeyTable::admitted`], so a tuple that is both over-wide and
-/// unresolvable answers `OverWide` at either of them — the precedence both declaring
-/// sites always had, carried by the type rather than by the order its callers ask in.
+/// unresolvable is refused for its width at each: [`KeyTable::columns`] answers
+/// `OverWide`, and [`KeyTable::resolved`] hands out no scalar tuple either way.
 pub(super) enum KeyColumns<'a> {
     Admitted(Vec<AdmittedKeyColumn<'a>>),
     /// The tuple is over the image's fixed key width: the refusal and its span.
