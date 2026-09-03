@@ -1054,9 +1054,9 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     let key_scalar = BASE_SOURCE
         .replace("^counters[id: int]", "^counters[id: string]")
         .replace("readValue(n: int)", "readValue(n: string)");
-    // A second key column. Arity is not separable from the columns themselves — the added
-    // column carries its own ledger id — so this records that the key tuple is bound, not
-    // that the count alone is.
+    // A second key column, which moves both the count and the id set at once. The
+    // isolated-count case is separate, below: arity IS separable from the ledger, in the
+    // drop direction, and an earlier note here claimed it was not.
     let key_arity = BASE_SOURCE
         .replace("^counters[id: int]", "^counters[id: int, part: int]")
         .replace("readValue(n: int)", "readValue(n: int, p: int)")
@@ -1065,6 +1065,12 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
         "id key counters.id",
         "id key counters.part 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c\nid key counters.id",
     );
+
+    // The head as provisioned. A refusal must leave it byte-identical: the binding it
+    // refused must not be the binding it stored. Without this the classification could
+    // write the incoming binding on its way out and every assertion below would still
+    // pass, so this is what makes the refusal a refusal rather than a report.
+    let provisioned_head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head");
 
     for (fact, source, ids) in [
         ("a field's value shape", value_shape, BASE_IDS),
@@ -1084,7 +1090,67 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
             ),
             Ok(_) => panic!("{fact} changed but the store was served"),
         }
+        assert_eq!(
+            std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head"),
+            provisioned_head,
+            "{fact}: the refusal rewrote the head it refused",
+        );
     }
+}
+
+/// A key tuple's arity is a durable-contract fact in its own right, separable from the
+/// ledger ids of its columns.
+///
+/// Round 4 recorded that it was NOT separable — that no case could change the arity while
+/// preserving every column's ledger id — and skipped the pin on that ground. The claim is
+/// false in the DROP direction: provision a two-column root, then attach a one-column one
+/// against the identical ledger. Every ledger byte survives and the dropped column's id is
+/// simply orphaned, so the ids are untouched and only the arity moved.
+///
+/// What makes the contract move is the shorter `(scalar, id)` run, not the `u16_be(count)`
+/// that precedes it — removing that count leaves this case still refusing, because a
+/// dropped column withdraws its own bytes from the preimage. Established by mutation
+/// rather than by reading: the count looks like the mechanism and is not. The count is
+/// pinned in its own right by the `durable_contract_id_*` known-answer tests beside
+/// `push_keys`, which freeze the preimage byte for byte; this case pins the end-to-end
+/// refusal, and the two together are why an arity change cannot be served.
+#[test]
+fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
+    let two_columns = BASE_SOURCE
+        .replace("^counters[id: int]", "^counters[id: int, part: int]")
+        .replace("readValue(n: int)", "readValue(n: int, p: int)")
+        .replace("^counters[n]", "^counters[n, p]");
+    // One ledger serves both shapes: the second column's id is present throughout, live in
+    // the two-column image and orphaned in the one-column image.
+    let ids = BASE_IDS.replace(
+        "id key counters.id",
+        "id key counters.part 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c\n\
+         id key counters.id",
+    );
+
+    let scratch = Scratch::new("arity-alone");
+    let wide = compile(&two_columns, &ids);
+    provision_from(scratch.dir(), &wide);
+    let head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head");
+
+    // The same ledger, one column narrower.
+    let narrow = compile(BASE_SOURCE, &ids);
+    match attach(scratch.dir(), &narrow, projection_of(&narrow)) {
+        Err(LifecycleError::ContractChanged(refusal)) => {
+            assert_eq!(refusal.changed, ChangedFact::DurableContract);
+            assert_eq!(refusal.code(), "store.contract_changed");
+        }
+        Err(other) => panic!(
+            "dropping a key column must be a durable-contract refusal, got code {}",
+            other.code()
+        ),
+        Ok(_) => panic!("the key tuple narrowed but the store was served"),
+    }
+    assert_eq!(
+        std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head"),
+        head,
+        "the refusal rewrote the head it refused",
+    );
 }
 
 /// The absence/tidy check over the callers of lifecycle `open` — the one *spelling* of a
@@ -1377,10 +1443,23 @@ fn classify_open_references(
 /// keyword to its terminating `;`. `extern` opens a statement only in `extern crate`: as an
 /// ABI marker (`extern "Rust" fn f() { … }`, or an `extern` block) it introduces an item
 /// whose body is ordinary code, and a span running to the first `;` would swallow it.
+///
+/// A raw identifier is NOT the keyword it spells. `r#use` and `r#extern` are ordinary
+/// names, so they open no statement — and the distinction is the opposite of the one the
+/// call scan needs, which is why the two are handled in different places. `open` is an
+/// identifier, so `r#open` names the same function and the call scan steps over the
+/// prefix to see it. `use` is a keyword, so `r#use` names something else entirely and
+/// this scan must not see it. Reading a raw identifier as the keyword opens a span to the
+/// next `;` over code that is not an import, and a call inside that span disappears:
+/// `#[cfg_attr(any(), r#use)] let leaked = r#open(dir, projection);` hid its call from
+/// every assertion here.
 fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     for keyword in ["use", "extern"] {
         for at in ident_token_offsets(code, keyword) {
+            if code[..at].ends_with("r#") {
+                continue;
+            }
             if keyword == "extern"
                 && !matches!(token_after(code, at + keyword.len()), Some((_, "crate")))
             {
@@ -1608,6 +1687,21 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
     // A raw identifier names the same function, in every qualification.
     assert_eq!(lifecycle("r#open(dir, projection)"), [Call { at: 2 }]);
     assert_eq!(lifecycle("crate::r#open(dir, p)"), [Call { at: 9 }]);
+    // And a raw identifier spelling a KEYWORD is not that keyword, so it opens no import
+    // span. Read as `use`, the span below runs to the `;` and the call inside it vanishes.
+    assert_eq!(
+        lifecycle("#[cfg_attr(any(), r#use)] let leaked = r#open(dir, projection);"),
+        [Call { at: 41 }]
+    );
+    assert_eq!(
+        lifecycle("#[cfg_attr(any(), r#extern)] let s = open(dir, p);"),
+        [Call { at: 37 }]
+    );
+    assert!(use_statements("#[cfg_attr(any(), r#use)] let x = 1;").is_empty());
+    assert!(use_statements("#[cfg_attr(any(), r#extern)] let x = 1;").is_empty());
+    // The keyword itself still opens one, so the exclusion is about the prefix only.
+    assert_eq!(use_statements("use crate::provision::open;").len(), 1);
+    assert_eq!(use_statements("extern crate marrow_kernel;").len(), 1);
     // An ABI `extern` marks an item, not an import: its body stays visible to the scan.
     assert_eq!(
         lifecycle(
