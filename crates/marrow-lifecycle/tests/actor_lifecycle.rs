@@ -971,12 +971,16 @@ fn entry_root(name: &str, parts: &str) -> marrow_kernel::durable::StoreSchema {
 }
 
 /// Coverage is decided over occurrence identity, not declaration identity — at every node
-/// kind and at every depth. Each case below splits the members of `Entry` between the two
-/// roots, so the omitted occurrence's ledger id is present in the walk under the *other*
-/// root: a check keyed on ledger ids would count that one as covering this one and serve a
-/// store whose numbering omits a node the program addresses. A group, a keyed branch, and a
-/// branch nested inside a branch each carry the property in their own right; pinning it on
-/// the flat field alone leaves a coverage check that consults ids for the rest.
+/// kind and at every depth. In the flat-field, keyed-branch and group cases the omitted
+/// occurrence's ledger id is present in the walk under the *other* root, so a check keyed on
+/// ledger ids would count that one as covering this one and serve a store whose numbering
+/// omits a node the program addresses. A group and a keyed branch therefore carry the
+/// property in their own right; pinning it on the flat field alone leaves a coverage check
+/// that consults ids for the rest. The nested-branch case is a DEPTH case, not an identity
+/// one: it projects `replies` under neither root, so what it establishes is that the walk
+/// reaches a branch member nested inside a branch at all. Isolating a nested occurrence
+/// against a live twin, and the fields below a group or a branch, belongs to the follow-on
+/// row.
 ///
 /// The persisted map binds only the two store roots. Coverage is decided during derivation,
 /// before the persisted map is read, so what the map binds cannot make an uncovered node
