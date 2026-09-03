@@ -201,9 +201,13 @@ impl std::error::Error for LifecycleError {}
 /// Attach the verified `image` to the store at `dir`, opening it under the store shape
 /// `projection` describes. Takes the store's single-owner lock, rereads the persisted
 /// head, and classifies the image against the active binding (see the module documentation):
-/// an identical image opens already-active, a binding-only code update is atomically rebound
-/// and receipted, and any binding-fact change is a typed [`LifecycleError::ContractChanged`]
-/// refusal pointing at `marrow apply`.
+/// an identical image opens already-active, and a binding-only code update is atomically
+/// rebound and receipted. The classification runs after the admission gate and after the
+/// engine's physical open, so a binding-fact change is the typed
+/// [`LifecycleError::ContractChanged`] refusal pointing at `marrow apply` when the store
+/// admits the image and the engine opens; a demand beyond the accepted ceiling, a head-map
+/// pin disagreement, or an engine that fails to open surfaces as its own refusal instead. The
+/// store is served under none of them.
 pub fn attach(
     dir: &Path,
     image: &VerifiedImage,

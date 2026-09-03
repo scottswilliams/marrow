@@ -180,6 +180,40 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
     );
 }
 
+/// The admission gate precedes the binding-fact classification, so an image that both
+/// broadens its demand beyond the accepted ceiling and changes the durable contract is
+/// refused as the authority refusal, never as the contract one. The two name different
+/// remedies — consciously expand the accepted ceiling, or review the change with `marrow
+/// apply` — so which one arrives is part of the attach contract rather than a detail of the
+/// order the checks happen to run in.
+#[test]
+fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
+    let scratch = Scratch::new("preempt");
+    let (read_only, _) = compile(&source_read_only());
+    // Broadened *and* contract-changed: the sparse `label` the broadened export writes is
+    // promoted to required, which moves the durable contract on its own.
+    let (both, _) = compile(
+        &source_broadened().replace("    label: string\n", "    required label: string\n"),
+    );
+    assert_ne!(
+        marrow_lifecycle::active_binding(&read_only).durable_contract,
+        marrow_lifecycle::active_binding(&both).durable_contract,
+        "the variant must really change the contract, or the preemption proves nothing",
+    );
+
+    provision(scratch.dir(), &read_only);
+    match attach_image(scratch.dir(), &both) {
+        Err(LifecycleError::DemandExceedsCeiling(refusal)) => {
+            assert_eq!(refusal.code(), "store.demand_exceeds_ceiling");
+        }
+        Err(other) => panic!(
+            "the ceiling refusal must preempt the contract one, got code {}",
+            other.code()
+        ),
+        Ok(_) => panic!("an over-ceiling image must be refused, not admitted"),
+    }
+}
+
 /// The naming join spells the Workshop catalog's places correctly through the recursive
 /// walk: a store provisioned under a Workshop variant with one export refuses a variant
 /// broadened to touch a two-root spread — the refusal spells the second root (`^tallies`) and
