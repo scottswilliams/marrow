@@ -2919,6 +2919,22 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
         !module.contains("Clone for DeclarationCoordinates"),
         "a hand-written `impl Clone` reopens the copy the derive scan forbids",
     );
+    // Prove the needle is there to be blanked before proving it was blanked. Without this
+    // the probe is only as good as the source's line wrapping: the previous needle was
+    // split across two lines by rustfmt, so it occurred in neither the raw text nor the
+    // projection and the assertion below passed whether or not comments were blanked. A
+    // reflow can do that again at any time; asserting raw containment first turns that
+    // into a failure here rather than a probe that quietly stops deciding anything.
+    let raw: String = src_files()
+        .into_iter()
+        .filter(|path| path.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/types")))
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .collect();
+    assert!(
+        raw.contains("one-shot ownership"),
+        "the probe's needle must occur contiguously in the raw source, or it proves \
+         nothing; a reflow has split it",
+    );
     assert!(
         !module.contains("one-shot ownership"),
         "the projection must blank doc comments; this module's own prose survived",
