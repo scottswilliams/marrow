@@ -76,24 +76,24 @@ impl<'a> ResourceDirectory<'a> {
         // built from, by pushing both in lockstep, so this reads that pairing rather than
         // rebuilding one. It used to rebuild it from resource name spellings, which was two
         // defects in one: source spelling is not declaration identity, so a same-named
-        // declaration from elsewhere paired happily; and re-deriving a fact an earlier
-        // owner settled is the re-derivation the speed pillar forbids. Reading the ordinal
-        // is linear and admits no key at all.
+        // declaration from elsewhere paired happily; and re-deriving a fact an earlier owner
+        // settled is the re-derivation the speed pillar forbids. Reading the ordinal is
+        // linear and admits no key at all.
         //
         // What the ordinal establishes: for the writer that recorded it — the declare pass,
         // handed the same slice — an exact record-to-declaration pairing, derived once and
-        // never again. What the coordinate check below adds: the declaration at that
-        // ordinal must sit at the module POSITION and name span the declare pass recorded,
-        // so a slice of a different shape fails loudly instead of pairing by position with
-        // whatever it was handed. A position, not a spelling, because two parses of one
-        // project repeat spellings and cannot repeat positions.
+        // never again. What the coordinate check below adds, exactly this: at each ordinal
+        // an admitted record cites, the declaration found there sits at the module position
+        // and name span the declare pass recorded, so a cited declaration that moved or was
+        // replaced is refused rather than paired with whatever now sits at that index.
         //
-        // What neither establishes: that an arbitrary caller's slice is the one the
-        // registry was built from. `FileRef` is snapshot-local and `FileIdentity` is not
-        // compared, so a second parse presenting the same module ordinal and name span with
-        // its members mutated is accepted here. Making that unrepresentable means carrying
-        // the declare pass's pairing out with the registry under one borrowed wrapper,
-        // which retires the ordinal and this check together; it is a successor row's work.
+        // What it does not reach: an ordinal no record cites. A slice carrying declarations
+        // appended past the last cited one, or altered at an uncited one, passes untouched.
+        // Nor is the slice authenticated: `FileRef` is snapshot-local and `FileIdentity` is
+        // not compared, and two parses of one project repeat every module position and name
+        // span, so a re-parse presenting those with its members mutated is accepted here.
+        // Carrying the declare pass's pairing out with the registry under one borrowed
+        // wrapper retires the ordinal and this check together; it is a successor row's work.
         let ordinals = records.record_declaration_ordinals();
         let admitted = records.admitted_resources();
         let mut rows = Vec::with_capacity(admitted.len());
