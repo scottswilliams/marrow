@@ -76,20 +76,34 @@ impl<'a> ResourceDirectory<'a> {
         resources: &[(FileRef, FileIdentity, &'a ResourceDecl)],
         records: &'a TypeRegistry,
     ) -> Result<Self, GenericInvariant> {
-        // A repeated resource name is refused by the declare pass, which keeps the
-        // first declaration; answering the spelling with the first declaration is the
-        // same choice, spelled once. One keyed pass here; the join below is a lookup,
-        // not a scan, so the take is linear-logarithmic in the declaration count.
-        let mut declared: BTreeMap<&str, (&FileIdentity, &'a ResourceDecl)> = BTreeMap::new();
-        for (_, file, decl) in resources {
-            declared.entry(decl.name.as_str()).or_insert((file, decl));
-        }
-        let mut rows = Vec::new();
+        // The declare pass already paired every admitted record with the declaration it was
+        // built from, by pushing both in lockstep, so this reads that pairing rather than
+        // rebuilding one. It used to rebuild it from resource name spellings, which was two
+        // defects in one: source spelling is not declaration identity, so a same-named
+        // declaration from elsewhere paired happily; and re-deriving a fact an earlier
+        // owner settled is the re-derivation the speed pillar forbids. Reading the ordinal
+        // is linear and admits no key at all.
+        //
+        // The coordinate check below is what makes a wrong slice fail loudly instead of
+        // pairing by position with whatever it was handed. It compares the module POSITION
+        // and span the declare pass recorded against the declaration at that ordinal — a
+        // position, not a spelling, because two parses of one project repeat spellings and
+        // cannot repeat positions.
+        let ordinals = records.record_declaration_ordinals();
+        let admitted = records.admitted_resources();
+        let mut rows = Vec::with_capacity(admitted.len());
         let mut by_spelling = BTreeMap::new();
-        for record in records.admitted_resources() {
-            let Some((file, decl)) = declared.get(record.name.as_str()).copied() else {
-                return Err(GenericInvariant::DurableResourceMissing(record.type_id));
-            };
+        for (index, record) in admitted.iter().enumerate() {
+            let missing = || GenericInvariant::DurableResourceMissing(record.type_id);
+            let (at, file, decl) = ordinals
+                .get(index)
+                .and_then(|&ordinal| resources.get(ordinal))
+                .ok_or_else(missing)?;
+            let (declared_at, declared_span) =
+                records.declaration_module(record.type_id).ok_or_else(missing)?;
+            if declared_at != *at || declared_span != decl.name_span {
+                return Err(missing());
+            }
             let id = ResourceDeclId(rows.len());
             rows.push(ResourceRow {
                 record,

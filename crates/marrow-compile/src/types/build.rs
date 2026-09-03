@@ -1557,7 +1557,7 @@ pub(super) fn declare_records<'a>(
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<Vec<(FileRef, FileIdentity, &'a ResourceDecl)>, DeclareError> {
     let mut survivors = Vec::new();
-    for (at, file, resource) in resources {
+    for (ordinal, (at, file, resource)) in resources.iter().enumerate() {
         let declared = DeclarationSite {
             name: &resource.name,
             file,
@@ -1602,6 +1602,9 @@ pub(super) fn declare_records<'a>(
             fields: Vec::new(),
             groups: Vec::new(),
         });
+        // Pushed with the record, never separately: the durable build reads index `i` of
+        // this against index `i` of `records`, so the two must not be able to drift.
+        registry.record_declarations.push(ordinal);
         registry.named.declare(
             resource.name.clone(),
             DeclarationOccurrence::Accepted(NamedTypeKind::Resource),

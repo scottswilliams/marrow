@@ -1341,6 +1341,15 @@ pub(crate) struct TypeRegistry {
     /// record type; at most one backs a durable store this line. Names are unique
     /// (a duplicate is rejected at declare), so a name selects at most one.
     records: Vec<RecordInfo>,
+    /// For each admitted record, its position in the resource slice `declare_records` was
+    /// given. Written in lockstep with `records`, so index `i` of one addresses index `i`
+    /// of the other by construction rather than by a later join on any key.
+    ///
+    /// This exists because the durable build was rebuilding that pairing from resource
+    /// name strings — a fact settled at declaration time, thrown away, and re-derived with
+    /// a weaker key. Carrying the ordinal is both the identity fix and the removal of a
+    /// re-derivation.
+    record_declarations: Vec<usize>,
     /// The generic value-type templates: the reserved toolchain generics
     /// (`Option`/`Result`) followed by the user `struct`/`enum` templates. Fixed
     /// after `build`; instantiations reference a template by index.
@@ -1399,6 +1408,7 @@ impl TypeRegistry {
             collection_index: RefCell::default(),
             row_directory: RefCell::default(),
             coordinates: DeclarationCoordinates::default(),
+            record_declarations: Vec::new(),
         }
     }
 }
@@ -3202,6 +3212,22 @@ impl TypeRegistry {
         &self.records
     }
 
+    /// For each admitted record, in record order, its position in the resource slice the
+    /// declare pass was given. The durable build reads this instead of re-pairing records
+    /// to declarations by name.
+    pub(crate) fn record_declaration_ordinals(&self) -> &[usize] {
+        &self.record_declarations
+    }
+
+    /// The module position and span `type_id` was declared at, for a consumer proving that
+    /// a declaration it holds is the one a record was built from.
+    pub(crate) fn declaration_module(
+        &self,
+        type_id: TypeId,
+    ) -> Option<(crate::analysis::FileRef, SourceSpan)> {
+        self.coordinates.module_of(type_id)
+    }
+
     pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {
         self.records.iter().find(|info| info.name == name)
     }
@@ -3467,6 +3493,7 @@ impl TypeRegistry {
             collection_index: RefCell::default(),
             row_directory: RefCell::default(),
             coordinates: DeclarationCoordinates::default(),
+            record_declarations: Vec::new(),
         };
         registry.nominals = build_nominals(
             &mut registry,

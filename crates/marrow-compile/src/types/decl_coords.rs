@@ -71,6 +71,18 @@ impl DeclarationCoordinates {
             .or_insert(DeclarationCoordinate { at, span });
     }
 
+    /// The module position and span `type_id` was declared at, or `None` when this pass
+    /// minted no coordinate for it.
+    ///
+    /// Distinct from [`resolve`](Self::resolve), which answers with the module's SPELLING
+    /// for a diagnostic to print. This answers with its position, which is what a consumer
+    /// checking that two references denote one declaration needs: a spelling can repeat
+    /// across two parses of a project, a position within one admitted project cannot.
+    pub(super) fn module_of(&self, type_id: TypeId) -> Option<(FileRef, SourceSpan)> {
+        let coordinate = self.declarations.get(&type_id)?;
+        Some((coordinate.at, coordinate.span))
+    }
+
     /// Where `type_id` was declared, or `None` for a type this pass minted no
     /// coordinate for — a reserved toolchain template has no source declaration.
     pub(super) fn resolve(&self, type_id: TypeId) -> Option<(&FileIdentity, SourceSpan)> {
