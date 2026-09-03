@@ -737,11 +737,15 @@ fn sync_dir(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `Database` is deliberately NOT imported here. Every redb open in this crate goes
-    // through `create_raw` or `reopen_raw`, so nothing in these tests names the type — and
-    // naming it again to open directly is now a visible act, an added import rather than a
-    // line that blends in. The unused-import lint noticed the moment the last direct call
-    // went, which is the structural half of what the guard checks lexically.
+    // `Database` is not imported here: every redb open in this crate routes through
+    // `open_past_lock_release`, so nothing in these tests names the type and the
+    // unused-import lint removed it.
+    //
+    // That is tidiness, NOT enforcement, and an earlier version of this comment claimed
+    // otherwise. Opening directly still needs no import — `::redb::Database::create(...)`
+    // works as written, and inside `redb.rs` so does `super::Database::open(...)`. Only
+    // the bare spelling would need the import back. The guard beside `open_past_lock_release`
+    // is what checks this; a missing import merely means nobody has done it yet.
     use ::redb::{ReadableDatabase, TableDefinition};
 
     use crate::redb::{create_raw, reopen_raw};

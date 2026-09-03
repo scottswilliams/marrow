@@ -217,7 +217,9 @@ fn contain_panic<T>(
 /// one cause. Two candidates fit every observation: the kernel's release trailing the
 /// close the drop performs, and a concurrently spawned child inheriting the descriptor
 /// until its exec. Both are absorbed by the same wait, so the retry does not depend on
-/// choosing between them. A genuine concurrent holder keeps the lock for the whole
+/// choosing between them. A genuine CONFLICTING holder keeps the lock for the whole
+/// budget — conflicting, not merely concurrent, because two read-only handles take
+/// compatible shared locks and the second simply succeeds —
 /// budget and surfaces as [`StoreError::Locked`], as does a transient window longer than
 /// the budget. Bounded here means the retry sleeps are bounded — 1, 2, 4 and 8 ms — which
 /// is the only part this function controls; it does not bound the filesystem or database
@@ -847,6 +849,19 @@ where
     traversal::collect_after(range, prefix, io("scan_after"))
 }
 
+/// Create, as a raw redb handle, a database for a test to seed or inspect.
+///
+/// The paths these tests create on are fresh, so none races a preceding drop today. It
+/// waits anyway, because the alternative is a claim with four exceptions: every open of a
+/// redb database in this crate goes through [`open_past_lock_release`], full stop, and a
+/// reader checking that does not have to hold four sites in mind. The wait costs nothing
+/// on a path nobody holds.
+#[cfg(test)]
+pub(crate) fn create_raw(path: &Path, subject: &str) -> Database {
+    open_past_lock_release(path, || Database::create(path))
+        .unwrap_or_else(|error| panic!("create {subject}: {error:?}"))
+}
+
 /// Reopen, as a raw redb handle, a file whose previous handle was just dropped.
 ///
 /// A store's advisory lock can still be held for a short interval after the handle that
@@ -865,19 +880,6 @@ where
 /// retry sleeps are bounded, which is the only part this helper controls: it does not
 /// bound the filesystem or database open it is retrying. It never reports a held lock as
 /// success.
-/// Create, as a raw redb handle, a database for a test to seed or inspect.
-///
-/// The paths these tests create on are fresh, so none races a preceding drop today. It
-/// waits anyway, because the alternative is a claim with four exceptions: every open of a
-/// redb database in this crate goes through [`open_past_lock_release`], full stop, and a
-/// reader checking that does not have to hold four sites in mind. The wait costs nothing
-/// on a path nobody holds.
-#[cfg(test)]
-pub(crate) fn create_raw(path: &Path, subject: &str) -> Database {
-    open_past_lock_release(path, || Database::create(path))
-        .unwrap_or_else(|error| panic!("create {subject}: {error:?}"))
-}
-
 #[cfg(test)]
 pub(crate) fn reopen_raw(path: &Path, subject: &str) -> Database {
     open_past_lock_release(path, || Database::open(path))
@@ -890,8 +892,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // See `native_owner.rs`: `Database` is not imported into the test module, so opening
-    // directly requires adding the import back.
+    // See `native_owner.rs`: `Database` is absent because nothing here names it, which is
+    // tidiness rather than a constraint — `super::Database::open(...)` needs no import.
     use redb::{ReadableDatabase, TableDefinition};
 
     use super::{
@@ -993,11 +995,12 @@ mod tests {
     /// no projection reads — a failure there would have sent a reader to teach a projection
     /// that never looks at it.
     ///
-    /// It also fails on a cooked one-letter string whose content is the raw marker, such as
-    /// a literal holding just `r`, because that content is byte-for-byte a raw opener and
-    /// telling the two apart needs the very lexer this stands in for. That is a loud false
-    /// failure in the safe direction, and the remedy is to spell such a literal differently
-    /// or teach `code_only` the raw forms.
+    /// It also fails on a cooked string ENDING in a boundary-delimited raw-marker suffix —
+    /// not only a literal whose whole content is the marker, but any ending in one, with or
+    /// without the byte or C prefix and with any run of hashes. Such a suffix plus the
+    /// literal's own closing quote is byte-for-byte a raw opener, and telling the two apart
+    /// needs the lexer this stands in for. A loud false failure in the safe direction; the
+    /// remedy is to spell the literal differently or teach `code_only` the raw forms.
     #[test]
     fn the_projected_source_contains_no_raw_string() {
         assert!(
