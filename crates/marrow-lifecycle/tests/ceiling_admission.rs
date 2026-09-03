@@ -320,3 +320,53 @@ fn a_narrowed_demand_within_the_ceiling_is_admitted() {
         ),
     }
 }
+
+/// The accepted ceiling belongs to the STORE, not to whatever image is bound to it, so a
+/// binding-only rebind carries it forward verbatim. A rebind that wrote the incoming image's
+/// own ceiling instead would silently shrink the standing maximum to the narrower image's
+/// demand — and the store would then refuse the very image it was provisioned under. That is
+/// the harm this pins: not a lost write, but a healthy store over-refused later by an attach
+/// that reported success at the time.
+#[test]
+fn a_rebind_preserves_the_stores_standing_ceiling() {
+    let scratch = Scratch::new("standing");
+    let (read_only, _) = compile(&source_read_only());
+    let (broadened, _) = compile(&source_broadened());
+    let broad_ceiling = marrow_lifecycle::accepted_ceiling(&broadened);
+    assert_ne!(
+        broad_ceiling,
+        marrow_lifecycle::accepted_ceiling(&read_only),
+        "the two ceilings must really differ, or preservation proves nothing",
+    );
+
+    provision(scratch.dir(), &broadened);
+    match attach_image(scratch.dir(), &read_only) {
+        Ok(AttachOutcome::Rebound { .. }) => {}
+        Ok(AttachOutcome::AlreadyActive(_)) => panic!("the narrower image differs in code"),
+        Err(other) => panic!("the narrower image must rebind, got {}", other.code()),
+    }
+
+    let head = marrow_lifecycle::LogicalHead::decode(
+        &std::fs::read(scratch.dir().join("head")).expect("read head"),
+    )
+    .expect("decode head");
+    assert_eq!(
+        marrow_lifecycle::active_binding(&read_only),
+        head.binding,
+        "the rebind must really have rewritten the head, or nothing was preserved through it",
+    );
+    assert_eq!(
+        head.accepted_ceiling, broad_ceiling,
+        "the rebind rewrote the store's standing maximum to the incoming image's demand",
+    );
+
+    // And the maximum still admits what the store was provisioned under.
+    match attach_image(scratch.dir(), &broadened) {
+        Ok(AttachOutcome::Rebound { .. }) => {}
+        Ok(AttachOutcome::AlreadyActive(_)) => panic!("the broader image differs in code"),
+        Err(other) => panic!(
+            "the store over-refuses the image it was provisioned under: {}",
+            other.code()
+        ),
+    }
+}
