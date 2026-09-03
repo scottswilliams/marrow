@@ -891,12 +891,26 @@ fn a_projection_that_under_covers_the_image_is_refused_as_uncovered() {
     }
 }
 
-/// Two store roots of one resource: `^a.v` and `^b.v` are distinct durable nodes whose
-/// ledger ids — the identity of the *declaration* `Entry.v` — are equal. A head map is a
-/// bijection over ledger ids, so this program cannot be provisioned today, but the pin's
-/// coverage check must still be injective over occurrences rather than over declarations.
+/// Two store roots of one resource, so every member of `Entry` is two durable nodes under
+/// one ledger id — `^a.v` and `^b.v` are the identity of the *declaration* `Entry.v`, and so
+/// are `^a.meta` and `^b.meta`, `^a.notes` and `^b.notes`, and the nested `replies` under
+/// each. A head map is a bijection over ledger ids, so this program cannot be provisioned
+/// today, but the pin's coverage check must still be injective over occurrences rather than
+/// over declarations, at every node kind and at every depth.
 const SHARED_PRODUCT_SOURCE: &str = r#"resource Entry {
     required v: int
+
+    meta {
+        m: int
+    }
+
+    notes[noteId: string] {
+        required body: string
+
+        replies[replyId: string] {
+            required text: string
+        }
+    }
 }
 
 store ^a[id: int]: Entry
@@ -916,52 +930,89 @@ const SHARED_PRODUCT_IDS: &str = "marrow ids v0\n\
      id key a.id 53535353535353535353535353535353\n\
      id root b 54545454545454545454545454545454\n\
      id key b.id 55555555555555555555555555555555\n\
+     id group Entry.meta 56565656565656565656565656565656\n\
+     id field Entry.meta.m 57575757575757575757575757575757\n\
+     id root Entry.notes 58585858585858585858585858585858\n\
+     id key Entry.notes.noteId 59595959595959595959595959595959\n\
+     id field Entry.notes.body 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\n\
+     id root Entry.notes.replies 5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b\n\
+     id key Entry.notes.replies.replyId 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c\n\
+     id field Entry.notes.replies.text 5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d\n\
      high-water 0\n\
      end\n";
 
-/// Coverage is decided over occurrence identity, not declaration identity. A projection
-/// covering `^a` and its field but reaching `^b` without one leaves `^b.v` unaddressed;
-/// because `^a.v` and `^b.v` share the ledger id of `Entry.v`, a check keyed on ledger ids
-/// would count the first as covering the second and serve a store whose numbering omits a
-/// node the program addresses. The persisted map handed in binds exactly the three nodes the
-/// projection does reach, so nothing else can refuse it.
-#[test]
-fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
+/// One `Entry` root of a coverage case's store shape, carrying the named parts of the shared
+/// resource: `v` (the flat field), `meta` (the group and its field), `notes` (the keyed
+/// branch and its field), `replies` (the sub-branch nested inside `notes`).
+fn entry_root(name: &str, parts: &str) -> marrow_kernel::durable::StoreSchema {
     use marrow_kernel::codec::value::ScalarKind;
 
+    let has = |part: &str| parts.split_whitespace().any(|token| token == part);
+    let mut builder =
+        marrow_kernel::durable::StoreSchemaBuilder::root(name, vec![ScalarKind::Int]);
+    if has("v") {
+        builder.scalar_field("v", ScalarKind::Int, true);
+    }
+    if has("meta") {
+        builder.open_group("meta");
+        builder.scalar_field("m", ScalarKind::Int, false);
+        builder.close_group();
+    }
+    if has("notes") {
+        builder.open_branch("notes", vec![ScalarKind::Str]);
+        builder.scalar_field("body", ScalarKind::Str, true);
+        if has("replies") {
+            builder.open_branch("replies", vec![ScalarKind::Str]);
+            builder.scalar_field("text", ScalarKind::Str, true);
+            builder.close_branch();
+        }
+        builder.close_branch();
+    }
+    builder.finish().expect("the root builds")
+}
+
+/// Coverage is decided over occurrence identity, not declaration identity — at every node
+/// kind and at every depth. Each case below splits the members of `Entry` between the two
+/// roots, so the omitted occurrence's ledger id is present in the walk under the *other*
+/// root: a check keyed on ledger ids would count that one as covering this one and serve a
+/// store whose numbering omits a node the program addresses. A group, a keyed branch, and a
+/// branch nested inside a branch each carry the property in their own right; pinning it on
+/// the flat field alone leaves a coverage check that consults ids for the rest.
+///
+/// The persisted map binds only the two store roots. Coverage is decided during derivation,
+/// before the persisted map is read, so what the map binds cannot make an uncovered node
+/// covered — and were the map what refused, the exact typed disagreement asserted here would
+/// fail rather than pass.
+#[test]
+fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
     let image = compile(SHARED_PRODUCT_SOURCE, SHARED_PRODUCT_IDS);
-    let entry_v = marrow_image::LedgerIdBytes::from_bytes([0x51; 16]);
-
-    let mut with_field =
-        marrow_kernel::durable::StoreSchemaBuilder::root("a", vec![ScalarKind::Int]);
-    with_field.scalar_field("v", ScalarKind::Int, true);
-    let mut projection = marrow_kernel::durable::StoreProjection::builder();
-    projection.root(with_field.finish().expect("the covered root builds"));
-    projection.root(
-        marrow_kernel::durable::StoreSchemaBuilder::root("b", vec![ScalarKind::Int])
-            .finish()
-            .expect("the fieldless root builds"),
-    );
-    let partial = projection.finish().expect("the projection builds");
-
-    // Numbers 0, 1, 2 for `a`, `a.v`, `b` — the three nodes the projection reaches, validly
-    // assigned, so the binding and high-water comparisons both agree.
     let map = marrow_lifecycle::HeadMap::assign(&[
         marrow_image::LedgerIdBytes::from_bytes([0x52; 16]),
-        entry_v,
         marrow_image::LedgerIdBytes::from_bytes([0x54; 16]),
     ])
-    .expect("the partial map assigns");
+    .expect("the root-only map assigns");
 
-    match marrow_lifecycle::verify_head_map_pin(&image, &partial, &map) {
-        Err(refusal) => assert_eq!(
-            refusal.disagreement,
-            PinDisagreement::Uncovered {
-                ledger_id: entry_v,
-                place: Some("^b.v".to_string()),
-            },
-        ),
-        Ok(()) => panic!("the second root's field is unreached and must refuse"),
+    for (kind, a, b, ledger, place) in [
+        ("a flat field", "v meta notes replies", "", 0x51, "^b.v"),
+        ("a keyed branch", "v meta", "notes replies", 0x58, "^a.notes"),
+        ("a nested branch", "v meta notes", "", 0x5b, "^a.notes.replies"),
+        ("a group", "v notes replies", "meta", 0x56, "^a.meta"),
+    ] {
+        let mut projection = marrow_kernel::durable::StoreProjection::builder();
+        projection.root(entry_root("a", a));
+        projection.root(entry_root("b", b));
+        let partial = projection.finish().expect("the projection builds");
+        match marrow_lifecycle::verify_head_map_pin(&image, &partial, &map) {
+            Err(refusal) => assert_eq!(
+                refusal.disagreement,
+                PinDisagreement::Uncovered {
+                    ledger_id: marrow_image::LedgerIdBytes::from_bytes([ledger; 16]),
+                    place: Some(place.to_string()),
+                },
+                "{kind}: the first unreached occurrence",
+            ),
+            Ok(()) => panic!("{kind}: an unreached occurrence must refuse"),
+        }
     }
 }
 
