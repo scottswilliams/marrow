@@ -835,6 +835,26 @@ where
     traversal::collect_after(range, prefix, io("scan_after"))
 }
 
+/// Reopen, as a raw redb handle, a file whose previous handle was just dropped.
+///
+/// A store's advisory lock can still be held for a short interval after the handle that
+/// took it is dropped — whether because the kernel's release trails the close, or because
+/// a concurrently spawned child transiently inherited the descriptor before its exec. The
+/// cause is not established; both produce the same observation, a `DatabaseAlreadyOpen`
+/// for a path whose Marrow handle is gone, and both are absorbed by the same wait.
+/// [`open_write_capable`] is where the production path absorbs it. A test that opens
+/// directly reintroduces the hazard and reports it as a store defect, so every raw reopen
+/// in this crate's tests comes through here.
+///
+/// The wait is bounded: a genuinely held lock exhausts the backoff and surfaces as
+/// [`StoreError::Locked`] rather than hanging, and a transient window longer than the
+/// budget still surfaces that way.
+#[cfg(test)]
+pub(crate) fn reopen_raw(path: &Path, subject: &str) -> Database {
+    open_write_capable(path, || Database::open(path))
+        .unwrap_or_else(|error| panic!("reopen {subject}: {error:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -843,7 +863,7 @@ mod tests {
 
     use redb::{Database, ReadableDatabase, TableDefinition};
 
-    use super::{FORMAT_VERSION, META, NativeEngine, TABLE, map_open_error};
+    use super::{FORMAT_VERSION, META, NativeEngine, TABLE, map_open_error, reopen_raw};
     use crate::conformance;
     use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn};
     use crate::error::StoreError;
@@ -887,6 +907,139 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    /// Every raw reopen in this crate's tests goes through [`reopen_raw`], so no test
+    /// races the lock interval that [`open_write_capable`] waits out.
+    ///
+    /// What this detects, across `redb.rs` and `native_owner.rs`: a direct open call on
+    /// `Database` in code — comments, string and char literals blanked, and a call whose
+    /// receiver is a longer identifier ending in `Database` not counted — outside the two
+    /// places that own it, plus a `reopen_raw` whose own body stops routing through the
+    /// production helper.
+    ///
+    /// What it does NOT detect: `<Database>::open(...)`, a spelling broken across tokens
+    /// or lines, a call reached through a macro, an aliased import of either function, a
+    /// reopen written against `ReadOnlyDatabase` instead, and the same hazard spelled as a
+    /// create. It is a spelling check at a site, not a call-graph boundary. It earns its
+    /// keep because the failure it prevents is intermittent and costs a whole battery to
+    /// observe, and its limits are written here rather than implied by its name.
+    #[test]
+    fn every_raw_reopen_goes_through_the_lock_release_tolerance() {
+        // Split so these assertions do not match themselves.
+        let spelling = ["Database", "::open("].concat();
+        let tolerance = ["open", "_write_capable("].concat();
+
+        let mut direct = 0;
+        for source in [include_str!("redb.rs"), include_str!("native_owner.rs")] {
+            let code = code_only(source);
+            direct += count_receiver_calls(&code, &spelling);
+        }
+        assert_eq!(
+            direct, 2,
+            "a direct `{spelling}` belongs to `open_write_capable` and `reopen_raw` only; \
+             a third reopens a just-dropped path with no wait and fails intermittently",
+        );
+
+        let code = code_only(include_str!("redb.rs"));
+        let body = brace_matched_body(&code, "fn reopen_raw(")
+            .expect("the shared reopen helper is present");
+        assert!(
+            body.contains(&tolerance),
+            "`reopen_raw`'s own body must route through the production wait, not open directly",
+        );
+    }
+
+    /// Blank comments and string/char literals, preserving length and newlines so a span
+    /// found in the result addresses the same place in the source. Minimal by design: this
+    /// crate cannot reach the workspace's shared projection, and neither scanned file uses
+    /// a raw-string form.
+    fn code_only(source: &str) -> String {
+        let src = source.as_bytes();
+        let mut out = Vec::with_capacity(src.len());
+        let at = |i: usize, pat: &[u8]| src.len() >= i + pat.len() && &src[i..i + pat.len()] == pat;
+        let mut i = 0;
+        while i < src.len() {
+            if at(i, b"//") {
+                while i < src.len() && src[i] != b'\n' {
+                    out.push(b' ');
+                    i += 1;
+                }
+            } else if at(i, b"/*") {
+                let mut depth = 0usize;
+                while i < src.len() {
+                    if at(i, b"/*") {
+                        depth += 1;
+                        out.extend_from_slice(b"  ");
+                        i += 2;
+                    } else if at(i, b"*/") {
+                        depth -= 1;
+                        out.extend_from_slice(b"  ");
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        out.push(if src[i] == b'\n' { b'\n' } else { b' ' });
+                        i += 1;
+                    }
+                }
+            } else if src[i] == b'"' || src[i] == b'\'' {
+                let quote = src[i];
+                out.push(b' ');
+                i += 1;
+                while i < src.len() && src[i] != quote {
+                    let escaped = src[i] == b'\\';
+                    out.push(if src[i] == b'\n' { b'\n' } else { b' ' });
+                    i += 1;
+                    if escaped && i < src.len() {
+                        out.push(b' ');
+                        i += 1;
+                    }
+                }
+                if i < src.len() {
+                    out.push(b' ');
+                    i += 1;
+                }
+            } else {
+                out.push(src[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).expect("blanking replaces bytes one for one within ASCII runs")
+    }
+
+    /// Occurrences of `call` whose receiver is exactly that identifier, so a longer name
+    /// ending the same way — `ReadOnlyDatabase::open(`, say — is not one of them.
+    fn count_receiver_calls(code: &str, call: &str) -> usize {
+        code.match_indices(call)
+            .filter(|(at, _)| {
+                !code[..*at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|before| before.is_alphanumeric() || before == '_')
+            })
+            .count()
+    }
+
+    /// The brace-matched body of the first item whose header is `header`.
+    fn brace_matched_body(code: &str, header: &str) -> Option<String> {
+        let at = code.find(header)?;
+        let open = code[at..].find('{')? + at;
+        let mut depth = 0;
+        for (offset, ch) in code[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(code[open..open + offset + 1].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     #[test]
@@ -1206,7 +1359,7 @@ mod tests {
             assert_eq!(txn.commit(), CommitOutcome::Confirmed);
         }
         drop(store);
-        let db = Database::open(&path).expect("reopen raw redb handle");
+        let db = reopen_raw(&path, "raw redb handle");
 
         let read = db.begin_read().expect("begin read transaction");
         let table = read
@@ -1255,7 +1408,7 @@ mod tests {
         let path = dir.path().join("aborted-write.redb");
 
         drop(NativeEngine::open(&path).expect("open"));
-        let db = Database::open(&path).expect("reopen raw redb handle");
+        let db = reopen_raw(&path, "raw redb handle");
 
         let seed = db.begin_write().expect("begin seed transaction");
         {
@@ -1315,7 +1468,7 @@ mod tests {
         let path = dir.path().join("ordered-bytes.redb");
 
         drop(NativeEngine::open(&path).expect("open"));
-        let db = Database::open(&path).expect("reopen raw redb handle");
+        let db = reopen_raw(&path, "raw redb handle");
 
         let write = db.begin_write().expect("begin write transaction");
         {
@@ -1389,7 +1542,7 @@ mod tests {
             }
         }
 
-        let db = Database::open(&path).expect("reopen foreign database");
+        let db = reopen_raw(&path, "foreign database");
         let read = db.begin_read().expect("read foreign database");
         assert!(
             matches!(
@@ -1427,7 +1580,7 @@ mod tests {
             NativeEngine::open_existing(&unstamped).is_err(),
             "a valid but unstamped redb database is not a Marrow store",
         );
-        let db = Database::open(&unstamped).expect("reopen unstamped database");
+        let db = reopen_raw(&unstamped, "unstamped database");
         let read = db.begin_read().expect("read unstamped database");
         assert!(
             matches!(

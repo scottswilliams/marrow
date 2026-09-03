@@ -739,6 +739,8 @@ mod tests {
     use super::*;
     use ::redb::{Database, ReadableDatabase, TableDefinition};
 
+    use crate::redb::reopen_raw;
+
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -1140,7 +1142,7 @@ mod tests {
             open_existing(&unstamped.0, [0x23; 16]),
             Err(NativeOwnerOpenError::Store(_))
         ));
-        let db = Database::open(&path).expect("reopen refused unstamped database");
+        let db = reopen_raw(&path, "refused unstamped database");
         let read = db.begin_read().expect("read unstamped database");
         const META: TableDefinition<&str, u32> = TableDefinition::new("marrow.meta");
         assert!(
