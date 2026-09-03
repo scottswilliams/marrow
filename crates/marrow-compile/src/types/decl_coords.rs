@@ -35,16 +35,27 @@ use crate::analysis::FileRef;
 /// The admitted `resource` records, each with the position of the declaration it was
 /// built from in the resource slice the declare pass was given.
 ///
-/// Index `i` of one addresses index `i` of the other, and the whole mutable surface is
-/// what keeps that true rather than the private fields alone. [`Self::admit`] is the
-/// only append and it appends to both vectors, so a helper that pushed a record alone
-/// would leave every later record carrying another declaration's ordinal; [`Self::at_mut`]
-/// is the only other mutation, and it edits one record where it lies. No route hands out
-/// a `&mut [RecordInfo]`, so `swap`, `sort`, `reverse`, `truncate` and slice assignment —
-/// each of which moves a record out from under a fixed ordinal — do not compile against
-/// this type. The durable build reads the pairing rather than rebuilding one from
-/// resource name spellings. Reading is the record slice itself; the ordinals are read
-/// through [`Self::ordinals`].
+/// Index `i` of one addresses index `i` of the other. What the type enforces is that no
+/// record can MOVE: [`Self::admit`] is the only append and appends to both vectors, so a
+/// helper pushing a record alone would leave every later record carrying another
+/// declaration's ordinal, and no route hands out a `&mut [RecordInfo]`, so `swap`, `sort`,
+/// `reverse`, `truncate` and slice assignment do not compile against this type. Positions
+/// are therefore stable by construction.
+///
+/// What it does NOT enforce is that a record's CONTENTS at a stable position belong to the
+/// declaration that position's ordinal names. [`Self::at_mut`] hands out a `&mut RecordInfo`
+/// so the reserve-then-fill pass can fill a record where it lies, and a caller inside this
+/// crate could instead assign a whole different record through it, leaving index `i`
+/// holding one declaration's record beside another's ordinal. No production path does; the
+/// three callers fill a reserved record from its own declaration.
+///
+/// That distinction is worth stating precisely because this type's guarantee was claimed
+/// too broadly three times before it was written down accurately. Structural here means
+/// stable positions, not authenticated contents.
+///
+/// The durable build reads this pairing rather than rebuilding one from resource name
+/// spellings. Reading is the record slice itself; the ordinals are read through
+/// [`Self::ordinals`].
 #[derive(Default)]
 pub(crate) struct AdmittedRecords {
     records: Vec<RecordInfo>,
@@ -63,10 +74,13 @@ impl AdmittedRecords {
         &self.declarations
     }
 
-    /// The record at `index`, to fill in place. The reserve-then-fill pass edits a
-    /// record where it lies, which is the only mutation this type admits besides
-    /// [`Self::admit`]: a mutable slice would additionally let a caller reorder or
-    /// replace records while the ordinals stayed put.
+    /// The record at `index`, to fill in place. The reserve-then-fill pass edits a record
+    /// where it lies, and a mutable slice would additionally let a caller REORDER records
+    /// while the ordinals stayed put, which this forbids.
+    ///
+    /// It does not forbid replacing the record at a fixed index — `*at_mut(0) = other`
+    /// compiles — so this narrows the mutable surface to position-preserving edits rather
+    /// than authenticating what sits at a position.
     pub(super) fn at_mut(&mut self, index: usize) -> &mut RecordInfo {
         &mut self.records[index]
     }
