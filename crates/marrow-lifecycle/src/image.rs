@@ -65,6 +65,153 @@ pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
     HeadMap::assign(&ledger_ids)
 }
 
+/// The first point at which a persisted head-map pin and the numbering this toolchain
+/// derives disagree. The payload is typed so a tool asserts the disagreement itself, not a
+/// rendered sentence; the hex spelling exists only in [`std::fmt::Display`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinDisagreement {
+    /// A durable node the two bijections bind differently: the number the persisted pin
+    /// binds its ledger id to (`None`: the pin does not carry the id), and the number the
+    /// derivation assigns (`None`: the derivation does not reach the id).
+    Binding {
+        ledger_id: LedgerIdBytes,
+        persisted: Option<u32>,
+        derived: Option<u32>,
+    },
+    /// Every binding agrees but the never-reuse high-water differs — a head claiming
+    /// numbers were used and retired where the derivation retires nothing. No production
+    /// path writes such a head today, so it is refused rather than tolerated.
+    HighWater { persisted: u32, derived: u32 },
+}
+
+/// The head-map pin refusal: the store's persisted ledger-id ↔ cell-number bijection
+/// (FR01 §3) disagrees with the numbering this toolchain derives for the store's active
+/// durable contract. Fail-closed and recovery-shaped — serving the store would readdress
+/// durable cells (ledger id X's bytes read as id Y's value), so the attach refuses before
+/// any engine call and the store bytes are untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeadMapPinMismatch {
+    /// The first disagreement, in the derived walk order (then any pin-only binding, then
+    /// the high-water), so the rendered refusal is a deterministic function of the delta.
+    pub disagreement: PinDisagreement,
+}
+
+impl HeadMapPinMismatch {
+    /// The stable dotted code a tool reports. The pin is part of the store's durable
+    /// addressing, so a disagreement is recovery-shaped: whether the head bytes drifted or
+    /// the toolchain's walk did, the store's cells cannot be addressed under this pairing.
+    pub fn code(&self) -> &'static str {
+        marrow_codes::Code::StoreCorruption.as_str()
+    }
+}
+
+impl std::fmt::Display for HeadMapPinMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the store's persisted head identity map (the ledger-id \u{2194} cell-number pin) \
+             disagrees with the numbering this toolchain derives for the store's active \
+             program: "
+        )?;
+        match &self.disagreement {
+            PinDisagreement::Binding {
+                ledger_id,
+                persisted,
+                derived,
+            } => {
+                let mut hex = String::with_capacity(32);
+                for byte in ledger_id.bytes() {
+                    use std::fmt::Write;
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                match persisted {
+                    Some(number) => write!(f, "ledger id {hex} is pinned to number {number}")?,
+                    None => write!(f, "ledger id {hex} is not in the pin")?,
+                }
+                match derived {
+                    Some(number) => write!(f, " but derives number {number}")?,
+                    None => write!(f, " but is not derived")?,
+                }
+            }
+            PinDisagreement::HighWater { persisted, derived } => write!(
+                f,
+                "every binding agrees but the pinned high-water is {persisted} where the \
+                 derivation's is {derived}"
+            )?,
+        }
+        write!(
+            f,
+            ". The store is refused before any data access: serving it would address durable \
+             cells under the wrong identities. Restore the store from a trusted backup, or \
+             attach with the toolchain that provisioned it"
+        )
+    }
+}
+
+/// Verify the persisted head-map pin against the numbering this toolchain derives for
+/// `image`: every ledger id must carry exactly the number position the canonical split
+/// pre-order assigns (the same `number i = i`-th walked node mint [`head_map`] projects at
+/// provision), no binding may exist on only one side, and the high-water must be the walked
+/// node count. Total over any decoded [`HeadMap`] — the comparison consumes the persisted
+/// bijection and the derived walk, allocating one hash map over the persisted entries, and
+/// returns the first disagreement rather than panicking on any shape.
+///
+/// The attach actor runs this after the single-owner lock and before any engine call,
+/// exactly when the incoming durable contract equals the store's active contract — the one
+/// case where the persisted pin claims to describe the presented image's numbering.
+pub fn verify_head_map_pin(
+    image: &VerifiedImage,
+    persisted: &HeadMap,
+) -> Result<(), HeadMapPinMismatch> {
+    let (nodes, order) = split_order(image);
+    let mut pinned: HashMap<[u8; 16], u32> = persisted
+        .entries()
+        .iter()
+        .map(|entry| (*entry.ledger_id.bytes(), entry.number))
+        .collect();
+    for (derived_number, &node) in order.iter().enumerate() {
+        let ledger_id = nodes[node].path.node_id();
+        let derived_number = derived_number as u32;
+        match pinned.remove(ledger_id.bytes()) {
+            Some(number) if number == derived_number => {}
+            pinned_number => {
+                return Err(HeadMapPinMismatch {
+                    disagreement: PinDisagreement::Binding {
+                        ledger_id,
+                        persisted: pinned_number,
+                        derived: Some(derived_number),
+                    },
+                });
+            }
+        }
+    }
+    // A pin-only binding: an id the persisted map carries that the derivation never walks.
+    // Reported in the persisted encoding order, the map's own deterministic order.
+    if let Some(entry) = persisted
+        .entries()
+        .iter()
+        .find(|entry| pinned.contains_key(entry.ledger_id.bytes()))
+    {
+        return Err(HeadMapPinMismatch {
+            disagreement: PinDisagreement::Binding {
+                ledger_id: entry.ledger_id,
+                persisted: Some(entry.number),
+                derived: None,
+            },
+        });
+    }
+    let derived = order.len() as u32;
+    if persisted.next_number() != derived {
+        return Err(HeadMapPinMismatch {
+            disagreement: PinDisagreement::HighWater {
+                persisted: persisted.next_number(),
+                derived,
+            },
+        });
+    }
+    Ok(())
+}
+
 /// The kind **and ledger identity** of each durable node in the same canonical split
 /// pre-order the head map numbers, the other projection of [`split_order`]. This is the
 /// cross-crate enforcement artifact: a test compares this sequence against the kernel's

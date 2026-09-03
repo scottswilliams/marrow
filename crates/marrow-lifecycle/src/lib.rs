@@ -41,7 +41,10 @@ pub use codec::FormatError;
 pub use envelope::{EngineKind, MAX_ENVELOPE_FILE_BYTES, StoreEnvelope};
 pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
-pub use image::{accepted_ceiling, active_binding, head_map, head_map_node_order};
+pub use image::{
+    HeadMapPinMismatch, PinDisagreement, accepted_ceiling, active_binding, head_map,
+    head_map_node_order, verify_head_map_pin,
+};
 pub use import::{
     CommitFault, ImportError, ImportLimits, ImportReport, ImportTarget, RowFault, ShapeFault,
     import_jsonl,

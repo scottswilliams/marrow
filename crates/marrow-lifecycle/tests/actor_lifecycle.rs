@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use marrow_lifecycle::{
     AttachOutcome, ChangedFact, EngineKind, HEAD_FILE, LifecycleError, LogicalHead,
-    ProvisionRequest, StoreEnvelope, StoreInstanceId, active_binding, attach, head_map, open,
-    provision,
+    PinDisagreement, ProvisionRequest, StoreEnvelope, StoreInstanceId, active_binding, attach,
+    head_map, open, provision,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -416,6 +416,248 @@ fn a_crash_between_head_and_envelope_commit_recovers_to_the_new_binding() {
         reopened.binding.facts_equal(&binding_b),
         "the recovered binding facts match the new image",
     );
+}
+
+/// Rewrite the store's head at `dir` with the same binding and ceiling as `image` but a
+/// *permuted* head map: the same ledger ids with the first and last swapped, so two nodes
+/// carry each other's cell numbers. The permuted map is still a valid bijection and the
+/// rewritten head reseals, so decode admits it — only the pin comparison can catch the
+/// disagreement. Returns the swapped (first, last) ledger ids and the last number.
+fn permute_persisted_pin(
+    dir: &Path,
+    image: &VerifiedImage,
+) -> (
+    marrow_image::LedgerIdBytes,
+    marrow_image::LedgerIdBytes,
+    u32,
+) {
+    let map = head_map(image).expect("head map");
+    let mut ids: Vec<marrow_image::LedgerIdBytes> =
+        map.entries().iter().map(|entry| entry.ledger_id).collect();
+    let last = ids.len() - 1;
+    ids.swap(0, last);
+    let permuted = marrow_lifecycle::HeadMap::assign(&ids).expect("a permuted bijection assigns");
+    let forged = LogicalHead::provision(
+        active_binding(image),
+        marrow_lifecycle::accepted_ceiling(image),
+        permuted,
+    );
+    std::fs::write(dir.join(HEAD_FILE), forged.encode()).expect("write permuted head");
+    (ids[last], ids[0], last as u32)
+}
+
+/// The pin family covers every serving outcome: an attach serves a store only as
+/// already-active or as a binding-only rebind, and both arms are fenced by a permuted-pin
+/// fixture below. A new [`AttachOutcome`] variant fails this match until the family covers
+/// it too.
+fn _pin_family_covers_every_serving_outcome(outcome: AttachOutcome) {
+    match outcome {
+        AttachOutcome::AlreadyActive(_) => (),
+        AttachOutcome::Rebound { .. } => (),
+    }
+}
+
+/// The head-map pin bites (FR01 §3): a provisioned store whose persisted ledger-id ↔
+/// cell-number bijection disagrees with the numbering this toolchain derives for the same
+/// durable contract — a permuted bijection, the exact readdressing hazard where ledger id
+/// X's bytes would be served as id Y's value — is refused at attach with a typed fail-closed
+/// error naming the pin's first disagreeing binding. Before the pin comparison existed,
+/// attach served this store silently as already-active.
+#[test]
+fn a_store_with_a_permuted_head_map_pin_is_refused_at_attach() {
+    let scratch = Scratch::new("pin-permuted");
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    provision_from(scratch.dir(), &image);
+    let (first_id, _, last_number) = permute_persisted_pin(scratch.dir(), &image);
+
+    let projection = projection_of(&image);
+    match attach(scratch.dir(), &image, projection) {
+        Err(LifecycleError::HeadMapPin(refusal)) => {
+            assert_eq!(
+                refusal.code(),
+                "store.corruption",
+                "fail-closed, recovery-shaped"
+            );
+            // The typed payload names the pin's first disagreement in derived walk order:
+            // the first walked node (derived number 0) is pinned to the last number.
+            assert_eq!(
+                refusal.disagreement,
+                PinDisagreement::Binding {
+                    ledger_id: first_id,
+                    persisted: Some(last_number),
+                    derived: Some(0),
+                },
+            );
+        }
+        Err(other) => panic!("expected the pin refusal, got code {}", other.code()),
+        Ok(_) => panic!(
+            "a store whose persisted head-map pin disagrees with the derived numbering must \
+             be refused, but attach served it"
+        ),
+    }
+}
+
+/// The pin refusal precedes any engine call: with the engine file replaced by garbage — an
+/// engine open would fail loudly — a permuted pin still surfaces as the pin refusal, so the
+/// disagreement is decided strictly before the engine (and therefore before any read or
+/// mutation) is reached.
+#[test]
+fn the_pin_refusal_precedes_any_engine_call() {
+    let scratch = Scratch::new("pin-before-engine");
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    provision_from(scratch.dir(), &image);
+    permute_persisted_pin(scratch.dir(), &image);
+    std::fs::write(
+        scratch.dir().join(marrow_lifecycle::ENGINE_FILE),
+        b"not an engine",
+    )
+    .expect("corrupt the engine file");
+
+    let projection = projection_of(&image);
+    match attach(scratch.dir(), &image, projection) {
+        Err(LifecycleError::HeadMapPin(_)) => {}
+        Err(other) => panic!(
+            "the pin must refuse before the engine is touched, got code {}",
+            other.code()
+        ),
+        Ok(_) => panic!("a permuted pin over a garbage engine was served"),
+    }
+}
+
+/// The rebind arm is fenced too: a body-only edit (the binding-only rebind case) against a
+/// permuted pin is refused without rewriting the head or envelope, and the refusal releases
+/// the single-owner lock — restoring the true head lets the same rebind commit.
+#[test]
+fn a_rebind_over_a_permuted_pin_is_refused_without_a_write() {
+    let scratch = Scratch::new("pin-rebind");
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    provision_from(scratch.dir(), &image);
+    let true_head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read true head");
+    permute_persisted_pin(scratch.dir(), &image);
+
+    let before_head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head");
+    let before_envelope =
+        std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE)).expect("read envelope");
+
+    // A body-only edit: same durable contract and interface, different image bytes.
+    let edited = compile(&GRAPH_SOURCE.replace("?? \"?\"", "?? \"!\""), GRAPH_IDS);
+    assert!(
+        active_binding(&image).facts_equal(&active_binding(&edited)),
+        "the edit is binding-only"
+    );
+    match attach(scratch.dir(), &edited, projection_of(&edited)) {
+        Err(LifecycleError::HeadMapPin(_)) => {}
+        Err(other) => panic!("expected the pin refusal, got code {}", other.code()),
+        Ok(_) => panic!("a rebind over a permuted pin was served"),
+    }
+    assert_eq!(
+        std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head"),
+        before_head,
+        "the refusal rewrites nothing",
+    );
+    assert_eq!(
+        std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE)).expect("read envelope"),
+        before_envelope,
+        "the refusal rewrites nothing",
+    );
+
+    // The refusal released the lock: with the true pin restored, the same rebind commits.
+    std::fs::write(scratch.dir().join(HEAD_FILE), &true_head).expect("restore the true head");
+    match attach(scratch.dir(), &edited, projection_of(&edited)).expect("attach") {
+        AttachOutcome::Rebound { store, .. } => drop(store),
+        AttachOutcome::AlreadyActive(_) => panic!("a body edit must rebind"),
+    }
+}
+
+/// A changed durable contract is a different graph whose numbering legitimately differs, so
+/// the pin comparison does not preempt the typed contract-changed refusal: over a permuted
+/// pin, an image with an evolved contract is still refused as `store.contract_changed` — and
+/// the store is not served on that path either.
+#[test]
+fn a_contract_change_over_a_permuted_pin_stays_a_contract_refusal() {
+    let scratch = Scratch::new("pin-contract");
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    provision_from(scratch.dir(), &image);
+    permute_persisted_pin(scratch.dir(), &image);
+
+    // The same durable node set (same ledger ids) with one field promoted to required — a
+    // durable-contract change that leaves the numbering walk identical.
+    let evolved = compile(
+        &GRAPH_SOURCE.replace("    subtitle: string\n", "    required subtitle: string\n"),
+        GRAPH_IDS,
+    );
+    match attach(scratch.dir(), &evolved, projection_of(&evolved)) {
+        Err(LifecycleError::ContractChanged(refusal)) => {
+            assert_eq!(refusal.changed, ChangedFact::DurableContract);
+        }
+        Err(other) => panic!("expected the contract refusal, got code {}", other.code()),
+        Ok(_) => panic!("a contract change must be refused"),
+    }
+}
+
+/// The pin's high-water is part of the comparison: a head whose bindings all agree but whose
+/// never-reuse high-water is inflated — forged by byte surgery and validly resealed, claiming
+/// numbers were used and retired where the derivation retires nothing — is a typed high-water
+/// disagreement.
+#[test]
+fn an_inflated_pin_high_water_is_a_typed_disagreement() {
+    let scratch = Scratch::new("pin-high-water");
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    provision_from(scratch.dir(), &image);
+    let node_count = head_map(&image).expect("head map").len() as u32;
+
+    // The head map's high-water u32 sits right after the fixed head prefix:
+    // magic(4)+ver(1)+imgfmt(1)+3×id(32)+commit(8)+ddig(32)+ddpos(8) = 150.
+    let head_path = scratch.dir().join(HEAD_FILE);
+    let mut bytes = std::fs::read(&head_path).expect("read head");
+    let map_start = 4 + 1 + 1 + 32 * 3 + 8 + 32 + 8;
+    bytes[map_start..map_start + 4].copy_from_slice(&(node_count + 7).to_be_bytes());
+    let body_len = bytes.len() - 32;
+    let resealed = marrow_image::StoreHeadDigest::compute(&bytes[..body_len]);
+    bytes[body_len..].copy_from_slice(resealed.bytes());
+    std::fs::write(&head_path, &bytes).expect("write forged head");
+
+    match attach(scratch.dir(), &image, projection_of(&image)) {
+        Err(LifecycleError::HeadMapPin(refusal)) => {
+            assert_eq!(
+                refusal.disagreement,
+                PinDisagreement::HighWater {
+                    persisted: node_count + 7,
+                    derived: node_count,
+                },
+            );
+        }
+        Err(other) => panic!("expected the pin refusal, got code {}", other.code()),
+        Ok(_) => panic!("an inflated high-water must be refused"),
+    }
+}
+
+/// The comparison itself, at its public seam: the pin a provision persists verifies against
+/// the very image it was derived from, and a permuted pin reports its first disagreement in
+/// the derived walk order (deterministic, so the rendered refusal is a stable function of
+/// the delta).
+#[test]
+fn verify_head_map_pin_accepts_the_provisioned_pin_and_orders_disagreements() {
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
+    let map = head_map(&image).expect("head map");
+    assert_eq!(marrow_lifecycle::verify_head_map_pin(&image, &map), Ok(()));
+
+    let mut ids: Vec<marrow_image::LedgerIdBytes> =
+        map.entries().iter().map(|entry| entry.ledger_id).collect();
+    ids.swap(1, 2);
+    let permuted = marrow_lifecycle::HeadMap::assign(&ids).expect("assign");
+    match marrow_lifecycle::verify_head_map_pin(&image, &permuted) {
+        Err(refusal) => assert_eq!(
+            refusal.disagreement,
+            PinDisagreement::Binding {
+                ledger_id: ids[2],
+                persisted: Some(2),
+                derived: Some(1),
+            },
+            "the first disagreement in derived walk order names the earlier node",
+        ),
+        Ok(()) => panic!("a permuted pin must disagree"),
+    }
 }
 
 #[test]
