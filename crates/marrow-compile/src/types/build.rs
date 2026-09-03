@@ -1765,7 +1765,7 @@ fn fill_record(
     draft
         .set_record_fields(type_id, field_defs)
         .expect("a reserved row fills once");
-    let info = &mut registry.records[index];
+    let info = registry.records.at_mut(index);
     info.fields = fields;
     info.groups = groups;
     Ok(())

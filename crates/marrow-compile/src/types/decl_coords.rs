@@ -23,7 +23,7 @@
 //! the declarations that minted it.
 
 use std::collections::BTreeMap;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 use marrow_image::TypeId;
 use marrow_project::FileIdentity;
@@ -35,12 +35,16 @@ use crate::analysis::FileRef;
 /// The admitted `resource` records, each with the position of the declaration it was
 /// built from in the resource slice the declare pass was given.
 ///
-/// [`Self::admit`] is the only way to append and it appends to both vectors, so index
-/// `i` of one addresses index `i` of the other because the type admits no other shape.
-/// The durable build reads that pairing rather than rebuilding one from resource name
-/// spellings, and a helper that pushed a record alone would leave every later record
-/// carrying another declaration's ordinal. Reading is the record slice itself; the
-/// ordinals are read through [`Self::ordinals`].
+/// Index `i` of one addresses index `i` of the other, and the whole mutable surface is
+/// what keeps that true rather than the private fields alone. [`Self::admit`] is the
+/// only append and it appends to both vectors, so a helper that pushed a record alone
+/// would leave every later record carrying another declaration's ordinal; [`Self::at_mut`]
+/// is the only other mutation, and it edits one record where it lies. No route hands out
+/// a `&mut [RecordInfo]`, so `swap`, `sort`, `reverse`, `truncate` and slice assignment —
+/// each of which moves a record out from under a fixed ordinal — do not compile against
+/// this type. The durable build reads the pairing rather than rebuilding one from
+/// resource name spellings. Reading is the record slice itself; the ordinals are read
+/// through [`Self::ordinals`].
 #[derive(Default)]
 pub(crate) struct AdmittedRecords {
     records: Vec<RecordInfo>,
@@ -58,6 +62,14 @@ impl AdmittedRecords {
     pub(super) fn ordinals(&self) -> &[usize] {
         &self.declarations
     }
+
+    /// The record at `index`, to fill in place. The reserve-then-fill pass edits a
+    /// record where it lies, which is the only mutation this type admits besides
+    /// [`Self::admit`]: a mutable slice would additionally let a caller reorder or
+    /// replace records while the ordinals stayed put.
+    pub(super) fn at_mut(&mut self, index: usize) -> &mut RecordInfo {
+        &mut self.records[index]
+    }
 }
 
 impl Deref for AdmittedRecords {
@@ -65,14 +77,6 @@ impl Deref for AdmittedRecords {
 
     fn deref(&self) -> &Self::Target {
         &self.records
-    }
-}
-
-/// Filling a reserved record in place is an edit of one record, and a slice offers no
-/// append, so the two vectors keep the same length however a pass mutates a row.
-impl DerefMut for AdmittedRecords {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.records
     }
 }
 

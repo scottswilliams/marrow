@@ -360,7 +360,7 @@ fn add_resource_group(
             fields: Vec::new(),
         })
         .expect("a within-domain mint");
-    registry.records[record].groups.push(GroupInfo {
+    registry.records.at_mut(record).groups.push(GroupInfo {
         name: name.to_string(),
         type_id,
         fields: Vec::new(),
@@ -1476,7 +1476,7 @@ fn metadata_rejects_resource_record_collisions_with_static_record_owners() {
     let mut group_draft = fresh_draft();
     let resource = add_resource_record(&mut group_registry, &mut group_draft, "Account");
     add_resource_group(&mut group_registry, &mut group_draft, 0, "profile");
-    group_registry.records[0].groups[0].type_id = resource;
+    group_registry.records.at_mut(0).groups[0].type_id = resource;
     let expected = GenericInvariant::TypeIdentityCollision(TypeInstId::Record(resource));
     let owner_before = metadata_owner_snapshot(&group_registry);
     let draft_before = draft_snapshot(&group_draft);
