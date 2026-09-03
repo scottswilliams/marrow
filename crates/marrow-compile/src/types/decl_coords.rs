@@ -50,14 +50,9 @@ use crate::analysis::FileRef;
 ///
 /// The sole PRODUCTION caller — `build.rs`'s fill pass — fills a reserved record from its
 /// own surviving declaration and never replaces one. The two test callers do not fill at
-/// all: one of them deliberately rewrites a group's `type_id` to manufacture a
-/// `TypeIdentityCollision`, which is the point of that fixture. So the honest statement is
-/// about production only, and an earlier version of this sentence claimed all three filled
-/// from their own declaration.
-///
-/// That distinction is worth stating precisely because this type's guarantee was claimed
-/// too broadly three times before it was written down accurately. Structural here means
-/// stable positions, not authenticated contents.
+/// all; one rewrites a group's `type_id` to manufacture a `TypeIdentityCollision`, which
+/// is the point of that fixture. Structural here means stable positions, not
+/// authenticated contents.
 ///
 /// The durable build reads this pairing rather than rebuilding one from resource name
 /// spellings. Reading is the record slice itself; the ordinals are read through

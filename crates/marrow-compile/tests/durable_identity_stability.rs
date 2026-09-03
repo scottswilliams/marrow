@@ -563,3 +563,29 @@ fn the_declaration_search_census_is_closed_at_its_spellings() {
         "the staging boundary never names the raw declaration type",
     );
 }
+
+/// The record/ordinal pairing hands out no mutable slice. A `DerefMut` would restore
+/// `swap`, `sort`, `reverse`, `truncate` and slice assignment, each of which moves a
+/// record out from under the ordinal that still addresses it.
+///
+/// It sits beside the other pairing censuses rather than with the absence gates: this is
+/// the file that owns what the record-to-declaration join may and may not do, and the gate
+/// file had reached the workspace line cap, whose remedy is a seam rather than shorter
+/// prose.
+#[test]
+fn the_admitted_record_pairing_hands_out_no_mutable_slice() {
+    let module = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/types/decl_coords.rs"),
+    )
+    .expect("read the coordinate module");
+    let code = source_projection::production_code(&module);
+    assert_eq!(
+        code.matches("Deref for AdmittedRecords").count(),
+        1,
+        "the read-only slice is the live subject",
+    );
+    assert!(
+        !code.contains("DerefMut for AdmittedRecords"),
+        "a mutable slice reorders records out from under their ordinals",
+    );
+}

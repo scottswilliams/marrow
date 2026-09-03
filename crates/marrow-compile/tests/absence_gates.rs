@@ -2919,12 +2919,8 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
         !module.contains("Clone for DeclarationCoordinates"),
         "a hand-written `impl Clone` reopens the copy the derive scan forbids",
     );
-    // Prove the needle is there to be blanked before proving it was blanked. Without this
-    // the probe is only as good as the source's line wrapping: the previous needle was
-    // split across two lines by rustfmt, so it occurred in neither the raw text nor the
-    // projection and the assertion below passed whether or not comments were blanked. A
-    // reflow can do that again at any time; asserting raw containment first turns that
-    // into a failure here rather than a probe that quietly stops deciding anything.
+    // The needle must be there to blank before its absence proves anything: a reflow that
+    // splits it makes this probe vacuous, silently.
     let raw: String = src_files()
         .into_iter()
         .filter(|path| path.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/types")))
@@ -2945,11 +2941,10 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
 /// from every function body it reaches by name inside the types module, and the pass
 /// is spelled with its two-parameter signature at one definition and one call site.
 ///
-/// Round 1 proved a lexical counter pins nothing; round 2 that a signature alone
-/// admits a dead wrapper kept beside a redirected caller, which is why the walk
-/// follows callees. It follows them by spelling — a method call by its method name — so
+/// The walk follows callees, because a signature alone admits a dead wrapper beside a
+/// redirected caller. It follows them by spelling — a method call by its method name — so
 /// a macro call, or one whose spelling names no function of this module, is not followed
-/// and a declaration read there is invisible; a matching spelling is followed regardless.
+/// and a declaration read there is invisible.
 #[test]
 fn reporting_a_value_cycle_reads_no_syntax_declaration() {
     let module = production_code_of_module("types");
@@ -3001,15 +2996,4 @@ fn reporting_a_value_cycle_reads_no_syntax_declaration() {
             }
         }
     }
-}
-
-/// The record/ordinal pairing hands out no mutable slice. A `DerefMut` would restore
-/// `swap`, `sort`, `reverse`, `truncate` and slice assignment, each of which moves a
-/// record out from under the ordinal that still addresses it.
-#[test]
-fn the_admitted_record_pairing_hands_out_no_mutable_slice() {
-    let read_only = production_occurrences("Deref for AdmittedRecords").len();
-    let mutable = production_occurrences("DerefMut for AdmittedRecords");
-    assert_eq!(read_only, 1, "the read-only slice is the live subject");
-    assert!(mutable.is_empty(), "a mutable slice reorders records");
 }
