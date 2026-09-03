@@ -1318,7 +1318,9 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// reference that is named without being called. Those two are the imprecisions this list
 /// can carry: a shape read imprecisely in the SILENT direction would not be a documented
 /// limit but a hole, so the keyword scan resolves its own boundaries under
-/// [`continues_identifier`] instead, which admits non-ASCII identifier characters.
+/// [`continues_identifier`] instead, which decides on decoded characters — a non-ASCII
+/// letter continues a name, a non-ASCII space separates tokens — and [`use_statements`]
+/// refuses any span it opens that reaches over a call.
 ///
 /// The scan is lexical over the shared production projection (comments, string and char
 /// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
@@ -1608,7 +1610,12 @@ fn classify_open_references(
 /// Nor is a keyword the keyword when it is only the ASCII prefix or suffix of an ordinary
 /// name: `let useé = open(dir, projection);` binds a variable, and reading its `use` prefix
 /// as the keyword swallows the call the same silent way. So the keyword boundary here is
-/// [`continues_identifier`], which is wider than the shared projection's ASCII-only test.
+/// [`continues_identifier`], asked of decoded characters: a non-ASCII letter continues the
+/// name around a keyword, and a non-ASCII space still separates tokens.
+///
+/// Whatever that boundary decides, a span that swallowed a call would carry the call's
+/// parentheses, and no `use` or `extern crate` statement contains any: the assertion below
+/// turns every remaining misreading of the boundary from a vanished call into a failure.
 fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     for keyword in ["use", "extern"] {
@@ -1619,9 +1626,21 @@ fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
             if keyword == "extern" && keyword_after(code, at + keyword.len()) != Some("crate") {
                 continue;
             }
+            // A precise-capturing bound spells the keyword and imports nothing: in
+            // `impl Iterator<Item = T> + use<>` the span to the next `;` would run over the
+            // rest of the function and everything after it. An import names something, so
+            // only this form puts `<` next.
+            if keyword == "use" && matches!(token_after(code, at + keyword.len()), Some((_, "<"))) {
+                continue;
+            }
             let end = code[at..]
                 .find(';')
                 .map_or(code.len(), |semi| at + semi + 1);
+            assert!(
+                !code[at..end].contains('('),
+                "an import span reaches over a call: {:?}",
+                &code[at..end],
+            );
             spans.push(at..end);
         }
     }
@@ -1751,7 +1770,7 @@ fn has_ident_token(text: &str, needle: &str) -> bool {
     ident_token_offsets(text, needle).next().is_some()
 }
 
-/// Whether `byte` continues a Rust identifier, as the keyword scan needs the question
+/// Whether `ch` continues a Rust identifier, as the keyword scan needs the question
 /// answered.
 ///
 /// The shared projection's [`source_projection::is_ident_byte`] is ASCII-only, which is the
@@ -1761,27 +1780,40 @@ fn has_ident_token(text: &str, needle: &str) -> bool {
 /// ordinary binding whose `use` prefix, read as the keyword, opens an import span to the
 /// next `;` and hides every call inside it.
 ///
-/// Every identifier character outside ASCII is encoded as two or more UTF-8 bytes, each of
-/// them `>= 0x80`, and no ASCII byte beyond alphanumerics and `_` can continue an
-/// identifier. So admitting the whole non-ASCII byte range admits exactly the characters a
-/// Unicode table would, with no table.
-fn continues_identifier(byte: u8) -> bool {
-    source_projection::is_ident_byte(byte) || byte >= 0x80
+/// The question is asked of a decoded CHARACTER, not of a byte, because the two mistakes
+/// are mirror images and both are silent. Admitting every byte `>= 0x80` closes `useé` and
+/// opens the reverse hole: Rust separates tokens on non-ASCII whitespace, so
+/// `use\u{85}crate::provision as p;` would stop being an import, its alias would go
+/// unrefused, and the `p::open` calls it introduces would read as another crate's. A
+/// character is alphanumeric or `_`, or it is not: `é` continues a name, U+0085 and the
+/// rest of the whitespace set do not, and no table is needed for either direction.
+///
+/// `char::is_alphanumeric` is not literally `XID_Continue` — a combining mark or connector
+/// punctuation continues a Rust identifier and is not alphanumeric — so a name spelled with
+/// a decomposed accent can still read as the keyword. That residual cannot hide a call:
+/// [`use_statements`] refuses any span it opens that contains `(`, and a swallowed call
+/// carries its own parentheses.
+fn continues_identifier(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+/// Whether the character starting at byte `at` of `text` continues an identifier. False at
+/// the end of the text, and at an offset inside a character, which no caller passes.
+fn continues_identifier_at(text: &str, at: usize) -> bool {
+    text.get(at..)
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(continues_identifier)
 }
 
 /// The byte offsets of every occurrence of the keyword `needle` in `text` as a whole token,
 /// under [`continues_identifier`].
 fn keyword_token_offsets<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
-    let bytes = text.as_bytes();
     text.match_indices(needle).filter_map(move |(at, _)| {
-        let end = at + needle.len();
-        let before_ok = at
-            .checked_sub(1)
-            .is_none_or(|before| !continues_identifier(bytes[before]));
-        let after_ok = bytes
-            .get(end)
-            .is_none_or(|&byte| !continues_identifier(byte));
-        (before_ok && after_ok).then_some(at)
+        let before_ok = !text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(continues_identifier);
+        (before_ok && !continues_identifier_at(text, at + needle.len())).then_some(at)
     })
 }
 
@@ -1789,10 +1821,7 @@ fn keyword_token_offsets<'a>(text: &'a str, needle: &'a str) -> impl Iterator<It
 /// [`continues_identifier`] agrees the token ends there: `extern crateé` names no crate.
 fn keyword_after(text: &str, start: usize) -> Option<&str> {
     let (at, token) = token_after(text, start)?;
-    text.as_bytes()
-        .get(at + token.len())
-        .is_none_or(|&byte| !continues_identifier(byte))
-        .then_some(token)
+    (!continues_identifier_at(text, at + token.len())).then_some(token)
 }
 
 /// The token ending just before byte `end` of `text`, skipping whitespace: an identifier,
@@ -1919,6 +1948,42 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
     // `extern crate` is the only statement form of `extern`, and the crate it names is a
     // whole token too: `extern crateé` opens nothing.
     assert!(use_statements("extern crate\u{e9} = open(dir, p);").is_empty());
+    // The mirror direction. Rust separates tokens on non-ASCII whitespace as readily as on a
+    // space, so these two ARE the keyword and the alias in each is refused; a boundary that
+    // read the whole non-ASCII range as identifier continuation would open no span here, let
+    // the alias through, and leave the `p::open` calls it introduces reading as foreign.
+    assert_eq!(
+        use_statements("use\u{85}crate::provision as p;").len(),
+        1,
+        "non-ASCII whitespace separates `use` from what it imports",
+    );
+    assert!(introduces_alias(
+        "use\u{85}crate::provision as p;",
+        Scope::Lifecycle,
+        false
+    ));
+    assert_eq!(
+        use_statements("extern crate\u{85}marrow_lifecycle as life;").len(),
+        1,
+        "non-ASCII whitespace separates `crate` from the crate it names",
+    );
+    assert!(introduces_alias(
+        "extern crate\u{85}marrow_lifecycle as life;",
+        Scope::Lifecycle,
+        false
+    ));
+    // A precise-capturing bound is the keyword and imports nothing; its span would have run
+    // to the next `;`, over the body after it and every call inside.
+    assert!(use_statements("fn f() -> impl Fn() + use<> { g }\nlet s = open(d, p);").is_empty());
+    assert_eq!(
+        lifecycle("fn f() -> impl Fn() + use<> { g }\nlet s = open(d, p);"),
+        [Call { at: 42 }]
+    );
+    // And whatever the boundary decides, a span cannot reach over a call unnoticed.
+    assert!(
+        std::panic::catch_unwind(|| use_statements("use\u{301} = open(dir, p);")).is_err(),
+        "a span reaching over a call must fail rather than swallow it",
+    );
     // The keyword itself still opens one, so the exclusion is about the prefix only.
     assert_eq!(use_statements("use crate::provision::open;").len(), 1);
     assert_eq!(use_statements("extern crate marrow_kernel;").len(), 1);
