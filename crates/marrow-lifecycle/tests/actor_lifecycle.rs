@@ -1108,36 +1108,32 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
 /// (`marrow-image`'s `push_keys`) and each field's `required` flag and value shape
 /// (`push_members`), so a recompiled program that changes any of them moves the contract and
 /// is refused before the store is served. The boundary is recorded here so a later widening
-/// or narrowing of either layer has evidence to move against; the fourth such fact, a
-/// field's `required` flag, is pinned by `changing_the_durable_contract_is_a_typed_refusal`
-/// above.
+/// or narrowing of either layer has evidence to move against.
 ///
-/// Every recompile below keeps every ledger id, every durable node name, and every node
-/// kind, so the pin itself would pair and agree — only the contract moves. A refusal writes
-/// nothing, so one provisioned store serves all three.
+/// Every fact below is changed in the program's **second** store root. The graph payload
+/// walks the roots and writes each one's own keys and members; a walk that wrote the first
+/// root's for every root would carry the same identity under all four of these changes, and
+/// a one-root fixture cannot tell the two walks apart.
+///
+/// Every recompile keeps every ledger id, every durable node name, and every node kind, so
+/// the pin itself would pair and agree — only the contract moves. A refusal writes nothing,
+/// so one provisioned store serves them all.
 #[test]
 fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     let scratch = Scratch::new("schema-fact");
-    let image = compile(BASE_SOURCE, BASE_IDS);
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
     provision_from(scratch.dir(), &image);
 
-    let value_shape = BASE_SOURCE.replace("    label: string\n", "    label: int\n");
-    // A key column's scalar kind, over the same key ledger id. The export's parameter type
-    // follows the key; a resignature alone is not a binding-fact delta, so the refusal below
-    // is the contract's, not the interface's.
-    let key_scalar = BASE_SOURCE
-        .replace("^counters[id: int]", "^counters[id: string]")
-        .replace("readValue(n: int)", "readValue(n: string)");
-    // A second key column, which moves both the count and the id set at once. The
-    // isolated-count case is separate, below: arity IS separable from the ledger, in the
-    // drop direction, and an earlier note here claimed it was not.
-    let key_arity = BASE_SOURCE
-        .replace("^counters[id: int]", "^counters[id: int, part: int]")
-        .replace("readValue(n: int)", "readValue(n: int, p: int)")
-        .replace("^counters[n]", "^counters[n, p]");
-    let arity_ids = BASE_IDS.replace(
-        "id key counters.id",
-        "id key counters.part 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c\nid key counters.id",
+    let value_shape = GRAPH_SOURCE.replace("required name: string", "required name: int");
+    let required = GRAPH_SOURCE.replace("required name: string", "name: string");
+    let key_scalar = GRAPH_SOURCE.replace("^tags[id: int]", "^tags[id: string]");
+    // A second key column, which moves both the count and the id set at once. The isolated
+    // count case is separate, below: arity IS separable from the ledger, in the drop
+    // direction, and an earlier note here claimed it was not.
+    let key_arity = GRAPH_SOURCE.replace("^tags[id: int]", "^tags[id: int, part: int]");
+    let arity_ids = GRAPH_IDS.replace(
+        "id key tags.id",
+        "id key tags.part 5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c\nid key tags.id",
     );
 
     // The head as provisioned. A refusal must leave it byte-identical: the binding it
@@ -1147,8 +1143,9 @@ fn a_changed_schema_fact_is_a_durable_contract_refusal() {
     let provisioned_head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("read head");
 
     for (fact, source, ids) in [
-        ("a field's value shape", value_shape, BASE_IDS),
-        ("a key column's scalar kind", key_scalar, BASE_IDS),
+        ("a field's value shape", value_shape, GRAPH_IDS),
+        ("a field's required flag", required, GRAPH_IDS),
+        ("a key column's scalar kind", key_scalar, GRAPH_IDS),
         ("a key tuple's arity", key_arity, arity_ids.as_str()),
     ] {
         let changed = compile(&source, ids);
