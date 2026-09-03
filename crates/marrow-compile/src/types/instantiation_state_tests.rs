@@ -83,6 +83,7 @@ fn ordered(outcome: GenericDiagnostics) -> Vec<SourceDiagnostic> {
 
 fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
+        record_declarations: Vec::new(),
         named: DeclarationLedger::new(
             DeclarationNamespace::NamedType,
             DeclarationBudget::default(),

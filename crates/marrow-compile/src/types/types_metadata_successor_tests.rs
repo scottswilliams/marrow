@@ -60,6 +60,7 @@ fn enum_template(template_name: &str, param: &str) -> TypeTemplate {
 
 fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
+        record_declarations: Vec::new(),
         named: DeclarationLedger::new(
             DeclarationNamespace::NamedType,
             DeclarationBudget::default(),

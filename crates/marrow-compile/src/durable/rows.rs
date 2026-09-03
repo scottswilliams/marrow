@@ -99,8 +99,9 @@ impl<'a> ResourceDirectory<'a> {
                 .get(index)
                 .and_then(|&ordinal| resources.get(ordinal))
                 .ok_or_else(missing)?;
-            let (declared_at, declared_span) =
-                records.declaration_module(record.type_id).ok_or_else(missing)?;
+            let (declared_at, declared_span) = records
+                .declaration_module(record.type_id)
+                .ok_or_else(missing)?;
             if declared_at != *at || declared_span != decl.name_span {
                 return Err(missing());
             }
