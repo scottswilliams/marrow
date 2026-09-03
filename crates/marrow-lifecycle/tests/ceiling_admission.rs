@@ -192,9 +192,8 @@ fn a_demand_beyond_the_ceiling_preempts_the_contract_refusal() {
     let (read_only, _) = compile(&source_read_only());
     // Broadened *and* contract-changed: the sparse `label` the broadened export writes is
     // promoted to required, which moves the durable contract on its own.
-    let (both, _) = compile(
-        &source_broadened().replace("    label: string\n", "    required label: string\n"),
-    );
+    let (both, _) =
+        compile(&source_broadened().replace("    label: string\n", "    required label: string\n"));
     assert_ne!(
         marrow_lifecycle::active_binding(&read_only).durable_contract,
         marrow_lifecycle::active_binding(&both).durable_contract,

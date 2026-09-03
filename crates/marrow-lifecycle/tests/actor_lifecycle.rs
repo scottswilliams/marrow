@@ -948,8 +948,7 @@ fn entry_root(name: &str, parts: &str) -> marrow_kernel::durable::StoreSchema {
     use marrow_kernel::codec::value::ScalarKind;
 
     let has = |part: &str| parts.split_whitespace().any(|token| token == part);
-    let mut builder =
-        marrow_kernel::durable::StoreSchemaBuilder::root(name, vec![ScalarKind::Int]);
+    let mut builder = marrow_kernel::durable::StoreSchemaBuilder::root(name, vec![ScalarKind::Int]);
     if has("v") {
         builder.scalar_field("v", ScalarKind::Int, true);
     }
@@ -992,12 +991,14 @@ fn coverage_is_decided_over_occurrence_identity_not_declaration_identity() {
     ])
     .expect("the root-only map assigns");
 
-    for (kind, a, b, ledger, place) in [
-        ("a flat field", "v meta notes replies", "", 0x51, "^b.v"),
-        ("a keyed branch", "v meta", "notes replies", 0x58, "^a.notes"),
-        ("a nested branch", "v meta notes", "", 0x5b, "^a.notes.replies"),
-        ("a group", "v notes replies", "meta", 0x56, "^a.meta"),
+    // Each case gives `^a` the parts left of the bar and `^b` those right of it.
+    for (kind, split, ledger, place) in [
+        ("a flat field", "v meta notes replies|", 0x51, "^b.v"),
+        ("a keyed branch", "v meta|notes replies", 0x58, "^a.notes"),
+        ("a nested branch", "v meta notes|", 0x5b, "^a.notes.replies"),
+        ("a group", "v notes replies|meta", 0x56, "^a.meta"),
     ] {
+        let (a, b) = split.split_once('|').expect("both roots' parts");
         let mut projection = marrow_kernel::durable::StoreProjection::builder();
         projection.root(entry_root("a", a));
         projection.root(entry_root("b", b));
