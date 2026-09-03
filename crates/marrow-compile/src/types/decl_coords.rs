@@ -1,10 +1,11 @@
 //! The declaration coordinate tables the declare pass owns: where each declared
 //! `struct` and `resource` was written.
 //!
-//! Those are the two families a later pass reports at. The value-containment cycle
-//! check reports every struct and record on a cycle at its own declaration, and reaches
-//! a cyclic enum through the template of an instantiation rather than through a
-//! coordinate, so `declare_enums` records none and an enum has no row here.
+//! Those are the families a later pass reports at. The value-containment cycle check
+//! reports each struct and record on a cycle at its own declaration; a cyclic generic
+//! instantiation is reported at its template's own span instead, and an enum payload
+//! naming an enum is outside the admitted subset today. So `declare_enums` records no
+//! coordinate, and an enum has no row here.
 //!
 //! A pass that must report at a declaration reads the coordinate from here instead of
 //! scanning the syntax tree for a declaration whose name matches. That scan was linear
