@@ -36,9 +36,11 @@ pub const STORE_DATA_KIND: &[u8] = b"marrow.store.data.v0";
 pub const STORE_INTERFACE_KIND: &[u8] = b"marrow.store.iface.v0";
 
 /// A runner-free **export-set** binding fingerprint: a domain-separated digest over the
-/// sorted set of the program's export declaration identities (each an
-/// [`ExportId`](crate::ExportId)'s 32 bytes). Sorting makes it the export *set* fingerprint,
-/// independent of export order. An [`ExportId`](crate::ExportId) digests only the export's
+/// sorted sequence of the program's export declaration identities (each an
+/// [`ExportId`](crate::ExportId)'s 32 bytes), which a verified image supplies uniquely. The
+/// sort makes the fingerprint independent of export order; it does not deduplicate, so a
+/// caller that repeated an id would digest it twice.
+/// An [`ExportId`](crate::ExportId) digests only the export's
 /// declaration path, so this fingerprint moves exactly when that set moves:
 /// adding, removing, renaming, or relocating an export changes it, while a body edit — and
 /// equally a *resignatured* export (changed parameters or return type) — preserves it. It is
@@ -170,15 +172,14 @@ mod tests {
 
     /// The documented sensitivity of [`interface_fingerprint`], as a known answer: it moves
     /// exactly when the export set moves — an export added, removed, renamed, or relocated —
-    /// and stands still under a reordering and under a resignature.
+    /// and stands still under a reordering of any length.
     ///
-    /// The resignature half is the one a reader cannot check by inspection here. It holds
-    /// because the fingerprint's inputs are [`ExportId`](crate::ExportId)s, which digest the
-    /// declaration path alone: `of_local(module, item)` has nowhere to put a parameter or
-    /// return type, so recompiling a resignatured export mints the same input. The frozen hex
-    /// below pins that payload end to end — an `ExportId` widened to carry a signature would
-    /// change these bytes, and this test would fail rather than the head's interface slot
-    /// silently becoming signature-sensitive.
+    /// The frozen hex pins the payload end to end: an [`ExportId`](crate::ExportId) widened to
+    /// carry a signature, or a reframing of the digest, changes these bytes here rather than
+    /// silently moving every store's persisted interface slot. That a *resignatured* export
+    /// mints the same input, so the whole production projection stands still under it, is
+    /// pinned beside `active_binding` in `marrow-lifecycle`, over really compiled images —
+    /// repeating a call to `of_local` here would only restate this helper's arguments.
     #[test]
     fn interface_fingerprint_moves_exactly_with_the_export_set() {
         let export = |module: &str, item: &str| *crate::ExportId::of_local(module, item).bytes();
@@ -207,12 +208,17 @@ mod tests {
         assert_eq!(
             baseline,
             interface_fingerprint(&[write, read]),
-            "the digest is over the sorted set, so export order does not move it",
+            "the digest is over the sorted ids, so export order does not move it",
         );
+        // And over four, which a sort of only the shortest lists would leave in place: a
+        // reversal of four distinct ids is no transposition of a pair.
+        let four = [read, write, export("a.b", "erase"), export("a.c", "seal")];
+        let mut reversed = four;
+        reversed.reverse();
         assert_eq!(
-            baseline,
-            interface_fingerprint(&[export("a.b", "read"), export("a.b", "write")]),
-            "a resignature mints the same declaration-path ids, so it does not move it",
+            interface_fingerprint(&four),
+            interface_fingerprint(&reversed),
+            "order does not move it at any export count",
         );
         assert_eq!(
             to_hex(&baseline),

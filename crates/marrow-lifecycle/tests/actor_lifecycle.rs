@@ -42,11 +42,19 @@ const BASE_IDS: &str = "marrow ids v0\n\
      end\n";
 
 fn compile(source: &str, ids: &str) -> VerifiedImage {
+    compile_files(&[("src/main.mw", source)], ids)
+}
+
+/// Compile a project of several modules, so an export's *module* — half of its declaration
+/// path identity — can be varied as well as its item name.
+fn compile_files(sources: &[(&str, &str)], ids: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
+    let files = sources
+        .iter()
+        .map(|(path, text)| {
+            marrow_project::CapturedFile::new(path.to_string(), text.as_bytes().to_vec())
+        })
+        .collect();
     let project = marrow_project::capture(
         &manifest,
         files,
@@ -141,6 +149,72 @@ fn active_binding_and_head_map_derive_from_the_image() {
     let map = head_map(&image).expect("head map");
     assert_eq!(map.len(), 3, "root + two fields");
     assert_eq!(map.next_number(), 3);
+}
+
+/// A pure export, declared apart from the durable half so it can be renamed, relocated to
+/// another module, and resignatured without disturbing anything else.
+const PURE_EXPORT: &str = "pub fn two(): int {\n    return 2\n}\n";
+
+/// The interface fingerprint a store persists moves exactly with the export set, measured
+/// through the production projection — `active_binding` over really compiled images —
+/// rather than over hand-minted ids: an export added, removed, renamed, or relocated to
+/// another module moves it, while reordering the declarations and *resignaturing* an export
+/// leave it standing.
+///
+/// The two stillnesses carry the invariant-A claim that the slot is an export-SET identity,
+/// blind to signatures, so each is taken against an image that really differs — asserted
+/// here, because a stillness compared against a repeated derivation of one image would hold
+/// no matter what the fingerprint digested.
+#[test]
+fn the_persisted_interface_fingerprint_moves_exactly_with_the_export_set() {
+    let facts = |image: &VerifiedImage| {
+        let binding = active_binding(image);
+        (binding.image_id, binding.interface)
+    };
+    let base = format!("{BASE_SOURCE}\n{PURE_EXPORT}");
+    let baseline = facts(&compile(&base, BASE_IDS));
+
+    let added = format!("{base}\npub fn three(): int {{\n    return 3\n}}\n");
+    let renamed = base.replace("fn two()", "fn deux()");
+    let relocated = format!("module extra\n\n{PURE_EXPORT}");
+    for (movement, image) in [
+        ("an export added", compile(&added, BASE_IDS)),
+        ("an export removed", compile(BASE_SOURCE, BASE_IDS)),
+        ("an export renamed", compile(&renamed, BASE_IDS)),
+        (
+            "an export relocated",
+            compile_files(
+                &[("src/main.mw", BASE_SOURCE), ("src/extra.mw", &relocated)],
+                BASE_IDS,
+            ),
+        ),
+    ] {
+        assert_ne!(
+            baseline.1,
+            facts(&image).1,
+            "{movement} must move the persisted fingerprint",
+        );
+    }
+
+    let (head, read) = BASE_SOURCE
+        .split_once("pub fn readValue")
+        .expect("the base declares its export");
+    let reordered = format!("{head}{PURE_EXPORT}\npub fn readValue{read}");
+    let resignatured = base.replace("fn two(): int", "fn two(k: int): int");
+    for (stillness, image) in [
+        ("the declarations reordered", compile(&reordered, BASE_IDS)),
+        ("an export resignatured", compile(&resignatured, BASE_IDS)),
+    ] {
+        let changed = facts(&image);
+        assert_ne!(
+            baseline.0, changed.0,
+            "{stillness} must really change the image, or the stillness proves nothing",
+        );
+        assert_eq!(
+            baseline.1, changed.1,
+            "{stillness} must not move the persisted fingerprint",
+        );
+    }
 }
 
 /// A durable program exercising every split-order decision point across more than one shape:
