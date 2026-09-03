@@ -1732,18 +1732,18 @@ fn function_body(code: &str, name: &str) -> std::ops::Range<usize> {
 
 /// The projection reaches the END of `path`, by two facts. Blanking the literals leaves as many
 /// `{` as `}`, counted to the file's last byte. A mis-lexed literal blanks past its own end — to
-/// the file's end, which is how an unrecognised raw string swallows the rest — and a blank
-/// beginning inside any block takes that block's closing brace while its opening brace stands, so
-/// the counts part. Every call sits inside a block, so the count reaches past every call the scan
-/// must see. And the file's last production item header —
+/// the file's end, which is how an unrecognised raw string swallows the rest — and the counts
+/// part whenever such a blank consumes a closing brace whose own opener is left standing. That
+/// is the exact condition, and it is narrower than "any blank inside a block": a blank that
+/// consumes a brace and exposes another in its place leaves the totals equal and escapes. And
+/// the file's last production item header —
 /// or, for a file with none (a module list), its last production line free of literal and comment
 /// text — survives blanking at the byte offset it has in the source with only the test items
 /// removed, which catches a blank beginning before that header, where the counts alone would not:
 /// erasing a whole item takes its braces in pairs. A file offering no sentinel fails loudly.
 ///
-/// Unreached, in two shapes, and the brace fact is weaker than "any blank inside a block":
-/// it detects a blank whose consumed closing brace has no matching opener left standing, so a
-/// blank that happens to REBALANCE escapes. A missed raw opener does exactly that — for
+/// Unreached, in two shapes, both following from that condition. A missed raw opener rebalances
+/// — for
 /// `let _ = r#"x" }"#;` inside a function, the ordinary-string scanner exposes the literal's `}`,
 /// which balances the function's `{` while the blank runs to the file's end and takes a call with
 /// it, and the header comparison passes too. The second shape is a blank beginning at a file's
