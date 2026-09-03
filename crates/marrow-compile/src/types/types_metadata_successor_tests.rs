@@ -60,7 +60,6 @@ fn enum_template(template_name: &str, param: &str) -> TypeTemplate {
 
 fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
-        record_declarations: Vec::new(),
         named: DeclarationLedger::new(
             DeclarationNamespace::NamedType,
             DeclarationBudget::default(),
@@ -73,7 +72,7 @@ fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         nominals: Vec::new(),
         structs: Vec::new(),
         enums: Vec::new(),
-        records: Vec::new(),
+        records: AdmittedRecords::default(),
         type_templates: templates,
         generics: RefCell::default(),
         collections: RefCell::default(),
@@ -978,16 +977,19 @@ fn resource_target_fixture() -> (TypeRegistry, DraftTxn<'static>, TypeId, TypeId
         })
         .expect("a within-domain mint");
     let mut registry = test_registry(vec![struct_template("Box", &["T"])]);
-    registry.records.push(RecordInfo {
-        type_id: root_id,
-        name: "Resource".to_string(),
-        fields: Vec::new(),
-        groups: vec![GroupInfo {
-            name: "details".to_string(),
-            type_id: group_id,
+    registry.records.admit(
+        RecordInfo {
+            type_id: root_id,
+            name: "Resource".to_string(),
             fields: Vec::new(),
-        }],
-    });
+            groups: vec![GroupInfo {
+                name: "details".to_string(),
+                type_id: group_id,
+                fields: Vec::new(),
+            }],
+        },
+        0,
+    );
     (registry, draft, root_id, group_id)
 }
 
@@ -1286,16 +1288,19 @@ fn valid_group_adds_no_value_containment_edge() {
         })
         .expect("a within-domain mint");
     let mut registry = test_registry(vec![struct_template("Outer", &["T"])]);
-    registry.records.push(RecordInfo {
-        type_id: root,
-        name: "Resource".to_string(),
-        fields: Vec::new(),
-        groups: vec![GroupInfo {
-            name: "details".to_string(),
-            type_id: group,
+    registry.records.admit(
+        RecordInfo {
+            type_id: root,
+            name: "Resource".to_string(),
             fields: Vec::new(),
-        }],
-    });
+            groups: vec![GroupInfo {
+                name: "details".to_string(),
+                type_id: group,
+                fields: Vec::new(),
+            }],
+        },
+        0,
+    );
     let outer = registry
         .mint_type_instance(&mut draft, 0, &[GArg::Group(group)], site())
         .expect("a real group is a valid non-containing argument");

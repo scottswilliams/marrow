@@ -22,12 +22,58 @@
 //! the declarations that minted it.
 
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
 use marrow_image::TypeId;
 use marrow_project::FileIdentity;
 use marrow_syntax::SourceSpan;
 
+use super::RecordInfo;
 use crate::analysis::FileRef;
+
+/// The admitted `resource` records, each with the position of the declaration it was
+/// built from in the resource slice the declare pass was given.
+///
+/// [`Self::admit`] is the only way to append and it appends to both vectors, so index
+/// `i` of one addresses index `i` of the other because the type admits no other shape.
+/// The durable build reads that pairing rather than rebuilding one from resource name
+/// spellings, and a helper that pushed a record alone would leave every later record
+/// carrying another declaration's ordinal. Reading is the record slice itself; the
+/// ordinals are read through [`Self::ordinals`].
+#[derive(Default)]
+pub(crate) struct AdmittedRecords {
+    records: Vec<RecordInfo>,
+    declarations: Vec<usize>,
+}
+
+impl AdmittedRecords {
+    /// Admit `record`, built from the declaration at `ordinal`.
+    pub(super) fn admit(&mut self, record: RecordInfo, ordinal: usize) {
+        self.records.push(record);
+        self.declarations.push(ordinal);
+    }
+
+    /// For each admitted record, in record order, its declaration's position.
+    pub(super) fn ordinals(&self) -> &[usize] {
+        &self.declarations
+    }
+}
+
+impl Deref for AdmittedRecords {
+    type Target = [RecordInfo];
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+/// Filling a reserved record in place is an edit of one record, and a slice offers no
+/// append, so the two vectors keep the same length however a pass mutates a row.
+impl DerefMut for AdmittedRecords {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.records
+    }
+}
 
 /// Where one declared value type was written: its module and its name span.
 ///

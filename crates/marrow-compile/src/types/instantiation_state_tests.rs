@@ -83,7 +83,6 @@ fn ordered(outcome: GenericDiagnostics) -> Vec<SourceDiagnostic> {
 
 fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
-        record_declarations: Vec::new(),
         named: DeclarationLedger::new(
             DeclarationNamespace::NamedType,
             DeclarationBudget::default(),
@@ -96,7 +95,7 @@ fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         nominals: Vec::new(),
         structs: Vec::new(),
         enums: Vec::new(),
-        records: Vec::new(),
+        records: AdmittedRecords::default(),
         type_templates: templates,
         generics: RefCell::default(),
         collections: RefCell::default(),
@@ -336,12 +335,15 @@ fn add_resource_record(
             fields: Vec::new(),
         })
         .expect("a within-domain mint");
-    registry.records.push(RecordInfo {
-        type_id,
-        name: name.to_string(),
-        fields: Vec::new(),
-        groups: Vec::new(),
-    });
+    registry.records.admit(
+        RecordInfo {
+            type_id,
+            name: name.to_string(),
+            fields: Vec::new(),
+            groups: Vec::new(),
+        },
+        registry.records.len(),
+    );
     type_id
 }
 

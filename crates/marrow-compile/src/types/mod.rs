@@ -57,7 +57,7 @@ use build::{
     fill_records, fill_structs, register_type_templates, reserved_templates,
     validate_alias_targets,
 };
-use decl_coords::DeclarationCoordinates;
+use decl_coords::{AdmittedRecords, DeclarationCoordinates};
 use metadata::{DeclaredCounts, RowDirectory, RowDirectoryGuard};
 pub(crate) use owner_txn::GenericOwnerTxn;
 use owner_txn::ProofIsolation;
@@ -1337,19 +1337,16 @@ pub(crate) struct TypeRegistry {
     nominals: Vec<NominalInfo>,
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
-    /// The project's `resource` record types, in source order. Each is a value
-    /// record type; at most one backs a durable store this line. Names are unique
-    /// (a duplicate is rejected at declare), so a name selects at most one.
-    records: Vec<RecordInfo>,
-    /// For each admitted record, its position in the resource slice `declare_records` was
-    /// given. Written in lockstep with `records`, so index `i` of one addresses index `i`
-    /// of the other by construction rather than by a later join on any key.
+    /// The project's `resource` record types, in source order, each with the position
+    /// of the declaration it was built from. Each is a value record type; at most one
+    /// backs a durable store this line. Names are unique (a duplicate is rejected at
+    /// declare), so a name selects at most one.
     ///
-    /// This exists because the durable build was rebuilding that pairing from resource
-    /// name strings — a fact settled at declaration time, thrown away, and re-derived with
-    /// a weaker key. Carrying the ordinal is both the identity fix and the removal of a
-    /// re-derivation.
-    record_declarations: Vec<usize>,
+    /// The ordinal travels with the record because the durable build was rebuilding
+    /// that pairing from resource name strings — a fact settled at declaration time,
+    /// thrown away, and re-derived with a weaker key. [`AdmittedRecords`] is what makes
+    /// the two answer for one another; this field cannot be filled any other way.
+    records: AdmittedRecords,
     /// The generic value-type templates: the reserved toolchain generics
     /// (`Option`/`Result`) followed by the user `struct`/`enum` templates. Fixed
     /// after `build`; instantiations reference a template by index.
@@ -1401,14 +1398,13 @@ impl TypeRegistry {
             nominals: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
-            records: Vec::new(),
+            records: AdmittedRecords::default(),
             type_templates: Vec::new(),
             generics: RefCell::default(),
             collections: RefCell::default(),
             collection_index: RefCell::default(),
             row_directory: RefCell::default(),
             coordinates: DeclarationCoordinates::default(),
-            record_declarations: Vec::new(),
         }
     }
 }
@@ -3216,7 +3212,7 @@ impl TypeRegistry {
     /// declare pass was given. The durable build reads this instead of re-pairing records
     /// to declarations by name.
     pub(crate) fn record_declaration_ordinals(&self) -> &[usize] {
-        &self.record_declarations
+        self.records.ordinals()
     }
 
     /// The module position and span `type_id` was declared at, for a consumer proving that
@@ -3486,14 +3482,13 @@ impl TypeRegistry {
             nominals: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
-            records: Vec::new(),
+            records: AdmittedRecords::default(),
             type_templates: reserved_templates(),
             generics: RefCell::default(),
             collections: RefCell::default(),
             collection_index: RefCell::default(),
             row_directory: RefCell::default(),
             coordinates: DeclarationCoordinates::default(),
-            record_declarations: Vec::new(),
         };
         registry.nominals = build_nominals(
             &mut registry,
@@ -3823,7 +3818,7 @@ pub(crate) fn reject_value_cycles(
             diagnostics.push(value_cycle_diagnostic(file, span, &info.name, &path));
         }
     }
-    for record in &registry.records {
+    for record in registry.records.iter() {
         if let Some(path) = graph.cycle_through(ValueNode::Record(record.type_id)) {
             let (file, span) = registry.coordinates.resolve(record.type_id).ok_or(
                 GenericInvariant::DeclarationCoordinateMissing(record.type_id),
@@ -3931,7 +3926,7 @@ impl ValueGraph {
             labels.push(label);
             targets.push(outgoing);
         };
-        for record in &registry.records {
+        for record in registry.records.iter() {
             let outgoing = record
                 .fields
                 .iter()
