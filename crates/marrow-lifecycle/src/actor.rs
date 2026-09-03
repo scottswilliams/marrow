@@ -1,5 +1,7 @@
-//! The one-shot lifecycle actor: the single privileged path that binds a verified program
-//! image to a persistent store.
+//! The one-shot lifecycle actor: the only path that can change which verified program image
+//! a persistent store is bound to, and the only one that compares the store's head-map pin.
+//! It is not the only path that pairs an image with a store; the end of this list says which
+//! other ones exist and what they skip.
 //!
 //! An attach takes the store's single-owner lock, rereads the persisted head from disk (never
 //! a cached copy), and classifies the incoming image against the store's active binding:
@@ -21,8 +23,8 @@
 //!   persisted pin, because serving it would readdress durable cells. Fail-closed and
 //!   recovery-shaped; the head, envelope, and engine data are unchanged (acquisition has
 //!   already rewritten the lock's owner marker, so the next successful open audits). The
-//!   pin guards this attach path; `crate::open` runs no pin comparison and its production
-//!   caller set is pinned by the lifecycle test battery.
+//!   pin guards this attach path; `crate::open` runs no pin comparison and its direct
+//!   production callers are censused by the lifecycle test battery.
 //! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
 //!   image's code (its byte identity) differs. The actor rewrites the head and then the
 //!   envelope as two separately atomic ordered commits, with a valid state between them
@@ -46,8 +48,12 @@
 //! holding one can pair any verified image with it through the runner's public
 //! `AttachedService::new`, which executes that image against that store. Closing that
 //! composition belongs to the follow-on row, together with threading an image through
-//! `import_jsonl`; here, `open`'s production caller set is pinned by the lifecycle test
-//! battery so no new unfenced pairing appears unnoticed. An `OpenStore` holds the store's
+//! `import_jsonl`. Here, the lifecycle test battery censuses the production callers of the
+//! `open` *spelling*, so a new direct call turns up; the census also records the spellings it
+//! does not reach — a submodule re-export called under another path, a public wrapper over
+//! `open_admitted`, a dependency rename inherited from the workspace manifest, and a call a
+//! macro emits — each of which can still produce an unpinned `OpenStore` unseen. An
+//! unfenced pairing is therefore fenced against the direct route only. An `OpenStore` holds the store's
 //! owner lock, which is non-`Clone` and non-serializable, so no session, bytecode, or client
 //! path can enter or forge a lifecycle state — nothing below this crate depends on it (the
 //! Cargo trust boundary), and there is no serialized form to reconstruct one from.
