@@ -663,7 +663,10 @@ impl DurableRegistry {
         }
     }
 
-    /// Record the qualified path of every keyed branch among `groups`, recursively.
+    /// Record the qualified path of every keyed branch among `groups`, and of every
+    /// keyed branch beneath one. An unkeyed group ends the walk, so a keyed branch
+    /// declared under it records no path; the one consumer, [`Self::declares_branch`],
+    /// asks only about a resource's own top-level member, which such a branch is not.
     /// The rows carry each branch's path and keyedness, so this projection reads no
     /// declaration syntax and re-derives neither; the answer is available for every
     /// admitted Product whether or not a root over it reached the executable subset.

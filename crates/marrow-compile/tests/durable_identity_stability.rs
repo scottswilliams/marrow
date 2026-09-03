@@ -248,12 +248,14 @@ fn production_code_of_crate() -> String {
 ///
 /// What it does not establish: that the drift has one *deciding* seam. A second site
 /// reached through a renamed helper, a function value, or a shared constructor keeps
-/// every number here intact. Nor does it say the join is *right*: `ResourceDirectory`
-/// pairs an admitted record with a declaration of the same written name, and a
-/// same-named declaration supplied in place of the admitted one is accepted with no
-/// disagreement to report. Closing that means handing the durable build the pairing
-/// the declare pass already made, and until then this census is the tripwire against
-/// a post-projection rescan, not a proof that the pairing is sound.
+/// every number here intact. Nor does it say the pairing is *authenticated*:
+/// `ResourceDirectory` pairs an admitted record with the declaration at the ordinal the
+/// declare pass recorded and checks that declaration's module position and name span,
+/// so a slice of a different shape is refused — but a second parse presenting the same
+/// position and span with its members mutated is not, because `FileRef` is
+/// snapshot-local and `FileIdentity` is not compared. Closing that means carrying the
+/// declare pass's pairing out with the registry; until then this census is the tripwire
+/// against a post-projection rescan, not a proof that the slice is the right one.
 #[test]
 fn the_durable_resource_drift_seams_are_spelled_once() {
     let code = production_code_of_crate();

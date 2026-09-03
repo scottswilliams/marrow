@@ -1,10 +1,14 @@
 //! The declaration coordinate tables the declare pass owns: where each declared
-//! value type was written.
+//! `struct` and `resource` was written.
 //!
-//! A later pass that must report at a declaration — today the value-containment
-//! cycle check — reads the coordinate from here instead of scanning the syntax
-//! tree for a declaration whose name matches. That scan was linear in the
-//! project's declarations and ran once per reported type, and it could only be
+//! Those are the two families a later pass reports at. The value-containment cycle
+//! check reports every struct and record on a cycle at its own declaration, and reaches
+//! a cyclic enum through the template of an instantiation rather than through a
+//! coordinate, so `declare_enums` records none and an enum has no row here.
+//!
+//! A pass that must report at a declaration reads the coordinate from here instead of
+//! scanning the syntax tree for a declaration whose name matches. That scan was linear
+//! in the project's declarations and ran once per reported type, and it could only be
 //! written at all because the pass still borrowed the tree.
 //!
 //! The tables are owned fields of [`super::TypeRegistry`], the bundle declaration

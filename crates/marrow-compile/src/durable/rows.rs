@@ -2,17 +2,17 @@
 //!
 //! Each table is taken once, before the first store is built, from the two owners a
 //! durable declaration has: the declaration the parser wrote, and the fact the type
-//! registry admitted for it. A row retains no declaration it could be asked about a
-//! second time: member paths, key widths, key columns, and index arguments are all
-//! settled here, and a consumer is handed validated projections, so it cannot
-//! re-derive an answer a row already carries.
+//! registry admitted for it. Member paths, key widths, key columns, and index
+//! arguments are settled here, so a consumer is handed validated projections rather
+//! than a question it could answer a second way.
 //!
-//! That is a property of the rows, not yet of the build around them.
-//! `DurableRegistry::build` still receives the raw `resource` declarations these
-//! tables are constructed from, and each store's own `StoreDecl` travels beside its
-//! row for the root placement name and the spans its refusals report at. Both remain
-//! reachable syntax for a consumer that goes looking; closing that means the build
-//! accepting rows and nothing else.
+//! Declaration syntax stays reachable through these tables, and that is the state of
+//! the build today rather than an oversight. `DurableRegistry::build` still receives
+//! the raw `resource` declarations the tables are constructed from; each store's own
+//! `StoreDecl` travels beside its row for the root placement name and the spans its
+//! refusals report at; and a [`GroupRow`] retains its member `FieldDecl`s, which carry
+//! their own key syntax. Each row states what it retains. Closing those routes means
+//! the build accepting rows and nothing else, which is a successor row's work.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -39,9 +39,10 @@ pub(super) struct ResourceDeclId(usize);
 /// registry admitted, and the member `group`/`branch` tree projected from the
 /// declaration the parser wrote.
 ///
-/// The declaration itself is consumed whole at the take: everything the build reads
-/// from it afterwards travels as rows, so no later phase can reach back into the
-/// syntax it was projected from.
+/// The row holds no `ResourceDecl` of its own: the declaration is borrowed for the
+/// projection and left where it was. It stays reachable to the build through the slice
+/// `DurableRegistry::build` receives, so this row narrows what the build reads without
+/// putting the declaration out of reach.
 pub(super) struct ResourceRow<'a> {
     pub(super) record: &'a RecordInfo,
     pub(super) groups: Vec<GroupRow<'a>>,
@@ -59,13 +60,8 @@ pub(super) struct ResourceRow<'a> {
 /// inputs drifting apart — a compiler coherence failure raised here, at the single
 /// join, and nowhere else.
 ///
-/// The join pairs on the written name, which is **not** declaration identity: the
-/// declare pass admits a record from one declaration, and a same-named declaration
-/// supplied in its place answers here with no disagreement to report. Nothing
-/// available to this module distinguishes them — the pairing the declare pass already
-/// made is not carried out of `TypeRegistry::build`, so making foreign substitution
-/// unrepresentable means handing that pairing over rather than re-deriving it here,
-/// and it is not this module's to install.
+/// The join is the ordinal the declare pass recorded, not the written name, and
+/// [`Self::take`] states what that pairing does and does not establish.
 pub(super) struct ResourceDirectory<'a> {
     rows: Vec<ResourceRow<'a>>,
     by_spelling: BTreeMap<&'a str, ResourceDeclId>,
@@ -84,11 +80,20 @@ impl<'a> ResourceDirectory<'a> {
         // owner settled is the re-derivation the speed pillar forbids. Reading the ordinal
         // is linear and admits no key at all.
         //
-        // The coordinate check below is what makes a wrong slice fail loudly instead of
-        // pairing by position with whatever it was handed. It compares the module POSITION
-        // and span the declare pass recorded against the declaration at that ordinal — a
-        // position, not a spelling, because two parses of one project repeat spellings and
-        // cannot repeat positions.
+        // What the ordinal establishes: for the writer that recorded it — the declare pass,
+        // handed the same slice — an exact record-to-declaration pairing, derived once and
+        // never again. What the coordinate check below adds: the declaration at that
+        // ordinal must sit at the module POSITION and name span the declare pass recorded,
+        // so a slice of a different shape fails loudly instead of pairing by position with
+        // whatever it was handed. A position, not a spelling, because two parses of one
+        // project repeat spellings and cannot repeat positions.
+        //
+        // What neither establishes: that an arbitrary caller's slice is the one the
+        // registry was built from. `FileRef` is snapshot-local and `FileIdentity` is not
+        // compared, so a second parse presenting the same module ordinal and name span with
+        // its members mutated is accepted here. Making that unrepresentable means carrying
+        // the declare pass's pairing out with the registry under one borrowed wrapper,
+        // which retires the ordinal and this check together; it is a successor row's work.
         let ordinals = records.record_declaration_ordinals();
         let admitted = records.admitted_resources();
         let mut rows = Vec::with_capacity(admitted.len());
@@ -358,12 +363,14 @@ struct KeyColumnRow<'a> {
 /// to the durable-key scalar set or the one refusal that resolution earned.
 ///
 /// A root's tuple and a branch's tuple are the same shape enforced by the same rules,
-/// so they are one owner. It is taken once per declared tuple per compile, and it
-/// retains no `KeyParam`: the width is a count, a column is a name and a scalar, and
-/// the refusal is a settled diagnostic. A consumer therefore holds no key syntax — it
-/// can neither resolve a column's scalar a second time nor build a second table from
-/// the table it was handed. Column position is declaration order throughout, which is
-/// the order the identity suffix law and the image key tuple both read.
+/// so they are one owner. It is taken once per declared tuple per compile, and this
+/// table retains none of the `KeyParam`s it was taken from: the width is a count, a
+/// column is a name and a scalar, and the refusal is a settled diagnostic, so a
+/// consumer cannot resolve a column's scalar a second time off the table it was handed.
+/// The claim is the table's alone — a keyed field's own key syntax travels with the
+/// `FieldDecl` in [`GroupRow::fields`]. Column position is declaration order
+/// throughout, which is the order the identity suffix law and the image key tuple both
+/// read.
 pub(super) struct KeyTable<'a> {
     owner: KeyOwner<'a>,
     /// The declared column count. Kept beside the resolution because the width cap
@@ -498,10 +505,13 @@ pub(super) struct GroupRow<'a> {
     /// The qualified member path, the branch-path and key-anchor prefix. Assembled
     /// here and nowhere else.
     pub(super) path: String,
-    /// The member's directly declared stored fields, in declaration order. The group
-    /// declaration itself — and with it its raw key tuple — is deliberately NOT
-    /// retained: a consumer holding this row has nothing to reconstruct a key table
-    /// from.
+    /// The member's directly declared stored fields, in declaration order.
+    ///
+    /// The `group` declaration itself is not retained, so its own key tuple reaches a
+    /// consumer only as [`GroupRow::keys`]. A field's key tuple is another matter: a
+    /// `FieldDecl` carries its `KeyParam`s, and `DurableRegistry::build_field` reads
+    /// them to refuse a keyed field. A consumer holding this row therefore holds that
+    /// much key syntax, and will until a field row displaces the declaration here.
     pub(super) fields: Vec<&'a FieldDecl>,
     /// The span of the first declared member, for the depth-cap refusal.
     pub(super) first_member_span: Option<SourceSpan>,
