@@ -254,9 +254,9 @@ pub fn production_code_of(file: &str) -> String {
 
 /// The names `body` calls: every identifier immediately before a `(`.
 ///
-/// A call is recognised by its spelling, so a call through an alias, a function
-/// value, a method, or a macro is not one of these names — a walker driven by this
-/// reader reaches what the source calls by name and no further.
+/// A method call yields its method name, `receiver.resolve(` giving `resolve`. A call
+/// through a function value or a macro yields nothing, and a call through an alias
+/// yields the alias — a walker driven by this reader follows only names it can match.
 pub fn callees(body: &str) -> Vec<String> {
     let bytes = body.as_bytes();
     body.match_indices('(')

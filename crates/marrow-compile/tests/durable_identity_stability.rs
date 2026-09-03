@@ -3,14 +3,15 @@
 //! A durable declaration's `(kind, path)` anchors are the keys of the
 //! machine-written `.marrow/ids` ledger: the compiler resolves each one to a
 //! stable id, and a store keeps its data under the id that anchor resolved to.
-//! A changed anchor spelling therefore does not report anything — it silently
-//! re-anchors durable identity, so every existing store's data hangs off an id
-//! nothing asks for any more, and the rename-preserves-identity law
-//! (`docs/language/traversal-and-indexes.md`) is broken with no diagnostic.
+//! A changed anchor spelling therefore reports a missing identity rather than a
+//! rename: `check.durable_identity` names the new anchor as a `.marrow/ids` gap, and
+//! the mint action commits it beside the id the old spelling still owns, so every
+//! existing store's data hangs off an id nothing asks for any more and the
+//! rename-preserves-identity law (`docs/language/traversal-and-indexes.md`) breaks.
 //!
 //! That makes the anchor set a durable contract rather than a diagnostic
 //! surface, and it is why this suite compares the WHOLE set for a corpus that
-//! reaches every anchor-minting site, instead of asserting individual anchors
+//! reaches every anchor kind, instead of asserting individual anchors
 //! where they are convenient. The corpus below covers each `IdentityKind` a
 //! store declaration can mint: the application anchor, root placements
 //! (single-column, composite, and a second root over one resource), the product,
@@ -34,7 +35,7 @@ use marrow_compile::compile;
 use marrow_project::{IdentityAnchor, IdentityKind, ProjectInput};
 use project_capture::project_with_ids;
 
-/// A corpus reaching every anchor-minting site in the durable builder.
+/// A corpus minting an anchor of every `IdentityKind` the durable builder resolves.
 ///
 /// Split across two modules so a coordinate the builder took from the wrong
 /// module cannot pass by there being only one.
@@ -203,13 +204,13 @@ use source_projection::{is_test_only_file, production_code, production_code_of};
 /// crate-wide, because a shape minted in a file the per-file censuses never read
 /// is still that shape.
 ///
-/// Every check below reads this text and decides one thing: whether a spelling
-/// occurs at a site, and how often, in the source as written. None of them binds a
-/// call graph. A renamed function, a call through an alias or a function value, a
-/// wrapper that forwards, and a second deciding site sharing one counted
-/// constructor all leave these numbers intact. Each census states the spellings it
-/// reads; the property itself is carried by a type boundary, a visibility, or a
-/// production-path test, and is named where that is so.
+/// One check below reads this whole text; the other three read one named file each.
+/// All of them decide the same kind of thing: whether a spelling occurs at a site,
+/// and how often, in the source as written. None binds a call graph. A renamed
+/// function, a call through an alias or a function value, a wrapper that forwards,
+/// and a second deciding site sharing one counted constructor all leave these numbers
+/// intact. Each census states the spellings it reads; the property itself is carried
+/// by a type boundary, a visibility, or a production-path test, and is named there.
 fn production_code_of_crate() -> String {
     fn walk(dir: &Path, code: &mut String) {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -243,8 +244,9 @@ fn production_code_of_crate() -> String {
 /// of the raw declaration tuple and the declaration type it carries.
 ///
 /// Round 2 named two evasions of per-file censuses: a factory holding the sole
-/// counted construction, and a raw-slice alias minted in a file the durable
-/// censuses never read. Counting crate-wide moves a number for either spelling.
+/// counted construction, and a raw-slice alias minted in a file the durable censuses
+/// never read. Counting crate-wide closes the second — the alias moves a number
+/// wherever it is minted. The first stays open, and the paragraph below says so.
 ///
 /// What it does not establish: that the drift has one *deciding* seam. A second site
 /// reached through a renamed helper, a function value, or a shared constructor keeps
@@ -306,8 +308,8 @@ fn the_durable_resource_drift_seams_are_spelled_once() {
     );
 }
 
-/// The durable builder spells none of the index and key syntax below, and mints a key
-/// anchor at exactly two sites.
+/// The durable builder spells none of the index and key syntax below, and resolves a
+/// key anchor at exactly two of its own sites.
 ///
 /// Every index admission rule once read the parsed `IndexDecl` and rendered each
 /// argument's path spelling at the moment it needed one, which made "the same
@@ -368,8 +370,8 @@ fn the_durable_builder_spells_none_of_the_index_or_key_syntax_needles() {
 /// `StagedStoreTxn::build_one` and the `durable.rs::build_one` it forwards to once
 /// took `&[(FileRef, FileIdentity, &ResourceDecl)]` and recovered the resource
 /// declaration by name search after row construction. This is the lane's named
-/// enforcement artifact for the carrier: the slice type occurs only at the `build`
-/// entry, where it is row-construction input handed to `ResourceDirectory::take`.
+/// enforcement artifact for the carrier: in the builder the slice type occurs only at
+/// the `build` entry, as row-construction input handed to `ResourceDirectory::take`.
 ///
 /// It reads type spellings in two files. A slice reaching the staging boundary
 /// through a type alias, a tuple struct, or a closure it does not name would leave
@@ -418,7 +420,7 @@ fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
 /// whatever its type is spelled as, and a field opened to the durable builder changes
 /// the line's `pub(super)`.
 ///
-/// It reads the field lines of five named structs in one file. A carrier reached
+/// It reads the field lines of six named structs in one file. A carrier reached
 /// through a type these rows already hold, or added to a struct not pinned here, is
 /// outside its reach.
 #[test]
@@ -499,7 +501,7 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
 }
 
 /// The durable module's `.find(` occurrences are exactly as counted, the three
-/// recovery combinators are unspelled there, and the raw declaration type occurs
+/// recovery shapes are unspelled there, and the raw declaration type occurs
 /// exactly as counted per file.
 ///
 /// The counts are exact rather than "at most" so a recovery rewritten onto an

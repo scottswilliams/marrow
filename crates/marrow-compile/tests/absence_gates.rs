@@ -2879,10 +2879,11 @@ fn the_propagating_call_reader_names_a_planted_exit() {
 ///
 /// Declaration admission is one-shot: a failed `TypeRegistry::build` drops the
 /// partially built registry with everything it owns, so the stale-coordinate window
-/// is closed by ownership rather than by an inverse. The closing probe keeps the scan
-/// honest: a phrase from this module's own prose must be invisible, so a commented-out
-/// `Clone` cannot decide the gate. It does not see a table handed out under a return
-/// type spelled differently, or a copy assembled from the rows instead of the table.
+/// is closed by ownership rather than by an inverse. The closing probe asserts that a
+/// phrase from this module's own prose is invisible, but rustfmt wrapped that phrase
+/// across a line break, so it is absent from the source too and decides nothing. The
+/// scan does not see a table handed out under a return type spelled differently, or a
+/// copy assembled from the rows instead of the table.
 #[test]
 fn declaration_coordinates_cannot_outlive_their_admission() {
     let module = production_code_of_module("types");
@@ -2930,9 +2931,9 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
 ///
 /// Round 1 proved a lexical counter pins nothing; round 2 that a signature alone
 /// admits a dead wrapper kept beside a redirected caller, which is why the walk
-/// follows callees. It follows them by spelling, so a call through an alias, a
-/// function value, a method, a macro, or a function outside this module is not
-/// followed and a declaration read there is invisible to it.
+/// follows callees. It follows them by spelling — a method call by its method name —
+/// so a call through an alias, a function value, a macro, or a function outside this
+/// module is not followed, and a declaration read there is invisible to it.
 #[test]
 fn reporting_a_value_cycle_reads_no_syntax_declaration() {
     let module = production_code_of_module("types");

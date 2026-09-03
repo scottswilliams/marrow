@@ -462,9 +462,10 @@ fn the_store_binding_corpus_covers_every_binding_class() {
 /// collision with an earlier index, and a singleton root that has no identity to point
 /// at.
 ///
-/// Every rule `build_indexes` enforces reads the index's *declaration* — its name, its
-/// argument count, its span — and every one of them renders that name into the row a
-/// reader sees. Admitted indexes are declared first and interleaved between the refused
+/// Every rule `build_indexes` enforces reads the index rows — a name, an argument
+/// count, a span — and the per-index rules render that name into the row a reader sees.
+/// The per-root count cap and the projection width cap name the root or the count
+/// instead. Admitted indexes are declared first and interleaved between the refused
 /// roots, so an owner that refused every index would not pass, and the count-cap root
 /// carries nine otherwise-valid indexes so the cap is observed on a body that is wrong
 /// only in its length.
