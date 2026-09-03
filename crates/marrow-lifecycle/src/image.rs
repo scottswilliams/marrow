@@ -135,9 +135,11 @@ pub enum PinDisagreement {
 /// The pin protects the attach path: `crate::attach` derives the pin before the store is
 /// touched and compares it inside the admission gate, after the single-owner lock and
 /// before any engine call, whenever the incoming durable contract is the store's active
-/// contract. A changed durable contract is instead classified as the typed
-/// `store.contract_changed` refusal after the engine's physical open but before any session;
-/// that path never attaches the store either.
+/// contract. A changed durable contract never reaches the pin. It is classified after the
+/// engine's physical open and before any session, as the typed `store.contract_changed`
+/// refusal when nothing preempts that classification: a demand beyond the accepted ceiling
+/// is refused in the admission gate first as `store.demand_exceeds_ceiling`, and an engine
+/// that fails to open surfaces its own error. None of those paths attaches the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadMapPinMismatch {
     /// The first disagreement, in the derived walk order (then any pin-only binding, then
