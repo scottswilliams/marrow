@@ -305,8 +305,8 @@ fn the_durable_resource_drift_seams_are_spelled_once() {
     );
 }
 
-/// The durable builder spells no index or key syntax, and mints a key anchor at
-/// exactly two sites.
+/// The durable builder spells none of the index and key syntax below, and mints a key
+/// anchor at exactly two sites.
 ///
 /// Every index admission rule once read the parsed `IndexDecl` and rendered each
 /// argument's path spelling at the moment it needed one, which made "the same
@@ -319,11 +319,11 @@ fn the_durable_resource_drift_seams_are_spelled_once() {
 /// second time off a row — a visibility fact, which is why the census that stood in
 /// for it is gone.
 ///
-/// What remains uncovered, and is not claimed here: the builder still holds each
-/// store's `StoreDecl` and the raw `resource` slice, so key and index syntax is
-/// reachable there under any spelling these needles do not name.
+/// Not claimed: that the builder reads no key syntax. `build_field` takes a member
+/// `FieldDecl` from `GroupRow::fields` and reads `field.keys` to refuse a keyed field,
+/// and each store's `StoreDecl` and the raw `resource` slice stay in reach besides.
 #[test]
-fn the_durable_builder_spells_no_index_or_key_syntax() {
+fn the_durable_builder_spells_none_of_the_index_or_key_syntax_needles() {
     let builder = production_code_of("durable.rs");
     for absent in [
         "IndexDecl",
