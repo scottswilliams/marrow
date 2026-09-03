@@ -1732,18 +1732,19 @@ fn function_body(code: &str, name: &str) -> std::ops::Range<usize> {
 
 /// The projection reaches the END of `path`, by two facts. Blanking the literals leaves as many
 /// `{` as `}`, counted to the file's last byte. A mis-lexed literal blanks past its own end — to
-/// the file's end, which is how an unrecognised raw string swallows the rest — and the counts
-/// part whenever such a blank consumes a closing brace whose own opener is left standing. That
-/// is the exact condition, and it is narrower than "any blank inside a block": a blank that
-/// consumes a brace and exposes another in its place leaves the totals equal and escapes. And
-/// the file's last production item header —
+/// the file's end, which is how an unrecognised raw string swallows the rest. The condition is
+/// simply that the projected brace totals differ: any blanking that changes the net balance is
+/// caught, and any that preserves it is not. That is narrower than "a blank inside a block" in
+/// one direction and wider in the other — a blank consuming a brace escapes if it exposes
+/// another in its place, and a blank consuming a balanced item is caught if the literal it
+/// mis-read exposed an unmatched brace of its own. And the file's last production item header —
 /// or, for a file with none (a module list), its last production line free of literal and comment
 /// text — survives blanking at the byte offset it has in the source with only the test items
 /// removed, which catches a blank beginning before that header, where the counts alone would not:
 /// erasing a whole item takes its braces in pairs. A file offering no sentinel fails loudly.
 ///
-/// Unreached, in two shapes, both following from that condition. A missed raw opener rebalances
-/// — for
+/// Unreached: anything that leaves the net balance intact, in two shapes. A missed raw opener
+/// rebalances — for
 /// `let _ = r#"x" }"#;` inside a function, the ordinary-string scanner exposes the literal's `}`,
 /// which balances the function's `{` while the blank runs to the file's end and takes a call with
 /// it, and the header comparison passes too. The second shape is a blank beginning at a file's
