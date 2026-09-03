@@ -1043,21 +1043,25 @@ mod tests {
 
     /// Whether the `'` at `start` opens a char literal rather than a lifetime tick.
     ///
-    /// A char literal closes within a few bytes: `'a'`, `'\n'`, `'\u{1F600}'`. A lifetime
-    /// never closes at all. Scanning a bounded window for the closing quote separates them
-    /// without a full lexer, and the window is wide enough for the longest escape form.
+    /// Decided by the two bytes after the quote, never by searching ahead for a closing
+    /// one. An escape form (`'\n'`, `'\''`) is a literal; a single-byte form (`'a'`) is a
+    /// literal because its third byte closes it; anything else is a lifetime.
+    ///
+    /// Searching ahead is what the first version did, and it was wrong on real code in
+    /// this file: `redb::AccessGuard<'a, &'static [u8]>` puts two ticks within a dozen
+    /// bytes, so `'a` found `'static`'s quote and the span between them was blanked as if
+    /// it were a literal. Deciding locally cannot make that mistake.
+    ///
+    /// A multi-byte char literal such as `'é'` is read as a lifetime, because its third
+    /// byte is a UTF-8 continuation rather than the closing quote. That direction is safe:
+    /// the unblanked content of a char literal is one character, which cannot spell a
+    /// call.
     fn is_char_literal(src: &[u8], start: usize) -> bool {
-        let limit = (start + 12).min(src.len());
-        let mut i = start + 1;
-        while i < limit {
-            match src[i] {
-                b'\\' => i += 2,
-                b'\'' => return true,
-                b'\n' => return false,
-                _ => i += 1,
-            }
+        match (src.get(start + 1), src.get(start + 2)) {
+            (Some(b'\\'), _) => true,
+            (Some(_), Some(b'\'')) => true,
+            _ => false,
         }
-        false
     }
 
     /// Whether `source` contains a raw string literal, in any of its prefixed forms, at a
