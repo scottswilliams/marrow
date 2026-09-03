@@ -23,8 +23,9 @@
 //!   persisted pin, because serving it would readdress durable cells. Fail-closed and
 //!   recovery-shaped; the head, envelope, and engine data are unchanged (acquisition has
 //!   already rewritten the lock's owner marker, so the next successful open audits). The
-//!   pin guards this attach path; `crate::open` runs no pin comparison and its direct
-//!   production callers are censused by the lifecycle test battery.
+//!   pin guards this attach path; `crate::open` runs no pin comparison and its ordinarily
+//!   spelled production callers are censused by the lifecycle test battery, which lists the
+//!   spellings — a root alias among them — that it does not reach.
 //! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
 //!   image's code (its byte identity) differs. The actor rewrites the head and then the
 //!   envelope as two separately atomic ordered commits, with a valid state between them

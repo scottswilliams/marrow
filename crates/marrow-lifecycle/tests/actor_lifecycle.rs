@@ -1290,7 +1290,10 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// row owns, and the same row owns removing this permitted call by threading the image in —
 /// and no crate outside `marrow-lifecycle` may name lifecycle `open` at all. A new caller of
 /// that spelling therefore turns up here and must either go through `attach`, which runs the
-/// pin, or extend the pin family.
+/// pin, or extend the pin family — provided that caller is spelled the ordinary way. The
+/// spellings this scan does not reach are listed at [`continues_identifier`], and a root
+/// alias (`use crate as life; life::open(...)`) is among them: direct, entirely ASCII, and
+/// missed, because the alias refusal recognises `crate` only immediately before `::`.
 ///
 /// That is a census over one spelling, not a claim that `attach` is the only place an image
 /// and a store meet: a caller holding an `OpenStore` can pair any verified image with it
@@ -1315,12 +1318,12 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// tracked and only the ABI marker immediately before `fn` is. An identifier carrying a
 /// non-ASCII character (`r#opené`, `opené`) is split at `open`, because the shared
 /// projection's identifier-byte test is ASCII-only, and the fragment is then reported as a
-/// reference that is named without being called. Those two are the imprecisions this list
-/// can carry: a shape read imprecisely in the SILENT direction would not be a documented
-/// limit but a hole, so the keyword scan resolves its own boundaries under
-/// [`continues_identifier`] instead, which decides on decoded characters — a non-ASCII
-/// letter continues a name, a non-ASCII space separates tokens — and [`use_statements`]
-/// refuses any span it opens that reaches over a call.
+/// reference that is named without being called. Those two fail the census loudly.
+///
+/// Shapes read imprecisely in the SILENT direction also exist, and are holes rather than
+/// documented limits until named — so they are named, at [`continues_identifier`]. The
+/// keyword scan resolving its own boundaries under that function and [`use_statements`]
+/// refusing a span that reaches over a call narrow the silent set; they do not empty it.
 ///
 /// The scan is lexical over the shared production projection (comments, string and char
 /// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
@@ -1592,8 +1595,10 @@ fn classify_open_references(
     references
 }
 
-/// The byte spans of every `use` and `extern crate` statement in `code`, each from its
-/// keyword to its terminating `;`. `extern` opens a statement only in `extern crate`: as an
+/// The byte spans of `use` and `extern crate` statements in `code`, each from its keyword
+/// to its terminating `;`. Not every one: a statement whose keyword is separated from what
+/// follows by non-ASCII whitespace (`extern\u{85}crate marrow_lifecycle as life;`) is not
+/// spanned, because the token helpers here skip ASCII whitespace only. `extern` opens a statement only in `extern crate`: as an
 /// ABI marker (`extern "Rust" fn f() { … }`, or an `extern` block) it introduces an item
 /// whose body is ordinary code, and a span running to the first `;` would swallow it.
 ///
@@ -1613,9 +1618,11 @@ fn classify_open_references(
 /// [`continues_identifier`], asked of decoded characters: a non-ASCII letter continues the
 /// name around a keyword, and a non-ASCII space still separates tokens.
 ///
-/// Whatever that boundary decides, a span that swallowed a call would carry the call's
-/// parentheses, and no `use` or `extern crate` statement contains any: the assertion below
-/// turns every remaining misreading of the boundary from a vanished call into a failure.
+/// A span that swallowed a DIRECT call would carry the call's parentheses, and no `use` or
+/// `extern crate` statement contains any, so the assertion below turns that misreading into
+/// a failure rather than a vanished call. It does not catch an INDIRECT one: binding the
+/// function first and calling the binding leaves both false spans parenthesis-free, which
+/// the decomposed-accent case at [`continues_identifier`] demonstrates.
 fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     for keyword in ["use", "extern"] {
@@ -1895,9 +1902,11 @@ fn token_after(text: &str, start: usize) -> Option<(usize, &str)> {
     Some((start, text.get(start..end).unwrap_or("\u{fffd}")))
 }
 
-/// The plant probes for the caller scan: every spelling that can legally name the lifecycle
-/// function is either classified as a call or refused as an alias, and every foreign shape
-/// stays invisible.
+/// The plant probes for the caller scan: each spelling BELOW is either classified as a call
+/// or refused as an alias, and each foreign shape stays invisible. Not every spelling that
+/// can legally name the function — [`continues_identifier`] lists those this scan does not
+/// reach, and they are absent here because they are not caught, not because they cannot
+/// occur.
 #[test]
 fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() {
     use OpenReference::{Call, Definition, Foreign, Import, Method, Other};
