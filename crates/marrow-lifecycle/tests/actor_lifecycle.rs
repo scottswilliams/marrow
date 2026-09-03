@@ -1299,13 +1299,16 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// unrepresentable is the follow-on row's, alongside the `import.rs` change; this check is a
 /// caller census over one spelling, not a structural guarantee about the API.
 ///
-/// Two shapes it reads imprecisely, both in the loud direction — the census fails rather
-/// than passing them unseen, so neither hides a caller. A foreign `open` declared inside an
-/// `extern` block (`extern "C" { fn open(); }`) reads as this crate's definition, because
-/// the block is not tracked and only the ABI marker immediately before `fn` is. A raw
-/// identifier carrying a non-ASCII character (`r#opené`) is split at `open`, because the
-/// shared projection's identifier-byte test is ASCII-only, and the fragment is then reported
-/// as a reference that is named without being called.
+/// Two shapes it reads imprecisely, and both fail the census rather than passing unseen, so
+/// neither hides a caller. A foreign `open` declared inside an `extern` block
+/// (`extern "C" { fn open(); }`) reads as this crate's definition, because the block is not
+/// tracked and only the ABI marker immediately before `fn` is. An identifier carrying a
+/// non-ASCII character (`r#opené`, `opené`) is split at `open`, because the shared
+/// projection's identifier-byte test is ASCII-only, and the fragment is then reported as a
+/// reference that is named without being called. Those two are the imprecisions this list
+/// can carry: a shape read imprecisely in the SILENT direction would not be a documented
+/// limit but a hole, so the keyword scan resolves its own boundaries under
+/// [`continues_identifier`] instead, which admits non-ASCII identifier characters.
 ///
 /// The scan is lexical over the shared production projection (comments, string and char
 /// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
@@ -1591,16 +1594,19 @@ fn classify_open_references(
 /// next `;` over code that is not an import, and a call inside that span disappears:
 /// `#[cfg_attr(any(), r#use)] let leaked = r#open(dir, projection);` hid its call from
 /// every assertion here.
+///
+/// Nor is a keyword the keyword when it is only the ASCII prefix or suffix of an ordinary
+/// name: `let useé = open(dir, projection);` binds a variable, and reading its `use` prefix
+/// as the keyword swallows the call the same silent way. So the keyword boundary here is
+/// [`continues_identifier`], which is wider than the shared projection's ASCII-only test.
 fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
     let mut spans = Vec::new();
     for keyword in ["use", "extern"] {
-        for at in ident_token_offsets(code, keyword) {
+        for at in keyword_token_offsets(code, keyword) {
             if code[..at].ends_with("r#") {
                 continue;
             }
-            if keyword == "extern"
-                && !matches!(token_after(code, at + keyword.len()), Some((_, "crate")))
-            {
+            if keyword == "extern" && keyword_after(code, at + keyword.len()) != Some("crate") {
                 continue;
             }
             let end = code[at..]
@@ -1735,6 +1741,50 @@ fn has_ident_token(text: &str, needle: &str) -> bool {
     ident_token_offsets(text, needle).next().is_some()
 }
 
+/// Whether `byte` continues a Rust identifier, as the keyword scan needs the question
+/// answered.
+///
+/// The shared projection's [`source_projection::is_ident_byte`] is ASCII-only, which is the
+/// right boundary for finding the identifier `open` — a fragment split out of a longer
+/// non-ASCII name is then reported as an uncalled reference, and the census fails loudly.
+/// It is the wrong boundary for a KEYWORD, where the same split is silent: `useé` is an
+/// ordinary binding whose `use` prefix, read as the keyword, opens an import span to the
+/// next `;` and hides every call inside it.
+///
+/// Every identifier character outside ASCII is encoded as two or more UTF-8 bytes, each of
+/// them `>= 0x80`, and no ASCII byte beyond alphanumerics and `_` can continue an
+/// identifier. So admitting the whole non-ASCII byte range admits exactly the characters a
+/// Unicode table would, with no table.
+fn continues_identifier(byte: u8) -> bool {
+    source_projection::is_ident_byte(byte) || byte >= 0x80
+}
+
+/// The byte offsets of every occurrence of the keyword `needle` in `text` as a whole token,
+/// under [`continues_identifier`].
+fn keyword_token_offsets<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let bytes = text.as_bytes();
+    text.match_indices(needle).filter_map(move |(at, _)| {
+        let end = at + needle.len();
+        let before_ok = at
+            .checked_sub(1)
+            .is_none_or(|before| !continues_identifier(bytes[before]));
+        let after_ok = bytes
+            .get(end)
+            .is_none_or(|&byte| !continues_identifier(byte));
+        (before_ok && after_ok).then_some(at)
+    })
+}
+
+/// The token after byte `start` as [`token_after`] reads it, but only when
+/// [`continues_identifier`] agrees the token ends there: `extern crateé` names no crate.
+fn keyword_after(text: &str, start: usize) -> Option<&str> {
+    let (at, token) = token_after(text, start)?;
+    text.as_bytes()
+        .get(at + token.len())
+        .is_none_or(|&byte| !continues_identifier(byte))
+        .then_some(token)
+}
+
 /// The token ending just before byte `end` of `text`, skipping whitespace: an identifier,
 /// `::`, or one other byte, with its start offset.
 fn token_before(text: &str, end: usize) -> Option<(usize, &str)> {
@@ -1837,9 +1887,35 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
     );
     assert!(use_statements("#[cfg_attr(any(), r#use)] let x = 1;").is_empty());
     assert!(use_statements("#[cfg_attr(any(), r#extern)] let x = 1;").is_empty());
+    // Nor is a keyword the keyword when it is only the ASCII prefix of an ordinary name.
+    // `useé` is a legal binding; read as `use`, its span runs to the `;` and the call inside
+    // it vanishes, which is the same disappearance in the silent direction.
+    assert!(use_statements("let use\u{e9} = open(dir, projection);").is_empty());
+    assert!(use_statements("let extern\u{e9} = open(dir, projection);").is_empty());
+    assert_eq!(
+        lifecycle("let use\u{e9} = open(dir, projection);"),
+        [Call { at: 12 }]
+    );
+    assert_eq!(
+        lifecycle("let extern\u{e9} = open(dir, projection);"),
+        [Call { at: 15 }]
+    );
+    // A non-ASCII character ENDING the identifier before the keyword hides it just as well.
+    assert!(use_statements("let \u{e9}use = open(dir, p);").is_empty());
+    assert_eq!(
+        lifecycle("let \u{e9}use = open(dir, p);"),
+        [Call { at: 12 }]
+    );
+    // `extern crate` is the only statement form of `extern`, and the crate it names is a
+    // whole token too: `extern crateé` opens nothing.
+    assert!(use_statements("extern crate\u{e9} = open(dir, p);").is_empty());
     // The keyword itself still opens one, so the exclusion is about the prefix only.
     assert_eq!(use_statements("use crate::provision::open;").len(), 1);
     assert_eq!(use_statements("extern crate marrow_kernel;").len(), 1);
+    assert_eq!(
+        use_statements("use crate::provision::open as raw_open;\nextern crate m;").len(),
+        2
+    );
     // An ABI `extern` marks an item, not an import: its body stays visible to the scan.
     assert_eq!(
         lifecycle(
