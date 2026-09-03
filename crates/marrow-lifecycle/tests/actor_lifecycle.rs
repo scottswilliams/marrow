@@ -1328,14 +1328,16 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// The scan is lexical over the shared production projection (comments, string and char
 /// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
 /// around it into the closed set [`OpenReference`] enumerates. Rather than following an
-/// alias, the gate refuses any `use` that would let a new spelling name the function — an
-/// `as` alias of `open`, `provision`, or the crate's own path roots, a glob import of them —
-/// and any dependency rename of `marrow-lifecycle` a crate's own manifest declares. Every
-/// scanned file's last production item header must survive blanking at its own byte offset,
-/// so a runaway blank cannot erase a call. Limitation: the shared projection carries no cfg
-/// context — a test-only module included as `#[cfg(test)] mod name;` from its parent (only
-/// `*_tests.rs` files are recognised as test-only) and an item under a compound marker such
-/// as `#[cfg(all(test, unix))]` are scanned as production code; no such region names `open`
+/// alias, the gate refuses the `use` shapes [`introduces_alias`] defines — an `as` alias of
+/// `open`, `provision`, or `marrow_lifecycle`, a glob import of those or of the crate root,
+/// an `as` alias of `crate`, `self`, or `super` in a statement that also spells one of them
+/// before a `::` — and any dependency rename of `marrow-lifecycle` a crate's own manifest
+/// declares. Every scanned file's tail sentinel ([`assert_projection_reaches_the_end`])
+/// survives blanking at its own byte offset, so a blank running to a file's end cannot
+/// erase a call unseen. Limitation: the shared projection carries no cfg context — a
+/// test-only module included as `#[cfg(test)] mod name;` from its parent (only `*_tests.rs`
+/// files are recognised as test-only) and an item under a compound marker such as
+/// `#[cfg(all(test, unix))]` are scanned as production code; no such region names `open`
 /// today, so nothing is falsely rejected.
 #[test]
 fn plain_open_has_exactly_the_documented_unfenced_callers() {
@@ -1526,7 +1528,7 @@ enum OpenReference {
     /// alias rule inspects separately.
     Import,
     /// This crate's function, called: `open(`, `open (`, `open::<…>(`, in any of the
-    /// qualifications [`Scope::qualifies`] admits with any spacing around `::`.
+    /// qualifications [`Scope::qualifies`] admits with ASCII spacing around `::`.
     Call { at: usize },
     /// This crate's function named without a call — a function pointer, a parenthesised
     /// callee `(open)(…)`, a re-export alias target.
@@ -1596,11 +1598,11 @@ fn classify_open_references(
 }
 
 /// The byte spans of `use` and `extern crate` statements in `code`, each from its keyword
-/// to its terminating `;`. Not every one: a statement whose keyword is separated from what
-/// follows by non-ASCII whitespace (`extern\u{85}crate marrow_lifecycle as life;`) is not
-/// spanned, because the token helpers here skip ASCII whitespace only. `extern` opens a statement only in `extern crate`: as an
-/// ABI marker (`extern "Rust" fn f() { … }`, or an `extern` block) it introduces an item
-/// whose body is ordinary code, and a span running to the first `;` would swallow it.
+/// to its terminating `;`. Not every one: `extern\u{85}crate marrow_lifecycle as life;` is
+/// not spanned, because `crate` is read by a token helper that skips ASCII whitespace only.
+/// `extern` opens a statement only in `extern crate`: as an ABI marker
+/// (`extern "Rust" fn f() { … }`, or an `extern` block) it introduces an item whose body is
+/// ordinary code, and a span running to the first `;` would swallow it.
 ///
 /// A raw identifier is NOT the keyword it spells. `r#use` and `r#extern` are ordinary
 /// names, so they open no statement — and the distinction is the opposite of the one the
@@ -1654,13 +1656,16 @@ fn use_statements(code: &str) -> Vec<std::ops::Range<usize>> {
     spans
 }
 
-/// Whether one `use` statement introduces a spelling of lifecycle `open` this scan does
-/// not follow: an `as` alias whose subject is `open`, `provision`, `marrow_lifecycle`, or —
-/// inside the crate, in a statement rooted at its own module tree — `crate`, `self`, or
-/// `super`; a glob import from `provision`, `marrow_lifecycle`, or the crate root (which
-/// re-exports `open`); or, when the enclosing file itself binds `open` (`binds_open`: it
-/// defines or imports it, so a child module's `super::*` reaches it), any glob rooted at
-/// the file's own module tree.
+/// Whether one `use` statement matches an alias shape this gate refuses: an `as` alias whose
+/// subject is `open`, `provision`, `marrow_lifecycle`, or — inside the crate, and only when
+/// the statement also spells `crate`, `self`, or `super` before a `::` — one of those three;
+/// a glob import from `provision`, `marrow_lifecycle`, or the crate root (re-exporting it);
+/// or, when the enclosing file itself binds `open` (`binds_open`: it defines or imports it,
+/// so a child module's `super::*` reaches it), any glob rooted at the file's own module tree.
+///
+/// Not every `use` that introduces a new spelling of lifecycle `open`: `use crate as life;`
+/// spells no `crate::` path, so it matches no shape here and its `life::open` calls then
+/// read as another crate's.
 fn introduces_alias(statement: &str, scope: Scope, binds_open: bool) -> bool {
     let rooted = ["crate", "self", "super"].iter().any(|root| {
         ident_token_offsets(statement, root)
@@ -1758,7 +1763,8 @@ fn assert_projection_reaches_the_end(path: &Path, source: &str, code: &str) {
 }
 
 /// The byte offsets of every occurrence of the identifier `needle` in `text` as a whole
-/// token (not part of a longer identifier).
+/// token, under the shared projection's ASCII identifier bytes: a longer name carrying a
+/// non-ASCII character is split at `needle`, which [`continues_identifier`] reads loudly.
 fn ident_token_offsets<'a>(text: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
     let bytes = text.as_bytes();
     text.match_indices(needle).filter_map(move |(at, _)| {
@@ -1817,16 +1823,18 @@ fn has_ident_token(text: &str, needle: &str) -> bool {
 /// These are not defects to be patched one at a time. This scan is a lexical stand-in for
 /// name resolution, and nine rounds of closing named spellings have each been met by the
 /// next; a check of this shape cannot carry a guarantee about every legal spelling, and
-/// saying so is worth more than another spelling closed. What it does carry: a direct,
-/// ASCII-spelled production call to `open` turns up here. The structural answer — making
-/// `open` unavailable outside a fenced entry, so no census is needed — belongs to the
-/// follow-on row, and retires this check rather than hardening it.
+/// saying so is worth more than another spelling closed. What it does carry: an ASCII call
+/// spelled bare or under a qualifier [`Scope::qualifies`] admits turns up here; one reached
+/// through any other binding does not. The structural answer — making `open` unavailable
+/// outside a fenced entry, so no census is needed — belongs to the follow-on row, and
+/// retires this check rather than hardening it.
 fn continues_identifier(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
 /// Whether the character starting at byte `at` of `text` continues an identifier. False at
-/// the end of the text, and at an offset inside a character, which no caller passes.
+/// the end of the text, and at an offset inside a character — which the `\u{fffd}` token
+/// fallback can hand it, so that offset answers `false` rather than panicking.
 fn continues_identifier_at(text: &str, at: usize) -> bool {
     text.get(at..)
         .and_then(|rest| rest.chars().next())
@@ -1852,8 +1860,8 @@ fn keyword_after(text: &str, start: usize) -> Option<&str> {
     (!continues_identifier_at(text, at + token.len())).then_some(token)
 }
 
-/// The token ending just before byte `end` of `text`, skipping whitespace: an identifier,
-/// `::`, or one other byte, with its start offset.
+/// The token ending just before byte `end` of `text`, skipping ASCII whitespace: an
+/// identifier, `::`, or one other byte, with its start offset.
 fn token_before(text: &str, end: usize) -> Option<(usize, &str)> {
     let bytes = text.as_bytes();
     let mut end = end;
@@ -1877,7 +1885,7 @@ fn token_before(text: &str, end: usize) -> Option<(usize, &str)> {
     Some((start, text.get(start..end).unwrap_or("\u{fffd}")))
 }
 
-/// The token starting at or after byte `start` of `text`, skipping whitespace: an
+/// The token starting at or after byte `start` of `text`, skipping ASCII whitespace: an
 /// identifier, `::`, or one other byte, with its start offset.
 fn token_after(text: &str, start: usize) -> Option<(usize, &str)> {
     let bytes = text.as_bytes();
@@ -1902,13 +1910,14 @@ fn token_after(text: &str, start: usize) -> Option<(usize, &str)> {
     Some((start, text.get(start..end).unwrap_or("\u{fffd}")))
 }
 
-/// The plant probes for the caller scan: each spelling BELOW is either classified as a call
-/// or refused as an alias, and each foreign shape stays invisible. Not every spelling that
-/// can legally name the function — [`continues_identifier`] lists those this scan does not
+/// The plant probes for the caller scan: each spelling BELOW gets the reading the census
+/// rests on — a call, an alias refusal, a foreign shape that stays invisible, or a lifecycle
+/// reference that is not a call and fails the census loudly. Not every spelling that can
+/// legally name the function — [`continues_identifier`] lists those this scan does not
 /// reach, and they are absent here because they are not caught, not because they cannot
 /// occur.
 #[test]
-fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() {
+fn the_open_caller_scanner_gives_each_planted_spelling_its_documented_reading() {
     use OpenReference::{Call, Definition, Foreign, Import, Method, Other};
     let classify = |code: &str, scope: Scope| {
         let code = source_projection::production_code(code);
@@ -1941,7 +1950,7 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
         [Import]
     );
     assert!(lifecycle("open_admitted(dir, p, admit); reopen(dir)").is_empty());
-    // A raw identifier names the same function, in every qualification.
+    // A raw identifier names the same function, in any qualification the scope admits.
     assert_eq!(lifecycle("r#open(dir, projection)"), [Call { at: 2 }]);
     assert_eq!(lifecycle("crate::r#open(dir, p)"), [Call { at: 9 }]);
     // And a raw identifier spelling a KEYWORD is not that keyword, so it opens no import
@@ -2009,7 +2018,7 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
         lifecycle("fn f() -> impl Fn() + use<> { g }\nlet s = open(d, p);"),
         [Call { at: 42 }]
     );
-    // And whatever the boundary decides, a span cannot reach over a call unnoticed.
+    // And whatever the boundary decides, a span cannot reach over a DIRECT call unnoticed.
     assert!(
         std::panic::catch_unwind(|| use_statements("use\u{301} = open(dir, p);")).is_err(),
         "a span reaching over a call must fail rather than swallow it",
