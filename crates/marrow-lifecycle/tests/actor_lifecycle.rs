@@ -1298,6 +1298,14 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// unrepresentable is the follow-on row's, alongside the `import.rs` change; this check is a
 /// caller census over one spelling, not a structural guarantee about the API.
 ///
+/// Two shapes it reads imprecisely, both in the loud direction — the census fails rather
+/// than passing them unseen, so neither hides a caller. A foreign `open` declared inside an
+/// `extern` block (`extern "C" { fn open(); }`) reads as this crate's definition, because
+/// the block is not tracked and only the ABI marker immediately before `fn` is. A raw
+/// identifier carrying a non-ASCII character (`r#opené`) is split at `open`, because the
+/// shared projection's identifier-byte test is ASCII-only, and the fragment is then reported
+/// as a reference that is named without being called.
+///
 /// The scan is lexical over the shared production projection (comments, string and char
 /// literals, and `#[cfg(test)]` items blanked), resolving each `open` token by the tokens
 /// around it into the closed set [`OpenReference`] enumerates. Rather than following an
@@ -1490,9 +1498,10 @@ enum OpenReference {
     /// `.open` — a method or field, never this crate's function.
     Method,
     /// `<qualifier>::open` with a qualifier that does not name this crate's function
-    /// (`File::open`, a foreign crate's own `open`), or a bare `open` outside the crate.
+    /// (`File::open`, a foreign crate's own `open`), a bare `open` outside the crate, or a
+    /// definition an ABI marker gives another language (`extern "C" fn open`).
     Foreign,
-    /// `fn open` — a definition.
+    /// `fn open` — this crate's own definition.
     Definition,
     /// The token inside a `use` statement — the binding a call resolves through, which the
     /// alias rule inspects separately.
@@ -1533,8 +1542,14 @@ fn classify_open_references(
                 references.push(OpenReference::Method);
                 continue;
             }
-            Some((_, "fn")) => {
-                references.push(OpenReference::Definition);
+            // An ABI marker before `fn` declares another language's function under this
+            // spelling: `extern "C" fn open` shares the name and nothing else, so counting
+            // it as the definition would let it stand in for the one the census pins.
+            Some((keyword, "fn")) => {
+                references.push(match token_before(code, keyword) {
+                    Some((_, "extern")) => OpenReference::Foreign,
+                    _ => OpenReference::Definition,
+                });
                 continue;
             }
             Some((colons, "::")) => match token_before(code, colons) {
@@ -1831,6 +1846,23 @@ fn the_open_caller_scanner_resolves_every_spelling_and_ignores_foreign_shapes() 
         ),
         [Call { at: 55 }]
     );
+    // Including an `extern` BLOCK, which carries no `fn` of its own to mark it as an item:
+    // an exemption written for the ABI-function form alone would open a span here and
+    // swallow the call after it.
+    assert_eq!(
+        lifecycle("extern \"C\" {}\nlet s = open(d, p);\n"),
+        [Call { at: 22 }]
+    );
+    assert!(use_statements("extern \"C\" {}\nlet x = 1;").is_empty());
+    // An ABI marker makes a definition another language's function under the same spelling,
+    // so it is not the definition this census counts.
+    assert_eq!(lifecycle("pub extern \"C\" fn open() {}"), [Foreign]);
+    // The two documented imprecisions, each pinned to the loud reading it actually has: a
+    // declaration inside an `extern` block reads as this crate's definition, and a raw
+    // identifier carrying a non-ASCII character is split at `open` and reported as a
+    // reference that is never called. Both fail the census; neither hides a caller.
+    assert_eq!(lifecycle("extern \"C\" { fn open(); }"), [Definition]);
+    assert_eq!(lifecycle("r#open\u{e9}(dir)"), [Other { at: 2 }]);
     assert!(
         lifecycle("let s = \"open(\"; // open(\n").is_empty(),
         "literals are not code"
