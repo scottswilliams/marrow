@@ -390,9 +390,10 @@ pub(super) struct AdmittedKeyColumn<'a> {
 /// What a key tuple admits, in the order its refusals are ranked.
 ///
 /// The three arms are the whole answer, so a consumer cannot read the columns without
-/// having been handed the refusal that would have made them wrong, and cannot reorder
-/// the width cap behind the scalar set: a tuple that is both over-wide and unresolvable
-/// answers `OverWide`, which is the precedence both declaring sites always had.
+/// having been handed the refusal that would have made them wrong. Both readings of a
+/// table rank through [`KeyTable::admitted`], so a tuple that is both over-wide and
+/// unresolvable answers `OverWide` at either of them — the precedence both declaring
+/// sites always had, carried by the type rather than by the order its callers ask in.
 pub(super) enum KeyColumns<'a> {
     Admitted(Vec<AdmittedKeyColumn<'a>>),
     /// The tuple is over the image's fixed key width: the refusal and its span.
@@ -430,13 +431,7 @@ impl<'a> KeyTable<'a> {
 
     /// This tuple's admission verdict, and on admission every column a consumer reads.
     pub(super) fn columns(&self) -> KeyColumns<'_> {
-        if let Some(message) = self.over_wide() {
-            return KeyColumns::OverWide {
-                span: self.owner.span(),
-                message,
-            };
-        }
-        match &self.resolution {
+        match self.admitted() {
             Ok(columns) => KeyColumns::Admitted(
                 columns
                     .iter()
@@ -447,16 +442,38 @@ impl<'a> KeyTable<'a> {
                     })
                     .collect(),
             ),
-            Err(row) => KeyColumns::Unresolved(row),
+            Err(refusal) => refusal,
+        }
+    }
+
+    /// The columns this tuple admits, or the refusal that outranks them.
+    ///
+    /// The one place the width cap and the scalar resolution are ranked against each
+    /// other. Every reading of a table is answered from here, so neither can be read
+    /// ahead of the other at one reading and behind it at another: the width cap is a
+    /// fact of the declared tuple, and a tuple past it has no admitted columns to
+    /// report whatever its columns resolved to.
+    fn admitted(&self) -> Result<&[KeyColumnRow<'a>], KeyColumns<'_>> {
+        if let Some(message) = self.over_wide() {
+            return Err(KeyColumns::OverWide {
+                span: self.owner.span(),
+                message,
+            });
+        }
+        match &self.resolution {
+            Ok(columns) => Ok(columns),
+            Err(row) => Err(KeyColumns::Unresolved(row)),
         }
     }
 
     /// The settled scalar tuple, or the typed coherence failure for a consumer that can
-    /// only run once this tuple was admitted. The graph build consumes the refusal as
-    /// the declaring member's own diagnostic, and a refused member refuses its store, so
-    /// a store that reached the executable derivation proved every tuple resolved.
+    /// only run once this tuple was admitted. The graph build consumes a refusal as the
+    /// declaring member's own diagnostic, and a refused member refuses its store, so a
+    /// store that reached the executable derivation proved every tuple admitted — both
+    /// resolved and within the width cap, which is why either refusal answers here with
+    /// the same coherence failure rather than with a scalar tuple.
     pub(super) fn resolved(&self) -> Result<Vec<ScalarType>, GenericInvariant> {
-        match &self.resolution {
+        match self.admitted() {
             Ok(columns) => Ok(columns.iter().map(|column| column.scalar).collect()),
             Err(_) => Err(GenericInvariant::DurableBranchKeyUnresolved),
         }
@@ -613,4 +630,48 @@ fn resolve_key_columns<'a>(
         });
     }
     Ok(columns)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tuple past the width cap is refused at every reading of its table, the settled
+    /// scalars included.
+    ///
+    /// Production asks for the verdict before the scalars, so no compile reaches
+    /// `resolved` on an over-wide tuple and no source can exercise this; the state is
+    /// built here directly because the property is the type's rather than a caller
+    /// ordering's. Ranking the width cap at only one of the two readings restores the
+    /// bypass and fails here.
+    #[test]
+    fn an_over_wide_tuple_is_refused_at_the_scalar_reading_too() {
+        let store = || KeyOwner::Store {
+            root: "root",
+            span: SourceSpan::default(),
+        };
+        let column = || KeyColumnRow {
+            spelling: "k",
+            scalar: ScalarType::Int,
+        };
+        let over_wide = KeyTable {
+            owner: store(),
+            declared_width: bounds::MAX_KEY_COLUMNS + 1,
+            resolution: Ok(vec![column()]),
+        };
+        assert!(matches!(over_wide.columns(), KeyColumns::OverWide { .. }));
+        assert!(
+            over_wide.resolved().is_err(),
+            "a tuple the width cap refuses has no settled scalar tuple to hand out",
+        );
+        let within = KeyTable {
+            owner: store(),
+            declared_width: 1,
+            resolution: Ok(vec![column()]),
+        };
+        assert_eq!(
+            within.resolved().expect("a tuple within the cap resolves"),
+            vec![ScalarType::Int],
+        );
+    }
 }
