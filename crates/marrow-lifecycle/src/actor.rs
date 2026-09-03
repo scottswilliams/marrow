@@ -93,16 +93,20 @@ pub enum AttachOutcome {
     AlreadyActive(OpenStore),
     /// The image was a binding-only code update: the head and then the envelope were
     /// rewritten to the new image, each commit atomic, and the rebind is committed. The
-    /// receipt proves the commit.
+    /// receipt reports what that commit made active.
     Rebound {
         store: OpenStore,
         receipt: RebindReceipt,
     },
 }
 
-/// The confirmed-commit receipt of a binding-only rebind, issued only after the head rewrite
-/// has been made durable. It records the store instance and the newly active image identity;
-/// its meaning is exactly "the active code was updated, the durable contract unchanged".
+/// What a binding-only rebind reports: the store instance and the newly active image
+/// identity, returned only once both commits are durable. Reading one from an
+/// [`AttachOutcome::Rebound`] therefore means "the active code was updated, the durable
+/// contract unchanged" — that is the actor's guarantee about the value it returned, not a
+/// property of the value itself. The fields are public and `StoreInstanceId::from_bytes` is
+/// public, so an equal value is constructible without any rebind: this is a record, not an
+/// unforgeable token, and nothing may authorize on having one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebindReceipt {
     pub instance: crate::instance::StoreInstanceId,
