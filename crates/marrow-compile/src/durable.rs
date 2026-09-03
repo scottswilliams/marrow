@@ -669,7 +669,8 @@ impl DurableRegistry {
     /// asks only about a resource's own top-level member, which such a branch is not.
     /// The rows carry each branch's path and keyedness, so this projection reads no
     /// declaration syntax and re-derives neither; the answer is available for every
-    /// admitted Product whether or not a root over it reached the executable subset.
+    /// Product with an admitted root, whether or not that root reached the executable
+    /// subset.
     fn record_declared_branch_paths(&mut self, groups: &[GroupRow<'_>]) {
         for row in groups {
             if row.keys.is_none() {
@@ -1050,9 +1051,9 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
     /// root name is rejected before it is built, so it is not an occurrence of anything.
     ///
     /// Each declaration is counted under its [`ProductKey`] — the resolved resource
-    /// declaration it binds, or its written spelling when it binds none — so the census
-    /// partitions declarations exactly as the Product identity does without treating the
-    /// source text as an identity classifier.
+    /// declaration it binds, or its written spelling when it binds none — so a bound
+    /// declaration is partitioned by Product identity rather than by source text, and an
+    /// unbound one, which is an occurrence of no Product, by the only thing it has.
     fn take(
         stores: &'stores [(FileRef, FileIdentity, &StoreDecl)],
         rows: &[StoreRow<'stores>],

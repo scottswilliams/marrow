@@ -12,7 +12,7 @@
 //! `StoreDecl` travels beside its row for the root placement name and the spans its
 //! refusals report at; and a [`GroupRow`] retains its member `FieldDecl`s, which carry
 //! their own key syntax. Each row states what it retains. Closing those routes means
-//! the build accepting rows and nothing else, which is a successor row's work.
+//! the build accepting rows and nothing else, which is successor row DURSYNTAX01's work.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -57,9 +57,9 @@ pub(super) struct ResourceRow<'a> {
 /// any store is built. The registry drives the join: every row comes from an admitted
 /// record, so which resources exist is decided by exactly one owner, and a store
 /// reaches a record only *through* a row this join built from a declaration. An
-/// admitted record no declaration in the received slice answers is the two build
-/// inputs drifting apart — a compiler coherence failure raised here, at the single
-/// join, and nowhere else.
+/// admitted record whose cited declaration is absent, or sits somewhere other than the
+/// declare pass recorded, is the two build inputs drifting apart — a compiler
+/// coherence failure raised here, at the single join, and nowhere else.
 ///
 /// The join is the ordinal the declare pass recorded, not the written name, and
 /// [`Self::take`] states what that pairing does and does not establish.
@@ -94,7 +94,7 @@ impl<'a> ResourceDirectory<'a> {
         // not compared, and two parses of one project repeat every module position and name
         // span, so a re-parse presenting those with its members mutated is accepted here.
         // Carrying the declare pass's pairing out with the registry under one borrowed
-        // wrapper retires the ordinal and this check together; it is a successor row's work.
+        // wrapper retires the ordinal and this check together; that is DURSYNTAX01's work.
         let ordinals = records.record_declaration_ordinals();
         let admitted = records.admitted_resources();
         let mut rows = Vec::with_capacity(admitted.len());
@@ -126,8 +126,8 @@ impl<'a> ResourceDirectory<'a> {
     }
 
     /// The row `id` addresses. `id` is minted only by [`Self::take`], from a length
-    /// taken immediately before the matching push, so it addresses a row of this
-    /// directory by construction.
+    /// taken immediately before the matching push, so it addresses a row of the
+    /// directory that minted it — of a second directory, only by coincidence of length.
     pub(super) fn row(&self, id: ResourceDeclId) -> &ResourceRow<'a> {
         &self.rows[id.0]
     }
@@ -214,7 +214,7 @@ pub(super) enum ProductKey<'stores> {
     Unbound(&'stores str),
 }
 /// One `index` declaration of a store root, as the durable build reads it: the name
-/// every admission diagnostic renders, the uniqueness the suffix law turns on, the
+/// the per-index diagnostics render, the uniqueness the suffix law turns on, the
 /// declaration span the count and width caps report at, and the range of argument rows
 /// this index projects.
 pub(super) struct IndexRow<'a> {
@@ -255,9 +255,9 @@ pub(super) struct IndexArgRow {
 /// the declaration before the root is built.
 ///
 /// The two tables are one owner because an index without its arguments admits nothing:
-/// every rule reads the index row and its argument rows together, and a range into a
-/// single argument vector keeps that pairing a property of the table rather than of
-/// each caller's bookkeeping.
+/// every rule past the per-root count cap reads the index row and its argument rows
+/// together, and a range into a single argument vector keeps that pairing a property of
+/// the table rather than of each caller's bookkeeping.
 pub(super) struct IndexTable<'a> {
     indexes: Vec<IndexRow<'a>>,
     args: Vec<IndexArgRow>,
@@ -315,8 +315,8 @@ impl<'a> IndexTable<'a> {
 /// same rules and anchored the same way, declared in two different places. Carrying
 /// the difference as a closed owner is what lets the rules and the anchor join exist
 /// once: the two sites used to spell the join `format!("{path}.{name}")` twice, in
-/// two functions, and a divergence between them re-anchors committed durable identity
-/// with no diagnostic anywhere.
+/// two functions, and a divergence between them re-anchors durable identity — reported
+/// as a `.marrow/ids` gap on the new anchor, never as a rename of the old one.
 pub(super) enum KeyOwner<'a> {
     /// A `store` root's key tuple, anchored at the root placement name.
     Store { root: &'a str, span: SourceSpan },
@@ -410,9 +410,9 @@ pub(super) enum KeyColumns<'a> {
 impl<'a> KeyTable<'a> {
     /// Take and resolve one declared tuple.
     ///
-    /// Every key-table construction — root or branch, wherever it is spelled — charges
-    /// the once-per-compile counter here, so a reconstruction cannot avoid the count by
-    /// living at a different call site. Resolution happens here rather than at a
+    /// The fields are private, so outside this module this is the only constructor, and
+    /// it charges the once-per-compile counter itself: a reconstruction cannot avoid the
+    /// count by living at a different call site. Resolution happens here rather than at a
     /// consumer: it is a fact of the tuple, settled once.
     pub(super) fn take(
         owner: KeyOwner<'a>,
@@ -499,10 +499,10 @@ impl<'a> KeyTable<'a> {
     ///
     /// This is the only place a key column's anchor is assembled. The anchors it
     /// returns are the keys of the machine-written `.marrow/ids` ledger, so a second
-    /// spelling of this join would silently re-anchor durable identity — which is why
-    /// the join has one owner and `durable_identity_stability.rs` freezes its output.
-    /// It is private because a column is: [`Self::columns`] is the only way to reach an
-    /// anchor, so no caller is in a position to spell the join a second time.
+    /// spelling of this join re-anchors durable identity: the compiler reports the new
+    /// anchor as a missing-identity gap and the mint action commits it beside the id the
+    /// old spelling still owns. It is private because a column is: [`Self::columns`] is
+    /// the only way to reach an anchor, so no caller can spell the join a second time.
     fn identity_path(&self, spelling: &str) -> String {
         format!("{}.{}", self.owner.anchor(), spelling)
     }
@@ -513,15 +513,17 @@ impl<'a> KeyTable<'a> {
 /// and its nested group rows in declaration order.
 ///
 /// The tree mirrors the declaration's group nesting exactly, so a walker drives off
-/// the rows and can no longer re-derive a path or reclassify keyedness. It is taken
+/// the rows and re-derives neither a member path nor keyedness from syntax. It is taken
 /// once per compile, with the directory: a store attempt that stages and rolls back
 /// consumes the same rows a later attempt does.
 pub(super) struct GroupRow<'a> {
     /// The member's simple name — what the physical layer keys a branch family by,
     /// and the segment its path ends with.
     pub(super) name: &'a str,
-    /// The qualified member path, the branch-path and key-anchor prefix. Assembled
-    /// here and nowhere else.
+    /// The qualified member path, the branch-path and key-anchor prefix: the one
+    /// assembly of it from declaration syntax. `DurableRegistry` joins the same shape
+    /// again over built descriptors, in `record_branch_declarations` and as the lookup
+    /// key of `declares_branch`.
     pub(super) path: String,
     /// The member's directly declared stored fields, in declaration order.
     ///
@@ -529,7 +531,7 @@ pub(super) struct GroupRow<'a> {
     /// consumer only as [`GroupRow::keys`]. A field's key tuple is another matter: a
     /// `FieldDecl` carries its `KeyParam`s, and `DurableRegistry::build_field` reads
     /// them to refuse a keyed field. A consumer holding this row therefore holds that
-    /// much key syntax, and will until a field row displaces the declaration here.
+    /// much key syntax, and will until DURSYNTAX01 displaces the declaration with a row.
     pub(super) fields: Vec<&'a FieldDecl>,
     /// The span of the first declared member, for the depth-cap refusal.
     pub(super) first_member_span: Option<SourceSpan>,
