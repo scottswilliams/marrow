@@ -252,6 +252,26 @@ pub fn production_code_of(file: &str) -> String {
     production_code(&std::fs::read_to_string(path).expect("read source file"))
 }
 
+/// The names `body` calls: every identifier immediately before a `(`.
+///
+/// A call is recognised by its spelling, so a call through an alias, a function
+/// value, a method, or a macro is not one of these names — a walker driven by this
+/// reader reaches what the source calls by name and no further.
+pub fn callees(body: &str) -> Vec<String> {
+    let bytes = body.as_bytes();
+    body.match_indices('(')
+        .map(|(at, _)| {
+            let start = (0..at)
+                .rev()
+                .take_while(|index| is_ident_byte(bytes[*index]))
+                .last()
+                .unwrap_or(at);
+            body[start..at].to_string()
+        })
+        .filter(|name| name.starts_with(|first: char| first.is_alphabetic() || first == '_'))
+        .collect()
+}
+
 /// Whether any quote in `line` opens a char literal rather than a lifetime.
 fn contains_char_literal(line: &str) -> bool {
     let bytes = line.as_bytes();

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 #[path = "common/source_projection.rs"]
 mod source_projection;
 use source_projection::{
-    is_ident_byte, is_test_only_file, last_production_item, production_code, production_code_of,
-    without_literals,
+    callees, is_ident_byte, is_test_only_file, last_production_item, production_code,
+    production_code_of, without_literals,
 };
 
 fn src_files() -> Vec<PathBuf> {
@@ -2873,17 +2873,16 @@ fn the_propagating_call_reader_names_a_planted_exit() {
     );
 }
 
-/// The declaration coordinate tables cannot outlive the admission that minted them.
+/// The coordinate table is spelled as an owned registry field, its derive list does
+/// not spell `Clone`, and the types module spells neither an `impl Clone` for it nor
+/// any of three return types that would hand it out.
 ///
 /// Declaration admission is one-shot: a failed `TypeRegistry::build` drops the
 /// partially built registry with everything it owns, so the stale-coordinate window
-/// is closed by ownership rather than by an inverse. Ownership is what this gate
-/// pins, three ways, because any one alone could be satisfied while the property was
-/// lost. If admission ever becomes transactional, `decl_coords` records that the rows
-/// then owe the same inverse the generic owners carry. The closing probe keeps the
-/// scan honest: a phrase from this module's own prose must be invisible, so a
-/// commented-out `Clone` or an escape spelled in a doc comment can never decide the
-/// gate either way.
+/// is closed by ownership rather than by an inverse. The closing probe keeps the scan
+/// honest: a phrase from this module's own prose must be invisible, so a commented-out
+/// `Clone` cannot decide the gate. It does not see a table handed out under a return
+/// type spelled differently, or a copy assembled from the rows instead of the table.
 #[test]
 fn declaration_coordinates_cannot_outlive_their_admission() {
     let module = production_code_of_module("types");
@@ -2925,26 +2924,15 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
     );
 }
 
-/// The names `body` calls: every identifier immediately before a `(`.
-fn callees(body: &str) -> Vec<String> {
-    let bytes = body.as_bytes();
-    body.match_indices('(')
-        .map(|(at, _)| {
-            let start = (0..at)
-                .rev()
-                .take_while(|index| is_ident_byte(bytes[*index]))
-                .last()
-                .unwrap_or(at);
-            body[start..at].to_string()
-        })
-        .filter(|name| name.starts_with(|first: char| first.is_alphabetic() || first == '_'))
-        .collect()
-}
-
-/// Reporting a value cycle reads no syntax declaration — held at the signature, the
-/// body, the one production call site, and every function the body reaches inside
-/// the types module. Review round 1 proved a lexical counter pins nothing; round 2
-/// that a signature alone admits a dead wrapper kept beside a redirected caller.
+/// Four declaration-type spellings are absent from the value-cycle pass's body and
+/// from every function body it reaches by name inside the types module, and the pass
+/// is spelled with its two-parameter signature at one definition and one call site.
+///
+/// Round 1 proved a lexical counter pins nothing; round 2 that a signature alone
+/// admits a dead wrapper kept beside a redirected caller, which is why the walk
+/// follows callees. It follows them by spelling, so a call through an alias, a
+/// function value, a method, a macro, or a function outside this module is not
+/// followed and a declaration read there is invisible to it.
 #[test]
 fn reporting_a_value_cycle_reads_no_syntax_declaration() {
     let module = production_code_of_module("types");

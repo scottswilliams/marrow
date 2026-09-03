@@ -202,6 +202,14 @@ use source_projection::{is_test_only_file, production_code, production_code_of};
 /// concatenated in path order: the search space of a census that must hold
 /// crate-wide, because a shape minted in a file the per-file censuses never read
 /// is still that shape.
+///
+/// Every check below reads this text and decides one thing: whether a spelling
+/// occurs at a site, and how often, in the source as written. None of them binds a
+/// call graph. A renamed function, a call through an alias or a function value, a
+/// wrapper that forwards, and a second deciding site sharing one counted
+/// constructor all leave these numbers intact. Each census states the spellings it
+/// reads; the property itself is carried by a type boundary, a visibility, or a
+/// production-path test, and is named where that is so.
 fn production_code_of_crate() -> String {
     fn walk(dir: &Path, code: &mut String) {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -229,20 +237,25 @@ fn production_code_of_crate() -> String {
     code
 }
 
-/// The registry/slice drift has one deciding seam, and the raw declaration slice
-/// has no alias anywhere in the crate.
+/// The spellings that carry the registry/slice drift occur exactly as counted,
+/// crate-wide: one `DurableResourceMissing` construction, one
+/// `ResourceDirectory::take(`, one `DurableRegistry::build(`, and an exact census
+/// of the raw declaration tuple and the declaration type it carries.
 ///
 /// Round 2 named two evasions of per-file censuses: a factory holding the sole
-/// counted `DurableResourceMissing` construction, reached from several deciding
-/// seams; and a raw-slice alias minted in a file the durable censuses never read,
-/// carried beside the directory and consumed by a filter. Both are closed by
-/// counting the seams, crate-wide: the invariant has one constructor and one
-/// deciding call chain (`compile` -> `DurableRegistry::build` ->
-/// `ResourceDirectory::take`), and the raw tuple type and the declaration type it
-/// carries are exact censuses over the whole tree, so an alias spelled in any file
-/// moves a count.
+/// counted construction, and a raw-slice alias minted in a file the durable
+/// censuses never read. Counting crate-wide moves a number for either spelling.
+///
+/// What it does not establish: that the drift has one *deciding* seam. A second site
+/// reached through a renamed helper, a function value, or a shared constructor keeps
+/// every number here intact. Nor does it say the join is *right*: `ResourceDirectory`
+/// pairs an admitted record with a declaration of the same written name, and a
+/// same-named declaration supplied in place of the admitted one is accepted with no
+/// disagreement to report. Closing that means handing the durable build the pairing
+/// the declare pass already made, and until then this census is the tripwire against
+/// a post-projection rescan, not a proof that the pairing is sound.
 #[test]
-fn the_durable_resource_drift_has_one_deciding_join() {
+fn the_durable_resource_drift_seams_are_spelled_once() {
     let code = production_code_of_crate();
     for deleted in [
         "records.by_name(&store.resource)",
@@ -255,17 +268,17 @@ fn the_durable_resource_drift_has_one_deciding_join() {
         code.matches("GenericInvariant::DurableResourceMissing(")
             .count(),
         1,
-        "the drift invariant has exactly one constructor, at the directory join",
+        "the drift invariant's constructor is spelled once, at the directory join",
     );
     assert_eq!(
         code.matches("ResourceDirectory::take(").count(),
         1,
-        "the join is decided at exactly one call site, the durable build entry",
+        "`ResourceDirectory::take(` is spelled once, at the durable build entry",
     );
     assert_eq!(
         code.matches("DurableRegistry::build(").count(),
         1,
-        "the durable build has exactly one production caller, the compile driver",
+        "`DurableRegistry::build(` is spelled once, in the compile driver",
     );
     assert!(
         code.contains("StoreResourceBinding::Accepted"),
@@ -287,21 +300,25 @@ fn the_durable_resource_drift_has_one_deciding_join() {
     );
 }
 
-/// The durable builder reads its declaration row tables, never index or key syntax,
-/// and a key column's ledger anchor is assembled in exactly one place.
+/// The durable builder spells no index or key syntax, and mints a key anchor at
+/// exactly two sites.
 ///
 /// Every index admission rule once read the parsed `IndexDecl` and rendered each
 /// argument's path spelling at the moment it needed one, which made "the same
 /// component" a per-caller answer; the `IndexTable` renders each path and classifies
-/// its reach once, when the row is taken, so a rule can only ask. The root's and a
-/// branch's key tuples each used to spell their own `format!("{path}.{name}")` join,
-/// and those anchors are the keys of the ledger this suite freezes: a divergence
-/// between two spellings reports nothing and silently re-anchors committed durable
-/// identity. The join counts are exact rather than "at most", because a reintroduced
-/// inline join would leave `identity_path` behind at one site and pass a mere
-/// absence check.
+/// its reach once, when the row is taken, so a rule can only ask.
+///
+/// The anchor join itself is no longer this gate's subject. `KeyTable` retains no
+/// declared key column and `identity_path` is private to `durable/rows.rs`, so the
+/// builder is handed rendered anchors and is not in a position to spell the join a
+/// second time off a row — a visibility fact, which is why the census that stood in
+/// for it is gone.
+///
+/// What remains uncovered, and is not claimed here: the builder still holds each
+/// store's `StoreDecl` and the raw `resource` slice, so key and index syntax is
+/// reachable there under any spelling these needles do not name.
 #[test]
-fn the_durable_builder_reads_rows_and_joins_each_key_anchor_once() {
+fn the_durable_builder_spells_no_index_or_key_syntax() {
     let builder = production_code_of("durable.rs");
     for absent in [
         "IndexDecl",
@@ -314,7 +331,7 @@ fn the_durable_builder_reads_rows_and_joins_each_key_anchor_once() {
     ] {
         assert!(
             !builder.contains(absent),
-            "`{absent}` names declaration syntax; the durable builder reads row tables",
+            "`{absent}` names declaration syntax and is spelled in the durable builder",
         );
     }
     assert!(
@@ -324,33 +341,33 @@ fn the_durable_builder_reads_rows_and_joins_each_key_anchor_once() {
     assert_eq!(
         builder.matches("IdentityKind::Key,").count(),
         2,
-        "exactly two sites mint a key anchor: the store root's tuple and a branch's",
-    );
-    assert_eq!(
-        builder.matches("identity_path(").count(),
-        2,
-        "both key-anchor sites must read the one join, and nothing else may",
+        "`IdentityKind::Key,` is spelled at two sites: the store root's tuple and a \
+         branch's",
     );
     let rows = production_code_of("durable/rows.rs");
     assert!(
         rows.contains("fn take(indexes: &'a [IndexDecl])") && rows.contains("field_path_spelling"),
-        "the index row table must be the one reader of index syntax",
+        "the index row table must be the live reader of index syntax",
     );
     assert!(
         rows.contains("fn identity_path(") && rows.contains("fn over_wide("),
-        "the key row table must own the anchor join and the width cap",
+        "the anchor join and the width cap must still live on the key row table",
     );
 }
 
-/// The staged producer boundary itself carries no raw declaration slice.
+/// The raw declaration slice's type is spelled once in the durable builder and never
+/// in the staging wrapper, and `directory: &ResourceDirectory<'_>` is spelled once in
+/// each.
 ///
 /// `StagedStoreTxn::build_one` and the `durable.rs::build_one` it forwards to once
 /// took `&[(FileRef, FileIdentity, &ResourceDecl)]` and recovered the resource
-/// declaration by name search after row construction. The crate-wide absence gate
-/// forbids the search; this gate forbids the carrier: the raw slice type appears
-/// exactly once in the durable builder — the `build` entry, where it is
-/// row-construction *input* handed to nothing but the row tables' `take` — and never
-/// inside the staging wrapper, while both `build_one`s read the typed projection.
+/// declaration by name search after row construction. This is the lane's named
+/// enforcement artifact for the carrier: the slice type occurs only at the `build`
+/// entry, where it is row-construction input handed to `ResourceDirectory::take`.
+///
+/// It reads type spellings in two files. A slice reaching the staging boundary
+/// through a type alias, a tuple struct, or a closure it does not name would leave
+/// these counts unchanged.
 #[test]
 fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
     let builder = production_code_of("durable.rs");
@@ -386,12 +403,18 @@ fn the_staged_store_producer_accepts_no_raw_declaration_slice() {
     }
 }
 
-/// Every row table holds exactly its typed fields — pinned line by line, because the
-/// round-1 review constructed a bridge the lexical needles missed: a type alias for
-/// the raw declaration slice, carried as an extra directory field and consumed by a
-/// `find_map` name recovery, kept every asserted count intact. A field-exact pin has
-/// no such gap: any carrier added to a row table changes the pinned field list,
-/// whatever its type is spelled as.
+/// Each row table's field lines are exactly as written here, visibility included.
+///
+/// The round-1 review constructed a bridge the lexical needles missed: a type alias
+/// for the raw declaration slice, carried as an extra directory field and consumed by
+/// a `find_map` name recovery, kept every asserted count intact. A field-exact pin
+/// closes that: a carrier added to one of these tables changes its pinned line list
+/// whatever its type is spelled as, and a field opened to the durable builder changes
+/// the line's `pub(super)`.
+///
+/// It reads the field lines of five named structs in one file. A carrier reached
+/// through a type these rows already hold, or added to a struct not pinned here, is
+/// outside its reach.
 #[test]
 fn the_row_tables_hold_exactly_their_typed_fields() {
     let rows = production_code_of("durable/rows.rs");
@@ -408,7 +431,7 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
             .map(str::to_string)
             .collect()
     };
-    let pins: [(&str, &[&str]); 5] = [
+    let pins: [(&str, &[&str]); 6] = [
         (
             "ResourceDirectory<'a>",
             &[
@@ -430,7 +453,6 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
                 "pub(super) binding: StoreResourceBinding,",
                 "pub(super) indexes: IndexTable<'a>,",
                 "pub(super) keys: KeyTable<'a>,",
-                "pub(super) scalars: Result<Vec<ScalarType>, Box<SourceDiagnostic>>,",
             ],
         ),
         (
@@ -440,15 +462,24 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
                 "pub(super) path: String,",
                 "pub(super) fields: Vec<&'a FieldDecl>,",
                 "pub(super) first_member_span: Option<SourceSpan>,",
-                "pub(super) keys: Option<BranchKeyRows<'a>>,",
+                "pub(super) keys: Option<KeyTable<'a>>,",
                 "pub(super) groups: Vec<GroupRow<'a>>,",
             ],
         ),
         (
-            "BranchKeyRows<'a>",
+            "KeyTable<'a>",
             &[
-                "pub(super) table: KeyTable<'a>,",
-                "pub(super) scalars: Result<Vec<ScalarType>, Box<SourceDiagnostic>>,",
+                "owner: KeyOwner<'a>,",
+                "declared_width: usize,",
+                "resolution: Result<Vec<KeyColumnRow<'a>>, Box<SourceDiagnostic>>,",
+            ],
+        ),
+        (
+            "AdmittedKeyColumn<'a>",
+            &[
+                "pub(super) spelling: &'a str,",
+                "pub(super) anchor: String,",
+                "pub(super) scalar: ScalarType,",
             ],
         ),
     ];
@@ -461,16 +492,19 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
     }
 }
 
-/// Declaration-by-name recovery has no shape left to hide in: the durable module's
-/// `.find` population is a closed census of within-declaration member lookups, and
-/// the recovery combinators are absent entirely.
+/// The durable module's `.find(` occurrences are exactly as counted, the three
+/// recovery combinators are unspelled there, and the raw declaration type occurs
+/// exactly as counted per file.
 ///
 /// The counts are exact rather than "at most" so a recovery rewritten onto an
-/// allowed combinator moves a number instead of slipping past a needle. Every
-/// counted site compares members of ONE declaration's own row — never one
-/// declaration list against another's name.
+/// already-counted combinator moves a number instead of slipping past a needle. Each
+/// counted site reads members of ONE declaration's own row; that is what was checked
+/// when these numbers were set, and what a reviewer re-checks when one moves.
+///
+/// It reads spellings in three files. A recovery written with a `for` loop, a method
+/// on a helper type, or a combinator not named here occurs without moving a number.
 #[test]
-fn declaration_name_recovery_has_no_shape_to_hide_in() {
+fn the_declaration_search_census_is_closed_at_its_spellings() {
     let builder = production_code_of("durable.rs");
     let rows = production_code_of("durable/rows.rs");
     let staging = production_code_of("durable/staging.rs");
@@ -483,7 +517,7 @@ fn declaration_name_recovery_has_no_shape_to_hide_in() {
     assert_eq!(
         rows.matches(".find(").count() + staging.matches(".find(").count(),
         0,
-        "the row tables and the staging boundary perform no searches at all",
+        "the row tables and the staging boundary spell no `.find(` at all",
     );
     for (file, code) in [
         ("durable.rs", &builder),
@@ -497,9 +531,8 @@ fn declaration_name_recovery_has_no_shape_to_hide_in() {
             );
         }
     }
-    // The raw declaration type itself is a closed census: the build entry and the
-    // row tables' take own every mention, so an alias cannot be minted from either
-    // file without moving a count.
+    // The raw declaration type's mentions are counted per file, so an alias minted
+    // from either file moves a number.
     let mentions = |code: &String| {
         code.matches("ResourceDecl").count() - code.matches("ResourceDeclId").count()
     };

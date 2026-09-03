@@ -749,25 +749,75 @@ fn the_key_width_corpus_carries_both_tuple_subjects() {
          earning a width refusal",
     );
 }
+/// A store root tuple that is both over-wide and carries a column outside the
+/// durable-key scalar set.
+///
+/// The two refusals are ranked: the width cap is reported and the key type is not.
+/// A tuple past the fixed width has no admissible column list to judge, so telling
+/// its author about one column's type first would steer them at the smaller of two
+/// faults. The ranking used to be the order two consumers happened to test in; it is
+/// now the order the key table answers in, and this corpus is what holds it — the
+/// key-width corpus alone keeps passing with the ranking inverted, because none of
+/// its tuples is both.
+const KEY_RANK_MAIN: &str = r#"module main
+
+resource Plain {
+    required label: string
+}
+
+store ^both[k1: int, k2: int, k3: int, k4: int, k5: int, k6: int, k7: int, k8: int, k9: duration]: Plain
+"#;
+
+#[test]
+fn an_over_wide_tuple_reports_its_width_rather_than_a_column_type() {
+    let project = project_capture::project_with_ids(&[("src/main.mw", KEY_RANK_MAIN)], None);
+    let diagnostics = refused(&project);
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![(
+            "src/main.mw".to_string(),
+            "check.resource_limit".to_string(),
+            7,
+            7,
+            "a store root key tuple has 9 columns; the fixed limit is 8".to_string(),
+        )],
+        "an over-wide tuple reports its width, and reports nothing about a column",
+    );
+}
 // ---------------------------------------------------------------------------
 // Corpus G — declaration attribution.
 // ---------------------------------------------------------------------------
 
-/// A branch key column whose type is not a durable-key scalar, declared in one
-/// module and occurred by a store in another.
+/// Two branch key columns that are not durable-key scalars — one a scalar outside
+/// the durable-key set, one no scalar at all — declared in one module and occurred
+/// by a store in another.
 ///
-/// The refusal is about the branch declaration, so it is attributed to the module
-/// that declares it. Before the key tuple became a row of its resource, the refusal
-/// borrowed the file of whichever store first built the resource's graph — a
+/// Both refusals are about the branch declaration, so both are attributed to the
+/// module that declares it. Before the key tuple became a row of its resource, the
+/// refusal borrowed the file of whichever store first built the resource's graph — a
 /// declaration-side error reported in a store-side file, and a different file
 /// depending on store order. The two modules are what make the attribution
 /// observable: a single-file corpus would agree either way.
+///
+/// The corpus carries both refusing columns because the corrected attribution feeds
+/// both arms of the key-scalar resolution: `duration` is a scalar the durable-key set
+/// excludes and earns `check.type`, while a struct is not a scalar at all and earns
+/// `check.unsupported`. Pinning one arm would leave the other free to move.
 const BRANCH_KEY_MODEL: &str = r#"module model
+
+struct Note {
+    n: int
+}
 
 resource R {
     required title: string
 
     items[k: duration] {
+        required v: string
+    }
+
+    notes[k: Note] {
         required v: string
     }
 }
@@ -799,17 +849,26 @@ fn a_branch_key_refusal_is_attributed_to_the_declaring_module() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![(
-            "src/model.mw".to_string(),
-            "check.type".to_string(),
-            6,
-            1,
-            "a durable key column must be an orderable durable-key scalar (int, string, \
-             bool, bytes, date, or instant)"
-                .to_string(),
-        )],
-        "the branch key refusal is reported in the module that declares the branch, at \
-         the branch's own span",
+        vec![
+            (
+                "src/model.mw".to_string(),
+                "check.type".to_string(),
+                10,
+                1,
+                "a durable key column must be an orderable durable-key scalar (int, string, \
+                 bool, bytes, date, or instant)"
+                    .to_string(),
+            ),
+            (
+                "src/model.mw".to_string(),
+                "check.unsupported".to_string(),
+                14,
+                1,
+                "this key type is not yet supported on the beta line".to_string(),
+            ),
+        ],
+        "both branch key refusals are reported in the module that declares the branch, \
+         each at its own branch's span, in declaration order",
     );
 }
 

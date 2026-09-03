@@ -57,7 +57,7 @@ mod rows;
 mod staging;
 
 use rows::{
-    BranchKeyRows, GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, ProductKey,
+    GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyColumns, KeyTable, ProductKey,
     ResourceDirectory, StoreResourceBinding, StoreRow,
 };
 use staging::StagedStoreTxn;
@@ -1156,17 +1156,17 @@ fn build_one(
             DurableRefusal::Admission { row },
         )))
     };
-    let keys = &row.keys;
-    if let Some(message) = keys.over_wide() {
-        return refuse(diagnostics, resource_limit(file, keys.span(), message));
-    }
-    // The root tuple's scalars were resolved once, when the store's row was taken;
-    // a refusal is rendered here, at the same position it always held. A singleton
-    // root has no columns.
-    let key_scalars = match &row.scalars {
-        Ok(scalars) => scalars.clone(),
-        Err(refused_row) => return refuse(diagnostics, refused_row.as_ref().clone()),
+    // The root tuple was taken and resolved once, when the store's row was taken; a
+    // refusal is rendered here, at the same position it always held, width cap first.
+    // A singleton root has no columns.
+    let key_columns = match row.keys.columns() {
+        KeyColumns::OverWide { span, message } => {
+            return refuse(diagnostics, resource_limit(file, span, message));
+        }
+        KeyColumns::Unresolved(refused_row) => return refuse(diagnostics, refused_row.clone()),
+        KeyColumns::Admitted(columns) => columns,
     };
+    let key_scalars: Vec<ScalarType> = key_columns.iter().map(|column| column.scalar).collect();
     // The declaration and the record it was built from are read from one row, so a
     // store cannot reach a record whose declaration the durable build does not hold.
     // The refused and absent arms report the same row at the same span: a name that is
@@ -1218,10 +1218,9 @@ fn build_one(
     let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
     resolver.name_step(placement, PathSigil::Root, &store.root.root);
     let product = resolver.resolve(IdentityKind::Product, row.resource);
-    let key_ids: Vec<LedgerIdBytes> = keys
-        .rows()
+    let key_ids: Vec<LedgerIdBytes> = key_columns
         .iter()
-        .map(|key| resolver.resolve(IdentityKind::Key, &keys.identity_path(key)))
+        .map(|column| resolver.resolve(IdentityKind::Key, &column.anchor))
         .collect();
 
     // The resource's member tree, in canonical order: its top-level fields
@@ -1269,12 +1268,10 @@ fn build_one(
     // and value shape is read from it. An index admission violation is a precise
     // `check.type` diagnostic that also marks the graph incomplete, so a rejected
     // index discards the whole durable graph rather than emitting a partial one.
-    let key_entries: Vec<(String, LedgerIdBytes, ScalarType)> = keys
-        .rows()
+    let key_entries: Vec<(String, LedgerIdBytes, ScalarType)> = key_columns
         .iter()
         .zip(&key_ids)
-        .zip(&key_scalars)
-        .map(|((key, id), scalar)| (key.name.to_string(), *id, *scalar))
+        .map(|(column, id)| (column.spelling.to_string(), *id, column.scalar))
         .collect();
     // The Product's members, however they were reached: the command vector this store
     // just built, or the declaration the draft already holds. Both place the resource's
@@ -2001,29 +1998,24 @@ impl<'a> IdentityResolver<'a> {
     /// The key tuple of a branch placement: each column's scalar and its ledger id
     /// anchored at `<branch path>.<column>`. A key type outside the closed orderable
     /// durable-key set is a precise diagnostic and marks the graph incomplete.
-    fn build_branch_keys(&mut self, keys: &BranchKeyRows<'_>) -> Vec<KeyColumn> {
-        if let Some(message) = keys.table.over_wide() {
-            self.reject_resource_limit(keys.table.span(), message);
-            return Vec::new();
-        }
-        let scalars = match &keys.scalars {
-            Ok(scalars) => scalars,
-            Err(row) => {
-                self.refuse(DurableRefusal::Admission {
-                    row: row.as_ref().clone(),
-                });
-                return Vec::new();
+    fn build_branch_keys(&mut self, keys: &KeyTable<'_>) -> Vec<KeyColumn> {
+        match keys.columns() {
+            KeyColumns::OverWide { span, message } => {
+                self.reject_resource_limit(span, message);
+                Vec::new()
             }
-        };
-        keys.table
-            .rows()
-            .iter()
-            .zip(scalars)
-            .map(|(key, scalar)| KeyColumn {
-                scalar: scalar.image(),
-                id: self.resolve(IdentityKind::Key, &keys.table.identity_path(key)),
-            })
-            .collect()
+            KeyColumns::Unresolved(row) => {
+                self.refuse(DurableRefusal::Admission { row: row.clone() });
+                Vec::new()
+            }
+            KeyColumns::Admitted(columns) => columns
+                .into_iter()
+                .map(|column| KeyColumn {
+                    scalar: column.scalar.image(),
+                    id: self.resolve(IdentityKind::Key, &column.anchor),
+                })
+                .collect(),
+        }
     }
 
     /// Append the members of one group or branch body at `cursor`, which already names
@@ -2703,7 +2695,7 @@ fn build_branches(
             // The key scalars were resolved once, when the row was taken; the graph
             // build consumed a refusal as this branch's own diagnostic, so a branch
             // reaching the executable derivation reads the settled tuple.
-            let key = keys.resolved()?.to_vec();
+            let key = keys.resolved()?;
             let fields = row
                 .fields
                 .iter()
