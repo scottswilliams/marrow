@@ -46,8 +46,14 @@ use crate::analysis::FileRef;
 /// declaration that position's ordinal names. [`Self::at_mut`] hands out a `&mut RecordInfo`
 /// so the reserve-then-fill pass can fill a record where it lies, and a caller inside this
 /// crate could instead assign a whole different record through it, leaving index `i`
-/// holding one declaration's record beside another's ordinal. No production path does; the
-/// three callers fill a reserved record from its own declaration.
+/// holding one declaration's record beside another's ordinal.
+///
+/// The sole PRODUCTION caller — `build.rs`'s fill pass — fills a reserved record from its
+/// own surviving declaration and never replaces one. The two test callers do not fill at
+/// all: one of them deliberately rewrites a group's `type_id` to manufacture a
+/// `TypeIdentityCollision`, which is the point of that fixture. So the honest statement is
+/// about production only, and an earlier version of this sentence claimed all three filled
+/// from their own declaration.
 ///
 /// That distinction is worth stating precisely because this type's guarantee was claimed
 /// too broadly three times before it was written down accurately. Structural here means
