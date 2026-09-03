@@ -50,12 +50,13 @@
 //! `AttachedService::new`, which executes that image against that store. Closing that
 //! composition belongs to the follow-on row, together with threading an image through
 //! `import_jsonl`. Here, the lifecycle test battery censuses the production callers of the
-//! `open` *spelling* as it is ordinarily written, so a new direct ASCII-spelled call turns
-//! up. It does not reach a submodule re-export called under another path, a public wrapper
-//! over `open_admitted`, a dependency rename inherited from the workspace manifest, a call a
-//! macro emits, a root alias (`use crate as life`), a call separated by non-ASCII
-//! whitespace, or a binding whose name uses a decomposed accent — each of which can still
-//! produce an unpinned `OpenStore` unseen, and each of which is listed at the census itself.
+//! `open` *spelling* as it is ordinarily written, so a new ASCII call spelled bare or under
+//! one of the qualifiers the census resolves turns up. It does not reach a submodule re-export
+//! called under another path, a public wrapper over `open_admitted`, a dependency rename
+//! inherited from the workspace manifest, a call a macro emits, a root alias
+//! (`use crate as life`), a call separated by non-ASCII whitespace, or a binding whose name
+//! uses a decomposed accent — each of which can still produce an unpinned `OpenStore`
+//! unseen, and each of which is listed at the census itself.
 //! An unfenced pairing is therefore fenced against the ordinary direct route only, and this
 //! census is a stand-in until the follow-on row makes `open` unavailable outside a fenced
 //! entry, at which point it retires rather than hardens. An `OpenStore` holds the store's
@@ -225,8 +226,8 @@ impl std::error::Error for LifecycleError {}
 /// `projection` describes. Takes the store's single-owner lock, rereads the persisted
 /// head, and classifies the image against the active binding (see the module documentation):
 /// an identical image opens already-active, and a binding-only code update is rebound and
-/// receipted once both commits confirm. The classification runs after the admission gate and after the
-/// engine's physical open, so a binding-fact change is the typed
+/// receipted once both commits confirm. The classification runs after the admission gate
+/// and after the engine's physical open, so a binding-fact change is the typed
 /// [`LifecycleError::ContractChanged`] refusal pointing at `marrow apply` when the store
 /// admits the image and the engine opens; a demand beyond the accepted ceiling, a head-map
 /// pin disagreement, or an engine that fails to open surfaces as its own refusal instead. The
