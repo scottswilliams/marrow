@@ -251,7 +251,10 @@ impl std::error::Error for HeadMapPinMismatch {}
 /// are the numbers that will address cells. Each schema node is then paired with its ledger
 /// identity by its path-qualified source name **and its node kind** through the image's
 /// sealed↔semantic correspondence (`crate::authority::named_durable_nodes`), each image
-/// node claimed at most once and every image node claimed. Pairing by name rather than by
+/// node claimed at most once and every *numbered* image node claimed. A managed `Index` is
+/// the exception at both ends: its cell keys carry a 16-byte identity rather than a number,
+/// so the walk never numbers it and the coverage check does not require it claimed.
+/// Pairing by name rather than by
 /// walk position is what makes the pin bite on derivation drift: kernel numbers are dense
 /// over any projection shape, so a positionally paired comparison would accept a projection
 /// that orders or shapes the store differently than the provisioning toolchain did, while

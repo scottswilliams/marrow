@@ -15,9 +15,11 @@ use marrow_lifecycle::{
 use marrow_verify::{VerifiedImage, verify};
 
 /// The identity ledger shared by every source variant below: the application, the `Counter`
-/// product, its two fields, the `counters` root, and its key column. Because the variants
-/// share this ledger, the durable contract and the exported interface stay identical across
-/// them and only the demand differs.
+/// product, its two fields, the `counters` root, and its key column. Sharing the ledger is
+/// what lets a variant hold the durable contract and the exported interface still while its
+/// demand grows, which is how the admission refusal is isolated from a contract refusal. It
+/// does not make every variant contract-preserving: the preemption case below deliberately
+/// promotes `label` to required, moving the durable contract as well, and says so.
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -29,7 +31,8 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// The shape shared by every variant.
+/// The base shape every variant starts from. The preemption case edits it, promoting `label`
+/// to required.
 const SHAPE: &str = r#"resource Counter {
     required value: int
     label: string

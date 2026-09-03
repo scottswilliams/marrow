@@ -5,7 +5,8 @@
 //! a cached copy), and classifies the incoming image against the store's active binding:
 //!
 //! - **Already active** — the image is byte-identical to the active binding; the store opens
-//!   with no write.
+//!   with the head and envelope byte-unchanged. Taking the lock has already rewritten its
+//!   owner marker, as it does on every attach before anything is classified.
 //! - **Demand exceeds ceiling** — the presented image demands durable authority the store's
 //!   accepted ceiling (its separately owned standing maximum, recorded at provision) does not
 //!   admit. Checked first, after the lock and before any engine call, so a broadened effect
@@ -23,8 +24,10 @@
 //!   pin guards this attach path; `crate::open` runs no pin comparison and its production
 //!   caller set is pinned by the lifecycle test battery.
 //! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
-//!   image's code (its byte identity) differs. The actor atomically rewrites the envelope and
-//!   head to the new image and issues a receipt *after* the commit confirms. The receipt
+//!   image's code (its byte identity) differs. The actor rewrites the head and then the
+//!   envelope as two separately atomic ordered commits, with a valid state between them
+//!   (`rewrite_atomically` states the ordering and what a crash there leaves), and issues a
+//!   receipt *after* the second commit confirms. The receipt
 //!   claims only that the code was updated with the durable contract unchanged — never that
 //!   program meaning is preserved. The accepted ceiling is preserved verbatim across the
 //!   rebind (a standing maximum is expanded only by conscious re-acceptance).
@@ -37,11 +40,14 @@
 //!   fails to open surfaces as its own open error instead. Either way the store is not
 //!   served.
 //!
-//! The actor is the sole constructor of an *attached* lifecycle transition: `attach` is the
-//! only entry that pairs a store with a verified image, and the pin guards it. `crate::open`
-//! also returns an [`OpenStore`], without an image and without a pin comparison; its
-//! production caller set is pinned by the lifecycle test battery, and the follow-on row that
-//! threads an image through `import_jsonl` owns closing it. An `OpenStore` holds the store's
+//! `attach` is the only entry that pairs a store with a verified image *and compares the
+//! pin*, and the only one that can rebind. It is not the only way an image and a store meet:
+//! `crate::open` returns an [`OpenStore`] with no image and no pin comparison, and a caller
+//! holding one can pair any verified image with it through the runner's public
+//! `AttachedService::new`, which executes that image against that store. Closing that
+//! composition belongs to the follow-on row, together with threading an image through
+//! `import_jsonl`; here, `open`'s production caller set is pinned by the lifecycle test
+//! battery so no new unfenced pairing appears unnoticed. An `OpenStore` holds the store's
 //! owner lock, which is non-`Clone` and non-serializable, so no session, bytecode, or client
 //! path can enter or forge a lifecycle state — nothing below this crate depends on it (the
 //! Cargo trust boundary), and there is no serialized form to reconstruct one from.
@@ -75,11 +81,13 @@ enum AdmissionRefusal {
 
 /// The result of a successful attach.
 pub enum AttachOutcome {
-    /// The presented image is already the active binding: no write occurred. The store is
-    /// open and ready.
+    /// The presented image is already the active binding: the head and envelope are
+    /// byte-unchanged (taking the lock rewrote its owner marker first, as on every attach).
+    /// The store is open and ready.
     AlreadyActive(OpenStore),
-    /// The image was a binding-only code update: the envelope and head were atomically
-    /// rewritten to the new image and the rebind is committed. The receipt proves the commit.
+    /// The image was a binding-only code update: the head and then the envelope were
+    /// rewritten to the new image, each commit atomic, and the rebind is committed. The
+    /// receipt proves the commit.
     Rebound {
         store: OpenStore,
         receipt: RebindReceipt,
@@ -217,7 +225,7 @@ pub fn attach(
 
     // The (ledger id → cell number) binding this toolchain would actually serve the store
     // under: the kernel's numbering of this exact projection, paired to the image's durable
-    // identities by source name (`crate::image::derive_head_map_pin`). Pure over
+    // identities by source name and node kind (`crate::image::derive_head_map_pin`). Pure over
     // (image, projection); derived here, before the store is touched, so the admission
     // closure below needs no borrow of the projection the open consumes.
     let expected_pin = derive_head_map_pin(image, &projection);
@@ -268,7 +276,7 @@ pub fn attach(
 
     let stored = opened.head.binding;
 
-    // Byte-identical binding: no write, already active.
+    // Byte-identical binding: already active, with no head or envelope write.
     if incoming == stored {
         return Ok(AttachOutcome::AlreadyActive(opened));
     }

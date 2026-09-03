@@ -1284,9 +1284,15 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
 /// qualified, raw-identifier, turbofished). Its caller set is pinned to exactly one call,
 /// inside the body of `import_jsonl` — the trusted bulk importer, a WRITE path the follow-on
 /// row owns, and the same row owns removing this permitted call by threading the image in —
-/// and no crate outside `marrow-lifecycle` may name lifecycle `open` at all. Every other
-/// production route to an attached store goes through `attach`, which runs the pin, so a new
-/// caller turns up here and must either go through `attach` or extend the pin family.
+/// and no crate outside `marrow-lifecycle` may name lifecycle `open` at all. A new caller of
+/// that spelling therefore turns up here and must either go through `attach`, which runs the
+/// pin, or extend the pin family.
+///
+/// That is a census over one spelling, not a claim that `attach` is the only place an image
+/// and a store meet: a caller holding an `OpenStore` can pair any verified image with it
+/// through the runner's public `AttachedService::new`, which compares no pin. This scan
+/// pins who may PRODUCE an unpinned `OpenStore`; the follow-on row owns what may be done
+/// with one.
 ///
 /// What it does not detect: a second unfenced public constructor that reaches an `OpenStore`
 /// under another name. `open_admitted` is `pub(crate)` and takes an arbitrary admit closure,

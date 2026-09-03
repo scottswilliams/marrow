@@ -71,7 +71,7 @@ impl std::fmt::Display for DemandExceedsCeiling {
         write!(
             f,
             "the program image demands durable authority the store's accepted ceiling does not \
-             admit, so it is refused before any store access and the store is intact: "
+             admit, so it is refused before any engine call and the store is intact: "
         )?;
         for (i, atom) in self.exceeding.iter().enumerate() {
             if i > 0 {
