@@ -202,13 +202,17 @@ fn contain_panic<T>(
 /// advisory-lock release lag.
 ///
 /// redb guards a store with an OS file lock (`flock` on Unix) acquired on open and
-/// released when the handle drops. The release can lag the close that the drop
-/// performs, so a write-capable open issued just after another handle on the same
-/// path was dropped — by this process or by one that has already exited, such as a
-/// preceding read-only inspection — can observe the not-yet-released lock and fail
-/// with `DatabaseAlreadyOpen` even though no holder remains. A genuine concurrent
-/// holder keeps the lock for the whole budget and still surfaces promptly as
-/// [`StoreError::Locked`]; only the brief release lag is absorbed.
+/// released when the handle drops. A write-capable open issued just after another handle
+/// on the same path was dropped can still observe that lock held and fail with
+/// `DatabaseAlreadyOpen`, and the window widens with machine load.
+///
+/// Why the lock is still held is NOT established, and this comment previously asserted
+/// one cause. Two candidates fit every observation: the kernel's release trailing the
+/// close the drop performs, and a concurrently spawned child inheriting the descriptor
+/// until its exec. Both are absorbed by the same wait, so the retry does not depend on
+/// choosing between them. A genuine concurrent holder keeps the lock for the whole
+/// budget and still surfaces promptly as [`StoreError::Locked`] rather than hanging, and
+/// so does a transient window longer than the budget.
 fn open_write_capable(
     path: &Path,
     open: impl Fn() -> Result<Database, DatabaseError>,
@@ -846,9 +850,9 @@ where
 /// directly reintroduces the hazard and reports it as a store defect, so every raw reopen
 /// in this crate's tests comes through here.
 ///
-/// The wait is bounded: a genuinely held lock exhausts the backoff and surfaces as
-/// [`StoreError::Locked`] rather than hanging, and a transient window longer than the
-/// budget still surfaces that way.
+/// The wait is bounded rather than indefinite: a genuinely held lock exhausts the backoff
+/// and this helper then panics carrying the typed [`StoreError`], which is how a test
+/// surfaces it. It never hangs, and it never reports a held lock as success.
 #[cfg(test)]
 pub(crate) fn reopen_raw(path: &Path, subject: &str) -> Database {
     open_write_capable(path, || Database::open(path))
@@ -909,21 +913,28 @@ mod tests {
         }
     }
 
-    /// Every raw reopen in this crate's tests goes through [`reopen_raw`], so no test
-    /// races the lock interval that [`open_write_capable`] waits out.
+    /// Every raw reopen in this crate's tests goes through [`reopen_raw`], so no test races
+    /// the lock interval that [`super::open_write_capable`] waits out.
     ///
-    /// What this detects, across `redb.rs` and `native_owner.rs`: a direct open call on
-    /// `Database` in code — comments, string and char literals blanked, and a call whose
-    /// receiver is a longer identifier ending in `Database` not counted — outside the two
-    /// places that own it, plus a `reopen_raw` whose own body stops routing through the
-    /// production helper.
+    /// What this detects, across `redb.rs` and `native_owner.rs`: a direct open call whose
+    /// receiver is exactly `Database`, in code with comments and string/char literals
+    /// blanked, outside the two places that own it — plus a [`reopen_raw`] whose own body
+    /// stops routing through the production wait at an identifier boundary.
     ///
-    /// What it does NOT detect: `<Database>::open(...)`, a spelling broken across tokens
-    /// or lines, a call reached through a macro, an aliased import of either function, a
-    /// reopen written against `ReadOnlyDatabase` instead, and the same hazard spelled as a
-    /// create. It is a spelling check at a site, not a call-graph boundary. It earns its
-    /// keep because the failure it prevents is intermittent and costs a whole battery to
-    /// observe, and its limits are written here rather than implied by its name.
+    /// What it does NOT detect: `Database::builder().open(...)`, `<Database>::open(...)`,
+    /// a spelling broken across tokens or lines, a call reached through a macro, an
+    /// aliased import of either function, a reopen written against `ReadOnlyDatabase`, and
+    /// the same hazard spelled as a create.
+    ///
+    /// It also has a false-positive mode worth knowing: it counts direct opens, so a third
+    /// one fails this check even when that third call is correctly wrapped. Adding a
+    /// legitimate direct open therefore means updating this check deliberately, which is
+    /// the intended friction and not a bug.
+    ///
+    /// It is a spelling check at a site, not a call-graph boundary. It earns its keep
+    /// because the failure it prevents is intermittent and costs a whole battery to
+    /// observe, and its limits are written here rather than implied by its name — four
+    /// drafts of it were wrong, each in the same way, a scanner that could not see itself.
     #[test]
     fn every_raw_reopen_goes_through_the_lock_release_tolerance() {
         // Split so these assertions do not match themselves.
@@ -932,6 +943,15 @@ mod tests {
 
         let mut direct = 0;
         for source in [include_str!("redb.rs"), include_str!("native_owner.rs")] {
+            // The blanker's stated precondition, enforced rather than assumed: a raw
+            // string would be mis-blanked and could hide a call or invent one. Adding the
+            // first raw string to either file fails here instead of silently weakening
+            // the scan.
+            assert!(
+                !has_raw_string(source),
+                "this scan cannot blank raw strings; teach `code_only` the form before \
+                 introducing one",
+            );
             let code = code_only(source);
             direct += count_receiver_calls(&code, &spelling);
         }
@@ -944,16 +964,28 @@ mod tests {
         let code = code_only(include_str!("redb.rs"));
         let body = brace_matched_body(&code, "fn reopen_raw(")
             .expect("the shared reopen helper is present");
-        assert!(
-            body.contains(&tolerance),
-            "`reopen_raw`'s own body must route through the production wait, not open directly",
+        assert_eq!(
+            count_receiver_calls(&body, &tolerance),
+            1,
+            "`reopen_raw`'s own body must call the production wait at an identifier \
+             boundary; a name merely containing that spelling is not a call to it",
         );
     }
 
-    /// Blank comments and string/char literals, preserving length and newlines so a span
-    /// found in the result addresses the same place in the source. Minimal by design: this
-    /// crate cannot reach the workspace's shared projection, and neither scanned file uses
-    /// a raw-string form.
+    /// Blank comments and string/char literals, preserving byte length so a span found in
+    /// the result addresses the same place in the source.
+    ///
+    /// A leading `'` is a char literal only when a closing `'` follows within a char
+    /// body's width; otherwise it is a lifetime tick and passes through. Getting that
+    /// wrong is not a small error: treating `PanicHookInfo<'_>` as an opening quote blanks
+    /// everything after it to the end of the file, and a raw reopen written below that
+    /// point becomes invisible to the scan.
+    ///
+    /// Newlines inside blanked spans are preserved except in one case — a backslash-
+    /// newline line continuation inside a string becomes two spaces — so a line number
+    /// derived from this projection can be off inside such a literal. Byte offsets stay
+    /// exact, which is what the callers here use. Raw strings are NOT handled and the
+    /// caller asserts their absence rather than assuming it.
     fn code_only(source: &str) -> String {
         let src = source.as_bytes();
         let mut out = Vec::with_capacity(src.len());
@@ -984,7 +1016,7 @@ mod tests {
                         i += 1;
                     }
                 }
-            } else if src[i] == b'"' || src[i] == b'\'' {
+            } else if src[i] == b'"' || (src[i] == b'\'' && is_char_literal(src, i)) {
                 let quote = src[i];
                 out.push(b' ');
                 i += 1;
@@ -1007,6 +1039,43 @@ mod tests {
             }
         }
         String::from_utf8(out).expect("blanking replaces bytes one for one within ASCII runs")
+    }
+
+    /// Whether the `'` at `start` opens a char literal rather than a lifetime tick.
+    ///
+    /// A char literal closes within a few bytes: `'a'`, `'\n'`, `'\u{1F600}'`. A lifetime
+    /// never closes at all. Scanning a bounded window for the closing quote separates them
+    /// without a full lexer, and the window is wide enough for the longest escape form.
+    fn is_char_literal(src: &[u8], start: usize) -> bool {
+        let limit = (start + 12).min(src.len());
+        let mut i = start + 1;
+        while i < limit {
+            match src[i] {
+                b'\\' => i += 2,
+                b'\'' => return true,
+                b'\n' => return false,
+                _ => i += 1,
+            }
+        }
+        false
+    }
+
+    /// Whether `source` contains a raw string literal, in any of its prefixed forms, at a
+    /// token boundary. [`code_only`] cannot blank these, so its caller refuses rather than
+    /// scanning a projection it knows is wrong.
+    fn has_raw_string(source: &str) -> bool {
+        let src = source.as_bytes();
+        src.iter().enumerate().any(|(i, byte)| {
+            *byte == b'r'
+                && !src[..i]
+                    .last()
+                    .is_some_and(|before| before.is_ascii_alphanumeric() || *before == b'_')
+                && src[i + 1..]
+                    .iter()
+                    .position(|next| *next != b'#')
+                    .is_some_and(|offset| src[i + 1 + offset] == b'"')
+        }) || source.contains("br\"")
+            || source.contains("cr\"")
     }
 
     /// Occurrences of `call` whose receiver is exactly that identifier, so a longer name
