@@ -2920,7 +2920,7 @@ fn declaration_coordinates_cannot_outlive_their_admission() {
         "a hand-written `impl Clone` reopens the copy the derive scan forbids",
     );
     assert!(
-        !module.contains("stale-row window"),
+        !module.contains("one-shot ownership"),
         "the projection must blank doc comments; this module's own prose survived",
     );
 }
