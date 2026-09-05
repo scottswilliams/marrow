@@ -771,7 +771,7 @@ fn exports_within_the_widened_bound_compile() {
 /// durable identity ledger (~4091 fields, ~343 KB) well under the ceiling, so the
 /// ceiling is driven instead by many distinct near-maximal string literals — each a
 /// live return value, so none is dead-stripped. The bodies themselves are tiny, so this
-/// is the encoder's late verdict, not the settled-body stop below.
+/// is the encoder's late verdict, not the settled-body stop.
 #[test]
 fn image_too_large_is_an_aggregate_resource_limit() {
     // 150 distinct ~4000-byte strings ≈ 600 KB of string pool, past the 512 KiB image
@@ -785,30 +785,6 @@ fn image_too_large_is_an_aggregate_resource_limit() {
     }
     source.push_str("pub fn main(): int {\n    return 0\n}\n");
     assert_aggregate_resource_limit(compile(&project(&source, None)));
-}
-
-/// The one image-policy bound decided before the encoder. Once the settled bodies alone
-/// commit the image to more than the byte ceiling, the drive stops retaining further
-/// bodies and reports exactly the kind and limit the encoder would: 32 bodies of 512
-/// accumulating statements cross it at the twentieth body. Every other image-policy
-/// bound in this file keeps its late meaning.
-#[test]
-fn image_too_large_through_settled_bodies_is_the_same_aggregate_resource_limit() {
-    let mut source = String::from("module main\n\n");
-    for index in 0..32 {
-        source.push_str(&format!("pub fn f{index}(): int {{\n    var total = 0\n"));
-        for _ in 0..512 {
-            source.push_str("    total += 1\n");
-        }
-        source.push_str("    return total\n}\n\n");
-    }
-    match compile(&project(&source, None)) {
-        Err(CompileFailure::ResourceLimit(limit)) => {
-            assert_eq!(limit.kind(), ResourceLimitKind::ImageBytes);
-            assert_eq!(limit.limit(), marrow_image::bounds::MAX_IMAGE_BYTES as u64);
-        }
-        other => panic!("expected the image byte ceiling, got {other:?}"),
-    }
 }
 
 /// Every fixed bound projects two ways from one typed kind: `detail` is the frozen

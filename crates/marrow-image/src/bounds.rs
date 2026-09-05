@@ -28,6 +28,10 @@
 /// still accepts, byte-for-byte.
 pub const MAX_IMAGE_BYTES: usize = 512 * 1024;
 
+/// The encoded width of one SPANS row, the per-span term of the draft's settled-body
+/// image charge.
+pub use crate::encode::SPAN_ROW_BYTES;
+
 /// Maximum string-pool entries and the byte length of any one entry. A wide
 /// resource interns one string per declared field name, so the M-shaped workload's
 /// thousands of fields drive the pool past a narrow count; this bounds the *count*

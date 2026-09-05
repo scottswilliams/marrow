@@ -47,7 +47,7 @@ Refusals raised by the `marrow` command itself.
 | `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. `marrow` itself opens no store; the companion runner does. Run the export against a provisioned store: `marrow run <export> --store <dir>`. A storeless export is unaffected. |
 | `cli.installation_damaged` | `marrow run --store` could not use the companion runner: the release manifest beside the toolchain is missing or malformed, names another release, or the runner binary is absent or does not match its recorded identity. The store is untouched. Reinstall the toolchain. |
 | `cli.ceiling_unaccepted` | `marrow image` writes an image only when `--accept-ceiling <id>` names the image's own deployment ceiling. The argument was absent or named a different id, so no image was written. The message prints the id to accept. |
-| `cli.compiler_resource_limit` | Compilation crossed a fixed bound that no single construct is at fault for: an aggregate count across the whole program, or the image byte ceiling. No image or source diagnostic is produced, and the outcome carries no source location. A bound one construct crosses is `check.resource_limit` at that construct. |
+| `cli.compiler_resource_limit` | Compilation crossed a fixed bound that no single construct is at fault for: an aggregate count across the whole program, or the image byte ceiling. No image is produced and the outcome carries no source location. When function bodies alone exceed the image byte ceiling, checking stops at that body; diagnostics found before the stop are not reported and reappear once the program fits. A bound one construct crosses is `check.resource_limit` at that construct. |
 
 ### `check.*`
 

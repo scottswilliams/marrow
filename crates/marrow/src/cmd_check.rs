@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use marrow_codes::Code;
 use marrow_compile::{
-    AnalysisFailure, CompileFailure, DurableNaming, ExportEntry, InputRevision, SourceDiagnostic,
-    analyze, compile,
+    AnalysisFailure, AnalysisResourceLimit, CompileFailure, DurableNaming, ExportEntry,
+    InputRevision, ResourceLimitKind, SourceDiagnostic, analyze, compile,
 };
 use marrow_verify::VerifiedImage;
 
@@ -161,9 +161,19 @@ fn term_paint(style: Style, text: &str) -> String {
 /// A fixed analysis-floor failure with no diagnostic to report: an aggregate bound or an
 /// opaque compiler-coherence failure. Reported as one fixed code line with no location.
 /// An exhausted bound names itself in the bound owner's own words, as `image` and
-/// `client` report it; an opaque invariant has nothing to name.
+/// `client` report it; an opaque invariant has nothing to name. Analysis never encodes,
+/// so the image byte ceiling reaches it only as the settled-body stop, which discards the
+/// findings made before it.
 fn report_analysis_failure(failure: &AnalysisFailure) -> ExitCode {
     match failure {
+        AnalysisFailure::ResourceLimit {
+            limit: AnalysisResourceLimit::Compile(limit),
+            ..
+        } if limit.kind() == ResourceLimitKind::ImageBytes => report_simple_error(
+            Code::CliCompilerResourceLimit.as_str(),
+            "analysis stopped: function bodies alone exceed the program image limit; \
+             findings before the stop are not shown",
+        ),
         AnalysisFailure::ResourceLimit { limit, .. } => report_simple_error(
             Code::CliCompilerResourceLimit.as_str(),
             &resource_limit_message(limit.description()),

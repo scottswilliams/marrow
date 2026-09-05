@@ -40,9 +40,10 @@ restored with its transactions. After each settled body the compiler polls it; o
 the charge exceeds the image byte ceiling, both compilation and editor analysis stop
 lowering and report the `ImageBytes` resource limit without a snapshot. An invariant
 discovered in executed work is reported ahead of that stop and of parse or
-structural findings. The retained population at a stop is bounded by the largest
-prefix under the charge plus one body; this is a retention bound, not a capacity
-claim.
+structural findings. A stop retains at most 105,865 instructions: the largest prefix
+under the charge (40,329 one-byte instructions) and the body that crossed it (at most
+65,536); the lowerer's in-flight buffer for a later body is unretained. This is a
+retention bound, not a capacity claim.
 
 A tool sees a project through two layers. `marrow-project` is pure: manifest,
 module discovery, and the `.marrow/ids` ledger, all over bytes a caller supplies.

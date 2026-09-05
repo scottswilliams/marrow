@@ -66,7 +66,9 @@ A failed background capture, such as a malformed `marrow.toml`, is reported once
 an error `window/showMessage`; no diagnostics are invented for it.
 
 A request answers `-32803` in two cases: the open buffer's last edit was refused
-by overlay admission, or an analysis limit was exhausted. A completion or
+by overlay admission, or an analysis limit was exhausted. A program whose function
+bodies alone exceed the program image limit yields no editor facts for that
+revision. A completion or
 signature-help request whose candidate set or rendered display exceeds its cap is
 refused whole; the server returns no truncated list.
 

@@ -59,7 +59,7 @@ pub(crate) const SECTION_COUNT: u8 = 10;
 /// One SPANS row: `u32(offset) ‖ u32(line) ‖ u32(column)` — the row width
 /// `encode_spans` spells in three `u32` pushes and the measure core's span counting
 /// consumes arithmetically; the counted==emitted KATs pin the two against each other.
-pub(crate) const SPAN_ROW_BYTES: usize = 12;
+pub const SPAN_ROW_BYTES: usize = 12;
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]

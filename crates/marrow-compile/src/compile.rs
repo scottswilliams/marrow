@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
+use marrow_image::bounds;
 use marrow_image::{DraftTxn, EncodedImage, ExportId, FuncId, ImageBuildError, ImageDraft, Instr};
 use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{
@@ -466,7 +467,6 @@ fn stage_failure(diagnostics: BoundedDiagnostics) -> Option<CompileFailure> {
 /// both are opaque invariants. The match has no wildcard, so a new image-build variant
 /// forces an explicit classification here.
 fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
-    use marrow_image::bounds;
     let aggregate = |kind: ResourceLimitKind, limit: usize| {
         ImagePolicyOutcome::ResourceLimit(CompileResourceLimit::new(kind, limit as u64))
     };
@@ -549,7 +549,7 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
 fn image_bytes_limit() -> CompileResourceLimit {
     CompileResourceLimit::new(
         ResourceLimitKind::ImageBytes,
-        marrow_image::bounds::MAX_IMAGE_BYTES as u64,
+        bounds::MAX_IMAGE_BYTES as u64,
     )
 }
 
@@ -1990,7 +1990,9 @@ fn registry_phases(
             if result.func.index() != reserved {
                 return Err(PhaseStop::Invariant(InvariantCause::ReservedIndexMismatch));
             }
-            settle_image_capacity(draft, result.func)?;
+            if !records.has_instantiation_limit() {
+                settle_image_capacity(draft, result.func)?;
+            }
             lowered.push(LoweredFn {
                 func: result.func,
                 file: template.source_file().clone(),
@@ -2145,6 +2147,16 @@ fn lower_declared_functions(
                 owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
             });
+            // Every appended body is polled exactly once, before the export bookkeeping
+            // that may skip the rest of this iteration.
+            if records.has_instantiation_limit() {
+                return Ok(LoweredFunctions {
+                    lowered,
+                    exports,
+                    exit: DeclarationExit::StoppedOnInstantiationLimit,
+                });
+            }
+            settle_image_capacity(draft, result.func)?;
             let export = if function.public {
                 // Export validation and minting ran before the lowering transaction
                 // committed; the driver sees the accepted id only after settlement.
@@ -2160,14 +2172,6 @@ fn lower_declared_functions(
                 None
             };
             exports.extend(export);
-            if records.has_instantiation_limit() {
-                return Ok(LoweredFunctions {
-                    lowered,
-                    exports,
-                    exit: DeclarationExit::StoppedOnInstantiationLimit,
-                });
-            }
-            settle_image_capacity(draft, result.func)?;
         }
     }
     Ok(LoweredFunctions {

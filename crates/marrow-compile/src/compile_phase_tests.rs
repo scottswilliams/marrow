@@ -1092,19 +1092,28 @@ fn observing<T>(drive: impl FnOnce() -> T) -> (T, usize) {
     (result, population)
 }
 
-/// The encoder's span row width, which the charge mirrors. The largest prefix the
-/// charge admits is `MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES)` one-byte instructions,
-/// and one settled body adds at most `MAX_CODE_BYTES` more, so the population any
-/// stop retains is bounded by their sum. This is a retention bound, not a capacity
-/// claim: nested operands, other owners, and input size are outside it.
-const SPAN_ROW_BYTES: usize = 12;
-const RETENTION_BOUND: usize = marrow_image::bounds::MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES)
-    + marrow_image::bounds::MAX_CODE_BYTES;
+use marrow_image::bounds::{MAX_CODE_BYTES, MAX_IMAGE_BYTES, SPAN_ROW_BYTES};
 
-/// Every body of the corpus below is `4 + 4 * statements` instructions: `total += 1`
-/// lowers to four, and the binding and return add four.
-const fn wide_body_instructions(statements: usize) -> usize {
-    4 + 4 * statements
+/// The largest prefix the charge admits is `MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES)`
+/// one-byte instructions, and the body that crosses it adds at most `MAX_CODE_BYTES`
+/// more, so the population any stop retains is bounded by their sum. This is a
+/// retention bound, not a capacity claim: nested operands, other owners, and input
+/// size are outside it.
+const RETENTION_BOUND: usize = MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES) + MAX_CODE_BYTES;
+
+/// The instructions the bodies of `source` retain, measured through the observer over a
+/// compile that includes tests, so every population below is derived from the compiler
+/// rather than written as arithmetic.
+fn settled_instructions(source: String) -> usize {
+    let input = capacity_project(&[("src/main.mw", source)]);
+    let (result, population) = observing(|| crate::compile_with_tests(&input));
+    result.expect("a width fixture compiles");
+    population
+}
+
+/// The instructions one body of `statements` accumulating statements retains.
+fn wide_body_instructions(statements: usize) -> usize {
+    settled_instructions(wide_module(1, statements))
 }
 
 fn capacity_project(files: &[(&str, String)]) -> marrow_project::ProjectInput {
@@ -1155,7 +1164,7 @@ fn image_bytes_limit(result: Result<impl std::fmt::Debug, CompileFailure>) {
     match result {
         Err(CompileFailure::ResourceLimit(limit)) => {
             assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes);
-            assert_eq!(limit.limit(), marrow_image::bounds::MAX_IMAGE_BYTES as u64);
+            assert_eq!(limit.limit(), MAX_IMAGE_BYTES as u64);
         }
         other => panic!("expected the image-bytes limit, got {other:?}"),
     }
@@ -1183,7 +1192,7 @@ fn an_accepted_shape_retains_every_body_and_keeps_its_image_identity() {
 fn a_refused_shape_stops_the_drive_within_the_retention_bound() {
     let input = capacity_project(&[("src/main.mw", wide_module(32, 512))]);
     let stop_population = 20 * wide_body_instructions(512);
-    assert!(stop_population * (1 + SPAN_ROW_BYTES) > marrow_image::bounds::MAX_IMAGE_BYTES);
+    assert!(stop_population * (1 + SPAN_ROW_BYTES) > MAX_IMAGE_BYTES);
     assert!(stop_population <= RETENTION_BOUND);
 
     let (result, population) = observing(|| crate::compile(&input));
@@ -1211,11 +1220,16 @@ fn a_refused_shape_stops_the_drive_within_the_retention_bound() {
 /// fits, the test image includes them and stops.
 #[test]
 fn test_bodies_settle_under_the_same_stop() {
+    fn test_body(index: usize) -> String {
+        format!(
+            "test \"t{index}\" {{\n{}}}\n\n",
+            wide_body(512).replace("    return total\n", "    assert total == 512\n")
+        )
+    }
+    let test_body_instructions = settled_instructions(format!("module main\n\n{}", test_body(0)));
     let mut source = wide_module(16, 512);
     for index in 0..16 {
-        source.push_str(&format!("test \"t{index}\" {{\n"));
-        source.push_str(&wide_body(512).replace("    return total\n", "    assert total == 512\n"));
-        source.push_str("}\n\n");
+        source.push_str(&test_body(index));
     }
     let input = capacity_project(&[("src/main.mw", source)]);
     let (compiled, population) = observing(|| crate::compile(&input));
@@ -1223,8 +1237,6 @@ fn test_bodies_settle_under_the_same_stop() {
     assert_eq!(population, 16 * wide_body_instructions(512));
     let (result, population) = observing(|| crate::compile_with_tests(&input));
     image_bytes_limit(result);
-    // `assert total == 512` is three instructions longer than `return total`.
-    let test_body_instructions = wide_body_instructions(512) + 3;
     assert_eq!(
         population,
         16 * wide_body_instructions(512) + 4 * test_body_instructions
@@ -1258,18 +1270,18 @@ fn wide_template(statements: usize) -> String {
 /// bodies stay under the charge, and the instance the driver infers crosses it.
 #[test]
 fn an_inferred_instance_settles_under_the_same_stop() {
-    let source = format!(
-        "{}{}pub fn driver(): int {{\n    return acc(1)\n}}\n",
-        wide_module(19, 512),
-        wide_template(512),
+    let driver = format!(
+        "{}pub fn driver(): int {{\n    return acc(1)\n}}\n",
+        wide_template(512)
     );
+    let driver_and_instance = settled_instructions(format!("module main\n\n{driver}"));
+    let source = format!("{}{driver}", wide_module(19, 512));
     let input = capacity_project(&[("src/main.mw", source)]);
     let (result, population) = observing(|| crate::compile(&input));
     image_bytes_limit(result);
-    let driver_instructions = 3;
     assert_eq!(
         population,
-        20 * wide_body_instructions(512) + driver_instructions
+        19 * wide_body_instructions(512) + driver_and_instance
     );
 }
 
@@ -1320,13 +1332,16 @@ fn growing_chain(statements: usize) -> String {
 
 /// The stop precedes a later instantiation limit: wide instance bodies cross the
 /// charge before the chain exhausts the instantiation budget, while narrow ones let
-/// the located instantiation limit report first.
+/// the located instantiation limit report first. A body that trips the limit itself is
+/// refused by the lowerer's terminal check and never appended, so no single body can
+/// both settle and trip the limit; the drain's poll is nevertheless guarded like the
+/// declared-body sites so the located row would win if that ever changed.
 #[test]
 fn the_stop_precedes_a_later_instantiation_limit() {
     let input = capacity_project(&[("src/main.mw", growing_chain(40))]);
     let (result, population) = observing(|| crate::compile(&input));
     image_bytes_limit(result);
-    assert!(population > marrow_image::bounds::MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
+    assert!(population > MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
     assert!(population <= RETENTION_BOUND);
 
     let input = capacity_project(&[("src/main.mw", growing_chain(0))]);
@@ -1339,13 +1354,13 @@ fn the_stop_precedes_a_later_instantiation_limit() {
         ),
         other => panic!("a narrow chain reaches the instantiation limit, got {other:?}"),
     }
-    assert!(population <= marrow_image::bounds::MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
+    assert!(population <= MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
 }
 
 fn image_bytes_stop() -> SemanticOutcome {
     SemanticOutcome::ResourceLimit(super::CompileResourceLimit::new(
         super::ResourceLimitKind::ImageBytes,
-        marrow_image::bounds::MAX_IMAGE_BYTES as u64,
+        MAX_IMAGE_BYTES as u64,
     ))
 }
 
