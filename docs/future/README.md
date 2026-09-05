@@ -27,7 +27,7 @@ Durable model and paths:
 Applications and serving:
 
 - [Local applications](local-applications.md): the runner, client, and bundle for one machine.
-- [Served execution](served-execution.md): several terminals, public paths, and concurrent writers.
+- [Served execution](served-execution.md): several terminals and public paths over one store with serial mutating invocations.
 
 A future page contains no proposed `.mw` syntax, manifest field, instruction
 format, protocol schema, or diagnostic catalog. When working code makes a

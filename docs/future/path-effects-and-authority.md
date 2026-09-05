@@ -30,10 +30,17 @@ more. A later authenticated principal can only further intersect an address or
 a context predicate. It can narrow an already-granted reach; it can never add a
 place the grant did not carry.
 
-Demand records an operation on a place: a read, a create, a replace, an erase,
-or a traversal with its bound. A grant covers a subset of those operations over
-a region of the tree, so an export that reads one entry is not thereby allowed
-to walk its root.
+Demand describes operations a program may execute over semantic paths. The
+compiler and verifier compose it once from resolved operations and callee
+summaries. Presence checking and writer classification consume those facts;
+they do not introduce another source declaration, authority grant or scheduling
+envelope. A grant covers only its permitted operations and region, so reading
+one entry does not authorize walking its root.
+
+An address alias neither grants authority nor reserves its target. A presence
+proof establishes a condition about an entry in the invocation's view, not
+permission to access it. Refactoring to a checked address or whole-entry
+assignment can change demand and must still pass ordinary store admission.
 
 Stored users, credentials, and rotation records are inert data. They cannot be
 decoded into an authenticated context or a grant; the trust anchor for
@@ -41,9 +48,10 @@ authentication stays outside application durable state. Maintenance,
 activation, backup, restore, and physical recovery use authority that
 application code cannot hold.
 
-Three things are deferred. Closures and recursion need effect variables and a
-demand over indirect calls. Key provenance would record which key values an
-export may address. Principals, roles, and served enforcement belong to
+Three things are deferred. Closures and recursion would require a separate
+decision about indirect-call demand. Key provenance is not needed for serial
+writer admission or conservative entry-family invalidation. Principals, roles,
+and served enforcement belong to
 [served execution](served-execution.md).
 
 ## Evidence

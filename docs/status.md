@@ -40,7 +40,14 @@ are recognized; each reports `cli.command_unsupported`.
   `store.contract_changed` refusal and the prior program stays usable
   ([admission and activation](future/admission-and-activation.md)).
 - Backup and restore ([local applications](future/local-applications.md)).
-- Served execution: several terminals, public paths, and concurrent writers
+- Checked durable place bindings, stable required-field reads through a
+  presence-tested address, and complete-entry-only creation. The selected first
+  increment keeps serial execution and requires a source/new-store migration
+  ([durable programming](future/durable-programming.md)). Current `place`, field
+  creation and commit-time required-missing behavior remain implemented until
+  that vertical change lands.
+- Local reader/writer overlap and served execution with several terminals and
+  public paths. The selected one-store model keeps mutating invocations serial
   ([served execution](future/served-execution.md)).
 - Path authority: principals and grants finer than read and write
   ([path effects and authority](future/path-effects-and-authority.md)).

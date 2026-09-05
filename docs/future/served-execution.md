@@ -19,10 +19,26 @@ revocation state is monotonic: an application write cannot reduce it, and
 restoring an old store cannot resurrect it. Revocation takes effect for
 in-flight invocations.
 
-Concurrent invocations need isolation, conflict handling, retries, and
-idempotency. Cancellation, disconnects, and non-retryable host effects each
-have a defined outcome. Running invocations drain before a new image is
-activated. Failure, audit, readiness, and recovery are bounded.
+One machine owns one store and one commit stream. Mutating invocations run one
+at a time, with admission before their first durable read and ownership through
+return. Reads before a transaction block belong to that same invocation.
+Helpers share its block; there is no read-to-write upgrade or nested writer.
+The runtime infers the invocation's mode from verified operations.
+
+After the serial language increment, local read-only invocations can overlap a
+writer using one committed snapshot per invocation. Snapshot acquisition orders
+against the commit verdict; it may wait at admission, and the admitted reader
+then retains its view. Pinning an older view must apply backpressure before
+unbounded committed history accumulates. Commit uncertainty closes admission
+and retains store custody until every old view drains. The owned-view seam and
+its physical retention cost require a prototype before this overlap ships.
+
+Invocations run once. A lost reply does not imply rollback or authorize replay.
+Applications use ordinary durable progress when duplicate non-idempotent work
+must be recognized. Cancellation and disconnects cannot reverse committed work.
+Running invocations drain before a new image is activated. Transport capacity
+includes pending responses, so stalled output cannot create an unbounded queue.
+Failure, audit, readiness, and recovery are bounded.
 
 A transport adapter decodes values, invokes an export, and encodes the result.
 It owns no source semantics, physical key, or route-local authorization.
@@ -61,6 +77,7 @@ independently authenticated terminals without rewriting its durable declarations
 or ordinary business functions. If transport or concurrency requires such a
 rewrite, the local-to-served continuity hypothesis has failed.
 
-Replication, consensus, failover, rolling mixed-version deployment, broad
-online evolution, and high availability are separate work after the first
-served profile.
+Several terminals address that same store owner. Parallel mutating bodies,
+reservations and automatic job execution are not prerequisites. Replication,
+consensus, several stores, failover, rolling mixed-version deployment, broad
+online evolution, and high availability are out of scope for this profile.
