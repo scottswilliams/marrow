@@ -68,7 +68,7 @@ test "an optional return takes a default" {
 
 ## Functions
 
-Parameters are named and typed. An omitted return type means the function returns no value. Every reachable path of a value-returning function returns (`check.type`). A function with no return type is called as a statement. A value-returning function may also be called as a statement when its result is unused.
+Parameters are named and typed, and each parameter name is declared once; a repeat is a `check.name_conflict` at the repeated name. An omitted return type means the function returns no value. Every reachable path of a value-returning function returns (`check.type`). A function with no return type is called as a statement. A value-returning function may also be called as a statement when its result is unused.
 
 Project and generic functions take positional arguments. A named argument to a function is a `check.type` error; struct and resource constructors name their fields ([source and syntax](source-and-syntax.md)).
 
@@ -101,7 +101,7 @@ There is one kind of function. Any body may read or write a durable place. A fun
 
 ## Generic functions
 
-A function may take type parameters in angle brackets after its name. Each parameter names a type usable in the signature and in the body's annotations:
+A function may take type parameters in angle brackets after its name. Each parameter names a type usable in the signature and in the body's annotations, and each name is declared once (`check.name_conflict` at a repeat):
 
 ```mw
 module docs::modules::generics

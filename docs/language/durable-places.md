@@ -55,7 +55,9 @@ keys and report `check.unsupported`.
 A root may take several key components. `store ^copies[isbn: string, number: int]:
 Copy` names one entry by the whole tuple, `^copies[isbn, number]`, in
 declaration order. Every read and write supplies one operand per component. A
-key tuple has at most 8 components. `for` iterates one key component, so a
+key tuple has at most 8 components, each with its own name; a component that
+repeats another, or the name of a member of the resource, is a
+`check.name_conflict` at that component. `for` iterates one key component, so a
 composite-keyed layer is addressed and not iterated
 ([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 

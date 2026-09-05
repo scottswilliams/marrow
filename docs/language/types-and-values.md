@@ -210,8 +210,9 @@ test "a struct is built by name" {
 }
 ```
 
-A struct is constructed by naming every field once, in any order. A field is
-read with `.` and yields the field's type. A `var` binding assigns a field with
+A struct declares each field name once; a repeated name is a
+`check.name_conflict` at the repeat. A struct is constructed by naming every
+field once, in any order. A field is read with `.` and yields the field's type. A `var` binding assigns a field with
 `s.to = Point(x: 1, y: 1)`. A field may name a struct or enum declared anywhere in
 the project, including later in the same file and in another module. A value type that contains itself, directly or through other types,
 is a `check.recursion` naming the cycle. Two structs have no `==`; compare their
@@ -264,8 +265,10 @@ once and binds a payload positionally; it is described under
 [control flow](control-flow.md#match).
 
 A declared payload field is a scalar. A struct or enum reaches a payload through
-a type parameter of a [generic enum](#generic-types). An enum name is
-project-wide, like a struct name.
+a type parameter of a [generic enum](#generic-types). An enum declares each
+member once, and a member declares each payload field once; a repeat is a
+`check.name_conflict` at the repeated name. An enum name is project-wide, like a
+struct name.
 
 ## Option and Result
 
@@ -477,8 +480,10 @@ test "type arguments are inferred" {
 }
 ```
 
-A generic value is constructed with the ordinary spelling, and the type arguments
-are inferred from the field or payload values. A parameter that no value
+The type parameters of one declaration have distinct names, as do its fields
+or members; a repeat is a `check.name_conflict` at the repeated name. A generic
+value is constructed with the ordinary spelling, and the type arguments are
+inferred from the field or payload values. A parameter that no value
 determines is a `check.type` at the construction. An annotation names an
 application directly: `Pair<int, string>`, `Box<int>`.
 
