@@ -26,7 +26,7 @@ use marrow_syntax::{
 use crate::analysis::FileRef;
 use crate::diag::SourceDiagnostic;
 use crate::scalar::ScalarType;
-use crate::types::{GenericInvariant, RecordInfo, TypeRegistry};
+use crate::types::{GenericInvariant, RecordInfo, ResolveError, ResolveRefusal, TypeRegistry};
 /// A typed handle to one admitted `resource` declaration: a row index into the
 /// [`ResourceDirectory`] that minted it, rather than a narrowed ordinal, and never on
 /// the wire.
@@ -45,6 +45,7 @@ pub(super) struct ResourceDeclId(usize);
 /// `DurableRegistry::build` receives, so this row narrows what the build reads without
 /// putting the declaration out of reach.
 pub(super) struct ResourceRow<'a> {
+    pub(super) file: &'a FileIdentity,
     pub(super) record: &'a RecordInfo,
     pub(super) groups: Vec<GroupRow<'a>>,
 }
@@ -70,7 +71,7 @@ pub(super) struct ResourceDirectory<'a> {
 
 impl<'a> ResourceDirectory<'a> {
     pub(super) fn take(
-        resources: &[(FileRef, FileIdentity, &'a ResourceDecl)],
+        resources: &'a [(FileRef, FileIdentity, &'a ResourceDecl)],
         records: &'a TypeRegistry,
     ) -> Result<Self, GenericInvariant> {
         // The declare pass already paired every admitted record with the declaration it was
@@ -115,8 +116,9 @@ impl<'a> ResourceDirectory<'a> {
             }
             let id = ResourceDeclId(rows.len());
             rows.push(ResourceRow {
+                file,
                 record,
-                groups: group_rows(file, records, &record.name, &decl.members),
+                groups: group_rows(file, records, &record.name, &decl.members)?,
             });
             by_spelling.insert(record.name.as_str(), id);
         }
@@ -170,7 +172,7 @@ impl<'a> StoreRow<'a> {
         store: &'a StoreDecl,
         records: &TypeRegistry,
         file: &FileIdentity,
-    ) -> Self {
+    ) -> Result<Self, GenericInvariant> {
         let resource = store.resource.as_str();
         let binding = match directory.lookup(resource) {
             Some(id) => StoreResourceBinding::Accepted(id),
@@ -184,13 +186,13 @@ impl<'a> StoreRow<'a> {
             &store.root.keys,
             file,
             records,
-        );
-        Self {
+        )?;
+        Ok(Self {
             resource,
             binding,
             indexes: IndexTable::take(&store.indexes),
             keys,
-        }
+        })
     }
 
     /// The census key this store counts under: the Product it binds, or its written spelling.
@@ -421,15 +423,15 @@ impl<'a> KeyTable<'a> {
         keys: &'a [KeyParam],
         file: &FileIdentity,
         records: &TypeRegistry,
-    ) -> Self {
+    ) -> Result<Self, GenericInvariant> {
         #[cfg(test)]
         crate::types::bump_key_table_construction();
-        let resolution = resolve_key_columns(file, owner.span(), keys, records);
-        Self {
+        let resolution = resolve_key_columns(file, owner.span(), keys, records)?;
+        Ok(Self {
             owner,
             declared_width: keys.len(),
             resolution,
-        }
+        })
     }
 
     /// This tuple's admission verdict, and on admission every column a consumer reads.
@@ -548,25 +550,27 @@ fn group_rows<'a>(
     records: &TypeRegistry,
     container: &str,
     members: &'a [ResourceMember],
-) -> Vec<GroupRow<'a>> {
+) -> Result<Vec<GroupRow<'a>>, GenericInvariant> {
     let mut rows = Vec::new();
     for member in members {
         let ResourceMember::Group(group) = member else {
             continue;
         };
         let path = format!("{container}.{}", group.name);
-        let keys = (!group.keys.is_empty()).then(|| {
-            KeyTable::take(
-                KeyOwner::Member {
-                    path: path.clone(),
-                    span: group.span,
-                },
-                &group.keys,
-                file,
-                records,
-            )
-        });
-        let groups = group_rows(file, records, &path, &group.members);
+        let keys = (!group.keys.is_empty())
+            .then(|| {
+                KeyTable::take(
+                    KeyOwner::Member {
+                        path: path.clone(),
+                        span: group.span,
+                    },
+                    &group.keys,
+                    file,
+                    records,
+                )
+            })
+            .transpose()?;
+        let groups = group_rows(file, records, &path, &group.members)?;
         rows.push(GroupRow {
             name: &group.name,
             fields: group
@@ -586,7 +590,7 @@ fn group_rows<'a>(
             groups,
         });
     }
-    rows
+    Ok(rows)
 }
 /// Resolve each declared key column in tuple order, rejecting a key type outside the
 /// closed orderable durable-key set. A singleton placement has no columns and yields
@@ -603,11 +607,20 @@ fn resolve_key_columns<'a>(
     span: SourceSpan,
     keys: &'a [KeyParam],
     records: &TypeRegistry,
-) -> Result<Vec<KeyColumnRow<'a>>, Box<SourceDiagnostic>> {
+) -> Result<Result<Vec<KeyColumnRow<'a>>, Box<SourceDiagnostic>>, GenericInvariant> {
     let mut columns = Vec::with_capacity(keys.len());
     for column in keys {
-        let Some(key) = super::scalar_of(&records.expand(&column.ty)) else {
-            return Err(Box::new(super::unsupported(file, span, "this key type")));
+        let key = match records.scalar_annotation(&column.ty) {
+            Ok(key) => key,
+            Err(ResolveError::Refusal(refusal)) => {
+                let span = match refusal {
+                    ResolveRefusal::RefusedDeclaration(_) => column.ty.span(),
+                    _ => span,
+                };
+                let row = records.scalar_refusal_row(refusal, file, span, "this key type")?;
+                return Ok(Err(Box::new(row)));
+            }
+            Err(ResolveError::Invariant(invariant)) => return Err(invariant),
         };
         // The closed orderable durable-key scalar set (frozen at C04): int, string,
         // bool, bytes, date, and instant. `duration` is a span, not an identity, so
@@ -621,20 +634,20 @@ fn resolve_key_columns<'a>(
                 | ScalarType::Date
                 | ScalarType::Instant
         ) {
-            return Err(Box::new(SourceDiagnostic::at(
+            return Ok(Err(Box::new(SourceDiagnostic::at(
                 marrow_codes::Code::CheckType.as_str(),
                 file,
                 span,
                 "a durable key column must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"
                     .to_string(),
-            )));
+            ))));
         }
         columns.push(KeyColumnRow {
             spelling: column.name.as_str(),
             scalar: key,
         });
     }
-    Ok(columns)
+    Ok(Ok(columns))
 }
 
 #[cfg(test)]

@@ -9,19 +9,19 @@
 use marrow_codes::Code;
 use marrow_project::FileIdentity;
 use marrow_syntax::{
-    ConstDecl, Expression, LiteralKind, SourceSpan, TypeExpr, UnaryOp, decode_string_literal,
+    ConstDecl, Expression, LiteralKind, SourceSpan, UnaryOp, decode_string_literal,
 };
 
 use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
-    DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, DeclareError,
-    ModuleScopedName, refuse, refuse_row,
+    DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName, refuse,
+    refuse_row,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::lower::parse_int;
 use crate::scalar::ScalarType;
-use crate::types::TypeRegistry;
+use crate::types::{BuildError, ResolveError, TypeRegistry};
 
 /// A folded module-constant value: one scalar literal.
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ impl ConstRegistry {
         types: &TypeRegistry,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
-    ) -> Result<Self, DeclareError> {
+    ) -> Result<Self, BuildError> {
         let mut entries: DeclarationLedger<ConstKey, ConstScalar> =
             DeclarationLedger::new(DeclarationNamespace::Constant, budget);
         for (module, at, file, decl) in consts {
@@ -138,10 +138,7 @@ impl ConstRegistry {
                 ));
                 continue;
             }
-            let occurrence = match evaluate(declared, decl, types, diagnostics) {
-                Ok(value) => DeclarationOccurrence::Accepted(value),
-                Err(refusal) => DeclarationOccurrence::Refused(refusal),
-            };
+            let occurrence = evaluate(declared, decl, types, diagnostics)?;
             entries.declare(key, occurrence)?;
         }
         Ok(Self { entries })
@@ -156,25 +153,24 @@ fn evaluate(
     decl: &ConstDecl,
     types: &TypeRegistry,
     diagnostics: &mut DiagnosticCollector,
-) -> Result<ConstScalar, DeclarationRefusalSummary> {
+) -> Result<DeclarationOccurrence<ConstScalar>, BuildError> {
     let Some(expression) = &decl.value else {
-        return Err(unsupported(
+        return Ok(DeclarationOccurrence::Refused(unsupported(
             diagnostics,
             declared,
             declared.span,
             "a constant without a value",
-        ));
+        )));
     };
-    let value = literal_value(declared, expression, diagnostics)?;
+    let value = match literal_value(declared, expression, diagnostics) {
+        Ok(value) => value,
+        Err(refusal) => return Ok(DeclarationOccurrence::Refused(refusal)),
+    };
     if let Some(annotation) = &decl.ty {
-        let annotated = match types.expand(annotation) {
-            TypeExpr::Name { text, .. } => ScalarType::from_spelling(&text),
-            _ => None,
-        };
-        match annotated {
-            Some(scalar) if scalar == value.scalar() => {}
-            Some(scalar) => {
-                return Err(refuse(
+        match types.scalar_annotation(annotation) {
+            Ok(scalar) if scalar == value.scalar() => {}
+            Ok(scalar) => {
+                return Ok(DeclarationOccurrence::Refused(refuse(
                     diagnostics,
                     declared,
                     Code::CheckType.as_str(),
@@ -184,19 +180,22 @@ fn evaluate(
                         scalar.spelling(),
                         value.scalar().spelling()
                     ),
-                ));
+                )));
             }
-            None => {
-                return Err(unsupported(
-                    diagnostics,
-                    declared,
-                    declared.span,
-                    "this constant type",
-                ));
+            Err(ResolveError::Refusal(refusal)) => {
+                let span = match refusal {
+                    crate::types::ResolveRefusal::RefusedDeclaration(_) => annotation.span(),
+                    _ => declared.span,
+                };
+                let row =
+                    types.scalar_refusal_row(refusal, declared.file, span, "this constant type")?;
+                let refusal = refuse_row(diagnostics, declared, row);
+                return Ok(DeclarationOccurrence::Refused(refusal));
             }
+            Err(ResolveError::Invariant(invariant)) => return Err(invariant.into()),
         }
     }
-    Ok(value)
+    Ok(DeclarationOccurrence::Accepted(value))
 }
 
 /// Fold a scalar literal (or a negated integer literal) to its value. The refusal

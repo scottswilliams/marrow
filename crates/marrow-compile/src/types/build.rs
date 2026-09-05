@@ -431,7 +431,7 @@ fn template_enum_variants(
     ok.then_some(variants)
 }
 
-/// Resolve the alias declarations to an alias-free name → target map. A
+/// Resolve the alias declarations to shared global terminal targets. A
 /// duplicate alias name or a collision with a resource name is a
 /// `check.name_conflict`; an alias on a cyclic chain is a `check.recursion`
 /// and does not enter the map.
@@ -442,8 +442,8 @@ pub(super) fn build_alias_table(
     structs: &[(FileRef, FileIdentity, &StructDecl)],
     enums: &[(FileRef, FileIdentity, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<BTreeMap<String, TypeExpr>, DeclareError> {
-    let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
+) -> Result<AliasTable, DeclareError> {
+    let mut raw = BTreeMap::new();
     for (at, file, decl) in aliases {
         let declared = DeclarationSite {
             name: &decl.name,
@@ -463,7 +463,7 @@ pub(super) fn build_alias_table(
             named.declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if raw.contains_key(&decl.name) {
+        if raw.contains_key(&decl.name) || named.declared(&decl.name) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
                 file,
@@ -502,205 +502,49 @@ pub(super) fn build_alias_table(
             ));
             continue;
         }
-        raw.insert(decl.name.clone(), ty.clone());
-    }
-
-    // Report every member of a cyclic component in the existing sorted alias
-    // order, at its declaration.
-    let cyclic_membership = alias_cycle_membership(&raw);
-    let cyclic: Vec<String> = raw
-        .keys()
-        .zip(cyclic_membership)
-        .filter_map(|(name, cyclic)| cyclic.then_some(name.clone()))
-        .collect();
-    #[cfg(test)]
-    bump_alias_cycle(|counts| counts.cyclic_aliases += cyclic.len());
-    for name in &cyclic {
-        #[expect(
-            clippy::expect_used,
-            reason = "lowering bookkeeping: `name` was collected from the alias declaration map being searched, so the lookup finds its declaration"
-        )]
-        let (at, file, decl) = aliases
-            .iter()
-            .find(|(_, _, decl)| &decl.name == name)
-            .expect("cyclic alias came from the declaration list");
-        let refusal = refuse(
-            diagnostics,
-            DeclarationSite {
-                name,
-                file,
-                at: *at,
-                span: decl.name_span,
+        #[cfg(test)]
+        bump_alias_cycle(|counts| counts.target_visits += 1);
+        let target = match ty {
+            TypeExpr::Name { text, .. } => Some((text.as_str(), AliasPresence::Bare)),
+            TypeExpr::Optional { inner, .. } => match inner.as_ref() {
+                TypeExpr::Name { text, .. } => Some((text.as_str(), AliasPresence::Optional)),
+                _ => None,
             },
-            Code::CheckRecursion.as_str(),
-            format!("alias `{name}` is part of a cyclic alias chain"),
+            _ => None,
+        };
+        let Some((target, presence)) = target else {
+            let refusal = refuse_row(
+                diagnostics,
+                DeclarationSite {
+                    span: decl.span,
+                    ..declared
+                },
+                unsupported(
+                    file,
+                    decl.span,
+                    &format!("the target type of alias `{}`", decl.name),
+                ),
+            );
+            named.declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+            continue;
+        };
+        raw.insert(
+            decl.name.clone(),
+            AliasInput {
+                at: *at,
+                file,
+                decl,
+                target,
+                presence,
+            },
         );
-        named.declare(name.clone(), DeclarationOccurrence::Refused(refusal))?;
-        raw.remove(name);
     }
 
-    // The survivors are acyclic; expand each target to alias-free form. Whether
-    // each one is accepted or refused is settled by `validate_alias_targets`, which
-    // is where an alias over an unknown target is reported.
-    let expanded: BTreeMap<String, TypeExpr> = raw
-        .keys()
-        .map(|name| (name.clone(), expand_in(&raw, &raw[name])))
-        .collect();
-    Ok(expanded)
+    AliasTable::normalize(named, raw, diagnostics)
 }
 
-/// Classify cyclic aliases with two iterative graph passes. Node indices follow
-/// the alias table's sorted key order; graph order never owns diagnostics.
-fn alias_cycle_membership(table: &BTreeMap<String, TypeExpr>) -> Vec<bool> {
-    let node_count = table.len();
-    let node_by_name: BTreeMap<&str, usize> = table
-        .keys()
-        .enumerate()
-        .map(|(node, name)| (name.as_str(), node))
-        .collect();
-    let mut adjacency = vec![Vec::new(); node_count];
-    let mut reverse = vec![Vec::new(); node_count];
-    let mut self_edges = vec![false; node_count];
-
-    for (source, target) in table.values().enumerate() {
-        referenced_names(target, &mut |name| {
-            let Some(&destination) = node_by_name.get(name) else {
-                return;
-            };
-            adjacency[source].push(destination);
-            reverse[destination].push(source);
-            self_edges[source] |= source == destination;
-            #[cfg(test)]
-            bump_alias_cycle(|counts| counts.resolved_edges += 1);
-        });
-    }
-
-    let finishing_order = alias_graph_finishing_order(&adjacency);
-    let mut assigned = vec![false; node_count];
-    let mut cyclic = vec![false; node_count];
-    let mut stack = Vec::new();
-    let mut component = Vec::new();
-
-    for root in finishing_order.into_iter().rev() {
-        if assigned[root] {
-            continue;
-        }
-        assigned[root] = true;
-        stack.push(root);
-        #[cfg(test)]
-        bump_alias_cycle(|counts| counts.node_entries += 1);
-
-        while let Some(node) = stack.pop() {
-            component.push(node);
-            for &next in &reverse[node] {
-                #[cfg(test)]
-                bump_alias_cycle(|counts| counts.edge_inspections += 1);
-                if !assigned[next] {
-                    assigned[next] = true;
-                    stack.push(next);
-                    #[cfg(test)]
-                    bump_alias_cycle(|counts| counts.node_entries += 1);
-                }
-            }
-        }
-
-        let component_is_cyclic = component.len() > 1 || self_edges[component[0]];
-        if component_is_cyclic {
-            for node in component.drain(..) {
-                cyclic[node] = true;
-            }
-        } else {
-            component.clear();
-        }
-    }
-
-    cyclic
-}
-
-/// Iterative depth-first postorder for the first Kosaraju pass.
-fn alias_graph_finishing_order(adjacency: &[Vec<usize>]) -> Vec<usize> {
-    let mut entered = vec![false; adjacency.len()];
-    let mut order = Vec::with_capacity(adjacency.len());
-    let mut stack: Vec<(usize, usize)> = Vec::new();
-
-    for root in 0..adjacency.len() {
-        if entered[root] {
-            continue;
-        }
-        entered[root] = true;
-        stack.push((root, 0));
-        #[cfg(test)]
-        bump_alias_cycle(|counts| counts.node_entries += 1);
-
-        while let Some((node, next_edge)) = stack.last_mut() {
-            let Some(&next) = adjacency[*node].get(*next_edge) else {
-                order.push(*node);
-                stack.pop();
-                continue;
-            };
-            *next_edge += 1;
-            #[cfg(test)]
-            bump_alias_cycle(|counts| counts.edge_inspections += 1);
-            if !entered[next] {
-                entered[next] = true;
-                stack.push((next, 0));
-                #[cfg(test)]
-                bump_alias_cycle(|counts| counts.node_entries += 1);
-            }
-        }
-    }
-
-    order
-}
-
-/// Visit every type name a target mentions. `referenced_names` and `expand_in`
-/// walk the same structure; keeping the traversal here keeps them aligned.
-fn referenced_names<'t>(ty: &'t TypeExpr, visit: &mut impl FnMut(&'t str)) {
-    #[cfg(test)]
-    bump_alias_cycle(|counts| counts.target_visits += 1);
-    match ty {
-        TypeExpr::Name { text, .. } => visit(text),
-        TypeExpr::Optional { inner, .. } => referenced_names(inner, visit),
-        TypeExpr::Apply { args, .. } => {
-            for arg in args {
-                referenced_names(arg, visit);
-            }
-        }
-        TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => {}
-    }
-}
-
-/// Expand a target over an acyclic raw table (build-time twin of
-/// [`TypeRegistry::expand`], which reads the finished alias-free map).
-fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
-    match ty {
-        TypeExpr::Name { text, .. } => match table.get(text) {
-            Some(target) => expand_in(table, target),
-            None => ty.clone(),
-        },
-        TypeExpr::Optional { inner, span } => TypeExpr::Optional {
-            inner: Box::new(expand_in(table, inner)),
-            span: *span,
-        },
-        TypeExpr::Apply {
-            head,
-            head_span,
-            args,
-            span,
-        } => TypeExpr::Apply {
-            head: head.clone(),
-            head_span: *head_span,
-            args: args.iter().map(|arg| expand_in(table, arg)).collect(),
-            span: *span,
-        },
-        TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => ty.clone(),
-    }
-}
-
-/// Every alias must denote a known type, used or not: its expansion is a scalar,
-/// the record type, or one optional over either. An unknown name is a
-/// `check.type` at the alias; a well-formed but unadmitted shape is a
-/// `check.unsupported`.
+/// Validate global targets after concrete declarations have their fill verdicts.
+/// An unknown target is `check.type`; a refused declaration retains its cause.
 pub(super) fn validate_alias_targets(
     registry: &mut TypeRegistry,
     aliases: &[(FileRef, FileIdentity, &AliasDecl)],
@@ -708,7 +552,7 @@ pub(super) fn validate_alias_targets(
 ) -> Result<(), DeclareError> {
     let mut refused: Vec<String> = Vec::new();
     for (at, file, decl) in aliases {
-        let Some(expanded) = registry.aliases.get(&decl.name) else {
+        let Some(target) = registry.aliases.get(&decl.name) else {
             continue; // duplicate or cyclic: already reported
         };
         let declared = DeclarationSite {
@@ -717,50 +561,28 @@ pub(super) fn validate_alias_targets(
             at: *at,
             span: decl.span,
         };
-        let head = match expanded {
-            TypeExpr::Optional { inner, .. } => inner.as_ref(),
-            other => other,
-        };
-        let refusal = match head {
-            TypeExpr::Name { text, .. } => {
-                if ScalarType::from_spelling(text).is_none()
-                    && registry.by_name(text).is_none()
-                    && registry.nominal_by_name(text).is_none()
-                    && registry.struct_by_name(text).is_none()
-                    && registry.enum_by_name(text).is_none()
-                {
-                    // The target names nothing this alias can expand to. Whether that
-                    // is a genuine absence or a declaration this project wrote and the
-                    // compiler refused is the ledger's answer, never this pass's: a
-                    // refused target is steered to its own cause, because telling the
-                    // reader the name is unknown when it is declared two lines above
-                    // is the fabricated absence the declaration ledger exists to kill.
-                    Some(match registry.named.lookup(text.as_str())? {
-                        Binding::Refused(_, summary) => refuse_row(
-                            diagnostics,
-                            declared,
-                            declaration_refused(file, decl.span, summary),
-                        ),
-                        Binding::Accepted(_) | Binding::Absent => refuse(
-                            diagnostics,
-                            declared,
-                            Code::CheckType.as_str(),
-                            format!("alias `{}` does not name a known type: `{text}`", decl.name),
-                        ),
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => Some(refuse_row(
-                diagnostics,
-                declared,
-                unsupported(
-                    file,
-                    decl.span,
-                    &format!("the target type of alias `{}`", decl.name),
+        let text = target.name;
+        let refusal = if ScalarType::from_spelling(text).is_none()
+            && registry.by_name(text).is_none()
+            && registry.nominal_by_name(text).is_none()
+            && registry.struct_by_name(text).is_none()
+            && registry.enum_by_name(text).is_none()
+        {
+            Some(match registry.named.lookup(text)? {
+                Binding::Refused(_, summary) => refuse_row(
+                    diagnostics,
+                    declared,
+                    declaration_refused(file, decl.span, summary),
                 ),
-            )),
+                Binding::Accepted(_) | Binding::Absent => refuse(
+                    diagnostics,
+                    declared,
+                    Code::CheckType.as_str(),
+                    format!("alias `{}` does not name a known type: `{text}`", decl.name),
+                ),
+            })
+        } else {
+            None
         };
         let occurrence = match refusal {
             Some(refusal) => {
@@ -771,10 +593,8 @@ pub(super) fn validate_alias_targets(
         };
         registry.named.declare(decl.name.clone(), occurrence)?;
     }
-    // A refused alias leaves the expansion table, so a use of its name stops
-    // expanding to the target that could not be resolved and reaches the ledger
-    // instead. Without this the use would resolve the unknown *target* spelling and
-    // be told that name is missing, blaming a name the source never wrote.
+    // Uses of a refused alias reach its own ledger cause, preserving the name
+    // the annotation actually wrote rather than blaming the terminal spelling.
     for name in refused {
         registry.aliases.remove(&name);
     }
@@ -783,7 +603,7 @@ pub(super) fn validate_alias_targets(
 
 /// Resolve the nominal type declarations against the aliases already installed
 /// in `registry`. A name collision with an alias, resource, or earlier nominal
-/// is a `check.name_conflict`; a base that does not expand to `int` is a
+/// is a `check.name_conflict`; a base that does not denote `int` is a
 /// `check.unsupported`; a non-literal, stepped, or empty interval is a
 /// `check.type`; the capability list must draw from the closed set without
 /// repeats. A declaration with a defect is dropped whole rather than admitted
@@ -796,7 +616,7 @@ pub(super) fn build_nominals(
     structs: &[(FileRef, FileIdentity, &StructDecl)],
     enums: &[(FileRef, FileIdentity, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<NominalInfo>, DeclareError> {
+) -> Result<Vec<NominalInfo>, BuildError> {
     let mut built: Vec<NominalInfo> = Vec::new();
     for (at, file, decl) in nominals {
         let declared = DeclarationSite {
@@ -842,9 +662,9 @@ pub(super) fn build_nominals(
             ));
             continue;
         }
-        let refused = match scalar_of(&registry.expand(base)) {
-            Some(ScalarType::Int) => None,
-            Some(other) => Some(refuse_row(
+        let refused = match registry.scalar_annotation(base) {
+            Ok(ScalarType::Int) => None,
+            Ok(other) => Some(refuse_row(
                 diagnostics,
                 declared,
                 unsupported(
@@ -853,11 +673,17 @@ pub(super) fn build_nominals(
                     &format!("a nominal type over `{}`", other.spelling()),
                 ),
             )),
-            None => Some(refuse_row(
+            Err(ResolveError::Refusal(refusal)) => Some(refuse_row(
                 diagnostics,
                 declared,
-                unsupported(file, base.span(), "this nominal base type"),
+                registry.scalar_refusal_row(
+                    refusal,
+                    file,
+                    base.span(),
+                    "this nominal base type",
+                )?,
             )),
+            Err(ResolveError::Invariant(invariant)) => return Err(invariant.into()),
         };
         if let Some(refusal) = refused {
             registry
@@ -1191,15 +1017,6 @@ fn struct_fields(
             );
             continue;
         }
-        if matches!(registry.expand(&field.ty), TypeExpr::Optional { .. }) {
-            refuse_first(
-                &mut refusal,
-                diagnostics,
-                declared,
-                unsupported(file, field.ty.span(), "an optional struct field type"),
-            );
-            continue;
-        }
         let field_ty = match registry.resolve_garg(
             draft,
             &field.ty,
@@ -1214,7 +1031,11 @@ fn struct_fields(
                     refused,
                     file,
                     field.ty.span(),
-                    "this struct field type",
+                    if registry.optional_annotation(&field.ty) {
+                        "an optional struct field type"
+                    } else {
+                        "this struct field type"
+                    },
                 )? {
                     Some(row) => refuse_first(&mut refusal, diagnostics, declared, row),
                     None => limited = true,
@@ -1490,7 +1311,7 @@ fn enum_payload(
     member: &EnumMember,
     diagnostics: &mut DiagnosticCollector,
     refusal: &mut Option<DeclarationRefusalSummary>,
-) -> Result<Option<EnumPayload>, DeclarationIndexDrift> {
+) -> Result<Option<EnumPayload>, BuildError> {
     let file = declared.file;
     if member.payload.len() > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
         refuse_first(
@@ -1514,25 +1335,20 @@ fn enum_payload(
     let mut scalars = Vec::new();
     let mut ok = true;
     for field in &member.payload {
-        if matches!(registry.expand(&field.ty), TypeExpr::Optional { .. }) {
-            refuse_first(
-                refusal,
-                diagnostics,
-                declared,
-                unsupported(file, field.ty.span(), "an optional enum payload field type"),
-            );
-            ok = false;
-            continue;
-        }
-        let Some(scalar) = scalar_of(&registry.expand(&field.ty)) else {
-            // A payload naming a declaration this project refused is steered to
-            // that cause; only a genuinely unknown or unadmitted spelling is
-            // described as an unsupported payload type.
-            let row =
-                registry.unresolved_member_row(&field.ty, file, "this enum payload field type")?;
-            refuse_first(refusal, diagnostics, declared, row);
-            ok = false;
-            continue;
+        let scalar = match registry.scalar_annotation(&field.ty) {
+            Ok(scalar) => scalar,
+            Err(ResolveError::Refusal(refused)) => {
+                let subject = if registry.optional_annotation(&field.ty) {
+                    "an optional enum payload field type"
+                } else {
+                    "this enum payload field type"
+                };
+                let row = registry.scalar_refusal_row(refused, file, field.ty.span(), subject)?;
+                refuse_first(refusal, diagnostics, declared, row);
+                ok = false;
+                continue;
+            }
+            Err(ResolveError::Invariant(invariant)) => return Err(invariant.into()),
         };
         payload.push(EnumPayloadInfo {
             name: field.name.clone(),

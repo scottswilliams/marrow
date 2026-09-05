@@ -37,7 +37,7 @@ use marrow_image::{
     SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
-use marrow_syntax::{FieldDecl, ResourceDecl, SourceSpan, StoreDecl, TypeExpr};
+use marrow_syntax::{FieldDecl, ResourceDecl, SourceSpan, StoreDecl};
 
 use crate::analysis::FileRef;
 use crate::compile::admitted;
@@ -50,7 +50,7 @@ use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{
-    BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
+    BuildError, GArg, GenericInvariant, ResolveError, TypeMetadataSession, TypeRegistry,
 };
 
 mod rows;
@@ -58,7 +58,7 @@ mod staging;
 
 use rows::{
     GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyColumns, KeyTable, ProductKey,
-    ResourceDirectory, StoreResourceBinding, StoreRow,
+    ResourceDirectory, ResourceRow, StoreResourceBinding, StoreRow,
 };
 use staging::StagedStoreTxn;
 
@@ -718,7 +718,7 @@ impl DurableRegistry {
         let rows: Vec<StoreRow<'_>> = stores
             .iter()
             .map(|(_, file, store)| StoreRow::resolve(&directory, store, records, file))
-            .collect();
+            .collect::<Result<_, _>>()?;
         let census = ProductOccurrenceCensus::take(stores, &rows);
         // The census is the admission owner for durable graph input: it is the one place
         // that knows the whole declaration set before any of it reaches the draft, so it
@@ -1176,11 +1176,8 @@ fn build_one(
     // The refused and absent arms report the same row at the same span: a name that is
     // written but binds no admitted resource is not a resource of this project either
     // way, and steering the refused case to its own cause is a separate change.
-    let (record, group_rows) = match row.binding {
-        StoreResourceBinding::Accepted(bound) => {
-            let bound = directory.row(bound);
-            (bound.record, bound.groups.as_slice())
-        }
+    let resource = match row.binding {
+        StoreResourceBinding::Accepted(bound) => directory.row(bound),
         StoreResourceBinding::Unbound => {
             return refuse(
                 diagnostics,
@@ -1193,6 +1190,8 @@ fn build_one(
             );
         }
     };
+    let record = resource.record;
+    let group_rows = resource.groups.as_slice();
 
     // Compiler-owned enum readiness is validated before the first ledger lookup.
     // This keeps a malformed Ready body out of both contextual Unsupported
@@ -1250,7 +1249,7 @@ fn build_one(
     let built = match draft.product_members(product) {
         Some(members) => Some(ProductDeclarationSource::Held(members)),
         None => resolver
-            .build_product_graph(draft, records, metadata, row.resource, record, group_rows)
+            .build_product_graph(draft, records, metadata, row.resource, resource)
             .map(ProductDeclarationSource::Built),
     };
     if let Some(invariant) = resolver.invariant {
@@ -1874,18 +1873,16 @@ impl<'a> IdentityResolver<'a> {
     /// store-traversal order: a later root over the same Product reads the declaration
     /// the draft already holds, resolving no anchor a second time and minting no second
     /// entry record type for the Product's nested branches.
-    #[allow(clippy::too_many_arguments)]
     fn build_product_graph(
         &mut self,
         draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         product: &str,
-        record: &RecordInfo,
-        groups: &[GroupRow<'_>],
+        resource: &ResourceRow<'_>,
     ) -> Option<Vec<DeclarationMemberDef>> {
         let mut nodes: Vec<DeclarationDraftNode> = Vec::new();
-        for field in &record.fields {
+        for field in &resource.record.fields {
             let shape = DeclarationMemberShape::Field {
                 id: self.resolve(IdentityKind::Field, &format!("{product}.{}", field.name)),
                 required: field.required,
@@ -1909,10 +1906,10 @@ impl<'a> IdentityResolver<'a> {
         }
         self.build_extras(
             &mut nodes,
-            MemberCursor::top(product),
+            MemberCursor::top(product, resource.file),
             draft,
             records,
-            groups,
+            &resource.groups,
         );
         Some(declaration_commands(nodes))
     }
@@ -1963,7 +1960,7 @@ impl<'a> IdentityResolver<'a> {
                 // physical layer keys its family by.
                 let placement = self.resolve(IdentityKind::Root, path);
                 self.name_step(placement, PathSigil::Child, row.name);
-                let keys = self.build_branch_keys(branch_keys);
+                let keys = self.build_branch_keys(branch_keys, cursor.file);
                 // The branch's slot is reserved before its members are walked: its own
                 // members declare it as their parent, and its entry record type is minted
                 // from them, so the shape is completed once the walk returns.
@@ -2002,10 +1999,12 @@ impl<'a> IdentityResolver<'a> {
     /// The key tuple of a branch placement: each column's scalar and its ledger id
     /// anchored at `<branch path>.<column>`. A key type outside the closed orderable
     /// durable-key set is a precise diagnostic and marks the graph incomplete.
-    fn build_branch_keys(&mut self, keys: &KeyTable<'_>) -> Vec<KeyColumn> {
+    fn build_branch_keys(&mut self, keys: &KeyTable<'_>, file: &FileIdentity) -> Vec<KeyColumn> {
         match keys.columns() {
             KeyColumns::OverWide { span, message } => {
-                self.reject_resource_limit(span, message);
+                self.refuse(DurableRefusal::Admission {
+                    row: resource_limit(file, span, message),
+                });
                 Vec::new()
             }
             KeyColumns::Unresolved(row) => {
@@ -2045,15 +2044,15 @@ impl<'a> IdentityResolver<'a> {
     ) -> Vec<FieldDef> {
         if cursor.depth > bounds::MAX_DURABLE_DEPTH {
             if let Some(span) = row.first_member_span {
-                self.reject_resource_limit(span, over_deep_member_message());
+                self.refuse(DurableRefusal::Admission {
+                    row: resource_limit(cursor.file, span, over_deep_member_message()),
+                });
             }
             return Vec::new();
         }
         let mut record_fields = Vec::new();
         for field in &row.fields {
-            if let Some((shape, record_field)) =
-                self.build_field(draft, records, field, cursor.container)
-            {
+            if let Some((shape, record_field)) = self.build_field(draft, records, field, cursor) {
                 nodes.push(DeclarationDraftNode::declared(
                     cursor.parent,
                     DeclarationWireClass::Field,
@@ -2076,23 +2075,41 @@ impl<'a> IdentityResolver<'a> {
         draft: &mut DraftTxn<'_>,
         records: &TypeRegistry,
         field: &FieldDecl,
-        container: &str,
+        cursor: MemberCursor<'_>,
     ) -> Option<(DeclarationMemberShape, FieldDef)> {
         if !field.keys.is_empty() {
-            self.refuse(DurableRefusal::Member {
-                subject: "a keyed field",
-                span: field.span,
+            self.refuse(DurableRefusal::Admission {
+                row: unsupported(cursor.file, field.span, "a keyed field"),
             });
             return None;
         }
-        let Some(scalar) = scalar_of(&records.expand(&field.ty)) else {
-            self.refuse(DurableRefusal::Member {
-                subject: "a non-scalar field of a group or branch",
-                span: field.span,
-            });
-            return None;
+        let scalar = match records.scalar_annotation(&field.ty) {
+            Ok(scalar) => scalar,
+            Err(ResolveError::Refusal(refusal)) => {
+                let span = match refusal {
+                    crate::types::ResolveRefusal::RefusedDeclaration(_) => field.ty.span(),
+                    _ => field.span,
+                };
+                match records.scalar_refusal_row(
+                    refusal,
+                    cursor.file,
+                    span,
+                    "a non-scalar field of a group or branch",
+                ) {
+                    Ok(row) => self.refuse(DurableRefusal::Admission { row }),
+                    Err(invariant) => self.remember_invariant(invariant),
+                }
+                return None;
+            }
+            Err(ResolveError::Invariant(invariant)) => {
+                self.remember_invariant(invariant);
+                return None;
+            }
         };
-        let id = self.resolve(IdentityKind::Field, &format!("{container}.{}", field.name));
+        let id = self.resolve(
+            IdentityKind::Field,
+            &format!("{}.{}", cursor.container, field.name),
+        );
         self.name_step(id, PathSigil::Child, &field.name);
         let member = DeclarationMemberShape::Field {
             id,
@@ -2705,20 +2722,21 @@ fn build_branches(
                 .iter()
                 .zip(&sites.fields)
                 .map(|(field, path)| {
-                    #[expect(
-                        clippy::expect_used,
-                        reason = "checker-classified type: fields admitted to an executable branch were classified as scalars during checking, so expansion yields a scalar"
-                    )]
-                    let scalar = scalar_of(&records.expand(&field.ty))
-                        .expect("an executable branch field is a scalar");
-                    DurableBranchField {
+                    let scalar = match records.scalar_annotation(&field.ty) {
+                        Ok(scalar) => scalar,
+                        Err(ResolveError::Invariant(invariant)) => return Err(invariant),
+                        Err(ResolveError::Refusal(_)) => {
+                            return Err(GenericInvariant::DurableBranchFieldUnresolved);
+                        }
+                    };
+                    Ok(DurableBranchField {
                         name: field.name.clone(),
                         scalar,
                         required: field.required,
                         path: path.clone(),
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<_, GenericInvariant>>()?;
             let branches = build_branches(records, &row.groups, &sites.branches)?;
             Ok(DurableBranch {
                 name: row.name.to_string(),
@@ -2730,13 +2748,6 @@ fn build_branches(
             })
         })
         .collect()
-}
-
-fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {
-    match ty {
-        TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
-        _ => None,
-    }
 }
 
 /// The precise missing/retired-identity diagnostic: the typed `(kind, path)`
@@ -2794,13 +2805,13 @@ fn resource_limit(file: &FileIdentity, span: SourceSpan, message: String) -> Sou
 
 /// Where the durable member walk is: the ordinal of the node whose members are being
 /// appended (`None` at the resource's own level), the nesting level those members
-/// occupy, and the anchor path prefix they extend.
+/// occupy, the anchor path prefix they extend, and their resource's source file.
 ///
-/// The three move together by construction. A member's parent ordinal, its depth, and
-/// its anchor path are one fact about one position in the tree, and a walk that carried
-/// them as three arguments could descend one without the others.
+/// Descending updates the structural position together and retains the resource's
+/// source file, so a member span is never paired with the store's file.
 #[derive(Clone, Copy)]
 struct MemberCursor<'a> {
+    file: &'a FileIdentity,
     parent: Option<usize>,
     depth: usize,
     container: &'a str,
@@ -2809,8 +2820,9 @@ struct MemberCursor<'a> {
 impl<'a> MemberCursor<'a> {
     /// The resource's own members: no parent node, nesting level 1, anchored at the
     /// resource name.
-    fn top(resource: &'a str) -> Self {
+    fn top(resource: &'a str, file: &'a FileIdentity) -> Self {
         Self {
+            file,
             parent: None,
             depth: 1,
             container: resource,
@@ -2821,6 +2833,7 @@ impl<'a> MemberCursor<'a> {
     /// its qualified `path`, one level deeper.
     fn below(self, at: usize, path: &'a str) -> Self {
         Self {
+            file: self.file,
             parent: Some(at),
             depth: self.depth + 1,
             container: path,

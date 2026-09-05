@@ -21,6 +21,13 @@ whose file operations go through `marrow-fs-journal`. The same crate stack
 serves a durable `test` by minting a fresh in-memory store from the verified
 image and discarding it when the test ends.
 
+The compiler retains parser syntax. Its private `types/aliases.rs` owner stores
+each supported alias as a shared global terminal name and optionality. It
+normalizes chains iteratively and refuses unsupported target shapes before
+dependent fills. Type consumers resolve written parameters before aliases and
+carry existing declaration refusals through scalar and value-type checks;
+they do not allocate expanded alias trees.
+
 A tool sees a project through two layers. `marrow-project` is pure: manifest,
 module discovery, and the `.marrow/ids` ledger, all over bytes a caller supplies.
 `marrow-project-fs` reads those bytes from disk under fixed bounds and publishes

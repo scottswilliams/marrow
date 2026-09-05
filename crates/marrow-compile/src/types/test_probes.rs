@@ -224,6 +224,8 @@ pub(super) struct AliasCycleCounts {
     pub(crate) node_entries: usize,
     pub(crate) edge_inspections: usize,
     pub(crate) cyclic_aliases: usize,
+    pub(crate) terminal_rows: usize,
+    pub(crate) terminal_bytes: usize,
 }
 
 thread_local! {
@@ -234,6 +236,8 @@ thread_local! {
             node_entries: 0,
             edge_inspections: 0,
             cyclic_aliases: 0,
+            terminal_rows: 0,
+            terminal_bytes: 0,
         })
     };
 }

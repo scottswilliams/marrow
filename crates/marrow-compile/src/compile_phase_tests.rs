@@ -207,6 +207,8 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
         GenericInvariant::DurableConstructionRefused => "durable construction refused",
         GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
         GenericInvariant::DurableBranchKeyUnresolved => "durable branch key unresolved",
+        GenericInvariant::DurableBranchFieldUnresolved => "durable branch field unresolved",
+        GenericInvariant::ScalarResolutionLimit => "scalar resolution limit",
         GenericInvariant::DeclarationCoordinateMissing(_) => "declaration coordinate missing",
     }
 }

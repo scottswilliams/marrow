@@ -1,9 +1,8 @@
 //! The project named-type registry: transparent aliases and the record type.
 //!
 //! This is the single owner of what a source type name denotes. A transparent
-//! `alias Name = Type` denotes exactly its expansion — it mints no identity and
-//! no constructor — so every annotation classification calls [`TypeRegistry::expand`]
-//! before reading the spelling. A nominal `type Name: int in lo..hi` mints a
+//! `alias Name = Type` shares one globally bound terminal and optionality; it
+//! mints no identity or constructor. Written type parameters resolve locally. A nominal `type Name: int in lo..hi` mints a
 //! distinct type: the registry owns its identity — name, inclusive interval, and
 //! `supports` capability set — while the image records only its base scalar, so
 //! the interval is carried by the guard instructions the compiler emits, not by
@@ -44,6 +43,9 @@ use crate::decl::{
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;
 
+mod aliases;
+use aliases::{AliasInput, AliasTable};
+pub(crate) use aliases::{AliasPresence, GlobalAliasTarget};
 mod build;
 mod decl_coords;
 mod function_index;
@@ -521,6 +523,10 @@ pub(crate) enum GenericInvariant {
     /// that reaches the executable derivation proved every branch admitted — this arm
     /// is the compiler disagreeing with its own admission ordering, not the source.
     DurableBranchKeyUnresolved,
+    /// An executable branch field no longer has the scalar admitted by its builder.
+    DurableBranchFieldUnresolved,
+    /// Scalar annotation lookup cannot spend a generic instantiation budget.
+    ScalarResolutionLimit,
     /// A `struct` or `resource` on a containment cycle has no declaration coordinate.
     ///
     /// The declare pass mints the coordinate in the same statement sequence that
@@ -1333,9 +1339,8 @@ pub(crate) struct TypeRegistry {
     /// compiler refused answers `Refused` at the lookups that would otherwise
     /// report the record as having no such field.
     members: DeclarationLedger<MemberKey, FieldInfo>,
-    /// `alias name -> alias-free expanded target`. Cyclic aliases are reported
-    /// at build and never enter this map.
-    aliases: BTreeMap<String, TypeExpr>,
+    /// Supported aliases share globally bound terminal names and optionality.
+    aliases: AliasTable,
     nominals: Vec<NominalInfo>,
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
@@ -1396,7 +1401,7 @@ impl TypeRegistry {
         Self {
             named: DeclarationLedger::new(DeclarationNamespace::NamedType, budget.clone()),
             members: DeclarationLedger::new(DeclarationNamespace::ResourceMember, budget),
-            aliases: BTreeMap::new(),
+            aliases: AliasTable::default(),
             nominals: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
@@ -1893,12 +1898,12 @@ impl TypeRegistry {
         annotation: &TypeExpr,
         site: MintSite<'_>,
     ) -> Result<GArg, ResolveError> {
-        self.resolve_garg_expanded(draft, &self.expand(annotation), &[], site)
+        self.resolve_garg_annotation(draft, annotation, &[], site)
     }
 
     /// Resolve a type expression under a substitution environment (`param name ->
     /// concrete argument`), used when a generic template body is monomorphized. The
-    /// expression is already alias-expanded.
+    /// expression is the template's written syntax.
     #[inline(always)]
     fn resolve_garg_env(
         &mut self,
@@ -1907,10 +1912,10 @@ impl TypeRegistry {
         subst: &[(String, GArg)],
         site: MintSite<'_>,
     ) -> Result<GArg, ResolveError> {
-        self.resolve_garg_expanded(draft, &self.expand(ty), subst, site)
+        self.resolve_garg_annotation(draft, ty, subst, site)
     }
 
-    fn resolve_garg_expanded(
+    fn resolve_garg_annotation(
         &mut self,
         draft: &mut DraftTxn<'_>,
         ty: &TypeExpr,
@@ -1939,7 +1944,19 @@ impl TypeRegistry {
     ) -> Result<GArg, ResolveError> {
         if let Some((_, arg)) = subst.iter().find(|(name, _)| name == text) {
             Ok(*arg)
-        } else if let Some(scalar) = ScalarType::from_spelling(text) {
+        } else if let Some(target) = self.alias_target(text) {
+            let arg = self.resolve_global_garg(target.name)?;
+            if target.presence == AliasPresence::Optional {
+                return Err(ResolveRefusal::Unsupported.into());
+            }
+            Ok(arg)
+        } else {
+            self.resolve_global_garg(text)
+        }
+    }
+
+    fn resolve_global_garg(&self, text: &str) -> Result<GArg, ResolveError> {
+        if let Some(scalar) = ScalarType::from_spelling(text) {
             Ok(GArg::Scalar(scalar))
         } else if let Some((id, _)) = self.nominal_by_name(text) {
             Ok(GArg::Nominal(id))
@@ -1967,7 +1984,7 @@ impl TypeRegistry {
         let [elem] = args else {
             return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
         };
-        let elem = self.resolve_garg_expanded(draft, &self.expand(elem), subst, site)?;
+        let elem = self.resolve_garg_annotation(draft, elem, subst, site)?;
         Ok(GArg::Collection(self.instantiate_list(draft, elem)?))
     }
 
@@ -1981,9 +1998,9 @@ impl TypeRegistry {
         let [key, value] = args else {
             return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
         };
-        let key = self.resolve_garg_expanded(draft, &self.expand(key), subst, site)?;
+        let key = self.resolve_garg_annotation(draft, key, subst, site)?;
         self.check_map_key_admissibility(key)?;
-        let value = self.resolve_garg_expanded(draft, &self.expand(value), subst, site)?;
+        let value = self.resolve_garg_annotation(draft, value, subst, site)?;
         Ok(GArg::Collection(self.instantiate_map(draft, key, value)?))
     }
 
@@ -1998,7 +2015,7 @@ impl TypeRegistry {
         let template = self.application_template(head)?;
         let mut resolved = Vec::with_capacity(args.len());
         for arg in args {
-            resolved.push(self.resolve_garg_expanded(draft, &self.expand(arg), subst, site)?);
+            resolved.push(self.resolve_garg_annotation(draft, arg, subst, site)?);
         }
         if resolved.len() != self.type_templates[template].type_params.len() {
             return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
@@ -3297,26 +3314,6 @@ impl TypeRegistry {
         self.named.lookup(name)
     }
 
-    /// The row a member position reports when its declared type does not resolve
-    /// to an admitted shape: the causal steer when the annotation names a
-    /// declaration this project refused, and the subset-gap phrase otherwise.
-    ///
-    /// The summary is read out of the same lookup that classified the name, so
-    /// there is no handle to mis-address and no drift arm to swallow.
-    pub(crate) fn unresolved_member_row(
-        &self,
-        ty: &TypeExpr,
-        file: &FileIdentity,
-        subject: &str,
-    ) -> Result<SourceDiagnostic, DeclarationIndexDrift> {
-        if let TypeExpr::Name { text, .. } = ty
-            && let Binding::Refused(_, summary) = self.named.lookup(text.as_str())?
-        {
-            return Ok(declaration_refused(file, ty.span(), summary));
-        }
-        Ok(unsupported(file, ty.span(), subject))
-    }
-
     /// The row a member whose type could not resolve is reported with: the causal
     /// steer when the type names a declaration this project refused, the
     /// subset-gap phrase when the name is genuinely outside the admitted set, and
@@ -3341,6 +3338,19 @@ impl TypeRegistry {
                 Ok(Some(declaration_refused(file, span, summary)))
             }
         }
+    }
+
+    /// Scalar lookup never mints: its refusal must name a source cause, not a
+    /// generic limit whose diagnostic some other phase might have reported.
+    pub(crate) fn scalar_refusal_row(
+        &self,
+        refusal: ResolveRefusal,
+        file: &FileIdentity,
+        span: SourceSpan,
+        subject: &str,
+    ) -> Result<SourceDiagnostic, GenericInvariant> {
+        self.member_refusal_row(refusal, file, span, subject)?
+            .ok_or(GenericInvariant::ScalarResolutionLimit)
     }
 
     /// The accepted members of `owner`, in declaration order.
@@ -3418,39 +3428,38 @@ impl TypeRegistry {
         &self.nominals[id.0 as usize]
     }
 
-    /// The alias-free form of a type annotation: every name that is an alias is
-    /// replaced by its expanded target, structurally, so classification reads
-    /// only scalar spellings and declared type names. Diagnostics stay on the
-    /// caller's annotation span — expansion carries the alias target's spans,
-    /// which point at another declaration.
-    pub(crate) fn expand(&self, ty: &TypeExpr) -> TypeExpr {
+    /// An alias terminal is global: it must never re-enter a caller's parameter environment.
+    pub(crate) fn alias_target(&self, name: &str) -> Option<GlobalAliasTarget<'_>> {
+        self.aliases.get(name)
+    }
+
+    pub(crate) fn scalar_annotation(&self, ty: &TypeExpr) -> Result<ScalarType, ResolveError> {
+        let TypeExpr::Name { text, .. } = ty else {
+            return Err(ResolveRefusal::Unsupported.into());
+        };
+        let target = self.alias_target(text);
+        let name = target.map_or(text.as_str(), |target| target.name);
+        if let Binding::Refused(id, _) = self.named.lookup(name)? {
+            return Err(ResolveRefusal::RefusedDeclaration(id).into());
+        }
+        if target.is_some_and(|target| target.presence == AliasPresence::Optional) {
+            return Err(ResolveRefusal::Unsupported.into());
+        }
+        ScalarType::from_spelling(name).ok_or_else(|| ResolveRefusal::Unsupported.into())
+    }
+
+    pub(crate) fn optional_annotation(&self, ty: &TypeExpr) -> bool {
         match ty {
-            TypeExpr::Name { text, .. } => match self.aliases.get(text) {
-                Some(target) => target.clone(),
-                None => ty.clone(),
-            },
-            TypeExpr::Optional { inner, span } => TypeExpr::Optional {
-                inner: Box::new(self.expand(inner)),
-                span: *span,
-            },
-            TypeExpr::Apply {
-                head,
-                head_span,
-                args,
-                span,
-            } => TypeExpr::Apply {
-                head: head.clone(),
-                head_span: *head_span,
-                args: args.iter().map(|arg| self.expand(arg)).collect(),
-                span: *span,
-            },
-            TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => ty.clone(),
+            TypeExpr::Optional { .. } => true,
+            TypeExpr::Name { text, .. } => self
+                .alias_target(text)
+                .is_some_and(|target| target.presence == AliasPresence::Optional),
+            _ => false,
         }
     }
 
-    /// Build the registry: the alias table (duplicates, resource-name collisions,
-    /// and cycles rejected; targets pre-expanded to alias-free form and validated
-    /// against the known types), then the value types in two passes.
+    /// Normalize alias targets, build nominal and value types, then validate alias
+    /// terminals against the completed declaration set.
     ///
     /// Value types (the resource records, the dense structs, and the closed
     /// enums) are built declare-then-fill: pass one reserves every type's image
@@ -4127,13 +4136,6 @@ impl ValueGraph {
             .collect();
         path.push(self.labels[target].clone());
         Some(path)
-    }
-}
-
-fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {
-    match ty {
-        TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
-        _ => None,
     }
 }
 

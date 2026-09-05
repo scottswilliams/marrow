@@ -1531,11 +1531,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             }
             let got = self.lower_expr(&argument.value)?;
-            let expanded = self.records.expand(&param.ty);
             if let Err(error) = unify_type_param(
                 self.records,
                 &template.type_params,
-                &expanded,
+                &param.ty,
                 got,
                 &mut subst,
             ) {
@@ -2298,9 +2297,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             };
             let got = self.lower_expr(&argument.value)?;
-            let expanded = self.records.expand(field_ty);
-            if let Err(error) = unify_type_param(self.records, &params, &expanded, got, &mut subst)
-            {
+            if let Err(error) = unify_type_param(self.records, &params, field_ty, got, &mut subst) {
                 self.reject_unification(
                     error,
                     argument.value.span(),
@@ -2398,9 +2395,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::Recoverable);
             };
             let got = self.lower_expr(&argument.value)?;
-            let expanded = self.records.expand(field_ty);
-            if let Err(error) = unify_type_param(self.records, &params, &expanded, got, &mut subst)
-            {
+            if let Err(error) = unify_type_param(self.records, &params, field_ty, got, &mut subst) {
                 self.reject_unification(
                     error,
                     argument.value.span(),

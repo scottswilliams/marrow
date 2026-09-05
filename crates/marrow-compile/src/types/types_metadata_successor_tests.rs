@@ -68,7 +68,7 @@ fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
             DeclarationNamespace::ResourceMember,
             DeclarationBudget::default(),
         ),
-        aliases: BTreeMap::new(),
+        aliases: AliasTable::default(),
         nominals: Vec::new(),
         structs: Vec::new(),
         enums: Vec::new(),
@@ -1481,6 +1481,8 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             18
         }
         GenericInvariant::DurableBranchKeyUnresolved => 24,
+        GenericInvariant::DurableBranchFieldUnresolved => 25,
+        GenericInvariant::ScalarResolutionLimit => 26,
         GenericInvariant::DeclarationCoordinateMissing(type_id) => {
             let _ = type_id;
             23

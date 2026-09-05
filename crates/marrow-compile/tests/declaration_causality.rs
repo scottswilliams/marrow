@@ -18,8 +18,8 @@
 //! out of scope — which is the fabrication these fixtures exist to kill.
 
 use marrow_compile::{
-    CompileFailure, DeclarationNamespace, InputRevision, RefusalReport, SourceDiagnostic, analyze,
-    compile,
+    CompileFailure, DeclarationNamespace, InputRevision, RefusalReport, RefusedDeclaration,
+    SourceDiagnostic, analyze, compile,
 };
 use marrow_compile::{ResourceLimitKind, SourceStage};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
@@ -2565,4 +2565,282 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
         .collect::<BTreeSet<String>>(),
         "every kind of report a steer can name is audited",
     );
+}
+
+#[test]
+fn refused_aliases_keep_available_causes_in_scalar_and_concrete_siblings() {
+    let consumers = [
+        (
+            "const value: Bad = 1\npub fn driver(): int { return value }",
+            None,
+        ),
+        (
+            "type Value: Bad in 0..=10\npub fn driver(): int { return 0 }",
+            Some(13),
+        ),
+        (
+            "enum Value { item(value: Bad) }\npub fn driver(): int { return 0 }",
+            Some(26),
+        ),
+        (
+            "struct Value { value: Bad }\npub fn driver(): int { return 0 }",
+            Some(23),
+        ),
+        (
+            "resource R { required value: Bad }\npub fn driver(): int { return 0 }",
+            Some(30),
+        ),
+        (
+            "resource R { required value: int }\nstore ^root[k: Bad]: R\npub fn driver(): int { return 0 }",
+            None,
+        ),
+        (
+            "resource R { entries[k: Bad] { required value: int } }\nstore ^root[k: int]: R\npub fn driver(): int { return 0 }",
+            None,
+        ),
+        (
+            "resource R { values { required value: Bad } }\nstore ^root[k: int]: R\npub fn driver(): int { return 0 }",
+            None,
+        ),
+        (
+            "resource R { entries[k: int] { required value: Bad } }\nstore ^root[k: int]: R\npub fn driver(): int { return 0 }",
+            None,
+        ),
+    ];
+    for (target, code) in [
+        ("Missing", "check.type"),
+        ("Bad", "check.recursion"),
+        ("List<int>", "check.unsupported"),
+    ] {
+        for (consumer, before_validation_column) in consumers {
+            let source = format!("module main\nalias Bad = {target}\n{consumer}\n");
+            let project = with_minted_ids(&[("src/main.mw", source.clone())]);
+            let diagnostics = diagnostics_of(&project);
+            let use_start = source.find(consumer).expect("consumer is present");
+            let annotation_start =
+                use_start + consumer.find("Bad").expect("consumer writes its alias");
+            let before_annotation = &source[..annotation_start];
+            let annotation_span = marrow_syntax::SourceSpan {
+                start_byte: annotation_start,
+                end_byte: annotation_start + "Bad".len(),
+                line: before_annotation
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count() as u32
+                    + 1,
+                column: before_annotation
+                    .rsplit('\n')
+                    .next()
+                    .expect("source prefix")
+                    .len() as u32
+                    + 1,
+            };
+            if target == "Missing"
+                && let Some(column) = before_validation_column
+            {
+                assert_eq!(
+                    rows(&diagnostics),
+                    [
+                        ("src/main.mw", "check.unsupported", 3, column),
+                        ("src/main.mw", "check.type", 2, 1),
+                    ],
+                    "{consumer}: {diagnostics:#?}"
+                );
+                assert!(
+                    diagnostics
+                        .iter()
+                        .all(|row| row.refused_declaration().is_none())
+                );
+                assert_eq!(diagnostics[0].span(), annotation_span);
+                assert_eq!(
+                    diagnostics[1].span(),
+                    marrow_syntax::SourceSpan {
+                        start_byte: 12,
+                        end_byte: 31,
+                        line: 2,
+                        column: 1,
+                    }
+                );
+                continue;
+            }
+            let expected_cause = RefusedDeclaration {
+                namespace: Some(DeclarationNamespace::NamedType),
+                declaring_code: code,
+                report: RefusalReport::AtDeclaration,
+            };
+            let causal = diagnostics.iter().find(|row| {
+                row.file().as_str() == "src/main.mw"
+                    && row.code() == code
+                    && row.span() == annotation_span
+                    && row.refused_declaration() == Some(&expected_cause)
+            });
+            assert!(causal.is_some(), "{target}, {consumer}: {diagnostics:#?}");
+        }
+    }
+}
+
+#[test]
+fn a_refused_alias_in_a_group_field_keeps_its_declaring_file() {
+    let schema =
+        "module schema\nalias Bad = Missing\nresource R { values { required value: Bad } }\n";
+    let main = "module main\nstore ^root[id: int]: R\npub fn driver(): int { return 0 }\n";
+    let project = with_minted_ids(&[
+        ("src/schema.mw", schema.to_string()),
+        ("src/main.mw", main.to_string()),
+    ]);
+    let diagnostics = diagnostics_of(&project);
+    let start = schema.rfind("Bad").expect("field annotation");
+    let expected = RefusedDeclaration {
+        namespace: Some(DeclarationNamespace::NamedType),
+        declaring_code: "check.type",
+        report: RefusalReport::AtDeclaration,
+    };
+    assert!(
+        diagnostics.iter().any(|row| {
+            row.file().as_str() == "src/schema.mw"
+                && row.code() == "check.type"
+                && row.span()
+                    == marrow_syntax::SourceSpan {
+                        start_byte: start,
+                        end_byte: start + 3,
+                        line: 3,
+                        column: 39,
+                    }
+                && row.refused_declaration() == Some(&expected)
+        }),
+        "{diagnostics:#?}"
+    );
+}
+
+fn written_span(source: &str, spelling: &str) -> marrow_syntax::SourceSpan {
+    let start = source.rfind(spelling).expect("written diagnostic owner");
+    let prefix = &source[..start];
+    marrow_syntax::SourceSpan {
+        start_byte: start,
+        end_byte: start + spelling.len(),
+        line: prefix.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1,
+        column: prefix.rsplit('\n').next().expect("line prefix").len() as u32 + 1,
+    }
+}
+
+#[test]
+fn refused_alias_member_and_key_uses_keep_their_own_files() {
+    for (target, code) in [
+        ("Missing", "check.type"),
+        ("Bad", "check.recursion"),
+        ("List<int>", "check.unsupported"),
+    ] {
+        for (member, root_key, early) in [
+            ("required value: Bad", "int", true),
+            ("values { required value: Bad }", "int", false),
+            ("entries[k: int] { required value: Bad }", "int", false),
+            ("entries[k: Bad] { required value: int }", "int", false),
+            ("required value: int", "Bad", false),
+        ] {
+            let aliases = format!("module aliases\nalias Bad = {target}\n");
+            let schema = format!("module schema\n\n\nresource R {{ {member} }}\n");
+            let main = format!(
+                "module main\nstore ^root[id: {root_key}]: R\npub fn driver(): int {{ return 0 }}\n"
+            );
+            let project = with_minted_ids(&[
+                ("src/aliases.mw", aliases),
+                ("src/schema.mw", schema.clone()),
+                ("src/main.mw", main.clone()),
+            ]);
+            let diagnostics = diagnostics_of(&project);
+            let (file, source) = if root_key == "Bad" {
+                ("src/main.mw", &main)
+            } else {
+                ("src/schema.mw", &schema)
+            };
+            let (code, cause) = if early && target == "Missing" {
+                ("check.unsupported", None)
+            } else {
+                (
+                    code,
+                    Some(RefusedDeclaration {
+                        namespace: Some(DeclarationNamespace::NamedType),
+                        declaring_code: code,
+                        report: RefusalReport::AtDeclaration,
+                    }),
+                )
+            };
+            let span = written_span(source, "Bad");
+            let matching: Vec<_> = diagnostics
+                .iter()
+                .filter(|row| row.code() == code && row.span() == span)
+                .collect();
+            assert!(!matching.is_empty(), "{target}, {member}: {diagnostics:#?}");
+            for row in matching {
+                assert_eq!(row.file().as_str(), file, "{target}, {member}");
+                assert_eq!(row.refused_declaration(), cause.as_ref());
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_group_and_branch_field_refusals_keep_the_resource_file() {
+    for field in ["required value: Maybe", "required value[k: int]: int"] {
+        for placement in ["values", "entries[k: int]"] {
+            let schema =
+                format!("module schema\n\n\nresource R {{\n{placement} {{\n{field}\n}}\n}}\n");
+            let project = with_minted_ids(&[
+                (
+                    "src/aliases.mw",
+                    "module aliases\nalias Maybe = int?\n".to_string(),
+                ),
+                ("src/schema.mw", schema.clone()),
+                (
+                    "src/main.mw",
+                    "module main\nstore ^root[id: int]: R\npub fn driver(): int { return 0 }\n"
+                        .to_string(),
+                ),
+            ]);
+            let diagnostics = diagnostics_of(&project);
+            let span = written_span(&schema, field);
+            let row = diagnostics
+                .iter()
+                .find(|row| row.code() == "check.unsupported" && row.span() == span)
+                .unwrap_or_else(|| panic!("{field}, {placement}: {diagnostics:#?}"));
+            assert_eq!(row.file().as_str(), "src/schema.mw");
+            assert_eq!(row.refused_declaration(), None);
+        }
+    }
+}
+
+#[test]
+fn member_shape_bounds_keep_the_resource_file() {
+    let keys = (0..=marrow_image::bounds::MAX_KEY_COLUMNS)
+        .map(|i| format!("k{i}: int"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let branch_head = format!("entries[{keys}] {{");
+    let branch = format!("{branch_head}\nrequired value: int\n}}");
+    let field = "required value: int";
+    let depth = marrow_image::bounds::MAX_DURABLE_DEPTH;
+    let nested = format!(
+        "{}{field}\n{}",
+        "nested {\n".repeat(depth),
+        "}\n".repeat(depth)
+    );
+    for (member, owner) in [(&branch, branch_head.as_str()), (&nested, field)] {
+        let schema = format!("module schema\n\n\nresource R {{\n{member}\n}}\n");
+        let project = with_minted_ids(&[
+            ("src/schema.mw", schema.clone()),
+            (
+                "src/main.mw",
+                "module main\nstore ^root[id: int]: R\npub fn driver(): int { return 0 }\n"
+                    .to_string(),
+            ),
+        ]);
+        let diagnostics = diagnostics_of(&project);
+        let row = diagnostics
+            .iter()
+            .find(|row| row.code() == "check.resource_limit")
+            .unwrap_or_else(|| panic!("{diagnostics:#?}"));
+        assert_eq!(row.span(), written_span(&schema, owner));
+        assert_eq!(row.file().as_str(), "src/schema.mw");
+        assert_eq!(row.refused_declaration(), None);
+    }
 }

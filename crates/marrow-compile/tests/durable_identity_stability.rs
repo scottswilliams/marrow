@@ -453,6 +453,7 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
         (
             "ResourceRow<'a>",
             &[
+                "pub(super) file: &'a FileIdentity,",
                 "pub(super) record: &'a RecordInfo,",
                 "pub(super) groups: Vec<GroupRow<'a>>,",
             ],

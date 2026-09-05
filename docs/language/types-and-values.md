@@ -530,6 +530,13 @@ Aliases chain, and a cycle is a `check.recursion` at each alias on it. An alias
 whose target names no type is a `check.type`, even when unused. An alias is a
 type annotation only and has no constructor.
 
+An alias target is a type name, optionally followed by `?`. The name may be
+another alias, but the complete chain admits at most one optional layer.
+Generic applications and entry identities are not admitted alias targets.
+Names inside an alias bind globally. A generic parameter shadows a same-named
+alias in the generic declaration's written annotations; it does not change
+the meaning of another alias's target.
+
 `type Name: int in lo..hi` declares a nominal type over `int`: a distinct type
 whose every value lies in the declared interval. Unlike a transparent `alias`,
 the name mints its own identity and constructor. An `int` is not a `Name` and a

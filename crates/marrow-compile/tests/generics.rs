@@ -108,6 +108,27 @@ fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, 
     assert_eq!(actual, expected, "{diagnostics:#?}");
 }
 
+#[test]
+fn alias_global_targets_cannot_capture_function_parameters() {
+    for (parameter, return_column) in [("Item", 48), ("T", 42)] {
+        let source = format!(
+            "module main\nstruct Item {{ value: int }}\nalias SavedItem = Item\nfn identity<{parameter}>(x: {parameter}): SavedItem {{ return x }}\npub fn driver(): int {{ return identity(1) }}\n"
+        );
+        let diagnostics = compile_err(&source);
+        assert_diagnostic_sites(
+            &diagnostics,
+            &[("check.type", 4, return_column), ("check.type", 5, 31)],
+        );
+    }
+}
+
+#[test]
+fn written_function_parameters_shadow_aliases() {
+    compile_ok(
+        "module main\nalias T = int\nfn identity<T>(x: T): T { return x }\npub fn driver(): bool { return identity(true) }\n",
+    );
+}
+
 /// The public failure boundary has exactly two externally matchable arms. Source
 /// diagnostics retain their original ordered allocation behind the nonempty owner;
 /// compiler-private causes remain payload-blind to external consumers.
@@ -2105,5 +2126,64 @@ fn a_type_parameter_past_the_u16_domain_does_not_alias_ordinal_zero() {
     assert!(
         has_code(&diagnostics, "check.type"),
         "the position-65,536 parameter must not alias ordinal 0: {diagnostics:#?}",
+    );
+}
+
+#[test]
+fn aliases_and_type_parameters_keep_distinct_bindings_in_type_templates() {
+    for declaration in [
+        "struct Box<T> { value: T }",
+        "enum Box<T> { value(value: T) }",
+    ] {
+        let constructor = if declaration.starts_with("struct") {
+            "Box(value: true)"
+        } else {
+            "Box::value(value: true)"
+        };
+        compile_ok(&format!(
+            "module main\nalias T = int\n{declaration}\npub fn driver(): int {{ const value: Box<bool> = {constructor}\nreturn 0 }}\n"
+        ));
+    }
+    for (declaration, constructor) in [
+        (
+            "struct Box<Item> { local: Item\nsaved: Saved }",
+            "Box(local: true, saved: Item(value: 1))",
+        ),
+        (
+            "enum Box<Item> { value(local: Item, saved: Saved) }",
+            "Box::value(local: true, saved: Item(value: 1))",
+        ),
+    ] {
+        let source = format!(
+            "module main\nstruct Item {{ value: int }}\nalias Direct = Item\nalias Saved = Direct\n{declaration}\npub fn driver(): int {{ const value: Box<bool> = {constructor}\nreturn 0 }}\n"
+        );
+        compile_ok(&source);
+        let diagnostics = compile_err(&source.replace("saved: Item(value: 1)", "saved: false"));
+        assert!(
+            diagnostics.iter().any(|row| row.code() == "check.type"),
+            "{diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn optional_aliases_remain_global_in_generic_function_annotations() {
+    compile_ok(
+        "module main\nstruct Item { value: int }\nalias Saved = Item?\nfn keep<Item>(local: Item): Saved { const saved: Saved = absent\nreturn saved }\npub fn driver(): Item? { return keep(true) }\n",
+    );
+    let diagnostics = compile_err(
+        "module main\nalias Saved = int?\nfn bad<T>(value: Saved?): int { return 0 }\npub fn driver(): int { return 0 }\n",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|row| row.code() == "check.unsupported")
+    );
+}
+
+#[test]
+fn forward_aliases_preserve_all_admitted_global_type_families() {
+    compile_ok(
+        "module main\nalias N = Number\nalias S = Product\nalias E = Choice\nalias R = Record\ntype Number: int in 0..=10\nstruct Product { value: int }\nenum Choice { item(value: int) }\nresource Record { required value: int }\nfn number(value: N): N { return value }\nfn product(value: S): S { return value }\nfn choice(value: E): E { return value }\nfn record(value: R): R { return value }\npub fn driver(): int { return 0 }\n",
     );
 }

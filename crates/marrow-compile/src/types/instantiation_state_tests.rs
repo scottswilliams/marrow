@@ -91,7 +91,7 @@ fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
             DeclarationNamespace::ResourceMember,
             DeclarationBudget::default(),
         ),
-        aliases: BTreeMap::new(),
+        aliases: AliasTable::default(),
         nominals: Vec::new(),
         structs: Vec::new(),
         enums: Vec::new(),
@@ -3675,5 +3675,46 @@ store ^beta[id: int]: Beta
     assert!(
         aborted_rows.is_empty(),
         "a whole-build abort publishes no store's payload, got {aborted_rows:?}",
+    );
+}
+
+#[test]
+fn scalar_consumer_refusal_conversion_preserves_ledger_drift() {
+    let registry = registry(Vec::new());
+    let file = crate::test_file_identity("src/main.mw");
+    let span = SourceSpan::default();
+    let mut diagnostics = DiagnosticCollector::new();
+    let mut constants: DeclarationLedger<String, ()> =
+        DeclarationLedger::new(DeclarationNamespace::Constant, DeclarationBudget::default());
+    let summary = refuse(
+        &mut diagnostics,
+        DeclarationSite {
+            name: "value",
+            file: &file,
+            at: FileRef::admitted(0),
+            span,
+        },
+        Code::CheckType.as_str(),
+        "invalid constant".into(),
+    );
+    constants
+        .declare("value".into(), DeclarationOccurrence::Refused(summary))
+        .expect("within budget");
+    let Binding::Refused(id, _) = constants.lookup("value").expect("constant refusal exists")
+    else {
+        panic!("the constant was refused");
+    };
+    assert_eq!(
+        registry.scalar_refusal_row(
+            ResolveRefusal::RefusedDeclaration(id),
+            &file,
+            span,
+            "this scalar annotation"
+        ),
+        Err(GenericInvariant::DeclarationIndexDrift)
+    );
+    assert_eq!(
+        registry.scalar_refusal_row(ResolveRefusal::Limit, &file, span, "this scalar annotation"),
+        Err(GenericInvariant::ScalarResolutionLimit)
     );
 }

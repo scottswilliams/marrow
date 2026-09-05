@@ -107,23 +107,9 @@ pub(super) fn param_type(
     }
 }
 
-/// Resolve a type annotation into a lowered type, or `None` for an unsupported
-/// spelling. Aliases expand first, so classification reads only scalar spellings
-/// and declared type names; the no-nested-optional rule applies to the expanded
-/// form, so an alias cannot smuggle a doubled optional.
+/// Resolve written annotations with local parameters and globally bound aliases.
+/// Optionality is checked after name resolution, so an alias cannot hide a second layer.
 pub(super) fn resolve_type(
-    records: &mut TypeRegistry,
-    draft: &mut DraftTxn<'_>,
-    durable: &DurableRegistry,
-    annotation: &TypeExpr,
-    env: TypeEnv,
-    site: MintSite<'_>,
-) -> Result<LTy, ResolveError> {
-    let expanded = records.expand(annotation);
-    resolve_expanded(records, draft, durable, &expanded, env, site)
-}
-
-fn resolve_expanded(
     records: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
     durable: &DurableRegistry,
@@ -144,7 +130,9 @@ fn resolve_expanded(
                     ParamBinding::Concrete(arg) => garg_to_lty(arg),
                 });
             }
-            if let Some(scalar) = ScalarType::from_spelling(text) {
+            let target = records.alias_target(text);
+            let text = target.map_or(text.as_str(), |target| target.name);
+            let resolved = if let Some(scalar) = ScalarType::from_spelling(text) {
                 Ok(LTy::bare_scalar(scalar))
             } else if let Some((id, _)) = records.nominal_by_name(text) {
                 Ok(LTy::Nominal {
@@ -170,10 +158,19 @@ fn resolve_expanded(
                     // and only the first may be reported as an unsupported form.
                     None => Err(ResolveError::Refusal(records.unresolved_named_type(text)?)),
                 }
-            }
+            };
+            resolved.map(|ty| {
+                if target
+                    .is_some_and(|target| target.presence == crate::types::AliasPresence::Optional)
+                {
+                    ty.to_optional()
+                } else {
+                    ty
+                }
+            })
         }
         TypeExpr::Optional { inner, .. } => {
-            let inner = resolve_expanded(records, draft, durable, inner, env, site)?;
+            let inner = resolve_type(records, draft, durable, inner, env, site)?;
             if inner.is_optional() {
                 Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
             } else {
@@ -233,7 +230,7 @@ fn resolve_generic(
             let [elem] = args else {
                 return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
             };
-            let elem = resolve_expanded(records, draft, durable, elem, env, site)?
+            let elem = resolve_type(records, draft, durable, elem, env, site)?
                 .as_garg()
                 .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
             Ok(LTy::Collection {
@@ -245,11 +242,11 @@ fn resolve_generic(
             let [key, value] = args else {
                 return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
             };
-            let key = resolve_expanded(records, draft, durable, key, env, site)?
+            let key = resolve_type(records, draft, durable, key, env, site)?
                 .as_garg()
                 .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
             records.check_map_key_admissibility(key)?;
-            let value = resolve_expanded(records, draft, durable, value, env, site)?
+            let value = resolve_type(records, draft, durable, value, env, site)?
                 .as_garg()
                 .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
             Ok(LTy::Collection {
@@ -266,7 +263,7 @@ fn resolve_generic(
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
                 resolved.push(
-                    resolve_expanded(records, draft, durable, arg, env, site)?
+                    resolve_type(records, draft, durable, arg, env, site)?
                         .as_garg()
                         .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?,
                 );
@@ -314,7 +311,7 @@ fn resolve_generic(
 
 /// Structurally unify a generic parameter's declared type against an argument's
 /// inferred type, binding each type parameter to the concrete value type filling
-/// its position. `annotation` is already alias-expanded. Inference is exact: a bare
+/// its position. `annotation` is the written syntax. Inference is exact: a bare
 /// parameter position requires a bare argument (no implicit bare-to-optional
 /// widening), and a concrete named position requires an exactly matching argument. A
 /// conflicting binding or a shape mismatch is an error the caller reports.
@@ -559,15 +556,16 @@ fn unify_apply_with(
     }
 }
 
-/// Resolve a concrete named type (a scalar spelling or a declared nominal/struct/
-/// enum/record) to its bare lowered type without minting into any draft, for
-/// exact-match generic inference.
+/// Resolve a concrete named type or global alias, preserving alias optionality,
+/// without minting into any draft, for exact-match generic inference.
 fn named_type(
     records: &TypeRegistry,
     metadata: &mut TypeMetadataSession<'_>,
     text: &str,
 ) -> Result<Option<LTy>, LowerInvariant> {
-    if let Some(scalar) = ScalarType::from_spelling(text) {
+    let target = records.alias_target(text);
+    let text = target.map_or(text, |target| target.name);
+    let resolved = if let Some(scalar) = ScalarType::from_spelling(text) {
         Ok(Some(LTy::bare_scalar(scalar)))
     } else if let Some((id, _)) = records.nominal_by_name(text) {
         Ok(Some(LTy::Nominal {
@@ -590,7 +588,17 @@ fn named_type(
             }),
             None => None,
         })
-    }
+    };
+    resolved.map(|ty| {
+        ty.map(|ty| {
+            if target.is_some_and(|target| target.presence == crate::types::AliasPresence::Optional)
+            {
+                ty.to_optional()
+            } else {
+                ty
+            }
+        })
+    })
 }
 
 /// The instruction an int ordering comparison lowers to, shared by the bare-int

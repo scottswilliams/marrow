@@ -275,8 +275,8 @@ fn a_keyword_alias_name_is_a_parse_error() {
     assert!(stdout.contains("parse.syntax"), "{stdout}");
 }
 
-/// SCC membership is independent of reachability into a cycle. Generic
-/// application heads are not alias references; only their arguments are.
+/// Cycles distinguish their members from dependent aliases. Unsupported
+/// applications are refused before their names can enter the alias graph.
 #[test]
 fn alias_cycle_membership_order_and_spans_follow_the_alias_owner() {
     let diagnostics = source_diagnostics(
@@ -317,16 +317,17 @@ pub fn f(value: PlainAlias): PlainAlias {
     assert_eq!(
         observed,
         vec![
+            // Unsupported target shapes are refused before dependency normalization.
+            ("check.unsupported", 145, 170, 15, 1),
             ("check.recursion", 25, 30, 3, 7),
             ("check.recursion", 44, 48, 5, 7),
             ("check.recursion", 6, 9, 1, 7),
+            ("check.unsupported", 123, 143, 13, 1),
             // `Tail` names `Alpha`, a declaration this project wrote and the compiler
             // refused for the cycle above. The steer reuses that declaring code; calling
             // the name unknown would fabricate an absence for a name declared four lines
             // up.
             ("check.recursion", 58, 76, 7, 1),
-            ("check.unsupported", 123, 143, 13, 1),
-            ("check.unsupported", 145, 170, 15, 1),
         ],
         "observed diagnostics: {diagnostics:#?}"
     );

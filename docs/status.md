@@ -9,7 +9,7 @@ each behavior.
 | Area | Today | Page |
 |---|---|---|
 | Language core | Modules, functions, generics, `const` and `var`, `if` and `if const`, `match`, `while`, bounded `for`, let-else, `require`, prefix `try`, checked arithmetic, and `test` blocks. Braces delimit blocks. | [Source and syntax](language/source-and-syntax.md), [Control flow](language/control-flow.md) |
-| Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums, `Option` and `Result`, lists and maps, aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
+| Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums, `Option` and `Result`, lists and maps, global name/optional-name aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
 | Resources | Required and sparse fields, groups, keyed branches nested to 16 levels, and local resource values. | [Resources](language/resources.md) |
 | Durable places | Keyed store roots with one or several key components, and several roots per project. Field and whole-entry reads and writes, `exists`, `place`, `delete`, entry identity `Id(^root)`, and each export's access demand from `marrow check`. | [Durable places](language/durable-places.md) |
 | Transactions | One `transaction` block per mutating export. Every `return` inside it commits; a fault rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |

@@ -798,16 +798,17 @@ impl TypeMetadataView<'_> {
             READY_BODY_MATCH_VISITS.with(|count| count.set(count.get() + 1));
             match expected {
                 TypeExpr::Name { text, .. } => {
-                    if let Some(expanded) = self.registry.aliases.get(text) {
-                        pending.push((expanded, actual));
-                        continue;
-                    }
                     if let Some(&index) = param_indices.get(text.as_str()) {
                         if args.get(index).copied() != Some(actual) {
                             return Ok(false);
                         }
                         continue;
                     }
+                    let alias = self.registry.alias_target(text);
+                    if alias.is_some_and(|target| target.presence == AliasPresence::Optional) {
+                        return Ok(false);
+                    }
+                    let text = alias.map_or(text.as_str(), |target| target.name);
                     if let Some(scalar) = ScalarType::from_spelling(text) {
                         if actual != GArg::Scalar(scalar) {
                             return Ok(false);
@@ -819,13 +820,13 @@ impl TypeMetadataView<'_> {
                             .registry
                             .nominals
                             .get(id.0 as usize)
-                            .is_some_and(|info| info.name.as_str() == text.as_str()),
-                        GArg::Struct(id) => scratch.declared_struct(id).is_some_and(|row| {
-                            self.registry.structs[row].name.as_str() == text.as_str()
-                        }),
-                        GArg::Enum(id) => scratch.declared_enum(id).is_some_and(|row| {
-                            self.registry.enums[row].name.as_str() == text.as_str()
-                        }),
+                            .is_some_and(|info| info.name.as_str() == text),
+                        GArg::Struct(id) => scratch
+                            .declared_struct(id)
+                            .is_some_and(|row| self.registry.structs[row].name.as_str() == text),
+                        GArg::Enum(id) => scratch
+                            .declared_enum(id)
+                            .is_some_and(|row| self.registry.enums[row].name.as_str() == text),
                         GArg::Scalar(_) | GArg::Group(_) | GArg::Collection(_) | GArg::Param(_) => {
                             false
                         }

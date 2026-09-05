@@ -306,17 +306,34 @@ fn ready_body_matcher_visits_deep_borrowed_template_once_per_node() {
 }
 
 #[test]
-fn ready_body_matcher_preserves_alias_precedence_over_template_parameters() {
-    let mut alias = BTreeMap::new();
-    alias.insert("Alias".to_string(), name("int"));
+fn ready_body_matcher_preserves_parameter_precedence_over_aliases() {
+    let alias = AliasDecl {
+        docs: Vec::new(),
+        name: "Alias".into(),
+        name_span: SourceSpan::default(),
+        ty: Some(name("int")),
+        span: SourceSpan::default(),
+    };
     let mut alias_template = template("AliasBox", vec![("value", name("Alias"))]);
     alias_template.type_params = vec![("Alias".to_string(), None)];
     let mut registry = registry(vec![alias_template]);
-    registry.aliases = alias;
+    registry.aliases = build_alias_table(
+        &mut registry.named,
+        &[(
+            FileRef::admitted(0),
+            crate::test_file_identity("src/main.mw"),
+            &alias,
+        )],
+        &[],
+        &[],
+        &[],
+        &mut DiagnosticCollector::new(),
+    )
+    .expect("alias normalizes");
     let mut draft = fresh_draft();
     let id = registry
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Text)], site(23))
-        .expect("alias expansion wins before template substitution while minting");
+        .expect("the written parameter wins over the global alias");
     let owner_before = stable_snapshot(&registry);
     let draft_before = draft_snapshot(&draft);
 
@@ -327,12 +344,9 @@ fn ready_body_matcher_preserves_alias_precedence_over_template_parameters() {
         body,
         Ok(Some(InstBody::Struct(ref fields)))
             if fields
-                == &vec![("value".to_string(), GArg::Scalar(ScalarType::Int))]
+                == &vec![("value".to_string(), GArg::Scalar(ScalarType::Text))]
     ));
-    assert_eq!(
-        visits, 2,
-        "the alias name and expanded scalar are visited once"
-    );
+    assert_eq!(visits, 1, "the written parameter is matched once");
     assert_eq!(builds, 1);
     assert_eq!(stable_snapshot(&registry), owner_before);
     assert_eq!(draft_snapshot(&draft), draft_before);
