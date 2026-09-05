@@ -1072,9 +1072,8 @@ pub(crate) struct CheckedProgram {
 
 impl CheckedProgram {
     /// Encode the checked draft into canonical image bytes. This is the single point at
-    /// which a public image-policy bound is consulted; the production projection
-    /// [`Driven::into_built`] and the check projection [`Driven::into_checked`] are its
-    /// only callers.
+    /// which a public image-policy bound is consulted, and the projection-shared
+    /// [`encode`] is its only caller.
     fn encode(self) -> Result<Built, ImagePolicyOutcome> {
         match self.draft.encode() {
             Ok(image) => Ok(Built {
@@ -1100,22 +1099,32 @@ impl From<ImagePolicyOutcome> for CompileFailure {
 }
 
 impl Driven {
-    /// Project the production compile result. The first logically non-empty
-    /// stage in order — parse, then structural, then semantic — is the
-    /// failure, byte-identical to the historical staged early-return (a
-    /// stage's rows are never sorted, deduped, or merged with a later
-    /// stage's, so no cross-stage limit strengthening can occur: a limit
-    /// arises only within the stage whose own collector crossed it). The parse
-    /// and structural stages carry no stage tag: an empty terminal passes over
-    /// and a non-empty one is already the failure, so only a semantic stage can
-    /// reach the tagged empty boundary. A semantic diagnostics terminal that is
-    /// complete and empty is that empty-boundary invariant. A fully clean pass
-    /// yields the image.
+    /// The production compile result: the production projection's checked program,
+    /// encoded.
+    fn into_built(self) -> Result<Built, CompileFailure> {
+        encode(self.production())
+    }
+
+    /// The check result: the complete projection's checked program, encoded.
+    fn into_checked(self) -> Result<Built, CompileFailure> {
+        encode(self.complete())
+    }
+
+    /// The production projection. The first logically non-empty stage in order —
+    /// parse, then structural, then semantic — is the failure, byte-identical to the
+    /// historical staged early-return (a stage's rows are never sorted, deduped, or
+    /// merged with a later stage's, so no cross-stage limit strengthening can occur: a
+    /// limit arises only within the stage whose own collector crossed it). The parse
+    /// and structural stages carry no stage tag: an empty terminal passes over and a
+    /// non-empty one is already the failure, so only a semantic stage can reach the
+    /// tagged empty boundary. A semantic diagnostics terminal that is complete and
+    /// empty is that empty-boundary invariant. A fully clean pass yields the checked
+    /// program.
     ///
     /// An invariant the semantic pass actually discovered is reported before any
     /// stage's findings: it is a compiler-coherence failure over executed work, and a
     /// precheck finding cannot make that work coherent.
-    fn into_built(self) -> Result<Built, CompileFailure> {
+    fn production(self) -> Result<Box<CheckedProgram>, CompileFailure> {
         let Self {
             parse,
             structural,
@@ -1144,16 +1153,15 @@ impl Driven {
         if let Some(failure) = stage_failure(structural) {
             return Err(failure);
         }
-        Ok(checked?.encode()?)
+        checked
     }
 
-    /// Project the check result: the complete diagnostic union the editor snapshot
-    /// reads, resolved under the same precedence, and for a checked program the
-    /// encoded image. The retained editor facts and per-file outline bounds are
-    /// dropped unread: a fact ceiling bounds what a snapshot publishes, and this
-    /// projection publishes none. A capacity stop or a resource limit arrives here
-    /// with no program, so nothing is encoded for it.
-    fn into_checked(self) -> Result<Built, CompileFailure> {
+    /// The check projection: the complete diagnostic union the editor snapshot reads,
+    /// resolved under the same precedence, or the checked program. The retained editor
+    /// facts and per-file outline bounds are dropped unread: a fact ceiling bounds what
+    /// a snapshot publishes, and this projection publishes none. A capacity stop or a
+    /// resource limit arrives here with no program, so nothing is encoded for it.
+    fn complete(self) -> Result<Box<CheckedProgram>, CompileFailure> {
         let Self {
             parse,
             structural,
@@ -1162,12 +1170,19 @@ impl Driven {
             symbol_bounded_files: _,
         } = self;
         match analyze_outcome(parse, structural, semantic) {
-            Analyzed::Checked(program) => Ok(program.encode()?),
+            Analyzed::Checked(program) => Ok(program),
             Analyzed::Diagnostics(diagnostics) => Err(CompileFailure::Diagnostics(diagnostics)),
             Analyzed::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
             Analyzed::Invariant(invariant) => Err(CompileFailure::Invariant(invariant)),
         }
     }
+}
+
+/// The single point at which a checked program becomes an image: both projections
+/// pass through it, so an image-policy verdict is taken here and nowhere else, strictly
+/// after the projection's own failure has been ruled out.
+fn encode(checked: Result<Box<CheckedProgram>, CompileFailure>) -> Result<Built, CompileFailure> {
+    Ok(checked?.encode()?)
 }
 
 /// Parse every module, then analyze the cleanly-parsed ones. A module with a parse
