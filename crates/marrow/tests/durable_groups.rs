@@ -609,3 +609,117 @@ fn a_missing_group_leaf_still_reports_its_group_diagnostic() {
         "the rejection carries a located span",
     );
 }
+
+// --- Complete entries: a group leaf is written through a place proved present. ---
+
+/// The diagnostic codes `SCHEMA` plus `body` compiles to; empty when it compiles.
+fn compile_codes(body: &str) -> Vec<String> {
+    let source = format!("{SCHEMA}\n{body}");
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => Vec::new(),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            diagnostics.iter().map(|d| d.code().to_string()).collect()
+        }
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
+    }
+}
+
+/// A group is present exactly when its entry is present, so a group-leaf write needs the
+/// same presence fact a field write does: the inline `^books[shelf, id].details.pages = p`
+/// with no fact is refused at check time, and the same write through a place inside
+/// `if exists(b)` updates the leaf, keeps the sibling leaf, and compiles without the
+/// absent-entry branch the read-modify-write carries today. Today the inline write
+/// compiles and runs as a silent no-op over an absent entry.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_group_leaf_write_through_a_place_proven_present_updates_the_leaf() {
+    assert_eq!(
+        compile_codes(
+            "pub fn setPagesInline(shelf: int, id: int, p: int) {\n    transaction {\n        \
+             ^books[shelf, id].details.pages = p\n    }\n}\n",
+        ),
+        vec!["check.requires_presence".to_string()],
+        "an unproven group-leaf write is refused at check time",
+    );
+
+    let source = format!(
+        "{SOURCE}\n{}",
+        r#"pub fn setPagesProven(shelf: int, id: int, p: int): bool {
+    transaction {
+        place b = ^books[shelf, id]
+        if exists(b) {
+            b.details.pages = p
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let image = compile_verify(&source, IDS);
+    let proven = image
+        .functions()
+        .iter()
+        .find(|function| function.name() == "setPagesProven")
+        .expect("the proven export is in the image");
+    assert!(
+        !proven
+            .instrs()
+            .iter()
+            .any(|instr| matches!(instr, marrow_verify::SealedInstr::BranchPresent(_))),
+        "a group-leaf write on a proven entry carries no absent-entry branch",
+    );
+
+    let mut store = attach(&image);
+    run(
+        &image,
+        &mut store,
+        "setBook",
+        vec![i(1), i(7), s("Small Gods"), i(381), s("en")],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut store,
+            "setPagesProven",
+            vec![i(1), i(7), i(400)]
+        ),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        as_int(run(&image, &mut store, "readPages", vec![i(1), i(7)])),
+        Some(400),
+        "the leaf is updated"
+    );
+    assert_eq!(
+        as_str(run(&image, &mut store, "readLanguage", vec![i(1), i(7)])),
+        Some("en".to_string()),
+        "the sibling leaf survives"
+    );
+    assert_eq!(
+        run(&image, &mut store, "setPagesProven", vec![i(9), i(9), i(1)]),
+        Some(Value::Bool(false)),
+        "an absent entry fails the guard and nothing is written"
+    );
+    assert_eq!(
+        as_int(run(&image, &mut store, "readPages", vec![i(9), i(9)])),
+        None
+    );
+}

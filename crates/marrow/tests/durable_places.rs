@@ -550,3 +550,172 @@ pub fn edit(n: int, v: int) {
         );
     }
 }
+
+// --- Complete entries: a field write updates an entry the compiler has proved present. ---
+//
+// Every test in this section is red until the B2 complete-entries vertical lands. Each
+// asserts the rule the design predicts through the production capture -> compile path:
+// a field write through a place needs a presence fact that no erase of the entry's
+// family — direct, through another binding, or inside a called helper — has ended, and
+// a required field read through such a place has its declared type.
+
+/// `(code, line, column)` of every diagnostic a source that fails to compile carries.
+fn compile_diagnostics(source: &str) -> Vec<(String, u32, u32)> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => Vec::new(),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
+            .iter()
+            .map(|d| (d.code().to_string(), d.line(), d.column()))
+            .collect(),
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
+    }
+}
+
+/// The 1-based `(line, column)` of the first occurrence of `needle` in `source`.
+fn position_of(source: &str, needle: &str) -> (u32, u32) {
+    let offset = source.find(needle).expect("the needle is in the source");
+    let line = source[..offset].matches('\n').count() as u32 + 1;
+    let column = source[..offset].rsplit('\n').next().map_or(0, str::len) as u32 + 1;
+    (line, column)
+}
+
+/// The refusal a field write without a live presence fact reports.
+const REQUIRES_PRESENCE: &str = "check.requires_presence";
+
+/// A presence fact ends at a call whose composed demand writes the entry's family:
+/// `wipe(n)` erases `^counters[n]` inside the guarded block, so the sparse set after it
+/// is refused at check time with a typed code at the write. Today the program checks
+/// clean and faults at runtime with `run.corruption`.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_sparse_set_after_a_helper_erase_of_the_family_is_refused_at_check() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+fn wipe(n: int) {
+    delete ^counters[n]
+}
+
+pub fn provedThenHelperErase(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            wipe(n)
+            p.label = "after helper erase"
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = \"after helper erase\"");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "the set after the helper erase is refused at the write, with no other report"
+    );
+}
+
+/// A presence fact ends at any erase of the entry's family in the same region, whichever
+/// binding spells it: `delete b` erases the entry `a` was proven for, so the sparse set
+/// through `a` is refused at check time. Today the program checks clean and faults at
+/// runtime with `run.corruption`.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_sparse_set_after_an_erase_through_another_place_is_refused_at_check() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn provedThenAliasErase(n: int): bool {
+    transaction {
+        place a = ^counters[n]
+        place b = ^counters[n]
+        if exists(a) {
+            delete b
+            a.label = "after alias erase"
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "a.label = \"after alias erase\"");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "the set after the erase through the other binding is refused at the write"
+    );
+}
+
+/// Whole-entry assignment is the only way an entry comes into existence: a required
+/// field write on an entry no fact proves present is refused at check time rather than
+/// creating the entry at commit. Today the write compiles to the bare set and the entry
+/// is minted by the commit reconcile.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_field_write_on_an_unproven_entry_is_refused_at_check() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn create(n: int, v: int) {
+    transaction {
+        ^counters[n].value = v
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "^counters[n].value = v");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "a field write never creates an entry; it is refused where no presence fact holds"
+    );
+}
+
+/// A present entry has every required field, so inside `if exists(p)` the required
+/// `p.value` reads as a plain `int`, while the sparse `p.label` stays `string?`. Today
+/// every durable field read is optional and the annotated binding is `check.type`.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_required_field_reads_bare_through_a_place_proven_present() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn valueOf(n: int): int {
+    place p = ^counters[n]
+    if exists(p) {
+        const v: int = p.value
+        const l: string? = p.label
+        return v + len(l ?? "")
+    }
+    return 0
+}
+"#
+    );
+    assert_eq!(
+        compile_diagnostics(&source),
+        Vec::<(String, u32, u32)>::new(),
+        "a required read through a proven place has its declared type"
+    );
+    let image = compile_verify(&source);
+    assert!(has_function(&image, "valueOf"));
+}

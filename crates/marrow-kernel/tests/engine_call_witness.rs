@@ -39,8 +39,9 @@ use common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    DemandCoverage, Durable, DurableStore, InvocationGrant, KernelFault, SessionError, SiteTarget,
-    StoreProjection, StoreSchema, StoreSchemaBuilder,
+    BoundedLimit, CommitResult, DemandCoverage, Durable, DurableStore, EntryValue, InvocationGrant,
+    KernelFault, Presence, SessionError, SiteTarget, StoreProjection, StoreSchema,
+    StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -223,5 +224,122 @@ fn an_in_range_write_advances_the_write_counter() {
     assert!(
         counters.writes() > writes_before,
         "an in-range write must advance the write counter",
+    );
+}
+
+// --- The layer-walk bound class: a family walk costs its bound, not its population. ---
+//
+// Both witnesses are red until the B2 complete-entries vertical relocates entry presence
+// into an ordered family namespace. Today `layer_step` meets every descendant-only
+// sibling in the marker walk and seeks past each one, so a bound on frozen keys is not a
+// bound on engine seeks.
+
+/// A `books` root keyed by string with a required `title`, and a `notes` branch keyed by
+/// int with a required `text`. Site 0 is the root entry, site 1 the branch entry.
+fn layered_schema() -> StoreSchema {
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_branch("notes", vec![ScalarKind::Int]);
+    builder.scalar_field("text", ScalarKind::Str, true);
+    builder.close_branch();
+    builder.finish().expect("the layered schema builds")
+}
+
+fn layered_sites() -> Vec<SiteTarget> {
+    vec![
+        SiteTarget::whole_payload(),
+        SiteTarget::branch_entry(vec![0u16]),
+    ]
+}
+
+fn text_entry(text: &str) -> EntryValue {
+    EntryValue {
+        fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str(text.into())))],
+        groups: Vec::new(),
+    }
+}
+
+/// A counting store whose root family holds `present` books with their own payload and
+/// `descendant_only` books that carry one note each and no payload of their own.
+fn layered_store(
+    present: &[&str],
+    descendant_only: &[&str],
+) -> (DurableStore<CountingEngine>, Counters) {
+    let counters = Counters::new();
+    let mut store = DurableStore::from_projection_with_ceiling(
+        CountingEngine::new(counters.clone()),
+        project(&layered_schema(), layered_sites()),
+        writing_demand(),
+    );
+    {
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), writing_demand())
+            .expect("txn session");
+        let root = txn.site(0);
+        let note = txn.site(1);
+        for key in present {
+            txn.create_entry(&root, &[KeyScalar::Str((*key).into())], text_entry("T"))
+                .expect("create a present book");
+        }
+        for key in descendant_only {
+            txn.create_entry(
+                &note,
+                &[KeyScalar::Str((*key).into()), KeyScalar::Int(7)],
+                text_entry("hi"),
+            )
+            .expect("create a note under an absent book");
+        }
+        assert!(matches!(txn.commit(), CommitResult::Committed));
+    }
+    (store, counters)
+}
+
+fn bound(n: u32) -> BoundedLimit {
+    BoundedLimit::new(n).expect("positive bound")
+}
+
+/// `at most 1` over `[k1 present, k2 and k3 descendant-only, k4 present]` freezes `k1`
+/// and flags `more` in exactly two seeks: one per frozen key plus the one that finds the
+/// `(N + 1)`th present key. Today the walk also seeks past `k2` and `k3` (four seeks),
+/// so the count grows with the descendant-only population the bound never names.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_bounded_layer_walk_costs_the_bound_plus_one_seek_regardless_of_descendant_only_siblings() {
+    let (mut store, counters) = layered_store(&["k1", "k4"], &["k2", "k3"]);
+    let mut txn = store
+        .txn_session(InvocationGrant::full_store(), writing_demand())
+        .expect("txn session");
+    let root = txn.site(0);
+    let before = counters.reads();
+    let frozen = txn
+        .iterate_bounded(&root, &[], None, bound(1))
+        .expect("iterate");
+    let seeks = counters.reads() - before;
+    assert_eq!(frozen.keys, vec![KeyScalar::Str("k1".into())]);
+    assert!(frozen.more, "k4 lies beyond the bound");
+    assert_eq!(
+        seeks, 2,
+        "one seek per frozen key plus the one that flags `on more`, whatever sits between",
+    );
+}
+
+/// A family presence probe over `[a1, a2, a3 descendant-only, a4 present]` answers
+/// `Present` in exactly one seek. Today it seeks past each descendant-only sibling first
+/// (four seeks), so `exists(^books)` costs the population, not the probe.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_family_presence_probe_costs_one_seek_regardless_of_descendant_only_siblings() {
+    let (mut store, counters) = layered_store(&["a4"], &["a1", "a2", "a3"]);
+    let mut txn = store
+        .txn_session(InvocationGrant::full_store(), writing_demand())
+        .expect("txn session");
+    let root = txn.site(0);
+    let before = counters.reads();
+    let populated = txn.family_populated(&root, &[]).expect("probe");
+    let seeks = counters.reads() - before;
+    assert_eq!(populated, Presence::Present);
+    assert_eq!(
+        seeks, 1,
+        "a family probe is one seek into the presence namespace"
     );
 }
