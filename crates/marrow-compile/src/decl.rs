@@ -18,7 +18,7 @@
 
 use std::borrow::Borrow;
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use marrow_codes::Code;
@@ -313,6 +313,59 @@ pub(crate) fn refuse_first(
     match refusal {
         Some(_) => diagnostics.push(row),
         None => *refusal = Some(refuse_row(diagnostics, at, row)),
+    }
+}
+
+/// One layer of declared members, refusing a repeated name at the repeat.
+///
+/// Every namespace of members a declaration opens — a struct's or resource's
+/// fields, an enum's members and one member's payload fields, a type-parameter
+/// list, a parameter list, a key tuple together with the members of the layer it
+/// keys — takes its names through one of these, in declaration order. The first
+/// occurrence keeps the name and the repeat earns the `check.name_conflict` row at
+/// its own name token, so a second slot is never minted for a name the reader
+/// wrote once and no image carries two members of one name for the verifier to
+/// refuse without a span.
+///
+/// The set borrows the names from the declaration it walks; the owner spelling is
+/// rendered into the row, so it is owned.
+pub(crate) struct MemberNamespace<'a> {
+    owner: String,
+    taken: BTreeSet<&'a str>,
+}
+
+impl<'a> MemberNamespace<'a> {
+    /// An empty layer whose rows name `owner`.
+    pub(crate) fn new(owner: impl Into<String>) -> Self {
+        Self {
+            owner: owner.into(),
+            taken: BTreeSet::new(),
+        }
+    }
+
+    /// Give `name` to a member an earlier owner settled without a span to report
+    /// at, so a later declaration in this layer is the repeat.
+    pub(crate) fn occupy(&mut self, name: &'a str) {
+        self.taken.insert(name);
+    }
+
+    /// Claim `name` for the member declared at `span` in `file`, or the row refusing
+    /// it as a repeat.
+    pub(crate) fn claim(
+        &mut self,
+        file: &FileIdentity,
+        name: &'a str,
+        span: SourceSpan,
+    ) -> Result<(), SourceDiagnostic> {
+        if self.taken.insert(name) {
+            return Ok(());
+        }
+        Err(SourceDiagnostic::at(
+            Code::CheckNameConflict.as_str(),
+            file,
+            span,
+            format!("`{}` already declares `{name}`", self.owner),
+        ))
     }
 }
 

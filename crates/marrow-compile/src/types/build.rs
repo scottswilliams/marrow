@@ -139,6 +139,14 @@ pub(super) fn register_type_templates(
             continue;
         }
         let mut refusal = None;
+        refuse_repeated_type_params(
+            file,
+            &decl.name,
+            &decl.type_params,
+            declared,
+            diagnostics,
+            &mut refusal,
+        );
         let fields = template_struct_fields(file, decl, diagnostics, declared, &mut refusal);
         if let Some(fields) = fields.as_ref() {
             for (_, ty) in fields {
@@ -212,6 +220,14 @@ pub(super) fn register_type_templates(
             continue;
         }
         let mut refusal = None;
+        refuse_repeated_type_params(
+            file,
+            &decl.name,
+            &decl.type_params,
+            declared,
+            diagnostics,
+            &mut refusal,
+        );
         let variants = template_enum_variants(file, decl, diagnostics, declared, &mut refusal);
         if let Some(variants) = variants.as_ref() {
             for variant in variants {
@@ -257,6 +273,23 @@ pub(super) fn register_type_templates(
         });
     }
     Ok(())
+}
+
+/// Refuse every type parameter of `owner` that repeats an earlier one, in order.
+fn refuse_repeated_type_params(
+    file: &FileIdentity,
+    owner: &str,
+    params: &[marrow_syntax::TypeParamDecl],
+    declared: DeclarationSite<'_>,
+    diagnostics: &mut DiagnosticCollector,
+    refusal: &mut Option<DeclarationRefusalSummary>,
+) {
+    let mut names = MemberNamespace::new(owner);
+    for param in params {
+        if let Err(row) = names.claim(file, &param.name, param.name_span) {
+            refuse_first(refusal, diagnostics, declared, row);
+        }
+    }
 }
 
 /// The row refusing a generic template's member type that names nothing this
@@ -338,6 +371,7 @@ fn template_struct_fields(
     refusal: &mut Option<DeclarationRefusalSummary>,
 ) -> Option<Vec<(String, TypeExpr)>> {
     let mut fields = Vec::new();
+    let mut names = MemberNamespace::new(&decl.name);
     let mut ok = true;
     for member in &decl.members {
         let ResourceMember::Field(field) = member else {
@@ -350,6 +384,11 @@ fn template_struct_fields(
             ok = false;
             continue;
         };
+        if let Err(row) = names.claim(file, &field.name, field.name_span) {
+            refuse_first(refusal, diagnostics, declared, row);
+            ok = false;
+            continue;
+        }
         if !field.keys.is_empty() {
             refuse_first(
                 refusal,
@@ -400,8 +439,14 @@ fn template_enum_variants(
     refusal: &mut Option<DeclarationRefusalSummary>,
 ) -> Option<Vec<TemplateVariant>> {
     let mut variants = Vec::new();
+    let mut names = MemberNamespace::new(&decl.name);
     let mut ok = true;
     for member in &decl.members {
+        if let Err(row) = names.claim(file, &member.name, member.name_span) {
+            refuse_first(refusal, diagnostics, declared, row);
+            ok = false;
+            continue;
+        }
         if member.category || !member.members.is_empty() {
             refuse_first(
                 refusal,
@@ -416,16 +461,22 @@ fn template_enum_variants(
             ok = false;
             continue;
         }
+        let mut payload_names = MemberNamespace::new(format!("{}.{}", decl.name, member.name));
+        let mut payload = Vec::with_capacity(member.payload.len());
+        for field in &member.payload {
+            if let Err(row) = payload_names.claim(file, &field.name, field.name_span) {
+                refuse_first(refusal, diagnostics, declared, row);
+                ok = false;
+                continue;
+            }
+            payload.push(TemplatePayload {
+                name: field.name.clone(),
+                ty: field.ty.clone(),
+            });
+        }
         variants.push(TemplateVariant {
             name: member.name.clone(),
-            payload: member
-                .payload
-                .iter()
-                .map(|field| TemplatePayload {
-                    name: field.name.clone(),
-                    ty: field.ty.clone(),
-                })
-                .collect(),
+            payload,
         });
     }
     ok.then_some(variants)
@@ -983,6 +1034,7 @@ fn struct_fields(
     let file = declared.file;
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
+    let mut names = MemberNamespace::new(&decl.name);
     let mut refusal = None;
     let mut limited = false;
     for member in &decl.members {
@@ -995,6 +1047,10 @@ fn struct_fields(
             );
             continue;
         };
+        if let Err(row) = names.claim(file, &field.name, field.name_span) {
+            refuse_first(&mut refusal, diagnostics, declared, row);
+            continue;
+        }
         if !field.keys.is_empty() {
             refuse_first(
                 &mut refusal,
@@ -1232,7 +1288,7 @@ fn enum_variants(
     let file = declared.file;
     let mut variants = Vec::new();
     let mut variant_defs = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
+    let mut names = MemberNamespace::new(&decl.name);
     let mut refusal = None;
     for member in &decl.members {
         if member.category {
@@ -1261,21 +1317,10 @@ fn enum_variants(
             );
             continue;
         }
-        if seen.contains(&member.name) {
-            refuse_first(
-                &mut refusal,
-                diagnostics,
-                declared,
-                SourceDiagnostic::at(
-                    Code::CheckNameConflict.as_str(),
-                    file,
-                    member.name_span,
-                    format!("enum member `{}` is already declared", member.name),
-                ),
-            );
+        if let Err(row) = names.claim(file, &member.name, member.name_span) {
+            refuse_first(&mut refusal, diagnostics, declared, row);
             continue;
         }
-        seen.push(member.name.clone());
         let Some((payload, payload_scalars)) =
             enum_payload(registry, declared, member, diagnostics, &mut refusal)?
         else {
@@ -1333,8 +1378,14 @@ fn enum_payload(
     }
     let mut payload = Vec::new();
     let mut scalars = Vec::new();
+    let mut names = MemberNamespace::new(format!("{}.{}", declared.name, member.name));
     let mut ok = true;
     for field in &member.payload {
+        if let Err(row) = names.claim(file, &field.name, field.name_span) {
+            refuse_first(refusal, diagnostics, declared, row);
+            ok = false;
+            continue;
+        }
         let scalar = match registry.scalar_annotation(&field.ty) {
             Ok(scalar) => scalar,
             Err(ResolveError::Refusal(refused)) => {
@@ -1477,6 +1528,10 @@ fn fill_record(
     let type_id = registry.records[index].type_id;
     let mut groups = Vec::new();
     let mut group_slot_defs = Vec::new();
+    // Fields, groups, and branches share the resource's one member layer: a group
+    // or branch is declared here as a name even though its value or placement is
+    // built elsewhere, so a repeat across kinds is refused at the repeat.
+    let mut names = MemberNamespace::new(&resource.name);
     for member in &resource.members {
         match member {
             ResourceMember::Field(field) => {
@@ -1486,18 +1541,8 @@ fn fill_record(
                     at: declared.at,
                     span: field.span,
                 };
-                let occurrence = if registry
-                    .members
-                    .declared(&MemberKey::field(&resource.name, &field.name))
-                {
-                    // Two members of one name have no unambiguous slot in the
-                    // record; the first declaration stands and the repeat is a
-                    // precise rejection rather than a silently dropped member.
-                    DeclarationOccurrence::Refused(refuse_row(
-                        diagnostics,
-                        at,
-                        member_conflict(file, field.span, &resource.name, &field.name),
-                    ))
+                let occurrence = if let Err(row) = names.claim(file, &field.name, field.name_span) {
+                    DeclarationOccurrence::Refused(refuse_row(diagnostics, at, row))
                 } else if field.keys.is_empty() {
                     resource_member(draft, registry, at, field, "this field type", diagnostics)?
                 } else {
@@ -1515,6 +1560,20 @@ fn fill_record(
                     .declare(MemberKey::field(&resource.name, &field.name), occurrence)?;
             }
             ResourceMember::Group(group) if group.keys.is_empty() => {
+                if let Err(row) = names.claim(file, &group.name, group.name_span) {
+                    let at = DeclarationSite {
+                        name: &group.name,
+                        file,
+                        at: declared.at,
+                        span: group.span,
+                    };
+                    let refusal = refuse_row(diagnostics, at, row);
+                    registry.members.declare(
+                        MemberKey::field(&resource.name, &group.name),
+                        DeclarationOccurrence::Refused(refusal),
+                    )?;
+                    continue;
+                }
                 // An unkeyed `group` is a nested sub-record value: its scalar/enum
                 // leaves become a group record type, and the containing value gains one
                 // required slot holding that record. Its durable identity is owned
@@ -1547,10 +1606,23 @@ fn fill_record(
                     fields: leaf_fields,
                 });
             }
-            ResourceMember::Group(_) => {
+            ResourceMember::Group(branch) => {
                 // A keyed `branch` (a `group` with key parameters) is a durable-graph
                 // member, resolved by `durable.rs`; it is an addressed collection, not
-                // part of the materialized value.
+                // part of the materialized value. Its name still occupies this layer.
+                if let Err(row) = names.claim(file, &branch.name, branch.name_span) {
+                    let at = DeclarationSite {
+                        name: &branch.name,
+                        file,
+                        at: declared.at,
+                        span: branch.span,
+                    };
+                    let refusal = refuse_row(diagnostics, at, row);
+                    registry.members.declare(
+                        MemberKey::field(&resource.name, &branch.name),
+                        DeclarationOccurrence::Refused(refusal),
+                    )?;
+                }
             }
         }
     }
@@ -1585,22 +1657,6 @@ fn fill_record(
     info.fields = fields;
     info.groups = groups;
     Ok(())
-}
-
-/// The row rejecting a second member of one name in `owner`, which has no
-/// unambiguous slot in the record the owner materializes.
-fn member_conflict(
-    file: &FileIdentity,
-    span: SourceSpan,
-    owner: &str,
-    member: &str,
-) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckNameConflict.as_str(),
-        file,
-        span,
-        format!("`{owner}` already declares a member `{member}`"),
-    )
 }
 
 /// Resolve one resource member's declared type to the value it binds, or to the
@@ -1676,6 +1732,7 @@ fn build_group_leaves(
 ) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), BuildError> {
     let file = declared.file;
     let anchor = format!("{record}.{}", group.name);
+    let mut names = MemberNamespace::new(anchor.as_str());
     for member in &group.members {
         let field = match member {
             ResourceMember::Field(field) => field,
@@ -1687,19 +1744,18 @@ fn build_group_leaves(
                     span: inner.span,
                 };
                 let key = MemberKey::leaf(record, &group.name, &inner.name);
-                // A member occupies its name whether or not it was accepted, so a
-                // repeat here is a name conflict exactly as it is at a leaf below.
-                // The nested group is refused either way; the repeat is the thing
-                // the reader has to fix first.
-                let row = if registry.members.declared(&key) {
-                    member_conflict(file, inner.span, &anchor, &inner.name)
-                } else {
-                    let what = if inner.keys.is_empty() {
-                        "a nested group"
-                    } else {
-                        "a keyed branch inside a group"
-                    };
-                    unsupported(file, inner.span, what)
+                // The nested group is refused either way; a repeated name is the
+                // thing the reader has to fix first.
+                let row = match names.claim(file, &inner.name, inner.name_span) {
+                    Err(row) => row,
+                    Ok(()) => {
+                        let what = if inner.keys.is_empty() {
+                            "a nested group"
+                        } else {
+                            "a keyed branch inside a group"
+                        };
+                        unsupported(file, inner.span, what)
+                    }
                 };
                 let refusal = refuse_row(diagnostics, at, row);
                 registry
@@ -1714,32 +1770,24 @@ fn build_group_leaves(
             at: declared.at,
             span: field.span,
         };
-        let occurrence =
-            if registry
-                .members
-                .declared(&MemberKey::leaf(record, &group.name, &field.name))
-            {
-                DeclarationOccurrence::Refused(refuse_row(
-                    diagnostics,
-                    at,
-                    member_conflict(file, field.span, &anchor, &field.name),
-                ))
-            } else if field.keys.is_empty() {
-                resource_member(
-                    draft,
-                    registry,
-                    at,
-                    field,
-                    "this group field type",
-                    diagnostics,
-                )?
-            } else {
-                DeclarationOccurrence::Refused(refuse_row(
-                    diagnostics,
-                    at,
-                    unsupported(file, field.span, "a keyed field"),
-                ))
-            };
+        let occurrence = if let Err(row) = names.claim(file, &field.name, field.name_span) {
+            DeclarationOccurrence::Refused(refuse_row(diagnostics, at, row))
+        } else if field.keys.is_empty() {
+            resource_member(
+                draft,
+                registry,
+                at,
+                field,
+                "this group field type",
+                diagnostics,
+            )?
+        } else {
+            DeclarationOccurrence::Refused(refuse_row(
+                diagnostics,
+                at,
+                unsupported(file, field.span, "a keyed field"),
+            ))
+        };
         registry.members.declare(
             MemberKey::leaf(record, &group.name, &field.name),
             occurrence,

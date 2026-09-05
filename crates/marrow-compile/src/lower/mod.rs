@@ -60,7 +60,7 @@ use marrow_syntax::{
 
 use crate::decl::{
     Binding, DeclarationIndexDrift, DeclarationNamespace, DeclarationRefusalId,
-    DeclarationRefusalSummary, declaration_refused,
+    DeclarationRefusalSummary, MemberNamespace, declaration_refused,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::durable::{DurableRegistry, ProductBinding, RootBinding};
@@ -792,7 +792,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // would otherwise shift the correspondence and give the image a signature
         // the source never wrote.
         let mut declared_params: Vec<Option<LTy>> = Vec::with_capacity(function.params.len());
+        // Type parameters and parameters are two layers of one signature; each
+        // refuses a repeat at the repeat, before the repeat could take a slot the
+        // body would then read in place of the name the reader wrote.
+        let mut type_param_names = MemberNamespace::new(&function.name);
+        for param in &function.type_params {
+            if let Err(row) = type_param_names.claim(file, &param.name, param.name_span) {
+                lowerer.fail(row);
+            }
+        }
+        let mut param_names = MemberNamespace::new(&function.name);
         for param in &function.params {
+            if let Err(row) = param_names.claim(file, &param.name, param.name_span) {
+                lowerer.fail(row);
+                declared_params.push(None);
+                continue;
+            }
             if !param.keys.is_empty() {
                 lowerer.fail(unsupported(file, function.span, "a keyed parameter"));
             }

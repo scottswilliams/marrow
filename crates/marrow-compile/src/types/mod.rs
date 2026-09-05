@@ -37,8 +37,8 @@ use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
     DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary,
-    DeclarationSite, DeclareError, declaration_refused, refuse, refuse_covered, refuse_first,
-    refuse_row,
+    DeclarationSite, DeclareError, MemberNamespace, declaration_refused, refuse, refuse_covered,
+    refuse_first, refuse_row,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;

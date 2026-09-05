@@ -1117,8 +1117,8 @@ fn a_resource_member_occupies_its_name() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.name_conflict", 5, 1)],
-        "the second member of one name is a repeat, not a second slot: {:#?}",
+        vec![("src/main.mw", "check.name_conflict", 5, 14)],
+        "the second member of one name is a repeat at its name, not a second slot: {:#?}",
         messages(&diagnostics),
     );
 }
@@ -1559,7 +1559,7 @@ fn a_nested_group_repeating_a_member_name_is_a_name_conflict() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.name_conflict", 7, 1),
+            ("src/main.mw", "check.name_conflict", 7, 9),
             ("src/main.mw", "check.type", 14, 15),
         ],
         "the nested group repeats `body`, which the group already declares: {:#?}",

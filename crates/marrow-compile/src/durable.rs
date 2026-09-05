@@ -2050,6 +2050,11 @@ impl<'a> IdentityResolver<'a> {
             }
             return Vec::new();
         }
+        for conflict in &row.conflicts {
+            self.refuse(DurableRefusal::Admission {
+                row: conflict.clone(),
+            });
+        }
         let mut record_fields = Vec::new();
         for field in &row.fields {
             if let Some((shape, record_field)) = self.build_field(draft, records, field, cursor) {
