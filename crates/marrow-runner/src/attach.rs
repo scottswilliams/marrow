@@ -38,7 +38,7 @@
 
 use marrow_codes::Code;
 use marrow_lifecycle::NativeAttachment;
-use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage};
+use marrow_local_wire::{ClientMessage, Json, ServerMessage};
 use marrow_vm::{DurableExecutionFault, DurableRun, IncompleteDisposition};
 
 use crate::channel::Handler;
@@ -60,16 +60,6 @@ impl AttachedService {
             attachment: Some(attachment),
             close_after_response: false,
         }
-    }
-
-    /// The handshake identity the runner proves back: the exact image identity, which the
-    /// terminal independently recomputes from the bytes it spawned the runner with.
-    pub fn identity(&self) -> Id32 {
-        let attachment = self
-            .attachment
-            .as_ref()
-            .expect("the handshake identity is read before any request retires the store");
-        Id32::from_bytes(attachment.image().image_id().0)
     }
 }
 
@@ -103,7 +93,7 @@ impl AttachedService {
         };
         // A storeless export needs no session; a durable one runs against the native store
         // through the same attachment seam the ephemeral session uses.
-        if !decoded.durable {
+        if let dispatch::Route::Storeless = decoded.route {
             return dispatch::run_storeless(attachment.image(), decoded.export, decoded.values);
         }
         let run = marrow_vm::run_export(attachment, decoded.export, decoded.values);

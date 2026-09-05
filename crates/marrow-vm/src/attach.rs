@@ -29,7 +29,7 @@
 
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, SessionHost};
 use marrow_lifecycle::{Attachment, FreshTest, TestHost};
-use marrow_verify::{ExportDemand, ExportId, FunctionIndex, VerifiedImage};
+use marrow_verify::{ExportDemand, ExportId, FunctionIndex, TestKind, VerifiedImage};
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
 use crate::run::{DriverDispatch, run, run_driver, run_durable, run_in_session};
@@ -79,19 +79,28 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
     let execution = test.execution();
     let image = execution.image;
     let entry = execution.entry;
-    match execution.host {
-        TestHost::Storeless => DurableRun::Ran(
+    let host = match execution.host {
+        TestHost::Storeless => {
+            return DurableRun::Ran(
+                run(image, entry.func(), Vec::new()).map_err(DurableExecutionFault::from),
+            );
+        }
+        TestHost::Ready(host) => host,
+        TestHost::Parked => return DurableRun::Parked,
+        TestHost::Failed(cause) => return DurableRun::Failed(cause),
+    };
+    match entry.kind() {
+        // A storeless entry is never minted a store; the arm is total over the kind.
+        TestKind::Storeless => DurableRun::Ran(
             run(image, entry.func(), Vec::new()).map_err(DurableExecutionFault::from),
         ),
-        TestHost::Direct(host) => {
+        TestKind::DirectDurable => {
             run_on_host(image, entry.func(), entry.demand(), Vec::new(), host)
         }
-        TestHost::Driver(host) => {
+        TestKind::Driver => {
             let mut driver = TestDriver { image, host };
             DurableRun::Ran(run_driver(image, entry.func(), Vec::new(), &mut driver))
         }
-        TestHost::Parked => DurableRun::Parked,
-        TestHost::Failed(cause) => DurableRun::Failed(cause),
     }
 }
 

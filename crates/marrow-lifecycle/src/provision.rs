@@ -503,6 +503,21 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new().create(dir)
 }
 
+/// An open with a no-op admission gate: the directory lifecycle under test, with no image to
+/// admit. Test-only; every production open admits an image.
+#[cfg(test)]
+pub(crate) fn open_unadmitted(
+    dir: &Path,
+    projection: StoreProjection,
+) -> Result<OpenStore, OpenError> {
+    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
+        match error {
+            AdmitError::Open(error) => error,
+            AdmitError::Refused(never) => match never {},
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,16 +617,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// An open with a no-op admission gate, over the rootless shape.
-    fn open_unadmitted(dir: &Path) -> Result<OpenStore, OpenError> {
-        open_admitted(dir, rootless(), |_| Ok::<(), std::convert::Infallible>(())).map_err(
-            |error| match error {
-                AdmitError::Open(error) => error,
-                AdmitError::Refused(never) => match never {},
-            },
-        )
-    }
-
     fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
         NativeStore::acquire_existing(dir)
             .expect("acquire the owner")
@@ -648,7 +653,7 @@ mod tests {
 
         let mut contended = None;
         let opened = open_admitted(&store, rootless(), |head| {
-            contended = Some(match open_unadmitted(&store) {
+            contended = Some(match open_unadmitted(&store, rootless()) {
                 Err(OpenError::Lock(error)) => error.code(),
                 Ok(_) => panic!("a competing open ran inside the admission callback"),
                 Err(other) => panic!("admission ran outside its owner: {other}"),

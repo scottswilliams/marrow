@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::provision::{AdmitError, open_admitted};
+use crate::provision::open_unadmitted as open;
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
@@ -59,17 +59,6 @@ fn projection() -> StoreProjection {
     projection
         .finish()
         .expect("the site names the one declared root")
-}
-
-/// An open with a no-op admission gate over the synthetic store shape: the directory
-/// lifecycle under test, with no image to admit.
-fn open(dir: &Path, projection: StoreProjection) -> Result<crate::OpenStore, OpenError> {
-    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
-        match error {
-            AdmitError::Open(error) => error,
-            AdmitError::Refused(never) => match never {},
-        }
-    })
 }
 
 fn request(instance: StoreInstanceId) -> ProvisionRequest {

@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::provision::{AdmitError, open_admitted};
+use crate::provision::open_unadmitted as open;
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
     StoreInstanceId, provision,
@@ -101,17 +101,6 @@ fn head(entries: usize, ceiling_payload: Vec<u8>) -> LogicalHead {
         ceiling_payload,
         HeadMap::assign(&ids).expect("head map"),
     )
-}
-
-/// An open with a no-op admission gate over the synthetic store shape: the directory
-/// lifecycle under test, with no image to admit.
-fn open(dir: &Path, projection: StoreProjection) -> Result<crate::OpenStore, OpenError> {
-    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
-        match error {
-            AdmitError::Open(error) => error,
-            AdmitError::Refused(never) => match never {},
-        }
-    })
 }
 
 fn request(instance: StoreInstanceId) -> ProvisionRequest {

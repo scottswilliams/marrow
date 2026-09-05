@@ -342,8 +342,8 @@ fn a_storeless_image_keeps_its_identity_and_mints_no_store() {
 
     let prepared: PreparedImage = prepare(image);
     assert!(prepared.projection().is_none());
+    assert_eq!(prepared.image().test_entries()[0].name(), "two is two");
     let test = fresh_test(&prepared, 0).expect("the image carries one test");
-    assert_eq!(test.entry().name(), "two is two");
     assert!(matches!(run_test(test), DurableRun::Ran(Ok(_))));
     assert!(
         fresh_test(&prepared, 1).is_none(),

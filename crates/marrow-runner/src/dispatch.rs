@@ -21,11 +21,19 @@ use marrow_vm::{
 
 use crate::transfer;
 
-/// A decoded `Request`: the export's identity, whether its verified demand is durable, and
-/// its arguments as owned runtime values. Owns nothing borrowed from the image.
+/// Where a decoded request runs, from the export's verified demand.
+pub(crate) enum Route {
+    /// An empty demand: no session, no attachment.
+    Storeless,
+    /// A durable demand: one session on the attachment.
+    Durable,
+}
+
+/// A decoded `Request`: the export's identity, its route, and its arguments as owned runtime
+/// values. Owns nothing borrowed from the image.
 pub(crate) struct DecodedRequest {
     pub(crate) export: ExportId,
-    pub(crate) durable: bool,
+    pub(crate) route: Route,
     pub(crate) values: Vec<Value>,
 }
 
@@ -54,9 +62,14 @@ pub(crate) fn decode_request(
             None => return Err(reject(Code::RunnerArgMismatch)),
         }
     }
+    let route = if export.demand().is_empty() {
+        Route::Storeless
+    } else {
+        Route::Durable
+    };
     Ok(DecodedRequest {
         export: export_id,
-        durable: !export.demand().is_empty(),
+        route,
         values,
     })
 }

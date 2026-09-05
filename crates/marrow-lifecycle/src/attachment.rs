@@ -102,7 +102,10 @@ pub struct Attachment<H: SessionHost> {
 pub type NativeAttachment = Attachment<OpenStore>;
 
 /// The in-memory pairing: the image and a fresh process-local store minted from its own
-/// projection. The host is boxed because the attachment owns a whole store schema.
+/// projection. The host is boxed: an `EphemeralAttachment` measures 192 bytes on a 64-bit
+/// target against the 8-byte image handle the other mint outcomes carry, so boxing keeps
+/// every [`EphemeralOutcome`] arm and [`FreshTest`] state 16 bytes (pinned by
+/// `tests::memory_attachment_size`).
 pub type MemoryAttachment = Attachment<Box<EphemeralAttachment>>;
 
 impl<H: SessionHost> Attachment<H> {
@@ -196,8 +199,7 @@ pub struct FreshTest {
 
 enum FreshTestState {
     Storeless,
-    Direct(Box<EphemeralAttachment>),
-    Driver(Box<EphemeralAttachment>),
+    Ready(Box<EphemeralAttachment>),
     Parked,
     Failed(&'static str),
 }
@@ -209,21 +211,18 @@ enum FreshTestState {
 /// mint failure by its stable code.
 pub fn fresh_test(prepared: &PreparedImage, index: usize) -> Option<FreshTest> {
     let entry = prepared.image.test_entries().get(index)?;
-    let mint = || match prepared.projection() {
-        None => Err(FreshTestState::Parked),
-        Some(projection) => {
+    let state = match (entry.kind(), prepared.projection()) {
+        (TestKind::Storeless, _) => FreshTestState::Storeless,
+        (TestKind::DirectDurable | TestKind::Driver, None) => FreshTestState::Parked,
+        (TestKind::DirectDurable | TestKind::Driver, Some(projection)) => {
             let ceiling = deployment_ceiling(prepared.image.test_demand_union());
-            EphemeralAttachment::mint(projection.clone(), ceiling)
-                .map(Box::new)
-                .map_err(|_| {
+            match EphemeralAttachment::mint(projection.clone(), ceiling) {
+                Ok(host) => FreshTestState::Ready(Box::new(host)),
+                Err(_) => {
                     FreshTestState::Failed(marrow_codes::Code::CliDurableUnsupported.as_str())
-                })
+                }
+            }
         }
-    };
-    let state = match entry.kind() {
-        TestKind::Storeless => FreshTestState::Storeless,
-        TestKind::DirectDurable => mint().map_or_else(|state| state, FreshTestState::Direct),
-        TestKind::Driver => mint().map_or_else(|state| state, FreshTestState::Driver),
     };
     Some(FreshTest {
         image: Rc::clone(&prepared.image),
@@ -240,15 +239,12 @@ pub struct TestExecution<'a> {
     pub host: TestHost<'a>,
 }
 
-/// Where a fresh test runs, decided from the entry's kind in the owned image.
+/// Where a fresh test runs; the entry's kind in the owned image says how.
 pub enum TestHost<'a> {
     /// A storeless entry: no session.
     Storeless,
-    /// A direct-durable entry: one harness session over its own fresh in-memory store.
-    Direct(&'a mut dyn SessionHost<Engine = MemoryEngine>),
-    /// A driver entry: its own fresh in-memory store, each export call it makes opening its
-    /// own session.
-    Driver(&'a mut dyn SessionHost<Engine = MemoryEngine>),
+    /// A durable entry over its own fresh in-memory store.
+    Ready(&'a mut dyn SessionHost<Engine = MemoryEngine>),
     /// A durable entry whose image shape the flat kernel does not execute yet.
     Parked,
     /// A durable entry whose store could not be minted; the stable code names why.
@@ -256,23 +252,12 @@ pub enum TestHost<'a> {
 }
 
 impl FreshTest {
-    /// The owned image.
-    pub fn image(&self) -> &Rc<VerifiedImage> {
-        &self.image
-    }
-
-    /// The selected entry, read from the owned image.
-    pub fn entry(&self) -> &SealedTestEntry {
-        &self.image.test_entries()[self.entry]
-    }
-
     /// Borrow the image, the entry, and the host together for execution.
     pub fn execution(&mut self) -> TestExecution<'_> {
         let entry = &self.image.test_entries()[self.entry];
         let host = match &mut self.state {
             FreshTestState::Storeless => TestHost::Storeless,
-            FreshTestState::Direct(host) => TestHost::Direct(&mut **host),
-            FreshTestState::Driver(host) => TestHost::Driver(&mut **host),
+            FreshTestState::Ready(host) => TestHost::Ready(&mut **host),
             FreshTestState::Parked => TestHost::Parked,
             FreshTestState::Failed(cause) => TestHost::Failed(cause),
         };
@@ -297,4 +282,18 @@ fn deployment_ceiling(union: ExportDemand) -> DeploymentCeiling {
         },
         CeilingIdToken::new(*descriptor.ceiling_id().bytes()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The measured sizes the boxing decision above rests on.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn memory_attachment_size() {
+        assert_eq!(std::mem::size_of::<EphemeralAttachment>(), 192);
+        assert_eq!(std::mem::size_of::<Rc<VerifiedImage>>(), 8);
+        assert_eq!(std::mem::size_of::<MemoryAttachment>(), 16);
+    }
 }

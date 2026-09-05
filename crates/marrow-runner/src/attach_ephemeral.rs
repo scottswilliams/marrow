@@ -24,7 +24,7 @@
 
 use marrow_codes::Code;
 use marrow_lifecycle::{EphemeralOutcome, PreparedImage, mint_ephemeral};
-use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage};
+use marrow_local_wire::{ClientMessage, Json, ServerMessage};
 
 use crate::channel::Handler;
 use crate::dispatch;
@@ -47,12 +47,6 @@ impl AttachedEphemeralService {
             outcome: mint_ephemeral(prepared),
             close_after_response: false,
         }
-    }
-
-    /// The handshake identity the runner proves back: the exact image identity, which the client
-    /// independently recomputes from the bytes it spawned the runner with.
-    pub fn identity(&self) -> Id32 {
-        Id32::from_bytes(self.outcome.image().image_id().0)
     }
 }
 
@@ -82,7 +76,7 @@ impl AttachedEphemeralService {
         // A storeless export needs no session, so a parked or failed mint still serves it; a
         // durable one runs against the in-memory store through the same attachment seam the
         // native session uses.
-        if !decoded.durable {
+        if let dispatch::Route::Storeless = decoded.route {
             return dispatch::run_storeless(self.outcome.image(), decoded.export, decoded.values);
         }
         let projection = match &mut self.outcome {
