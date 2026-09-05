@@ -3,7 +3,8 @@
 //! The M3 gate scored the diagnostic each seeded memory-path defect produces on four
 //! axes — location, cause, steer, and cascade cleanliness — and flagged five as merely
 //! detected or cascade-obscured. This suite reconstructs each flagged defect on the
-//! frozen fixtures it was measured on (`club_locker`, `cross_module_roots`) and pins the
+//! durable shapes it was measured on, reduced to owner-local fixtures (`actionability`,
+//! `cross_module_roots`), and pins the
 //! *actionable* shape the fix establishes: the typed code, the span at the defect, the
 //! bound cascade count, and the load-bearing steer the diagnostic now carries (an
 //! unclosed-block report, the `at most` bound law, a did-you-mean candidate). The codes
@@ -33,15 +34,15 @@ fn fixture_file(fixture: &str, relative: &str) -> String {
         .unwrap_or_else(|error| panic!("read fixture `{}`: {error}", path.display()))
 }
 
-/// The `club_locker` source with one `old -> new` mutation applied exactly once, so a
-/// defect is one edit against the frozen flagship rather than a hand-copied program.
-fn club_locker_mutated(old: &str, new: &str) -> Project {
-    let source = fixture_file("club_locker", "src/clublocker.mw");
+/// The `actionability` source with one `old -> new` mutation applied exactly once, so a
+/// defect is one edit against the frozen fixture rather than a hand-copied program.
+fn locker_mutated(old: &str, new: &str) -> Project {
+    let source = fixture_file("actionability", "src/locker.mw");
     assert!(
         source.matches(old).count() == 1,
         "the mutation anchor `{old}` must occur exactly once in the frozen fixture",
     );
-    Project::from_fixture("club_locker").source("src/clublocker.mw", &source.replace(old, new))
+    Project::from_fixture("actionability").source("src/locker.mw", &source.replace(old, new))
 }
 
 /// Compile a project and return its typed source diagnostics, failing the test if it
@@ -62,8 +63,8 @@ fn diagnostics(project: &Project) -> Diagnostics {
 /// edit-state points at the real fix instead of the next `pub fn`.
 #[test]
 fn d11_unclosed_brace_names_the_open_site_without_a_cascade() {
-    // Drop the closing brace of `suspendMember`, opened on line 113.
-    let project = club_locker_mutated(
+    // Drop the closing brace of `suspendMember`, opened on line 49.
+    let project = locker_mutated(
         "    transaction {\n        place member = ^members[memberId]\n        if exists(member) {\n            member.standing = Standing::suspended\n        }\n    }\n}\n\npub fn reinstateMember",
         "    transaction {\n        place member = ^members[memberId]\n        if exists(member) {\n            member.standing = Standing::suspended\n        }\n    }\n\npub fn reinstateMember",
     );
@@ -77,7 +78,7 @@ fn d11_unclosed_brace_names_the_open_site_without_a_cascade() {
     let unclosed = diagnostics.only("parse.syntax");
     assert_eq!(
         unclosed.line(),
-        113,
+        49,
         "the diagnostic points at the opening brace of the unclosed body: {:?}",
         diagnostics.all()
     );
@@ -113,7 +114,7 @@ fn d11_a_truncated_body_is_reported_not_silently_recovered() {
 /// generic `parse.syntax: expected an expression`.
 #[test]
 fn d13_unbounded_traversal_names_the_bound_law_at_the_head() {
-    let project = club_locker_mutated(
+    let project = locker_mutated(
         "for seq in ^assets[assetId].serviceLog at most 100 {",
         "for seq in ^assets[assetId].serviceLog {",
     );
@@ -127,7 +128,7 @@ fn d13_unbounded_traversal_names_the_bound_law_at_the_head() {
     let unbounded = diagnostics.only("check.type");
     assert_eq!(
         unbounded.line(),
-        278,
+        84,
         "at the `for` head: {:?}",
         diagnostics.all()
     );
@@ -149,13 +150,13 @@ fn d13_unbounded_traversal_names_the_bound_law_at_the_head() {
 /// failure.
 #[test]
 fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
-    let ids = fixture_file("club_locker", ".marrow/ids");
+    let ids = fixture_file("actionability", ".marrow/ids");
     let stripped = ids
         .lines()
         .filter(|line| !line.contains("id field Member.email"))
         .collect::<Vec<_>>()
         .join("\n");
-    let project = Project::from_fixture("club_locker").ids(&format!("{stripped}\n"));
+    let project = Project::from_fixture("actionability").ids(&format!("{stripped}\n"));
     let diagnostics = diagnostics(&project);
     assert_eq!(
         diagnostics.count_code("check.durable_identity"),
@@ -195,7 +196,7 @@ fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
 /// failed is poisoned, so its later uses raise no `is not in scope` cascade.
 #[test]
 fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
-    let project = club_locker_mutated(
+    let project = locker_mutated(
         "^idseq[\"member\"]\n        const next = (seq.value ?? 0) + 1",
         "^idseq[\"member\"]\n        const next = (seq.value) + 1",
     );
@@ -203,7 +204,7 @@ fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
     let primary = diagnostics.only("check.type");
     assert_eq!(
         primary.line(),
-        74,
+        42,
         "at the optional arithmetic: {:?}",
         diagnostics.all()
     );
@@ -229,7 +230,7 @@ fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
 /// A misspelled store root offers the nearest declared root, spelled as a root.
 #[test]
 fn d08_a_misspelled_root_suggests_the_nearest_store_root() {
-    let project = club_locker_mutated(
+    let project = locker_mutated(
         "    return ^members[memberId].name\n}",
         "    return ^membrs[memberId].name\n}",
     );
@@ -237,7 +238,7 @@ fn d08_a_misspelled_root_suggests_the_nearest_store_root() {
     let unknown = diagnostics.only("check.type");
     assert_eq!(
         unknown.line(),
-        235,
+        68,
         "at the reference: {:?}",
         diagnostics.all()
     );

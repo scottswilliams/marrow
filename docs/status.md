@@ -23,6 +23,15 @@ each behavior.
 The command names `data`, `doctor`, `evolve`, `serve`, `backup`, and `restore`
 are recognized; each reports `cli.command_unsupported`.
 
+### Applications
+
+Two complete applications, Club Locker (equipment lending, with a desktop
+shell) and EMR (a change-set tool over a synthetic corpus), live in the
+separate `marrow-acceptance` repository together with their source tests,
+expectations, and the journeys that run them against a built toolchain through
+the public commands. This repository keeps short reference examples,
+conformance fixtures, and compiler-local regressions.
+
 ## Not yet available
 
 - Third-party packages ([packages](future/packages.md)).

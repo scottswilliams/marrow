@@ -99,26 +99,35 @@ const THEME_FILES = Object.freeze({
   "themes/hc_black.json": "2d2a8b6d47db029ee826bc0f235f7a7d76142a82bffec485b12e38855d9feaf9",
 });
 
+// The scope specimen: a small program holding one token of each inspected kind at a
+// known position (a comment, a declaration keyword, a string, an operator, an integer,
+// a store-root sigil, and a plain identifier); the scratch file holds a group and an
+// escape. Positions are zero-based lines and characters into SCOPE_SPECIMEN below.
 const SCOPE_ROWS = Object.freeze([
-  ["status", { line: 2, character: 3 }, "Status",
+  ["specimen", { line: 2, character: 3 }, "Status",
     ["comment.line.double-slash.marrow", "source.marrow"], "Comment"],
-  ["status", { line: 11, character: 4 }, "fn",
+  ["specimen", { line: 10, character: 4 }, "fn",
     ["keyword.declaration.marrow", "source.marrow"], "Other"],
-  ["status", { line: 12, character: 17 }, "active",
+  ["specimen", { line: 11, character: 17 }, "active",
     ["string.quoted.double.marrow", "source.marrow"], "String"],
-  ["status", { line: 12, character: 13 }, "==",
+  ["specimen", { line: 11, character: 13 }, "==",
     ["keyword.operator.marrow", "source.marrow"], "Other"],
-  ["changeset", { line: 20, character: 29 }, "1",
+  ["specimen", { line: 15, character: 22 }, "1",
     ["constant.numeric.integer.marrow", "source.marrow"], "Other"],
-  ["changeset", { line: 216, character: 22 }, "^",
+  ["specimen", { line: 19, character: 11 }, "^",
     ["punctuation.definition.variable.marrow", "source.marrow"], "Other"],
   ["scratch", { line: 2, character: 4 }, "(",
     ["punctuation.section.group.marrow", "source.marrow"], "Other"],
   ["scratch", { line: 3, character: 16 }, "\\n",
     ["constant.character.escape.marrow", "string.quoted.double.marrow", "source.marrow"], "String"],
-  ["status", { line: 11, character: 7 }, "patientStatusValid",
+  ["specimen", { line: 10, character: 7 }, "patientStatusValid",
     ["source.marrow"], "Other"],
 ]);
+
+const SCOPE_SPECIMEN =
+  "module specimen\n\n// Status families and the create/transition law.\n\nresource Patient {\n    required status: string\n}\n\nstore ^patients[id: int]: Patient\n\npub fn patientStatusValid(s: string): bool {\n    return s == \"active\" or s == \"inactive\"\n}\n\npub fn revisionAfter(revision: int): int {\n    return revision + 1\n}\n\npub fn patientStatus(id: int): string {\n    return ^patients[id].status ?? \"absent\"\n}\n";
+const SCOPE_SPECIMEN_SHA256 =
+  "56b2438eb22536148e2d2aa9c5a6dc7e6c8b073fb1b70ee0f6df8fe3379cf2b5";
 
 const THEMES = Object.freeze([
   ["Dark 2026", 2, "vs-dark"],
@@ -618,18 +627,19 @@ function prepareWorkspace(root, canonicalCli) {
   writeFileSync(coldPath, broken);
   const completionSource = graphSource.replace("Role::isolated", "Role::");
   requireCondition(completionSource !== graphSource, "completion red does not bite");
-  const status = join(workspace, "status.mw");
-  const changeset = join(workspace, "changeset.mw");
+  const specimen = join(workspace, "scope-specimen.mw");
   const scratch = join(workspace, "scope-scratch.mw");
-  copyFileSync(join(REPO, "apps/emr/src/status.mw"), status);
-  copyFileSync(join(REPO, "apps/emr/src/changeset.mw"), changeset);
+  writeFileSync(specimen, SCOPE_SPECIMEN);
   writeFileSync(scratch, 'module scope\n\nfn f() {\n    const s = "a\\nb"\n}\n');
-  requireCondition(shaFile(status) ===
-    "4544ed99bd7a23793c85e121c8149a828e52b31c9936c37e6a68731c9d40b252",
-  "status scope source drifted");
-  requireCondition(shaFile(changeset) ===
-    "2dcee57afe5cdb4b005fbf0cc77a3e7600bbb5ce6e3fd0b02a4ad8307c80158a",
-  "changeset scope source drifted");
+  requireCondition(shaFile(specimen) === SCOPE_SPECIMEN_SHA256, "specimen scope source drifted");
+  for (const [source, position, lexeme] of SCOPE_ROWS) {
+    const text = readFileSync(source === "specimen" ? specimen : scratch, "utf8");
+    const line = text.split("\n")[position.line] ?? "";
+    requireCondition(
+      line.slice(position.character, position.character + lexeme.length) === lexeme,
+      `scope row ${source}:${position.line}:${position.character} does not start ${lexeme}`,
+    );
+  }
   requireCondition(shaFile(scratch) ===
     "69e71d721a006159006ed58781d1d51f26ea4a3b9be41fd00a275e039045fba9",
   "scratch scope source drifted");
@@ -678,7 +688,7 @@ function prepareWorkspace(root, canonicalCli) {
         "classifyRole".length,
       ),
     },
-    scope: { status, changeset, scratch },
+    scope: { specimen, scratch },
   };
 }
 

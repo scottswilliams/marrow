@@ -24,7 +24,9 @@ crosses the channel.
 
 Two programs carry the evidence: a storeless graph report
 (`fixtures/v01/conformance/graph_report`) and an equipment-lending desktop
-application (`apps/club-locker`).
+application, Club Locker. Club Locker and the EMR change-set tool live in the
+separate `marrow-acceptance` repository, which runs both against a built
+toolchain through the public commands ([status](../status.md#applications)).
 
 ## Direction
 

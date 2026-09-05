@@ -1,0 +1,90 @@
+module locker
+
+// The seeded-defect corpus for the diagnostic-actionability suite: the durable
+// shapes each flagged defect was measured on, reduced to the declarations the
+// defects touch. A member has a sparse contact field and an enum standing, a
+// counter allocates member numbers, and an asset carries a keyed service log.
+
+enum Standing {
+    active
+    suspended
+}
+
+resource Counter {
+    required value: int
+}
+
+resource Member {
+    required name: string
+    required joined: date
+    required standing: Standing
+    email: string
+}
+
+resource Asset {
+    required tag: string
+
+    serviceLog[seq: int] {
+        required note: string
+        required at: date
+    }
+}
+
+store ^idseq[name: string]: Counter
+
+store ^members[memberId: int]: Member
+
+store ^assets[assetId: int]: Asset
+
+pub fn registerMember(name: string, joined: date): int {
+    transaction {
+        place seq = ^idseq["member"]
+        const next = (seq.value ?? 0) + 1
+        seq.value = next
+        ^members[next] = Member(name: name, joined: joined, standing: Standing::active)
+        return next
+    }
+}
+
+pub fn suspendMember(memberId: int) {
+    transaction {
+        place member = ^members[memberId]
+        if exists(member) {
+            member.standing = Standing::suspended
+        }
+    }
+}
+
+pub fn reinstateMember(memberId: int) {
+    transaction {
+        place member = ^members[memberId]
+        if exists(member) {
+            member.standing = Standing::active
+        }
+    }
+}
+
+pub fn memberName(memberId: int): string? {
+    return ^members[memberId].name
+}
+
+pub fn memberEmail(memberId: int): string? {
+    return ^members[memberId].email
+}
+
+pub fn memberIsActive(memberId: int): bool {
+    if const member = ^members[memberId] {
+        return member.standing == Standing::active
+    }
+    return false
+}
+
+pub fn serviceLogCount(assetId: int): int {
+    var count = 0
+    for seq in ^assets[assetId].serviceLog at most 100 {
+        count += 1
+    } on more {
+        count = -1
+    }
+    return count
+}

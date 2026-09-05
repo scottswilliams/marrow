@@ -12,10 +12,7 @@
 
 mod common;
 
-use std::path::PathBuf;
-use std::process::Command;
-
-use common::{MARROW_BIN, Project};
+use common::Project;
 
 /// The full per-export demand form for the bookstore fixture, printed by
 /// `marrow check --demand`: one line per export in `module.item` order, each naming every
@@ -197,58 +194,34 @@ fn check_is_not_a_refounding_command() {
     );
 }
 
-/// The acceptance case: the EMR application. Its default check must read as a human-shaped
-/// summary — the all-storeless `status` module collapses to one line, the six writers
-/// that share a transaction helper's demand list once, and no line is the former
-/// atom-by-atom wall. These are shape invariants robust to ordinary EMR evolution, not a
-/// byte snapshot of a concurrently edited app.
+/// The default summary rolls each demand up to its roots, so no line is a wall of
+/// atoms. The `demand_wall` fixture has one export that reads and writes every field
+/// of three roots: its `--demand` sentence runs past 600 columns, and the summary that
+/// describes the same export stays under 300. The wall this collapses is asserted to
+/// exist, so a shorter fixture cannot pass this law vacuously.
 #[test]
-fn check_emr_acceptance_summarizes_without_the_wall() {
-    let Some(emr) = emr_dir() else {
-        eprintln!("skipping EMR acceptance: apps/emr not present");
-        return;
-    };
-    let output = Command::new(MARROW_BIN)
-        .arg("check")
-        .arg(&emr)
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("run the marrow binary against apps/emr");
+fn check_summary_rolls_a_wide_demand_up_to_its_roots() {
+    let project = Project::from_fixture("demand_wall");
+    let sentences = project.run_cli("demand-wall-sentences", &["check", "--demand"]);
+    assert!(sentences.status.success(), "{}", sentences.stderr_text());
+    let widest_sentence = widest_line(&sentences.stdout_text());
     assert!(
-        output.status.success(),
-        "EMR must check clean: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let report = String::from_utf8_lossy(&output.stdout);
-
-    // The storeless `status` module collapses, and a shared transaction demand groups its
-    // writers — the two headline collapses.
-    assert!(
-        report.contains("all storeless"),
-        "no storeless collapse: {report}"
-    );
-    assert!(
-        report.contains("one shared demand"),
-        "no shared-demand dedup: {report}"
+        widest_sentence >= 600,
+        "the per-export sentence is no longer a wall ({widest_sentence} cols)"
     );
 
-    // The wall is gone: the summary rolls children up to roots, so no line approaches the
-    // former per-atom length (the widest atom sentence ran past 600 columns).
-    let widest = report.lines().map(str::len).max().unwrap_or(0);
+    let summary = project.run_cli("demand-wall-summary", &["check"]);
+    assert!(summary.status.success(), "{}", summary.stderr_text());
+    let widest = widest_line(&summary.stdout_text());
     assert!(
         widest < 300,
-        "a demand line is still a wall ({widest} cols): {report}"
+        "a summary line is still a wall ({widest} cols): {}",
+        summary.stdout_text()
     );
 }
 
-/// The EMR application directory, resolved from the crate manifest, or `None` when the
-/// app tree is not checked out beside the crate.
-fn emr_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/emr")
-        .canonicalize()
-        .ok()?;
-    dir.join("marrow.toml").is_file().then_some(dir)
+fn widest_line(text: &str) -> usize {
+    text.lines().map(str::len).max().unwrap_or(0)
 }
 
 /// The `(file, code)` pairs of a `check` run's diagnostic lines, in report order.

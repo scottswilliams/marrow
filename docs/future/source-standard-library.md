@@ -29,5 +29,6 @@ Rust. Applications and the library are Marrow.
 
 ## Evidence
 
-The library builds as an ordinary package, and Graph Report and Club Locker
-use it through the package system ([local applications](local-applications.md)).
+The library builds as an ordinary package, and Graph Report and the
+acceptance-suite applications (Club Locker and EMR) use it through the package
+system ([local applications](local-applications.md)).

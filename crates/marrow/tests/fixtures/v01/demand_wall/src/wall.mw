@@ -1,0 +1,76 @@
+module wall
+
+// One export whose per-export demand sentence names every field of three roots,
+// so its `--demand` line is far wider than any line of the default summary.
+
+resource Alpha {
+    first: int
+    second: int
+    third: int
+    fourth: int
+    fifth: int
+    sixth: int
+    seventh: int
+    eighth: int
+}
+
+store ^alpha[id: int]: Alpha
+
+resource Beta {
+    first: int
+    second: int
+    third: int
+    fourth: int
+    fifth: int
+    sixth: int
+    seventh: int
+    eighth: int
+}
+
+store ^beta[id: int]: Beta
+
+resource Gamma {
+    first: int
+    second: int
+    third: int
+    fourth: int
+    fifth: int
+    sixth: int
+    seventh: int
+    eighth: int
+}
+
+store ^gamma[id: int]: Gamma
+
+pub fn touchAll(id: int) {
+    transaction {
+        ^alpha[id].first = (^alpha[id].first ?? 0) + 1
+        ^alpha[id].second = (^alpha[id].second ?? 0) + 1
+        ^alpha[id].third = (^alpha[id].third ?? 0) + 1
+        ^alpha[id].fourth = (^alpha[id].fourth ?? 0) + 1
+        ^alpha[id].fifth = (^alpha[id].fifth ?? 0) + 1
+        ^alpha[id].sixth = (^alpha[id].sixth ?? 0) + 1
+        ^alpha[id].seventh = (^alpha[id].seventh ?? 0) + 1
+        ^alpha[id].eighth = (^alpha[id].eighth ?? 0) + 1
+        ^beta[id].first = (^beta[id].first ?? 0) + 1
+        ^beta[id].second = (^beta[id].second ?? 0) + 1
+        ^beta[id].third = (^beta[id].third ?? 0) + 1
+        ^beta[id].fourth = (^beta[id].fourth ?? 0) + 1
+        ^beta[id].fifth = (^beta[id].fifth ?? 0) + 1
+        ^beta[id].sixth = (^beta[id].sixth ?? 0) + 1
+        ^beta[id].seventh = (^beta[id].seventh ?? 0) + 1
+        ^beta[id].eighth = (^beta[id].eighth ?? 0) + 1
+        ^gamma[id].first = (^gamma[id].first ?? 0) + 1
+        ^gamma[id].second = (^gamma[id].second ?? 0) + 1
+        ^gamma[id].third = (^gamma[id].third ?? 0) + 1
+        ^gamma[id].fourth = (^gamma[id].fourth ?? 0) + 1
+        ^gamma[id].fifth = (^gamma[id].fifth ?? 0) + 1
+        ^gamma[id].sixth = (^gamma[id].sixth ?? 0) + 1
+        ^gamma[id].seventh = (^gamma[id].seventh ?? 0) + 1
+        ^gamma[id].eighth = (^gamma[id].eighth ?? 0) + 1
+    }
+}
+
+pub fn firstOf(id: int): int {
+    return ^alpha[id].first ?? 0
+}

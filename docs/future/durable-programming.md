@@ -137,8 +137,9 @@ latency guarantee; measure setup and disposal separately.
 Record Marrow compile latency first, test wall time second, and Rust build time
 third. These are evidence requirements, not measured benefits.
 
-Migrate Club Locker and compare its ordinary serial behavior on the in-memory
-and native engines. Populate EMR through ordinary seed exports and compare its
-baseline state. Club Locker's business functions need no concurrency annotations;
+Migrate Club Locker, in the `marrow-acceptance` repository, and compare its
+ordinary serial behavior on the in-memory and native engines. Populate EMR,
+in the same repository, through ordinary seed exports and compare its baseline
+state. Club Locker's business functions need no concurrency annotations;
 the selected language cleanup does require source edits. The first increment
 must be useful with every future worker and job facility absent.
