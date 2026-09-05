@@ -330,19 +330,45 @@ fn check_refuses_a_test_entry_ceiling_that_the_production_run_does_not_reach() {
     assert_eq!(String::from_utf8(ran.stdout).expect("utf8 stdout"), "0\n");
 }
 
-/// The settled-body capacity stop reaches `check` from its one drive and is rendered as
-/// the stop it is — the findings made before it were discarded with the drive — rather
-/// than as an encoder verdict over a finished image.
+/// Two hundred exports each returning a distinct literal near the per-string bound:
+/// the string pool alone carries the encoded image past the byte ceiling while the
+/// settled bodies stay far inside the charge, so the ceiling is reported late, by the
+/// encoder over a finished program.
+fn over_image_bytes_through_strings_project(dir: &Path) {
+    std::fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n").expect("write manifest");
+    std::fs::create_dir_all(dir.join("src")).expect("create src");
+    let mut source = String::from("module main\n\n");
+    for index in 0..200 {
+        let literal = format!("{index:04}").repeat(750);
+        source.push_str(&format!(
+            "pub fn s{index}(): string {{\n    return \"{literal}\"\n}}\n\n"
+        ));
+    }
+    std::fs::write(dir.join("src").join("main.mw"), source).expect("write source");
+}
+
+/// The image byte ceiling reads the same from `check` whichever owner reports it: the
+/// settled-body stop inside the drive, or the encoder's verdict over a finished program
+/// whose string pool alone is too large. Both are the one bound, in its own words.
 #[test]
-fn check_renders_the_capacity_stop_as_a_stop() {
-    let dir = TempDir::new("check-capacity-stop");
-    over_image_bytes_project(&dir.root);
-    let checked = run_in(&dir.root, &["check", "."]);
-    assert!(!checked.status.success());
-    assert!(checked.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(checked.stderr).expect("utf8 stderr"),
-        "cli.compiler_resource_limit: analysis stopped: function bodies alone exceed the \
-         program image limit; findings before the stop are not shown\n"
-    );
+fn check_reports_the_image_byte_ceiling_in_one_sentence_from_either_owner() {
+    for (name, project) in [
+        ("check-capacity-stop", over_image_bytes_project as fn(&Path)),
+        (
+            "check-string-pool",
+            over_image_bytes_through_strings_project,
+        ),
+    ] {
+        let dir = TempDir::new(name);
+        project(&dir.root);
+        let checked = run_in(&dir.root, &["check", "."]);
+        assert!(!checked.status.success(), "{name}");
+        assert!(checked.stdout.is_empty(), "{name}");
+        assert_eq!(
+            String::from_utf8(checked.stderr).expect("utf8 stderr"),
+            "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
+             program image is too large\n",
+            "{name}"
+        );
+    }
 }

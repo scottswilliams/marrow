@@ -324,7 +324,7 @@ fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
         empty_terminal(),
         SemanticOutcome::Invariant(template_proof_cause()),
     )
-    .into_built();
+    .production_built();
     let Err(failure) = outcome else {
         panic!("an invariant must not produce a partial image")
     };
@@ -363,7 +363,7 @@ fn an_earlier_stage_dominates_a_later_semantic_failure() {
             empty_terminal(),
             semantic,
         )
-        .into_built()
+        .production_built()
         .map(|_| ())
         .expect_err("a parse-stage row fails compilation");
         let CompileFailure::Diagnostics(diagnostics) = failure else {
@@ -389,7 +389,7 @@ fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
         BoundedDiagnostics::Limited { .. } => panic!("two rows stay complete"),
     };
     let failure = driven(terminal, empty_terminal(), image_bytes_stop())
-        .into_built()
+        .production_built()
         .map(|_| ())
         .expect_err("a nonempty parse stage fails compilation");
     assert_eq!(
@@ -610,7 +610,7 @@ fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
             empty_terminal(),
             SemanticOutcome::Diagnostics(empty_terminal(), stage),
         )
-        .into_built()
+        .production_built()
         .map(|_| ())
         .expect_err("an empty semantic terminal must not build");
         let CompileFailure::Invariant(invariant) = empty else {
@@ -744,7 +744,7 @@ fn a_limited_stage_terminal_is_the_displacing_resource_limit() {
         collector.push(diagnostic(Code::CheckType.as_str(), line + 1));
     }
     let failure = driven(collector.finish(), empty_terminal(), image_bytes_stop())
-        .into_built()
+        .production_built()
         .map(|_| ())
         .expect_err("an over-ceiling stage must not build");
     let CompileFailure::ResourceLimit(limit) = failure else {
@@ -1170,8 +1170,8 @@ fn check_encodes_the_same_image_over_complete_and_limited_editor_facts() {
         },
     };
 
-    let complete = complete.into_checked().expect("complete facts check");
-    let limited = limited.into_checked().expect("limited facts still check");
+    let complete = complete.check_built().expect("complete facts check");
+    let limited = limited.check_built().expect("limited facts still check");
     assert_eq!(complete.image.bytes, limited.image.bytes);
     assert_eq!(complete.exports.len(), 1);
     assert_eq!(limited.tests.len(), 1);
@@ -1474,7 +1474,7 @@ fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
         finished(vec![row()]),
         SemanticOutcome::Invariant(template_proof_cause()),
     )
-    .into_built();
+    .production_built();
     assert!(matches!(production, Err(CompileFailure::Invariant(_))));
     assert!(matches!(
         analyze_outcome(
@@ -1485,7 +1485,8 @@ fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
         Analyzed::Invariant(_)
     ));
 
-    let production = driven(empty_terminal(), empty_terminal(), image_bytes_stop()).into_built();
+    let production =
+        driven(empty_terminal(), empty_terminal(), image_bytes_stop()).production_built();
     let Err(CompileFailure::ResourceLimit(limit)) = production else {
         panic!("the stop is the image-bytes resource limit")
     };
@@ -1498,7 +1499,7 @@ fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
     assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes);
 
     let production =
-        driven(finished(vec![row()]), empty_terminal(), image_bytes_stop()).into_built();
+        driven(finished(vec![row()]), empty_terminal(), image_bytes_stop()).production_built();
     assert!(matches!(production, Err(CompileFailure::Diagnostics(_))));
     let Analyzed::Diagnostics(rows) =
         analyze_outcome(finished(vec![row()]), empty_terminal(), image_bytes_stop())

@@ -663,7 +663,7 @@ impl LoweredFn {
 pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
     let built = drive(project, TestMode::Exclude)
         .map_err(CompileFailure::ResourceLimit)?
-        .into_built()?;
+        .production_built()?;
     Ok(Compiled {
         image: built.image,
         exports: built.exports,
@@ -678,7 +678,7 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
 pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
     let built = drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
-        .into_built()?;
+        .production_built()?;
     Ok(built.into())
 }
 
@@ -693,7 +693,7 @@ pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Compi
 pub fn check(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
     let built = drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
-        .into_checked()?;
+        .check_built()?;
     Ok(built.into())
 }
 
@@ -1101,13 +1101,13 @@ impl From<ImagePolicyOutcome> for CompileFailure {
 impl Driven {
     /// The production compile result: the production projection's checked program,
     /// encoded.
-    fn into_built(self) -> Result<Built, CompileFailure> {
-        encode(self.production())
+    fn production_built(self) -> Result<Built, CompileFailure> {
+        encode(self.production()?)
     }
 
     /// The check result: the complete projection's checked program, encoded.
-    fn into_checked(self) -> Result<Built, CompileFailure> {
-        encode(self.complete())
+    fn check_built(self) -> Result<Built, CompileFailure> {
+        encode(self.complete()?)
     }
 
     /// The production projection. The first logically non-empty stage in order —
@@ -1181,8 +1181,8 @@ impl Driven {
 /// The single point at which a checked program becomes an image: both projections
 /// pass through it, so an image-policy verdict is taken here and nowhere else, strictly
 /// after the projection's own failure has been ruled out.
-fn encode(checked: Result<Box<CheckedProgram>, CompileFailure>) -> Result<Built, CompileFailure> {
-    Ok(checked?.encode()?)
+fn encode(checked: Box<CheckedProgram>) -> Result<Built, CompileFailure> {
+    Ok(checked.encode()?)
 }
 
 /// Parse every module, then analyze the cleanly-parsed ones. A module with a parse
@@ -2442,7 +2442,7 @@ fn analyze_outcome(
     }
 
     // The parse and structural prechecks preempt the semantic pass's resource limit in
-    // the production compile: `into_built` returns those stages before it. So a real
+    // the production compile: `production` returns those stages before it. So a real
     // precheck diagnostic dominates a semantic resource limit here too, and the
     // semantic pass's own diagnostics still union in for dependency resilience. An
     // invariant the pass discovered in executed work is reported first in both

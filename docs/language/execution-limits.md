@@ -84,9 +84,9 @@ calls. The text limit applies to a text built by concatenation or `join`. The
 collection limits apply whenever a list or map grows: `append`, map insertion,
 `split`, and `lines`.
 
-The compiled program size is checked as function bodies are compiled. Once the
-bodies compiled so far alone exceed it, checking stops at that body and reports
-`cli.compiler_resource_limit`; diagnostics found before the stop are not reported
-and reappear once the program fits.
+The compiled program size is checked as function bodies are compiled and again
+when the image is encoded. Once it is crossed, checking stops at that bound and
+reports `cli.compiler_resource_limit`; other diagnostics the program carries are
+not reported until it fits.
 
 These limits are fixed.

@@ -15,9 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_compile::{
-    CompileFailure, DurableNaming, ExportEntry, ResourceLimitKind, SourceDiagnostic,
-};
+use marrow_compile::{CompileFailure, DurableNaming, ExportEntry, SourceDiagnostic};
 use marrow_verify::VerifiedImage;
 
 use crate::demand::{demand_lines, demand_summary_lines};
@@ -145,21 +143,13 @@ fn term_paint(style: Style, text: &str) -> String {
 /// A check failure: diagnostics are printed with spans, and a fixed bound or an
 /// invariant becomes its fixed code line with no location. An exhausted bound names
 /// itself in the bound owner's own words, as `image` and `client` report it; an opaque
-/// invariant has nothing to name. The image byte ceiling reaches `check` as the
-/// settled-body stop, which discards the findings made before it.
+/// invariant has nothing to name.
 fn report_check_failure(failure: &CompileFailure) -> ExitCode {
     match failure {
         CompileFailure::Diagnostics(diagnostics) => {
             for diagnostic in diagnostics {
                 eprintln!("{}", diagnostic_line(diagnostic));
             }
-        }
-        CompileFailure::ResourceLimit(limit) if limit.kind() == ResourceLimitKind::ImageBytes => {
-            report_simple_error(
-                Code::CliCompilerResourceLimit.as_str(),
-                "analysis stopped: function bodies alone exceed the program image limit; \
-                 findings before the stop are not shown",
-            )
         }
         CompileFailure::ResourceLimit(limit) => report_simple_error(
             Code::CliCompilerResourceLimit.as_str(),

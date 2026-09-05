@@ -3,10 +3,11 @@
 On the beta line this is a thin CLI. `marrow
 init` creates a project, and `marrow fmt` formats a single `.mw` file or every
 captured source file in a project directory through the retained formatter.
-`marrow check [projectdir]` captures the project, runs the resilient analysis
-floor for the complete diagnostic set (printing each diagnostic with its span),
-and — when the project checks clean — compiles and verifies it to describe each
-export's verifier-reconstructed durable demand in source spelling through the
+`marrow check [projectdir]` captures the project and drives the compiler once,
+tests included, for the complete diagnostic set (printing each diagnostic with
+its span); when the project checks clean, the test-inclusive image from that same
+drive is encoded once and verified to describe each export's
+verifier-reconstructed durable demand in source spelling through the
 compiler-owned `DurableNaming` join. It opens no store and runs no code; the
 sentence describes access and never grants it.
 `marrow run

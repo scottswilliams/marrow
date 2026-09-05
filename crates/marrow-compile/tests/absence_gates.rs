@@ -736,9 +736,10 @@ fn the_projection_reaches_the_end_of_every_scanned_file() {
 }
 
 /// The image is produced at exactly one place. `CheckedProgram::encode` is the only
-/// caller of `ImageDraft::encode`, and `Driven::into_built` is the only caller of that —
-/// so the production projection is the single point at which an image-policy verdict can
-/// be taken, and no analysis or tooling path can reach one.
+/// caller of `ImageDraft::encode`, and the projection-shared `encode` — reached by the
+/// production projection and the check projection alike — is the only caller of that,
+/// so it is the single point at which an image-policy verdict can be taken, and no
+/// analysis or tooling path can reach one.
 #[test]
 fn the_image_is_encoded_at_exactly_one_call_site() {
     let draft_calls = production_occurrences("draft.encode()");
