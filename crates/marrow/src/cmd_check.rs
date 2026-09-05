@@ -1,23 +1,22 @@
 //! `marrow check [--demand] [projectdir]`: capture, check, and describe durable demand.
 //!
-//! The minimal check surface. It captures the project, runs the resilient analysis
-//! floor for the complete diagnostic set (every stage over every module, including
-//! test bodies), and prints each diagnostic with its span. A project that checks clean
-//! is compiled and verified so each exported function's verifier-reconstructed durable
-//! **demand** — which durable places it reads and writes, in source spelling — can be
-//! described. The default groups that demand into a human-shaped per-module summary
+//! The minimal check surface. It captures the project and drives the compiler once,
+//! tests included, for the complete diagnostic set (every stage over every module,
+//! including test bodies), and prints each diagnostic with its span. A project that
+//! checks clean has its test-inclusive image encoded from that same drive and verified,
+//! so each exported function's verifier-reconstructed durable **demand** — which durable
+//! places it reads and writes, in source spelling — can be described. The default groups
+//! that demand into a human-shaped per-module summary
 //! ([`crate::demand::demand_summary_lines`]); `--demand` prints the full per-export
 //! sentence form ([`crate::demand::demand_lines`]) unchanged. The demand describes
 //! access and never grants it; `check` opens no store and runs no code.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use marrow_codes::Code;
 use marrow_compile::{
-    AnalysisFailure, AnalysisResourceLimit, CompileFailure, DurableNaming, ExportEntry,
-    InputRevision, ResourceLimitKind, SourceDiagnostic, analyze, compile,
+    CompileFailure, DurableNaming, ExportEntry, ResourceLimitKind, SourceDiagnostic,
 };
 use marrow_verify::VerifiedImage;
 
@@ -78,28 +77,13 @@ pub(crate) fn check(rest: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let project = Arc::new(project);
 
-    // The resilient analysis floor owns the complete diagnostic set. A clean floor
-    // guarantees a clean production compile, so demand is described only for a project
-    // with no diagnostic.
-    let snapshot = match analyze(Arc::clone(&project), InputRevision::new(0)) {
-        Ok(snapshot) => snapshot,
-        Err(failure) => return report_analysis_failure(&failure),
-    };
-    let diagnostics = snapshot.diagnostics();
-    if !diagnostics.is_empty() {
-        for diagnostic in diagnostics {
-            eprintln!("{}", diagnostic_line(diagnostic));
-        }
-        return ExitCode::FAILURE;
-    }
-
-    // Compile the production exports (no test entries) and verify, so each export's
-    // demand is the verifier's reconstruction, not a compiler claim.
-    let compiled = match compile(&project) {
+    // One drive, tests included: the complete diagnostic set, then the test-inclusive
+    // image it checked. The image is verified so each export's demand is the verifier's
+    // reconstruction, not a compiler claim.
+    let compiled = match marrow_compile::check(&project) {
         Ok(compiled) => compiled,
-        Err(failure) => return report_compile_failure(&failure),
+        Err(failure) => return report_check_failure(&failure),
     };
     let image = match marrow_verify::verify(&compiled.image.bytes) {
         Ok(image) => image,
@@ -158,43 +142,24 @@ fn term_paint(style: Style, text: &str) -> String {
     crate::term_style::paint(Stream::Stderr, style, text)
 }
 
-/// A fixed analysis-floor failure with no diagnostic to report: an aggregate bound or an
-/// opaque compiler-coherence failure. Reported as one fixed code line with no location.
-/// An exhausted bound names itself in the bound owner's own words, as `image` and
-/// `client` report it; an opaque invariant has nothing to name. Analysis never encodes,
-/// so the image byte ceiling reaches it only as the settled-body stop, which discards the
-/// findings made before it.
-fn report_analysis_failure(failure: &AnalysisFailure) -> ExitCode {
-    match failure {
-        AnalysisFailure::ResourceLimit {
-            limit: AnalysisResourceLimit::Compile(limit),
-            ..
-        } if limit.kind() == ResourceLimitKind::ImageBytes => report_simple_error(
-            Code::CliCompilerResourceLimit.as_str(),
-            "analysis stopped: function bodies alone exceed the program image limit; \
-             findings before the stop are not shown",
-        ),
-        AnalysisFailure::ResourceLimit { limit, .. } => report_simple_error(
-            Code::CliCompilerResourceLimit.as_str(),
-            &resource_limit_message(limit.description()),
-        ),
-        AnalysisFailure::Invariant { .. } => report_simple_error(
-            Code::CliCompilerInvariant.as_str(),
-            "the project could not be checked",
-        ),
-    }
-    ExitCode::FAILURE
-}
-
-/// A compile failure on the clean-analysis path. A clean floor makes the diagnostic arm
-/// unreachable, but the mapping is total: diagnostics are printed with spans, and a
-/// fixed bound or an invariant becomes its fixed code line.
-fn report_compile_failure(failure: &CompileFailure) -> ExitCode {
+/// A check failure: diagnostics are printed with spans, and a fixed bound or an
+/// invariant becomes its fixed code line with no location. An exhausted bound names
+/// itself in the bound owner's own words, as `image` and `client` report it; an opaque
+/// invariant has nothing to name. The image byte ceiling reaches `check` as the
+/// settled-body stop, which discards the findings made before it.
+fn report_check_failure(failure: &CompileFailure) -> ExitCode {
     match failure {
         CompileFailure::Diagnostics(diagnostics) => {
             for diagnostic in diagnostics {
                 eprintln!("{}", diagnostic_line(diagnostic));
             }
+        }
+        CompileFailure::ResourceLimit(limit) if limit.kind() == ResourceLimitKind::ImageBytes => {
+            report_simple_error(
+                Code::CliCompilerResourceLimit.as_str(),
+                "analysis stopped: function bodies alone exceed the program image limit; \
+                 findings before the stop are not shown",
+            )
         }
         CompileFailure::ResourceLimit(limit) => report_simple_error(
             Code::CliCompilerResourceLimit.as_str(),

@@ -54,7 +54,7 @@ pub use analysis::{
 pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,
     MAX_PARSED_FILE_BYTES, MAX_QUERY_PARSE_TRANSIENT_BYTES, NonEmptySourceDiagnostics,
-    ResourceLimitKind, TestEntry, compile, compile_with_tests,
+    ResourceLimitKind, TestEntry, check, compile, compile_with_tests,
 };
 pub use decl::{DeclarationNamespace, RefusalReport, SourceStage};
 pub use demand::{DemandSummary, DurableNaming, RootDemand};

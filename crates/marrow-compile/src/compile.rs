@@ -679,12 +679,22 @@ pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Compi
     let built = drive(project, TestMode::Include)
         .map_err(CompileFailure::ResourceLimit)?
         .into_built()?;
-    Ok(CompiledTests {
-        image: built.image,
-        exports: built.exports,
-        tests: built.tests,
-        naming: built.naming,
-    })
+    Ok(built.into())
+}
+
+/// Check a captured project as `marrow check` does: one drive with tests included,
+/// projected to the complete bounded diagnostic union over every stage and module —
+/// the set the editor snapshot reports, not the first non-empty stage `compile` reports
+/// — and, for a clean program, the encoded test-inclusive image for independent
+/// verification. The image is the one [`compile_with_tests`] encodes from the same
+/// drive, so a bound only the test entries cross refuses here while the production
+/// [`compile`] still fits. The editor-fact retention bound is not consulted: no editor
+/// fact is published.
+pub fn check(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
+    let built = drive(project, TestMode::Include)
+        .map_err(CompileFailure::ResourceLimit)?
+        .into_checked()?;
+    Ok(built.into())
 }
 
 /// The image, export directory, and (when included) test directory a compilation
@@ -696,12 +706,23 @@ struct Built {
     naming: DurableNaming,
 }
 
+impl From<Built> for CompiledTests {
+    fn from(built: Built) -> Self {
+        CompiledTests {
+            image: built.image,
+            exports: built.exports,
+            tests: built.tests,
+            naming: built.naming,
+        }
+    }
+}
+
 /// The staged outcome of one analysis/lowering pass over a project. Diagnostics are
-/// bucketed by the stage that produced them, so a single traversal serves both the
+/// bucketed by the stage that produced them, so a single traversal serves the
 /// production compile — which projects the first non-empty stage and thereby
-/// reproduces the historical staged early-return byte for byte — and the editor
-/// analysis snapshot, which consumes every stage. There is no analyze/compile mode
-/// flag forking control flow: the traversal is one and the same; only the projection
+/// reproduces the historical staged early-return byte for byte — and the complete
+/// union the editor analysis snapshot and `check` consume. There is no mode flag
+/// forking control flow: the traversal is one and the same; only the projection
 /// differs.
 struct Driven {
     /// Invalid-UTF-8 and syntax diagnostics from every module, parseable or
@@ -1042,7 +1063,7 @@ impl Artifacts {
 /// the image-policy verdict out of the semantic outcome: the analysis path consumes
 /// this value without ever encoding, so no image is allocated on it and no public
 /// image bound is reachable from it.
-struct CheckedProgram {
+pub(crate) struct CheckedProgram {
     draft: ImageDraft,
     exports: Vec<ExportEntry>,
     tests: Vec<TestEntry>,
@@ -1050,9 +1071,10 @@ struct CheckedProgram {
 }
 
 impl CheckedProgram {
-    /// The production projection: encode the checked draft into canonical image bytes.
-    /// This is the single point at which a public image-policy bound is consulted, and
-    /// [`Driven::into_built`] is its only caller.
+    /// Encode the checked draft into canonical image bytes. This is the single point at
+    /// which a public image-policy bound is consulted; the production projection
+    /// [`Driven::into_built`] and the check projection [`Driven::into_checked`] are its
+    /// only callers.
     fn encode(self) -> Result<Built, ImagePolicyOutcome> {
         match self.draft.encode() {
             Ok(image) => Ok(Built {
@@ -1062,6 +1084,17 @@ impl CheckedProgram {
                 naming: self.naming,
             }),
             Err(error) => Err(image_build_outcome(error)),
+        }
+    }
+}
+
+impl From<ImagePolicyOutcome> for CompileFailure {
+    fn from(outcome: ImagePolicyOutcome) -> Self {
+        match outcome {
+            ImagePolicyOutcome::ResourceLimit(limit) => CompileFailure::ResourceLimit(limit),
+            ImagePolicyOutcome::Invariant(cause) => {
+                CompileFailure::Invariant(CompileInvariant(cause))
+            }
         }
     }
 }
@@ -1111,14 +1144,28 @@ impl Driven {
         if let Some(failure) = stage_failure(structural) {
             return Err(failure);
         }
-        match checked?.encode() {
-            Ok(built) => Ok(built),
-            Err(ImagePolicyOutcome::ResourceLimit(limit)) => {
-                Err(CompileFailure::ResourceLimit(limit))
-            }
-            Err(ImagePolicyOutcome::Invariant(cause)) => {
-                Err(CompileFailure::Invariant(CompileInvariant(cause)))
-            }
+        Ok(checked?.encode()?)
+    }
+
+    /// Project the check result: the complete diagnostic union the editor snapshot
+    /// reads, resolved under the same precedence, and for a checked program the
+    /// encoded image. The retained editor facts and per-file outline bounds are
+    /// dropped unread: a fact ceiling bounds what a snapshot publishes, and this
+    /// projection publishes none. A capacity stop or a resource limit arrives here
+    /// with no program, so nothing is encoded for it.
+    fn into_checked(self) -> Result<Built, CompileFailure> {
+        let Self {
+            parse,
+            structural,
+            semantic,
+            facts: _,
+            symbol_bounded_files: _,
+        } = self;
+        match analyze_outcome(parse, structural, semantic) {
+            Analyzed::Checked(program) => Ok(program.encode()?),
+            Analyzed::Diagnostics(diagnostics) => Err(CompileFailure::Diagnostics(diagnostics)),
+            Analyzed::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
+            Analyzed::Invariant(invariant) => Err(CompileFailure::Invariant(invariant)),
         }
     }
 }
@@ -1130,6 +1177,8 @@ impl Driven {
 /// runs over whatever parsed cleanly; the projection decides what the production
 /// compile reports.
 fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResourceLimit> {
+    #[cfg(test)]
+    tests::observe_drive();
     // The admission proof carries one coordinate per module, so every fact this pass
     // retains has a coordinate before the first one allocates.
     let admitted = DriveInputAdmission::check(project)?;
@@ -2302,13 +2351,18 @@ fn lower_declared_tests(
     })
 }
 
-/// The complete diagnostic picture the editor analysis snapshot consumes: every stage's
-/// diagnostics over every module — the resilient union, not the first-non-empty
-/// projection the production compile takes — or the dominating non-diagnostic failure.
+/// The complete diagnostic picture of one drive: every stage's diagnostics over every
+/// module — the resilient union, not the first-non-empty projection the production
+/// compile takes — or the dominating non-diagnostic failure. The editor snapshot and
+/// `check` both consume it.
 pub(crate) enum Analyzed {
-    /// The complete bounded diagnostic set, in compiler order (empty for a clean
-    /// project). A snapshot is producible.
-    Diagnostics(Vec<SourceDiagnostic>),
+    /// The union is empty and the semantic pass produced a checked program. It carries
+    /// the draft, not an image: the analysis snapshot discards it without encoding, and
+    /// `check` encodes it once.
+    Checked(Box<CheckedProgram>),
+    /// The complete bounded diagnostic set, in compiler order. Statically nonempty, so
+    /// a partial or discarded set can never read as a clean result.
+    Diagnostics(NonEmptySourceDiagnostics),
     /// An aggregate resource bound with no diagnostic to dominate it.
     ResourceLimit(CompileResourceLimit),
     /// An opaque compiler-coherence failure that dominates everything.
@@ -2349,16 +2403,29 @@ pub(crate) fn analyze_project(
 }
 
 /// Resolve the complete diagnostic outcome under the shared precedence from the driven
-/// stage terminals. Analysis alone creates a temporary fourth collector that
-/// consumes parse, then structural, then semantic diagnostics before one
-/// finish — the ordered cross-stage union, in which an OwnedBytes limit may
-/// strengthen to Count across stages (the production projection never merges
-/// stages, so it never strengthens across them).
+/// stage terminals. A temporary fourth collector consumes parse, then structural, then
+/// semantic diagnostics before one finish — the ordered cross-stage union, in which an
+/// OwnedBytes limit may strengthen to Count across stages (the production projection
+/// never merges stages, so it never strengthens across them).
 fn analyze_outcome(
     parse: BoundedDiagnostics,
     structural: BoundedDiagnostics,
     semantic: SemanticOutcome,
 ) -> Analyzed {
+    /// What the semantic pass left beside the union: the checked program, or why an
+    /// empty complete union is not one.
+    enum BesideUnion {
+        Checked(Box<CheckedProgram>),
+        /// The semantic terminal was logically empty. An unavailable artifact always
+        /// follows a refusal that reported, so an empty union here is the same
+        /// empty-boundary invariant the production projection reports.
+        EmptyTerminal(CompileStage),
+        /// A semantic stop beneath a precheck finding. The precheck terminal is
+        /// logically non-empty, so the union cannot be empty; the arm keeps the
+        /// mapping total without an abort.
+        Stopped(CompileResourceLimit),
+    }
+
     // The parse and structural prechecks preempt the semantic pass's resource limit in
     // the production compile: `into_built` returns those stages before it. So a real
     // precheck diagnostic dominates a semantic resource limit here too, and the
@@ -2369,28 +2436,41 @@ fn analyze_outcome(
     let mut union = DiagnosticCollector::new();
     union.absorb(parse);
     union.absorb(structural);
-    match semantic {
+    let beside = match semantic {
         SemanticOutcome::Invariant(cause) => {
             return Analyzed::Invariant(CompileInvariant(cause));
         }
-        SemanticOutcome::Diagnostics(semantic, _) => union.absorb(semantic),
+        SemanticOutcome::Diagnostics(semantic, stage) => {
+            union.absorb(semantic);
+            BesideUnion::EmptyTerminal(stage)
+        }
         // A checked program contributes no diagnostic and is never encoded here: the
-        // only image-policy bound the analysis path reaches is the settled-body byte
+        // only image-policy bound this projection reaches is the settled-body byte
         // ceiling, which arrives as the semantic resource limit below.
-        SemanticOutcome::Checked(_) => {}
+        SemanticOutcome::Checked(program) => BesideUnion::Checked(program),
         // A semantic bound the pass could not run past. It is a resource limit for
         // the same reason a precheck one is — no source construct is at fault — and
         // it yields to a real precheck diagnostic like the other semantic arms.
         SemanticOutcome::ResourceLimit(limit) if !precheck_present => {
             return Analyzed::ResourceLimit(limit);
         }
-        SemanticOutcome::ResourceLimit(..) => {}
-    }
-    match union.finish() {
-        BoundedDiagnostics::Complete { rows, .. } => Analyzed::Diagnostics(rows),
+        SemanticOutcome::ResourceLimit(limit) => BesideUnion::Stopped(limit),
+    };
+    let rows = match union.finish() {
+        BoundedDiagnostics::Complete { rows, .. } => rows,
         BoundedDiagnostics::Limited { limit, .. } => {
-            Analyzed::ResourceLimit(diagnostic_limit_failure(limit))
+            return Analyzed::ResourceLimit(diagnostic_limit_failure(limit));
         }
+    };
+    match NonEmptySourceDiagnostics::new(rows) {
+        Some(diagnostics) => Analyzed::Diagnostics(diagnostics),
+        None => match beside {
+            BesideUnion::Checked(program) => Analyzed::Checked(program),
+            BesideUnion::EmptyTerminal(stage) => {
+                Analyzed::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(stage)))
+            }
+            BesideUnion::Stopped(limit) => Analyzed::ResourceLimit(limit),
+        },
     }
 }
 

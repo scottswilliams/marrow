@@ -1,8 +1,8 @@
 //! `marrow check`: the human-shaped default demand summary and the full per-export
 //! `--demand` form.
 //!
-//! A project travels the real production path through the built binary — capture, the
-//! resilient analysis floor, then compile and verify. On a clean check the default
+//! A project travels the real production path through the built binary — capture, one
+//! compiler drive with tests included, then encode and verify. On a clean check the default
 //! output summarizes each export's verifier-reconstructed durable demand grouped by
 //! module: exports that share an identical demand are listed once, each demand names its
 //! roots with a child-place count, and storeless exports collapse to one note per
@@ -394,5 +394,68 @@ fn the_later_checks_reorder_within_and_across_files() {
             "src/app.mw:4:12: check.type: `missingHere` is not in scope",
         ],
         "the line-7 alias error precedes the line-4 body error: {stderr}"
+    );
+}
+
+/// A project whose declaration outline crosses the editor snapshot's retained fact
+/// count while its image fits: seventeen modules of 4,000 aliases each beside one
+/// export. The per-file outline stays under `MAX_DOCUMENT_SYMBOLS_PER_FILE`, so every
+/// module contributes to the global count the ceiling is stated over.
+fn over_fact_count_sources() -> Vec<(String, String)> {
+    let per_file = 4_000u64;
+    assert!(per_file < marrow_compile::MAX_DOCUMENT_SYMBOLS_PER_FILE);
+    let files = (marrow_compile::MAX_SNAPSHOT_FACT_COUNT / per_file) + 2;
+    let mut sources = vec![(
+        "src/main.mw".to_string(),
+        "pub fn answer(): int {\n    return 1\n}\n".to_string(),
+    )];
+    for file in 0..files {
+        let mut source = format!("module wide{file}\n\n");
+        for index in 0..per_file {
+            source.push_str(&format!("alias W{file}x{index} = int\n"));
+        }
+        sources.push((format!("src/wide{file}.mw"), source));
+    }
+    sources
+}
+
+/// The editor-fact retention bound is a snapshot bound, not a check bound. Over the same
+/// input `analyze` refuses with the typed fact count, `marrow_compile::check` encodes an
+/// image the independent verifier seals, and the built binary's `check` describes it.
+#[test]
+fn check_succeeds_where_the_editor_snapshot_cannot_retain_its_facts() {
+    use marrow_compile::{AnalysisFailure, AnalysisResourceLimit, InputRevision};
+    use marrow_project::{CaptureLimits, CapturedFile, Manifest};
+
+    let sources = over_fact_count_sources();
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let captured = sources
+        .iter()
+        .map(|(path, source)| CapturedFile::new(path.clone(), source.as_bytes().to_vec()))
+        .collect();
+    let input = std::sync::Arc::new(
+        marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+            .expect("capture project"),
+    );
+    match marrow_compile::analyze(std::sync::Arc::clone(&input), InputRevision::new(1)) {
+        Err(AnalysisFailure::ResourceLimit {
+            limit: AnalysisResourceLimit::SnapshotFactCount { limit },
+            ..
+        }) => assert_eq!(limit, marrow_compile::MAX_SNAPSHOT_FACT_COUNT),
+        Err(_) => panic!("the fixture crosses the fact count ceiling and nothing else"),
+        Ok(_) => panic!("the fixture must cross the fact count ceiling"),
+    }
+    let checked = marrow_compile::check(&input).expect("the fact ceiling does not refuse check");
+    marrow_verify::verify(&checked.image.bytes).expect("the checked image verifies");
+
+    let mut project = Project::new();
+    for (path, source) in &sources {
+        project = project.source(path, source);
+    }
+    let output = project.run_cli("fact-ceiling", &["check"]);
+    assert!(output.success(), "{}", output.stderr_text());
+    assert_eq!(
+        output.stdout_text(),
+        "1 export across 1 module\n\nmain: 1 export, all storeless\n"
     );
 }

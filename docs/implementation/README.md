@@ -40,13 +40,22 @@ Template proofs use the same append path and erase their additions on completion
 The draft keeps a saturating charge of the bytes its retained bodies alone commit
 the image to (one byte per instruction plus one span row per span), snapshotted and
 restored with its transactions. After each settled body the compiler polls it; once
-the charge exceeds the image byte ceiling, both compilation and editor analysis stop
-lowering and report the `ImageBytes` resource limit without a snapshot. An invariant
+the charge exceeds the image byte ceiling, compilation, `check`, and editor analysis
+stop lowering and report the `ImageBytes` resource limit without a snapshot. An invariant
 discovered in executed work is reported ahead of that stop and of parse or
 structural findings. A stop retains at most 105,865 instructions: the largest prefix
 under the charge (40,329 one-byte instructions) and the body that crossed it (at most
 65,536); the lowerer's in-flight buffer for a later body is unretained. This is a
 retention bound, not a capacity claim.
+
+One drive of the compiler serves three projections. `compile` and
+`compile_with_tests` report the first non-empty stage's diagnostics and encode
+the production or test-inclusive image. `analyze` reports the complete union of
+every stage's diagnostics and publishes the retained editor facts as an
+`AnalysisSnapshot`, never encoding. `check`, which `marrow check` calls, drives
+once with tests included, reports that same complete union, and encodes the
+test-inclusive image once for the verifier; it reads no editor fact, so the
+snapshot's fact retention bound does not refuse it.
 
 A tool sees a project through two layers. `marrow-project` is pure: manifest,
 module discovery, and the `.marrow/ids` ledger, all over bytes a caller supplies.

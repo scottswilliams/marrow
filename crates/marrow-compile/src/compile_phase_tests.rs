@@ -627,10 +627,10 @@ fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
 /// The analysis union reads the same terminals the production projection
 /// does, row by row: a semantic invariant passes through whether or not
 /// prechecks reported; with prechecks present a semantic resource limit
-/// is suppressed for the precheck union; a semantic empty terminal is a
-/// truthful empty snapshot (where production reports the empty-boundary
-/// invariant above); and the union of stages may cross a ceiling no
-/// single stage crossed.
+/// is suppressed for the precheck union; a semantic empty terminal is the
+/// same empty-boundary invariant production reports above, never an empty
+/// clean result; and the union of stages may cross a ceiling no single
+/// stage crossed.
 #[test]
 fn the_analysis_union_follows_the_stage_table() {
     let row = |line| diagnostic(Code::CheckType.as_str(), line);
@@ -655,15 +655,19 @@ fn the_analysis_union_follows_the_stage_table() {
         Analyzed::Invariant(_)
     ));
 
-    // A semantic empty terminal with empty prechecks is an empty snapshot.
-    let Analyzed::Diagnostics(rows) = analyze_outcome(
+    // A semantic empty terminal with empty prechecks is the empty-boundary invariant,
+    // with its stage.
+    let Analyzed::Invariant(invariant) = analyze_outcome(
         empty_terminal(),
         empty_terminal(),
         SemanticOutcome::Diagnostics(empty_terminal(), CompileStage::BodyLowering),
     ) else {
-        panic!("a clean union is a producible snapshot")
+        panic!("an empty semantic terminal is not a clean union")
     };
-    assert!(rows.is_empty());
+    assert!(matches!(
+        invariant.0,
+        InvariantCause::EmptyDiagnostics(CompileStage::BodyLowering)
+    ));
 
     // The ordered union: parse, then structural, then semantic rows.
     let Analyzed::Diagnostics(rows) = analyze_outcome(
@@ -673,7 +677,7 @@ fn the_analysis_union_follows_the_stage_table() {
     ) else {
         panic!("a bounded union is a producible snapshot")
     };
-    assert_eq!(rows, vec![row(1), row(2), row(3)]);
+    assert_eq!(rows.as_slice(), &[row(1), row(2), row(3)]);
 
     // Analysis alone strengthens an OwnedBytes limit to Count across
     // stages: a byte-limited parse terminal plus enough semantic rows to
@@ -1059,37 +1063,118 @@ fn a_key_table_is_constructed_once_per_declared_tuple() {
 
 // ---- Image capacity: the semantic drive stops once retained bodies cannot fit.
 
-/// The instruction population the driver has retained through settled bodies, when a
-/// test is observing. Template proofs are erased with their transaction and never
-/// settle, so the sum is exactly what the draft holds at each poll.
-fn retained_population() -> &'static std::thread::LocalKey<std::cell::Cell<Option<usize>>> {
+/// The work one compiler entry performs, when a test is observing: the driver visits
+/// it made, and the bodies and instructions those visits settled into a draft. Template
+/// proofs are erased with their transaction and never settle, so the instruction sum is
+/// exactly what the draft holds at each poll.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Work {
+    drives: usize,
+    bodies: usize,
+    instructions: usize,
+}
+
+fn observed_work() -> &'static std::thread::LocalKey<std::cell::Cell<Option<Work>>> {
     thread_local! {
-        static RETAINED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+        static WORK: std::cell::Cell<Option<Work>> = const { std::cell::Cell::new(None) };
     }
-    &RETAINED
+    &WORK
+}
+
+pub(super) fn observe_drive() {
+    observed_work().with(|slot| {
+        let Some(work) = slot.get() else { return };
+        slot.set(Some(Work {
+            drives: work.drives + 1,
+            ..work
+        }));
+    });
 }
 
 pub(super) fn observe_settled_body(
     draft: &marrow_image::ImageDraft,
     settled: marrow_image::FuncId,
 ) {
-    retained_population().with(|slot| {
-        let Some(population) = slot.get() else { return };
+    observed_work().with(|slot| {
+        let Some(work) = slot.get() else { return };
         let code = draft
             .function_code(settled)
             .expect("a settled body is retained by the draft");
-        slot.set(Some(population + code.len()));
+        slot.set(Some(Work {
+            bodies: work.bodies + 1,
+            instructions: work.instructions + code.len(),
+            ..work
+        }));
     });
 }
 
-/// Run `drive` while counting the instruction population settled bodies retain.
-fn observing<T>(drive: impl FnOnce() -> T) -> (T, usize) {
-    retained_population().with(|slot| slot.set(Some(0)));
-    let result = drive();
-    let population = retained_population()
+/// Run one compiler entry while counting its driver visits and settled bodies.
+fn observing_work<T>(entry: impl FnOnce() -> T) -> (T, Work) {
+    observed_work().with(|slot| slot.set(Some(Work::default())));
+    let result = entry();
+    let work = observed_work()
         .with(|slot| slot.take())
-        .expect("observation stays enabled across the drive");
-    (result, population)
+        .expect("observation stays enabled across the entry");
+    (result, work)
+}
+
+/// Run one compiler entry while counting the instruction population its settled bodies
+/// retain.
+fn observing<T>(entry: impl FnOnce() -> T) -> (T, usize) {
+    let (result, work) = observing_work(entry);
+    (result, work.instructions)
+}
+
+/// One ordinary body, one generic instance shared by production and a test, and one
+/// test body: three settled bodies, so a check that skipped any population would show
+/// here as well as a check that visited one twice.
+const SHARED_GENERIC_WITH_TEST: &str = "module main\n\n\
+    fn identity<T>(x: T): T {\n    return x\n}\n\n\
+    pub fn f(): int {\n    return identity(1)\n}\n\n\
+    test \"identity holds\" {\n    assert identity(2) == 2\n}\n";
+
+/// `check` is one driver visit that settles exactly the test-inclusive population, and
+/// the image it encodes is the one `compile_with_tests` encodes from the same drive.
+#[test]
+fn check_drives_once_and_settles_the_test_inclusive_population() {
+    let input = capacity_project(&[("src/main.mw", SHARED_GENERIC_WITH_TEST.to_string())]);
+    let (with_tests, reference) = observing_work(|| crate::compile_with_tests(&input));
+    let with_tests = with_tests.expect("the fixture compiles with its test");
+    assert_eq!(reference.drives, 1);
+    assert_eq!(
+        reference.bodies, 3,
+        "f, identity<int>, and the test body settle"
+    );
+
+    let (checked, work) = observing_work(|| crate::check(&input));
+    let checked = checked.expect("the fixture checks clean");
+    assert_eq!(work, reference, "check is exactly one test-inclusive drive");
+    assert_eq!(checked.image.bytes, with_tests.image.bytes);
+}
+
+/// The check projection reads no editor fact: the same checked program projects to the
+/// same image whether its facts were retained complete or discarded at a fact ceiling.
+/// The analysis projection over the discarded terminal still refuses, as its consumer
+/// contract requires.
+#[test]
+fn check_encodes_the_same_image_over_complete_and_limited_editor_facts() {
+    use crate::analysis::{AnalysisFactLimit, BoundedAnalysisFacts, MAX_SNAPSHOT_FACT_COUNT};
+
+    let input = capacity_project(&[("src/main.mw", SHARED_GENERIC_WITH_TEST.to_string())]);
+    let complete = super::drive(&input, super::TestMode::Include).expect("admitted");
+    assert!(matches!(complete.facts, BoundedAnalysisFacts::Complete(_)));
+    let mut limited = super::drive(&input, super::TestMode::Include).expect("admitted");
+    limited.facts = BoundedAnalysisFacts::Limited {
+        limit: AnalysisFactLimit::Count {
+            limit: MAX_SNAPSHOT_FACT_COUNT,
+        },
+    };
+
+    let complete = complete.into_checked().expect("complete facts check");
+    let limited = limited.into_checked().expect("limited facts still check");
+    assert_eq!(complete.image.bytes, limited.image.bytes);
+    assert_eq!(complete.exports.len(), 1);
+    assert_eq!(limited.tests.len(), 1);
 }
 
 use marrow_image::bounds::{MAX_CODE_BYTES, MAX_IMAGE_BYTES, SPAN_ROW_BYTES};
@@ -1214,6 +1299,14 @@ fn a_refused_shape_stops_the_drive_within_the_retention_bound() {
         Ok(_) => panic!("analysis does not mint a snapshot past the stop"),
     }
     assert_eq!(population, stop_population);
+
+    // `check` stops at the same body and reports the stop from its one drive: no
+    // second drive follows it, and the twenty settled bodies are all it retained.
+    let (result, work) = observing_work(|| crate::check(&input));
+    image_bytes_limit(result);
+    assert_eq!(work.drives, 1);
+    assert_eq!(work.bodies, 20);
+    assert_eq!(work.instructions, stop_population);
 }
 
 /// Test bodies settle under the same stop: the production image excludes them and
@@ -1237,6 +1330,12 @@ fn test_bodies_settle_under_the_same_stop() {
     assert_eq!(population, 16 * wide_body_instructions(512));
     let (result, population) = observing(|| crate::compile_with_tests(&input));
     image_bytes_limit(result);
+    let (checked, check_population) = observing(|| crate::check(&input));
+    image_bytes_limit(checked);
+    assert_eq!(
+        check_population, population,
+        "check settles the test-inclusive set"
+    );
     assert_eq!(
         population,
         16 * wide_body_instructions(512) + 4 * test_body_instructions
@@ -1406,5 +1505,5 @@ fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
     else {
         panic!("a precheck finding is reported over the stop")
     };
-    assert_eq!(rows, vec![row()]);
+    assert_eq!(rows.as_slice(), &[row()]);
 }

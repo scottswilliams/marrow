@@ -98,6 +98,18 @@ A file that does not parse is left as it is and reported with `parse.syntax`.
 file, 1-based line, and column, as in `src/docs/cli/shelf.mw:26:12: check.type:
 found int where string is required`. It opens no store and runs no code.
 
+`check` runs the compiler once over the project with its `test` declarations
+included, so a diagnostic in a test body is reported beside the others, and
+every stage's diagnostics over every module are reported together. A project
+that checks clean has that same test-inclusive program encoded and verified,
+and the demand below is reconstructed by the verifier from that image. A fixed
+bound that only the test entries cross therefore refuses `check` while
+`marrow run` and `marrow image`, whose image excludes tests, still succeed: a
+project of one export and 257 `test` declarations reports
+`cli.compiler_resource_limit: the compiler reached a fixed resource limit: the
+test entry table is full` from `check` and runs its export. The editor's
+snapshot fact retention bound is not consulted by `check`.
+
 A project that checks clean prints its access demand: the durable places each
 export reads and writes ([access
 demand](../language/durable-places.md#access-demand)). The default form groups

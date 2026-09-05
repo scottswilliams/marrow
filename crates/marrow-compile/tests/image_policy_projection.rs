@@ -28,9 +28,9 @@
 use std::sync::Arc;
 
 use marrow_compile::{
-    ActiveCallOutcome, AnalysisFailure, AnalysisResourceLimit, CompileFailure, CompletionOutcome,
-    Fact, InputRevision, MAX_COMPLETION_CANDIDATES, ResourceLimitKind, analyze, compile,
-    compile_with_tests,
+    ActiveCallOutcome, AnalysisFailure, AnalysisResourceLimit, CompileFailure, CompiledTests,
+    CompletionOutcome, Fact, InputRevision, MAX_COMPLETION_CANDIDATES, ResourceLimitKind, analyze,
+    check, compile, compile_with_tests,
 };
 use marrow_project::{FileIdentity, ProjectInput};
 
@@ -137,10 +137,11 @@ fn over_functions() -> (Probes, String) {
     (probes(main), extra)
 }
 
-/// Both production entries refuse with exactly `kind`, and the analysis path over the
-/// same project yields an ordinary snapshot: no diagnostic, and every query answers
-/// without an unavailability. The queries are the whole point — an image-policy bound
-/// must be invisible to an editor, because the editor never asked for an image.
+/// Both production entries and `check` refuse with exactly `kind`, and the analysis
+/// path over the same project yields an ordinary snapshot: no diagnostic, and every
+/// query answers without an unavailability. The queries are the whole point — an
+/// image-policy bound must be invisible to an editor, because the editor never asked for
+/// an image; `check` asks for one and is refused like the production entries.
 fn assert_projection_only(
     kind: ResourceLimitKind,
     probes: &Probes,
@@ -154,6 +155,10 @@ fn assert_projection_only(
     match compile_with_tests(&project(files)) {
         Err(CompileFailure::ResourceLimit(limit)) => assert_eq!(limit.kind(), kind),
         other => panic!("expected {kind:?} from compile_with_tests, got {other:?}"),
+    }
+    match check(&project(files)) {
+        Err(CompileFailure::ResourceLimit(limit)) => assert_eq!(limit.kind(), kind),
+        other => panic!("expected {kind:?} from check, got {other:?}"),
     }
 
     let revision = InputRevision::new(11);
@@ -438,6 +443,24 @@ fn every_resource_limit_kind_has_exactly_one_owner() {
 
 // ---- Red 4: the frozen corpus.
 
+/// One generic instance shared by an ordinary caller and a test. Including the test
+/// reserves a function slot ahead of the instance, so the test-inclusive image differs
+/// from the production image beyond its test tables; `check` encodes the former.
+const SHARED_GENERIC_WITH_TEST: &str = "module main\n\n\
+    fn identity<T>(x: T): T {\n    return x\n}\n\n\
+    pub fn f(): int {\n    return identity(1)\n}\n\n\
+    test \"identity holds\" {\n    assert identity(2) == 2\n}\n";
+
+/// One export and `MAX_TEST_ENTRIES + 1` uniquely titled tests. Every other bound is far
+/// away, so the test entry table is the one ceiling the test-inclusive image crosses.
+fn over_test_entries() -> String {
+    let mut source = String::from("module main\n\npub fn f(): int {\n    return 1\n}\n\n");
+    for index in 0..=marrow_image::bounds::MAX_TEST_ENTRIES {
+        source.push_str(&format!("test \"t{index}\" {{\n    assert true\n}}\n\n"));
+    }
+    source
+}
+
 /// The durable identity ledger the `Wide` resource and its `^wide` root need: the
 /// application, the product, one identity per declared field, the root, and its key
 /// column.
@@ -504,6 +527,16 @@ fn corpus() -> Vec<Corpus> {
             ids: Some(item_ids()),
         },
         Corpus {
+            name: "shared-generic",
+            files: vec![("src/main.mw", SHARED_GENERIC_WITH_TEST.to_string())],
+            ids: None,
+        },
+        Corpus {
+            name: "over-test-entries",
+            files: vec![("src/main.mw", over_test_entries())],
+            ids: None,
+        },
+        Corpus {
             name: "over-exports",
             files: vec![("src/main.mw", over_exports().source)],
             ids: None,
@@ -560,7 +593,11 @@ enum ImageDigest {
 }
 
 fn image_digest(input: &ProjectInput) -> ImageDigest {
-    match compile_with_tests(input) {
+    digest_of(compile_with_tests(input))
+}
+
+fn digest_of(result: Result<CompiledTests, CompileFailure>) -> ImageDigest {
+    match result {
         Ok(compiled) => ImageDigest::Accepted {
             bytes: compiled.image.bytes.len(),
             image_id: compiled.image.image_id.to_hex(),
@@ -699,10 +736,19 @@ const FROZEN_ACCEPTED: &[FrozenDigest] = &[
                  0, 0, 0, 0, 0, 0, 0, 4]): (Child, \"note\"), LedgerIdBytes([0, 0, 0, 0, 0, \
                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]): (Root, \"wide\")} }",
     },
+    FrozenDigest {
+        name: "shared-generic",
+        bytes: 436,
+        image_id: "c4d26d16c9074de78adf8cd677f31b41defcf95b83e9fe6754c8a9623695e6c5",
+        exports: &[("main", "f", F_ID)],
+        tests: &[("identity holds", "main", "src/main.mw", 11, 6)],
+        naming: NO_NAMING,
+    },
 ];
 
 /// The corpus entries the projection refuses, and the exact bound each reports.
 const FROZEN_REFUSED: &[(&str, &str, u64)] = &[
+    ("over-test-entries", "TestEntries", 256),
     ("over-exports", "Exports", 256),
     ("over-consts", "Consts", 1024),
     ("over-functions", "Functions", 4096),
@@ -729,6 +775,29 @@ const FROZEN_FULL_IMAGE_DIGESTS: &[(&str, &str)] = &[
     (
         "durable",
         "4e740593a18ce82a2418888c3c3aae6b83449dd30900de8dba03346b37800f2d",
+    ),
+    (
+        "shared-generic",
+        "4adc69e1bf93173f722cfe6d45a3bb996221ff34350cbf79c5004d35a0411276",
+    ),
+];
+
+/// The production `compile` image of the two entries whose test-inclusive image
+/// diverges from it: the shared generic, whose instance index moves when a test slot is
+/// reserved ahead of it, and the over-test-entries project, which `compile` accepts
+/// while the test-inclusive projection refuses. Both are the bytes the base produced;
+/// `check` encoding the test-inclusive image moves neither.
+const FROZEN_PRODUCTION_IMAGE_DIGESTS: &[(&str, usize, &str)] = &[
+    (
+        "shared-generic",
+        309,
+        "ae26b8fb4a5bbd002b3df25a45375a6a771262bb06262f31f65b9071d8e377de",
+    ),
+    // Its 257 tests are excluded, so this is exactly the `unit` entry's image.
+    (
+        "over-test-entries",
+        241,
+        "1d722ce25469d85c56178bed2844b5c2f5629773daa5f3da7506e6b953feae0d",
     ),
 ];
 
@@ -822,5 +891,72 @@ fn the_image_projection_is_byte_identical_to_the_base() {
             "the image projection moved for `{}`",
             actual.0,
         );
+    }
+}
+
+/// Red 5. `check` encodes exactly the image `compile_with_tests` encodes: over the whole
+/// corpus the two digests agree, accepted and refused alike. The production `compile`
+/// image of the two entries whose test-inclusive image diverges is frozen separately, so
+/// the check projection provably moved nothing `run` and `image` ship.
+#[test]
+fn check_encodes_the_test_inclusive_image_and_moves_no_production_byte() {
+    let mut production = FROZEN_PRODUCTION_IMAGE_DIGESTS.iter();
+    for entry in corpus() {
+        let input = project_with_ids(&entry.files, entry.ids.as_deref());
+        assert_eq!(
+            digest_of(check(&input)),
+            image_digest(&input),
+            "check diverged from compile_with_tests for `{}`",
+            entry.name,
+        );
+        if let Some((name, bytes, digest)) = production.clone().next()
+            && *name == entry.name
+        {
+            production.next();
+            let compiled = compile(&input)
+                .unwrap_or_else(|_| panic!("the production image of `{name}` is accepted"));
+            assert_eq!(
+                compiled.image.bytes.len(),
+                *bytes,
+                "`{name}` production bytes"
+            );
+            assert_eq!(
+                marrow_image::image_id(&compiled.image.bytes).to_hex(),
+                *digest,
+                "the production image bytes moved for `{name}`",
+            );
+            assert_ne!(
+                digest_of(check(&input)),
+                ImageDigest::Accepted {
+                    bytes: compiled.image.bytes.len(),
+                    image_id: compiled.image.image_id.to_hex(),
+                    exports: Vec::new(),
+                    tests: Vec::new(),
+                    naming: String::new(),
+                },
+                "`{name}` is chosen because its test-inclusive image is not its production image",
+            );
+        }
+    }
+    assert!(
+        production.next().is_none(),
+        "every pinned production entry was produced by the corpus",
+    );
+}
+
+/// The 257-test case, stated on its own: the production image fits and is the frozen
+/// one, while `check` and `compile_with_tests` refuse with the test entry bound.
+#[test]
+fn a_project_of_257_tests_checks_as_a_test_entry_refusal_while_its_production_image_fits() {
+    let input = project(&[("src/main.mw", over_test_entries())]);
+    assert!(compile(&input).is_ok());
+    for result in [check(&input), compile_with_tests(&input)] {
+        match result {
+            Err(CompileFailure::ResourceLimit(limit)) => {
+                assert_eq!(limit.kind(), ResourceLimitKind::TestEntries);
+                assert_eq!(limit.limit(), marrow_image::bounds::MAX_TEST_ENTRIES as u64);
+            }
+            other => panic!("expected the test entry bound, got {other:?}"),
+        }
     }
 }

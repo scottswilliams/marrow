@@ -2,11 +2,11 @@
 //! projection that makes that true is the same one an abandoned body's facts would reach.
 //!
 //! The production compile refuses a project whose parse stage produced diagnostics before
-//! it consults the semantic outcome. The analysis projection deliberately does not: it
-//! continues semantic work over the cleanly-parsed modules, and with any parse or
-//! structural precheck present it *suppresses* a semantic invariant and returns the
-//! diagnostic union instead. `analyze` therefore takes the diagnostics arm and reads the
-//! fact terminal on exactly the input where a semantic body was abandoned.
+//! it consults the semantic outcome. The complete-union projection that `analyze` and
+//! `check` share deliberately does not: it continues semantic work over the cleanly-parsed
+//! modules, and with any parse or structural precheck present it yields the diagnostic
+//! union over a semantic resource stop. `analyze` therefore takes the diagnostics arm and
+//! reads the fact terminal on exactly the input where a semantic body was abandoned.
 //!
 //! These pin the live half of that projection — that a clean module's facts really are
 //! published while another module carries a parse diagnostic — so the custody seam beneath

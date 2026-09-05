@@ -65,6 +65,34 @@ fn over_export_project(dir: &Path) {
     std::fs::write(dir.join("src").join("main.mw"), source).expect("write source");
 }
 
+/// One export and 257 uniquely titled tests: the test-inclusive image crosses
+/// `MAX_TEST_ENTRIES` (256) while the production image, which excludes them, fits.
+fn over_test_entries_project(dir: &Path) {
+    std::fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n").expect("write manifest");
+    std::fs::create_dir_all(dir.join("src")).expect("create src");
+    let mut source = String::from("module main\n\npub fn main(): int {\n    return 0\n}\n\n");
+    for i in 0..257 {
+        source.push_str(&format!("test \"t{i}\" {{\n    assert true\n}}\n\n"));
+    }
+    std::fs::write(dir.join("src").join("main.mw"), source).expect("write source");
+}
+
+/// Thirty-two bodies of 512 accumulating statements: the settled bodies alone cross
+/// the image byte ceiling, so the drive stops before it finishes lowering.
+fn over_image_bytes_project(dir: &Path) {
+    std::fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n").expect("write manifest");
+    std::fs::create_dir_all(dir.join("src")).expect("create src");
+    let mut source = String::from("module main\n\n");
+    for index in 0..32 {
+        source.push_str(&format!("pub fn f{index}(): int {{\n    var total = 0\n"));
+        for _ in 0..512 {
+            source.push_str("    total += 1\n");
+        }
+        source.push_str("    return total\n}\n\n");
+    }
+    std::fs::write(dir.join("src").join("main.mw"), source).expect("write source");
+}
+
 fn run_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(MARROW)
         .args(args)
@@ -266,5 +294,55 @@ fn run_jsonl_names_the_export_bound_kind() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("utf8 stdout"),
         "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"kind_detail\":\"Exports\",\"outcome\":\"error\"}\n"
+    );
+}
+
+/// `check` drives once with tests included and encodes that image, so a bound only the
+/// test entries cross refuses the check in the bound owner's words, with no diagnostic
+/// and no demand summary — while the production `run` of the same project, whose image
+/// excludes the tests, succeeds. The two outcomes are stated together because the
+/// difference is the documented contract, not an accident of either command.
+#[test]
+fn check_refuses_a_test_entry_ceiling_that_the_production_run_does_not_reach() {
+    let dir = TempDir::new("check-test-entries");
+    over_test_entries_project(&dir.root);
+    let checked = run_in(&dir.root, &["check", "."]);
+    assert!(
+        !checked.status.success(),
+        "the test-inclusive image is refused"
+    );
+    assert!(
+        checked.stdout.is_empty(),
+        "no demand summary without an image"
+    );
+    assert_eq!(
+        String::from_utf8(checked.stderr).expect("utf8 stderr"),
+        "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
+         test entry table is full\n"
+    );
+
+    let ran = run_in(&dir.root, &["run", "main"]);
+    assert!(
+        ran.status.success(),
+        "the production image excludes the tests and fits: {}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert_eq!(String::from_utf8(ran.stdout).expect("utf8 stdout"), "0\n");
+}
+
+/// The settled-body capacity stop reaches `check` from its one drive and is rendered as
+/// the stop it is — the findings made before it were discarded with the drive — rather
+/// than as an encoder verdict over a finished image.
+#[test]
+fn check_renders_the_capacity_stop_as_a_stop() {
+    let dir = TempDir::new("check-capacity-stop");
+    over_image_bytes_project(&dir.root);
+    let checked = run_in(&dir.root, &["check", "."]);
+    assert!(!checked.status.success());
+    assert!(checked.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(checked.stderr).expect("utf8 stderr"),
+        "cli.compiler_resource_limit: analysis stopped: function bodies alone exceed the \
+         program image limit; findings before the stop are not shown\n"
     );
 }

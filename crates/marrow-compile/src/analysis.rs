@@ -673,7 +673,10 @@ pub fn analyze(
                 limit: AnalysisResourceLimit::Compile(limit),
             });
         }
-        Analyzed::Diagnostics(diagnostics) => diagnostics,
+        Analyzed::Diagnostics(diagnostics) => diagnostics.into_vec(),
+        // The snapshot publishes facts, never an image: the checked program is dropped
+        // here without encoding, so no image-policy bound is reachable from analysis.
+        Analyzed::Checked(_) => Vec::new(),
     };
     // The fact ledger admitted every fact against its ceilings at the push, so the
     // sealed terminal is either the complete retained set or the typed limit that
