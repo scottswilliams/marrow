@@ -411,7 +411,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8], from: usize, to: usize) -> Option<
 /// The fence character and run width when `line` opens a fenced code block.
 fn opening_fence(line: &str) -> Option<(u8, usize)> {
     let trimmed = line.trim_start_matches(' ');
-    for marker in [b'`', b'~'] {
+    for marker in *b"`~" {
         let width = trimmed.bytes().take_while(|byte| *byte == marker).count();
         if width >= 3 {
             return Some((marker, width));

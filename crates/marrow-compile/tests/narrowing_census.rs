@@ -347,7 +347,7 @@ fn arithmetic_operator_at(bytes: &[u8], at: usize) -> Option<usize> {
 /// so a narrow spelling elsewhere in the same statement does not make an unrelated
 /// operator a narrow-carrier site.
 fn operand_window(code: &str, bytes: &[u8], at: usize) -> (usize, usize) {
-    const BOUNDARY: [u8; 9] = [b';', b'{', b'}', b',', b'(', b')', b'=', b'&', b'|'];
+    const BOUNDARY: &[u8; 9] = b";{},()=&|";
     let mut start = at;
     while start > 0 && !BOUNDARY.contains(&bytes[start - 1]) {
         start -= 1;
@@ -364,7 +364,7 @@ fn operand_window(code: &str, bytes: &[u8], at: usize) -> (usize, usize) {
 /// statement delimiters. Used for the compound-assignment forms, whose operands straddle
 /// the `=` an expression window stops at.
 fn statement_window(bytes: &[u8], at: usize) -> (usize, usize) {
-    const BOUNDARY: [u8; 3] = [b';', b'{', b'}'];
+    const BOUNDARY: &[u8; 3] = b";{}";
     let mut start = at;
     while start > 0 && !BOUNDARY.contains(&bytes[start - 1]) {
         start -= 1;
