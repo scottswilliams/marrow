@@ -49,8 +49,10 @@ remain valid. Types stay stable: validity checking does not retroactively turn a
 required read into an optional one. An untested address supports optional reads
 without a presence assumption.
 
-Whole-entry reads remain optional copied values, including reads through an
-address whose earlier presence check has ended. One clearing operation covers
+Whole-entry reads through a tested or traversal binding consume its presence
+fact and yield a complete value. Reads through untested bindings remain optional;
+an invalidated tested binding must be rechecked or recaptured without a presence
+assumption. Detached copies remain valid. One clearing operation covers
 local sparse fields, local map entries and durable sparse fields; the durable
 mark identifies which state is affected. Reference examples, direct-touch tests
 and both applications migrate with these rules.
@@ -58,8 +60,10 @@ and both applications migrate with these rules.
 The compiler composes callee effects once and checks proof uses over resolved
 operations in a forward pass. The image verifier checks types, demand and
 transaction ownership; the kernel checks operation preconditions even for an
-image supplied without source proofs. The first implementation may conservatively
-lose knowledge about different keys in the same entry family. It must preserve ordinary storeless
+image supplied without source proofs. An entry erase invalidates only its exact
+entry family; parent, descendant and sibling families retain their independent
+presence. The first implementation may conservatively lose knowledge about
+different keys in that same family. It must preserve ordinary storeless
 work without another source effect declaration. It adds no first-class address
 values, reference parameters, borrow-region syntax, key-provenance analysis, or
 whole-program fixpoint.
