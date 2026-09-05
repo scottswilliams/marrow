@@ -69,8 +69,9 @@ fn scratch() -> PathBuf {
 /// The report token the owner accepts: derived from the same image the service serves.
 fn approval_token(store: &std::path::Path) -> String {
     let image = marrow_verify::verify(&image_bytes()).expect("verify");
-    let projection = marrow_vm::derive_store_schemas(&image).expect("flat-executable");
-    ProvisionReport::new(store, &image, &projection).token()
+    ProvisionReport::new(store, &marrow_lifecycle::prepare(image))
+        .expect("flat-executable")
+        .token()
 }
 
 /// A `Provision` with a matching approval token provisions the store and receipts the

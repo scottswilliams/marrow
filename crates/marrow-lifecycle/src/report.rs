@@ -11,9 +11,10 @@
 
 use std::path::Path;
 
-use marrow_kernel::durable::{NATIVE_ENGINE_FORMAT_VERSION, StoreProjection};
-use marrow_verify::{CeilingDescriptor, VerifiedImage};
+use marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION;
+use marrow_verify::CeilingDescriptor;
 
+use crate::attachment::PreparedImage;
 use crate::envelope::{EngineKind, StoreEnvelope};
 use crate::head::LogicalHead;
 use crate::image::{active_binding, head_map};
@@ -33,12 +34,16 @@ pub struct ProvisionReport {
 }
 
 impl ProvisionReport {
-    /// Render the report for provisioning `image` at `destination` under `projection`. The
-    /// roots are named from the schema (source spelling); the effects and ceiling are the
-    /// image's demand union in reads/writes terms.
-    pub fn new(destination: &Path, image: &VerifiedImage, projection: &StoreProjection) -> Self {
-        let ceiling = CeilingDescriptor::from_demand_union(image.demand_union());
-        Self {
+    /// Render the report for provisioning the prepared image at `destination`. The roots are
+    /// named from the image's store projection (source spelling); the effects and ceiling
+    /// are the image's demand union in reads/writes terms. An image whose durable shape is
+    /// not executable has no store to provision, so it has no report.
+    pub fn new(destination: &Path, prepared: &PreparedImage) -> Result<Self, ProvisionImageError> {
+        let projection = prepared
+            .projection()
+            .ok_or(ProvisionImageError::NotExecutable)?;
+        let ceiling = CeilingDescriptor::from_demand_union(prepared.image().demand_union());
+        Ok(Self {
             destination: destination.display().to_string(),
             roots: projection
                 .roots()
@@ -47,7 +52,7 @@ impl ProvisionReport {
                 .collect(),
             reads: ceiling.reads(),
             writes: ceiling.writes(),
-        }
+        })
     }
 
     /// The human-readable report, in source vocabulary. Presented to the owner before a first
@@ -184,22 +189,22 @@ impl std::fmt::Display for ProvisionImageError {
 
 impl std::error::Error for ProvisionImageError {}
 
-/// Provision a fresh store for the verified `image` at `dest`, gated by `approval`. Rebuilds
+/// Provision a fresh store for the prepared image at `dest`, gated by `approval`. Rebuilds
 /// the report the approval must match (so an approval accepted for a different store, image,
 /// or destination is refused), mints a fresh store identity, derives the envelope (writer and
 /// engine provenance) and the logical head (active binding + head identity map), and publishes
-/// the store complete-or-not-at-all through [`provision`]. `projection` is the store shape
-/// the caller derived from the image (`marrow_vm::derive_store_schemas`).
+/// the store complete-or-not-at-all through [`provision`]. The preparation is borrowed: the
+/// caller keeps it to attach or import into the store it just provisioned.
 pub fn provision_image(
     dest: &Path,
-    image: &VerifiedImage,
-    projection: StoreProjection,
+    prepared: &PreparedImage,
     approval: &ProvisionApproval,
 ) -> Result<Provisioned, ProvisionImageError> {
-    let report = ProvisionReport::new(dest, image, &projection);
+    let report = ProvisionReport::new(dest, prepared)?;
     if approval.token() != report.token() {
         return Err(ProvisionImageError::Unapproved);
     }
+    let image = prepared.image();
 
     let instance = StoreInstanceId::draw().map_err(ProvisionImageError::Entropy)?;
     let envelope = StoreEnvelope {
@@ -214,13 +219,5 @@ pub fn provision_image(
         head_map(image).map_err(ProvisionImageError::Head)?,
     );
 
-    provision(
-        dest,
-        ProvisionRequest {
-            envelope,
-            head,
-            projection,
-        },
-    )
-    .map_err(ProvisionImageError::Provision)
+    provision(dest, ProvisionRequest { envelope, head }).map_err(ProvisionImageError::Provision)
 }

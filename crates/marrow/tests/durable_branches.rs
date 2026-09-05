@@ -13,7 +13,9 @@
 //! or root write is observable by a later read invocation.
 
 use marrow_verify::{SealedExport, SealedInstr, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 // application, product, the top-level `title` field, the root placement and its key,
 // then the `notes` branch (a `root` placement), its key, and its two fields.
@@ -250,11 +252,13 @@ fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
     }
@@ -272,11 +276,13 @@ impl std::fmt::Debug for DebugRun<'_> {
     }
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a flat root with a simple branch must be executable"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
+            panic!("a flat root with a simple branch must be executable")
+        }
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
@@ -824,11 +830,13 @@ pub fn rootPresent(id: int): bool {
 /// Run an export whose commit is expected to fault, returning the runtime fault code.
 fn run_fault(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> &'static str {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Err(fault)) => fault.code(),
         other => panic!("{name} did not fault as expected: {:?}", DebugRun(&other)),
     }

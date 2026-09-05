@@ -12,9 +12,10 @@
 //!   second-declared root (`^tallies`, RootId 1), and a rejected write leaves the prior
 //!   committed state intact.
 
-use marrow_kernel::durable::EphemeralAttachment;
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 // Each root carries one unique index (`*BySku`) and one nonunique index (`*ByShelf`); the
 // index anchors live at `<root>.<index name>`. Every durable declaration has a distinct
@@ -175,11 +176,13 @@ impl std::fmt::Debug for DebugRun<'_> {
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
     }
@@ -187,21 +190,25 @@ fn run(
 
 fn run_faulting(
     image: &VerifiedImage,
-    attachment: &mut EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> String {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Err(fault)) => fault.code().to_string(),
         other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
     }
 }
 
-fn attach(image: &VerifiedImage) -> EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a two-root indexed image must be executable, not parked"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
+            panic!("a two-root indexed image must be executable, not parked")
+        }
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
@@ -220,7 +227,7 @@ fn int(v: i64) -> Option<Value> {
 /// Seed both roots with entries that deliberately SHARE `sku` and `shelf` values across the
 /// two roots, so any index-cell aliasing between roots would surface as a wrong lookup or
 /// count. `assets` and `tallies` each get two entries on shelf "A" with skus "s1"/"s2".
-fn seed(image: &VerifiedImage, store: &mut EphemeralAttachment) {
+fn seed(image: &VerifiedImage, store: &mut MemoryAttachment) {
     run(
         image,
         store,

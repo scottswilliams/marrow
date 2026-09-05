@@ -10,7 +10,9 @@
 //! attachment, so a committed write is observable by a later read invocation.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 // application, product, the top-level `title` field, the root and its key, then the
 // `notes` branch (a `root` placement) with its key and required `text`, then the nested
@@ -194,11 +196,13 @@ impl std::fmt::Debug for DebugRun<'_> {
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
     }
@@ -206,23 +210,25 @@ fn run(
 
 fn run_fault(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> &'static str {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Err(fault)) => fault.code(),
         other => panic!("{name} did not fault as expected: {:?}", DebugRun(&other)),
     }
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => {
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
             panic!("a nested single-column scalar-field branch must be executable")
         }
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 

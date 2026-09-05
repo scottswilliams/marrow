@@ -33,21 +33,14 @@ impl Service {
     }
 
     /// Provision a fresh persistent store for the launched image at `store`, gated by the
-    /// accepted-report `approval` token. Derives the store shape from the verified image,
-    /// rebuilds the report the approval must match (so an approval for a different store or
-    /// image is refused), and publishes the store complete-or-not-at-all. A parked durable
-    /// shape, a mismatched approval, or a taken destination each surface as a typed reject.
+    /// accepted-report `approval` token. Borrows the prepared image, rebuilds the report the
+    /// approval must match (so an approval for a different store or image is refused), and
+    /// publishes the store complete-or-not-at-all. A parked durable shape, a mismatched
+    /// approval, or a taken destination each surface as a typed reject.
     fn handle_provision(&self, store: &str, approval: &str) -> ServerMessage {
-        let Some(projection) = marrow_vm::derive_store_schemas(&self.image) else {
-            return reject(Code::CliDurableUnsupported);
-        };
         let approval = marrow_lifecycle::ProvisionApproval::from_token(approval);
-        match marrow_lifecycle::provision_image(
-            std::path::Path::new(store),
-            &self.image,
-            projection,
-            &approval,
-        ) {
+        match marrow_lifecycle::provision_image(std::path::Path::new(store), &self.image, &approval)
+        {
             Ok(provisioned) => ServerMessage::Provisioned {
                 instance: provisioned.instance.to_hex(),
             },
@@ -64,20 +57,21 @@ impl Service {
         if served.is_durable() {
             return reject(Code::RunnerDurableUnsupported);
         }
-        let function = self.image.function(served.func());
+        let image = self.image.image();
+        let function = image.function(served.func());
         if function.params().len() != args.len() {
             return reject(Code::RunnerArgMismatch);
         }
         let mut values = Vec::with_capacity(args.len());
         for (ty, json) in function.params().iter().zip(args) {
-            match transfer::decode_arg(&self.image, ty, json) {
+            match transfer::decode_arg(image, ty, json) {
                 Some(value) => values.push(value),
                 None => return reject(Code::RunnerArgMismatch),
             }
         }
-        match marrow_vm::run(&self.image, served.func(), values) {
+        match marrow_vm::run(image, served.func(), values) {
             Ok(None) => ServerMessage::Value { data: Json::Null },
-            Ok(Some(value)) => match transfer::encode_value(&self.image, &value) {
+            Ok(Some(value)) => match transfer::encode_value(image, &value) {
                 Some(data) => ServerMessage::Value { data },
                 // Unreachable for a served export: its return shape is transferable,
                 // so its value encodes. Fail closed rather than emit a partial reply.

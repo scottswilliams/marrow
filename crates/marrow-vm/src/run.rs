@@ -81,8 +81,10 @@ pub fn run(
 
 /// Run a durable function at `func_index`, driving `session` for every durable
 /// operation. The session is a read session for a read-only export and a
-/// transaction session for a mutating one.
-pub fn run_durable(
+/// transaction session for a mutating one. Crate-private: the public durable routes
+/// open the session on the attachment that pairs the image with the store it was
+/// admitted for, so no caller executes an image against a session from elsewhere.
+pub(crate) fn run_durable(
     image: &VerifiedImage,
     func_index: FunctionIndex,
     args: Vec<Value>,

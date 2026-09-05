@@ -30,7 +30,7 @@
 
 use marrow_verify::{TestKind, VerifiedImage};
 use marrow_vm::{
-    DurableRun, Ephemeral, Value, mint_ephemeral, run_driver_test, run_durable_test, run_export,
+    DurableRun, EphemeralOutcome, Value, fresh_test, mint_ephemeral, prepare, run_export, run_test,
 };
 
 /// The shared durable graph every composition is written against: a flat keyed
@@ -593,15 +593,18 @@ fn run_all_tests(label: &str, image: &VerifiedImage) {
         !image.test_entries().is_empty(),
         "{label}: a run-row must carry at least one test entry",
     );
-    for entry in image.test_entries() {
-        // Dispatch each test through the runtime its kind names: a driver test runs
-        // each export call as its own invocation boundary; a direct-durable test runs
-        // against one harness session. A storeless test never reaches a run row.
-        let run = match entry.kind() {
-            TestKind::Driver => run_driver_test(image, entry),
-            TestKind::DirectDurable | TestKind::Storeless => run_durable_test(image, entry),
-        };
-        match run {
+    let prepared = prepare(image.clone());
+    for (index, entry) in image.test_entries().iter().enumerate() {
+        // Each test is selected from the prepared image and runs through the runtime its
+        // kind names: a driver test runs each export call as its own invocation boundary; a
+        // direct-durable test runs against one harness session. A storeless test never
+        // reaches a run row.
+        assert!(
+            !matches!(entry.kind(), TestKind::Storeless),
+            "{label}: a run-row test entry is durable",
+        );
+        let test = fresh_test(&prepared, index).expect("the entry index is in the image");
+        match run_test(test) {
             DurableRun::Ran(Ok(_)) => {}
             DurableRun::Ran(Err(fault)) => {
                 panic!(
@@ -756,33 +759,33 @@ fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
         panic!("the rollback-journey program must verify");
     };
 
-    let Ephemeral::Ready(mut attachment) = mint_ephemeral(&image) else {
+    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare((*image).clone())) else {
         panic!("the books root must mint an executable attachment");
     };
 
     // Commit an entry.
     assert!(matches!(
         run_export(
-            &image,
             &mut attachment,
-            export_by_name(&image, "shelve"),
+            export_by_name(&image, "shelve").id(),
             vec![
                 Value::Int(1),
                 Value::Text("first".into()),
                 Value::Text("i1".into())
             ],
         ),
-        DurableRun::Ran(Ok(_)),
+        Some(DurableRun::Ran(Ok(_))),
     ));
 
     // A mutating invocation that faults before its commit (a divide-by-zero) rolls its
     // staged title write back.
     match run_export(
-        &image,
         &mut attachment,
-        export_by_name(&image, "badUpdate"),
+        export_by_name(&image, "badUpdate").id(),
         vec![Value::Int(1), Value::Int(0)],
-    ) {
+    )
+    .expect("the export is in the image")
+    {
         DurableRun::Ran(Err(fault)) => assert_eq!(
             fault.code(),
             "run.divide_by_zero",
@@ -793,11 +796,12 @@ fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
 
     // The prior commit survives, unchanged by the rolled-back invocation.
     match run_export(
-        &image,
         &mut attachment,
-        export_by_name(&image, "titleOf"),
+        export_by_name(&image, "titleOf").id(),
         vec![Value::Int(1)],
-    ) {
+    )
+    .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(Some(Value::Optional(Some(title))))) => {
             assert_eq!(
                 *title,

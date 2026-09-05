@@ -15,7 +15,9 @@
 
 use marrow_compile::SourceDiagnostic;
 use marrow_verify::VerifiedImage;
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 // application, product, the top-level `title` field, the composite root placement and its
 // two key columns, the `details` group and its two sparse leaves, then the `notes` branch
@@ -152,11 +154,13 @@ impl std::fmt::Debug for DebugRun<'_> {
     }
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a flat root with a root-level group must be executable"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
+            panic!("a flat root with a root-level group must be executable")
+        }
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
@@ -170,11 +174,13 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a marrow_verify::Sealed
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
     }
@@ -182,11 +188,11 @@ fn run(
 
 fn run_result(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> DurableRun {
-    run_export(image, attachment, export(image, name), args)
+    run_export(attachment, export(image, name).id(), args).expect("the export is in the image")
 }
 
 fn i(n: i64) -> Value {

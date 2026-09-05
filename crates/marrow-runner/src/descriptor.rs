@@ -12,6 +12,7 @@ use marrow_image::{
     CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
     RecordShape, RootShape, VariantShape,
 };
+use marrow_lifecycle::{PreparedImage, prepare};
 use marrow_local_wire::Id32;
 use marrow_verify::{FunctionIndex, RetShape, SealedCollectionType, VerifiedImage};
 
@@ -115,18 +116,19 @@ pub(crate) struct ServedExport {
     durable: bool,
 }
 
-/// The program a runner serves: a verified image, its wire [`Id32`] interface
+/// The program a runner serves: the prepared verified image, its wire [`Id32`] interface
 /// identity, and the export dispatch table. Built once at launch from the closed
-/// transfer graph, including finite lists, ordered maps, and entry identities.
+/// transfer graph, including finite lists, ordered maps, and entry identities. The
+/// preparation is the sole owner of the image; a `Provision` request borrows it.
 pub struct Service {
-    pub(crate) image: VerifiedImage,
+    pub(crate) image: PreparedImage,
     interface_id: Id32,
     exports: Vec<ServedExport>,
 }
 
 impl Service {
     /// Build the service from a verified image, or report why its interface could
-    /// not be reconstructed.
+    /// not be reconstructed. Prepares the image once, so a later provision derives nothing.
     pub fn build(image: VerifiedImage) -> Result<Service, InterfaceError> {
         let interface = interface_of(&image)?;
         let interface_id = Id32::from_bytes(*interface.interface_id().bytes());
@@ -140,7 +142,7 @@ impl Service {
             })
             .collect();
         Ok(Service {
-            image,
+            image: prepare(image),
             interface_id,
             exports,
         })

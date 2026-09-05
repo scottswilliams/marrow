@@ -278,6 +278,8 @@ dependencies = [
  "marrow-codes",
  "marrow-image",
  "marrow-kernel",
+ "marrow-lifecycle",
+ "marrow-store",
  "marrow-temporal",
  "marrow-verify",
 ]

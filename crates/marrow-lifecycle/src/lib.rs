@@ -1,10 +1,14 @@
 //! Privileged persistent-store lifecycle.
 //!
-//! `marrow-lifecycle` owns the persistent store's identity and durability contracts and,
-//! as the F-chain builds out, the privileged provision/open composition over the image,
-//! runtime, and engine owners — so `marrow-runtime`/`marrow-vm` stay session-free and no
-//! application path can enter a lifecycle state. It is the single owner of:
+//! `marrow-lifecycle` owns the persistent store's identity and durability contracts and the
+//! privileged provision/attach/import composition over the image, runtime, and engine
+//! owners. It is the single owner of:
 //!
+//! - the image/store attachment ([`PreparedImage`], [`Attachment`], [`FreshTest`]): an
+//!   image's store projection is derived once, and only this crate pairs an image with the
+//!   native or in-memory host it admitted for that image — the VM executes durable exports
+//!   through that pairing alone, so no application path can enter a lifecycle state or pair
+//!   an image with a store it was not admitted for;
 //! - the store's own identity ([`StoreInstanceId`], entropy-minted at provision);
 //! - the persisted [`StoreEnvelope`] recording store instance and writer/engine provenance;
 //! - the logical active [`LogicalHead`] recording the active binding, the FR01 reserved
@@ -19,6 +23,7 @@
 //! identity-framing owner, so this crate composes them without a hash dependency of its own.
 
 mod actor;
+mod attachment;
 mod authority;
 mod codec;
 mod durable_fs;
@@ -33,8 +38,17 @@ mod provision;
 mod report;
 mod store_dir;
 
+#[cfg(test)]
+mod owner_first_admission_tests;
+#[cfg(test)]
+mod provision_lifecycle_tests;
+
 pub use actor::{
     AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt, attach,
+};
+pub use attachment::{
+    Attachment, EphemeralOutcome, FreshTest, MemoryAttachment, MemoryEngine, NativeAttachment,
+    PreparedImage, TestExecution, TestHost, fresh_test, mint_ephemeral, prepare,
 };
 pub use authority::{DemandExceedsCeiling, ExceedingDemand};
 pub use codec::FormatError;
@@ -61,8 +75,8 @@ pub use marrow_kernel::durable::InvocationGrant;
 // taking an edge to the adapter crate itself.
 pub use marrow_fs_journal::CustodyError;
 pub use provision::{
-    OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, open,
-    preflight, provision,
+    OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, preflight,
+    provision,
 };
 pub use report::{ProvisionApproval, ProvisionImageError, ProvisionReport, provision_image};
 pub use store_dir::{

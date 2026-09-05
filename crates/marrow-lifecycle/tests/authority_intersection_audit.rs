@@ -23,11 +23,10 @@
 
 use std::path::{Path, PathBuf};
 
-use marrow_kernel::durable::{
-    DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError, SessionHost,
-};
+use marrow_kernel::durable::{DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError};
 use marrow_lifecycle::{
-    AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, provision_image,
+    AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, prepare,
+    provision_image,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -83,15 +82,14 @@ fn compile(source: &str) -> VerifiedImage {
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
-    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    let report = ProvisionReport::new(store, image, &projection);
+    let prepared = prepare(image.clone());
+    let report = ProvisionReport::new(store, &prepared).expect("flat-executable");
     let approval = ProvisionApproval::accept(&report);
-    provision_image(store, image, projection, &approval).expect("provision");
+    provision_image(store, &prepared, &approval).expect("provision");
 }
 
 fn attach_image(store: &Path, image: &VerifiedImage) -> Result<AttachOutcome, LifecycleError> {
-    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    attach(store, image, projection)
+    attach(store, prepare(image.clone()))
 }
 
 fn scratch() -> PathBuf {
@@ -137,14 +135,15 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
 
     // The read-only image is admitted (its demand fits the ceiling); it opens the store so the
     // remaining terms are checked at the kernel session over a real native handle.
-    let mut opened = match attach_image(&store, &read_only) {
-        Ok(AttachOutcome::AlreadyActive(opened)) => opened,
-        Ok(AttachOutcome::Rebound { store, .. }) => store,
+    let mut attachment = match attach_image(&store, &read_only) {
+        Ok(AttachOutcome::AlreadyActive(attachment)) => attachment,
+        Ok(AttachOutcome::Rebound { attachment, .. }) => attachment,
         Err(err) => panic!(
             "the covering image must open the store, got: {}",
             err.code()
         ),
     };
+    let (_, opened) = attachment.bridge();
 
     let read = DemandCoverage {
         read: true,

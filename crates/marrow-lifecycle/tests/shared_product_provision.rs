@@ -16,7 +16,9 @@
 
 use std::path::{Path, PathBuf};
 
-use marrow_lifecycle::{ProvisionApproval, ProvisionImageError, ProvisionReport, provision_image};
+use marrow_lifecycle::{
+    ProvisionApproval, ProvisionImageError, ProvisionReport, prepare, provision_image,
+};
 use marrow_verify::{VerifiedImage, verify};
 
 const SHARED: &str = r#"resource Counter {
@@ -126,10 +128,10 @@ impl Drop for Scratch {
 /// outcome. The approval is accepted from the report the same call rebuilds, so nothing
 /// but the image itself decides the result.
 fn provision(dest: &Path, image: &VerifiedImage) -> Result<(), ProvisionImageError> {
-    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    let report = ProvisionReport::new(dest, image, &projection);
+    let prepared = prepare(image.clone());
+    let report = ProvisionReport::new(dest, &prepared)?;
     let approval = ProvisionApproval::accept(&report);
-    provision_image(dest, image, projection, &approval).map(|_| ())
+    provision_image(dest, &prepared, &approval).map(|_| ())
 }
 
 #[test]

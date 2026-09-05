@@ -6,9 +6,10 @@
 //! verify -> attach -> VM — and compose with the entry-identity dereference: the bound
 //! identity reads its entry through `^root[id]`.
 
-use marrow_kernel::durable::EphemeralAttachment;
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 // `^books[id: int]: Book` with a nonunique `byShelf[shelf, id]` and a unique
 // `byIsbn[isbn]`. The index anchors live at `books.<index name>`.
@@ -157,21 +158,23 @@ impl std::fmt::Debug for DebugRun<'_> {
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
     }
 }
 
-fn attach(image: &VerifiedImage) -> EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("the books root must be executable"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => panic!("the books root must be executable"),
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
@@ -179,7 +182,7 @@ fn s(v: &str) -> Value {
     Value::Text(v.into())
 }
 
-fn seed(image: &VerifiedImage, store: &mut EphemeralAttachment) {
+fn seed(image: &VerifiedImage, store: &mut MemoryAttachment) {
     // Two books on shelf "A", one on "B"; distinct isbns.
     run(
         image,

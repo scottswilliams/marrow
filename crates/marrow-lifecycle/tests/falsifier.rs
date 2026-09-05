@@ -252,16 +252,19 @@ fn journey() {
         "the verifier enumerates the same node set the compiler did"
     );
 
-    // 7. The VM→kernel schema projection: the sealed maximum graph becomes the kernel's
-    //    checked store projection through the production adapter, on the same small stack.
-    let projection =
-        marrow_vm::derive_store_schemas(&sealed).expect("the maximum corpus is flat-executable");
+    // 7. The lifecycle's schema projection: the sealed maximum graph becomes the kernel's
+    //    checked store projection through the production preparation, on the same small
+    //    stack.
+    let prepared = marrow_lifecycle::prepare(sealed);
+    let projection = prepared
+        .projection()
+        .expect("the maximum corpus is flat-executable");
     assert_eq!(projection.roots().len(), OCCURRENCES);
 
     // 8. The current-order numbering: the split pre-order walk numbers every node of every
     //    root through the one checked counter. Contiguity from zero is the walk's own law,
     //    so the last root's last field carries the count minus one.
-    let numbering = marrow_kernel::durable::number_store(&projection);
+    let numbering = marrow_kernel::durable::number_store(projection);
     let numbered: usize = numbering.iter().map(|root| 1 + root.fields().len()).sum();
     assert_eq!(
         numbered,
@@ -281,13 +284,12 @@ fn journey() {
     // 9. The store intake: the projection opens a real ephemeral store through the
     //    production mint, and the attachment is dropped again — the leg a recursive
     //    schema teardown would overflow on.
-    let attachment = marrow_vm::mint_ephemeral(&sealed);
+    let attachment = marrow_lifecycle::mint_ephemeral(prepared);
     assert!(
-        matches!(attachment, marrow_vm::Ephemeral::Ready(_)),
+        matches!(attachment, marrow_lifecycle::EphemeralOutcome::Ready(_)),
         "the maximum corpus attaches"
     );
     drop(attachment);
-    drop(sealed);
     drop(encoded);
 
     // 10. Early return: an intake wider than its plan is refused before a row is appended,

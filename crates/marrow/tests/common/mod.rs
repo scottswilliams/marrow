@@ -121,10 +121,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
-use marrow_kernel::durable::EphemeralAttachment;
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput, capture};
 use marrow_verify::{VerifiedImage, verify};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 /// The built `marrow` binary under test.
 pub const MARROW_BIN: &str = env!("CARGO_BIN_EXE_marrow");
@@ -267,12 +268,14 @@ impl Project {
         let attachment = if image.roots().is_empty() {
             None
         } else {
-            match mint_ephemeral(&image) {
-                Ephemeral::Ready(attachment) => Some(attachment),
-                Ephemeral::Parked => {
+            match mint_ephemeral(prepare(image.clone())) {
+                EphemeralOutcome::Ready(attachment) => Some(attachment),
+                EphemeralOutcome::Parked(_) => {
                     panic!("durable shape is not executable by the ephemeral kernel")
                 }
-                Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+                EphemeralOutcome::Failed { cause, .. } => {
+                    panic!("minting the attachment failed: {cause}")
+                }
             }
         };
         Session { image, attachment }
@@ -323,7 +326,7 @@ impl Project {
 /// observable by a later read.
 pub struct Session {
     image: VerifiedImage,
-    attachment: Option<Box<EphemeralAttachment>>,
+    attachment: Option<MemoryAttachment>,
 }
 
 impl Session {
@@ -355,9 +358,9 @@ impl Session {
         }
         let attachment = self
             .attachment
-            .as_deref_mut()
+            .as_mut()
             .expect("a durable export requires a minted attachment");
-        match run_export(&self.image, attachment, sealed, args) {
+        match run_export(attachment, sealed.id(), args).expect("the export is in the image") {
             DurableRun::Ran(Ok(value)) => CallOutcome::Value(value),
             DurableRun::Ran(Err(fault)) => CallOutcome::Fault(fault.code().to_string()),
             DurableRun::Parked => CallOutcome::Parked,

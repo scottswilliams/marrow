@@ -162,7 +162,7 @@ fn a_refused_handshake_never_opens_the_memory_attachment() {
     let flag = Arc::clone(&minted);
     let outcome = channel.accept_and_serve(&secrets(nonce, session), identity, &quick(), 4, || {
         flag.store(true, Ordering::SeqCst);
-        AttachedEphemeralService::mint(image)
+        AttachedEphemeralService::mint(marrow_lifecycle::prepare(image))
     });
     client.join().unwrap();
     channel.teardown();
@@ -226,7 +226,7 @@ fn an_authenticated_client_commits_and_reads_back() {
     channel
         .accept_and_serve(&secrets(nonce, session), identity, &quick(), 4, || {
             flag.store(true, Ordering::SeqCst);
-            AttachedEphemeralService::mint(image)
+            AttachedEphemeralService::mint(marrow_lifecycle::prepare(image))
         })
         .expect("serve the authenticated client");
     let (ready, added, count) = client.join().unwrap();
@@ -446,7 +446,7 @@ fn post_handshake_hello_and_provision_are_rejected() {
 
     channel
         .accept_and_serve(&secrets(nonce, session), identity, &quick(), 4, || {
-            AttachedEphemeralService::mint(image)
+            AttachedEphemeralService::mint(marrow_lifecycle::prepare(image))
         })
         .expect("serve");
     let (after_hello, after_provision) = client.join().unwrap();
@@ -494,7 +494,7 @@ fn a_client_refuses_a_mismatched_identity() {
 
     channel
         .accept_and_serve(&secrets(nonce, session), identity, &quick(), 4, || {
-            AttachedEphemeralService::mint(image)
+            AttachedEphemeralService::mint(marrow_lifecycle::prepare(image))
         })
         .expect("serve");
     let client_accepted = client.join().unwrap();

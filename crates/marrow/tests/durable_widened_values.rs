@@ -11,7 +11,9 @@
 //! expression after read.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -137,21 +139,23 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .expect("export present")
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a widened-field store is executable, not parked"),
-        Ephemeral::Failed(code) => panic!("attach failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => panic!("a widened-field store is executable, not parked"),
+        EphemeralOutcome::Failed { cause, .. } => panic!("attach failed: {cause}"),
     }
 }
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
         DurableRun::Parked => panic!("{name} parked"),

@@ -99,7 +99,7 @@ fn id_of(ids: &[(String, Id32)], name: &str) -> Id32 {
 #[test]
 fn known_old_incomplete_is_typed_and_does_not_retire_a_healthy_ephemeral_owner() {
     let (image, ids) = compile();
-    let mut service = AttachedEphemeralService::mint(image);
+    let mut service = AttachedEphemeralService::mint(marrow_lifecycle::prepare(image));
 
     let response = service.handle(ClientMessage::Request {
         export: id_of(&ids, "labelOnly"),
@@ -165,7 +165,7 @@ fn assert_known_new_then_read(service: &mut impl Handler, ids: &[(String, Id32)]
 #[test]
 fn confirmed_commit_then_fault_is_known_new_and_keeps_the_ephemeral_owner() {
     let (image, ids) = compile();
-    let mut service = AttachedEphemeralService::mint(image);
+    let mut service = AttachedEphemeralService::mint(marrow_lifecycle::prepare(image));
     assert_known_new_then_read(&mut service, &ids);
 }
 
@@ -174,19 +174,19 @@ fn confirmed_commit_then_fault_is_known_new_through_the_native_attached_service(
     let (image, ids) = compile();
     let scratch = Scratch::new();
     let store = scratch.0.join("store");
-    let projection = marrow_vm::derive_store_schemas(&image).expect("fixture is native executable");
-    let report = marrow_lifecycle::ProvisionReport::new(&store, &image, &projection);
+    let prepared = marrow_lifecycle::prepare(image);
+    let report = marrow_lifecycle::ProvisionReport::new(&store, &prepared)
+        .expect("fixture is native executable");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    marrow_lifecycle::provision_image(&store, &image, projection.clone(), &approval)
+    marrow_lifecycle::provision_image(&store, &prepared, &approval)
         .expect("provision native fixture");
-    let open = match marrow_lifecycle::attach(&store, &image, projection)
-        .expect("attach native fixture")
-    {
-        marrow_lifecycle::AttachOutcome::AlreadyActive(open) => open,
-        marrow_lifecycle::AttachOutcome::Rebound { .. } => {
-            panic!("the just-provisioned image is already active")
-        }
-    };
-    let mut service = AttachedService::new(image, open);
+    let attachment =
+        match marrow_lifecycle::attach(&store, prepared).expect("attach native fixture") {
+            marrow_lifecycle::AttachOutcome::AlreadyActive(attachment) => attachment,
+            marrow_lifecycle::AttachOutcome::Rebound { .. } => {
+                panic!("the just-provisioned image is already active")
+            }
+        };
+    let mut service = AttachedService::new(attachment);
     assert_known_new_then_read(&mut service, &ids);
 }

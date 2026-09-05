@@ -14,7 +14,9 @@
 //! attachment, without process setup.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -336,11 +338,10 @@ test "drive a transaction owner" {
             run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
             Some(Value::Optional(Some(Box::new(Value::Int(11)))))
         );
-        if let Some(entry) = image.test_entries().first() {
-            assert!(matches!(
-                marrow_vm::run_driver_test(&image, entry),
-                DurableRun::Ran(Ok(_))
-            ));
+        if !image.test_entries().is_empty() {
+            let test = marrow_vm::fresh_test(&prepare(image.clone()), 0)
+                .expect("the first entry is in the image");
+            assert!(matches!(marrow_vm::run_test(test), DurableRun::Ran(Ok(_))));
         }
     }
 }
@@ -357,11 +358,13 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 /// panics — a fault case uses [`run_faulting`] instead).
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
     }
@@ -370,11 +373,13 @@ fn run(
 /// Run `name(args)` expecting a source-mapped runtime fault, returning its code.
 fn run_faulting(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> String {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Err(fault)) => fault.code().to_string(),
         other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
     }
@@ -393,11 +398,13 @@ impl std::fmt::Debug for DebugRun<'_> {
     }
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("the flat counter image must be executable, not parked"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
+            panic!("the flat counter image must be executable, not parked")
+        }
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 

@@ -12,9 +12,10 @@
 //! This pins that all three compose over a composite key, closing the DX05 gap the PL01
 //! explicit-place work already made executable.
 
-use marrow_kernel::durable::EphemeralAttachment;
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 // application, product, the required `grade` and sparse `note` fields, the composite root
 // placement, and its two key columns (student, course).
@@ -89,21 +90,23 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .expect("export present")
 }
 
-fn attach(image: &VerifiedImage) -> EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("the enrollments root must be executable"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => panic!("the enrollments root must be executable"),
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         DurableRun::Ran(Err(fault)) => panic!("{name} faulted at run: {}", fault.code()),
         DurableRun::Parked => {

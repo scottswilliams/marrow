@@ -17,7 +17,7 @@ each behavior.
 | Tests | `marrow test` runs every `test` block; a durable test runs against a fresh in-memory store. | [Tests](language/tests.md) |
 | CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. | [Language server](tools/lsp.md) |
-| Store lifecycle | `marrow import` provisions a store; `marrow run --store` runs an export against it through the companion runner; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`. | [Operations](operations/README.md) |
+| Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. | [TypeScript client](tools/typescript-client.md) |
 
 The command names `data`, `doctor`, `evolve`, `serve`, `backup`, and `restore`

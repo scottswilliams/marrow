@@ -14,7 +14,9 @@
 //! traversal ancestor pop re-proves that typed identity column, so those round trips run.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -209,11 +211,13 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
         DurableRun::Parked => panic!("{name} parked"),
@@ -221,15 +225,17 @@ fn run(
     }
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a flat root with a simple branch must be executable"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
+            panic!("a flat root with a simple branch must be executable")
+        }
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
-fn seed_notes(image: &VerifiedImage, attachment: &mut marrow_kernel::durable::EphemeralAttachment) {
+fn seed_notes(image: &VerifiedImage, attachment: &mut MemoryAttachment) {
     for id in [1i64, 2, 3] {
         run(
             image,

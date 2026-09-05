@@ -1,6 +1,7 @@
 use marrow_kernel::durable::{CommitRecovery, DurableCommitState};
 use marrow_lifecycle::{
-    ENGINE_FILE, OpenError, OpenStore, ProvisionApproval, ProvisionReport, open, provision_image,
+    ENGINE_FILE, LifecycleError, NativeAttachment, OpenError, PreparedImage, ProvisionApproval,
+    ProvisionReport, attach, prepare, provision_image,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -51,10 +52,7 @@ impl Drop for Scratch {
     }
 }
 
-fn compile() -> (
-    marrow_verify::VerifiedImage,
-    marrow_kernel::durable::StoreProjection,
-) {
+fn compile() -> PreparedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -69,34 +67,44 @@ fn compile() -> (
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
     let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
-    let projection = marrow_vm::derive_store_schemas(&image).expect("durable schema");
-    (image, projection)
+    let prepared = prepare(image);
+    assert!(prepared.projection().is_some(), "durable schema");
+    prepared
 }
 
-fn provision_fixture(store: &std::path::Path) -> marrow_kernel::durable::StoreProjection {
-    let (image, projection) = compile();
-    let report = ProvisionReport::new(store, &image, &projection);
+/// Provision the fixture store, returning the same prepared image to attach with.
+fn provision_fixture(store: &std::path::Path) -> PreparedImage {
+    let prepared = compile();
+    let report = ProvisionReport::new(store, &prepared).expect("report");
     let approval = ProvisionApproval::accept(&report);
-    provision_image(store, &image, projection.clone(), &approval).expect("provision fixture");
-    projection
+    provision_image(store, &prepared, &approval).expect("provision fixture");
+    prepared
 }
 
+/// Recovery consumes the attachment — the image paired with its store — and returns only a
+/// known reopened pairing of that same image, or retires it: no image or store is
+/// substituted on the way through.
 #[test]
 fn recovery_consumes_the_old_owner_and_returns_only_a_known_reopened_owner() {
-    let _signature: fn(OpenStore, CommitRecovery) -> (DurableCommitState, Option<OpenStore>) =
-        OpenStore::resolve_recovery;
+    let _signature: fn(
+        NativeAttachment,
+        CommitRecovery,
+    ) -> (DurableCommitState, Option<NativeAttachment>) = NativeAttachment::resolve_recovery;
 }
 
 #[test]
 fn ordinary_open_does_not_recreate_a_missing_engine_file() {
     let scratch = Scratch::new();
     let store = scratch.0.join("store");
-    let projection = provision_fixture(&store);
+    let prepared = provision_fixture(&store);
     let engine = store.join(ENGINE_FILE);
     std::fs::remove_file(&engine).expect("remove provisioned engine");
 
     assert!(
-        matches!(open(&store, projection), Err(OpenError::Incomplete)),
+        matches!(
+            attach(&store, prepared),
+            Err(LifecycleError::Open(OpenError::Incomplete))
+        ),
         "a store missing its engine artifact is incomplete, never freshly created",
     );
     assert!(
@@ -110,12 +118,12 @@ fn ordinary_open_does_not_adopt_empty_or_malformed_engine_files() {
     for (label, bytes) in [("empty", b"".as_slice()), ("malformed", b"not redb")] {
         let scratch = Scratch::new();
         let store = scratch.0.join(label);
-        let projection = provision_fixture(&store);
+        let prepared = provision_fixture(&store);
         let engine = store.join(ENGINE_FILE);
         std::fs::write(&engine, bytes).expect("replace engine with invalid body");
 
         assert!(
-            open(&store, projection).is_err(),
+            attach(&store, prepared).is_err(),
             "{label} engine body must be refused",
         );
         assert_eq!(

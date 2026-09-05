@@ -23,7 +23,9 @@ use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{CommitResult, DemandCoverage, Durable, EntryValue, InvocationGrant};
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{VerifiedImage, verify};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
 mod site_seam;
@@ -319,16 +321,15 @@ fn traversal_image() -> VerifiedImage {
 
 /// Mint a fresh attachment and run the seed export against it, leaving a populated
 /// store the caller reads.
-fn seeded_attachment(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    let Ephemeral::Ready(mut attachment) = mint_ephemeral(image) else {
+fn seeded_attachment(image: &VerifiedImage) -> MemoryAttachment {
+    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())) else {
         panic!("the traversal image is flat-executable");
     };
-    let seed = image.export_by_id(export_id("seed")).expect("seed export");
-    match run_export(image, &mut attachment, seed, Vec::new()) {
+    match run_export(&mut attachment, export_id("seed"), Vec::new()).expect("seed export") {
         DurableRun::Ran(Ok(_)) => {}
         other => panic!("seed did not run: {}", describe(&other)),
     }
-    *attachment
+    attachment
 }
 
 fn describe(run: &DurableRun) -> String {
@@ -343,12 +344,12 @@ fn describe(run: &DurableRun) -> String {
 /// Run a read-only export and return its VM value.
 fn run_read(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Value {
     let export = image.export_by_id(export_id(name)).expect("export present");
-    match run_export(image, attachment, export, args) {
+    match run_export(attachment, export.id(), args).expect("the export is in the image") {
         DurableRun::Ran(Ok(Some(value))) => value,
         other => panic!("{name} did not produce a value: {}", describe(&other)),
     }
@@ -627,7 +628,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
 #[test]
 fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
     let (image, root_entry) = wide_key_image();
-    let Ephemeral::Ready(mut attachment) = mint_ephemeral(&image) else {
+    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())) else {
         panic!("the wide-key image is flat-executable");
     };
 
@@ -640,7 +641,8 @@ fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
             read: true,
             write: true,
         };
-        let mut txn = attachment
+        let (_, host) = attachment.bridge();
+        let mut txn = host
             .txn_session(InvocationGrant::full_store(), write)
             .expect("txn session");
         let entry = txn.site(root_entry);
@@ -664,8 +666,7 @@ fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
     // materializes them into one ordinary `List[string]`, which crosses the single
     // collection aggregate ceiling and faults — the same fault a batch `split` result
     // of this size raises, not a traversal-specific bound.
-    let all = image.export_by_id(export_id("all")).expect("all export");
-    match run_export(&image, &mut attachment, all, Vec::new()) {
+    match run_export(&mut attachment, export_id("all"), Vec::new()).expect("all export") {
         DurableRun::Ran(Err(fault)) => assert_eq!(fault.code(), "run.collection_limit"),
         other => panic!(
             "expected a collection-limit fault, got {}",

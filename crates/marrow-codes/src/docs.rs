@@ -195,6 +195,7 @@ code is stable.
             Code::StoreReadOnly,
             Code::StoreContractChanged,
             Code::StoreDemandExceedsCeiling,
+            Code::StoreImageNotActive,
         ]),
         r#"
 ### `io.*`

@@ -4,7 +4,10 @@
 //! encoded value before applying a write, so a rejected value leaves no entry behind.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, RuntimeFault, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, RuntimeFault, Value, mint_ephemeral, prepare,
+    run_export,
+};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -83,21 +86,23 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .expect("export present")
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("the durable-value fixture must be executable"),
-        Ephemeral::Failed(code) => panic!("attachment mint failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => panic!("the durable-value fixture must be executable"),
+        EphemeralOutcome::Failed { cause, .. } => panic!("attachment mint failed: {cause}"),
     }
 }
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => Ok(value),
         DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Runtime(fault))) => Err(fault),
         DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Incomplete(incomplete))) => {

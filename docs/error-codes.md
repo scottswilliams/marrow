@@ -144,6 +144,7 @@ code is stable.
 | `store.read_only` | A write was requested through a read-only store handle. |
 | `store.contract_changed` | The program image changes the durable contract or the exported interface versus the store's active binding, so it is not a code-only update. The store is intact and the prior program remains usable. Accepting a changed contract is future work; today a new store is provisioned from the new program. [Changing the program](operations/README.md#changing-the-program) describes the outcomes. |
 | `store.demand_exceeds_ceiling` | The program image's durable demand exceeds the ceiling the store was provisioned under. The message names, for each place beyond the ceiling, the export, the effect (read, write, presence, delete, or iterate), and the place. No store call is made and the store is intact. Expand the store's accepted ceiling to cover the named demand before running the new program. |
+| `store.image_not_active` | The program is a code-only edit of the store's active program, and the requested operation does not rebind. `marrow import` populates a store only under its active program; run `marrow run --store` with the current program first, which rebinds the store to the new code, then retry. The store is intact. |
 
 ### `io.*`
 

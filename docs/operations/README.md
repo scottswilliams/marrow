@@ -76,6 +76,12 @@ indexes the program declares. No transition rewrites stored data. Accepting a
 changed contract, with stored data carried across, is future work ([data
 coexistence](../future/data-coexistence.md)).
 
+`marrow import` into an existing store never rebinds. It fills the store only
+when the compiled program is exactly the active binding; a code-only change is
+`store.image_not_active` until a `run --store` rebinds the store, and the
+other refusals above apply unchanged. Every refusal is decided before the
+store's engine opens, so a refused import writes nothing.
+
 ## Interrupted commits
 
 Whether an invocation returned and whether its commit happened are two separate

@@ -1,10 +1,10 @@
-//! The one-shot lifecycle actor: the only path that can change which verified program image
-//! a persistent store is bound to, and the only one that compares the store's head-map pin.
-//! It is not the only path that pairs an image with a store; the end of this list says which
-//! other ones exist and what they skip.
+//! The one-shot lifecycle actor: the only path that pairs a prepared image with a persistent
+//! store, the only one that can change which verified program image a store is bound to, and
+//! the only one that compares the store's head-map pin.
 //!
-//! An attach takes the store's single-owner lock, rereads the persisted head from disk (never
-//! a cached copy), and classifies the incoming image against the store's active binding:
+//! An attach consumes a [`PreparedImage`], takes the store's single-owner lock, rereads the
+//! persisted head from disk (never a cached copy), and classifies the image against the
+//! store's active binding:
 //!
 //! - **Already active** — the image is byte-identical to the active binding; the store opens
 //!   with the head and envelope byte-unchanged. Taking the lock has already rewritten its
@@ -22,10 +22,7 @@
 //!   engine call: a store is never attached under a numbering that disagrees with its
 //!   persisted pin, because serving it would readdress durable cells. Fail-closed and
 //!   recovery-shaped; the head, envelope, and engine data are unchanged (acquisition has
-//!   already rewritten the lock's owner marker, so the next successful open audits). The
-//!   pin guards this attach path; `crate::open` runs no pin comparison and its ordinarily
-//!   spelled production callers are censused by the lifecycle test battery, which lists the
-//!   spellings — a root alias among them — that it does not reach.
+//!   already rewritten the lock's owner marker, so the next successful open audits).
 //! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
 //!   image's code (its byte identity) differs. The actor rewrites the head and then the
 //!   envelope as two separately atomic ordered commits, with a valid state between them
@@ -43,26 +40,12 @@
 //!   fails to open surfaces as its own open error instead. Either way the store is not
 //!   served.
 //!
-//! `attach` is the only entry that pairs a store with a verified image *and compares the
-//! pin*, and the only one that can rebind. It is not the only way an image and a store meet:
-//! `crate::open` returns an [`OpenStore`] with no image and no pin comparison, and a caller
-//! holding one can pair any verified image with it through the runner's public
-//! `AttachedService::new`, which executes that image against that store. Closing that
-//! composition belongs to the follow-on row, together with threading an image through
-//! `import_jsonl`. Here, the lifecycle test battery censuses the production callers of the
-//! `open` *spelling* as it is ordinarily written, so a new ASCII call spelled bare or under
-//! one of the qualifiers the census resolves turns up. It does not reach a submodule re-export
-//! called under another path, a public wrapper over `open_admitted`, a dependency rename
-//! inherited from the workspace manifest, a call a macro emits, a root alias
-//! (`use crate as life`), a call separated by non-ASCII whitespace, or a binding whose name
-//! uses a decomposed accent — each of which can still produce an unpinned `OpenStore`
-//! unseen, and each of which is listed at the census itself.
-//! An unfenced pairing is therefore fenced against the ordinary direct route only, and this
-//! census is a stand-in until the follow-on row makes `open` unavailable outside a fenced
-//! entry, at which point it retires rather than hardens. An `OpenStore` holds the store's
-//! owner lock, which is non-`Clone` and non-serializable, so no session, bytecode, or client
-//! path can enter or forge a lifecycle state — nothing below this crate depends on it (the
-//! Cargo trust boundary), and there is no serialized form to reconstruct one from.
+//! A served store is a [`NativeAttachment`]: the admitted image and the open store behind
+//! private fields, so the VM executes only that image against that store. The trusted bulk
+//! importer shares the admission gate through [`ImageAdmission`] but requires the exact
+//! active binding and never rebinds. An open store holds the store's owner lock, which is
+//! non-`Clone` and non-serializable, so no session, bytecode, or client path can enter or
+//! forge a lifecycle state, and there is no serialized form to reconstruct one from.
 
 use std::path::Path;
 
@@ -71,17 +54,18 @@ use marrow_image::CeilingDescriptor;
 use marrow_kernel::durable::StoreProjection;
 use marrow_verify::VerifiedImage;
 
+use crate::attachment::{Attachment, NativeAttachment, PreparedImage};
 use crate::authority::{self, DemandExceedsCeiling};
 use crate::head::{ActiveBinding, LogicalHead};
-use crate::image::{HeadMapPinMismatch, active_binding, derive_head_map_pin};
-use crate::provision::{AdmitError, OpenError, OpenStore, open_admitted};
+use crate::image::{DerivedPin, HeadMapPinMismatch, active_binding, derive_head_map_pin};
+use crate::provision::{AdmitError, OpenError, open_admitted};
 use crate::store_dir;
 
-/// The ways the attach admission gate can decline before any engine call: the presented
-/// image demands authority beyond the accepted ceiling, the persisted ceiling payload is
-/// itself corrupt, or the persisted head-map pin disagrees with the derived numbering. Kept
-/// private to the actor; each maps to a distinct [`LifecycleError`].
-enum AdmissionRefusal {
+/// The ways the admission gate can decline before any engine call: the presented image
+/// demands authority beyond the accepted ceiling, the persisted ceiling payload is itself
+/// corrupt, or the persisted head-map pin disagrees with the derived numbering. Each maps to
+/// a distinct typed refusal at the attach and import entries.
+pub(crate) enum AdmissionRefusal {
     /// The image's demand exceeds the accepted ceiling — a typed authority refusal.
     Exceeds(DemandExceedsCeiling),
     /// The persisted accepted-ceiling payload did not decode — store corruption.
@@ -91,17 +75,117 @@ enum AdmissionRefusal {
     Pin(HeadMapPinMismatch),
 }
 
-/// The result of a successful attach.
+impl AdmissionRefusal {
+    /// The open error a corrupt persisted ceiling payload reports.
+    pub(crate) fn ceiling_corrupt() -> OpenError {
+        OpenError::Corruption {
+            message: "the persisted accepted authority ceiling did not decode".to_string(),
+        }
+    }
+}
+
+/// Why the exact-binding gate the importer runs declined: the head binds another image
+/// (a stale presented image or a changed contract), the head names this image with facts the
+/// image does not have, or the shared admission gate refused.
+pub(crate) enum ExactRefusal {
+    /// The head binds a different image whose binding facts are equal: the presented image is
+    /// a code-only edit the store has not been rebound to.
+    NotActive,
+    /// The head names this image's identity but records binding facts the image does not
+    /// have — inconsistent binding metadata, recovery-shaped.
+    InconsistentBinding,
+    /// The head binds a different image with different binding facts.
+    ContractChanged(ContractChanged),
+    /// The ceiling or pin gate refused.
+    Admission(AdmissionRefusal),
+}
+
+/// The admission facts one image carries into a locked store: its active binding and the
+/// head-map pin this toolchain would serve it under. Derived once, pure over the image and
+/// its projection, before the store is touched.
+pub(crate) struct ImageAdmission<'a> {
+    image: &'a VerifiedImage,
+    incoming: ActiveBinding,
+    expected_pin: Result<DerivedPin, HeadMapPinMismatch>,
+}
+
+impl<'a> ImageAdmission<'a> {
+    pub(crate) fn derive(image: &'a VerifiedImage, projection: &StoreProjection) -> Self {
+        Self {
+            image,
+            incoming: active_binding(image),
+            expected_pin: derive_head_map_pin(image, projection),
+        }
+    }
+
+    /// The presented image's active binding.
+    pub(crate) fn incoming(&self) -> &ActiveBinding {
+        &self.incoming
+    }
+
+    /// The attach gate: the accepted ceiling admits the image's whole-program demand, and
+    /// when the incoming durable contract is the store's active contract the persisted pin
+    /// is exactly the derived binding. A *changed* durable contract is a different graph
+    /// whose numbering legitimately differs; that path is classified as the typed
+    /// contract-changed refusal after the engine's physical open and never serves the store.
+    pub(crate) fn admit_compatible(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
+        self.admit_ceiling(head)?;
+        if self.incoming.durable_contract == head.binding.durable_contract {
+            self.verify_pin(head)?;
+        }
+        Ok(())
+    }
+
+    /// The import gate: the head binds exactly this image, the accepted ceiling admits it,
+    /// and the persisted pin is exactly the derived binding — all before the engine opens.
+    pub(crate) fn admit_exact(&self, head: &LogicalHead) -> Result<(), ExactRefusal> {
+        let stored = &head.binding;
+        if self.incoming != *stored {
+            return Err(if self.incoming.image_id == stored.image_id {
+                ExactRefusal::InconsistentBinding
+            } else if stored.facts_equal(&self.incoming) {
+                ExactRefusal::NotActive
+            } else {
+                ExactRefusal::ContractChanged(ContractChanged {
+                    changed: classify_delta(stored, &self.incoming),
+                })
+            });
+        }
+        self.admit_ceiling(head).map_err(ExactRefusal::Admission)?;
+        self.verify_pin(head).map_err(ExactRefusal::Admission)
+    }
+
+    /// Reconstruct the accepted ceiling from the persisted head and intersect it with the
+    /// presented image's whole-program demand (see `authority::admit`). A ceiling payload
+    /// that does not decode is store corruption, not a demand refusal.
+    fn admit_ceiling(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
+        let accepted = CeilingDescriptor::from_payload(&head.accepted_ceiling)
+            .map_err(|_| AdmissionRefusal::CeilingCorrupt)?;
+        authority::admit(self.image, &accepted).map_err(AdmissionRefusal::Exceeds)
+    }
+
+    /// The head-map pin (FR01 §3): the persisted ledger-id ↔ cell-number bijection must be
+    /// exactly the binding the derived pin carries — a disagreement (a drifted numbering, a
+    /// permuted or foreign head) would readdress durable cells.
+    fn verify_pin(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
+        match &self.expected_pin {
+            Ok(pin) => pin.verify(&head.head_map).map_err(AdmissionRefusal::Pin),
+            Err(mismatch) => Err(AdmissionRefusal::Pin(mismatch.clone())),
+        }
+    }
+}
+
+/// The result of a successful attach: the admitted image paired with the open store.
 pub enum AttachOutcome {
     /// The presented image is already the active binding: the head and envelope are
     /// byte-unchanged (taking the lock rewrote its owner marker first, as on every attach).
     /// The store is open and ready.
-    AlreadyActive(OpenStore),
+    AlreadyActive(NativeAttachment),
     /// The image was a binding-only code update: the head and then the envelope were
     /// rewritten to the new image, each commit atomic, and the rebind is committed. The
     /// receipt reports what that commit made active.
     Rebound {
-        store: OpenStore,
+        attachment: NativeAttachment,
         receipt: RebindReceipt,
     },
 }
@@ -174,6 +258,9 @@ impl std::fmt::Display for ContractChanged {
 /// Why an attach failed.
 #[derive(Debug)]
 pub enum LifecycleError {
+    /// The image's durable shape is not executable by the store kernel (a storeless image or
+    /// a parked shape), so no store can be opened for it. Decided before the store is touched.
+    NotExecutable,
     /// The store could not be opened (not provisioned, incomplete, held by another owner, or
     /// corrupt).
     Open(OpenError),
@@ -199,6 +286,7 @@ impl LifecycleError {
     /// The stable dotted code a tool reports.
     pub fn code(&self) -> &'static str {
         match self {
+            LifecycleError::NotExecutable => Code::CliDurableUnsupported.as_str(),
             LifecycleError::Open(error) => error.code(),
             LifecycleError::DemandExceedsCeiling(refusal) => refusal.code(),
             LifecycleError::ContractChanged(refusal) => refusal.code(),
@@ -211,6 +299,10 @@ impl LifecycleError {
 impl std::fmt::Display for LifecycleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            LifecycleError::NotExecutable => write!(
+                f,
+                "the program's durable shape is not yet executable by the store"
+            ),
             LifecycleError::Open(error) => write!(f, "{error}"),
             LifecycleError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
             LifecycleError::ContractChanged(refusal) => write!(f, "{refusal}"),
@@ -222,79 +314,48 @@ impl std::fmt::Display for LifecycleError {
 
 impl std::error::Error for LifecycleError {}
 
-/// Attach the verified `image` to the store at `dir`, opening it under the store shape
-/// `projection` describes. Takes the store's single-owner lock, rereads the persisted
-/// head, and classifies the image against the active binding (see the module documentation):
-/// an identical image opens already-active, and a binding-only code update is rebound and
+/// Attach the prepared image to the store at `dir`, opening it under the image's own store
+/// projection. Takes the store's single-owner lock, rereads the persisted head, and
+/// classifies the image against the active binding (see the module documentation): an
+/// identical image opens already-active, and a binding-only code update is rebound and
 /// receipted once both commits confirm. The classification runs after the admission gate
 /// and after the engine's physical open, so a binding-fact change is the typed
 /// [`LifecycleError::ContractChanged`] refusal pointing at `marrow apply` when the store
 /// admits the image and the engine opens; a demand beyond the accepted ceiling, a head-map
 /// pin disagreement, or an engine that fails to open surfaces as its own refusal instead. The
-/// store is served under none of them.
-pub fn attach(
-    dir: &Path,
-    image: &VerifiedImage,
-    projection: StoreProjection,
-) -> Result<AttachOutcome, LifecycleError> {
-    let incoming = active_binding(image);
-
-    // The (ledger id → cell number) binding this toolchain would actually serve the store
-    // under: the kernel's numbering of this exact projection, paired to the image's durable
-    // identities by source name and node kind (`crate::image::derive_head_map_pin`). Pure over
-    // (image, projection); derived here, before the store is touched, so the admission
-    // closure below needs no borrow of the projection the open consumes.
-    let expected_pin = derive_head_map_pin(image, &projection);
-
-    // The admission gate runs after the single-owner lock and before any engine call, so an
-    // image whose demand exceeds the store's accepted ceiling is refused with zero engine
-    // calls. The gate reconstructs the accepted ceiling from the persisted head and intersects
-    // it with the presented image's whole-program demand (see `authority::admit`). A ceiling
-    // payload that does not decode is store corruption, not a demand refusal.
-    let admit = |head: &LogicalHead| -> Result<(), AdmissionRefusal> {
-        let accepted = CeilingDescriptor::from_payload(&head.accepted_ceiling)
-            .map_err(|_| AdmissionRefusal::CeilingCorrupt)?;
-        authority::admit(image, &accepted).map_err(AdmissionRefusal::Exceeds)?;
-        // The head-map pin (FR01 §3): when the incoming durable contract is the store's
-        // active contract, the persisted ledger-id ↔ cell-number bijection must be exactly
-        // the binding the derived pin carries — a disagreement (a drifted numbering, a
-        // permuted or foreign head) would readdress durable cells, so the store is refused
-        // here, with zero engine calls, before anything can read or write under the wrong
-        // numbers. A *changed* durable contract is a different graph whose numbering
-        // legitimately differs; that path is classified as the typed contract-changed
-        // refusal after the engine's physical open (and, after an unclean shutdown, its
-        // integrity audit — numbering-independent physical access), before any session, and
-        // never serves the store. A failing engine on that path surfaces as its own open
-        // error rather than the contract refusal.
-        if incoming.durable_contract == head.binding.durable_contract {
-            match &expected_pin {
-                Ok(pin) => pin.verify(&head.head_map).map_err(AdmissionRefusal::Pin)?,
-                Err(mismatch) => return Err(AdmissionRefusal::Pin(mismatch.clone())),
-            }
-        }
-        Ok(())
+/// store is served under none of them. An image with no executable durable shape is refused
+/// before the store is touched.
+pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, LifecycleError> {
+    let (image, projection) = prepared.into_parts();
+    let Some(projection) = projection else {
+        return Err(LifecycleError::NotExecutable);
     };
-    let mut opened = match open_admitted(dir, projection, admit) {
+
+    // The admission facts are pure over (image, projection); derived here, before the store
+    // is touched, so the gate below needs no borrow of the projection the open consumes. The
+    // gate runs after the single-owner lock and before any engine call, so a refusal makes
+    // zero engine calls.
+    let admission = ImageAdmission::derive(&image, &projection);
+    let mut opened = match open_admitted(dir, projection, |head| admission.admit_compatible(head)) {
         Ok(opened) => opened,
         Err(AdmitError::Open(error)) => return Err(LifecycleError::Open(error)),
         Err(AdmitError::Refused(AdmissionRefusal::Exceeds(refusal))) => {
             return Err(LifecycleError::DemandExceedsCeiling(refusal));
         }
         Err(AdmitError::Refused(AdmissionRefusal::CeilingCorrupt)) => {
-            return Err(LifecycleError::Open(OpenError::Corruption {
-                message: "the persisted accepted authority ceiling did not decode".to_string(),
-            }));
+            return Err(LifecycleError::Open(AdmissionRefusal::ceiling_corrupt()));
         }
         Err(AdmitError::Refused(AdmissionRefusal::Pin(refusal))) => {
             return Err(LifecycleError::HeadMapPin(refusal));
         }
     };
 
+    let incoming = *admission.incoming();
     let stored = opened.head.binding;
 
     // Byte-identical binding: already active, with no head or envelope write.
     if incoming == stored {
-        return Ok(AttachOutcome::AlreadyActive(opened));
+        return Ok(AttachOutcome::AlreadyActive(Attachment::new(image, opened)));
     }
 
     // A binding-fact change is a typed refusal, never corruption.
@@ -324,7 +385,7 @@ pub fn attach(
     opened.envelope = new_envelope;
     opened.head = new_head;
     Ok(AttachOutcome::Rebound {
-        store: opened,
+        attachment: Attachment::new(image, opened),
         receipt,
     })
 }

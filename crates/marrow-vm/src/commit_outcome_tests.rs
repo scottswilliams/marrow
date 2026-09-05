@@ -10,14 +10,15 @@ use marrow_kernel::durable::{
     ReplaceOutcome,
 };
 use marrow_kernel::equality::ValueDomain;
-use marrow_verify::{VerifiedImage, verify};
-use marrow_vm::{
-    DurableExecutionFault, DurableRun, Ephemeral, Value, mint_ephemeral, run_durable, run_export,
-};
+use marrow_lifecycle::{EphemeralOutcome, MemoryAttachment, mint_ephemeral, prepare};
+use marrow_verify::verify;
 
-#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-use admitted_plan::admitted_plan;
+use crate::attach::{DurableRun, run_export};
+use crate::fault::DurableExecutionFault;
+use crate::run::run_durable;
+use crate::value::Value;
+
+use crate::admitted_plan::admitted_plan;
 
 const APPLICATION_ID: [u8; 16] = [0x81; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x82; 16];
@@ -43,7 +44,8 @@ enum PostCommitFault {
     Helper,
 }
 
-fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedImage {
+/// The encoded fixture image; every consumer seals it through the verifier.
+fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
@@ -193,7 +195,7 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", export_name), function);
-    verify(&draft.encode().expect("encode").bytes).expect("verify")
+    draft.encode().expect("encode").bytes
 }
 
 enum CommitMode {
@@ -368,19 +370,24 @@ impl<D: Durable> Durable for CommitOverride<D> {
     }
 }
 
-fn run_with_mode(
-    image: &VerifiedImage,
-    mode: CommitMode,
-) -> Result<Option<Value>, DurableExecutionFault> {
-    let mut attachment = match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("fixture must be executable"),
-        Ephemeral::Failed(code) => panic!("attachment failed: {code}"),
-    };
+fn attach(bytes: Vec<u8>) -> MemoryAttachment {
+    match mint_ephemeral(prepare(verify(&bytes).expect("verify"))) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => panic!("fixture must be executable"),
+        EphemeralOutcome::Failed { cause, .. } => panic!("attachment failed: {cause}"),
+    }
+}
+
+/// Run the attachment's own `write` export through the crate-private session executor,
+/// with the commit verdict overridden: the one route that drives the VM over a session the
+/// attachment opened, available only inside this crate.
+fn run_with_mode(bytes: Vec<u8>, mode: CommitMode) -> Result<Option<Value>, DurableExecutionFault> {
+    let mut attachment = attach(bytes);
+    let (image, host) = attachment.bridge();
     let export = image
         .export_by_id(ExportId::of_local("", "write"))
         .expect("export");
-    let session = attachment
+    let session = host
         .txn_session(
             InvocationGrant::full_store(),
             DemandCoverage {
@@ -399,7 +406,7 @@ fn run_with_mode(
 #[test]
 fn aborted_commit_is_incomplete_known_old() {
     let image = commit_image(PostCommitFault::None, true);
-    let fault = run_with_mode(&image, CommitMode::Abort).expect_err("abort is not a return");
+    let fault = run_with_mode(image, CommitMode::Abort).expect_err("abort is not a return");
     let DurableExecutionFault::Incomplete(incomplete) = fault else {
         panic!("aborted commit was flattened to an ordinary runtime fault");
     };
@@ -414,7 +421,7 @@ fn aborted_commit_is_incomplete_known_old() {
 fn confirmed_commit_followed_by_pure_fault_is_incomplete_known_new() {
     let image = commit_image(PostCommitFault::Direct, true);
     let fault =
-        run_with_mode(&image, CommitMode::Delegate).expect_err("post-commit divide must fault");
+        run_with_mode(image, CommitMode::Delegate).expect_err("post-commit divide must fault");
     let DurableExecutionFault::Incomplete(incomplete) = fault else {
         panic!("post-commit fault was flattened to an ordinary runtime fault");
     };
@@ -430,7 +437,7 @@ fn confirmed_commit_followed_by_pure_fault_is_incomplete_known_new() {
 fn confirmed_commit_followed_by_helper_fault_is_incomplete_known_new() {
     let image = commit_image(PostCommitFault::Helper, true);
     let fault =
-        run_with_mode(&image, CommitMode::Delegate).expect_err("post-commit helper must fault");
+        run_with_mode(image, CommitMode::Delegate).expect_err("post-commit helper must fault");
     let DurableExecutionFault::Incomplete(incomplete) = fault else {
         panic!("post-commit helper fault was flattened to an ordinary runtime fault");
     };
@@ -448,16 +455,10 @@ fn confirmed_commit_followed_by_helper_fault_is_incomplete_known_new() {
 
 #[test]
 fn read_only_region_followed_by_pure_fault_is_an_ordinary_runtime_fault() {
-    let image = commit_image(PostCommitFault::Direct, false);
-    let mut attachment = match mint_ephemeral(&image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("fixture must be executable"),
-        Ephemeral::Failed(code) => panic!("attachment failed: {code}"),
-    };
-    let export = image
-        .export_by_id(ExportId::of_local("", "read"))
-        .expect("read export");
-    let DurableRun::Ran(result) = run_export(&image, &mut attachment, export, Vec::new()) else {
+    let mut attachment = attach(commit_image(PostCommitFault::Direct, false));
+    let Some(DurableRun::Ran(result)) =
+        run_export(&mut attachment, ExportId::of_local("", "read"), Vec::new())
+    else {
         panic!("read-only fixture must run")
     };
     let fault = result.expect_err("post-region divide must fault");

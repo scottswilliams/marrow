@@ -113,16 +113,14 @@ fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode 
         Ok(image) => image,
         Err(code) => return code,
     };
-    let Some(projection) = marrow_vm::derive_store_schemas(&image) else {
-        eprintln!(
-            "{}: the program's durable shape is not yet executable by the store, so it cannot \
-             be provisioned",
-            marrow_codes::Code::CliDurableUnsupported.as_str()
-        );
-        return ExitCode::FAILURE;
+    let prepared = marrow_lifecycle::prepare(image);
+    let report = match marrow_lifecycle::ProvisionReport::new(store, &prepared) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("{}: {error}", error.code());
+            return ExitCode::FAILURE;
+        }
     };
-
-    let report = marrow_lifecycle::ProvisionReport::new(store, &image, &projection);
     // The report is the guided first-use flow: destination, roots, effects, and initial
     // ceiling in source vocabulary. Printed for review before any write.
     eprint!("{}", report.render());
@@ -133,7 +131,7 @@ fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode 
     }
 
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    match marrow_lifecycle::provision_image(store, &image, projection, &approval) {
+    match marrow_lifecycle::provision_image(store, &prepared, &approval) {
         Ok(provisioned) => {
             // The receipt names the store instance and destination in a canonical JSON line;
             // it prints no internal identity hash as its primary output.
@@ -187,20 +185,18 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         Ok(image) => image,
         Err(code) => return code,
     };
-    let Some(projection) = marrow_vm::derive_store_schemas(&image) else {
-        eprintln!(
-            "{}: the program's durable shape is not yet executable by the store",
-            marrow_codes::Code::CliDurableUnsupported.as_str()
-        );
-        return ExitCode::FAILURE;
-    };
+    // The attached session pins the exact image identity (not the transfer-graph interface),
+    // so a program with a non-transferable export still serves its transferable exports over
+    // the terminal path; a call to a non-transferable export fails closed at the per-call
+    // transfer codec rather than being refused wholesale here.
+    let identity = Id32::from_bytes(image.image_id().0);
 
-    let opened = match marrow_lifecycle::attach(store, &image, projection) {
-        Ok(marrow_lifecycle::AttachOutcome::AlreadyActive(opened)) => opened,
+    let attachment = match marrow_lifecycle::attach(store, marrow_lifecycle::prepare(image)) {
+        Ok(marrow_lifecycle::AttachOutcome::AlreadyActive(attachment)) => attachment,
         // A binding-only rebind atomically updated the active code with the durable contract
         // unchanged; the store is open on the new image. The receipt is confirmed-commit
         // evidence, consumed here rather than echoed to the client (the spawn is invisible).
-        Ok(marrow_lifecycle::AttachOutcome::Rebound { store, .. }) => store,
+        Ok(marrow_lifecycle::AttachOutcome::Rebound { attachment, .. }) => attachment,
         // A demand-exceeds-ceiling authority refusal happens before the store is opened (zero
         // engine calls). Rather than exit — which the terminal would see only as a spawn
         // failure — serve a typed refusal over the channel so the terminal renders a
@@ -210,7 +206,6 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         Err(marrow_lifecycle::LifecycleError::DemandExceedsCeiling(refusal)) => {
             eprintln!("{}: {refusal}", refusal.code());
             let code = refusal.code();
-            let identity = Id32::from_bytes(image.image_id().0);
             return serve_over_channel(identity, move || marrow_runner::RefusalService::new(code));
         }
         Err(error) => {
@@ -219,12 +214,7 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         }
     };
 
-    // The attached session pins the exact image identity (not the transfer-graph interface),
-    // so a program with a non-transferable export still serves its transferable exports over
-    // the terminal path; a call to a non-transferable export fails closed at the per-call
-    // transfer codec rather than being refused wholesale here.
-    let attached = marrow_runner::AttachedService::new(image, opened);
-    let identity = attached.identity();
+    let attached = marrow_runner::AttachedService::new(attachment);
     serve_over_channel(identity, move || attached)
 }
 
@@ -244,7 +234,8 @@ fn attach_ephemeral(image_path: &Path) -> ExitCode {
     // The identity is the image identity, known without opening the in-memory store; the store
     // is minted inside the handler builder, which runs only after the handshake.
     let identity = Id32::from_bytes(image.image_id().0);
-    serve_over_channel(identity, move || AttachedEphemeralService::mint(image))
+    let prepared = marrow_lifecycle::prepare(image);
+    serve_over_channel(identity, move || AttachedEphemeralService::mint(prepared))
 }
 
 /// The shared channel discipline for every serving mode: mint the session secrets, bind a
@@ -436,7 +427,8 @@ fn parse_import(mut args: impl Iterator<Item = String>) -> Option<Command> {
 /// The store shape is derived from the verified image (its single owner), so the corpus is
 /// validated against exactly the program's declared types. When no store exists yet, it is
 /// provisioned first from the same image (a trusted bulk import is an explicit first-population
-/// action). Every row is created through the path kernel by `import_jsonl`; no raw key, engine
+/// action); an existing store is imported into only when this image is its exact active
+/// binding. Every row is created through the path kernel by `import_jsonl`; no raw key, engine
 /// handle, or transaction is exposed here.
 fn import_command(
     image_path: &Path,
@@ -449,15 +441,15 @@ fn import_command(
         Ok(image) => image,
         Err(code) => return code,
     };
-    let Some(projection) = marrow_vm::derive_store_schemas(&image) else {
-        eprintln!(
-            "{}: the program's durable shape is not yet executable by the store, so it cannot \
-             be imported into",
-            marrow_codes::Code::CliDurableUnsupported.as_str()
+    let prepared = marrow_lifecycle::prepare(image);
+    // The import target indexes the store's root table, which is the prepared projection's.
+    let Some(projection) = prepared.projection() else {
+        let error = marrow_lifecycle::ImportError::UnsupportedShape(
+            marrow_lifecycle::ShapeFault::NotExecutable,
         );
+        eprintln!("{}: {error}", error.code());
         return ExitCode::FAILURE;
     };
-
     let Some(root_index) = projection
         .roots()
         .iter()
@@ -490,9 +482,12 @@ fn import_command(
             return ExitCode::FAILURE;
         }
         marrow_lifecycle::Preflight::Absent => {
-            let report = marrow_lifecycle::ProvisionReport::new(store, &image, &projection);
-            let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-            match marrow_lifecycle::provision_image(store, &image, projection.clone(), &approval) {
+            let provisioned =
+                marrow_lifecycle::ProvisionReport::new(store, &prepared).and_then(|report| {
+                    let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
+                    marrow_lifecycle::provision_image(store, &prepared, &approval)
+                });
+            match provisioned {
                 Ok(_) => eprintln!("provisioned a fresh store at {}", store.display()),
                 Err(error) => {
                     eprintln!("{}: {error}", error.code());
@@ -515,7 +510,7 @@ fn import_command(
     };
     match marrow_lifecycle::import_jsonl(
         store,
-        projection,
+        prepared,
         target,
         std::io::BufReader::new(file),
         marrow_lifecycle::InvocationGrant::full_store(),

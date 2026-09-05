@@ -11,6 +11,9 @@ authors.workspace = true
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
 marrow-kernel = { path = "../marrow-kernel" }
+# The sole owner of the image/store attachment: every durable execution route takes the
+# attachment the lifecycle prepared and admitted, never a caller-supplied image and host.
+marrow-lifecycle = { path = "../marrow-lifecycle" }
 marrow-temporal = { path = "../marrow-temporal" }
 marrow-verify = { path = "../marrow-verify" }
 
@@ -18,6 +21,9 @@ marrow-verify = { path = "../marrow-verify" }
 # The VM is exercised through `ImageDraft → encode → verify` with no compiler
 # dependency, so its tests prove the executable path independent of the compiler.
 marrow-image = { path = "../marrow-image" }
+# The byte-engine traits the private commit-fault tests implement their injecting engine
+# double against; production execution reaches the engine only through the kernel.
+marrow-store = { path = "../marrow-store" }
 
 [lints]
 workspace = true

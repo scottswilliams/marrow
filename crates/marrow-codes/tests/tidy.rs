@@ -405,18 +405,33 @@ fn cargo_dag_respects_the_trust_boundaries() {
         );
     }
 
-    // The raw byte engine has exactly one consumer: the path kernel.
+    // The raw byte engine has exactly one production consumer: the path kernel. The VM's
+    // private commit-fault tests implement a fault-injecting engine double against the
+    // engine traits, a dev-only edge that never reaches a production build.
     for package in &packages {
-        let depends_on_store = package.edges.iter().any(|(dep, _)| dep == "marrow-store");
+        let production_store = package
+            .edges
+            .iter()
+            .any(|(dep, is_dev)| dep == "marrow-store" && !is_dev);
+        let dev_store = package
+            .edges
+            .iter()
+            .any(|(dep, is_dev)| dep == "marrow-store" && *is_dev);
         if package.name == "marrow-kernel" {
             assert!(
-                depends_on_store,
+                production_store,
                 "marrow-kernel is the byte engine's consumer and must depend on marrow-store"
             );
         } else {
             assert!(
-                !depends_on_store,
+                !production_store,
                 "{} must not depend on marrow-store; the path kernel is the engine's only consumer",
+                package.name
+            );
+            assert!(
+                !dev_store || package.name == "marrow-vm",
+                "{} must not reach marrow-store even in tests; only the VM's private \
+                 commit-fault double implements the engine traits",
                 package.name
             );
         }

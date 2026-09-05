@@ -8,13 +8,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::provision::{AdmitError, open_admitted};
+use crate::{
+    ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
+    ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
+};
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
-use marrow_lifecycle::{
-    ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
-    ProvisionRequest, StoreEnvelope, StoreInstanceId, open, preflight, provision,
-};
 
 /// A unique temporary directory removed on drop.
 struct TempDir {
@@ -60,6 +61,17 @@ fn projection() -> StoreProjection {
         .expect("the site names the one declared root")
 }
 
+/// An open with a no-op admission gate over the synthetic store shape: the directory
+/// lifecycle under test, with no image to admit.
+fn open(dir: &Path, projection: StoreProjection) -> Result<crate::OpenStore, OpenError> {
+    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
+        match error {
+            AdmitError::Open(error) => error,
+            AdmitError::Refused(never) => match never {},
+        }
+    })
+}
+
 fn request(instance: StoreInstanceId) -> ProvisionRequest {
     let envelope = StoreEnvelope {
         instance,
@@ -77,7 +89,6 @@ fn request(instance: StoreInstanceId) -> ProvisionRequest {
     ProvisionRequest {
         envelope,
         head: LogicalHead::provision(binding, vec![0x44, 0x45], head_map),
-        projection: projection(),
     }
 }
 
@@ -198,7 +209,7 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
         Err(OpenError::Lock(error)) => {
             assert_eq!(error.code(), "store.locked");
             match error {
-                marrow_lifecycle::LockError::StoreInUse { owner: Some(owner) } => {
+                crate::LockError::StoreInUse { owner: Some(owner) } => {
                     assert_eq!(owner.pid, std::process::id(), "names the live owner pid");
                     assert_eq!(owner.instance, Some(id), "names the held store instance");
                 }
@@ -269,7 +280,7 @@ fn an_unclean_prior_shutdown_runs_the_audit_and_a_healthy_store_opens() {
         let held = open(&store, projection()).expect("open to populate the lock body");
         // Copy the current lock body, then drop `held` (which truncates it), then restore the
         // stale body — modelling a crash that left the descriptor behind.
-        let lock_path = store.join(marrow_lifecycle::LOCK_FILE);
+        let lock_path = store.join(crate::LOCK_FILE);
         let stale = std::fs::read(&lock_path).expect("read lock body");
         drop(held);
         assert!(
@@ -306,7 +317,12 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     // the coordination files by env. The child opens the store (taking the lock), touches
     // `ready`, and holds until `release` appears.
     let mut child = std::process::Command::new(std::env::current_exe().expect("current exe"))
-        .args(["--exact", "child_holder_helper", "--ignored", "--nocapture"])
+        .args([
+            "--exact",
+            "provision_lifecycle_tests::child_holder_helper",
+            "--ignored",
+            "--nocapture",
+        ])
         .env("MARROW_LC_STORE", &store)
         .env("MARROW_LC_READY", &ready)
         .env("MARROW_LC_RELEASE", &release)
@@ -326,7 +342,7 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     // The parent is refused, named by the child's pid.
     let outcome = open(&store, projection());
     match outcome {
-        Err(OpenError::Lock(marrow_lifecycle::LockError::StoreInUse { owner: Some(owner) })) => {
+        Err(OpenError::Lock(crate::LockError::StoreInUse { owner: Some(owner) })) => {
             assert_eq!(
                 owner.pid,
                 child.id(),

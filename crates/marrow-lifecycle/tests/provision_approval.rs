@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use marrow_lifecycle::{
-    ProvisionApproval, ProvisionImageError, ProvisionReport, StoreInstanceId, open, provision_image,
+    AttachOutcome, PreparedImage, ProvisionApproval, ProvisionImageError, ProvisionReport,
+    StoreInstanceId, attach, prepare, provision_image,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -49,8 +50,10 @@ fn compile() -> VerifiedImage {
     verify(&compiled.image.bytes).expect("verify")
 }
 
-fn projection(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjection {
-    marrow_vm::derive_store_schemas(image).expect("flat-executable")
+fn prepared(image: &VerifiedImage) -> PreparedImage {
+    let prepared = prepare(image.clone());
+    assert!(prepared.projection().is_some(), "flat-executable");
+    prepared
 }
 
 struct Scratch {
@@ -93,9 +96,8 @@ impl Drop for Scratch {
 #[test]
 fn the_report_names_roots_in_source_vocabulary_with_no_identity_hash() {
     let image = compile();
-    let projection = projection(&image);
     let dest = Path::new("/tmp/notes-store");
-    let report = ProvisionReport::new(dest, &image, &projection);
+    let report = ProvisionReport::new(dest, &prepared(&image)).expect("report");
     let rendered = report.render();
 
     assert!(
@@ -126,11 +128,10 @@ fn the_report_names_roots_in_source_vocabulary_with_no_identity_hash() {
 #[test]
 fn provision_refuses_without_a_matching_approval() {
     let image = compile();
-    let projection = projection(&image);
     let scratch = Scratch::new();
 
     let wrong = ProvisionApproval::from_token("not-the-right-token");
-    let refused = provision_image(&scratch.store(), &image, projection, &wrong);
+    let refused = provision_image(&scratch.store(), &prepared(&image), &wrong);
     assert!(
         matches!(refused, Err(ProvisionImageError::Unapproved)),
         "a mismatched approval is refused",
@@ -142,26 +143,29 @@ fn provision_refuses_without_a_matching_approval() {
     );
 }
 
-/// An accepted provision publishes the store and round-trips: open reads back the same store
-/// instance and active binding the image derives.
+/// An accepted provision publishes the store and round-trips: attaching the same image reads
+/// back the same store instance and active binding the image derives.
 #[test]
-fn an_accepted_provision_round_trips_through_open() {
+fn an_accepted_provision_round_trips_through_attach() {
     let image = compile();
-    let projection = projection(&image);
     let scratch = Scratch::new();
 
-    let report = ProvisionReport::new(&scratch.store(), &image, &projection);
+    let prepared = prepared(&image);
+    let report = ProvisionReport::new(&scratch.store(), &prepared).expect("report");
     let approval = ProvisionApproval::accept(&report);
-    let provisioned = provision_image(&scratch.store(), &image, projection.clone(), &approval)
-        .expect("provision");
+    let provisioned = provision_image(&scratch.store(), &prepared, &approval).expect("provision");
 
-    let opened = open(&scratch.store(), projection).expect("open");
+    let attachment = match attach(&scratch.store(), prepared).expect("attach") {
+        AttachOutcome::AlreadyActive(attachment) => attachment,
+        AttachOutcome::Rebound { .. } => panic!("the provisioned image is already active"),
+    };
     assert_eq!(
-        opened.envelope.instance, provisioned.instance,
+        attachment.envelope().instance,
+        provisioned.instance,
         "the opened store carries the provisioned instance",
     );
     assert_eq!(
-        opened.head.binding,
+        attachment.head().binding,
         marrow_lifecycle::active_binding(&image),
         "the head records the image's active binding",
     );

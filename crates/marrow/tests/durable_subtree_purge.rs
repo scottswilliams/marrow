@@ -12,7 +12,9 @@
 //! ephemeral attachment.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 // application, product, the top-level `title` field, the root and its key, the `notes`
 // branch (a `root` placement) with its key and required `text`, then the nested `tags`
@@ -134,21 +136,25 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .expect("export present")
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a flat root with nested scalar branches must be executable"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
+            panic!("a flat root with nested scalar branches must be executable")
+        }
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
         DurableRun::Parked => panic!("{name} parked"),
@@ -156,11 +162,7 @@ fn run(
     }
 }
 
-fn seed(
-    image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
-    id: i64,
-) {
+fn seed(image: &VerifiedImage, attachment: &mut MemoryAttachment, id: i64) {
     run(image, attachment, "seed", vec![Value::Int(id)]);
 }
 
@@ -178,11 +180,7 @@ fn absent() -> Option<Value> {
 
 /// The seeded three-level entry is fully present before any removal: the root, the note,
 /// and the tag each read their payload and each family is populated.
-fn assert_fully_seeded(
-    image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
-    id: i64,
-) {
+fn assert_fully_seeded(image: &VerifiedImage, attachment: &mut MemoryAttachment, id: i64) {
     assert_eq!(
         run(image, attachment, "rootExists", vec![Value::Int(id)]),
         Some(Value::Bool(true))

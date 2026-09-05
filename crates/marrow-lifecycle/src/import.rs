@@ -14,13 +14,17 @@
 //!
 //! # The closed lifecycle boundary
 //!
-//! [`import_jsonl`] opens the persistent store through [`open`](crate::open), which internally
-//! retains the non-cloneable, non-serializable single-owner lock for the store's entire open
-//! lifetime.
-//! Nothing below this crate depends on `marrow-lifecycle` (the Cargo trust boundary: only the
-//! privileged CLI host does), so no bytecode, client-wire, or host-adapter path can enter the
-//! import mode. The engine-generic core is crate-private and adds no privilege a caller with
-//! direct kernel access would not already have.
+//! [`import_jsonl`] consumes a [`PreparedImage`] and opens the persistent store through the
+//! crate's admitted open, which retains the non-cloneable, non-serializable single-owner lock
+//! for the store's entire open lifetime. The open admits the image under the exact active
+//! binding: the head must bind exactly this image, the accepted ceiling must admit its
+//! demand, and the persisted head-map pin must equal the derived numbering — all before the
+//! engine opens, so a stale or foreign image performs no engine call, opens no session, and
+//! writes no data. Import never rebinds; `marrow run --store` owns the explicit compatible
+//! rebind. The import site is a private reprojection of the admitted roots that never
+//! becomes an execution attachment. No bytecode opcode, host import, or client-wire request
+//! reaches this mode; the engine-generic core is crate-private and adds no privilege a
+//! caller with direct kernel access would not already have.
 //!
 //! # Bounds (campaign law 9)
 //!
@@ -38,12 +42,15 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitRecovery, CommitResult, CreateOutcome, DemandCoverage, Durable, DurableCommitState,
-    EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteTarget,
-    StoreProjection, StoreSchema,
+    EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 
-use crate::provision::{OpenError, open};
+use crate::actor::{AdmissionRefusal, ContractChanged, ExactRefusal, ImageAdmission};
+use crate::attachment::PreparedImage;
+use crate::authority::DemandExceedsCeiling;
+use crate::image::HeadMapPinMismatch;
+use crate::provision::{AdmitError, OpenError, open_admitted};
 
 /// The bounds every import obeys before it allocates (campaign law 9). The defaults suit a
 /// personal-tool export; a caller may tighten them but the importer never runs unbounded.
@@ -104,6 +111,9 @@ pub struct ImportReport {
 /// Why a target root cannot be mapped by the flat importer. Raised before any store write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShapeFault {
+    /// The image's durable shape is not executable by the store kernel (a storeless image or
+    /// a parked shape), so there is no store shape to import into.
+    NotExecutable,
     /// The root index is beyond the declared root table.
     RootOutOfRange { root: u16, declared: usize },
     /// The root declares groups or keyed branches; the flat importer populates scalar-field
@@ -126,6 +136,10 @@ pub enum ShapeFault {
 impl std::fmt::Display for ShapeFault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ShapeFault::NotExecutable => write!(
+                f,
+                "the program's durable shape is not yet executable by the store"
+            ),
             ShapeFault::RootOutOfRange { root, declared } => {
                 write!(
                     f,
@@ -288,6 +302,22 @@ pub enum ImportError {
     /// The store could not be opened (not provisioned, incomplete, held, or corrupt). No store
     /// write occurred.
     Open(OpenError),
+    /// The store's active binding is a different image with the same binding facts: the
+    /// presented image is a code-only edit the store has not been rebound to. Refused before
+    /// the engine opens; `marrow run --store` performs the explicit rebind.
+    ImageNotActive,
+    /// The store's head names this image but records binding facts the image does not have —
+    /// inconsistent binding metadata, refused before the engine opens.
+    InconsistentBinding,
+    /// The store's active binding differs from the presented image in a binding fact — the
+    /// same typed refusal an attach reports, before the engine opens.
+    ContractChanged(ContractChanged),
+    /// The presented image's demand exceeds the store's accepted ceiling, with zero engine
+    /// calls.
+    DemandExceedsCeiling(DemandExceedsCeiling),
+    /// The store's persisted head-map pin disagrees with the numbering this toolchain would
+    /// serve it under; fail-closed with zero engine calls.
+    HeadMapPin(HeadMapPinMismatch),
     /// The target root's shape is not importable from flat scalar rows. No store write occurred.
     UnsupportedShape(ShapeFault),
     /// Effective authority denied the write: the store's ceiling intersected with the import
@@ -320,6 +350,11 @@ impl ImportError {
         use marrow_codes::Code;
         match self {
             ImportError::Open(error) => error.code(),
+            ImportError::ImageNotActive => Code::StoreImageNotActive.as_str(),
+            ImportError::InconsistentBinding => Code::StoreCorruption.as_str(),
+            ImportError::ContractChanged(refusal) => refusal.code(),
+            ImportError::DemandExceedsCeiling(refusal) => refusal.code(),
+            ImportError::HeadMapPin(refusal) => refusal.code(),
             ImportError::UnsupportedShape(_) => Code::CliDurableUnsupported.as_str(),
             ImportError::Denied => Code::RunAuthority.as_str(),
             ImportError::Row { .. } => Code::ConfigInvalid.as_str(),
@@ -334,12 +369,17 @@ impl ImportError {
             ImportError::Row { committed, .. }
             | ImportError::Commit { committed, .. }
             | ImportError::Io { committed, .. } => *committed,
-            ImportError::Open(_) | ImportError::UnsupportedShape(_) | ImportError::Denied => {
-                ImportReport {
-                    rows_imported: 0,
-                    batches_committed: 0,
-                }
-            }
+            ImportError::Open(_)
+            | ImportError::ImageNotActive
+            | ImportError::InconsistentBinding
+            | ImportError::ContractChanged(_)
+            | ImportError::DemandExceedsCeiling(_)
+            | ImportError::HeadMapPin(_)
+            | ImportError::UnsupportedShape(_)
+            | ImportError::Denied => ImportReport {
+                rows_imported: 0,
+                batches_committed: 0,
+            },
         }
     }
 }
@@ -348,6 +388,20 @@ impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ImportError::Open(error) => write!(f, "{error}"),
+            ImportError::ImageNotActive => write!(
+                f,
+                "the program is not the store's active program: its code differs from the \
+                 bound program. Run `marrow run --store` with this program first to rebind the \
+                 store, then retry the import"
+            ),
+            ImportError::InconsistentBinding => write!(
+                f,
+                "the store's head names this program but records binding facts the program \
+                 does not have; the store is not imported into"
+            ),
+            ImportError::ContractChanged(refusal) => write!(f, "{refusal}"),
+            ImportError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
+            ImportError::HeadMapPin(refusal) => write!(f, "{refusal}"),
             ImportError::UnsupportedShape(fault) => {
                 write!(f, "the target root is not importable: {fault}")
             }
@@ -381,11 +435,12 @@ impl std::fmt::Display for ImportError {
 impl std::error::Error for ImportError {}
 
 /// Populate the persistent store at `dir` from flat-scalar JSONL `source`, creating one durable
-/// entry of the `target` root per line through the path kernel. Opens the store under
-/// `projection`'s roots with a whole-payload import site on the target root, replacing the
-/// sites it carries (taking the single-owner lock), resolves
-/// a full write grant, and commits the rows in bounded batches (see [`ImportLimits`]). The store
-/// is closed when the import returns.
+/// entry of the `target` root per line through the path kernel. Opens the store under the
+/// prepared image's roots with a whole-payload import site on the target root, replacing the
+/// sites the program declares (taking the single-owner lock and admitting the image under the
+/// exact active binding before the engine opens), resolves a full write grant, and commits the
+/// rows in bounded batches (see [`ImportLimits`]). The store is closed when the import
+/// returns.
 ///
 /// Each line is a JSON object whose members are the root's key columns and top-level scalar
 /// fields, by source name. A value is a JSON string, integer, or boolean; `null` (or an absent
@@ -398,12 +453,14 @@ impl std::error::Error for ImportError {}
 /// because effective authority is `demand ∩ ceiling ∩ grant`.
 pub fn import_jsonl(
     dir: &Path,
-    projection: StoreProjection,
+    prepared: PreparedImage,
     target: ImportTarget,
     source: impl BufRead,
     grant: InvocationGrant,
     limits: ImportLimits,
 ) -> Result<ImportReport, ImportError> {
+    let (image, projection) = prepared.into_parts();
+    let projection = projection.ok_or(ImportError::UnsupportedShape(ShapeFault::NotExecutable))?;
     let plan =
         RowPlan::resolve(projection.roots(), &target).map_err(ImportError::UnsupportedShape)?;
 
@@ -416,7 +473,34 @@ pub fn import_jsonl(
     let projection = builder
         .finish()
         .expect("the row plan refused a target root the projection does not declare");
-    let mut opened = open(dir, projection).map_err(ImportError::Open)?;
+
+    // The exact-binding gate runs under the single-owner lock and before any engine call, so
+    // a stale, foreign, over-demanding, or mis-numbered image opens no engine and no session
+    // and writes nothing. The pin is derived over the reprojection the engine actually opens
+    // under; its numbering is the roots', which the reprojection keeps.
+    let admission = ImageAdmission::derive(&image, &projection);
+    let mut opened =
+        open_admitted(dir, projection, |head| admission.admit_exact(head)).map_err(|error| {
+            match error {
+                AdmitError::Open(error) => ImportError::Open(error),
+                AdmitError::Refused(ExactRefusal::NotActive) => ImportError::ImageNotActive,
+                AdmitError::Refused(ExactRefusal::InconsistentBinding) => {
+                    ImportError::InconsistentBinding
+                }
+                AdmitError::Refused(ExactRefusal::ContractChanged(refusal)) => {
+                    ImportError::ContractChanged(refusal)
+                }
+                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Exceeds(
+                    refusal,
+                ))) => ImportError::DemandExceedsCeiling(refusal),
+                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::CeilingCorrupt)) => {
+                    ImportError::Open(AdmissionRefusal::ceiling_corrupt())
+                }
+                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
+                    ImportError::HeadMapPin(refusal)
+                }
+            }
+        })?;
 
     match import_rows_into(&mut opened, &plan, source, grant, limits) {
         Ok(report) => Ok(report),

@@ -16,10 +16,13 @@ writes leave the VM through `marrow-kernel`, which encodes keys and values and
 drives a transaction against an engine in `marrow-store`.
 
 The compiler opens no store, and the VM accepts only an image the verifier
-sealed. A store is provisioned, opened, and imported through `marrow-lifecycle`,
-whose file operations go through `marrow-fs-journal`. The same crate stack
-serves a durable `test` by minting a fresh in-memory store from the verified
-image and discarding it when the test ends.
+sealed. `marrow-lifecycle` prepares a verified image once, deriving the store
+projection every engine opens under, and pairs the image with the store it
+admits it for: a persistent store provisioned, attached, or imported through
+the lifecycle (its file operations go through `marrow-fs-journal`), or a fresh
+in-memory store for a durable `test`, discarded when the test ends. The VM
+executes a durable export or test only through that pairing, so a store runs
+exactly the image the lifecycle admitted for it.
 
 The compiler retains parser syntax. Its private `types/aliases.rs` owner stores
 each supported alias as a shared global terminal name and optionality. It
@@ -61,10 +64,10 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 | `marrow-compile` | The checker, the scalar vocabulary, lowering to the image draft, and the `AnalysisSnapshot` the language server reads | [Diagnostic voice](diagnostic-voice.md) |
 | `marrow-image` | The program-image container, the validating `ImageDraft`, the canonical encoder, and the `ImageId` digest. Holds no decoder | [Compiled programs](../future/compiled-programs.md) |
 | `marrow-verify` | The only image decoder and the phased verifier that seals a `VerifiedImage`; rebuilds each export's durable access demand from the image alone | [Trust boundaries](../status.md#trust-boundaries) |
-| `marrow-vm` | The stack VM over a sealed image: source-mapped runtime faults, execution bounds, and the executor that runs a durable test against a fresh in-memory store | [Execution limits](../language/execution-limits.md) |
+| `marrow-vm` | The stack VM over a sealed image: source-mapped runtime faults, execution bounds, and durable execution of an export or a source test through the attachment the lifecycle prepared | [Execution limits](../language/execution-limits.md) |
 | `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, and commit recovery | [Storage](storage.md) |
 | `marrow-store` | The ordered-byte engine contract, the in-memory and redb engines, and the conformance suite both must pass | [Storage](storage.md) |
-| `marrow-lifecycle` | Provision, open, and import of a persistent store: store identity, envelope, active head, and recovery after an interrupted commit | [Operations](../operations/README.md) |
+| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, and import of a persistent store: store identity, envelope, active head, admission, and recovery after an interrupted commit | [Operations](../operations/README.md) |
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
 | `marrow-project` | Manifest schema, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
@@ -83,33 +86,38 @@ it, so a change in a leaf rebuilds the leaf and its consumers and nothing else.
 ```text
 marrow (CLI)        marrow-lsp
 marrow-runner       marrow-project-fs
-marrow-lifecycle    marrow-local-wire    marrow-compile
-marrow-vm           marrow-verify        marrow-project
-marrow-kernel       marrow-image         marrow-syntax
-marrow-store        marrow-fs-journal    marrow-codes       marrow-temporal
+marrow-vm           marrow-local-wire    marrow-compile
+marrow-lifecycle                         marrow-project
+marrow-kernel       marrow-verify        marrow-syntax
+marrow-store        marrow-image         marrow-fs-journal  marrow-codes  marrow-temporal
 ```
 
 Four leaves have no workspace dependency at all: `marrow-codes`,
 `marrow-temporal`, `marrow-image`, and `marrow-fs-journal`. The compiler
 reaches `marrow-image` but never `marrow-verify`, `marrow-vm`, or
 `marrow-store`: it can emit bytes and cannot mint a verified image or open a
-store. The VM reaches `marrow-kernel` and `marrow-verify` but never
-`marrow-compile`: it cannot see source. The language server reaches
-`marrow-compile` and `marrow-project-fs` and nothing below the image.
+store. The VM reaches `marrow-lifecycle`, `marrow-kernel`, and `marrow-verify`
+but never `marrow-compile`: it cannot see source, and it re-exports from the
+lifecycle only the preparation and fresh-test surface the CLI consumes, never
+provision, attach, or import. The language server reaches `marrow-compile` and
+`marrow-project-fs` and nothing below the image.
 
 ## Tracing a command
 
 `marrow test` shows the whole stack in one invocation. The CLI asks
 `marrow-project-fs` to capture the project; `marrow-project` turns the captured
 bytes into a `ProjectInput`. `marrow-compile` checks every module and lowers a
-test image, which `marrow-image` encodes and `marrow-verify` seals. For each
-`test` block, `marrow-vm` runs the body. A body that touches a `^` place runs
-against a store `marrow-kernel` mints in memory from the sealed image, over the
-in-memory engine in `marrow-store`. The store is dropped when the test returns.
+test image, which `marrow-image` encodes and `marrow-verify` seals.
+`marrow-lifecycle` prepares the sealed image once and selects each `test` block
+from it; `marrow-vm` runs the body. A body that touches a `^` place runs against
+a store the lifecycle mints in memory from the prepared image, through
+`marrow-kernel` over the in-memory engine in `marrow-store`. The store is
+dropped when the test returns.
 
 `marrow run <export> --store <dir>` replaces the last step. `marrow-lifecycle`
-opens the directory, `marrow-store` takes the engine lock, and `marrow-runner`
-dispatches the export over the persistent redb engine.
+admits the prepared image against the store's active binding, `marrow-store`
+takes the engine lock, and `marrow-runner` dispatches the export through the
+returned attachment over the persistent redb engine.
 
 ## Guides
 

@@ -77,13 +77,12 @@ pub fn preflight(dir: &Path) -> Result<Preflight, StoreAccessError> {
     }
 }
 
-/// The inputs to a provision: the persisted envelope and logical head to publish, and the
-/// store projection the engine is created under. The caller (the lifecycle actor) derives
-/// these from a verified image; F02a provisions an empty engine (no user data).
+/// The inputs to a provision: the persisted envelope and logical head to publish. The
+/// caller (the lifecycle actor) derives these from a verified image; F02a provisions an
+/// empty engine (no user data), so no store shape is needed to create it.
 pub struct ProvisionRequest {
     pub envelope: StoreEnvelope,
     pub head: LogicalHead,
-    pub projection: StoreProjection,
 }
 
 /// The outcome of a successful provision: the store instance now published at the
@@ -206,8 +205,10 @@ fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), Provisio
 
 /// A held-open provisioned store: the native store the kernel drives, its envelope and head,
 /// and the single-owner lock. An ordinary close releases the lock; an unresolved commit
-/// quarantines it until process exit. The engine and lock are private and inseparable; callers
-/// receive only this session-host capability.
+/// quarantines it until process exit. The engine and lock are private and inseparable, and
+/// the metadata is read only through the [`crate::NativeAttachment`] that pairs the store
+/// with the image lifecycle admitted it for; this crate's admitted open is the sole
+/// constructor.
 ///
 /// ```compile_fail
 /// use marrow_kernel::durable::NativeStore;
@@ -217,10 +218,17 @@ fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), Provisio
 ///     let _lock = opened.lock;
 /// }
 /// ```
+///
+/// ```compile_fail
+/// use marrow_lifecycle::OpenStore;
+/// fn rewrite_head(opened: &mut OpenStore, head: marrow_lifecycle::LogicalHead) {
+///     opened.head = head;
+/// }
+/// ```
 pub struct OpenStore {
     owner: NativeStore,
-    pub envelope: StoreEnvelope,
-    pub head: LogicalHead,
+    pub(crate) envelope: StoreEnvelope,
+    pub(crate) head: LogicalHead,
 }
 
 impl SessionHost for OpenStore {
@@ -250,7 +258,10 @@ impl OpenStore {
     /// opened owner for later invocations in this process, but quarantine stays
     /// irreversible and its drop cannot release the lock. Unknown retires the
     /// owner under the same process-lifetime quarantine.
-    pub fn resolve_recovery(self, recovery: CommitRecovery) -> (DurableCommitState, Option<Self>) {
+    pub(crate) fn resolve_recovery(
+        self,
+        recovery: CommitRecovery,
+    ) -> (DurableCommitState, Option<Self>) {
         let Self {
             owner,
             envelope,
@@ -349,27 +360,16 @@ pub(crate) enum AdmitError<R> {
     Refused(R),
 }
 
-/// Open the complete store at `dir` under `projection`, taking the single-owner lock. A
+/// Open the complete store at `dir` under `projection`, taking the single-owner lock and
+/// running `admit` against the persisted head **after** the lock is taken and **before** any
+/// engine call, so a refusal makes zero engine calls and releases the lock on return. A
 /// non-complete directory is refused without opening; a store held by another owner returns
 /// [`OpenError::Lock`] naming the owner. When the prior shutdown was unclean (a stale lock
 /// descriptor) a full integrity audit runs, mapping a failure to corruption. On success the
-/// returned [`OpenStore`] holds the lock for the store's whole open life.
-pub fn open(dir: &Path, projection: StoreProjection) -> Result<OpenStore, OpenError> {
-    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
-        match error {
-            AdmitError::Open(error) => error,
-            // The no-op admit never refuses.
-            AdmitError::Refused(never) => match never {},
-        }
-    })
-}
-
-/// Open the complete store at `dir`, running `admit` against the persisted head **after** the
-/// single-owner lock is taken and **before** any engine call, so a refusal makes zero engine
-/// calls and releases the lock on return. The lifecycle actor supplies an `admit` that
-/// reconstructs the store's accepted deployment ceiling from the head and intersects it with
-/// the presented image's demand; a refusal is surfaced as [`AdmitError::Refused`]. The plain
-/// [`open`] passes a no-op admit.
+/// returned [`OpenStore`] holds the lock for the store's whole open life. The lifecycle actor
+/// and the importer supply an `admit` that admits the presented image against the head; a
+/// refusal is surfaced as [`AdmitError::Refused`]. This is the only constructor of an
+/// [`OpenStore`].
 pub(crate) fn open_admitted<R>(
     dir: &Path,
     projection: StoreProjection,
@@ -539,7 +539,6 @@ mod tests {
                 vec![0x44, 0x45],
                 head_map,
             ),
-            projection: rootless(),
         }
     }
 
@@ -603,6 +602,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// An open with a no-op admission gate, over the rootless shape.
+    fn open_unadmitted(dir: &Path) -> Result<OpenStore, OpenError> {
+        open_admitted(dir, rootless(), |_| Ok::<(), std::convert::Infallible>(())).map_err(
+            |error| match error {
+                AdmitError::Open(error) => error,
+                AdmitError::Refused(never) => match never {},
+            },
+        )
+    }
+
     fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
         NativeStore::acquire_existing(dir)
             .expect("acquire the owner")
@@ -639,7 +648,7 @@ mod tests {
 
         let mut contended = None;
         let opened = open_admitted(&store, rootless(), |head| {
-            contended = Some(match open(&store, rootless()) {
+            contended = Some(match open_unadmitted(&store) {
                 Err(OpenError::Lock(error)) => error.code(),
                 Ok(_) => panic!("a competing open ran inside the admission callback"),
                 Err(other) => panic!("admission ran outside its owner: {other}"),

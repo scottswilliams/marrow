@@ -17,13 +17,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::provision::{AdmitError, open_admitted};
+use crate::{
+    ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
+    StoreInstanceId, provision,
+};
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
-use marrow_lifecycle::{
-    ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
-    StoreInstanceId, open, provision,
-};
 
 /// A unique temporary directory removed on drop.
 struct TempDir {
@@ -102,11 +103,21 @@ fn head(entries: usize, ceiling_payload: Vec<u8>) -> LogicalHead {
     )
 }
 
+/// An open with a no-op admission gate over the synthetic store shape: the directory
+/// lifecycle under test, with no image to admit.
+fn open(dir: &Path, projection: StoreProjection) -> Result<crate::OpenStore, OpenError> {
+    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
+        match error {
+            AdmitError::Open(error) => error,
+            AdmitError::Refused(never) => match never {},
+        }
+    })
+}
+
 fn request(instance: StoreInstanceId) -> ProvisionRequest {
     ProvisionRequest {
         envelope: envelope(instance, "0.1.0"),
         head: head(1, vec![0x44, 0x45]),
-        projection: projection(),
     }
 }
 
@@ -123,11 +134,11 @@ fn provisioned(tag: &str) -> (TempDir, PathBuf) {
 }
 
 fn envelope_path(store: &Path) -> PathBuf {
-    store.join(marrow_lifecycle::ENVELOPE_FILE)
+    store.join(crate::ENVELOPE_FILE)
 }
 
 fn head_path(store: &Path) -> PathBuf {
-    store.join(marrow_lifecycle::HEAD_FILE)
+    store.join(crate::HEAD_FILE)
 }
 
 /// How an artifact file is made unreadable while its store is held.
@@ -239,7 +250,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_head_is_in() {
 fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
     let (dir, store) = provisioned("contender-marker");
     let held = open(&store, projection()).expect("the holder opens the store");
-    let marker = store.join(marrow_lifecycle::LOCK_FILE);
+    let marker = store.join(crate::LOCK_FILE);
 
     for (tag, body) in [
         ("empty", b"".as_slice()),
@@ -299,11 +310,11 @@ fn replacing_every_replaceable_node_a_holder_locks_admits_no_second_owner() {
     // engine byte for byte, and an inode no holder locks.
     let (_donor, donor_store) = provisioned("compound-fault-donor");
     let fresh = store.join("fresh-engine");
-    std::fs::copy(donor_store.join(marrow_lifecycle::ENGINE_FILE), &fresh)
+    std::fs::copy(donor_store.join(crate::ENGINE_FILE), &fresh)
         .expect("copy a fresh engine into the held store directory");
-    std::fs::rename(&fresh, store.join(marrow_lifecycle::ENGINE_FILE))
+    std::fs::rename(&fresh, store.join(crate::ENGINE_FILE))
         .expect("publish the fresh engine under the engine's name");
-    std::fs::remove_file(store.join(marrow_lifecycle::LOCK_FILE)).expect("remove the marker");
+    std::fs::remove_file(store.join(crate::LOCK_FILE)).expect("remove the marker");
 
     match open(&store, projection()) {
         Err(OpenError::Lock(error)) => assert_eq!(
@@ -399,7 +410,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
     };
     fn chmod_marker(store: &Path, mode: u32) {
         std::fs::set_permissions(
-            store.join(marrow_lifecycle::LOCK_FILE),
+            store.join(crate::LOCK_FILE),
             std::fs::Permissions::from_mode(mode),
         )
         .expect("chmod the marker");
@@ -408,7 +419,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
         door(
             "the marker deleted under the holder",
             Box::new(|store: &Path| {
-                std::fs::remove_file(store.join(marrow_lifecycle::LOCK_FILE)).expect("remove");
+                std::fs::remove_file(store.join(crate::LOCK_FILE)).expect("remove");
             }),
             Verdict::Locked,
         ),
@@ -417,7 +428,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             Box::new(|store: &Path| {
                 let decoy = store.join("decoy");
                 std::fs::write(&decoy, b"").expect("write the decoy");
-                std::fs::rename(&decoy, store.join(marrow_lifecycle::LOCK_FILE)).expect("swap");
+                std::fs::rename(&decoy, store.join(crate::LOCK_FILE)).expect("swap");
             }),
             Verdict::Locked,
         ),
@@ -432,14 +443,14 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
         door(
             "the engine deleted under the holder",
             Box::new(|store: &Path| {
-                std::fs::remove_file(store.join(marrow_lifecycle::ENGINE_FILE)).expect("remove");
+                std::fs::remove_file(store.join(crate::ENGINE_FILE)).expect("remove");
             }),
             Verdict::Locked,
         ),
         door(
             "a symbolic link standing in for the marker",
             Box::new(|store: &Path| {
-                let marker = store.join(marrow_lifecycle::LOCK_FILE);
+                let marker = store.join(crate::LOCK_FILE);
                 std::fs::remove_file(&marker).expect("remove the marker");
                 std::os::unix::fs::symlink(store.join("elsewhere"), &marker).expect("link");
             }),
@@ -448,7 +459,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
         door(
             "a directory standing in for the marker",
             Box::new(|store: &Path| {
-                let marker = store.join(marrow_lifecycle::LOCK_FILE);
+                let marker = store.join(crate::LOCK_FILE);
                 std::fs::remove_file(&marker).expect("remove the marker");
                 std::fs::create_dir(&marker).expect("a directory in place of the marker");
             }),
@@ -532,7 +543,7 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     let bytes = maximal.encode();
     assert_eq!(
         bytes.len() as u64,
-        marrow_lifecycle::MAX_ENVELOPE_FILE_BYTES,
+        crate::MAX_ENVELOPE_FILE_BYTES,
         "the largest envelope the encoder produces is the ceiling admission applies",
     );
     provision(
@@ -540,7 +551,6 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
         ProvisionRequest {
             envelope: maximal,
             head: head(1, vec![0x44]),
-            projection: projection(),
         },
     )
     .expect("provision a maximal envelope");
@@ -573,7 +583,7 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     let bytes = maximal.encode();
     assert_eq!(
         bytes.len() as u64,
-        marrow_lifecycle::MAX_HEAD_FILE_BYTES,
+        crate::MAX_HEAD_FILE_BYTES,
         "the largest head the encoder produces is the ceiling admission applies",
     );
     provision(
@@ -581,7 +591,6 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
         ProvisionRequest {
             envelope: envelope(instance(), "0.1.0"),
             head: maximal,
-            projection: projection(),
         },
     )
     .expect("provision a maximal head");
@@ -616,11 +625,7 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
 #[cfg(unix)]
 #[test]
 fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
-    for artifact in [
-        marrow_lifecycle::ENVELOPE_FILE,
-        marrow_lifecycle::HEAD_FILE,
-        marrow_lifecycle::ENGINE_FILE,
-    ] {
+    for artifact in [crate::ENVELOPE_FILE, crate::HEAD_FILE, crate::ENGINE_FILE] {
         let (dir, store) = provisioned(&format!("symlink-{artifact}"));
         let target = dir.path.join(format!("{artifact}-elsewhere"));
         let path = store.join(artifact);
@@ -841,13 +846,13 @@ fn an_open_of_a_directory_that_is_not_a_store_writes_nothing_into_it() {
     // not move the completeness verdict ahead of the owner: the lock is still taken first.
     let (_dir, complete) = provisioned("refused-after-first-open");
     drop(open(&complete, projection()).expect("the first open creates the lock entry"));
-    std::fs::remove_file(complete.join(marrow_lifecycle::HEAD_FILE)).expect("remove the head");
+    std::fs::remove_file(complete.join(crate::HEAD_FILE)).expect("remove the head");
     assert!(matches!(
         open(&complete, projection()),
         Err(OpenError::Incomplete),
     ));
     assert!(
-        complete.join(marrow_lifecycle::LOCK_FILE).exists(),
+        complete.join(crate::LOCK_FILE).exists(),
         "an open that took the owner lock keeps the entry it locked",
     );
 }

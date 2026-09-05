@@ -1,79 +1,126 @@
-//! Ephemeral-memory durable execution (E01 tests; E02 export transactions).
+//! Durable execution over a lifecycle-owned attachment.
 //!
-//! The executor derives a durable [`StoreProjection`] — the root schemas and the
-//! site table checked against them — from a
-//! [`VerifiedImage`] — the only source of a valid schema — mints an
-//! [`EphemeralAttachment`], opens the session an invocation's demand requires under
-//! a full grant, and runs on the VM. [`run_durable_test`] mints a fresh attachment
-//! per durable source test, so tests never observe one another's writes.
-//! [`mint_ephemeral`] plus [`run_export`] instead keep one attachment across several
-//! export invocations, so a mutating export's committed `transaction` region is
-//! observable by a later read invocation and a rolled-back one is not (E02).
+//! The lifecycle prepares an image once and pairs it privately with the store it admitted
+//! the image for; the VM never receives an image and a host separately. [`run_export`]
+//! looks an export up in the attachment's own image, opens the one session that export's
+//! verified demand requires on the attachment's own host, and runs it. [`run_test`] runs a
+//! fresh source test the same way over the store the lifecycle minted for it, or with no
+//! session for a storeless entry.
 //!
-//! The flat keyed root (one or more key columns) whose fields are scalars or widened
-//! values, with field-only keyed branches nested to any depth, is executable here; a
-//! parked durable shape — a singleton root, a group, or a nominal-typed field — is
-//! [`DurableRun::Parked`], reported honestly rather than run against a partial store.
+//! ```compile_fail
+//! fn foreign_pair(
+//!     image: &marrow_verify::VerifiedImage,
+//!     attachment: &mut marrow_lifecycle::NativeAttachment,
+//!     export: marrow_image::ExportId,
+//! ) {
+//!     let _ = marrow_vm::run_export(image, attachment, export, Vec::new());
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn bare_host(
+//!     image: &marrow_verify::VerifiedImage,
+//!     host: &mut marrow_kernel::durable::EphemeralAttachment,
+//!     export: marrow_image::ExportId,
+//! ) {
+//!     let _ = marrow_vm::run_export(host, export, Vec::new());
+//! }
+//! ```
 
-use marrow_kernel::codec::value::{ScalarKind, ValueShape, ValueShapeBuilder};
-use marrow_kernel::durable::{
-    CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment, IndexComponent,
-    InvocationGrant, SessionHost, SiteTarget, StoreProjection, StoreProjectionBuilder, StoreSchema,
-    StoreSchemaBuilder,
-};
-use marrow_verify::{
-    CeilingDescriptor, ExportDemand, FunctionIndex, ImageType, Scalar, SealedExport,
-    SealedIndexComponent, SealedSite, SealedSiteTarget, SealedTestEntry, VerifiedImage,
-};
+use marrow_kernel::durable::{DemandCoverage, InvocationGrant, SessionHost};
+use marrow_lifecycle::{Attachment, FreshTest, TestHost};
+use marrow_verify::{ExportDemand, ExportId, FunctionIndex, VerifiedImage};
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
-use crate::run::{DriverDispatch, run_driver, run_durable, run_in_session};
+use crate::run::{DriverDispatch, run, run_driver, run_durable, run_in_session};
 use crate::value::Value;
 
-/// The outcome of attempting to run one durable test against a fresh ephemeral
-/// attachment.
+/// The outcome of one durable invocation through an attachment or a fresh test.
 pub enum DurableRun {
-    /// The test ran; the inner result is its VM value or source-mapped fault.
+    /// The invocation ran; the inner result is its VM value or source-mapped fault.
     Ran(Result<Option<Value>, DurableExecutionFault>),
-    /// The image's durable shape is not yet executable by the ephemeral read kernel
-    /// (a singleton root, a group, or a nominal-typed field). Composite keys and
+    /// The image's durable shape is not yet executable by the flat kernel (a singleton
+    /// root, a group nested below a branch, or a nominal-typed field). Composite keys and
     /// field-only keyed branches nested to any depth are executable.
     Parked,
-    /// Minting the attachment failed operationally; the stable code names why.
+    /// Minting the store failed operationally; the stable code names why.
     Failed(&'static str),
 }
 
-/// Run one durable test entry against a fresh ephemeral-memory attachment. The
-/// ceiling is the test-image demand union; the invocation demand is the entry's own
-/// reconstructed demand under a full test grant.
-pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> DurableRun {
-    let Some(projection) = derive_projection(image) else {
-        return DurableRun::Parked;
-    };
+/// Run the attachment's own export `export` with `args`, opening the session its verified
+/// demand requires on the attachment's host: a transaction session for a mutating export
+/// (whose own `transaction` region commits the staged writes) and a read session for a
+/// read-only one, both under a full grant; a storeless export runs with no session. Because
+/// the host persists across calls, a mutating export's committed writes are visible to a
+/// later invocation on the same attachment, and a mutating export that faults before its
+/// commit leaves the store unchanged. `None` when the image carries no export with that
+/// identity, decided before any session opens.
+pub fn run_export<H: SessionHost>(
+    attachment: &mut Attachment<H>,
+    export: ExportId,
+    args: Vec<Value>,
+) -> Option<DurableRun> {
+    let (image, host) = attachment.bridge();
+    let export = image.export_by_id(export)?;
+    Some(run_on_host(
+        image,
+        export.function(),
+        export.demand(),
+        args,
+        host,
+    ))
+}
 
-    // The deployment ceiling admits exactly the test-image demand union.
-    let ceiling = deployment_ceiling(image.test_demand_union());
-    let mut attachment = match EphemeralAttachment::mint(projection, ceiling) {
-        Ok(attachment) => attachment,
-        Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
-    };
+/// Run one fresh source test: a storeless entry with no session, a direct-durable entry
+/// against one harness session over its own fresh store, and a driver entry against that
+/// store with each export call it makes as its own invocation boundary (see
+/// [`TestDriver`]). Kind and demand come from the entry in the test's own image.
+pub fn run_test(mut test: FreshTest) -> DurableRun {
+    let execution = test.execution();
+    let image = execution.image;
+    let entry = execution.entry;
+    match execution.host {
+        TestHost::Storeless => DurableRun::Ran(
+            run(image, entry.func(), Vec::new()).map_err(DurableExecutionFault::from),
+        ),
+        TestHost::Direct(host) => {
+            run_on_host(image, entry.func(), entry.demand(), Vec::new(), host)
+        }
+        TestHost::Driver(host) => {
+            let mut driver = TestDriver { image, host };
+            DurableRun::Ran(run_driver(image, entry.func(), Vec::new(), &mut driver))
+        }
+        TestHost::Parked => DurableRun::Parked,
+        TestHost::Failed(cause) => DurableRun::Failed(cause),
+    }
+}
 
+/// Open the session `demand` requires on `host` and run `func` in it. A mutating demand
+/// drives a transaction session (which also reads); a read-only demand drives a read
+/// session, so a read-only invocation never opens a writer; an empty demand needs no
+/// session.
+fn run_on_host<H: SessionHost + ?Sized>(
+    image: &VerifiedImage,
+    func: FunctionIndex,
+    demand: &ExportDemand,
+    args: Vec<Value>,
+    host: &mut H,
+) -> DurableRun {
+    if demand.is_empty() {
+        return DurableRun::Ran(run(image, func, args).map_err(DurableExecutionFault::from));
+    }
     let grant = InvocationGrant::full_store();
-    let demand = coverage(entry.demand().reads(), entry.demand().writes());
-    let func = entry.func();
-
-    // A mutating test drives a transaction session (which also reads); a read-only
-    // test drives a read session, so a read-only demand never opens a writer.
-    let result = if demand.write {
-        match attachment.txn_session(grant, demand) {
-            Ok(mut session) => run_durable(image, func, Vec::new(), &mut session),
+    let coverage = coverage(demand);
+    let result = if coverage.write {
+        match host.txn_session(grant, coverage) {
+            Ok(mut session) => run_durable(image, func, args, &mut session),
             Err(_) => {
                 return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
             }
         }
     } else {
-        match attachment.read_session(grant, demand) {
-            Ok(mut session) => run_durable(image, func, Vec::new(), &mut session),
+        match host.read_session(grant, coverage) {
+            Ok(mut session) => run_durable(image, func, args, &mut session),
             Err(_) => {
                 return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
             }
@@ -82,42 +129,21 @@ pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> Durab
     DurableRun::Ran(result)
 }
 
-fn coverage(read: bool, write: bool) -> DemandCoverage {
-    DemandCoverage { read, write }
+fn coverage(demand: &ExportDemand) -> DemandCoverage {
+    DemandCoverage {
+        read: demand.reads(),
+        write: demand.writes(),
+    }
 }
 
-/// Run one durable *driver* test entry against a fresh persistent ephemeral
-/// attachment. The test body drives exports: each durable call it makes is its own
-/// invocation boundary (see [`TestDriver`]), so a mutating export commits to the
-/// attachment and a later reading export observes the committed state, exactly as a
-/// terminal drives an application. The attachment is minted per test and discarded
-/// at the end, so no test observes another's writes. A driver test performs no
-/// direct durable operation — the verifier's test-entry phase refuses a body that
-/// mixes the two.
-pub fn run_driver_test(image: &VerifiedImage, entry: &SealedTestEntry) -> DurableRun {
-    let Some(projection) = derive_projection(image) else {
-        return DurableRun::Parked;
-    };
-    let ceiling = deployment_ceiling(image.test_demand_union());
-    let mut attachment = match EphemeralAttachment::mint(projection, ceiling) {
-        Ok(attachment) => attachment,
-        Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
-    };
-    let mut driver = TestDriver {
-        image,
-        attachment: &mut attachment,
-    };
-    DurableRun::Ran(run_driver(image, entry.func(), Vec::new(), &mut driver))
-}
-
-/// The invocation dispatcher for a driver test body: it owns one persistent
-/// attachment and turns each call the driver frame makes into its own session.
-struct TestDriver<'a> {
+/// The invocation dispatcher for a driver test body: it owns the test's one store and turns
+/// each call the driver frame makes into its own session.
+struct TestDriver<'a, H: SessionHost + ?Sized> {
     image: &'a VerifiedImage,
-    attachment: &'a mut EphemeralAttachment,
+    host: &'a mut H,
 }
 
-impl DriverDispatch for TestDriver<'_> {
+impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
     fn invoke(
         &mut self,
         func: FunctionIndex,
@@ -131,21 +157,21 @@ impl DriverDispatch for TestDriver<'_> {
             return run_in_session(self.image, func, args, depth, budget, None);
         }
         let grant = InvocationGrant::full_store();
-        let cover = coverage(demand.reads(), demand.writes());
+        let cover = coverage(demand);
         // A mutating call drives a transaction session (which also reads and, on its
-        // own `TxnCommit`, commits to the attachment); a read-only call drives a read
+        // own `TxnCommit`, commits to the store); a read-only call drives a read
         // session, so a read-only demand never opens a writer. Either session closes
         // when this invocation returns — a committed writer persists, a dropped one
         // rolls back — before the next call opens its own.
         if cover.write {
-            match self.attachment.txn_session(grant, cover) {
+            match self.host.txn_session(grant, cover) {
                 Ok(mut session) => {
                     run_in_session(self.image, func, args, depth, budget, Some(&mut session))
                 }
                 Err(_) => Err(session_open_fault(self.image, func)),
             }
         } else {
-            match self.attachment.read_session(grant, cover) {
+            match self.host.read_session(grant, cover) {
                 Ok(mut session) => {
                     run_in_session(self.image, func, args, depth, budget, Some(&mut session))
                 }
@@ -156,449 +182,11 @@ impl DriverDispatch for TestDriver<'_> {
 }
 
 /// A driver invocation whose session could not open — the authority resolved against
-/// the attachment's ceiling and the invocation grant refused it. The callee's demand
-/// is a subset of the test-image union the ceiling is minted from, so a well-formed
-/// image never reaches this; it is mapped to a source-positioned `run.authority`
-/// fault rather than a panic.
+/// the store's ceiling and the invocation grant refused it. The callee's demand is a
+/// subset of the test-image union the ceiling is minted from, so a well-formed image
+/// never reaches this; it is mapped to a source-positioned `run.authority` fault rather
+/// than a panic.
 fn session_open_fault(image: &VerifiedImage, func: FunctionIndex) -> DurableExecutionFault {
     let (line, column) = image.function(func).span_at(0).unwrap_or((1, 1));
     RuntimeFault::new(marrow_codes::Code::RunAuthority.as_str(), line, column).into()
-}
-
-/// Derive the deployment ceiling a fresh attachment is bounded by from a demand
-/// union. Building the descriptor from the union derives both the read/write
-/// coverage the kernel checks and the 32-byte ceiling-id binding token from the same
-/// verified atoms, so a wider ceiling would carry a different id — the ceiling is
-/// bound to the verified image, never supplied independently.
-fn deployment_ceiling(union: ExportDemand) -> DeploymentCeiling {
-    let descriptor = CeilingDescriptor::from_demand_union(union);
-    DeploymentCeiling::new(
-        coverage(descriptor.reads(), descriptor.writes()),
-        CeilingIdToken::new(*descriptor.ceiling_id().bytes()),
-    )
-}
-
-/// Whether a persistent ephemeral attachment could be minted for a whole image.
-pub enum Ephemeral {
-    /// A minted attachment over the image's flat executable durable shape. The caller
-    /// keeps it and drives several export invocations against the same store. Boxed
-    /// because the attachment owns the whole store schema and is far larger than the
-    /// other variants.
-    Ready(Box<EphemeralAttachment>),
-    /// The image's durable shape is not yet executable by the flat kernel (a
-    /// singleton root, a group, or a nominal-typed field).
-    Parked,
-    /// Minting the attachment failed operationally; the stable code names why.
-    Failed(&'static str),
-}
-
-/// Mint one persistent ephemeral attachment for a whole verified image: a single
-/// in-memory durable store bound to the image's schema, sites, and whole-program
-/// demand-union ceiling, which serves every export invocation in sequence. The
-/// persistent counterpart of [`run_durable_test`]'s per-test mint — here the caller
-/// retains the attachment and drives several exports against the same store, so a
-/// committed transaction is observable by a later read and a rolled-back one is not.
-pub fn mint_ephemeral(image: &VerifiedImage) -> Ephemeral {
-    let Some(projection) = derive_projection(image) else {
-        return Ephemeral::Parked;
-    };
-    let ceiling = deployment_ceiling(image.demand_union());
-    match EphemeralAttachment::mint(projection, ceiling) {
-        Ok(attachment) => Ephemeral::Ready(Box::new(attachment)),
-        Err(_) => Ephemeral::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
-    }
-}
-
-/// Run one export against a persistent attachment, opening the session its verified
-/// demand requires: a transaction session for a mutating export (whose own
-/// `transaction` region commits the staged writes) and a read session for a
-/// read-only one, both under a full grant. Because the attachment persists across
-/// calls, a mutating export's committed writes are visible to a later read invocation
-/// on the same attachment, and a mutating export that faults before its commit leaves
-/// the store unchanged.
-///
-/// Generic over the [`SessionHost`]: the ephemeral-memory attachment and the persistent
-/// native store open sessions the same way, so the terminal companion path (F02b) drives a
-/// durable export against a real native store through exactly this path. A committed native
-/// transaction is durable across a restart; a faulting one leaves the store unchanged.
-pub fn run_export<H: SessionHost>(
-    image: &VerifiedImage,
-    host: &mut H,
-    export: &SealedExport,
-    args: Vec<Value>,
-) -> DurableRun {
-    let grant = InvocationGrant::full_store();
-    let demand = coverage(export.demand().reads(), export.demand().writes());
-    let func = export.function();
-    let result = if demand.write {
-        match host.txn_session(grant, demand) {
-            Ok(mut session) => run_durable(image, func, args, &mut session),
-            Err(_) => {
-                return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
-            }
-        }
-    } else {
-        match host.read_session(grant, demand) {
-            Ok(mut session) => run_durable(image, func, args, &mut session),
-            Err(_) => {
-                return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
-            }
-        }
-    };
-    DurableRun::Ran(result)
-}
-
-/// Derive the store's root-indexed schema table and the index-aligned site table from a
-/// verified image, or `None` when the image's durable shape is not executable by the
-/// ephemeral kernel. Every declared root must be flat-executable; if any one parks, the
-/// whole image parks, since a partial store — some roots served, others silently absent —
-/// is never minted. The image is the sole source of a valid schema — a forged image cannot
-/// be verified, so it can never reach this derivation.
-/// The public projection from a verified image to the kernel's root-indexed schema and site
-/// tables — the store shape a persistent provision opens the engine under. The persistent
-/// lifecycle and the terminal companion derive the same tables the ephemeral attachment
-/// does, so a store is provisioned under exactly the schema the running program expects.
-/// `None` when the image's durable shape is not yet executable by the flat kernel.
-pub fn derive_store_schemas(image: &VerifiedImage) -> Option<StoreProjection> {
-    derive_projection(image)
-}
-
-fn derive_projection(image: &VerifiedImage) -> Option<StoreProjection> {
-    // A durable image declares at least one root; a storeless image never reaches attach.
-    if image.roots().is_empty() {
-        return None;
-    }
-
-    // One StoreSchema per declared root, in declaration order, plus each root's offset into
-    // the image-wide managed-index table. A site names its index by that image-wide
-    // position; the kernel resolves it against its own root's schema, so the offset rebases
-    // the position to root-local when the site table is built.
-    let mut projection = StoreProjection::builder();
-    let mut index_offsets = Vec::with_capacity(image.roots().len());
-    let mut running_indexes = 0u16;
-    for (root_index, root) in image.roots().iter().enumerate() {
-        let schema = derive_root_schema(image, root_index as u16, root)?;
-        index_offsets.push(running_indexes);
-        running_indexes = running_indexes.checked_add(schema.indexes().len() as u16)?;
-        projection.root(schema);
-    }
-
-    // The site table is index-aligned with the image's sites so `Durable::site` resolves by
-    // image site index. A parked site is never referenced by a verified durable opcode (the
-    // verifier refuses that in phase 3), so it keeps its slot as the kernel's typed absence
-    // rather than as a semantically valid placeholder site.
-    for site in image.sites() {
-        emit_site(&mut projection, site, &index_offsets)?;
-    }
-
-    // Every position the sites name is resolved against the completed roots here. A verified
-    // image cannot name a position its own roots do not declare, so a refusal is a divergence
-    // between the verifier's shape and this projection, and the image parks rather than
-    // attaching under a site table the resolver would have to trust.
-    projection.finish().ok()
-}
-
-/// Derive one root's [`StoreSchema`] from the image, or `None` when the root is not
-/// flat-executable (a singleton keyless root, or a group nested below its direct members).
-///
-/// The projection is a flat command stream into the kernel's schema builder over an
-/// explicit stack — it never assembles a recursive kernel value and then hands it over,
-/// because there is no longer any such value to assemble. A hostile or divergent branch
-/// tree therefore costs the walk's own heap, not the machine stack, and the builder returns
-/// a typed refusal that parks the root.
-fn derive_root_schema(
-    image: &VerifiedImage,
-    root_index: u16,
-    root: &marrow_verify::SealedRoot,
-) -> Option<StoreSchema> {
-    // The executable layout is the keyed root (any key arity, its fields scalar or widened
-    // composite) plus root-level unkeyed groups of storable-value fields plus field-only keyed
-    // branches nested to any depth, including composite-keyed branches. A root with a group
-    // nested below its direct members (or a nested/composite-keyed shape the flat kernel
-    // cannot serve) is not yet executable (`has_extras`); a singleton (keyless) root has no
-    // key columns and parks.
-    if root.has_extras() || root.keys().is_empty() {
-        return None;
-    }
-    let mut builder = StoreSchemaBuilder::root(root.name().to_string(), key_columns(root.keys()));
-
-    // The unified root record is `[leading value fields][one Record slot per root-level
-    // group]`, in declaration order. The typed split carries the two halves by name; the
-    // kernel's flat field set is only the value fields, and the group slots become groups
-    // below.
-    let split = RecordSplit::of(image.record_type(root.record()), root.groups().len())?;
-    emit_fields(image, &mut builder, split.value_fields)?;
-    // A trailing group slot contributes no kernel field, but its shape still has to be one
-    // the durable codec stores: the pre-projection derivation shaped every slot of the one
-    // record and parked the root when any of them was not storable. Deriving and discarding
-    // keeps that parking condition exactly.
-    for slot in split.group_slots {
-        value_shape(image, slot.ty)?;
-    }
-
-    // Each root-level group derives its own materialized record from the image; a group is a
-    // value unit of the root entry, addressed by the root's key-path, so it carries a field
-    // set but no key.
-    for group in root.groups() {
-        builder.open_group(group.name().to_string());
-        emit_fields(
-            image,
-            &mut builder,
-            image.record_type(group.record()).fields(),
-        )?;
-        builder.close_group();
-    }
-
-    // The sealed branch tree is in declaration order, so a `BranchEntry` branch path indexes
-    // it level by level. The walk is an explicit stack over that tree: a branch's own fields
-    // are emitted, then its sub-branches, then its close — the same pre-order the recursive
-    // projection produced, without the recursion.
-    let mut pending: Vec<BranchStep<'_>> = Vec::new();
-    push_branches(&mut pending, root.branches());
-    while let Some(step) = pending.pop() {
-        match step {
-            BranchStep::Open(branch) => {
-                builder.open_branch(branch.name().to_string(), key_columns(branch.keys()));
-                emit_fields(
-                    image,
-                    &mut builder,
-                    image.record_type(branch.record()).fields(),
-                )?;
-                pending.push(BranchStep::Close);
-                push_branches(&mut pending, branch.branches());
-            }
-            BranchStep::Close => {
-                builder.close_branch();
-            }
-        }
-        builder.refusal().map_or(Some(()), |_| None)?;
-    }
-
-    // This root's own managed indexes, in declaration order, each with a projection the
-    // builder resolves against the completed root. An index over a parked root never reaches
-    // here (the root parks above before its indexes are read).
-    for index in image
-        .indexes()
-        .iter()
-        .filter(|index| index.root() == root_index)
-    {
-        builder.index(
-            *index.id().bytes(),
-            index.unique(),
-            index
-                .projection()
-                .iter()
-                .map(|component| match component {
-                    SealedIndexComponent::Key(column) => IndexComponent::key(*column),
-                    SealedIndexComponent::Field(field) => IndexComponent::field(*field),
-                })
-                .collect(),
-        );
-    }
-
-    builder.finish().ok()
-}
-
-/// The unified root record's two typed halves: the leading value fields the kernel
-/// materializes directly, and the trailing per-group `Record` slots (one per root-level
-/// group, in group declaration order) that become kernel groups instead. Splitting once,
-/// by name, keeps the layout fact in one place rather than as positional truncation at
-/// each use.
-struct RecordSplit<'a> {
-    value_fields: &'a [marrow_verify::SealedField],
-    group_slots: &'a [marrow_verify::SealedField],
-}
-
-impl<'a> RecordSplit<'a> {
-    /// Split `record` before its trailing `group_count` slots. `None` when the record
-    /// holds fewer fields than the root holds groups — a divergence from the image's
-    /// unified-record layout — so the caller parks the root.
-    fn of(record: &'a marrow_verify::SealedRecordType, group_count: usize) -> Option<Self> {
-        let values = record.fields().len().checked_sub(group_count)?;
-        let (value_fields, group_slots) = record.fields().split_at(values);
-        Some(Self {
-            value_fields,
-            group_slots,
-        })
-    }
-}
-
-/// One step of the explicit branch walk: open a sealed branch, or close the branch whose
-/// subtree has been emitted.
-enum BranchStep<'a> {
-    Open(&'a marrow_verify::SealedBranch),
-    Close,
-}
-
-/// Queue a level of sealed branches so they are opened in declaration order.
-fn push_branches<'a>(
-    pending: &mut Vec<BranchStep<'a>>,
-    branches: &'a [marrow_verify::SealedBranch],
-) {
-    pending.extend(branches.iter().rev().map(BranchStep::Open));
-}
-
-/// The kernel key-column kinds of a sealed key tuple.
-fn key_columns(keys: &[Scalar]) -> Vec<ScalarKind> {
-    keys.iter().map(|scalar| scalar_kind(*scalar)).collect()
-}
-
-/// Emit one node's record fields into the schema builder, in declaration order, each with
-/// its storable value shape. `None` when a field is a collection, unit, or identity — shapes
-/// the durable field codec never stores inline — so the whole derivation parks. The verifier
-/// proves an executable node's record fields are a scalar or a widened composite, so this is
-/// defense in depth over that proof.
-fn emit_fields(
-    image: &VerifiedImage,
-    builder: &mut StoreSchemaBuilder,
-    fields: &[marrow_verify::SealedField],
-) -> Option<()> {
-    for field in fields {
-        builder.field(
-            field.name.to_string(),
-            value_shape(image, field.ty)?,
-            field.required,
-        );
-    }
-    builder.refusal().map_or(Some(()), |_| None)
-}
-
-/// Project one sealed site into the kernel's site table, tagging it with its root's
-/// declaration position and rebasing an index-read position from image-wide to root-local.
-/// A parked site — never referenced by a verified durable opcode — keeps its slot as the
-/// table's typed absence. `None` when an index position does not project onto its own
-/// root's table — a divergence from the verifier's shape — so the caller parks the image
-/// rather than publishing a table it would have to trust.
-fn emit_site(
-    projection: &mut StoreProjectionBuilder,
-    site: &SealedSite,
-    index_offsets: &[u16],
-) -> Option<()> {
-    let (root, target) = match site {
-        SealedSite::Flat { root, target } => (*root, target),
-        SealedSite::Parked { .. } => {
-            projection.parked_site();
-            return Some(());
-        }
-    };
-    let target = match target {
-        SealedSiteTarget::WholePayload => SiteTarget::whole_payload(),
-        SealedSiteTarget::FieldLeaf(field) => SiteTarget::field_leaf(*field),
-        SealedSiteTarget::BranchEntry(branch) => SiteTarget::branch_entry(branch.clone()),
-        SealedSiteTarget::BranchField { branch, field } => {
-            SiteTarget::branch_field(branch.clone(), *field)
-        }
-        SealedSiteTarget::GroupEntry(group) => SiteTarget::group_entry(*group),
-        // An index-read site names its index by image-wide position; the kernel resolves it
-        // against this root's own schema, so the checked projection rebases it by the
-        // root's index offset. Underflow or an unknown root is a shape divergence.
-        SealedSiteTarget::IndexScan(index) => {
-            SiteTarget::index_scan(root_local_index(*index, root, index_offsets)?)
-        }
-        SealedSiteTarget::IndexLookup(index) => {
-            SiteTarget::index_lookup(root_local_index(*index, root, index_offsets)?)
-        }
-    };
-    projection.site(root, target);
-    Some(())
-}
-
-/// Rebase one image-wide managed-index position onto its root's own index table: the typed
-/// root-local position the kernel's site targets carry. `None` when the position sits below
-/// its root's first index or the root is unknown — either way the image's shape and the
-/// derived projection disagree, and the caller parks.
-fn root_local_index(index: u16, root: u16, index_offsets: &[u16]) -> Option<u16> {
-    index.checked_sub(*index_offsets.get(root as usize)?)
-}
-
-/// Derive a field's kernel [`ValueShape`] from its image type: a scalar carries its kind; a
-/// record becomes a product of its fields' shapes in declaration order; a closed enum
-/// (`Option`/`Result`/a user `enum`) becomes a sum of its variants' dense payload shapes. A
-/// collection, unit, or identity is not an inline field value, so it parks (`None`).
-///
-/// The walk is an explicit stack emitting flat builder commands, so the projection's own
-/// depth is heap-bounded and the shape's depth is the builder's to refuse.
-fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
-    /// One step of the explicit shape walk.
-    enum ShapeStep {
-        /// Emit the shape of this image type.
-        Ty(ImageType),
-        /// Open the next variant of the sum at the top of the builder's stack.
-        Variant { enum_idx: u16, variant: usize },
-        /// Close the composite or variant whose members have been emitted.
-        Close,
-    }
-
-    /// The sealed wire-domain `u16` of a verified typed table reference: every value
-    /// here was decoded from a `u16` wire read, so the narrowing is total; it is
-    /// spelled checked so the wire domain is stated.
-    fn sealed_ordinal(index: u32) -> u16 {
-        u16::try_from(index).expect("a verified table reference was decoded from a u16 wire read")
-    }
-
-    let mut builder = ValueShapeBuilder::new();
-    let mut pending = vec![ShapeStep::Ty(ty)];
-    while let Some(step) = pending.pop() {
-        match step {
-            ShapeStep::Ty(ImageType::Scalar { scalar, .. }) => {
-                builder.scalar(scalar_kind(scalar));
-            }
-            ShapeStep::Ty(ImageType::Record { idx, .. }) => {
-                builder.open_product(sealed_ordinal(idx.index()));
-                pending.push(ShapeStep::Close);
-                pending.extend(
-                    image
-                        .record_type(sealed_ordinal(idx.index()))
-                        .fields()
-                        .iter()
-                        .rev()
-                        .map(|field| ShapeStep::Ty(field.ty)),
-                );
-            }
-            ShapeStep::Ty(ImageType::Enum { idx, .. }) => {
-                let sealed = image.enums().get(idx.index() as usize)?;
-                builder.open_sum(sealed_ordinal(idx.index()));
-                pending.push(ShapeStep::Close);
-                pending.extend((0..sealed.variants().len()).rev().map(|variant| {
-                    ShapeStep::Variant {
-                        enum_idx: sealed_ordinal(idx.index()),
-                        variant,
-                    }
-                }));
-            }
-            // An entry identity is not an inline durable field value on this line, so it
-            // parks like a collection or unit.
-            ShapeStep::Ty(
-                ImageType::Unit | ImageType::Collection { .. } | ImageType::Identity { .. },
-            ) => return None,
-            ShapeStep::Variant { enum_idx, variant } => {
-                let sealed = image.enums().get(enum_idx as usize)?;
-                let payload = &sealed.variants().get(variant)?.payload;
-                builder.open_variant();
-                pending.push(ShapeStep::Close);
-                pending.extend(payload.iter().rev().map(|leaf| ShapeStep::Ty(*leaf)));
-            }
-            ShapeStep::Close => {
-                builder.close();
-            }
-        }
-        // A latched refusal ends the walk: the remaining commands cannot change the verdict,
-        // and stopping keeps a divergent type graph from driving the walk's own stack.
-        builder.refusal().map_or(Some(()), |_| None)?;
-    }
-    builder.finish().ok()
-}
-
-/// Map an image scalar type to the runtime codec's scalar kind. Total over the
-/// closed scalar domain the value/key codecs already support.
-fn scalar_kind(scalar: Scalar) -> ScalarKind {
-    match scalar {
-        Scalar::Int => ScalarKind::Int,
-        Scalar::Bool => ScalarKind::Bool,
-        Scalar::Text => ScalarKind::Str,
-        Scalar::Bytes => ScalarKind::Bytes,
-        Scalar::Date => ScalarKind::Date,
-        Scalar::Instant => ScalarKind::Instant,
-        Scalar::Duration => ScalarKind::Duration,
-    }
 }

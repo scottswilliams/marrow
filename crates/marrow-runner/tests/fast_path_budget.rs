@@ -8,7 +8,8 @@
 //! Components measured, matching the exit gate (lock, spawn, verification, head commit):
 //!
 //! - **verification** — `marrow_verify::verify` over the Workshop image bytes;
-//! - **open** (lock + decode + engine open) — `marrow_lifecycle::open` on a provisioned store;
+//! - **open** (lock + decode + admission + engine open) — `marrow_lifecycle::attach` of the
+//!   active image on a provisioned store;
 //! - **head commit** — a binding-only rebind's atomic envelope+head rewrite;
 //! - **end-to-end companion call** — spawn + attach + open + run + commit + teardown, the
 //!   whole terminal fast path a `marrow run --store` pays.
@@ -64,10 +65,10 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
-    let projection = marrow_vm::derive_store_schemas(image).expect("flat");
-    let report = marrow_lifecycle::ProvisionReport::new(store, image, &projection);
+    let prepared = marrow_lifecycle::prepare(image.clone());
+    let report = marrow_lifecycle::ProvisionReport::new(store, &prepared).expect("flat");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    marrow_lifecycle::provision_image(store, image, projection, &approval).expect("provision");
+    marrow_lifecycle::provision_image(store, &prepared, &approval).expect("provision");
 }
 
 fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
@@ -99,20 +100,21 @@ fn measure(runs: usize, mut f: impl FnMut()) -> Duration {
 #[test]
 fn fast_path_costs_are_recorded() {
     let (bytes, image) = workshop();
-    let projection = marrow_vm::derive_store_schemas(&image).expect("flat");
 
     // verification
     let verify = measure(21, || {
         marrow_verify::verify(&bytes).expect("verify");
     });
 
-    // open (lock + decode + engine open): provision once, then open/close repeatedly.
+    // open (lock + decode + admission + engine open): provision once, then attach the active
+    // image and close repeatedly.
     let store = scratch("open");
     std::fs::create_dir_all(store.parent().unwrap()).unwrap();
     provision(&store, &image);
     let open = measure(21, || {
-        let opened = marrow_lifecycle::open(&store, projection.clone()).expect("open");
-        drop(opened);
+        let attached = marrow_lifecycle::attach(&store, marrow_lifecycle::prepare(image.clone()))
+            .expect("open");
+        drop(attached);
     });
 
     // head commit: a binding-only rebind's atomic envelope+head rewrite. Rebind back and
@@ -141,9 +143,11 @@ fn fast_path_costs_are_recorded() {
         // Alternate the active image so every attach is a real rebind (a head commit).
         let img = if toggle { &image } else { &edited };
         toggle = !toggle;
-        match marrow_lifecycle::attach(&store, img, projection.clone()).expect("attach") {
-            marrow_lifecycle::AttachOutcome::Rebound { store, .. } => drop(store),
-            marrow_lifecycle::AttachOutcome::AlreadyActive(store) => drop(store),
+        match marrow_lifecycle::attach(&store, marrow_lifecycle::prepare(img.clone()))
+            .expect("attach")
+        {
+            marrow_lifecycle::AttachOutcome::Rebound { attachment, .. } => drop(attachment),
+            marrow_lifecycle::AttachOutcome::AlreadyActive(attachment) => drop(attachment),
         }
     });
 

@@ -6,21 +6,32 @@
 //! verifier/VM disagreement about instruction shape is unrepresentable. Runtime
 //! faults are typed and source-mapped ([`RuntimeFault`]); execution runs under
 //! private bounds. Durable operations route through the path kernel, wired in with
-//! the durable slices.
+//! the durable slices. A durable export runs only through the attachment the lifecycle
+//! prepared and admitted ([`run_export`]), and a durable source test only through the
+//! fresh test it minted ([`run_test`]); the preparation and mint types are re-exported
+//! for the CLI, which reaches them through this crate alone.
 
+#[cfg(test)]
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
 mod attach;
+#[cfg(test)]
+mod commit_outcome_tests;
+#[cfg(test)]
+mod commit_poison_tests;
 mod fault;
 pub mod render;
 mod run;
 mod value;
 
-pub use attach::{
-    DurableRun, Ephemeral, derive_store_schemas, mint_ephemeral, run_driver_test, run_durable_test,
-    run_export,
-};
+pub use attach::{DurableRun, run_export, run_test};
 pub use fault::{DurableExecutionFault, IncompleteDisposition, InvocationIncomplete, RuntimeFault};
 pub use marrow_kernel::durable::DurableCommitState;
-pub use run::{run, run_durable};
+pub use marrow_lifecycle::{
+    EphemeralOutcome, FreshTest, MemoryAttachment, PreparedImage, fresh_test, mint_ephemeral,
+    prepare,
+};
+pub use run::run;
 pub use value::Value;
 // The key-scalar type a `Value::Map` entry and a `Value::Id` key tuple carry. It
 // belongs to the kernel codec owner; the value model surfaces it because its public

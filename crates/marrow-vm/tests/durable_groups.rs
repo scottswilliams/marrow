@@ -20,7 +20,9 @@ use marrow_image::{
     Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_verify::{VerifiedImage, verify};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
 mod site_seam;
@@ -320,16 +322,15 @@ fn add_read(
     draft.add_export(export_id(name), func);
 }
 
-fn seeded(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    let Ephemeral::Ready(mut attachment) = mint_ephemeral(image) else {
+fn seeded(image: &VerifiedImage) -> MemoryAttachment {
+    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare(image.clone())) else {
         panic!("the groups image is flat-executable");
     };
-    let seed = image.export_by_id(export_id("seed")).expect("seed export");
-    match run_export(image, &mut attachment, seed, Vec::new()) {
+    match run_export(&mut attachment, export_id("seed"), Vec::new()).expect("seed export") {
         DurableRun::Ran(Ok(_)) => {}
         other => panic!("seed did not run: {}", describe(&other)),
     }
-    *attachment
+    attachment
 }
 
 fn describe(run: &DurableRun) -> String {
@@ -341,25 +342,17 @@ fn describe(run: &DurableRun) -> String {
     }
 }
 
-fn run_mut(
-    image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
-    name: &str,
-) {
+fn run_mut(image: &VerifiedImage, attachment: &mut MemoryAttachment, name: &str) {
     let export = image.export_by_id(export_id(name)).expect("export present");
-    match run_export(image, attachment, export, Vec::new()) {
+    match run_export(attachment, export.id(), Vec::new()).expect("the export is in the image") {
         DurableRun::Ran(Ok(_)) => {}
         other => panic!("{name} did not run: {}", describe(&other)),
     }
 }
 
-fn run_read(
-    image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
-    name: &str,
-) -> Value {
+fn run_read(image: &VerifiedImage, attachment: &mut MemoryAttachment, name: &str) -> Value {
     let export = image.export_by_id(export_id(name)).expect("export present");
-    match run_export(image, attachment, export, Vec::new()) {
+    match run_export(attachment, export.id(), Vec::new()).expect("the export is in the image") {
         DurableRun::Ran(Ok(Some(value))) => value,
         other => panic!("{name} did not produce a value: {}", describe(&other)),
     }

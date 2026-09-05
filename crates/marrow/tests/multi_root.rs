@@ -14,7 +14,10 @@
 
 use marrow_compile::SourceDiagnostic;
 use marrow_verify::{SealedExport, SealedSite, SealedSiteTarget, TestKind, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_driver_test, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, fresh_test, mint_ephemeral, prepare,
+    run_export, run_test,
+};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -131,22 +134,24 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 }
 
 /// A minted two-root attachment; the kernel must execute over it, not park it.
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a two-root image must be executable, not parked"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => panic!("a two-root image must be executable, not parked"),
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
 /// Run `name(args)` against `attachment`, returning its VM value (a fault panics).
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
     }
@@ -155,11 +160,13 @@ fn run(
 /// Run `name(args)` expecting a source-mapped runtime fault, returning its code.
 fn run_faulting(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> String {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Err(fault)) => fault.code().to_string(),
         other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
     }
@@ -413,16 +420,17 @@ fn a_two_root_driver_test_drives_both_roots_through_exports() {
     });
     let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
 
-    let entry = image
+    let index = image
         .test_entries()
         .iter()
-        .find(|entry| entry.name() == "cross-root driver round trip")
+        .position(|entry| entry.name() == "cross-root driver round trip")
         .expect("the driver test entry is sealed");
     assert!(
-        matches!(entry.kind(), TestKind::Driver),
+        matches!(image.test_entries()[index].kind(), TestKind::Driver),
         "a test that only calls exports is a driver test",
     );
-    match run_driver_test(&image, entry) {
+    let test = fresh_test(&prepare(image.clone()), index).expect("the entry index is sealed");
+    match run_test(test) {
         DurableRun::Ran(Ok(_)) => {}
         other => panic!(
             "the two-root driver test must run cleanly: {:?}",

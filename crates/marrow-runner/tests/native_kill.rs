@@ -90,10 +90,10 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
-    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    let report = marrow_lifecycle::ProvisionReport::new(store, image, &projection);
+    let prepared = marrow_lifecycle::prepare(image.clone());
+    let report = marrow_lifecycle::ProvisionReport::new(store, &prepared).expect("flat-executable");
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    marrow_lifecycle::provision_image(store, image, projection, &approval).expect("provision");
+    marrow_lifecycle::provision_image(store, &prepared, &approval).expect("provision");
 }
 
 /// One field of the launch descriptor JSON line, by key.

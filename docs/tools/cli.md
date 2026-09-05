@@ -192,7 +192,10 @@ a usage error. `--format jsonl` prints one object per test and a summary.
 `marrow import` creates a store and fills it from a file of JSON objects, one
 entry per line. Each member is a scalar. Its name is either a key component of the root, named
 in `--keys`, or a field of the stored resource. The project is compiled and verified first
-and the new store is bound to it. Like `run --store`, `import` needs the
+and the new store is bound to it. An existing store is filled only when the
+project is its active program: a code-only edit is `store.image_not_active`
+until `marrow run --store` rebinds the store, and a changed durable contract
+is `store.contract_changed`. Like `run --store`, `import` needs the
 companion layout. The transcript is from the quickstart's notes program:
 
 ```text

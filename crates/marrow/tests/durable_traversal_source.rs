@@ -8,7 +8,9 @@
 //! attachment, seeding through ordinary writes and reading the traversal back.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{
+    DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
+};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -338,11 +340,13 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 
 fn run(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> Option<Value> {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Ok(value)) => value,
         DurableRun::Ran(Err(fault)) => panic!("{name} faulted: {}", fault.code()),
         DurableRun::Parked => panic!("{name} parked"),
@@ -350,15 +354,17 @@ fn run(
     }
 }
 
-fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
-    match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => *attachment,
-        Ephemeral::Parked => panic!("a flat root with a simple branch must be executable"),
-        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+fn attach(image: &VerifiedImage) -> MemoryAttachment {
+    match mint_ephemeral(prepare(image.clone())) {
+        EphemeralOutcome::Ready(attachment) => attachment,
+        EphemeralOutcome::Parked(_) => {
+            panic!("a flat root with a simple branch must be executable")
+        }
+        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
 }
 
-fn seed_books(image: &VerifiedImage, attachment: &mut marrow_kernel::durable::EphemeralAttachment) {
+fn seed_books(image: &VerifiedImage, attachment: &mut MemoryAttachment) {
     for id in [1i64, 2, 3] {
         run(
             image,
@@ -572,11 +578,13 @@ fn a_resumable_paged_traversal_composes_at_most_a_captured_key_and_from() {
 /// Run a read-only export and return the dotted code of the runtime fault it raises.
 fn run_fault(
     image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    attachment: &mut MemoryAttachment,
     name: &str,
     args: Vec<Value>,
 ) -> String {
-    match run_export(image, attachment, export(image, name), args) {
+    match run_export(attachment, export(image, name).id(), args)
+        .expect("the export is in the image")
+    {
         DurableRun::Ran(Err(fault)) => fault.code().to_string(),
         other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
     }
@@ -779,10 +787,7 @@ fn a_descendant_only_child_is_skipped_without_visiting_its_subtree() {
 
 /// Seed books {1,2,3}, each carrying three notes so an inner `at most 2` always leaves
 /// a further key: book 1 {1,2,3}, book 2 {4,5,6}, book 3 {7,8,9}.
-fn seed_books_with_notes(
-    image: &VerifiedImage,
-    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
-) {
+fn seed_books_with_notes(image: &VerifiedImage, attachment: &mut MemoryAttachment) {
     seed_books(image, attachment);
     for (id, positions) in [(1i64, [1i64, 2, 3]), (2, [4, 5, 6]), (3, [7, 8, 9])] {
         for pos in positions {

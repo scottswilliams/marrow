@@ -1,25 +1,25 @@
 //! The trusted bulk importer end to end: a realistic JSONL corpus populates a provisioned
 //! store through the path kernel, kernel mediation is observed on read-back, authority is
-//! enforced, bounded-batch behavior is measured on a large corpus, and the closed lifecycle
-//! boundary is proven — the importer is unreachable from the bytecode and client-wire crates
-//! and writes only through `create_entry`, never a raw cell/engine/transaction handle.
+//! enforced, the exact-binding admission gate refuses every stale, foreign, over-demanding,
+//! or mis-numbered image with zero engine work, bounded-batch behavior is measured on a large
+//! corpus, and the closed lifecycle boundary is proven — the importer is reachable only
+//! through the privileged host, is not re-exported by the VM, and writes only through
+//! `create_entry`, never a raw cell/engine/transaction handle.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
-use marrow_kernel::durable::{
-    DemandCoverage, Durable, EntryValue, InvocationGrant, Presence, SessionHost, SiteTarget,
-    StoreProjection,
-};
+use marrow_kernel::durable::{DemandCoverage, Durable, EntryValue, InvocationGrant, Presence};
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    EngineKind, ImportError, ImportLimits, ImportTarget, LogicalHead, ProvisionRequest, RowFault,
-    ShapeFault, StoreEnvelope, StoreInstanceId, active_binding, head_map, import_jsonl, open,
+    ActiveBinding, AttachOutcome, ChangedFact, EngineKind, HeadMap, ImportError, ImportLimits,
+    ImportTarget, LogicalHead, NativeAttachment, ProvisionRequest, RowFault, ShapeFault,
+    StoreEnvelope, StoreInstanceId, active_binding, attach, head_map, import_jsonl, prepare,
     provision,
 };
-use marrow_verify::{VerifiedImage, verify};
+use marrow_verify::{SealedSite, SealedSiteTarget, VerifiedImage, verify};
 
 /// A `counters` root of `Counter` resources — a required `value: int` and a sparse
 /// `label: string` — keyed by `id: int`. The flat scalar shape the importer targets.
@@ -33,6 +33,27 @@ store ^counters[id: int]: Counter
 pub fn readValue(n: int): int {
     return ^counters[n].value ?? 0
 }
+
+pub fn readLabel(n: int): string {
+    if const entry = ^counters[n] {
+        return entry.label ?? ""
+    }
+    return ""
+}
+"#;
+
+/// The same declarations with an export that touches no durable place: its accepted ceiling
+/// admits no durable demand, so a head carrying it refuses [`SOURCE`]'s reads.
+const STORELESS_EXPORT_SOURCE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn nothing(): int {
+    return 0
+}
 "#;
 
 const IDS: &str = "marrow ids v0\n\
@@ -41,6 +62,20 @@ const IDS: &str = "marrow ids v0\n\
      id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
      id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
      id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+/// [`IDS`] plus the identity of an added `extra` field: the evolved durable contract the
+/// admission matrix refuses.
+const EVOLVED_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id field Counter.extra 2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e\n\
      id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
      id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
      high-water 0\n\
@@ -127,18 +162,31 @@ fn compile(source: &str, ids: &str) -> VerifiedImage {
     verify(&compiled.image.bytes).expect("verify")
 }
 
-fn projection_of(image: &VerifiedImage) -> StoreProjection {
-    marrow_vm::derive_store_schemas(image).expect("flat-executable")
+/// Attach `image` to the store at `dir` as its active binding.
+fn attach_active(dir: &Path, image: &VerifiedImage) -> NativeAttachment {
+    match attach(dir, prepare(image.clone())).expect("attach the active image") {
+        AttachOutcome::AlreadyActive(attachment) => attachment,
+        AttachOutcome::Rebound { .. } => panic!("the provisioned image is already active"),
+    }
 }
 
-/// The same roots under one whole-payload read site on the target root: the shape a read-back
-/// opens under, distinct from the program's own operation sites.
-fn read_projection(image: &VerifiedImage) -> StoreProjection {
-    let mut projection = projection_of(image).reproject();
-    projection.site(0, SiteTarget::whole_payload());
-    projection
-        .finish()
-        .expect("the read site names the first declared root")
+/// The index of the program's own whole-entry read site on root 0 (`readLabel` binds the
+/// whole entry), the site a kernel read-back resolves through.
+fn whole_entry_site(image: &VerifiedImage) -> u16 {
+    image
+        .sites()
+        .iter()
+        .position(|site| {
+            matches!(
+                site,
+                SealedSite::Flat {
+                    root: 0,
+                    target: SealedSiteTarget::WholePayload,
+                }
+            )
+        })
+        .map(|index| index as u16)
+        .expect("the fixture reads a whole entry")
 }
 
 /// A unique scratch store directory, removed on drop.
@@ -176,27 +224,26 @@ impl Drop for Scratch {
 
 /// Provision a fresh store at `dir` bound to `image`.
 fn provision_from(dir: &Path, image: &VerifiedImage) {
-    let projection = projection_of(image);
+    provision_with_head(
+        dir,
+        LogicalHead::provision(
+            active_binding(image),
+            marrow_lifecycle::accepted_ceiling(image),
+            head_map(image).expect("head map"),
+        ),
+    );
+}
+
+/// Provision a fresh store at `dir` under a caller-built head: the admission matrix below
+/// forges each binding, ceiling, and pin fact one at a time.
+fn provision_with_head(dir: &Path, head: LogicalHead) {
     let envelope = StoreEnvelope {
         instance: StoreInstanceId::draw().expect("entropy"),
         writer_toolchain: "0.1.0".to_string(),
         engine_kind: EngineKind::Redb,
         engine_format_version: 1,
     };
-    let head = LogicalHead::provision(
-        active_binding(image),
-        marrow_lifecycle::accepted_ceiling(image),
-        head_map(image).expect("head map"),
-    );
-    provision(
-        dir,
-        ProvisionRequest {
-            envelope,
-            head,
-            projection,
-        },
-    )
-    .expect("provision");
+    provision(dir, ProvisionRequest { envelope, head }).expect("provision");
 }
 
 fn counter_target() -> ImportTarget {
@@ -206,10 +253,13 @@ fn counter_target() -> ImportTarget {
     }
 }
 
-/// Read one `counters` entry back through a kernel read session — proving the imported row
-/// landed as a proper kernel entry (a marker plus field leaves), not a raw byte blob.
+/// Read one `counters` entry back through a kernel read session on the active image's own
+/// attachment — proving the imported row landed as a proper kernel entry (a marker plus
+/// field leaves), not a raw byte blob.
 fn read_entry(dir: &Path, image: &VerifiedImage, id: i64) -> Option<EntryValue> {
-    let mut opened = open(dir, read_projection(image)).expect("open for read-back");
+    let site = whole_entry_site(image);
+    let mut attachment = attach_active(dir, image);
+    let (_, opened) = attachment.bridge();
     let mut read = opened
         .read_session(
             InvocationGrant::full_store(),
@@ -219,7 +269,7 @@ fn read_entry(dir: &Path, image: &VerifiedImage, id: i64) -> Option<EntryValue> 
             },
         )
         .expect("read session");
-    let site = read.site(0);
+    let site = read.site(site);
     read.read_entry(&site, &[KeyScalar::Int(id)]).expect("read")
 }
 
@@ -260,7 +310,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
     };
     let report = import_jsonl(
         scratch.dir(),
-        projection_of(&image),
+        prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.into_bytes()),
         InvocationGrant::full_store(),
@@ -297,7 +347,9 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
     assert_eq!(odd.fields[1], None, "a null label is a sparse-absent field");
 
     // A never-imported id is absent — the importer created exactly the corpus.
-    let mut opened = open(scratch.dir(), read_projection(&image)).expect("open");
+    let site = whole_entry_site(&image);
+    let mut attachment = attach_active(scratch.dir(), &image);
+    let (_, opened) = attachment.bridge();
     let mut read = opened
         .read_session(
             InvocationGrant::full_store(),
@@ -307,7 +359,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
             },
         )
         .expect("read session");
-    let site = read.site(0);
+    let site = read.site(site);
     assert_eq!(
         read.presence(&site, &[KeyScalar::Int(rows as i64 + 1)]),
         Ok(Presence::Absent),
@@ -326,7 +378,7 @@ fn a_read_only_grant_denies_the_import() {
     let jsonl = "{\"id\": 1, \"value\": 10}\n";
     let denied = import_jsonl(
         scratch.dir(),
-        projection_of(&image),
+        prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
         InvocationGrant {
@@ -366,7 +418,7 @@ fn a_row_fault_names_its_line_and_keeps_the_committed_prefix() {
     };
     match import_jsonl(
         scratch.dir(),
-        projection_of(&image),
+        prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
         InvocationGrant::full_store(),
@@ -400,7 +452,7 @@ fn a_duplicate_key_is_a_row_fault() {
     let jsonl = "{\"id\": 7, \"value\": 1}\n{\"id\": 7, \"value\": 2}\n";
     match import_jsonl(
         scratch.dir(),
-        projection_of(&image),
+        prepare(image.clone()),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
         InvocationGrant::full_store(),
@@ -431,7 +483,7 @@ fn a_unique_index_collision_is_a_located_row_fault() {
     };
     match import_jsonl(
         scratch.dir(),
-        projection_of(&image),
+        prepare(image.clone()),
         ImportTarget {
             root: 0,
             key_columns: vec!["id".to_string()],
@@ -463,7 +515,7 @@ fn a_nested_root_shape_is_refused() {
     let jsonl = "{\"id\": 1, \"title\": \"x\"}\n";
     match import_jsonl(
         scratch.dir(),
-        projection_of(&image),
+        prepare(image.clone()),
         ImportTarget {
             root: 0,
             key_columns: vec!["id".to_string()],
@@ -497,7 +549,7 @@ fn a_large_corpus_commits_in_bounded_batches() {
     let start = std::time::Instant::now();
     let report = import_jsonl(
         scratch.dir(),
-        projection_of(&image),
+        prepare(image.clone()),
         counter_target(),
         std::io::BufReader::new(source),
         InvocationGrant::full_store(),
@@ -563,11 +615,154 @@ impl std::io::Read for LazyJsonl {
     }
 }
 
-/// The closed lifecycle boundary (unconstructibility, crate level): the bytecode executor and
-/// the client-wire crate do not depend on `marrow-lifecycle`, so no bytecode/client path can
-/// name — let alone call — the import mode. Only the privileged CLI host reaches it. This is
-/// the Cargo trust boundary the type-level guard rests on (the mode requires an `OpenStore`,
-/// whose non-`Clone`, non-serializable owner lock has no constructor below this crate).
+/// One admission-matrix case: its name, the head the store is provisioned under, the image
+/// presented to the importer, and the typed refusal expected.
+type AdmissionCase = (
+    &'static str,
+    LogicalHead,
+    VerifiedImage,
+    fn(&ImportError) -> bool,
+);
+
+/// Import admits only the store's exact active binding, decided before the engine opens: with
+/// the engine file replaced by garbage — any engine open would fail loudly — each refusal is
+/// still its typed admission refusal, the head and envelope are byte-unchanged, and no row is
+/// written. The positive control is the corpus test above.
+#[test]
+fn import_refuses_every_non_active_image_before_the_engine_opens() {
+    let image = compile(SOURCE, IDS);
+    let edited = compile(&SOURCE.replace("?? 0", "?? 1"), IDS);
+    let evolved = compile(
+        &SOURCE.replace("    label: string\n", "    label: string\n    extra: int\n"),
+        EVOLVED_IDS,
+    );
+    let storeless_export = compile(STORELESS_EXPORT_SOURCE, IDS);
+    let binding = active_binding(&image);
+    let ceiling = marrow_lifecycle::accepted_ceiling(&image);
+    let map = head_map(&image).expect("head map");
+    let permuted = {
+        let mut ids: Vec<marrow_image::LedgerIdBytes> =
+            map.entries().iter().map(|entry| entry.ledger_id).collect();
+        let last = ids.len() - 1;
+        ids.swap(0, last);
+        HeadMap::assign(&ids).expect("a permuted bijection assigns")
+    };
+
+    let cases: [AdmissionCase; 5] = [
+        (
+            "a body-only stale image",
+            LogicalHead::provision(binding, ceiling.clone(), map.clone()),
+            edited,
+            |error| matches!(error, ImportError::ImageNotActive),
+        ),
+        (
+            "the same image identity with different binding facts",
+            LogicalHead::provision(
+                ActiveBinding {
+                    durable_contract: [0xEE; 32],
+                    ..binding
+                },
+                ceiling.clone(),
+                map.clone(),
+            ),
+            image.clone(),
+            |error| matches!(error, ImportError::InconsistentBinding),
+        ),
+        (
+            "a changed durable contract",
+            LogicalHead::provision(binding, ceiling.clone(), map.clone()),
+            evolved,
+            |error| {
+                matches!(
+                    error,
+                    ImportError::ContractChanged(refusal)
+                        if refusal.changed == ChangedFact::DurableContract
+                )
+            },
+        ),
+        (
+            "a demand beyond the accepted ceiling",
+            LogicalHead::provision(
+                binding,
+                marrow_lifecycle::accepted_ceiling(&storeless_export),
+                map.clone(),
+            ),
+            image.clone(),
+            |error| matches!(error, ImportError::DemandExceedsCeiling(_)),
+        ),
+        (
+            "a permuted head-map pin",
+            LogicalHead::provision(binding, ceiling.clone(), permuted),
+            image.clone(),
+            |error| matches!(error, ImportError::HeadMapPin(_)),
+        ),
+    ];
+
+    for (case, head, presented, refused) in cases {
+        let scratch = Scratch::new("admission");
+        provision_with_head(scratch.dir(), head);
+        let engine_path = scratch.dir().join(marrow_lifecycle::ENGINE_FILE);
+        std::fs::write(&engine_path, b"not an engine").expect("corrupt the engine file");
+        let head_before =
+            std::fs::read(scratch.dir().join(marrow_lifecycle::HEAD_FILE)).expect("read head");
+        let envelope_before = std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+            .expect("read envelope");
+
+        let outcome = import_jsonl(
+            scratch.dir(),
+            prepare(presented),
+            counter_target(),
+            Cursor::new(b"{\"id\": 1, \"value\": 10}\n".to_vec()),
+            InvocationGrant::full_store(),
+            ImportLimits::DEFAULT,
+        );
+        match outcome {
+            Err(error) => assert!(
+                refused(&error),
+                "{case}: expected the typed admission refusal, got {error:?}",
+            ),
+            Ok(report) => panic!(
+                "{case}: imported {} row(s) under a non-active image",
+                report.rows_imported
+            ),
+        }
+        assert_eq!(
+            std::fs::read(&engine_path).expect("read engine"),
+            b"not an engine",
+            "{case}: the refusal reached the engine",
+        );
+        assert_eq!(
+            std::fs::read(scratch.dir().join(marrow_lifecycle::HEAD_FILE)).expect("read head"),
+            head_before,
+            "{case}: the refusal rewrote the head",
+        );
+        assert_eq!(
+            std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+                .expect("read envelope"),
+            envelope_before,
+            "{case}: the refusal rewrote the envelope",
+        );
+    }
+}
+
+/// The stale-image refusal carries its own stable code, distinct from corruption and from the
+/// contract-changed refusal, and reports nothing committed.
+#[test]
+fn the_stale_image_refusal_is_typed_and_commits_nothing() {
+    let error = ImportError::ImageNotActive;
+    assert_eq!(error.code(), "store.image_not_active");
+    assert_eq!(error.committed().rows_imported, 0);
+    assert_eq!(ImportError::InconsistentBinding.code(), "store.corruption");
+}
+
+/// The closed lifecycle boundary (unconstructibility, crate level). The bytecode executor
+/// depends on `marrow-lifecycle` only to consume the attachment it prepares and admits; the
+/// VM re-exports exactly the preparation and fresh-test surface the CLI needs and never the
+/// import, attach, or provision entries, and its own source names none of them — so no
+/// opcode, host import, or bytecode path reaches the import mode. The client-wire crate does
+/// not depend on lifecycle at all. Only the privileged host reaches import, and the mode
+/// requires an owner lock that is non-`Clone`, non-serializable, and constructible only inside
+/// this crate.
 #[test]
 fn the_import_mode_is_unreachable_from_bytecode_and_client() {
     let crates = crates_dir();
@@ -575,15 +770,12 @@ fn the_import_mode_is_unreachable_from_bytecode_and_client() {
         let manifest = crates.join(crate_name).join("Cargo.toml");
         let text = std::fs::read_to_string(&manifest)
             .unwrap_or_else(|_| panic!("read {}", manifest.display()));
-        // A dependency edge names the crate outside the `[dev-dependencies]` section. Tests may
-        // legitimately depend on lifecycle (marrow-vm is a dev-dependency of lifecycle, not the
-        // reverse); production reachability is what the boundary forbids.
         production_deps(&text).contains("marrow-lifecycle")
     };
 
     assert!(
-        !depends_on_lifecycle("marrow-vm"),
-        "the bytecode executor must not depend on marrow-lifecycle",
+        depends_on_lifecycle("marrow-vm"),
+        "the bytecode executor consumes the lifecycle-owned attachment",
     );
     assert!(
         !depends_on_lifecycle("marrow-local-wire"),
@@ -595,15 +787,81 @@ fn the_import_mode_is_unreachable_from_bytecode_and_client() {
         depends_on_lifecycle("marrow-runner"),
         "the privileged CLI host is the legitimate caller of the lifecycle",
     );
+
+    // The VM's re-export of lifecycle is exactly the preparation and fresh-test surface, and
+    // no VM production source names a lifecycle entry that opens, provisions, or imports a
+    // persistent store.
+    let vm_src = crates.join("marrow-vm").join("src");
+    let lib = std::fs::read_to_string(vm_src.join("lib.rs")).expect("read marrow-vm lib.rs");
+    let reexport = lib
+        .split("pub use marrow_lifecycle::{")
+        .nth(1)
+        .and_then(|rest| rest.split("};").next())
+        .expect("the VM re-exports the lifecycle preparation surface");
+    let mut names: Vec<&str> = reexport
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "EphemeralOutcome",
+            "FreshTest",
+            "MemoryAttachment",
+            "PreparedImage",
+            "fresh_test",
+            "mint_ephemeral",
+            "prepare",
+        ],
+        "the VM re-exports only the preparation and fresh-test surface",
+    );
+    for entry in std::fs::read_dir(&vm_src)
+        .expect("list marrow-vm src")
+        .flatten()
+    {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
+            continue;
+        }
+        // Documentation may name an entry to state that it is unreachable (the compile-fail
+        // cases do); code may not.
+        let text: String = std::fs::read_to_string(&path)
+            .expect("read VM source")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in [
+            "import_jsonl",
+            "provision_image",
+            "ProvisionReport",
+            "OpenStore",
+            "NativeAttachment",
+            "lifecycle::attach",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "{name} names the lifecycle entry `{forbidden}`; the VM consumes attachments only",
+            );
+        }
+    }
 }
 
 /// The only workspace crates depending on `marrow-lifecycle` in production are the privileged
-/// host and lifecycle itself — an absence gate over the whole member set, so a new production
-/// edge from any bytecode/client/host-adapter crate into the import mode fails here.
+/// host, the bytecode executor that consumes its attachment, and lifecycle itself — an
+/// absence gate over the whole member set, so a new production edge from any client or
+/// host-adapter crate into the import mode fails here.
 #[test]
 fn no_unexpected_crate_reaches_the_lifecycle() {
     let crates = crates_dir();
-    let allowed = ["marrow-runner", "marrow-lifecycle"];
+    let allowed = ["marrow-runner", "marrow-lifecycle", "marrow-vm"];
     let mut offenders = Vec::new();
     for entry in std::fs::read_dir(&crates)
         .expect("read crates dir")

@@ -1,11 +1,12 @@
 //! `marrow test [--format text|jsonl] [--filter <substring>]`.
 //!
 //! Discover `test "name"` declarations from the captured project, compile them
-//! into a separately verified image carrying the closed TEST-ENTRY table, and run
-//! each through the VM. A storeless test (empty reconstructed demand) runs with no
-//! session; a durable test runs against its own fresh ephemeral-memory attachment
-//! bounded by the test-image demand union, so tests never observe one another's
-//! writes. A passing test reports `passed`; a false `assert` (`run.assert`) reports
+//! into a separately verified image carrying the closed TEST-ENTRY table, prepare
+//! that image once, and run each entry through the VM as a fresh test the lifecycle
+//! selects from the prepared image. A storeless test (empty reconstructed demand)
+//! runs with no session and no store; a durable test runs against its own fresh
+//! in-memory store bounded by the test-image demand union, so tests never observe
+//! one another's writes. A passing test reports `passed`; a false `assert` (`run.assert`) reports
 //! `failed`; any other runtime fault reports `errored`. Output is a typed
 //! `kind: "test"` JSONL stream ending in a summary, or human text. The command
 //! exits nonzero when any test fails or errors.
@@ -96,11 +97,12 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         }
     };
 
-    let total = image.test_entries().len();
+    let prepared = marrow_vm::prepare(image);
+    let total = prepared.image().test_entries().len();
     let mut records: Vec<TestRecord> = Vec::new();
     let (mut passed, mut failed, mut errored) = (0usize, 0usize, 0usize);
 
-    for entry in image.test_entries() {
+    for (index, entry) in prepared.image().test_entries().iter().enumerate() {
         if let Some(filter) = &args.filter
             && !entry.name().contains(filter.as_str())
         {
@@ -114,26 +116,17 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             .find(|test| test.name == entry.name())
             .expect("compiler and image agree on the test set");
 
-        // Family 3: a source-mapped runtime fault, or a pass. A storeless test runs
-        // with no session. A direct-durable test runs against one harness session over
-        // its own fresh attachment. A driver test runs against a fresh persistent
-        // attachment, where each export call it makes is its own invocation boundary
-        // (a mutating export commits, a later reading export observes it). Every test
-        // gets its own attachment, so tests never observe one another's writes. A
-        // durable shape the ephemeral kernel does not yet execute is reported as the
-        // trough.
-        let outcome = match entry.kind() {
-            marrow_verify::TestKind::Storeless => classify(
-                marrow_vm::run(&image, entry.func(), Vec::new())
-                    .map_err(marrow_vm::DurableExecutionFault::from),
-            ),
-            marrow_verify::TestKind::DirectDurable => {
-                durable_outcome(marrow_vm::run_durable_test(&image, entry), meta)
-            }
-            marrow_verify::TestKind::Driver => {
-                durable_outcome(marrow_vm::run_driver_test(&image, entry), meta)
-            }
-        };
+        // Family 3: a source-mapped runtime fault, or a pass. The lifecycle selects the
+        // entry from the prepared image and mints what its kind needs: no store for a
+        // storeless test; a fresh in-memory store for a direct-durable test (one harness
+        // session) or a driver test (each export call it makes is its own invocation
+        // boundary — a mutating export commits, a later reading export observes it).
+        // Every durable test gets its own store, so tests never observe one another's
+        // writes. A durable shape the ephemeral kernel does not yet execute is reported
+        // as the trough.
+        let test = marrow_vm::fresh_test(&prepared, index)
+            .expect("the entry index came from the prepared image's own test table");
+        let outcome = durable_outcome(marrow_vm::run_test(test), meta);
         match &outcome {
             TestOutcome::Passed => passed += 1,
             TestOutcome::Failed { .. } => failed += 1,

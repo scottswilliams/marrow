@@ -10,7 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use marrow_lifecycle::{
-    AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, provision_image,
+    AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, prepare,
+    provision_image,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -78,15 +79,14 @@ fn compile(source: &str) -> (VerifiedImage, Vec<u8>) {
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
-    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    let report = ProvisionReport::new(store, image, &projection);
+    let prepared = prepare(image.clone());
+    let report = ProvisionReport::new(store, &prepared).expect("flat-executable");
     let approval = ProvisionApproval::accept(&report);
-    provision_image(store, image, projection, &approval).expect("provision");
+    provision_image(store, &prepared, &approval).expect("provision");
 }
 
 fn attach_image(store: &Path, image: &VerifiedImage) -> Result<AttachOutcome, LifecycleError> {
-    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    attach(store, image, projection)
+    attach(store, prepare(image.clone()))
 }
 
 struct Scratch {
