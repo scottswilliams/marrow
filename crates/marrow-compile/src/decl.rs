@@ -320,8 +320,9 @@ pub(crate) fn refuse_first(
 ///
 /// Every namespace of members a declaration opens — a struct's or resource's
 /// fields, an enum's members and one member's payload fields, a type-parameter
-/// list, a parameter list, a key tuple together with the members of the layer it
-/// keys — takes its names through one of these, in declaration order. The first
+/// list, a parameter list, a root's key tuple, a branch's key tuple together with
+/// the members it keys — takes its names through one of these, in declaration
+/// order. The first
 /// occurrence keeps the name and the repeat earns the `check.name_conflict` row at
 /// its own name token, so a second slot is never minted for a name the reader
 /// wrote once and no image carries two members of one name for the verifier to
@@ -343,24 +344,18 @@ impl<'a> MemberNamespace<'a> {
         }
     }
 
-    /// Give `name` to a member an earlier owner settled without a span to report
-    /// at, so a later declaration in this layer is the repeat.
-    pub(crate) fn occupy(&mut self, name: &'a str) {
-        self.taken.insert(name);
-    }
-
-    /// Claim `name` for the member declared at `span` in `file`, or the row refusing
-    /// it as a repeat.
+    /// Claim `name` for the member declared at `span` in `file`; a repeat is
+    /// answered with the row refusing it.
     pub(crate) fn claim(
         &mut self,
         file: &FileIdentity,
         name: &'a str,
         span: SourceSpan,
-    ) -> Result<(), SourceDiagnostic> {
+    ) -> Option<SourceDiagnostic> {
         if self.taken.insert(name) {
-            return Ok(());
+            return None;
         }
-        Err(SourceDiagnostic::at(
+        Some(SourceDiagnostic::at(
             Code::CheckNameConflict.as_str(),
             file,
             span,

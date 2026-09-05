@@ -476,6 +476,7 @@ fn the_row_tables_hold_exactly_their_typed_fields() {
                 "pub(super) first_member_span: Option<SourceSpan>,",
                 "pub(super) keys: Option<KeyTable<'a>>,",
                 "pub(super) groups: Vec<GroupRow<'a>>,",
+                "pub(super) conflicts: Vec<SourceDiagnostic>,",
             ],
         ),
         (

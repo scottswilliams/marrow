@@ -797,13 +797,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // body would then read in place of the name the reader wrote.
         let mut type_param_names = MemberNamespace::new(&function.name);
         for param in &function.type_params {
-            if let Err(row) = type_param_names.claim(file, &param.name, param.name_span) {
+            if let Some(row) = type_param_names.claim(file, &param.name, param.name_span) {
                 lowerer.fail(row);
             }
         }
         let mut param_names = MemberNamespace::new(&function.name);
         for param in &function.params {
-            if let Err(row) = param_names.claim(file, &param.name, param.name_span) {
+            if let Some(row) = param_names.claim(file, &param.name, param.name_span) {
                 lowerer.fail(row);
                 declared_params.push(None);
                 continue;

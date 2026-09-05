@@ -179,19 +179,10 @@ impl<'a> StoreRow<'a> {
             Some(id) => StoreResourceBinding::Accepted(id),
             None => StoreResourceBinding::Unbound,
         };
-        // The root's key columns and the resource's own members share one layer.
-        // The resource is settled before any store binds it, so its members occupy
-        // the layer first and a key column of the same name is the repeat.
-        let mut layer = MemberNamespace::new(resource);
-        if let StoreResourceBinding::Accepted(id) = binding {
-            let row = directory.row(id);
-            for field in &row.record.fields {
-                layer.occupy(&field.name);
-            }
-            for group in &row.groups {
-                layer.occupy(group.name);
-            }
-        }
+        // A root's key columns are the store's own layer: the resource it binds
+        // keeps its members' names, and a second root over the same resource may
+        // key it by other names.
+        let mut layer = MemberNamespace::new(format!("^{}", store.root.root));
         let keys = KeyTable::take(
             KeyOwner::Store {
                 root: &store.root.root,
@@ -434,9 +425,9 @@ impl<'a> KeyTable<'a> {
     /// count by living at a different call site. Resolution happens here rather than at a
     /// consumer: it is a fact of the tuple, settled once.
     ///
-    /// `layer` is the member layer this tuple keys: every column takes its name
-    /// there, so a repeated column, and later a member repeating a column, is
-    /// refused at the repeat.
+    /// `layer` is the layer this tuple's columns are named in: every column takes
+    /// its name there, so a repeated column — and, for a branch, a member later
+    /// repeating a column — is refused at the repeat.
     pub(super) fn take(
         owner: KeyOwner<'a>,
         keys: &'a [KeyParam],
@@ -639,7 +630,7 @@ fn branch_member_conflicts<'a>(
                 ResourceMember::Field(field) => (&field.name, field.name_span),
                 ResourceMember::Group(group) => (&group.name, group.name_span),
             };
-            layer.claim(file, name, span).err()
+            layer.claim(file, name, span)
         })
         .collect()
 }
@@ -662,7 +653,7 @@ fn resolve_key_columns<'a>(
 ) -> Result<Result<Vec<KeyColumnRow<'a>>, Box<SourceDiagnostic>>, GenericInvariant> {
     let mut columns = Vec::with_capacity(keys.len());
     for column in keys {
-        if let Err(row) = layer.claim(file, &column.name, column.name_span) {
+        if let Some(row) = layer.claim(file, &column.name, column.name_span) {
             return Ok(Err(Box::new(row)));
         }
         let key = match records.scalar_annotation(&column.ty) {

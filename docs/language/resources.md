@@ -82,11 +82,11 @@ declaring the branch creates no entry. A branch may take several key
 components, `loans[borrower: string, day: date]`, and is then addressed by the
 whole tuple in order. A key is an `int`, `string`, `bool`, `bytes`, `date`, or
 `instant` ([Keys](durable-places.md#keys)). Within one layer, key names and
-field names share one namespace: the resource's own fields, groups, and branches
-together with its root's key components form one layer, and a branch's key
-components together with its fields and nested branches form another. A name is
-declared once per layer; a repeat is a `check.name_conflict` at the repeated
-name.
+field names share one namespace: a branch's key components together with its
+fields and nested branches form one layer, and the resource's own fields,
+groups, and branches form another. A name is declared once per layer; a repeat
+is a `check.name_conflict` at the repeated name. A store root's key names are
+the store's own ([Keys](durable-places.md#keys)).
 
 A branch holds scalar fields and may hold further branches
 ([Keyed branches](durable-places.md#keyed-branches)). Today, a group sits

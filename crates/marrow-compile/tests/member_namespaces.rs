@@ -2,7 +2,9 @@
 //!
 //! One conflict owner serves struct fields, enum members and payload fields, type
 //! parameters, function parameters, key columns, and every member layer of a
-//! resource. Each fixture below repeats one name in one namespace and asserts the
+//! resource: its own fields, groups, and branches, and each branch's key columns
+//! together with its members. A root's key columns are the store's own layer, so
+//! a root key named like a resource field is not a repeat. Each fixture below repeats one name in one namespace and asserts the
 //! whole diagnostic list: exactly one `check.name_conflict`, at the line and column
 //! of the repeated name token, and nothing else. A repeat that reached the verifier
 //! (a span-less `image.table`) or executed (`f(1, 2)` answering `2`) would surface
@@ -177,12 +179,6 @@ fn a_branch_member_declared_twice() {
          store ^r[id: int]: R\n{MAIN}"
     );
     assert_one_conflict(&durable(&source), 6, 9, "branch member");
-}
-
-#[test]
-fn a_root_key_repeating_a_member_name() {
-    let source = format!("resource R {{\n    id: int\n}}\nstore ^r[id: int]: R\n{MAIN}");
-    assert_one_conflict(&durable(&source), 6, 10, "root key versus member");
 }
 
 #[test]
