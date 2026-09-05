@@ -1001,7 +1001,9 @@ fn blanking_consumes_raw_and_byte_literals_whole() {
 /// their absence here proves their absence for rustix in the same build.
 #[cfg(target_os = "linux")]
 #[test]
-#[allow(unexpected_cfgs)]
+// The assertions are constant on purpose: the test's subject is the build
+// configuration itself, so each condition folds to a constant in that build.
+#[allow(unexpected_cfgs, clippy::assertions_on_constants)]
 fn the_linux_backend_is_linux_raw() {
     assert!(
         cfg!(any(target_arch = "x86_64", target_arch = "aarch64")),
