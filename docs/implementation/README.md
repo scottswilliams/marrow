@@ -1,7 +1,7 @@
 # Implementation guide
 
-Marrow's implementation is one workspace of small crates, each owning one
-concept and depending only on crates beneath it. The
+Marrow's workspace separates syntax, compilation, verification, execution,
+storage, and tooling into crates. The
 [language reference](../language/) states what a program means; this guide
 states where that meaning is computed.
 
@@ -46,7 +46,7 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, canonical JSON, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
 | `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and classification of an outcome the client could not confirm | [Interrupted commits](../operations/README.md#interrupted-commits) |
-| `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, and definition projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
+| `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
 subcommand.
@@ -97,17 +97,23 @@ dispatches the export over the persistent redb engine.
 
 ## Ownership rule
 
-One typed owner defines each semantic fact. Downstream crates consume stable
-typed projections rather than matching source spellings, diagnostic prose,
-raw paths, or serialized messages. When a needed fact is missing, add it to the
-upstream owner; do not reconstruct it in the CLI, LSP, or tests.
+The design rule is one typed owner per semantic fact. Downstream crates should
+consume typed projections rather than recover meaning from source spellings,
+diagnostic prose, raw paths, or serialized messages. Add a missing fact to its
+upstream owner and publish it through the appropriate interface.
 
-The rule is why no concept above has two owners. Path resolution has one
-owner in the compiler; the verifier rebuilds it from the image and compares, but
-never consults the compiler's copy. Diagnostic codes are spelled once, in
-`marrow-codes`, and every emitter names the variant. The language server carries
-no type, path, or format logic of its own; a missing editor fact is added to
-`marrow-compile` and published through the snapshot.
+Current code does not fully satisfy that rule. The compiler's
+[`FunctionRegistry`](../../crates/marrow-compile/src/lower/registry.rs) predicts
+image function indices, while the
+[`ImageDraft`](../../crates/marrow-image/src/draft.rs) assigns them as functions
+are added; the two depend on coordinated ordering. These overlapping decisions
+remain a simplification target.
+
+Independent verification is a separate trust boundary: the verifier reconstructs
+types and demand from image bytes without consulting compiler state. Diagnostic
+code spellings live in `marrow-codes`. The language server projects compiler
+snapshot facts and owns their protocol representation and document state; a
+missing semantic editor fact belongs in `marrow-compile`.
 
 ## Artifact fence
 

@@ -367,11 +367,12 @@ absent does nothing. Deleting a required field is a `check.type` error. `delete
 ^books[id]` removes the entry's own fields, and `exists(^books[id])` turns
 false. A note under the entry stays, because a branch entry is its own node.
 
-Removing an entry with everything beneath it is a bounded traversal that deletes
-each node:
+Deleting visited entries uses nested bounded traversals. These traversals visit
+only present entry payloads, so they do not by themselves implement
+complete subtree removal:
 
 ```mw
-module docs::durable::purge
+module docs::durable::visited
 
 resource Book {
     required title: string
@@ -392,10 +393,11 @@ pub fn seed(id: int) {
         ^books[id] = Book(title: "Small Gods")
         ^books[id].notes[1] = Book.notes(text: "signed")
         ^books[id].notes[1].tags["gift"] = Book.notes.tags(weight: 2)
+        ^books[id].notes[2].tags["gift"] = Book.notes.tags(weight: 3)
     }
 }
 
-pub fn purge(id: int) {
+pub fn removePresentEntries(id: int) {
     transaction {
         for pos, note in ^books[id].notes at most 1000 {
             for tag, entry in note.tags at most 1000 {
@@ -411,20 +413,31 @@ pub fn hasNotes(id: int): bool {
     return exists(^books[id].notes)
 }
 
-test "purge empties the subtree" {
+pub fn tagWeight(id: int, pos: int): int? {
+    return ^books[id].notes[pos].tags["gift"].weight
+}
+
+test "a descendant-only note is not visited" {
     seed(1)
     assert hasNotes(1)
-    purge(1)
+    removePresentEntries(1)
     assert not hasNotes(1)
+    assert tagWeight(1, 1) ?? 0 == 0
+    assert tagWeight(1, 2) ?? 0 == 3
 }
 ```
 
-The inner loop deletes each tag through the entry binding its loop head
-declares, the outer loop deletes each note, and the last statement deletes the
-book. Each `for` head states its bound, so one transaction removes as much as
-its bounds admit and `on more` observes the rest
-([traversal](traversal-and-indexes.md#bounded-durable-traversal)). There is no
-whole-subtree delete.
+The outer loop visits note `1`, whose inner loop deletes its tag, then deletes
+the note. Note `2` has no fields of its own, so the outer loop skips it and its
+tag survives. The last statement deletes the book's own fields. `hasNotes`
+then returns false even though the tag under note `2` remains.
+
+The empty `on more` blocks also leave entries beyond either limit untouched;
+this function does not report completion. A removal workflow must account for
+those limits and for descendants whose ancestors have no payload. The current
+language has no whole-subtree delete or traversal that enumerates such
+descendant-only ancestors
+([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
 ## Access demand
 

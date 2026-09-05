@@ -58,6 +58,15 @@ are recognized; each reports `cli.command_unsupported`.
 Every limit is a fixed number: source nesting, declaration counts, key
 components, indexes per root, member and value depth, the instruction budget,
 and text and collection sizes ([Execution limits](language/execution-limits.md#limits)).
+
+One current limitation lies outside those bounds: durable traversal and family
+presence tests skip descendant-only entries one at a time. The number skipped
+is not bounded by `at most N` or by the invocation's instruction budget
+([traversal](language/traversal-and-indexes.md#bounded-durable-traversal)). Bounded
+family navigation is part of the selected
+[durable-language direction](future/durable-programming.md#evidence); it is not
+implemented yet.
+
 The toolchain builds on Linux and macOS with Rust 1.89; opening a store on disk
 has its own platform and layout requirements
 ([Running against a store](install.md#running-against-a-store)).

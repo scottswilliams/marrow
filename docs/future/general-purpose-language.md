@@ -26,10 +26,12 @@ Temporal values carry no clock, so the current time is one such host input.
 Importing a package supplies no filesystem, network, clock, entropy, or
 process access.
 
-Packages carry exact dependency edges ([packages](packages.md)). A `decimal`
-type joins the scalars; there is no floating-point type. Enum members can group
-other members, with a membership test over the group; the checker reports the
-grouping form as unsupported today.
+Source reuse is exercised through maintained programs; the package direction
+uses exact dependency edges ([packages](packages.md)). Decimal arithmetic and
+enum grouping are deferred until a maintained program demonstrates a need and
+an implementation can be compared with a simpler alternative. Their parsed
+forms are unsupported today; neither is a beta prerequisite. There is no
+floating-point type.
 
 A set type is not planned. Closures wait on a demand over indirect calls
 ([path effects and authority](path-effects-and-authority.md)). Traits, dynamic

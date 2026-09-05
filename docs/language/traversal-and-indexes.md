@@ -127,11 +127,18 @@ Writes in the body do not change the frozen set. An entry created in the body
 is not visited. An entry erased by an earlier iteration keeps its frozen key,
 and a read through that key finds nothing, as the second test above shows.
 
-The walk costs work proportional to `N`. An entry that holds only branch
-descendants and no fields of its own is not visited; the loop passes it in one
-step and reads nothing beneath it. The frozen keys are held as one list and
-count against the collection limit, so a walk over wide keys can reach
-`run.collection_limit` before `N` keys.
+`N` bounds the frozen keys and body executions, not the total navigation work.
+An address that holds only branch descendants and no entry payload is not
+visited. Navigation skips each such address with one seek past its descendants,
+but may skip any number of them before finding a present entry or the end.
+The current engine-call count is proportional to `N + 1 + d`, where `d` is the
+number of descendant-only entries skipped. A family presence test,
+`exists(^books)` or `exists(^books[id].notes)`, has the same limitation. This
+navigation work is not bounded by the invocation's instruction budget
+([status](../status.md#bounds-and-platform)).
+
+The frozen keys are held as one list and count against the collection limit,
+so a walk over wide keys can reach `run.collection_limit` before `N` keys.
 
 `for` iterates one key component. A composite-keyed root or branch, such as
 `store ^cells[x: int, y: int]: Cell`, is addressed by its whole tuple and is
