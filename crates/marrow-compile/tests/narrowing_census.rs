@@ -5,6 +5,7 @@
 //! Split out of `absence_gates.rs` at the census seam — it is a self-contained subject with
 //! its own scanner, its own adjudicated list, and its own plant probe.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,6 +53,10 @@ use source_projection::{is_ident_byte, is_test_only_file, production_code};
 #[test]
 fn every_narrowing_site_is_pinned_to_its_exact_census() {
     let found = tallied(&narrowing_sites());
+    assert!(
+        !found.is_empty(),
+        "the scan found no narrowing site at all, which means it is not reading code",
+    );
     let expected = tallied(&sanctioned_narrowing_sites());
     let mut added = Vec::new();
     let mut missing = Vec::new();
@@ -103,11 +108,6 @@ fn the_narrowing_census_scans_all_three_carrier_crates() {
     for (krate, count) in &per_crate {
         assert!(*count > 5, "{krate} contributed only {count} source files");
     }
-    // The scanner finds real sites, so a projection bug that blanks everything is loud.
-    assert!(
-        !narrowing_sites().is_empty(),
-        "the scan found no narrowing site at all, which means it is not reading code",
-    );
 }
 
 /// The narrowing scanner sees code and not prose or test items, and it is not defeated by
@@ -130,8 +130,8 @@ fn fallible(n: usize) -> u16 {\n    u16::try_from(n).unwrap_or(0)\n}\n\
 }
 
 /// The scanner reads arithmetic over a narrow carrier, and does not read an arithmetic
-/// operator whose own expression names no narrow carrier — nor a dereference, a return
-/// arrow, or a compound assignment, none of which are binary arithmetic.
+/// operator whose own expression names no narrow carrier. Dereferences and return arrows
+/// are not arithmetic candidates.
 #[test]
 fn the_narrowing_census_reads_arithmetic_over_a_narrow_carrier() {
     // The exact shape the cast scan could not see on its own account.
@@ -149,6 +149,13 @@ fn the_narrowing_census_reads_arithmetic_over_a_narrow_carrier() {
         "a narrow-suffixed literal names the carrier at the operand",
     );
 
+    let compound = "fn probe(mut offset: u32, width: usize) -> u32 {\n    offset += width as u32;\n    offset\n}\n";
+    assert_eq!(
+        narrowing_hits_in(&production_code(compound)),
+        ["offset += width as u32;", "offset += width as u32;"],
+        "compound addition and its narrowed operand are distinct sites",
+    );
+
     let bound = "fn probe(base: usize) -> usize {\n    base + usize::from(u16::MAX)\n}\n";
     assert_eq!(
         narrowing_hits_in(&production_code(bound)).len(),
@@ -162,11 +169,44 @@ fn the_narrowing_census_reads_arithmetic_over_a_narrow_carrier() {
         "arithmetic naming no narrow carrier is not a site",
     );
 
-    let not_arithmetic =
+    let inferred =
         "fn probe(v: &u16, n: u16) -> u16 {\n    let mut t = *v;\n    t += n;\n    t\n}\n";
     assert!(
-        narrowing_hits_in(&production_code(not_arithmetic)).is_empty(),
-        "a dereference, a return arrow, and a compound assignment are not binary arithmetic",
+        narrowing_hits_in(&production_code(inferred)).is_empty(),
+        "dereferences and return arrows do not count; `t += n` spells no narrow carrier",
+    );
+}
+
+#[test]
+fn arithmetic_predecessor_search_skips_nonoperators_and_stays_linear() {
+    let mut nonoperator_visits = Vec::new();
+    let mut operator_work = Vec::new();
+    for padding in [128, 1024] {
+        let comment = format!("/*{}*/", "x".repeat(padding));
+        let code = production_code(&comment);
+        ARITHMETIC_PREDECESSOR_VISITS.with(|count| count.set(0));
+        assert!(narrowing_hits_in(&code).is_empty());
+        nonoperator_visits.push(ARITHMETIC_PREDECESSOR_VISITS.with(Cell::get));
+
+        let source = format!("fn value(base: u16) -> u16 {{ base {comment} + 1u16 }}");
+        let code = production_code(&source);
+        ARITHMETIC_PREDECESSOR_VISITS.with(|count| count.set(0));
+        assert_eq!(
+            narrowing_hits_in(&code),
+            ["fn value(base: u16) -> u16 { base + 1u16 }"],
+        );
+        operator_work.push((ARITHMETIC_PREDECESSOR_VISITS.with(Cell::get), code.len()));
+        let at = source.find('+').expect("the real addition is present");
+        assert_eq!(narrowing_at(&code, code.as_bytes(), at), Some(at + 1));
+    }
+    assert_eq!(
+        nonoperator_visits,
+        [0, 0],
+        "projected comments contain no arithmetic candidate",
+    );
+    assert!(
+        operator_work.iter().all(|(visits, bytes)| visits <= bytes),
+        "predecessor search visits at most the input byte count: {operator_work:?}",
     );
 }
 
@@ -266,6 +306,10 @@ const NARROW_OPERAND_SPELLINGS: [&str; 10] = [
     "u32>",
 ];
 
+thread_local! {
+    static ARITHMETIC_PREDECESSOR_VISITS: Cell<usize> = const { Cell::new(0) };
+}
+
 /// Whether an arithmetic operator opens at `at`, with `-` in `->`, `*` in a dereference or
 /// a raw pointer, and every comparison form excluded.
 ///
@@ -275,9 +319,15 @@ const NARROW_OPERAND_SPELLINGS: [&str; 10] = [
 /// exists to hold exactly those. A census that cannot see a live site is the failure it
 /// exists to prevent, so the compound forms are read as the arithmetic they are.
 fn arithmetic_operator_at(bytes: &[u8], at: usize) -> Option<usize> {
+    if !matches!(bytes[at], b'+' | b'-' | b'*') {
+        return None;
+    }
     let before = (0..at)
         .rev()
-        .find(|index| !bytes[*index].is_ascii_whitespace())
+        .find(|index| {
+            ARITHMETIC_PREDECESSOR_VISITS.with(|count| count.set(count.get() + 1));
+            !bytes[*index].is_ascii_whitespace()
+        })
         .map(|index| bytes[index]);
     let after = bytes.get(at + 1).copied();
     // An operand must precede the operator, which is what separates `x * y` from a
