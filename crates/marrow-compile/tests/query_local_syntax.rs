@@ -47,9 +47,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use marrow_compile::{
-    ActiveCallOutcome, AnalysisFailure, AnalysisSnapshot, CompletionOutcome, Fact, InputRevision,
-    MAX_PARSED_FILE_BYTES, MAX_QUERY_PARSE_TRANSIENT_BYTES, PositionClass, QueryError,
-    Unavailability, analyze,
+    ActiveCallOutcome, AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, CompletionOutcome,
+    Fact, InputRevision, MAX_PARSED_FILE_BYTES, MAX_QUERY_PARSE_TRANSIENT_BYTES, PositionClass,
+    QueryError, ResourceLimitKind, Unavailability, analyze,
 };
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 use marrow_syntax::{
@@ -846,6 +846,14 @@ fn maximum_admitted_file() -> Vec<u8> {
     source.into_bytes()
 }
 
+/// Whether the dense maximal file's bodies are generic templates, whose proofs are
+/// erased before the image charge is polled, or ordinary functions the draft retains.
+#[derive(Clone, Copy)]
+enum DenseBody {
+    Template,
+    Ordinary,
+}
+
 /// A file of exactly the largest admitted size built from operator chains, kept as a
 /// corroborating sample rather than as the source of the parse-transient term.
 ///
@@ -860,14 +868,22 @@ fn maximum_admitted_file() -> Vec<u8> {
 /// or names that never resolve inside one that did.
 /// [`statement_dense_file`] is that shape, and it is denser than this one.
 ///
-/// One deliberate type error keeps the whole-image byte ceiling (which a 1 MiB dense
-/// program exceeds) from deciding queryability; the analysis is resilient, so the project
-/// still yields a snapshot and the file still projects its outline.
-fn dense_admitted_file() -> Vec<u8> {
+/// With [`DenseBody::Template`] every body is a generic template: it is proved once, so
+/// the whole tree is parsed and lowered, and its throwaway image work is erased before
+/// the settled-body image charge is polled. That is the largest dense shape that stays
+/// inside the image bound. With [`DenseBody::Ordinary`] the same bodies are retained, and
+/// the drive stops at the image byte ceiling with no snapshot. One deliberate type error
+/// pins that the parser accepted every body's nesting: a refused nesting would report
+/// once per body instead.
+fn dense_admitted_file(bodies: DenseBody) -> Vec<u8> {
     let mut source = String::from("module dense\n\nfn typeError(): int {\n    return \"x\"\n}\n\n");
+    let signature = match bodies {
+        DenseBody::Template => "<T>(x: T)",
+        DenseBody::Ordinary => "()",
+    };
     let mut index = 0usize;
     loop {
-        let mut body = format!("fn f{index}(): int {{\n    return 1");
+        let mut body = format!("fn f{index}{signature}: int {{\n    return 1");
         for _ in 0..DENSE_OPERANDS {
             body.push_str("+1");
         }
@@ -888,7 +904,7 @@ fn dense_admitted_file() -> Vec<u8> {
 
 /// Operands per body in the dense fixture: below the nesting the parser refuses, so every
 /// body contributes a whole chain rather than an error node. A parser that narrows its
-/// nesting bound fails `a_dense_maximum_admitted_file_is_queryable`, which pins that the
+/// nesting bound fails `a_dense_maximal_file_of_template_bodies_is_queryable`, which pins that the
 /// fixture's only diagnostic is its one deliberate type error.
 const DENSE_OPERANDS: usize = 200;
 
@@ -937,8 +953,10 @@ const STATEMENT_DENSE_PER_LONG_BODY: usize = 4097;
 /// the same project whichever test reads it.
 const SHAPE_PATH: &str = "src/shape.mw";
 
-/// Every maximum-size shape this file can build, each queryable and each a corroborating
-/// sample under the derived bound rather than a source of it.
+/// Every maximum-size shape this file can build that stays inside the image bound, each
+/// queryable and each a corroborating sample under the derived bound rather than a source
+/// of it. The operator-chain shape is the template-bodied one: retained ordinary bodies
+/// of that density stop the drive at the image byte ceiling instead.
 ///
 /// Assembled once. Three tests state laws over the same five shapes, and each shape is a
 /// whole maximum admitted file, so building them per test spent more of the suite on
@@ -957,7 +975,7 @@ fn maximum_admitted_shapes() -> &'static [(&'static str, Vec<u8>)] {
                 statement_dense_file(STATEMENT_DENSE_PER_LONG_BODY),
             ),
             ("name-chain", name_chain_file()),
-            ("operator-chain", dense_admitted_file()),
+            ("operator-chain", dense_admitted_file(DenseBody::Template)),
             ("comment-padded", maximum_admitted_file()),
         ]
     })
@@ -1278,11 +1296,11 @@ fn assert_within_budget(measured: u128, budget: u128, bytes: usize) {
 }
 
 /// One query over a maximum admitted file stays inside the editor-latency budget in every
-/// maximum-size shape reachable here, including the statement-dense one the budget is
-/// derived from. The comment-padded and operator-chain shapes are kept because each was
-/// once published as the worst case and neither is.
+/// maximum-size shape reachable here that stays inside the image bound, including the
+/// statement-dense one the budget is derived from. The comment-padded and operator-chain
+/// shapes are kept because each was once published as the worst case and neither is.
 #[test]
-fn a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized() {
+fn a_query_over_a_maximal_file_inside_the_image_bound_stays_in_budget_when_optimized() {
     for (label, snapshot) in maximum_admitted_snapshots() {
         eprintln!("shape {label}");
         assert_within_budget(
@@ -1332,11 +1350,15 @@ fn a_maximum_admitted_file_yields_a_snapshot() {
     ));
 }
 
-/// A *uniformly dense* maximum admitted file also yields a snapshot and answers queries.
-/// Running this test alone measures the live parse tree of one such file.
+/// A *uniformly dense* maximum admitted file whose bodies are generic templates — the
+/// largest dense shape that stays inside the image bound — yields a snapshot and answers
+/// queries. Running this test alone measures the live parse tree of one such file.
 #[test]
-fn a_dense_maximum_admitted_file_is_queryable() {
-    let snapshot = snapshot(vec![("src/dense.mw", dense_admitted_file())]);
+fn a_dense_maximal_file_of_template_bodies_is_queryable() {
+    let snapshot = snapshot(vec![(
+        "src/dense.mw",
+        dense_admitted_file(DenseBody::Template),
+    )]);
     let file = identity("src/dense.mw");
     assert_eq!(
         snapshot.diagnostics().len(),
@@ -1353,6 +1375,27 @@ fn a_dense_maximum_admitted_file_is_queryable() {
         snapshot.completions(&file, 64).is_ok(),
         "the sample answers the query whose parse it corroborates"
     );
+}
+
+/// The same dense maximal file with ordinary bodies is retained body by body, and the
+/// settled bodies alone exceed the image byte ceiling: the drive stops with the
+/// `ImageBytes` limit and no snapshot is minted, so nothing in it is queryable.
+#[test]
+fn a_dense_maximal_file_of_ordinary_bodies_stops_at_the_image_charge() {
+    match analyze(
+        captured(vec![(
+            "src/dense.mw",
+            dense_admitted_file(DenseBody::Ordinary),
+        )]),
+        InputRevision::new(1),
+    ) {
+        Err(AnalysisFailure::ResourceLimit {
+            limit: AnalysisResourceLimit::Compile(limit),
+            ..
+        }) => assert_eq!(limit.kind(), ResourceLimitKind::ImageBytes),
+        Err(_) => panic!("retained dense bodies stop at the image byte ceiling"),
+        Ok(_) => panic!("no snapshot is minted past the image byte ceiling"),
+    }
 }
 
 /// Containers grow by doubling from a small minimum, never past it. The accounting
@@ -2070,8 +2113,9 @@ fn a_desynchronizing_maximum_admitted_file_is_still_admitted_and_queryable() {
         .expect("the deep-nesting worker did not panic");
 }
 
-/// The corroborating samples: every maximum-size shape reachable here is queryable, and
-/// each one's statement lists stay under what the derivation predicts for them.
+/// The corroborating samples: every maximum-size shape reachable here that stays inside
+/// the image bound is queryable, and each one's statement lists stay under what the
+/// derivation predicts for them.
 ///
 /// The densest sample is compared against [`statement_list_term`] rather than against the
 /// whole exported term, which also covers expressions, tokens, diagnostics, and the cap's
@@ -2080,7 +2124,7 @@ fn a_desynchronizing_maximum_admitted_file_is_still_admitted_and_queryable() {
 /// derivation is not optimistic. The term was derived first and the samples fell under
 /// it, rather than a sample being searched for and published as a term.
 #[test]
-fn every_maximum_admitted_shape_stays_under_the_derived_bound() {
+fn every_maximal_shape_inside_the_image_bound_stays_under_the_derived_bound() {
     let predicted = statement_list_term();
     let mut densest = 0;
     for ((label, bytes), (_, snapshot)) in maximum_admitted_shapes()
