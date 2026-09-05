@@ -755,11 +755,8 @@ impl Coordinator {
 
     fn on_notification(&mut self, method: &str, params: Option<Box<serde_json::value::RawValue>>) {
         match method {
-            "initialized" => {
-                if self.lifecycle.on_initialized() {
-                    self.enter_running();
-                }
-            }
+            "initialized" if self.lifecycle.on_initialized() => self.enter_running(),
+            "initialized" => {}
             "exit" => {
                 self.exit_code = self.lifecycle.on_exit();
                 self.running = false;

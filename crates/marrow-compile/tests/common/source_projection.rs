@@ -233,14 +233,13 @@ pub fn is_test_only_file(path: &Path) -> bool {
 pub fn last_production_item(source: &str) -> Option<String> {
     without_cfg_test_items(source)
         .lines()
-        .filter(|line| {
+        .rfind(|line| {
             line.starts_with(|first: char| first.is_ascii_alphabetic())
                 && line.ends_with('{')
                 && !line.contains('"')
                 && !line.contains("//")
                 && !contains_char_literal(line)
         })
-        .next_back()
         .map(str::to_string)
 }
 

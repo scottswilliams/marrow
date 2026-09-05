@@ -109,7 +109,7 @@ jobs:
           set -o pipefail
           started=$(date +%s)
           for t in \
-            a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized \
+            a_query_over_a_maximal_file_inside_the_image_bound_stays_in_budget_when_optimized \
             a_query_over_an_ordinary_file_stays_far_inside_the_budget_when_optimized
           do
             cargo test --release -p marrow-compile --test query_local_syntax --locked -- \

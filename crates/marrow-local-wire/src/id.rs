@@ -39,8 +39,9 @@ impl Id32 {
             return None;
         }
         let mut out = [0u8; 32];
-        for (i, pair) in bytes.chunks_exact(2).enumerate() {
-            out[i] = (lower_hex(pair[0])? << 4) | lower_hex(pair[1])?;
+        let (pairs, _) = bytes.as_chunks::<2>();
+        for (slot, [hi, lo]) in out.iter_mut().zip(pairs) {
+            *slot = (lower_hex(*hi)? << 4) | lower_hex(*lo)?;
         }
         Some(Id32(out))
     }
