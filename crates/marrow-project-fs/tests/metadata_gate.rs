@@ -539,7 +539,7 @@ fn the_external_inventory_is_unchanged_from_the_clean_tree() {
 ///
 /// The write owner writes each project's own `.marrow/.gitignore`, which is
 /// what an outside project relies on. This repository keeps its entries too:
-/// its fixture projects are published from in place, and one line per name
+/// any project in this tree that is published from in place, and one line per name
 /// covering every depth is what keeps an entry created there out of the index
 /// whether or not that project has been published from yet.
 #[test]

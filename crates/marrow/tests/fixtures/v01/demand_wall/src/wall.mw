@@ -70,7 +70,3 @@ pub fn touchAll(id: int) {
         ^gamma[id].eighth = (^gamma[id].eighth ?? 0) + 1
     }
 }
-
-pub fn firstOf(id: int): int {
-    return ^alpha[id].first ?? 0
-}

@@ -72,8 +72,8 @@ The first release of this invariant provisions new stores. Older store/image
 formats are refused without changing their data; a matching older toolchain
 remains necessary to use them. General data migration is separate work.
 Ordinary exports initialize and change application data; the separate
-data-populating importer is retired. Existing EMR baseline data needs explicit
-application seed exports; replaying ordinary transitions changes its meaning.
+data-populating importer is retired. The EMR baseline data in the
+`marrow-acceptance` repository needs explicit application seed exports; replaying ordinary transitions changes its meaning.
 Source migration changes address bindings, guarded updates and implicit counter
 creation. It can change demand, so the migrated program must still pass store
 admission. This is selected direction, not current syntax or implemented behavior.

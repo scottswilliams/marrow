@@ -328,7 +328,7 @@ fn try_then_require_inside_a_region_reports_the_earliest_exit() {
 
 /// A `require` in a helper that joins its caller's region owns no region itself:
 /// its failure exit is ordinary control flow into the export's committing
-/// in-region `return`, exactly like a helper's `try` (the EMR `validate` shape).
+/// in-region `return`, exactly like a helper's `try`.
 #[test]
 fn a_require_in_a_helper_joining_the_region_compiles() {
     let ops = "fn validate(v: int): Result<int, string> {\n    require v > 0 else \"value must be positive\"\n    return ok(v)\n}\n\nfn apply(id: int, v: int): Result<int, string> {\n    const w = try validate(v)\n    ^counters[id] = Counter(value: w)\n    return ok(w)\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        return apply(id, v)\n    }\n}\n";

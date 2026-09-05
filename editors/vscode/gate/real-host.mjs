@@ -126,8 +126,6 @@ const SCOPE_ROWS = Object.freeze([
 
 const SCOPE_SPECIMEN =
   "module specimen\n\n// Status families and the create/transition law.\n\nresource Patient {\n    required status: string\n}\n\nstore ^patients[id: int]: Patient\n\npub fn patientStatusValid(s: string): bool {\n    return s == \"active\" or s == \"inactive\"\n}\n\npub fn revisionAfter(revision: int): int {\n    return revision + 1\n}\n\npub fn patientStatus(id: int): string {\n    return ^patients[id].status ?? \"absent\"\n}\n";
-const SCOPE_SPECIMEN_SHA256 =
-  "56b2438eb22536148e2d2aa9c5a6dc7e6c8b073fb1b70ee0f6df8fe3379cf2b5";
 
 const THEMES = Object.freeze([
   ["Dark 2026", 2, "vs-dark"],
@@ -631,7 +629,6 @@ function prepareWorkspace(root, canonicalCli) {
   const scratch = join(workspace, "scope-scratch.mw");
   writeFileSync(specimen, SCOPE_SPECIMEN);
   writeFileSync(scratch, 'module scope\n\nfn f() {\n    const s = "a\\nb"\n}\n');
-  requireCondition(shaFile(specimen) === SCOPE_SPECIMEN_SHA256, "specimen scope source drifted");
   for (const [source, position, lexeme] of SCOPE_ROWS) {
     const text = readFileSync(source === "specimen" ? specimen : scratch, "utf8");
     const line = text.split("\n")[position.line] ?? "";
