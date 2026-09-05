@@ -2150,6 +2150,16 @@ impl ImageDraft {
         }
         self.sites.wire_ordinal(self.durable.identity(), site)
     }
+    /// Borrow the instruction sequence at a function's insertion ordinal.
+    ///
+    /// A `FuncId` carries no draft provenance or verification claim. The caller
+    /// must use an identity returned by this draft and handle an absent ordinal.
+    pub fn function_code(&self, function: FuncId) -> Option<&[Instr]> {
+        self.functions
+            .get(usize::from(function.index()))
+            .map(|function| function.code.as_slice())
+    }
+
     pub(crate) fn functions(&self) -> &[FunctionDef] {
         &self.functions
     }
@@ -2685,6 +2695,33 @@ mod row_access_tests {
     use crate::export_id::ExportId;
     use crate::instr::Instr;
     use crate::ty::ImageType;
+
+    #[test]
+    fn function_code_borrows_the_appended_allocation_and_tracks_rollback() {
+        let mut draft = ImageDraft::new();
+        let name = draft.intern_string("body").expect("name fits");
+        let source = draft.intern_string("source").expect("source fits");
+        let code = vec![Instr::Return];
+        let allocation = code.as_ptr();
+        let savepoint = draft.savepoint();
+        let mut txn = draft.begin_transaction(savepoint).expect("fresh savepoint");
+        let func = txn
+            .add_function(FunctionDef {
+                name,
+                source,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                code,
+                spans: Vec::new(),
+            })
+            .expect("no operation sites");
+        let borrowed = txn.function_code(func).expect("append is visible");
+        assert_eq!(borrowed.as_ptr(), allocation);
+        assert!(matches!(borrowed, [Instr::Return]));
+        txn.rollback();
+        assert!(draft.function_code(func).is_none());
+    }
 
     /// The borrowed row slices and their counts mirror exactly what was added, in
     /// insertion order — the retained base row set the encoder's permutations map.

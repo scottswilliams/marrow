@@ -80,6 +80,52 @@ fn line_of(ops: &str, needle: &str) -> u32 {
     (source[..index].bytes().filter(|&b| b == b'\n').count() as u32) + 1
 }
 
+#[test]
+fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
+    let prelude = "fn padding(v: int): int {\n    var n = v\n    n = n + 1\n    n = n + 2\n    return n\n}\nfn identity<T>(v: T): T { return v }\n";
+    let cases = [
+        (
+            "check.transaction_empty",
+            "pub fn empty() {\n    const n = identity(7)\n    transaction {}\n}\n",
+            "{}",
+        ),
+        (
+            "check.transaction_owner_called",
+            "pub fn owner(id: int, v: int) {\n    transaction { ^counters[id] = Counter(value: v) }\n}\nfn callOwner<T>(id: int, v: int, tag: T) {\n    owner(id, v)\n}\nfn driver(id: int, v: int) { callOwner(id, v, true) }\n",
+            "owner(id, v)",
+        ),
+        (
+            "check.durable_after_commit",
+            "fn readTagged<T>(id: int, tag: T): int? { return ^counters[id].value }\npub fn owner(id: int): int? {\n    transaction { ^counters[id] = Counter(value: identity(7)) }\n    return readTagged(id, true)\n}\n",
+            "readTagged(id, true)",
+        ),
+        (
+            "check.transaction_uncommitted",
+            "pub fn owner(id: int): int {\n    if identity(true) { return 0 }\n    transaction { ^counters[id] = Counter(value: 7) }\n    return 1\n}\n",
+            "return 0",
+        ),
+    ];
+    for (code, body, needle) in cases {
+        let ops = format!("{prelude}{body}");
+        let diagnostic = only(&ops);
+        let source = format!("{SCHEMA}{ops}");
+        let start = source.find(needle).expect("offending construct exists");
+        let line_start = source[..start].rfind('\n').map_or(0, |at| at + 1);
+        assert_eq!(diagnostic.code(), code);
+        assert_eq!(diagnostic.file().as_str(), "src/main.mw");
+        assert_eq!(
+            diagnostic.span(),
+            marrow_syntax::SourceSpan {
+                start_byte: start,
+                end_byte: start + needle.len(),
+                line: line_of(&ops, needle),
+                column: (start - line_start + 1) as u32,
+            },
+            "{code} must keep its complete source coordinate"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Law (a): the owner lattice.
 // ---------------------------------------------------------------------------

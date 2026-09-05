@@ -9,9 +9,9 @@
 //! rolled-back one is not, and a required field left unset at commit rolls the whole
 //! region back rather than publishing a partial entry.
 //!
-//! `marrow run` still parks a durable export in the trough (its in-process store open
-//! returns at F02b), so the transaction region has no CLI execution path yet; the
-//! ephemeral attachment is its production runtime, and these tests drive it directly.
+//! `marrow run --store` dispatches durable exports through the supervised runner.
+//! These tests exercise the same VM transaction semantics directly over an ephemeral
+//! attachment, without process setup.
 
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
@@ -238,6 +238,111 @@ fn compile_verify(source: &str) -> VerifiedImage {
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
+}
+
+#[test]
+fn generic_transaction_bodies_keep_verified_images_and_test_boundaries() {
+    let source = r#"resource Counter {
+    required value: int
+    label: string
+}
+store ^counters[id: int]: Counter
+fn identity<T>(value: T): T { return value }
+fn writeTagged<T>(id: int, v: int, tag: T) {
+    ^counters[id] = Counter(value: v)
+}
+pub fn set(id: int, v: int) {
+    transaction {
+        const value = identity(v)
+        writeTagged(id, value, true)
+    }
+}
+pub fn getValue(id: int): int? { return ^counters[id].value }
+test "drive a transaction owner" {
+    set(1, 7)
+    assert (getValue(1) ?? 0) == 7
+}
+"#;
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let project = marrow_project::capture(
+        &manifest,
+        vec![marrow_project::CapturedFile::new(
+            "src/main.mw".to_string(),
+            source.as_bytes().to_vec(),
+        )],
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    for include_tests in [false, true] {
+        let encoded = if include_tests {
+            marrow_compile::compile_with_tests(&project)
+                .expect("compile test image")
+                .image
+        } else {
+            marrow_compile::compile(&project)
+                .expect("compile image")
+                .image
+        };
+        let image = marrow_verify::verify(&encoded.bytes).expect("independent verification");
+        let (identity, bytes, instructions) = if include_tests {
+            (
+                "4392aebfc08805d09a25da2f69ab970312bd8cc8b12a829dd3a62de507773dbc",
+                1294,
+                44,
+            )
+        } else {
+            (
+                "f7323ca882805a2d670f992fd77c6e393db3a7d35bb817c0a5d0e61025a2aaae",
+                1044,
+                32,
+            )
+        };
+        assert_eq!(encoded.image_id.to_hex(), identity);
+        assert_eq!(image.image_id().to_hex(), identity);
+        assert_eq!(encoded.bytes.len(), bytes);
+        assert_eq!(
+            image
+                .functions()
+                .iter()
+                .map(|function| function.instrs().len())
+                .sum::<usize>(),
+            instructions
+        );
+        assert_eq!(image.functions().len(), 4 + usize::from(include_tests));
+        assert_eq!(image.test_entries().len(), usize::from(include_tests));
+        let owner = image.function(export(&image, "set").function());
+        let markers: Vec<_> = owner
+            .instrs()
+            .iter()
+            .enumerate()
+            .filter(|(_, instr)| {
+                matches!(
+                    instr,
+                    marrow_verify::SealedInstr::TxnBegin | marrow_verify::SealedInstr::TxnCommit
+                )
+            })
+            .map(|(index, _)| owner.span_at(index))
+            .collect();
+        assert_eq!(markers, [Some((11, 17)); 2]);
+        let mut attachment = attach(&image);
+        run(
+            &image,
+            &mut attachment,
+            "set",
+            vec![Value::Int(2), Value::Int(11)],
+        );
+        assert_eq!(
+            run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+            Some(Value::Optional(Some(Box::new(Value::Int(11)))))
+        );
+        if let Some(entry) = image.test_entries().first() {
+            assert!(matches!(
+                marrow_vm::run_driver_test(&image, entry),
+                DurableRun::Ran(Ok(_))
+            ));
+        }
+    }
 }
 
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {

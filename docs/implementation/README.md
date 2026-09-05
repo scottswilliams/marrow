@@ -28,6 +28,12 @@ dependent fills. Type consumers resolve written parameters before aliases and
 carry existing declaration refusals through scalar and value-type checks;
 they do not allocate expanded alias trees.
 
+Each completed function moves its instruction allocation into the image draft.
+The compiler retains the append-returned function identity and full source
+coordinates. After body settlement, transaction validation borrows the draft's
+instructions and checks that the coordinates cover exactly that sequence.
+Template proofs use the same append path and erase their additions on completion.
+
 A tool sees a project through two layers. `marrow-project` is pure: manifest,
 module discovery, and the `.marrow/ids` ledger, all over bytes a caller supplies.
 `marrow-project-fs` reads those bytes from disk under fixed bounds and publishes

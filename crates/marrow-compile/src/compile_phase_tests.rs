@@ -22,6 +22,67 @@ use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 use std::collections::BTreeMap;
 
+#[test]
+fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
+    use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr};
+
+    let mut draft = ImageDraft::new();
+    let mut txn = admitted(&mut draft);
+    let name = txn.intern_string("body").expect("name fits");
+    let source = txn.intern_string("src/main.mw").expect("source fits");
+    let func = txn
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            code: vec![Instr::Return],
+            spans: Vec::new(),
+        })
+        .expect("append a body without sites");
+    txn.commit();
+    let mut function = super::LoweredFn {
+        func,
+        file: crate::test_main_file_identity().clone(),
+        name: "body".to_string(),
+        span: SourceSpan::default(),
+        callees: Vec::new(),
+        is_export: false,
+        is_test: false,
+        unwrapped_mutations: Vec::new(),
+        unwrapped_calls: Vec::new(),
+        has_direct_durable_op: false,
+        owns_transaction: false,
+        code_spans: vec![SourceSpan::default()],
+    };
+
+    assert!(matches!(
+        function.borrow_body(&ImageDraft::new()),
+        Err(InvariantCause::MissingFunctionBody(actual)) if actual == func,
+    ));
+    for spans in [0, 2] {
+        function.code_spans = vec![SourceSpan::default(); spans];
+        assert!(matches!(
+            function.borrow_body(&draft),
+            Err(InvariantCause::InstructionSpanMismatch {
+                function: actual,
+                instructions: 1,
+                spans: actual_spans,
+            }) if actual == func && actual_spans == spans,
+        ));
+    }
+    function.code_spans = vec![SourceSpan::default()];
+    let body = function
+        .borrow_body(&draft)
+        .expect("one coordinate per instruction");
+    assert!(matches!(body.code, [Instr::Return]));
+    assert_eq!(
+        body.code.as_ptr(),
+        draft.function_code(func).expect("appended body").as_ptr()
+    );
+}
+
 /// The minting guard rejects every input class whose dotted join would break
 /// the ExportId payload's injectivity, even though the current capture path
 /// cannot produce them.

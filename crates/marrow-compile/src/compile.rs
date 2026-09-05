@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
-use marrow_image::{DraftTxn, EncodedImage, ExportId, ImageBuildError, ImageDraft, Instr};
+use marrow_image::{DraftTxn, EncodedImage, ExportId, FuncId, ImageBuildError, ImageDraft, Instr};
 use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{
     AliasDecl, ConstDecl, Declaration, EnumDecl, NominalDecl, ResourceDecl, ResourceMember,
@@ -167,6 +167,16 @@ impl CompileInvariant {
                 let _ = stage;
             }
             InvariantCause::UnavailableWithoutReport | InvariantCause::ReservedIndexMismatch => {}
+            InvariantCause::MissingFunctionBody(function) => {
+                let _ = function;
+            }
+            InvariantCause::InstructionSpanMismatch {
+                function,
+                instructions,
+                spans,
+            } => {
+                let _ = (function, instructions, spans);
+            }
             InvariantCause::ImageBuild(error) => {
                 let _ = error;
             }
@@ -411,6 +421,14 @@ enum InvariantCause {
     /// reserved for it, so a call site would name a different function than the one
     /// the image carries.
     ReservedIndexMismatch,
+    /// A settled body names no function in the draft it was appended to.
+    MissingFunctionBody(FuncId),
+    /// The compiler coordinates no longer cover exactly the draft-owned code.
+    InstructionSpanMismatch {
+        function: FuncId,
+        instructions: usize,
+        spans: usize,
+    },
     /// An image-build variant unreachable from a coherent compiler: a producer-state
     /// contradiction (an invalid cross-reference, a local count below the parameter
     /// count) or a per-construct bound a source precheck already refuses before the
@@ -580,7 +598,7 @@ struct Module {
 /// directly, where to report a cycle, and the durable-mutation and call sites it
 /// performs outside any `transaction` block.
 struct LoweredFn {
-    index: u16,
+    func: FuncId,
     file: FileIdentity,
     name: String,
     span: SourceSpan,
@@ -602,10 +620,33 @@ struct LoweredFn {
     has_direct_durable_op: bool,
     /// Whether this body owns a `transaction` block.
     owns_transaction: bool,
-    /// This body's lowered instruction tape and the parallel full source span of each
-    /// instruction, consumed by the check-time transaction-ownership pass.
-    code: Vec<Instr>,
+    /// Full source spans parallel to the draft-owned instructions at `func`.
     code_spans: Vec<SourceSpan>,
+}
+
+/// One settled body's metadata coupled to its sole draft-owned instruction slice.
+struct LoweredBody<'a> {
+    function: &'a LoweredFn,
+    code: &'a [Instr],
+}
+
+impl LoweredFn {
+    fn borrow_body<'a>(&'a self, draft: &'a ImageDraft) -> Result<LoweredBody<'a>, InvariantCause> {
+        let code = draft
+            .function_code(self.func)
+            .ok_or(InvariantCause::MissingFunctionBody(self.func))?;
+        if code.len() != self.code_spans.len() {
+            return Err(InvariantCause::InstructionSpanMismatch {
+                function: self.func,
+                instructions: code.len(),
+                spans: self.code_spans.len(),
+            });
+        }
+        Ok(LoweredBody {
+            function: self,
+            code,
+        })
+    }
 }
 
 /// Compile a captured project into canonical program-image bytes and its export
@@ -1628,6 +1669,22 @@ fn run_semantic(
         .as_ref()
         .and_then(|set| reject_recursion(set, &mut diagnostics));
 
+    // All body transactions and generic draining have settled. Couple each actual
+    // appended function with its coordinates before any transaction validation.
+    let bodies = match lowered_set
+        .as_ref()
+        .map(|set| {
+            set.functions()
+                .iter()
+                .map(|function| function.borrow_body(&draft))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
+    {
+        Ok(bodies) => bodies,
+        Err(invariant) => return SemanticOutcome::Invariant(invariant),
+    };
+
     // A function that mutates durable state carries a checked requires-ambient-
     // transaction effect: it is callable only inside a `transaction` block or from
     // another function carrying the effect. Reported at check time so the source, not
@@ -1648,8 +1705,8 @@ fn run_semantic(
     // image (image.flow) as defense in depth. Run once the call graph is acyclic and no
     // requires-ambient-transaction report already stands, so the closures converge and a
     // single mutation cannot cascade into an ownership report.
-    if let (Some(set), Some(acyclic), Some(closure)) = (&lowered_set, &call_graph, &transactions) {
-        reject_transaction_ownership(set, acyclic, closure, &mut diagnostics);
+    if let (Some(bodies), Some(acyclic), Some(closure)) = (&bodies, &call_graph, &transactions) {
+        reject_transaction_ownership(bodies, acyclic, closure, &mut diagnostics);
     }
 
     // A test body reaches durable data in one of two disjoint ways — directly, or by
@@ -1908,7 +1965,7 @@ fn registry_phases(
                 return Err(PhaseStop::Invariant(InvariantCause::ReservedIndexMismatch));
             }
             lowered.push(LoweredFn {
-                index: result.func.index(),
+                func: result.func,
                 file: template.source_file().clone(),
                 name: template.name().to_string(),
                 span: template.span(),
@@ -1919,7 +1976,6 @@ fn registry_phases(
                 unwrapped_calls: result.unwrapped_calls,
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
-                code: result.code,
                 code_spans: result.code_spans,
             });
         }
@@ -2032,7 +2088,7 @@ fn lower_declared_functions(
                 continue;
             };
             lowered.push(LoweredFn {
-                index: result.func.index(),
+                func: result.func,
                 file: module.file.clone(),
                 name: function.name.clone(),
                 span: function.span,
@@ -2043,7 +2099,6 @@ fn lower_declared_functions(
                 unwrapped_calls: result.unwrapped_calls,
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
-                code: result.code,
                 code_spans: result.code_spans,
             });
             let export = if function.public {
@@ -2161,7 +2216,7 @@ fn lower_declared_tests(
                 continue;
             };
             lowered.push(LoweredFn {
-                index: result.func.index(),
+                func: result.func,
                 file: module.file.clone(),
                 name: test.name.clone(),
                 span: test.name_span,
@@ -2172,7 +2227,6 @@ fn lower_declared_tests(
                 unwrapped_calls: result.unwrapped_calls,
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
-                code: result.code,
                 code_spans: result.code_spans,
             });
             entries.push(TestEntry {
@@ -2342,14 +2396,14 @@ fn reject_recursion(
     // function appears once, so a plain vec keyed by index is exact.
     let mut callees: Vec<&[u16]> = vec![&[]; lowered.len()];
     for function in lowered {
-        if (function.index as usize) < callees.len() {
-            callees[function.index as usize] = &function.callees;
+        if usize::from(function.func.index()) < callees.len() {
+            callees[usize::from(function.func.index())] = &function.callees;
         }
     }
     let analysis = crate::call_graph::analyze(&callees);
     let mut reported = false;
     for function in lowered {
-        if analysis.on_cycle(function.index) {
+        if analysis.on_cycle(function.func.index()) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckRecursion.as_str(),
                 &function.file,
@@ -2390,8 +2444,8 @@ fn reject_missing_transaction(
     let count = lowered.len();
     let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
     for function in lowered {
-        if (function.index as usize) < count {
-            by_index[function.index as usize] = Some(function);
+        if usize::from(function.func.index()) < count {
+            by_index[usize::from(function.func.index())] = Some(function);
         }
     }
 
@@ -2513,17 +2567,17 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 /// unwrapped mutation would cascade into a second ownership report. `acyclic`
 /// carries the shared callee-before-caller order for the two ownership relations.
 fn reject_transaction_ownership(
-    lowered: &CompleteLoweredFunctionSet,
+    lowered: &[LoweredBody<'_>],
     acyclic: &AcyclicCallGraph,
     _closure: &AmbientTransactionClosure,
     diagnostics: &mut DiagnosticCollector,
 ) {
-    let lowered = lowered.functions();
     let count = lowered.len();
-    let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
-    for function in lowered {
-        if (function.index as usize) < count {
-            by_index[function.index as usize] = Some(function);
+    let mut by_index: Vec<Option<&LoweredBody<'_>>> = vec![None; count];
+    for body in lowered {
+        let function = body.function;
+        if usize::from(function.func.index()) < count {
+            by_index[usize::from(function.func.index())] = Some(body);
         }
     }
 
@@ -2542,8 +2596,8 @@ fn reject_transaction_ownership(
     // closures settle in one callee-before-caller pass over the acyclic graph. These
     // mirror the verifier's mutate and non-empty-atom closures the lattice consumes.
     let visit_callees = |index: usize, visit: &mut dyn FnMut(usize)| {
-        if let Some(Some(function)) = by_index.get(index) {
-            for &callee in &function.callees {
+        if let Some(Some(body)) = by_index.get(index) {
+            for &callee in &body.function.callees {
                 visit(usize::from(callee));
             }
         }
@@ -2567,8 +2621,9 @@ fn reject_transaction_ownership(
         visit_callees,
     );
 
-    for function in lowered {
-        let i = function.index as usize;
+    for body in lowered {
+        let function = body.function;
+        let i = usize::from(function.func.index());
         if i >= count {
             continue;
         }
@@ -2579,13 +2634,15 @@ fn reject_transaction_ownership(
         // that calls an owner is not examined for its own ownership laws besides this.
         if !function.is_test {
             let mut reported = false;
-            for (idx, instr) in function.code.iter().enumerate() {
+            for (idx, instr) in body.code.iter().enumerate() {
                 let Instr::Call(target) = instr else { continue };
                 let t = *target as usize;
                 if t >= count || !has_begin[t] {
                     continue;
                 }
-                let name = by_index[t].map(|f| f.name.as_str()).unwrap_or("an export");
+                let name = by_index[t]
+                    .map(|f| f.function.name.as_str())
+                    .unwrap_or("an export");
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckTransactionOwnerCalled.as_str(),
                     &function.file,
@@ -2609,7 +2666,7 @@ fn reject_transaction_ownership(
         // A `transaction` whose closure performs no durable operation commits nothing and
         // opens no session; refuse it at the block.
         if function.is_export && has_begin[i] && !durable[i] {
-            if let Some(span) = first_marker_span(function) {
+            if let Some(span) = first_marker_span(body) {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckTransactionEmpty.as_str(),
                     &function.file,
@@ -2625,8 +2682,7 @@ fn reject_transaction_ownership(
 
         // A mutating (or region-owning) export runs the owner lattice.
         if function.is_export && (mutates[i] || has_begin[i]) {
-            if let Some((code, span, message)) = owner_lattice_violation(function, &durable, count)
-            {
+            if let Some((code, span, message)) = owner_lattice_violation(body, &durable, count) {
                 diagnostics.push(SourceDiagnostic::at(code, &function.file, span, message));
             }
             continue;
@@ -2635,7 +2691,7 @@ fn reject_transaction_ownership(
         // Every other function is a helper or a `test` body; neither owns a region, so a
         // `transaction` marker in one is misplaced.
         if has_begin[i] || has_commit[i] {
-            if let Some(span) = first_marker_span(function) {
+            if let Some(span) = first_marker_span(body) {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckTransactionMisplaced.as_str(),
                     &function.file,
@@ -2654,12 +2710,11 @@ fn reject_transaction_ownership(
 
 /// The source span of a function's first `transaction` marker (its begin, else its
 /// commit), for reporting a region-level ownership violation.
-fn first_marker_span(function: &LoweredFn) -> Option<SourceSpan> {
-    function
-        .code
+fn first_marker_span(body: &LoweredBody<'_>) -> Option<SourceSpan> {
+    body.code
         .iter()
         .position(|instr| matches!(instr, Instr::TxnBegin | Instr::TxnCommit))
-        .map(|idx| function.code_spans[idx])
+        .map(|idx| body.function.code_spans[idx])
 }
 
 /// The first owner-lattice violation on `function`'s tape, or `None` when the region is
@@ -2669,11 +2724,12 @@ fn first_marker_span(function: &LoweredFn) -> Option<SourceSpan> {
 /// on lowered output; first-writer-wins keeps the walk deterministic and can only make
 /// the checker miss a case the verifier still catches, never reject a legal one.
 fn owner_lattice_violation(
-    function: &LoweredFn,
+    body: &LoweredBody<'_>,
     durable: &[bool],
     count: usize,
 ) -> Option<(&'static str, SourceSpan, String)> {
-    let code = &function.code;
+    let code = body.code;
+    let function = body.function;
     if code.is_empty() {
         return None;
     }
@@ -2762,8 +2818,8 @@ fn reject_mixed_test_bodies(
     let count = lowered.len();
     let mut owns_transaction = vec![false; count];
     for function in lowered {
-        if (function.index as usize) < count {
-            owns_transaction[function.index as usize] = function.owns_transaction;
+        if usize::from(function.func.index()) < count {
+            owns_transaction[usize::from(function.func.index())] = function.owns_transaction;
         }
     }
     for test in lowered.iter().filter(|f| f.is_test) {

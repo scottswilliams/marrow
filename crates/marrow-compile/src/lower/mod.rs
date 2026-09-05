@@ -177,11 +177,8 @@ pub(crate) struct Lowered {
     /// Whether this body owns a `transaction` block (emits a begin). A test body that
     /// drives such a function mixes invocation boundaries and is refused.
     pub owns_transaction: bool,
-    /// This body's lowered instruction tape, and the full source span of each
-    /// instruction (parallel to `code`). The check-time transaction-ownership pass
-    /// walks this tape — the same instruction sequence the verifier reconstructs from
-    /// the image — to report the ownership-lattice laws at their source spans.
-    pub code: Vec<Instr>,
+    /// Full source spans parallel to the instructions owned by `func` in the draft.
+    /// Transaction-ownership validation borrows that code after body settlement.
     pub code_spans: Vec<SourceSpan>,
 }
 
@@ -218,8 +215,8 @@ type LowerResult = Result<BodyOutcome, LowerInvariant>;
 
 /// Which lowering pass a body is in: an ordinary or instance body that emits an
 /// image function and monomorphizes its generic calls, or the once-checked template
-/// pass that lowers a generic body against abstract type parameters into a throwaway
-/// draft and only checks (never monomorphizes) the generic calls it makes.
+/// pass that lowers against abstract parameters in a transaction whose additions
+/// are erased and only checks (never monomorphizes) the generic calls it makes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LowerMode {
     Concrete,
@@ -961,15 +958,27 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let code_spans = std::mem::take(&mut self.full_spans);
         let has_direct_durable_op = code.iter().any(is_durable_place_op);
         let owns_transaction = code.iter().any(|instr| matches!(instr, Instr::TxnBegin));
+        #[cfg(test)]
+        let allocation = code.as_ptr();
         let func_id = self.draft.add_function(FunctionDef {
             name: name_id,
             source: source_id,
             params,
             ret: ret_ref,
             local_count: self.slot_count,
-            code: code.clone(),
+            code,
             spans,
         })?;
+        #[cfg(test)]
+        instruction_ownership_tests::observe(
+            self.mode,
+            self.body_kind,
+            !self.type_env.is_empty(),
+            allocation,
+            self.draft
+                .function_code(func_id)
+                .expect("the successful append is present"),
+        );
         Ok(BodyOutcome::Lowered(Lowered {
             func: func_id,
             callees: std::mem::take(&mut self.calls),
@@ -977,7 +986,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
             has_direct_durable_op,
             owns_transaction,
-            code,
             code_spans,
         }))
     }
@@ -1419,6 +1427,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 #[cfg(test)]
 #[path = "lower_metadata_successor_tests.rs"]
 mod lower_metadata_successor_tests;
+
+#[cfg(test)]
+mod instruction_ownership_tests;
 
 #[cfg(test)]
 mod generic_cache_boundary_tests {
