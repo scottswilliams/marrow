@@ -37,6 +37,7 @@ use crate::bounds;
 use crate::durable_id::{
     DurableContractView, DurableIndexShape, DurableProductIdentity, LedgerIdBytes,
 };
+use crate::encode::SPAN_ROW_BYTES;
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::policy_ledger::{CurrentValidationOccurrence, TablePolicyKind, TablePolicyLedger};
@@ -722,6 +723,9 @@ pub struct ImageDraft {
     /// policy. Every site an image carries is requested through it.
     sites: SiteDemandPlan,
     functions: Vec<FunctionDef>,
+    /// The bytes the retained function bodies alone commit the image to, saturated at
+    /// one past [`bounds::MAX_IMAGE_BYTES`] (see [`Self::function_payload_exceeds_image_limit`]).
+    function_payload_charge: usize,
     exports: Vec<ExportDef>,
     test_entries: Vec<TestEntryDef>,
     /// The current one-shot transaction epoch (see [`TransactionEpoch`]). Its nested
@@ -729,6 +733,19 @@ pub struct ImageDraft {
     epoch: Rc<TransactionEpoch>,
     /// The eight-slot policy-crossing observer the one mutation surface maintains.
     ledger: TablePolicyLedger,
+}
+
+/// The charge at which the function payload alone proves the image cannot fit.
+const DECISIVE_FUNCTION_PAYLOAD: usize = bounds::MAX_IMAGE_BYTES + 1;
+
+/// The bytes one appended body commits the image to: every opcode encodes to at least
+/// one byte and every span row to exactly [`SPAN_ROW_BYTES`], while operands, headers,
+/// and sections only add. The charge can therefore miss an oversized image but never
+/// exceed one that fits.
+fn function_payload_floor(def: &FunctionDef) -> usize {
+    def.code
+        .len()
+        .saturating_add(SPAN_ROW_BYTES.saturating_mul(def.spans.len()))
 }
 
 /// The one-time-fill state of a reserved record or enum row: a row is minted
@@ -854,6 +871,7 @@ struct DraftSnapshot {
     durable: DurableGraphCheckpoint,
     sites: usize,
     functions: usize,
+    function_payload_charge: usize,
     exports: usize,
     test_entries: usize,
     product_conflict: Option<ProductClaimConflict>,
@@ -1228,6 +1246,7 @@ impl<'d> DraftTxn<'d> {
         draft.test_entries.truncate(at.test_entries);
         draft.exports.truncate(at.exports);
         draft.functions.truncate(at.functions);
+        draft.function_payload_charge = at.function_payload_charge;
         // 2. The site plan: suffix pop with retained-map key removal, receipt restore.
         draft.sites.pop_suffix_to(at.sites, at.receipt);
         // 3. The durable graph: occurrence/product/value-arena suffix restore plus the
@@ -1322,6 +1341,7 @@ impl ImageDraft {
             application_conflict: None,
             sites: SiteDemandPlan::default(),
             functions: Vec::new(),
+            function_payload_charge: 0,
             exports: Vec::new(),
             test_entries: Vec::new(),
             epoch: Rc::new(TransactionEpoch { draft }),
@@ -1820,8 +1840,22 @@ impl ImageDraft {
             }
         }
         let id = FuncId(function_ordinal(self.functions.len())?);
+        let floor = function_payload_floor(&def);
         self.functions.push(def);
+        self.function_payload_charge = self
+            .function_payload_charge
+            .saturating_add(floor)
+            .min(DECISIVE_FUNCTION_PAYLOAD);
         Ok(id)
+    }
+
+    /// Whether the retained function bodies alone already exceed
+    /// [`bounds::MAX_IMAGE_BYTES`], so no completion of this draft can encode. A
+    /// producer polls this after each settled body to stop retaining work the image
+    /// cannot carry; the encoder's measurement remains the verdict on a draft that
+    /// passes it.
+    pub fn function_payload_exceeds_image_limit(&self) -> bool {
+        self.function_payload_charge > bounds::MAX_IMAGE_BYTES
     }
 
     /// Bind the export identity `id` to function `func`. The compiler mints `id`
@@ -1941,6 +1975,7 @@ impl ImageDraft {
             application_conflict,
             sites,
             functions,
+            function_payload_charge,
             exports,
             test_entries,
             epoch: _,
@@ -1955,6 +1990,7 @@ impl ImageDraft {
             durable: durable.checkpoint(),
             sites: sites.rows().len(),
             functions: functions.len(),
+            function_payload_charge: *function_payload_charge,
             exports: exports.len(),
             test_entries: test_entries.len(),
             product_conflict: *product_conflict,
@@ -2796,5 +2832,118 @@ mod row_access_tests {
         // as [alpha, zeta].
         let str_map = vec![1u16, 2, 0];
         assert_eq!(draft.test_entry_permutation(&str_map), vec![1, 0]);
+    }
+}
+
+#[cfg(test)]
+mod function_payload_charge_tests {
+    use super::{DECISIVE_FUNCTION_PAYLOAD, DraftStateError, FunctionDef, ImageDraft, SpanEntry};
+    use crate::bounds::MAX_IMAGE_BYTES;
+    use crate::encode::SPAN_ROW_BYTES;
+    use crate::instr::Instr;
+    use crate::ty::ImageType;
+
+    fn body(draft: &mut ImageDraft, instructions: usize, spans: usize) -> FunctionDef {
+        let name = draft.intern_string("body").expect("a within-domain mint");
+        let source = draft.intern_string("src").expect("a within-domain mint");
+        FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            code: vec![Instr::Return; instructions],
+            spans: (0..spans)
+                .map(|index| SpanEntry {
+                    instr_index: index as u32,
+                    line: 1,
+                    column: 1,
+                })
+                .collect(),
+        }
+    }
+
+    /// The charge is the instruction count plus one span row per span, and the
+    /// predicate flips exactly one byte past the image ceiling.
+    #[test]
+    fn a_successful_append_charges_its_instructions_and_span_rows() {
+        let mut draft = ImageDraft::new();
+        assert_eq!(draft.function_payload_charge, 0);
+        let def = body(&mut draft, 7, 3);
+        draft.add_function(def).expect("no site operand");
+        assert_eq!(draft.function_payload_charge, 7 + 3 * SPAN_ROW_BYTES);
+        assert!(!draft.function_payload_exceeds_image_limit());
+
+        let remaining = MAX_IMAGE_BYTES - (7 + 3 * SPAN_ROW_BYTES);
+        let def = body(&mut draft, remaining, 0);
+        draft.add_function(def).expect("no site operand");
+        assert_eq!(draft.function_payload_charge, MAX_IMAGE_BYTES);
+        assert!(!draft.function_payload_exceeds_image_limit());
+
+        let def = body(&mut draft, 1, 0);
+        draft.add_function(def).expect("no site operand");
+        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
+        assert!(draft.function_payload_exceeds_image_limit());
+    }
+
+    /// The charge saturates one past the ceiling and stays there, however much more is
+    /// appended.
+    #[test]
+    fn the_charge_saturates_at_the_decisive_total() {
+        let mut draft = ImageDraft::new();
+        let def = body(&mut draft, 1, MAX_IMAGE_BYTES);
+        draft.add_function(def).expect("no site operand");
+        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
+        let def = body(&mut draft, MAX_IMAGE_BYTES, MAX_IMAGE_BYTES);
+        draft.add_function(def).expect("no site operand");
+        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
+        assert!(draft.function_payload_exceeds_image_limit());
+    }
+
+    /// A refused append changes nothing: the function-slot carrier refusal leaves the
+    /// charge at the accepted total.
+    #[test]
+    fn a_refused_append_leaves_the_charge_unchanged() {
+        let mut draft = ImageDraft::new();
+        for _ in 0..=u16::MAX {
+            let def = body(&mut draft, 1, 0);
+            draft.add_function(def).expect("a within-carrier ordinal");
+        }
+        let accepted = draft.function_payload_charge;
+        assert_eq!(accepted, usize::from(u16::MAX) + 1);
+        let def = body(&mut draft, 1, 0);
+        assert!(matches!(
+            draft.add_function(def),
+            Err(DraftStateError::CarrierDomain)
+        ));
+        assert_eq!(draft.function_payload_charge, accepted);
+        assert!(!draft.function_payload_exceeds_image_limit());
+    }
+
+    /// A transaction that saturated the charge rolls back to the exact pre-admission
+    /// total; a committed one keeps it.
+    #[test]
+    fn rollback_restores_a_saturated_charge() {
+        let mut draft = ImageDraft::new();
+        let def = body(&mut draft, 5, 5);
+        draft.add_function(def).expect("no site operand");
+        let before = draft.function_payload_charge;
+        let def = body(&mut draft, 1, MAX_IMAGE_BYTES);
+
+        let savepoint = draft.savepoint();
+        let mut txn = draft.begin_transaction(savepoint).expect("fresh savepoint");
+        txn.add_function(def).expect("no site operand");
+        assert!(txn.function_payload_exceeds_image_limit());
+        txn.rollback();
+        assert_eq!(draft.function_payload_charge, before);
+        assert!(!draft.function_payload_exceeds_image_limit());
+
+        let def = body(&mut draft, 1, MAX_IMAGE_BYTES);
+        let savepoint = draft.savepoint();
+        let mut txn = draft.begin_transaction(savepoint).expect("fresh savepoint");
+        txn.add_function(def).expect("no site operand");
+        txn.commit();
+        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
+        assert!(draft.function_payload_exceeds_image_limit());
     }
 }

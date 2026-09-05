@@ -74,10 +74,9 @@ impl CompanionReleaseId {
             return None;
         }
         let mut bytes = [0u8; 32];
-        for (slot, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
-            let hi = lower_hex_nibble(pair[0])?;
-            let lo = lower_hex_nibble(pair[1])?;
-            *slot = (hi << 4) | lo;
+        let (pairs, _) = text.as_bytes().as_chunks::<2>();
+        for (slot, [hi, lo]) in bytes.iter_mut().zip(pairs) {
+            *slot = (lower_hex_nibble(*hi)? << 4) | lower_hex_nibble(*lo)?;
         }
         Some(Self(bytes))
     }

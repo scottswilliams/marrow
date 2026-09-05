@@ -382,6 +382,38 @@ fn a_limited_terminal_reports_its_own_bound_over_an_image_ceiling() {
     }
 }
 
+/// The settled-body byte ceiling is the one image-policy verdict taken inside the
+/// semantic pass, and it is reported through the no-snapshot resource-limit arm: a body
+/// refused before the stop is not carried with it. Thirty-two wide bodies whose first
+/// carries a type error stop at the twenty-first retained body and report the byte
+/// ceiling; the same program with sixteen wide bodies reports the type error.
+#[test]
+fn the_settled_body_byte_ceiling_stops_before_a_settled_refusal_is_reported() {
+    fn wide(bodies: usize) -> String {
+        let mut source =
+            String::from("module main\n\npub fn refused(): int {\n    return \"x\"\n}\n\n");
+        for index in 0..bodies {
+            source.push_str(&format!("pub fn f{index}(): int {{\n    var total = 0\n"));
+            for _ in 0..512 {
+                source.push_str("    total += 1\n");
+            }
+            source.push_str("    return total\n}\n\n");
+        }
+        source
+    }
+    match compile(&project(&[("src/main.mw", &wide(32))])) {
+        Err(CompileFailure::ResourceLimit(limit)) => {
+            assert_eq!(limit.kind(), ResourceLimitKind::ImageBytes);
+        }
+        other => panic!("expected the byte ceiling, got {other:?}"),
+    }
+    assert_eq!(
+        codes(&diagnostics(&wide(16))),
+        vec!["check.type"],
+        "under the ceiling the settled refusal is the outcome"
+    );
+}
+
 /// Red 13. Every refusal in this suite is a reported one: an artifact never becomes
 /// unavailable without a diagnostic to explain it, so no source program in the
 /// continuation corpus reaches the `UnavailableWithoutReport` invariant.

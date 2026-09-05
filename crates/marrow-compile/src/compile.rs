@@ -492,9 +492,7 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         ImageBuildError::TooManyTestEntries => {
             aggregate(ResourceLimitKind::TestEntries, bounds::MAX_TEST_ENTRIES)
         }
-        ImageBuildError::ImageTooLarge => {
-            aggregate(ResourceLimitKind::ImageBytes, bounds::MAX_IMAGE_BYTES)
-        }
+        ImageBuildError::ImageTooLarge => ImagePolicyOutcome::ResourceLimit(image_bytes_limit()),
         // A divergent application-identity latch and a ledger/audit disagreement are
         // producer-state contradictions: the compiler sets one application identity
         // per project and the one mutation surface records every crossing, so both
@@ -544,6 +542,15 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
             ImagePolicyOutcome::Invariant(InvariantCause::ImageBuild(error))
         }
     }
+}
+
+/// The whole-image byte ceiling as its public record: the one verdict both the
+/// encoder's measurement and the draft's settled-body charge report.
+fn image_bytes_limit() -> CompileResourceLimit {
+    CompileResourceLimit::new(
+        ResourceLimitKind::ImageBytes,
+        marrow_image::bounds::MAX_IMAGE_BYTES as u64,
+    )
 }
 
 /// Why the production projection produced no image from a semantically checked
@@ -1071,33 +1078,47 @@ impl Driven {
     /// reach the tagged empty boundary. A semantic diagnostics terminal that is
     /// complete and empty is that empty-boundary invariant. A fully clean pass
     /// yields the image.
+    ///
+    /// An invariant the semantic pass actually discovered is reported before any
+    /// stage's findings: it is a compiler-coherence failure over executed work, and a
+    /// precheck finding cannot make that work coherent.
     fn into_built(self) -> Result<Built, CompileFailure> {
-        if let Some(failure) = stage_failure(self.parse) {
-            return Err(failure);
-        }
-        if let Some(failure) = stage_failure(self.structural) {
-            return Err(failure);
-        }
-        match self.semantic {
-            SemanticOutcome::Checked(program) => match program.encode() {
-                Ok(built) => Ok(built),
-                Err(ImagePolicyOutcome::ResourceLimit(limit)) => {
-                    Err(CompileFailure::ResourceLimit(limit))
-                }
-                Err(ImagePolicyOutcome::Invariant(cause)) => {
-                    Err(CompileFailure::Invariant(CompileInvariant(cause)))
-                }
-            },
-            SemanticOutcome::Diagnostics(diagnostics, stage) => match stage_failure(diagnostics) {
-                Some(failure) => Err(failure),
-                None => Err(CompileFailure::Invariant(CompileInvariant(
-                    InvariantCause::EmptyDiagnostics(stage),
-                ))),
-            },
+        let Self {
+            parse,
+            structural,
+            semantic,
+            facts: _,
+            symbol_bounded_files: _,
+        } = self;
+        let checked = match semantic {
             SemanticOutcome::Invariant(cause) => {
-                Err(CompileFailure::Invariant(CompileInvariant(cause)))
+                return Err(CompileFailure::Invariant(CompileInvariant(cause)));
+            }
+            SemanticOutcome::Checked(program) => Ok(program),
+            SemanticOutcome::Diagnostics(diagnostics, stage) => {
+                Err(match stage_failure(diagnostics) {
+                    Some(failure) => failure,
+                    None => CompileFailure::Invariant(CompileInvariant(
+                        InvariantCause::EmptyDiagnostics(stage),
+                    )),
+                })
             }
             SemanticOutcome::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
+        };
+        if let Some(failure) = stage_failure(parse) {
+            return Err(failure);
+        }
+        if let Some(failure) = stage_failure(structural) {
+            return Err(failure);
+        }
+        match checked?.encode() {
+            Ok(built) => Ok(built),
+            Err(ImagePolicyOutcome::ResourceLimit(limit)) => {
+                Err(CompileFailure::ResourceLimit(limit))
+            }
+            Err(ImagePolicyOutcome::Invariant(cause)) => {
+                Err(CompileFailure::Invariant(CompileInvariant(cause)))
+            }
         }
     }
 }
@@ -1612,6 +1633,7 @@ fn run_semantic(
             return SemanticOutcome::Diagnostics(diagnostics.finish(), stage);
         }
         Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
+        Err(PhaseStop::ResourceLimit(limit)) => return SemanticOutcome::ResourceLimit(limit),
     };
     let resolution = Resolution {
         durable: &durable,
@@ -1634,6 +1656,7 @@ fn run_semantic(
             return SemanticOutcome::Diagnostics(diagnostics.finish(), stage);
         }
         Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
+        Err(PhaseStop::ResourceLimit(limit)) => return SemanticOutcome::ResourceLimit(limit),
     };
     let RegistryPhases {
         template_proofs,
@@ -1767,6 +1790,9 @@ enum PhaseStop {
     /// merged into the caller's collector.
     StageDiagnostics(CompileStage),
     Invariant(InvariantCause),
+    /// The settled bodies alone proved the image cannot fit, so the pass stopped
+    /// retaining work before the next body.
+    ResourceLimit(CompileResourceLimit),
 }
 
 impl From<GenericInvariant> for PhaseStop {
@@ -1964,6 +1990,7 @@ fn registry_phases(
             if result.func.index() != reserved {
                 return Err(PhaseStop::Invariant(InvariantCause::ReservedIndexMismatch));
             }
+            settle_image_capacity(draft, result.func)?;
             lowered.push(LoweredFn {
                 func: result.func,
                 file: template.source_file().clone(),
@@ -1997,6 +2024,23 @@ fn registry_phases(
         exports: functions.exports,
         tests: tests.entries,
     })
+}
+
+/// Poll the image owner once `settled` has been retained: when the settled bodies
+/// alone already exceed the image byte ceiling, no completion of the draft can encode,
+/// so the pass stops retaining further bodies and reports that ceiling. The poll runs
+/// only on a committed body — a template proof erases with its transaction and never
+/// reaches it — and after the body's own instantiation-limit verdict, so a finding the
+/// same body reported is not displaced.
+fn settle_image_capacity(draft: &ImageDraft, settled: FuncId) -> Result<(), PhaseStop> {
+    #[cfg(test)]
+    tests::observe_settled_body(draft, settled);
+    #[cfg(not(test))]
+    let _ = settled;
+    if draft.function_payload_exceeds_image_limit() {
+        return Err(PhaseStop::ResourceLimit(image_bytes_limit()));
+    }
+    Ok(())
 }
 
 /// Lower each declared monomorphic function, in the same order the registry assigned
@@ -2123,6 +2167,7 @@ fn lower_declared_functions(
                     exit: DeclarationExit::StoppedOnInstantiationLimit,
                 });
             }
+            settle_image_capacity(draft, result.func)?;
         }
     }
     Ok(LoweredFunctions {
@@ -2243,6 +2288,7 @@ fn lower_declared_tests(
                     exit: DeclarationExit::StoppedOnInstantiationLimit,
                 });
             }
+            settle_image_capacity(draft, result.func)?;
         }
     }
     Ok(LoweredTests {
@@ -2309,26 +2355,25 @@ fn analyze_outcome(
     structural: BoundedDiagnostics,
     semantic: SemanticOutcome,
 ) -> Analyzed {
-    // The parse and structural prechecks preempt the semantic pass in the production
-    // compile: `into_built` returns those stages before the semantic outcome is
-    // consulted. So a real precheck diagnostic dominates a semantic invariant or
-    // resource limit here too — otherwise a defense-in-depth encode outcome (a bound the
-    // precheck already owns) would diverge from the production result. The semantic
-    // pass's own diagnostics still union in for dependency resilience.
+    // The parse and structural prechecks preempt the semantic pass's resource limit in
+    // the production compile: `into_built` returns those stages before it. So a real
+    // precheck diagnostic dominates a semantic resource limit here too, and the
+    // semantic pass's own diagnostics still union in for dependency resilience. An
+    // invariant the pass discovered in executed work is reported first in both
+    // projections: a precheck finding cannot make that work coherent.
     let precheck_present = !parse.is_empty() || !structural.is_empty();
     let mut union = DiagnosticCollector::new();
     union.absorb(parse);
     union.absorb(structural);
     match semantic {
-        SemanticOutcome::Invariant(cause) if !precheck_present => {
+        SemanticOutcome::Invariant(cause) => {
             return Analyzed::Invariant(CompileInvariant(cause));
         }
         SemanticOutcome::Diagnostics(semantic, _) => union.absorb(semantic),
-        // With prechecks present the semantic invariant is suppressed: the precheck
-        // union is the analysis result. A checked program contributes no diagnostic —
-        // and is never encoded here, so no image-policy bound is reachable from the
-        // analysis path at all.
-        SemanticOutcome::Invariant(..) | SemanticOutcome::Checked(_) => {}
+        // A checked program contributes no diagnostic and is never encoded here: the
+        // only image-policy bound the analysis path reaches is the settled-body byte
+        // ceiling, which arrives as the semantic resource limit below.
+        SemanticOutcome::Checked(_) => {}
         // A semantic bound the pass could not run past. It is a resource limit for
         // the same reason a precheck one is — no source construct is at fault — and
         // it yields to a real precheck diagnostic like the other semantic arms.

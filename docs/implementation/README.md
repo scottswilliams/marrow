@@ -34,6 +34,16 @@ coordinates. After body settlement, transaction validation borrows the draft's
 instructions and checks that the coordinates cover exactly that sequence.
 Template proofs use the same append path and erase their additions on completion.
 
+The draft keeps a saturating charge of the bytes its retained bodies alone commit
+the image to (one byte per instruction plus one span row per span), snapshotted and
+restored with its transactions. After each settled body the compiler polls it; once
+the charge exceeds the image byte ceiling, both compilation and editor analysis stop
+lowering and report the `ImageBytes` resource limit without a snapshot. An invariant
+discovered in executed work is reported ahead of that stop and of parse or
+structural findings. The retained population at a stop is bounded by the largest
+prefix under the charge plus one body; this is a retention bound, not a capacity
+claim.
+
 A tool sees a project through two layers. `marrow-project` is pure: manifest,
 module discovery, and the `.marrow/ids` ledger, all over bytes a caller supplies.
 `marrow-project-fs` reads those bytes from disk under fixed bounds and publishes

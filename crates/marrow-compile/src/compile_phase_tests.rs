@@ -346,23 +346,31 @@ fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
 }
 
 /// An earlier stage's complete diagnostics dominate a later semantic
-/// invariant or resource limit: the projection reports the first
+/// resource limit or diagnostic set: the projection reports the first
 /// logically non-empty stage and never mixes stages.
 #[test]
 fn an_earlier_stage_dominates_a_later_semantic_failure() {
     let parse_row = diagnostic(Code::CheckType.as_str(), 3);
-    let failure = driven(
-        finished(vec![parse_row.clone()]),
-        empty_terminal(),
-        SemanticOutcome::Invariant(template_proof_cause()),
-    )
-    .into_built()
-    .map(|_| ())
-    .expect_err("a parse-stage row fails compilation");
-    let CompileFailure::Diagnostics(diagnostics) = failure else {
-        panic!("the parse stage's own rows are the failure")
-    };
-    assert_eq!(diagnostics.as_slice(), std::slice::from_ref(&parse_row));
+    for semantic in [
+        image_bytes_stop(),
+        SemanticOutcome::Diagnostics(
+            finished(vec![diagnostic(Code::CheckType.as_str(), 9)]),
+            CompileStage::BodyLowering,
+        ),
+    ] {
+        let failure = driven(
+            finished(vec![parse_row.clone()]),
+            empty_terminal(),
+            semantic,
+        )
+        .into_built()
+        .map(|_| ())
+        .expect_err("a parse-stage row fails compilation");
+        let CompileFailure::Diagnostics(diagnostics) = failure else {
+            panic!("the parse stage's own rows are the failure")
+        };
+        assert_eq!(diagnostics.as_slice(), std::slice::from_ref(&parse_row));
+    }
 }
 
 /// Diagnostics preserve their collector order and allocation behind a
@@ -380,14 +388,10 @@ fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
         BoundedDiagnostics::Complete { rows, .. } => rows.as_ptr(),
         BoundedDiagnostics::Limited { .. } => panic!("two rows stay complete"),
     };
-    let failure = driven(
-        terminal,
-        empty_terminal(),
-        SemanticOutcome::Invariant(template_proof_cause()),
-    )
-    .into_built()
-    .map(|_| ())
-    .expect_err("a nonempty parse stage fails compilation");
+    let failure = driven(terminal, empty_terminal(), image_bytes_stop())
+        .into_built()
+        .map(|_| ())
+        .expect_err("a nonempty parse stage fails compilation");
     assert_eq!(
         failure.to_string(),
         "compilation failed with source diagnostics"
@@ -621,9 +625,9 @@ fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
 }
 
 /// The analysis union reads the same terminals the production projection
-/// does, row by row: with empty prechecks a semantic invariant or
-/// resource limit passes through; with prechecks present it is
-/// suppressed for the precheck union; a semantic empty terminal is a
+/// does, row by row: a semantic invariant passes through whether or not
+/// prechecks reported; with prechecks present a semantic resource limit
+/// is suppressed for the precheck union; a semantic empty terminal is a
 /// truthful empty snapshot (where production reports the empty-boundary
 /// invariant above); and the union of stages may cross a ceiling no
 /// single stage crossed.
@@ -641,15 +645,15 @@ fn the_analysis_union_follows_the_stage_table() {
         Analyzed::Invariant(_)
     ));
 
-    // A precheck row suppresses the semantic invariant.
-    let Analyzed::Diagnostics(rows) = analyze_outcome(
-        finished(vec![row(3)]),
-        empty_terminal(),
-        SemanticOutcome::Invariant(template_proof_cause()),
-    ) else {
-        panic!("prechecks suppress the semantic failure")
-    };
-    assert_eq!(rows, vec![row(3)]);
+    // A precheck row does not suppress an executed semantic invariant.
+    assert!(matches!(
+        analyze_outcome(
+            finished(vec![row(3)]),
+            empty_terminal(),
+            SemanticOutcome::Invariant(template_proof_cause()),
+        ),
+        Analyzed::Invariant(_)
+    ));
 
     // A semantic empty terminal with empty prechecks is an empty snapshot.
     let Analyzed::Diagnostics(rows) = analyze_outcome(
@@ -735,14 +739,10 @@ fn a_limited_stage_terminal_is_the_displacing_resource_limit() {
     for line in 0..=MAX_DIAGNOSTIC_COUNT as u32 {
         collector.push(diagnostic(Code::CheckType.as_str(), line + 1));
     }
-    let failure = driven(
-        collector.finish(),
-        empty_terminal(),
-        SemanticOutcome::Invariant(template_proof_cause()),
-    )
-    .into_built()
-    .map(|_| ())
-    .expect_err("an over-ceiling stage must not build");
+    let failure = driven(collector.finish(), empty_terminal(), image_bytes_stop())
+        .into_built()
+        .map(|_| ())
+        .expect_err("an over-ceiling stage must not build");
     let CompileFailure::ResourceLimit(limit) = failure else {
         panic!("an overflowing diagnostic collection is discarded for a resource limit")
     };
@@ -1055,4 +1055,341 @@ fn a_key_table_is_constructed_once_per_declared_tuple() {
         "two root tuples and one branch tuple mean exactly three key-table \
          constructions, store-attempt independent",
     );
+}
+
+// ---- Image capacity: the semantic drive stops once retained bodies cannot fit.
+
+/// The instruction population the driver has retained through settled bodies, when a
+/// test is observing. Template proofs are erased with their transaction and never
+/// settle, so the sum is exactly what the draft holds at each poll.
+fn retained_population() -> &'static std::thread::LocalKey<std::cell::Cell<Option<usize>>> {
+    thread_local! {
+        static RETAINED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+    &RETAINED
+}
+
+pub(super) fn observe_settled_body(
+    draft: &marrow_image::ImageDraft,
+    settled: marrow_image::FuncId,
+) {
+    retained_population().with(|slot| {
+        let Some(population) = slot.get() else { return };
+        let code = draft
+            .function_code(settled)
+            .expect("a settled body is retained by the draft");
+        slot.set(Some(population + code.len()));
+    });
+}
+
+/// Run `drive` while counting the instruction population settled bodies retain.
+fn observing<T>(drive: impl FnOnce() -> T) -> (T, usize) {
+    retained_population().with(|slot| slot.set(Some(0)));
+    let result = drive();
+    let population = retained_population()
+        .with(|slot| slot.take())
+        .expect("observation stays enabled across the drive");
+    (result, population)
+}
+
+/// The encoder's span row width, which the charge mirrors. The largest prefix the
+/// charge admits is `MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES)` one-byte instructions,
+/// and one settled body adds at most `MAX_CODE_BYTES` more, so the population any
+/// stop retains is bounded by their sum. This is a retention bound, not a capacity
+/// claim: nested operands, other owners, and input size are outside it.
+const SPAN_ROW_BYTES: usize = 12;
+const RETENTION_BOUND: usize = marrow_image::bounds::MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES)
+    + marrow_image::bounds::MAX_CODE_BYTES;
+
+/// Every body of the corpus below is `4 + 4 * statements` instructions: `total += 1`
+/// lowers to four, and the binding and return add four.
+const fn wide_body_instructions(statements: usize) -> usize {
+    4 + 4 * statements
+}
+
+fn capacity_project(files: &[(&str, String)]) -> marrow_project::ProjectInput {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let captured = files
+        .iter()
+        .map(|(path, source)| {
+            marrow_project::CapturedFile::new(path.to_string(), source.as_bytes().to_vec())
+        })
+        .collect();
+    marrow_project::capture(
+        &manifest,
+        captured,
+        None,
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture project")
+}
+
+fn wide_body(statements: usize) -> String {
+    let mut body = String::from("    var total = 0\n");
+    for _ in 0..statements {
+        body.push_str("    total += 1\n");
+    }
+    body.push_str("    return total\n");
+    body
+}
+
+/// `functions` public bodies of `statements` accumulating statements each.
+fn wide_functions(prefix: &str, functions: usize, statements: usize) -> String {
+    let mut source = String::new();
+    for index in 0..functions {
+        source.push_str(&format!("pub fn {prefix}{index}(): int {{\n"));
+        source.push_str(&wide_body(statements));
+        source.push_str("}\n\n");
+    }
+    source
+}
+
+fn wide_module(functions: usize, statements: usize) -> String {
+    format!(
+        "module main\n\n{}",
+        wide_functions("f", functions, statements)
+    )
+}
+
+fn image_bytes_limit(result: Result<impl std::fmt::Debug, CompileFailure>) {
+    match result {
+        Err(CompileFailure::ResourceLimit(limit)) => {
+            assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes);
+            assert_eq!(limit.limit(), marrow_image::bounds::MAX_IMAGE_BYTES as u64);
+        }
+        other => panic!("expected the image-bytes limit, got {other:?}"),
+    }
+}
+
+/// The 16x512 shape fits: every body is retained and the image is the one the base
+/// produced.
+#[test]
+fn an_accepted_shape_retains_every_body_and_keeps_its_image_identity() {
+    let input = capacity_project(&[("src/main.mw", wide_module(16, 512))]);
+    let (compiled, population) = observing(|| crate::compile(&input));
+    let compiled = compiled.expect("sixteen wide bodies fit the image");
+    assert_eq!(population, 16 * wide_body_instructions(512));
+    assert_eq!(compiled.image.bytes.len(), 477_073);
+    assert_eq!(
+        compiled.image.image_id.to_hex(),
+        "20102c203a94992c2adb1396e052df4d5ce179be65c2070bd6ff9fe74b942869",
+    );
+}
+
+/// The 32x512 shape cannot fit. Both production entries stop the drive at the first
+/// settled body whose charge proves it — the twentieth — and report the image-bytes
+/// limit; the remaining twelve bodies are never lowered.
+#[test]
+fn a_refused_shape_stops_the_drive_within_the_retention_bound() {
+    let input = capacity_project(&[("src/main.mw", wide_module(32, 512))]);
+    let stop_population = 20 * wide_body_instructions(512);
+    assert!(stop_population * (1 + SPAN_ROW_BYTES) > marrow_image::bounds::MAX_IMAGE_BYTES);
+    assert!(stop_population <= RETENTION_BOUND);
+
+    let (result, population) = observing(|| crate::compile(&input));
+    image_bytes_limit(result);
+    assert_eq!(population, stop_population);
+
+    let (result, population) = observing(|| {
+        crate::analyze(
+            std::sync::Arc::new(capacity_project(&[("src/main.mw", wide_module(32, 512))])),
+            crate::InputRevision::new(1),
+        )
+    });
+    match result {
+        Err(crate::AnalysisFailure::ResourceLimit {
+            limit: crate::AnalysisResourceLimit::Compile(limit),
+            ..
+        }) => assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes),
+        Err(_) => panic!("analysis reports the same stop through the compile limit"),
+        Ok(_) => panic!("analysis does not mint a snapshot past the stop"),
+    }
+    assert_eq!(population, stop_population);
+}
+
+/// Test bodies settle under the same stop: the production image excludes them and
+/// fits, the test image includes them and stops.
+#[test]
+fn test_bodies_settle_under_the_same_stop() {
+    let mut source = wide_module(16, 512);
+    for index in 0..16 {
+        source.push_str(&format!("test \"t{index}\" {{\n"));
+        source.push_str(&wide_body(512).replace("    return total\n", "    assert total == 512\n"));
+        source.push_str("}\n\n");
+    }
+    let input = capacity_project(&[("src/main.mw", source)]);
+    let (compiled, population) = observing(|| crate::compile(&input));
+    assert!(compiled.is_ok());
+    assert_eq!(population, 16 * wide_body_instructions(512));
+    let (result, population) = observing(|| crate::compile_with_tests(&input));
+    image_bytes_limit(result);
+    // `assert total == 512` is three instructions longer than `return total`.
+    let test_body_instructions = wide_body_instructions(512) + 3;
+    assert_eq!(
+        population,
+        16 * wide_body_instructions(512) + 4 * test_body_instructions
+    );
+}
+
+/// A later module's bodies settle under the same stop.
+#[test]
+fn a_later_module_settles_under_the_same_stop() {
+    let input = capacity_project(&[
+        ("src/main.mw", wide_module(16, 512)),
+        (
+            "src/wide.mw",
+            format!("module wide\n\n{}", wide_functions("g", 16, 512)),
+        ),
+    ]);
+    let (result, population) = observing(|| crate::compile(&input));
+    image_bytes_limit(result);
+    assert_eq!(population, 20 * wide_body_instructions(512));
+}
+
+/// A generic template whose body is wide enough to cross the charge on its own.
+fn wide_template(statements: usize) -> String {
+    format!(
+        "fn acc<T>(seed: T): int {{\n{}}}\n\n",
+        wide_body(statements)
+    )
+}
+
+/// An inferred instance settles under the same stop, in the drain: nineteen ordinary
+/// bodies stay under the charge, and the instance the driver infers crosses it.
+#[test]
+fn an_inferred_instance_settles_under_the_same_stop() {
+    let source = format!(
+        "{}{}pub fn driver(): int {{\n    return acc(1)\n}}\n",
+        wide_module(19, 512),
+        wide_template(512),
+    );
+    let input = capacity_project(&[("src/main.mw", source)]);
+    let (result, population) = observing(|| crate::compile(&input));
+    image_bytes_limit(result);
+    let driver_instructions = 3;
+    assert_eq!(
+        population,
+        20 * wide_body_instructions(512) + driver_instructions
+    );
+}
+
+/// A template proof is erased with its transaction and never polled: a proof body wide
+/// enough to cross the charge still erases to exactly the accepted 16x512 image.
+#[test]
+fn a_template_proof_is_erased_before_any_poll() {
+    let source = format!("{}{}", wide_module(16, 512), wide_template(3_000));
+    let input = capacity_project(&[("src/main.mw", source)]);
+    let (compiled, population) = observing(|| crate::compile(&input));
+    let compiled = compiled.expect("an uninstantiated proof retains nothing");
+    assert_eq!(population, 16 * wide_body_instructions(512));
+    assert_eq!(
+        compiled.image.image_id.to_hex(),
+        "20102c203a94992c2adb1396e052df4d5ce179be65c2070bd6ff9fe74b942869",
+    );
+}
+
+/// The stop precedes a later export-table limit: 257 public bodies wide enough to
+/// cross the charge report the image-bytes limit at the hundredth body, while the
+/// same declarations kept narrow reach the encoder's export verdict.
+#[test]
+fn the_stop_precedes_a_later_export_table_limit() {
+    let input = capacity_project(&[("src/main.mw", wide_module(257, 100))]);
+    let (result, population) = observing(|| crate::compile(&input));
+    image_bytes_limit(result);
+    assert_eq!(population, 100 * wide_body_instructions(100));
+
+    let input = capacity_project(&[("src/main.mw", wide_module(257, 8))]);
+    let (result, population) = observing(|| crate::compile(&input));
+    match result {
+        Err(CompileFailure::ResourceLimit(limit)) => {
+            assert_eq!(limit.kind(), super::ResourceLimitKind::Exports);
+        }
+        other => panic!("narrow bodies reach the export verdict, got {other:?}"),
+    }
+    assert_eq!(population, 257 * wide_body_instructions(8));
+}
+
+/// A growing generic instance chain: each drained instance queues the next until the
+/// shared instantiation limit refuses a reservation.
+fn growing_chain(statements: usize) -> String {
+    format!(
+        "module main\n\nfn grow<T>(x: T): int {{\n    var xs: List<T> = List()\n    xs = append(xs, x)\n{}    return grow(xs)\n}}\n\npub fn driver(): int {{\n    return grow(1)\n}}\n",
+        "    xs = append(xs, x)\n".repeat(statements),
+    )
+}
+
+/// The stop precedes a later instantiation limit: wide instance bodies cross the
+/// charge before the chain exhausts the instantiation budget, while narrow ones let
+/// the located instantiation limit report first.
+#[test]
+fn the_stop_precedes_a_later_instantiation_limit() {
+    let input = capacity_project(&[("src/main.mw", growing_chain(40))]);
+    let (result, population) = observing(|| crate::compile(&input));
+    image_bytes_limit(result);
+    assert!(population > marrow_image::bounds::MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
+    assert!(population <= RETENTION_BOUND);
+
+    let input = capacity_project(&[("src/main.mw", growing_chain(0))]);
+    let (result, population) = observing(|| crate::compile(&input));
+    match result {
+        Err(CompileFailure::Diagnostics(diagnostics)) => assert_eq!(
+            diagnostics.as_slice().len(),
+            1,
+            "the located instantiation limit reports once"
+        ),
+        other => panic!("a narrow chain reaches the instantiation limit, got {other:?}"),
+    }
+    assert!(population <= marrow_image::bounds::MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
+}
+
+fn image_bytes_stop() -> SemanticOutcome {
+    SemanticOutcome::ResourceLimit(super::CompileResourceLimit::new(
+        super::ResourceLimitKind::ImageBytes,
+        marrow_image::bounds::MAX_IMAGE_BYTES as u64,
+    ))
+}
+
+/// An invariant discovered in executed work dominates the stop and every precheck
+/// finding in both projections; the stop itself yields to a precheck finding.
+#[test]
+fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
+    let row = || diagnostic(Code::CheckType.as_str(), 3);
+
+    let production = driven(
+        finished(vec![row()]),
+        finished(vec![row()]),
+        SemanticOutcome::Invariant(template_proof_cause()),
+    )
+    .into_built();
+    assert!(matches!(production, Err(CompileFailure::Invariant(_))));
+    assert!(matches!(
+        analyze_outcome(
+            finished(vec![row()]),
+            finished(vec![row()]),
+            SemanticOutcome::Invariant(template_proof_cause()),
+        ),
+        Analyzed::Invariant(_)
+    ));
+
+    let production = driven(empty_terminal(), empty_terminal(), image_bytes_stop()).into_built();
+    let Err(CompileFailure::ResourceLimit(limit)) = production else {
+        panic!("the stop is the image-bytes resource limit")
+    };
+    assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes);
+    let Analyzed::ResourceLimit(limit) =
+        analyze_outcome(empty_terminal(), empty_terminal(), image_bytes_stop())
+    else {
+        panic!("analysis reports the same stop")
+    };
+    assert_eq!(limit.kind(), super::ResourceLimitKind::ImageBytes);
+
+    let production =
+        driven(finished(vec![row()]), empty_terminal(), image_bytes_stop()).into_built();
+    assert!(matches!(production, Err(CompileFailure::Diagnostics(_))));
+    let Analyzed::Diagnostics(rows) =
+        analyze_outcome(finished(vec![row()]), empty_terminal(), image_bytes_stop())
+    else {
+        panic!("a precheck finding is reported over the stop")
+    };
+    assert_eq!(rows, vec![row()]);
 }

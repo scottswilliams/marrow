@@ -1,15 +1,24 @@
-//! A public image-policy excess is a verdict of the production projection alone.
+//! A public image-policy excess is a verdict of the production projection alone, with
+//! one documented exception.
 //!
 //! An image count or byte ceiling belongs to the artifact `compile` produces, not to the
 //! meaning of the program. So a project that crosses one still checks: the analysis path
 //! never encodes, and its snapshot carries no diagnostic, no unavailable fact family, and
 //! no refusal of its own. The production projection alone reports the bound.
 //!
+//! The exception is `ImageBytes`. The image draft charges every settled body with the
+//! bytes it alone commits the image to, and once that charge proves no completion can
+//! fit, both the compile and the analysis drive stop retaining bodies and report the
+//! byte ceiling — the same kind and limit the encoder reports late. A program that
+//! crosses the ceiling through anything else (its string pool, say) is still refused by
+//! the encoder alone, and its snapshot still answers.
+//!
 //! The suite proves that three ways. Behaviourally, the three reachable whole-program
 //! ceilings (`Exports`, `Consts`, `Functions`) each refuse `compile` and
-//! `compile_with_tests` while their snapshot answers every query. Structurally, every
-//! [`ResourceLimitKind`] is classified without a wildcard into the drive-input, the
-//! projection-only, and the image-policy set, and the enum's declared variant count is
+//! `compile_with_tests` while their snapshot answers every query, and the settled-body
+//! charge refuses both entries. Structurally, every [`ResourceLimitKind`] is classified
+//! without a wildcard into the drive-input, the projection-only, the image-policy, and
+//! the image-capacity set, and the enum's declared variant count is
 //! read from the owner's source so a new variant cannot slip past the classification.
 //! And over a frozen corpus, the six things `compile` reports about an accepted or
 //! refused image — kind, accepted bytes, `ImageId`, exports, tests, and naming — are
@@ -19,8 +28,8 @@
 use std::sync::Arc;
 
 use marrow_compile::{
-    ActiveCallOutcome, AnalysisResourceLimit, CompileFailure, CompletionOutcome, Fact,
-    InputRevision, MAX_COMPLETION_CANDIDATES, ResourceLimitKind, analyze, compile,
+    ActiveCallOutcome, AnalysisFailure, AnalysisResourceLimit, CompileFailure, CompletionOutcome,
+    Fact, InputRevision, MAX_COMPLETION_CANDIDATES, ResourceLimitKind, analyze, compile,
     compile_with_tests,
 };
 use marrow_project::{FileIdentity, ProjectInput};
@@ -229,6 +238,54 @@ fn a_function_ceiling_refuses_the_projection_only() {
     );
 }
 
+/// Thirty-two bodies of 512 accumulating statements: 2,052 instructions each, so the
+/// twentieth settled body carries the draft's charge past the byte ceiling while the
+/// program itself stays inside every count bound and every per-file admission bound.
+fn over_image_bytes_through_bodies() -> String {
+    let mut source = String::from("module main\n\n");
+    for index in 0..32 {
+        source.push_str(&format!("pub fn f{index}(): int {{\n    var total = 0\n"));
+        for _ in 0..512 {
+            source.push_str("    total += 1\n");
+        }
+        source.push_str("    return total\n}\n\n");
+    }
+    source
+}
+
+/// The documented exception. Bodies that alone cannot fit the image stop the compile
+/// projection and the analysis drive alike, with the same kind and limit the encoder
+/// reports late; no snapshot is minted.
+#[test]
+fn a_body_payload_past_the_byte_ceiling_refuses_analysis_too() {
+    let files = [("src/main.mw", over_image_bytes_through_bodies())];
+    for result in [
+        compile(&project(&files)).map(|_| ()),
+        compile_with_tests(&project(&files)).map(|_| ()),
+    ] {
+        match result {
+            Err(CompileFailure::ResourceLimit(limit)) => {
+                assert_eq!(limit.kind(), ResourceLimitKind::ImageBytes);
+                assert_eq!(limit.limit(), marrow_image::bounds::MAX_IMAGE_BYTES as u64);
+            }
+            other => panic!("expected the byte ceiling from compile, got {other:?}"),
+        }
+    }
+    let revision = InputRevision::new(12);
+    match analyze(Arc::new(project(&files)), revision) {
+        Err(AnalysisFailure::ResourceLimit {
+            revision: reported,
+            limit: AnalysisResourceLimit::Compile(limit),
+        }) => {
+            assert_eq!(reported, revision);
+            assert_eq!(limit.kind(), ResourceLimitKind::ImageBytes);
+            assert_eq!(limit.limit(), marrow_image::bounds::MAX_IMAGE_BYTES as u64);
+        }
+        Err(_) => panic!("the analysis stop is the compile byte ceiling"),
+        Ok(_) => panic!("no snapshot is minted past the byte ceiling"),
+    }
+}
+
 // ---- Red 3: the wildcard-free partition.
 
 /// Where a resource limit is decided. The three sets are disjoint by construction: a kind
@@ -244,6 +301,10 @@ enum Owner {
     /// Decided by `ImageDraft::encode` over the production image. The analysis path never
     /// encodes, so no kind in this set is reachable from `analyze`.
     ImagePolicy,
+    /// Decided by the image draft's settled-body charge during the semantic pass, or by
+    /// `ImageDraft::encode` when the charge alone did not decide it. Reachable from
+    /// `analyze` through the charge only.
+    ImageCapacity,
     /// Decided by the semantic pass over what it must retain to answer later lookups,
     /// before any image is drafted. Reachable from `analyze`.
     Semantic,
@@ -268,8 +329,8 @@ fn owner_of(kind: ResourceLimitKind) -> Owner {
         | ResourceLimitKind::Sites
         | ResourceLimitKind::Functions
         | ResourceLimitKind::Exports
-        | ResourceLimitKind::TestEntries
-        | ResourceLimitKind::ImageBytes => Owner::ImagePolicy,
+        | ResourceLimitKind::TestEntries => Owner::ImagePolicy,
+        ResourceLimitKind::ImageBytes => Owner::ImageCapacity,
     }
 }
 
@@ -322,7 +383,8 @@ fn declared_kind_names() -> Vec<String> {
 }
 
 /// Red 3. Each kind is classified exactly once, the analysis path can reach exactly the
-/// drive-input and projection kinds, and no image-policy kind is among them.
+/// drive-input, projection, semantic, and image-capacity kinds, and no image-policy
+/// kind is among them.
 #[test]
 fn every_resource_limit_kind_has_exactly_one_owner() {
     let declared = declared_kind_names();
@@ -346,13 +408,14 @@ fn every_resource_limit_kind_has_exactly_one_owner() {
         .filter(|kind| {
             matches!(
                 owner_of(*kind),
-                Owner::DriveInput | Owner::Projection | Owner::Semantic
+                Owner::DriveInput | Owner::Projection | Owner::Semantic | Owner::ImageCapacity
             )
         })
         .collect();
     assert_eq!(
         analysis_reachable,
         vec![
+            ResourceLimitKind::ImageBytes,
             ResourceLimitKind::DiagnosticCount,
             ResourceLimitKind::DiagnosticBytes,
             ResourceLimitKind::ProjectFiles,
@@ -360,7 +423,8 @@ fn every_resource_limit_kind_has_exactly_one_owner() {
             ResourceLimitKind::ProjectSourceBytes,
             ResourceLimitKind::DeclarationLedgerBytes,
         ],
-        "the analysis path reaches exactly the drive-input, diagnostic, and semantic bounds",
+        "the analysis path reaches exactly the drive-input, diagnostic, semantic, and \
+         image-capacity bounds",
     );
     assert!(
         ALL_KINDS
