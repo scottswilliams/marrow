@@ -251,7 +251,7 @@ fn a_populated_store_audits_clean_with_a_stable_digest_that_tracks_writes() {
     let (first, findings) = walked(&store, &image);
     assert!(findings.is_empty(), "{findings:?}");
     assert!(first.is_clean());
-    assert_eq!(first.image_id, image.image_id().0);
+    assert_eq!(first.image_id, image.image_id());
     let (second, _) = walked(&store, &image);
     assert_eq!(digest_of(&first), digest_of(&second));
     if let AuditOutcome::Walked { summary, .. } = &second.outcome {
@@ -294,10 +294,9 @@ fn an_engine_swapped_under_another_provisions_head_is_reported() {
         findings[0],
         "store.audit_index_missing at ^people.index(2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c)[\"ada@example.org\"]"
     );
-    assert!(
-        findings[1].starts_with("store.audit_outside_schema at cell 02"),
-        "{}",
-        findings[1]
+    assert_eq!(
+        findings[1],
+        "store.audit_outside_schema at ^people.index(1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c)"
     );
     // The digest is over the logical entries, which the swap carried across unchanged.
     let (source, _) = walked(&populated, &image);

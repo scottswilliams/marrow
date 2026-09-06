@@ -200,7 +200,7 @@ fn a_clean_store_audits_with_a_stable_digest_and_exit_zero() {
     );
     assert!(
         lines[0].ends_with(&format!(
-            "\"index_rows\":0,\"instance\":\"{}\",\"kind\":\"doctor\",\"outcome\":\"clean\",\"store\":\"{store_arg}\"}}",
+            "\"index_rows\":0,\"instance\":\"{}\",\"kind\":\"doctor\",\"listed\":0,\"outcome\":\"clean\",\"store\":\"{store_arg}\"}}",
             instance_of(lines[0])
         )),
         "{out}"

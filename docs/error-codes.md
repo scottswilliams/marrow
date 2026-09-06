@@ -44,7 +44,7 @@ Refusals raised by the `marrow` command itself.
 |---|---|
 | `cli.command_unsupported` | The command name is reserved and not implemented: `data`, `evolve`, `serve`, `backup`, and `restore`. `marrow --help` lists the implemented commands. |
 | `cli.interface_unbuildable` | An export's signature cannot be projected onto the wire: it expands past the fixed interface budget, or it names a type the image does not declare. `marrow client typescript` and the runner refuse the whole program; the message names the export. |
-| `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. `marrow` itself opens no store; the companion runner does. Run the export against a provisioned store: `marrow run <export> --store <dir>`. A storeless export is unaffected. |
+| `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. `marrow` itself opens no store; the companion runner does. Run the export against a provisioned store: `marrow run <export> --store <dir>`. A storeless export is unaffected. `marrow import` and `marrow doctor` report it for a program that declares no durable place the store executes. |
 | `cli.installation_damaged` | `marrow run --store` could not use the companion runner: the release manifest beside the toolchain is missing or malformed, names another release, or the runner binary is absent or does not match its recorded identity. The store is untouched. Reinstall the toolchain. |
 | `cli.ceiling_unaccepted` | `marrow image` writes an image only when `--accept-ceiling <id>` names the image's own deployment ceiling. The argument was absent or named a different id, so no image was written. The message prints the id to accept. |
 | `cli.compiler_resource_limit` | Compilation crossed a fixed bound that no single construct is at fault for: an aggregate count across the whole program, or the image byte ceiling. No image is produced and the outcome carries no source location. When the image byte ceiling is crossed, checking stops at that bound, so other diagnostics the program carries are not reported until it fits. A bound one construct crosses is `check.resource_limit` at that construct. |
@@ -153,6 +153,7 @@ code is stable.
 | `store.audit_index_orphan` | `marrow doctor` found an index row whose source entry does not exist. The finding names the index by its ledger identity and the row's projected values. |
 | `store.audit_index_stale` | `marrow doctor` found an index row whose projected values disagree with the source entry it names. The finding names the index and the row. |
 | `store.audit_index_missing` | `marrow doctor` found a present entry whose projected values are complete but whose index row is absent. The finding names the index and the row the entry should have. |
+| `store.audit_witness_invalid` | `marrow doctor` found the store's commit witness cell holding bytes no witness encoding this build reads. The next transaction against the store would refuse with `store.corruption`. |
 
 ### `io.*`
 

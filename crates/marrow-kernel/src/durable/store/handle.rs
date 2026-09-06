@@ -314,6 +314,14 @@ fn resolve_authority(
 const WITNESS_VERSION: u8 = 0x01;
 const WITNESS_V1_BYTES: usize = 1 + std::mem::size_of::<u128>();
 
+/// Whether `bytes` are a witness encoding this build reads: a legacy 16-byte token or a
+/// tagged generation. The read-only audit reports a witness cell of any other shape, the
+/// same shape [`next_witness`] refuses at the next transaction.
+pub(crate) fn witness_well_formed(bytes: &[u8]) -> bool {
+    bytes.len() == std::mem::size_of::<u128>()
+        || (bytes.len() == WITNESS_V1_BYTES && bytes[0] == WITNESS_VERSION)
+}
+
 fn next_witness(before: &Option<Vec<u8>>) -> Result<Vec<u8>, StoreError> {
     let generation = match before.as_deref() {
         None => 0,
@@ -529,7 +537,12 @@ mod tests {
             bytes[0] = 0x02;
             bytes
         }];
+        assert!(witness_well_formed(&witness(7)) && witness_well_formed(&[0x00; 16]));
         for bytes in malformed {
+            assert!(
+                !witness_well_formed(&bytes),
+                "the audit's witness classifier agrees with the transaction's refusal"
+            );
             let mut store = scoped_store("/test/malformed");
             seed_witness(&mut store, bytes.clone());
             let error = match store.txn_session(

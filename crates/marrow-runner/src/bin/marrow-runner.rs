@@ -619,7 +619,7 @@ fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitC
         }
     };
     match format {
-        ReportFormat::Text => print!("{}", audit.render(store)),
+        ReportFormat::Text => print!("{}", render_audit(&audit, store)),
         ReportFormat::Jsonl => {
             for line in audit_records(&audit, store_text) {
                 println!("{}", encode(&line));
@@ -633,15 +633,60 @@ fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitC
     }
 }
 
+/// The audit in the command line's one voice: the store, its instance and image, then the
+/// engine verdict or the counts, the digest, and each retained finding.
+fn render_audit(audit: &marrow_lifecycle::StoreAudit, store: &Path) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "audited {}", store.display());
+    let _ = writeln!(out, "instance {}", audit.instance.to_hex());
+    let _ = writeln!(out, "image {}", audit.image_id.to_hex());
+    match &audit.outcome {
+        marrow_lifecycle::AuditOutcome::EngineCorrupt { message } => {
+            let _ = writeln!(
+                out,
+                "{}: the store is corrupt: {message}",
+                marrow_codes::Code::StoreCorruption.as_str()
+            );
+        }
+        marrow_lifecycle::AuditOutcome::Walked {
+            summary,
+            findings,
+            digest,
+        } => {
+            let _ = writeln!(
+                out,
+                "entries {}, descendant-only {}, index rows {}, cells {}",
+                summary.entries, summary.descendant_only, summary.index_rows, summary.cells,
+            );
+            let _ = writeln!(out, "digest {}", digest.to_hex());
+            if summary.findings == 0 {
+                out.push_str("no findings\n");
+            } else {
+                let _ = writeln!(out, "findings {}", summary.findings);
+                for finding in findings {
+                    let _ = writeln!(out, "  {} at {}", finding.code.as_str(), finding.place);
+                }
+                let unlisted = summary.findings - findings.len() as u64;
+                if unlisted > 0 {
+                    let _ = writeln!(out, "  ... {unlisted} more not listed");
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The JSONL projection of an audit: one `doctor` record, then one `finding` record per
-/// retained finding.
+/// retained finding. `findings` counts every finding; `listed` counts the records that
+/// follow, so a capped report is explicit.
 fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Json> {
     let text = |value: &str| Json::Str(value.to_string());
     let mut head = vec![
         ("kind".to_string(), text("doctor")),
         ("store".to_string(), Json::Str(store)),
         ("instance".to_string(), Json::Str(audit.instance.to_hex())),
-        ("image".to_string(), Json::Str(hex32(&audit.image_id))),
+        ("image".to_string(), Json::Str(audit.image_id.to_hex())),
     ];
     let mut records = Vec::new();
     match &audit.outcome {
@@ -676,6 +721,7 @@ fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Jso
             head.push(("index_rows".to_string(), count(summary.index_rows)));
             head.push(("cells".to_string(), count(summary.cells)));
             head.push(("findings".to_string(), count(summary.findings)));
+            head.push(("listed".to_string(), count(findings.len() as u64)));
             records.push(Json::Object(head));
             for finding in findings {
                 records.push(Json::Object(vec![
@@ -687,10 +733,6 @@ fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Jso
         }
     }
     records
-}
-
-fn hex32(bytes: &[u8; 32]) -> String {
-    Id32::from_bytes(*bytes).to_hex()
 }
 
 fn nonce_from_env() -> Result<Option<Id32>, ()> {

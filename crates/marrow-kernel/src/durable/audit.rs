@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use marrow_store::{ReadView, StoreError};
 
 use super::physical::{self, BelowMarker};
-use super::store::WITNESS;
+use super::store::{WITNESS, witness_well_formed};
 use super::{
     BranchNumbering, BranchSchema, FieldSchema, GroupNumbering, GroupSchema, IndexComponentRef,
     IndexSchema, NodeNumber, RootNumbering, StoreProjection, StoreSchema,
@@ -65,6 +65,8 @@ pub enum AuditFault {
     IndexStale,
     /// A present entry with a complete projection has no index row.
     IndexMissing,
+    /// The commit witness cell holds bytes no witness encoding this build reads.
+    WitnessInvalid,
 }
 
 /// Where a finding sits, by projection position and key path. The schema's names render
@@ -92,6 +94,8 @@ pub enum AuditSite {
         index: u16,
         row: Vec<KeyScalar>,
     },
+    /// The index family of a declared root under an identity the program does not declare.
+    UndeclaredIndex { root: u16, id: [u8; 16] },
     /// A cell no declared node or index owns, named by its raw key.
     Cell { key: Vec<u8> },
 }
@@ -145,6 +149,7 @@ pub(super) fn walk<V: ReadView>(
         path: Vec::new(),
         root_cursor: 0,
         index_cursor: 0,
+        index_family_cursor: 0,
         summary: AuditSummary::default(),
         findings: Vec::new(),
     };
@@ -216,10 +221,12 @@ struct IndexShape {
     components: Vec<(Component, ScalarKind)>,
 }
 
-/// One declared root: its entry family prefix, its cell-key number, its node tree, the
-/// top-level field numbers (for index reads), and its indexes' table positions.
+/// One declared root: its entry family prefix, the prefix every index family under it
+/// shares, its cell-key number, its node tree, the top-level field numbers (for index
+/// reads), and its indexes' table positions.
 struct RootShape {
     family: Vec<u8>,
+    index_family: Vec<u8>,
     number: NodeNumber,
     nodes: Vec<NodeShape>,
     field_numbers: Vec<NodeNumber>,
@@ -261,8 +268,13 @@ impl Tables {
             }];
             nodes[0].branches =
                 link_branches(&mut nodes, &[], schema.branches(), numbers.branches());
+            // An index cell key is the index family byte, the root number, then the index's
+            // 16-byte identity: every index family of one root shares the bytes ahead of
+            // the identity.
+            let any_index = physical::index_cell_key(numbers.root(), &[0; 16], &[]);
             roots.push(RootShape {
                 family: physical::entry_family_prefix(numbers.root()),
+                index_family: any_index[..any_index.len() - 16].to_vec(),
                 number: numbers.root(),
                 nodes,
                 field_numbers: numbers.fields().to_vec(),
@@ -412,6 +424,7 @@ struct Walker<'a, V: ReadView> {
     path: Vec<KeyScalar>,
     root_cursor: usize,
     index_cursor: usize,
+    index_family_cursor: usize,
     summary: AuditSummary,
     findings: Vec<AuditFinding>,
 }
@@ -493,12 +506,34 @@ impl<V: ReadView> Walker<'_, V> {
         ) {
             return self.index_row(&tables.indexes[index], key, value);
         }
-        if key != tables.witness.as_slice() {
-            self.finding(
-                AuditFault::OutsideSchema,
-                AuditSite::Cell { key: key.to_vec() },
-            );
+        if key == tables.witness.as_slice() {
+            if !witness_well_formed(value) {
+                self.finding(
+                    AuditFault::WitnessInvalid,
+                    AuditSite::Cell { key: key.to_vec() },
+                );
+            }
+            return Ok(());
         }
+        let site = match seek_prefix(
+            &tables.roots,
+            |root| root.index_family.as_slice(),
+            &mut self.index_family_cursor,
+            key,
+        ) {
+            Some(root) => {
+                let rest = &key[tables.roots[root].index_family.len()..];
+                match <[u8; 16]>::try_from(rest.get(..16).unwrap_or(&[])) {
+                    Ok(id) => AuditSite::UndeclaredIndex {
+                        root: root as u16,
+                        id,
+                    },
+                    Err(_) => AuditSite::Cell { key: key.to_vec() },
+                }
+            }
+            None => AuditSite::Cell { key: key.to_vec() },
+        };
+        self.finding(AuditFault::OutsideSchema, site);
         Ok(())
     }
 
@@ -1363,17 +1398,40 @@ mod tests {
         let mut named: Vec<Vec<u8>> = report
             .findings
             .iter()
-            .map(|finding| match &finding.site {
-                AuditSite::Cell { key } => key.clone(),
+            .filter_map(|finding| match &finding.site {
+                AuditSite::Cell { key } => Some(key.clone()),
+                AuditSite::UndeclaredIndex { root: 0, id } => {
+                    assert_eq!(*id, [0xEE; 16], "the undeclared index is named by its id");
+                    None
+                }
                 other => panic!("an outside-schema cell is named by its key: {other:?}"),
             })
             .collect();
         named.sort();
         let mut expected = cells.to_vec();
+        expected.retain(|cell| *cell != foreign_index);
         expected.sort();
         assert_eq!(named, expected);
         // The commit witness is a declared meta cell and never a finding.
         assert_eq!(report.summary.findings, 5);
+    }
+
+    /// The commit witness is the one meta cell the walk admits, and only in a shape the
+    /// next transaction would accept.
+    #[test]
+    fn a_witness_of_a_foreign_shape_is_a_typed_finding() {
+        let witness = physical::meta_key(WITNESS);
+        let store = tamper(populated(), |txn| {
+            txn.put(&witness, vec![0x02; 17]).expect("put");
+        });
+        let (report, _) = audit(&store);
+        assert_eq!(
+            report.findings,
+            vec![AuditFinding {
+                fault: AuditFault::WitnessInvalid,
+                site: AuditSite::Cell { key: witness },
+            }]
+        );
     }
 
     #[test]

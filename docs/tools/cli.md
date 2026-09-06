@@ -265,19 +265,21 @@ findings 2
 
 An index row is named by the index's identity from `.marrow/ids`, since the
 compiled program carries no index name. The audit codes are listed under
-`store.*` in [error codes](../error-codes.md). An engine file whose bytes were
-altered outside Marrow fails the integrity check before any cell is read and is
-reported as `store.corruption`. A clean store exits `0`; findings, a corrupt
-engine, or a refusal exit `1`. `--format jsonl` prints one `doctor` record,
-then one `finding` record per finding:
+`store.*` in [error codes](../error-codes.md). An engine file with a page that
+fails its checksum is reported as `store.corruption` before any cell is read;
+the engine's own contained assertion text precedes that line on standard
+error. A clean store exits `0`; findings, a corrupt engine, or a refusal exit
+`1`. `--format jsonl` prints one `doctor` record, then one `finding` record per
+listed finding:
 
 ```text
 $ marrow doctor --store ./store --format jsonl
-{"cells":5,"descendant_only":0,"digest":"ec9b1a28fcffcdfed54439d087a577d13c83383442a43e5bff3e585858e3689a","entries":1,"findings":0,"image":"3bbeb4bc1dddf124e86af8b96a667b0c6dda3872368cda668ca15a9f4a7c8921","index_rows":1,"instance":"5e26a00385e614895055a64ef7a13aa5","kind":"doctor","outcome":"clean","store":"./store"}
+{"cells":5,"descendant_only":0,"digest":"ec9b1a28fcffcdfed54439d087a577d13c83383442a43e5bff3e585858e3689a","entries":1,"findings":0,"image":"3bbeb4bc1dddf124e86af8b96a667b0c6dda3872368cda668ca15a9f4a7c8921","index_rows":1,"instance":"5e26a00385e614895055a64ef7a13aa5","kind":"doctor","listed":0,"outcome":"clean","store":"./store"}
 ```
 
-`outcome` is `clean`, `findings`, `corrupt`, or `error`; a finding record
-carries `code` and `place`. A project that does not compile, or an installation
+`outcome` is `clean`, `findings`, `corrupt`, or `error`; `findings` counts
+every finding and `listed` the finding records that follow, since the report
+lists at most 256; a finding record carries `code` and `place`. A project that does not compile, or an installation
 without the companion layout, is reported on standard error in either format.
 
 ## marrow image

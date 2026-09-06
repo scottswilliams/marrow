@@ -75,28 +75,19 @@ pub(crate) fn doctor(rest: &[String]) -> ExitCode {
         }
     };
 
-    // Stage the image in a private temp file for the companion to read and independently
-    // verify; the name carries the PID and a nanosecond timestamp so concurrent audits do not
-    // collide, and it is removed on every exit path.
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    let image_path = std::env::temp_dir().join(format!(
-        "marrow-doctor-{}-{nonce}.image",
-        std::process::id()
-    ));
-    if let Err(err) = std::fs::write(&image_path, &compiled.image.bytes) {
-        let _ = std::fs::remove_file(&image_path);
-        crate::report_simple_error(marrow_codes::Code::IoWrite.as_str(), &err.to_string());
-        return ExitCode::FAILURE;
-    }
+    let image = match crate::companion::stage_image("doctor", &compiled.image.bytes) {
+        Ok(image) => image,
+        Err(err) => {
+            crate::report_simple_error(marrow_codes::Code::IoWrite.as_str(), &err.to_string());
+            return ExitCode::FAILURE;
+        }
+    };
 
     let mut command = Command::new(&runner);
     command
         .arg("audit")
         .arg("--image")
-        .arg(&image_path)
+        .arg(image.path())
         .arg("--store")
         .arg(&args.store)
         .arg("--format")
@@ -105,10 +96,7 @@ pub(crate) fn doctor(rest: &[String]) -> ExitCode {
             Format::Jsonl => "jsonl",
         });
 
-    let status = command.status();
-    let _ = std::fs::remove_file(&image_path);
-
-    match status {
+    match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {

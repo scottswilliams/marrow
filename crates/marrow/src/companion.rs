@@ -83,6 +83,41 @@ impl CompanionError {
     }
 }
 
+/// A compiled image staged in a private temporary file for the companion to read and
+/// independently verify. The name carries the command, the process id, and a nanosecond
+/// timestamp so concurrent commands do not collide; dropping it removes the file on every
+/// exit path.
+pub(crate) struct StagedImage {
+    path: PathBuf,
+}
+
+impl StagedImage {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StagedImage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Write `image` to a private temporary file named for `verb` (the command staging it).
+pub(crate) fn stage_image(verb: &str, image: &[u8]) -> std::io::Result<StagedImage> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!(
+        "marrow-{verb}-{}-{nonce}.image",
+        std::process::id()
+    ));
+    let staged = StagedImage { path };
+    std::fs::write(&staged.path, image)?;
+    Ok(staged)
+}
+
 /// Discover and verify the companion runner beside this terminal binary. Returns the
 /// verified companion's absolute path, ready to spawn.
 pub(crate) fn discover_companion() -> Result<PathBuf, CompanionError> {

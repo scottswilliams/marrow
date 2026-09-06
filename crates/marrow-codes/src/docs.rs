@@ -204,6 +204,7 @@ code is stable.
             Code::StoreAuditIndexOrphan,
             Code::StoreAuditIndexStale,
             Code::StoreAuditIndexMissing,
+            Code::StoreAuditWitnessInvalid,
         ]),
         r#"
 ### `io.*`

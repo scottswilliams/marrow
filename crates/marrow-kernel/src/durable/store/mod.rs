@@ -17,7 +17,7 @@ mod traverse;
 mod txn_session;
 
 pub use handle::DurableStore;
-pub(crate) use handle::WITNESS;
+pub(crate) use handle::{WITNESS, witness_well_formed};
 pub use read_session::ReadSession;
 pub use txn_session::TxnSession;
 

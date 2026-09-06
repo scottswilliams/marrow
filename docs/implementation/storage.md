@@ -103,7 +103,9 @@ checked for its row; the engine work is therefore one scan per page of
 populated cells plus a bounded number of point reads per index row and per
 indexed entry, never a read per declared field (`tests/audit_walk_work.rs`
 holds this flat across declared widths, and holds the largest batch the walk
-ever receives at the engine's page bound over 10,000 entries).
+ever receives at the engine's page bound over 10,000 entries). That bound is
+the walk's own: the engine's page cache, and so the process's resident size
+over a whole-store scan, were not bounded by the lane that added the walk.
 
 `marrow-lifecycle`'s `audit.rs` composes the audit: it opens the store under
 the owner lock through the exact-binding gate the importer uses, runs the

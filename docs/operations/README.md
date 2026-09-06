@@ -120,9 +120,10 @@ A finding names a stable code and the place it concerns: a cell that does not
 decode as its field, a cell outside the program's shape, a present entry
 missing a required field, a field stored under an entry with no presence
 marker, an index row whose entry is absent or disagrees with it, or an entry
-whose index row is missing. An engine file altered outside Marrow is reported
-as `store.corruption` before any cell is read. A store that audits clean exits
-`0`.
+whose index row is missing. An engine file with a page that fails its checksum
+is reported as `store.corruption` before any cell is read, preceded on standard
+error by the engine's own contained assertion text. A store that audits clean
+exits `0`.
 
 The digest is stable across runs over an unchanged store and changes with any
 committed write. Marrow does not store it; recording it after a backup or

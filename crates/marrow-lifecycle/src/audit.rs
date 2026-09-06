@@ -6,7 +6,7 @@
 //! runs the engine's whole-file integrity audit and, when that passes, the kernel's bounded
 //! logical walk ([`marrow_kernel::durable::DurableStore::logical_audit`]), and returns the
 //! typed findings in source vocabulary together with a digest over the store's logical
-//! content. No session opens, no authority resolves, and nothing is written; the lock is
+//! content. No session opens, no authority resolves, and no data write happens; the lock is
 //! released when the audit returns.
 //!
 //! The digest is a hash chain over the kernel's canonical cell stream: it starts at the
@@ -20,7 +20,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use marrow_codes::Code;
-use marrow_image::{LedgerIdBytes, StoreDataDigest};
+use marrow_image::{ImageId, LedgerIdBytes, StoreDataDigest};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, encode_value};
 use marrow_kernel::durable::{
@@ -61,7 +61,7 @@ pub enum AuditOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreAudit {
     pub instance: StoreInstanceId,
-    pub image_id: [u8; 32],
+    pub image_id: ImageId,
     pub outcome: AuditOutcome,
 }
 
@@ -72,51 +72,6 @@ impl StoreAudit {
             AuditOutcome::EngineCorrupt { .. } => false,
             AuditOutcome::Walked { summary, .. } => summary.findings == 0,
         }
-    }
-
-    /// The report in the command line's own voice, for the store at `store`.
-    pub fn render(&self, store: &Path) -> String {
-        let mut out = String::new();
-        let _ = writeln!(out, "audited {}", store.display());
-        let _ = writeln!(out, "instance {}", self.instance.to_hex());
-        let _ = writeln!(out, "image {}", hex(&self.image_id));
-        match &self.outcome {
-            AuditOutcome::EngineCorrupt { message } => {
-                let _ = writeln!(
-                    out,
-                    "{}: the store is corrupt: {message}",
-                    Code::StoreCorruption.as_str()
-                );
-            }
-            AuditOutcome::Walked {
-                summary,
-                findings,
-                digest,
-            } => {
-                let _ = writeln!(
-                    out,
-                    "entries {}, descendant-only {}, index rows {}, cells {}",
-                    summary.entries, summary.descendant_only, summary.index_rows, summary.cells,
-                );
-                let _ = writeln!(out, "digest {}", digest.to_hex());
-                if summary.findings == 0 {
-                    out.push_str("no findings\n");
-                } else {
-                    let _ = writeln!(out, "findings {}", summary.findings);
-                    for finding in findings {
-                        let _ = writeln!(out, "  {} at {}", finding.code.as_str(), finding.place);
-                    }
-                    if summary.findings > findings.len() as u64 {
-                        let _ = writeln!(
-                            out,
-                            "  ... {} more not listed",
-                            summary.findings - findings.len() as u64
-                        );
-                    }
-                }
-            }
-        }
-        out
     }
 }
 
@@ -163,10 +118,12 @@ impl AuditError {
 impl std::fmt::Display for AuditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AuditError::NotExecutable => write!(
-                f,
-                "the program's durable shape is not yet executable by the store"
-            ),
+            AuditError::NotExecutable => {
+                write!(
+                    f,
+                    "the program declares no durable place the store executes"
+                )
+            }
             AuditError::Open(error) => write!(f, "{error}"),
             AuditError::ImageNotActive => write!(
                 f,
@@ -220,7 +177,7 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
             }
         })?;
     let instance = opened.envelope.instance;
-    let image_id = image.image_id().0;
+    let image_id = image.image_id();
     let outcome = match opened.audit_integrity() {
         Err(StoreError::Corruption { message }) => AuditOutcome::EngineCorrupt { message },
         Err(error) => return Err(AuditError::Engine(error)),
@@ -277,7 +234,8 @@ impl ContentDigest for ChainDigest {
 
 /// The source spellings a finding's site renders with: the projection's root, branch,
 /// group, and field names, and each index's ledger identity (the image carries no index
-/// name, so an index row is named by the identity `.marrow/ids` records for it).
+/// name, so an index row is named by the identity `.marrow/ids` records for it). Raw
+/// bytes — an identity or an unplaceable key — render as lowercase hex.
 struct Names {
     roots: Vec<StoreSchema>,
     index_ids: Vec<Vec<LedgerIdBytes>>,
@@ -338,6 +296,13 @@ impl Names {
                 push_keys(&mut out, row);
                 out
             }
+            AuditSite::UndeclaredIndex { root, id } => {
+                format!(
+                    "^{}.index({})",
+                    self.roots[usize::from(*root)].root_name(),
+                    hex(id)
+                )
+            }
             AuditSite::Cell { key } => format!("cell {}", hex(key)),
         }
     }
@@ -389,6 +354,7 @@ fn fault_code(fault: AuditFault) -> Code {
         AuditFault::IndexOrphan => Code::StoreAuditIndexOrphan,
         AuditFault::IndexStale => Code::StoreAuditIndexStale,
         AuditFault::IndexMissing => Code::StoreAuditIndexMissing,
+        AuditFault::WitnessInvalid => Code::StoreAuditWitnessInvalid,
     }
 }
 
