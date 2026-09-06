@@ -945,3 +945,234 @@ pub fn wipeThenSet(n: int): int {
         "the discriminator: a call whose demand writes the family ends the fact"
     );
 }
+
+// --- Complete entries, design v3: loop regions of every loop kind, and the guards. ---
+
+/// A `while` body is a loop region like a bounded traversal: the write through `p`
+/// precedes `delete p` on the back edge, so it is refused at the loop's close. Today
+/// the compiler emits the strict set and the verifier rejects the image (`image.flow`).
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_field_write_inside_a_while_loop_that_erases_the_family_is_refused_at_check() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn whileErase(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            var i = 0
+            while i < 2 {
+                p.label = "in while"
+                delete p
+                i += 1
+            }
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = \"in while\"");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "a while body is one proof region"
+    );
+}
+
+/// A write inside an inner loop is refused when the outer loop's body erases the
+/// family after it: the obligation is recorded against every loop entered after the
+/// fact was established, and the outer loop's close resolves it. Today the compiler
+/// emits the strict set and the verifier rejects the image (`image.flow`).
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_field_write_inside_nested_loops_that_erase_the_family_is_refused_at_check() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn nestedErase(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            for k in ^counters at most 10 {
+                for j in 0..2 {
+                    p.label = "nested"
+                }
+                delete p
+            } on more {
+            }
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = \"nested\"");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "the outer loop's erase reaches the inner loop's write on the back edge"
+    );
+}
+
+/// A loop whose body erases the family ends the fact for everything after the loop,
+/// whichever key the erase names. Today the inline erase leaves the compiler's fact
+/// and the verifier's exact-key kill misses it, so the program verifies and faults at
+/// runtime.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_field_write_after_a_loop_that_erases_the_family_is_refused_at_check() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn eraseAllThenSet(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            for k in ^counters at most 10 {
+                delete ^counters[k]
+            } on more {
+            }
+            p.label = "after the loop"
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = \"after the loop\"");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "an erase of the family inside the loop ends the fact past the loop"
+    );
+}
+
+/// Only a diverging negative guard proves its continuation: when the block of
+/// `if not exists(p)` falls through, the write after it has no proof. Today the write
+/// compiles as a bare set.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_non_diverging_negative_guard_does_not_prove_the_continuation() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn noteThenSet(n: int): int {
+    transaction {
+        place p = ^counters[n]
+        var missing = 0
+        if not exists(p) {
+            missing = 1
+        }
+        p.label = "unproven"
+        return missing
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = \"unproven\"");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "a negative guard that falls through proves nothing"
+    );
+}
+
+/// A durable field set takes a bare value: an optional operand is `check.type` at the
+/// write, naming `delete`, so clearing has one spelling. Today the optional operand
+/// is accepted and an absent value clears the field.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_durable_field_assigned_an_optional_value_is_refused_naming_delete() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn setMaybe(n: int, flag: bool) {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            var maybe: string? = absent
+            if flag {
+                maybe = "set"
+            }
+            p.label = maybe
+        }
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = maybe");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![("check.type".to_string(), line, column)],
+        "a `string?` operand is refused; `delete p.label` clears the field"
+    );
+}
+
+/// The loop rule refuses only a write that an erase or a family-writing call in the
+/// same region can precede on the back edge: a loop body that only writes keeps its
+/// fact, and the set stays strict. This holds today and must keep holding.
+#[test]
+fn a_field_write_inside_a_loop_with_no_erase_stays_accepted() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn relabelInLoop(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            for k in ^counters at most 10 {
+                p.label = "each visit"
+            } on more {
+            }
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    assert_eq!(
+        compile_diagnostics(&source),
+        Vec::<(String, u32, u32)>::new()
+    );
+    let image = compile_verify(&source);
+    assert_eq!(count_strict(export_instrs(&image, "relabelInLoop")), 1);
+}
+
+/// A fact established inside the loop body — `if exists(pin)` on each iteration — is
+/// never refused by the loop rule, even when the same body erases the family after the
+/// write: the fact was established after the loop was entered, so the back edge cannot
+/// place the erase before the proof. This holds today and must keep holding.
+#[test]
+fn a_per_iteration_pin_proof_stays_accepted() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn relabelThenErase(): int {
+    transaction {
+        var visited = 0
+        for k, pin in ^counters at most 10 {
+            if exists(pin) {
+                pin.label = "visited"
+            }
+            delete pin
+            visited += 1
+        } on more {
+        }
+        return visited
+    }
+}
+"#
+    );
+    assert_eq!(
+        compile_diagnostics(&source),
+        Vec::<(String, u32, u32)>::new()
+    );
+    let image = compile_verify(&source);
+    assert_eq!(count_strict(export_instrs(&image, "relabelThenErase")), 1);
+}

@@ -5540,3 +5540,73 @@ fn a_strict_sparse_set_after_a_call_that_erases_the_family_rejects() {
     let bytes = draft.encode().expect("encode").bytes;
     assert_eq!(code_of(&bytes), "image.flow");
 }
+
+/// A strict set after an erase of the same family keyed by a constant — no slot at
+/// all — is refused: the family kill does not depend on how the erased key was
+/// spelled. Today the exact-key kill finds no slot to match and the image verifies.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_strict_sparse_set_after_an_inline_keyed_erase_of_the_family_rejects() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let sites = durable_schema(&mut draft);
+    let text = ok(draft.intern_text("x"));
+    let other_key = ok(draft.intern_text("k"));
+    // 0 TxnBegin; 1 LocalGet(0); 2 DurExists; 3 JumpIfFalse(9) — slot 0 proven.
+    // 4 ConstLoad("k"); 5 DurEraseEntry — an erase of the family keyed inline.
+    // 6 ConstLoad; 7 SomeWrap; 8 strict set on slot 0 (rejected). 9 TxnCommit; 10 Return.
+    let bytes = finish_two_key(
+        draft,
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurExists(sites.entry.clone()),
+            Instr::JumpIfFalse(9),
+            Instr::ConstLoad(other_key),
+            Instr::DurEraseEntry(sites.entry),
+            Instr::ConstLoad(text),
+            Instr::SomeWrap,
+            Instr::DurSetSparsePresent {
+                site: sites.label,
+                key_slots: vec![0],
+            },
+            Instr::TxnCommit,
+            Instr::Return,
+        ],
+    );
+    assert_eq!(code_of(&bytes), "image.flow");
+}
+
+/// A strict set after an erase of the same family through a different key slot is
+/// refused: the two slots may hold the same key, and the rule does not reason about
+/// keys. Today the exact-key kill removes only the fact on slot 1 and the image
+/// verifies.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_strict_sparse_set_after_an_erase_through_another_slot_of_the_family_rejects() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let sites = durable_schema(&mut draft);
+    let text = ok(draft.intern_text("x"));
+    // As above, with the erase keyed by the second parameter, slot 1.
+    let bytes = finish_two_key(
+        draft,
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurExists(sites.entry.clone()),
+            Instr::JumpIfFalse(9),
+            Instr::LocalGet(1),
+            Instr::DurEraseEntry(sites.entry),
+            Instr::ConstLoad(text),
+            Instr::SomeWrap,
+            Instr::DurSetSparsePresent {
+                site: sites.label,
+                key_slots: vec![0],
+            },
+            Instr::TxnCommit,
+            Instr::Return,
+        ],
+    );
+    assert_eq!(code_of(&bytes), "image.flow");
+}

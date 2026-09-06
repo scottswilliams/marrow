@@ -375,9 +375,20 @@ fn book(title: Option<&str>, group: EntryValue) -> EntryValue {
     }
 }
 
-/// The kernel checks required completeness itself: an entry write missing a required
-/// field, an entry write whose group misses a required leaf, and a group write missing
-/// a required leaf each return a typed fault before any engine write, so an image
+/// The predicted fault of an incomplete write, matched by its rendering because the
+/// variant does not exist yet: `KernelFault::Incomplete`, reported as `run.corruption`.
+fn assert_incomplete<T>(result: Result<T, KernelFault>, what: &str) {
+    match result {
+        Err(fault) => assert_eq!(format!("{fault:?}"), "Incomplete", "{what}"),
+        Ok(_) => panic!("{what}: the write was accepted"),
+    }
+}
+
+/// The kernel checks required completeness itself, before the slot probe and before
+/// any engine write: an entry write missing a required field, an entry write whose
+/// group misses a required leaf, an entry write whose `groups` vector is shorter than
+/// the schema, a replace of a present entry, and a group write missing a required
+/// leaf each return `KernelFault::Incomplete` with zero engine writes, so an image
 /// supplied without the compiler's proofs cannot leave a present entry incomplete.
 /// Today each write succeeds and the incomplete payload commits.
 #[test]
@@ -399,29 +410,93 @@ fn a_write_missing_a_required_field_is_a_typed_kernel_fault_before_any_engine_wr
     txn.create_entry(&entry, &key, book(Some("Small Gods"), pages(Some(381))))
         .expect("a complete entry writes");
     let staged = counters.writes();
+    let probed = counters.reads();
 
-    assert!(
-        txn.create_entry(&entry, &[KeyScalar::Int(2)], book(None, pages(Some(1))))
-            .is_err(),
-        "an entry write missing its required `title` is refused",
+    assert_incomplete(
+        txn.create_entry(&entry, &[KeyScalar::Int(2)], book(None, pages(Some(1)))),
+        "an entry write missing its required `title`",
     );
-    assert!(
-        txn.create_entry(&entry, &[KeyScalar::Int(3)], book(Some("t"), pages(None)))
-            .is_err(),
-        "an entry write whose group misses the required `pages` is refused",
+    assert_incomplete(
+        txn.create_entry(&entry, &[KeyScalar::Int(3)], book(Some("t"), pages(None))),
+        "an entry write whose group misses the required `pages`",
     );
-    assert!(
-        txn.replace_entry(&entry, &key, book(None, pages(Some(1))))
-            .is_err(),
-        "a replace missing its required `title` is refused",
+    assert_incomplete(
+        txn.create_entry(
+            &entry,
+            &[KeyScalar::Int(4)],
+            EntryValue {
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("t".into())))],
+                groups: Vec::new(),
+            },
+        ),
+        "an entry write whose `groups` vector is shorter than the schema",
     );
-    assert!(
-        txn.replace_group(&group, &key, pages(None)).is_err(),
-        "a group write missing the required `pages` is refused",
+    assert_incomplete(
+        txn.create_entry(&entry, &key, book(None, pages(Some(1)))),
+        "an incomplete create over a present slot is refused before the slot probe",
+    );
+    assert_incomplete(
+        txn.replace_entry(&entry, &key, book(None, pages(Some(1)))),
+        "a replace of a present entry missing its required `title`",
+    );
+    assert_incomplete(
+        txn.replace_group(&group, &key, pages(None)),
+        "a group write missing the required `pages`",
     );
     assert_eq!(
         counters.writes(),
         staged,
         "every refused write stages zero engine writes",
+    );
+    assert_eq!(
+        counters.reads(),
+        probed,
+        "the completeness check precedes the slot probe, so a refused write reads nothing",
+    );
+}
+
+/// Erasing what a present entry must hold is refused the same way: `erase_field` on a
+/// required field site and `erase_group` on a group with a required leaf return
+/// `KernelFault::Incomplete` with zero engine writes. Today the field erase is guarded
+/// only by a debug assertion (`store/address.rs:94`) and the group erase succeeds.
+#[test]
+#[ignore = "B2 complete entries"]
+fn an_erase_of_a_required_field_or_group_is_a_typed_kernel_fault() {
+    let counters = Counters::new();
+    let mut store = DurableStore::from_projection_with_ceiling(
+        CountingEngine::new(counters.clone()),
+        project(
+            &grouped_schema(),
+            vec![
+                SiteTarget::whole_payload(),
+                SiteTarget::group_entry(0),
+                SiteTarget::field_leaf(0),
+            ],
+        ),
+        writing_demand(),
+    );
+    let mut txn = store
+        .txn_session(InvocationGrant::full_store(), writing_demand())
+        .expect("txn session");
+    let entry = txn.site(0);
+    let group = txn.site(1);
+    let title = txn.site(2);
+    let key = [KeyScalar::Int(1)];
+    txn.create_entry(&entry, &key, book(Some("Small Gods"), pages(Some(381))))
+        .expect("a complete entry writes");
+    let staged = counters.writes();
+
+    assert_incomplete(
+        txn.erase_field(&title, &key),
+        "an erase of the required `title`",
+    );
+    assert_incomplete(
+        txn.erase_group(&group, &key),
+        "an erase of the group holding the required `pages`",
+    );
+    assert_eq!(
+        counters.writes(),
+        staged,
+        "every refused erase stages zero engine writes",
     );
 }
