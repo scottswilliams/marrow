@@ -2050,11 +2050,6 @@ impl<'a> IdentityResolver<'a> {
             }
             return Vec::new();
         }
-        for conflict in &row.conflicts {
-            self.refuse(DurableRefusal::Admission {
-                row: conflict.clone(),
-            });
-        }
         let mut record_fields = Vec::new();
         for field in &row.fields {
             if let Some((shape, record_field)) = self.build_field(draft, records, field, cursor) {
@@ -2286,7 +2281,24 @@ impl<'a> IdentityResolver<'a> {
                 ok = false;
                 continue;
             }
-            if let Some((_, key_id, scalar)) = keys.iter().find(|(name, _, _)| name == arg) {
+            let key = keys.iter().find(|(name, _, _)| name == arg);
+            let leaf = fields.iter().find(|leaf| leaf.name == arg);
+            if key.is_some() && leaf.is_some() {
+                // A root key and a resource field may share a spelling, because the
+                // key is the store's and the field the resource's; an index component
+                // names one of them, so the shared spelling resolves neither.
+                self.reject_index(
+                    span,
+                    format!(
+                        "index `{}` component `{arg}` names both an identity key and a stored \
+                         field of this root; rename one of them",
+                        index.name
+                    ),
+                );
+                ok = false;
+                continue;
+            }
+            if let Some((_, key_id, scalar)) = key {
                 if !index.unique && position < trailing_start {
                     leading_key = true;
                 }
@@ -2294,7 +2306,7 @@ impl<'a> IdentityResolver<'a> {
                     component: DurableIndexComponent::Key(*key_id),
                     scalar: *scalar,
                 });
-            } else if let Some(leaf) = fields.iter().find(|leaf| leaf.name == arg) {
+            } else if let Some(leaf) = leaf {
                 let Some(scalar) = leaf.scalar else {
                     self.reject_index(
                         span,

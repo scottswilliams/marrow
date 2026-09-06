@@ -261,13 +261,15 @@ writes the entry once; both indexes follow. `moveByIsbn` changes `shelf`, and
 the last two assertions show `byShelf` moved with it.
 
 Each component names one key of the root or one top-level field of the
-resource, and no component repeats. A component is an `int`, `string`, `bool`,
-`bytes`, `date`, or `instant` field
+resource, and no component repeats. A root's key names are the store's own and
+a resource field may share one ([keys](durable-places.md#keys)); a component
+whose spelling names both is refused, because it resolves neither. A component
+is an `int`, `string`, `bool`, `bytes`, `date`, or `instant` field
 ([key types](types-and-values.md#key-types)). A field inside a group or a
 branch is not a component. A non-unique index ends with every key of the root
 in declaration order and puts no key first. A `unique` index may omit the
-keys. An index name shares the root's namespace with its keys and its fields.
-A root declares at most 8 indexes. A singleton root declares no index. Each of
+keys. An index name is distinct from the root's key names and the resource's
+field names. A root declares at most 8 indexes. A singleton root declares no index. Each of
 these rules is a `check.type` error at the declaration.
 
 The compiler maintains every index. A field assignment, a field clear, a

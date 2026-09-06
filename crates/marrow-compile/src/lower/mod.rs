@@ -794,17 +794,26 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let mut declared_params: Vec<Option<LTy>> = Vec::with_capacity(function.params.len());
         // Type parameters and parameters are two layers of one signature; each
         // refuses a repeat at the repeat, before the repeat could take a slot the
-        // body would then read in place of the name the reader wrote.
+        // body would then read in place of the name the reader wrote. The rows are
+        // the declaration's, reported by its one once-checked lowering — a concrete
+        // body or the template pass — never again by an instance.
+        let reports_signature = mode == LowerMode::Template || lowerer.type_env.is_empty();
         let mut type_param_names = MemberNamespace::new(&function.name);
         for param in &function.type_params {
-            if let Some(row) = type_param_names.claim(file, &param.name, param.name_span) {
+            if let Some(row) = type_param_names.claim(file, &param.name, param.name_span)
+                && reports_signature
+            {
                 lowerer.fail(row);
             }
         }
         let mut param_names = MemberNamespace::new(&function.name);
         for param in &function.params {
             if let Some(row) = param_names.claim(file, &param.name, param.name_span) {
-                lowerer.fail(row);
+                if reports_signature {
+                    lowerer.fail(row);
+                } else {
+                    lowerer.failed = true;
+                }
                 declared_params.push(None);
                 continue;
             }

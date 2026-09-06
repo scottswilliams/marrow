@@ -8,7 +8,9 @@
 //! whole diagnostic list: exactly one `check.name_conflict`, at the line and column
 //! of the repeated name token, and nothing else. A repeat that reached the verifier
 //! (a span-less `image.table`) or executed (`f(1, 2)` answering `2`) would surface
-//! here as a compile that succeeded.
+//! here as a compile that succeeded. Rows are the declaration's: a resource with
+//! no store or with two stores reports a branch repeat once, and a generic
+//! function reports a parameter repeat once however often it is called.
 
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::ProjectInput;
@@ -198,4 +200,84 @@ fn a_nested_branch_declared_twice() {
          store ^r[id: int]: R\n{MAIN}"
     );
     assert_one_conflict(&durable(&source), 8, 9, "nested branch name");
+}
+
+/// One row per declaration, however often the template is instantiated.
+#[test]
+fn a_generic_parameter_repeat_is_reported_once_whatever_the_call_count() {
+    for calls in ["", "    f(1, 2)\n", "    f(1, 2)\n    f(\"a\", \"b\")\n"] {
+        let source = format!(
+            "fn f<T>(a: T, a: T): T {{\n    return a\n}}\n\
+             pub fn main() {{\n{calls}    return\n}}\n"
+        );
+        assert_one_conflict(&storeless(&source), 3, 15, "generic function parameter");
+    }
+}
+
+/// The branch layer belongs to the resource declaration, so it refuses with no
+/// store at all.
+#[test]
+fn a_branch_repeat_is_refused_without_a_store() {
+    let source = format!(
+        "resource R {{\n    b[k: int] {{\n        x: int\n        x: int\n    }}\n}}\n{MAIN}"
+    );
+    assert_one_conflict(&storeless(&source), 6, 9, "branch member, no store");
+}
+
+/// Two stores over one resource report the resource's branch repeat once.
+#[test]
+fn a_branch_repeat_is_reported_once_under_two_stores() {
+    let source = format!(
+        "resource R {{\n    b[k: int] {{\n        x: int\n        x: int\n    }}\n}}\n\
+         store ^r[id: int]: R\nstore ^s[id: int]: R\n{MAIN}"
+    );
+    assert_one_conflict(&durable(&source), 6, 9, "branch member, two stores");
+}
+
+/// A static group nested in a branch claims its own leaves.
+#[test]
+fn a_group_nested_in_a_branch_refuses_a_repeated_leaf() {
+    let source = format!(
+        "resource R {{\n    b[k: int] {{\n        g {{\n            a: int\n            a: int\n\
+         \x20       }}\n    }}\n}}\n{MAIN}"
+    );
+    assert_one_conflict(
+        &storeless(&source),
+        7,
+        13,
+        "leaf of a group inside a branch",
+    );
+}
+
+/// Repeats in one branch layer are reported in declaration order: the key column
+/// first, then the members.
+#[test]
+fn branch_layer_repeats_are_reported_in_declaration_order() {
+    let source = format!(
+        "resource R {{\n    b[k: int, k: int] {{\n        k: int\n        x: int\n        x: int\n\
+         \x20   }}\n}}\n{MAIN}"
+    );
+    assert_eq!(
+        refused(&storeless(&source)),
+        vec![
+            ("check.name_conflict".to_string(), 4, 15),
+            ("check.name_conflict".to_string(), 5, 9),
+            ("check.name_conflict".to_string(), 7, 9),
+        ],
+        "the repeated key column, then the member repeating the key, then the repeated member",
+    );
+}
+
+/// A root key and a resource field may share a spelling, but an index component
+/// naming that spelling resolves neither.
+#[test]
+fn an_index_component_naming_both_a_key_and_a_field_is_refused() {
+    let source = format!(
+        "resource R {{\n    id: int\n}}\nstore ^r[id: int]: R {{\n    index byId[id] unique\n}}\n{MAIN}"
+    );
+    assert_eq!(
+        refused(&durable(&source)),
+        vec![("check.type".to_string(), 7, 16)],
+        "the component is refused at its own span",
+    );
 }

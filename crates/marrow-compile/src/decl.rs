@@ -322,11 +322,10 @@ pub(crate) fn refuse_first(
 /// fields, an enum's members and one member's payload fields, a type-parameter
 /// list, a parameter list, a root's key tuple, a branch's key tuple together with
 /// the members it keys — takes its names through one of these, in declaration
-/// order. The first
-/// occurrence keeps the name and the repeat earns the `check.name_conflict` row at
-/// its own name token, so a second slot is never minted for a name the reader
-/// wrote once and no image carries two members of one name for the verifier to
-/// refuse without a span.
+/// order. The first occurrence keeps the name and the repeat earns the
+/// `check.name_conflict` row at its own name token, so a second slot is never
+/// minted for a name the reader wrote once and no image carries two members of
+/// one name for the verifier to refuse without a span.
 ///
 /// The set borrows the names from the declaration it walks; the owner spelling is
 /// rendered into the row, so it is owned.

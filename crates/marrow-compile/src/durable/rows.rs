@@ -179,10 +179,6 @@ impl<'a> StoreRow<'a> {
             Some(id) => StoreResourceBinding::Accepted(id),
             None => StoreResourceBinding::Unbound,
         };
-        // A root's key columns are the store's own layer: the resource it binds
-        // keeps its members' names, and a second root over the same resource may
-        // key it by other names.
-        let mut layer = MemberNamespace::new(format!("^{}", store.root.root));
         let keys = KeyTable::take(
             KeyOwner::Store {
                 root: &store.root.root,
@@ -191,7 +187,6 @@ impl<'a> StoreRow<'a> {
             &store.root.keys,
             file,
             records,
-            &mut layer,
         )?;
         Ok(Self {
             resource,
@@ -424,20 +419,15 @@ impl<'a> KeyTable<'a> {
     /// it charges the once-per-compile counter itself: a reconstruction cannot avoid the
     /// count by living at a different call site. Resolution happens here rather than at a
     /// consumer: it is a fact of the tuple, settled once.
-    ///
-    /// `layer` is the layer this tuple's columns are named in: every column takes
-    /// its name there, so a repeated column — and, for a branch, a member later
-    /// repeating a column — is refused at the repeat.
     pub(super) fn take(
         owner: KeyOwner<'a>,
         keys: &'a [KeyParam],
         file: &FileIdentity,
         records: &TypeRegistry,
-        layer: &mut MemberNamespace<'a>,
     ) -> Result<Self, GenericInvariant> {
         #[cfg(test)]
         crate::types::bump_key_table_construction();
-        let resolution = resolve_key_columns(file, owner.span(), keys, records, layer)?;
+        let resolution = resolve_key_columns(file, &owner, keys, records)?;
         Ok(Self {
             owner,
             declared_width: keys.len(),
@@ -553,10 +543,6 @@ pub(super) struct GroupRow<'a> {
     /// `Some` for a keyed `branch` placement, `None` for a static `group`.
     pub(super) keys: Option<KeyTable<'a>>,
     pub(super) groups: Vec<GroupRow<'a>>,
-    /// The rows refusing a member of this branch that repeats a key column or an
-    /// earlier member, in declaration order. A static `group` at the resource's own
-    /// level has its leaves refused by the type registry, so it carries none here.
-    pub(super) conflicts: Vec<SourceDiagnostic>,
 }
 
 /// Project the group rows of `members`, in declaration order, recursively.
@@ -572,7 +558,6 @@ fn group_rows<'a>(
             continue;
         };
         let path = format!("{container}.{}", group.name);
-        let mut layer = MemberNamespace::new(path.as_str());
         let keys = (!group.keys.is_empty())
             .then(|| {
                 KeyTable::take(
@@ -583,15 +568,9 @@ fn group_rows<'a>(
                     &group.keys,
                     file,
                     records,
-                    &mut layer,
                 )
             })
             .transpose()?;
-        let conflicts = if keys.is_some() {
-            branch_member_conflicts(file, &mut layer, &group.members)
-        } else {
-            Vec::new()
-        };
         let groups = group_rows(file, records, &path, &group.members)?;
         rows.push(GroupRow {
             name: &group.name,
@@ -610,30 +589,11 @@ fn group_rows<'a>(
             path,
             keys,
             groups,
-            conflicts,
         });
     }
     Ok(rows)
 }
 
-/// The rows refusing each member of a branch body whose name `layer` already holds
-/// — a key column or an earlier member — in declaration order.
-fn branch_member_conflicts<'a>(
-    file: &FileIdentity,
-    layer: &mut MemberNamespace<'a>,
-    members: &'a [ResourceMember],
-) -> Vec<SourceDiagnostic> {
-    members
-        .iter()
-        .filter_map(|member| {
-            let (name, span) = match member {
-                ResourceMember::Field(field) => (&field.name, field.name_span),
-                ResourceMember::Group(group) => (&group.name, group.name_span),
-            };
-            layer.claim(file, name, span)
-        })
-        .collect()
-}
 /// Resolve each declared key column in tuple order, rejecting a key type outside the
 /// closed orderable durable-key set. A singleton placement has no columns and yields
 /// an empty vector. Called only from [`KeyTable::take`], so it is the sole reader of a
@@ -646,14 +606,24 @@ fn branch_member_conflicts<'a>(
 /// column loop.
 fn resolve_key_columns<'a>(
     file: &FileIdentity,
-    span: SourceSpan,
+    owner: &KeyOwner<'a>,
     keys: &'a [KeyParam],
     records: &TypeRegistry,
-    layer: &mut MemberNamespace<'a>,
 ) -> Result<Result<Vec<KeyColumnRow<'a>>, Box<SourceDiagnostic>>, GenericInvariant> {
+    let span = owner.span();
+    // A root's tuple is the store's own layer, claimed here. A branch's tuple is one
+    // layer with the members it keys, claimed by the branch's declaration in the
+    // type registry, once whatever number of stores bind the resource.
+    let mut root_layer = match owner {
+        KeyOwner::Store { root, .. } => Some(MemberNamespace::new(format!("^{root}"))),
+        KeyOwner::Member { .. } => None,
+    };
     let mut columns = Vec::with_capacity(keys.len());
     for column in keys {
-        if let Some(row) = layer.claim(file, &column.name, column.name_span) {
+        if let Some(row) = root_layer
+            .as_mut()
+            .and_then(|layer| layer.claim(file, &column.name, column.name_span))
+        {
             return Ok(Err(Box::new(row)));
         }
         let key = match records.scalar_annotation(&column.ty) {

@@ -1533,18 +1533,27 @@ fn fill_record(
     // built elsewhere, so a repeat across kinds is refused at the repeat.
     let mut names = MemberNamespace::new(&resource.name);
     for member in &resource.members {
+        let (name, name_span) = match member {
+            ResourceMember::Field(field) => (&field.name, field.name_span),
+            ResourceMember::Group(group) => (&group.name, group.name_span),
+        };
+        let at = DeclarationSite {
+            name,
+            file,
+            at: declared.at,
+            span: member.span(),
+        };
+        if let Some(row) = names.claim(file, name, name_span) {
+            let refusal = refuse_row(diagnostics, at, row);
+            registry.members.declare(
+                MemberKey::field(&resource.name, name),
+                DeclarationOccurrence::Refused(refusal),
+            )?;
+            continue;
+        }
         match member {
             ResourceMember::Field(field) => {
-                let at = DeclarationSite {
-                    name: &field.name,
-                    file,
-                    at: declared.at,
-                    span: field.span,
-                };
-                let occurrence = if let Some(row) = names.claim(file, &field.name, field.name_span)
-                {
-                    DeclarationOccurrence::Refused(refuse_row(diagnostics, at, row))
-                } else if field.keys.is_empty() {
+                let occurrence = if field.keys.is_empty() {
                     resource_member(draft, registry, at, field, "this field type", diagnostics)?
                 } else {
                     // A keyed scalar leaf (`tags(pos: int): string`) is a keyed
@@ -1561,20 +1570,6 @@ fn fill_record(
                     .declare(MemberKey::field(&resource.name, &field.name), occurrence)?;
             }
             ResourceMember::Group(group) if group.keys.is_empty() => {
-                if let Some(row) = names.claim(file, &group.name, group.name_span) {
-                    let at = DeclarationSite {
-                        name: &group.name,
-                        file,
-                        at: declared.at,
-                        span: group.span,
-                    };
-                    let refusal = refuse_row(diagnostics, at, row);
-                    registry.members.declare(
-                        MemberKey::field(&resource.name, &group.name),
-                        DeclarationOccurrence::Refused(refusal),
-                    )?;
-                    continue;
-                }
                 // An unkeyed `group` is a nested sub-record value: its scalar/enum
                 // leaves become a group record type, and the containing value gains one
                 // required slot holding that record. Its durable identity is owned
@@ -1610,15 +1605,18 @@ fn fill_record(
             ResourceMember::Group(branch) => {
                 // A keyed `branch` (a `group` with key parameters) is a durable-graph
                 // member, resolved by `durable.rs`; it is an addressed collection, not
-                // part of the materialized value. Its name still occupies this layer.
-                if let Some(row) = names.claim(file, &branch.name, branch.name_span) {
-                    let at = DeclarationSite {
-                        name: &branch.name,
-                        file,
-                        at: declared.at,
-                        span: branch.span,
-                    };
-                    let refusal = refuse_row(diagnostics, at, row);
+                // part of the materialized value. Its layers are claimed here, once
+                // per declaration, whether zero or several stores reach it.
+                let mut refusal = None;
+                refuse_branch_layer_repeats(
+                    file,
+                    &format!("{}.{}", resource.name, branch.name),
+                    branch,
+                    declared,
+                    diagnostics,
+                    &mut refusal,
+                );
+                if let Some(refusal) = refusal {
                     registry.members.declare(
                         MemberKey::field(&resource.name, &branch.name),
                         DeclarationOccurrence::Refused(refusal),
@@ -1658,6 +1656,49 @@ fn fill_record(
     info.fields = fields;
     info.groups = groups;
     Ok(())
+}
+
+/// Claim one branch's layer — its key columns, then its members in declaration
+/// order — and every group's layer below it, refusing each repeat at the repeat.
+///
+/// A static group nested in a branch claims its own leaves here too: the type
+/// registry materializes only the resource's top-level groups, so this is the one
+/// owner for every layer below a branch, and it runs once per declaration rather
+/// than once per store that binds the resource.
+fn refuse_branch_layer_repeats(
+    file: &FileIdentity,
+    anchor: &str,
+    group: &GroupDecl,
+    declared: DeclarationSite<'_>,
+    diagnostics: &mut DiagnosticCollector,
+    refusal: &mut Option<DeclarationRefusalSummary>,
+) {
+    let mut names = MemberNamespace::new(anchor);
+    for column in &group.keys {
+        if let Some(row) = names.claim(file, &column.name, column.name_span) {
+            refuse_first(refusal, diagnostics, declared, row);
+        }
+    }
+    for member in &group.members {
+        let (name, name_span) = match member {
+            ResourceMember::Field(field) => (&field.name, field.name_span),
+            ResourceMember::Group(inner) => (&inner.name, inner.name_span),
+        };
+        if let Some(row) = names.claim(file, name, name_span) {
+            refuse_first(refusal, diagnostics, declared, row);
+            continue;
+        }
+        if let ResourceMember::Group(inner) = member {
+            refuse_branch_layer_repeats(
+                file,
+                &format!("{anchor}.{}", inner.name),
+                inner,
+                declared,
+                diagnostics,
+                refusal,
+            );
+        }
+    }
 }
 
 /// Resolve one resource member's declared type to the value it binds, or to the

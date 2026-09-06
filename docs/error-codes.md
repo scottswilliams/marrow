@@ -58,7 +58,7 @@ Static errors found while checking source.
 | `check.nesting_limit` | Source nests expressions or blocks deeper than the parser limit (256). Reported at the offending span. The limit is listed under [execution limits](language/execution-limits.md). |
 | `check.unsupported` | The construct is well-formed Marrow that this compiler does not implement today. Reported at the construct's span. [Status](status.md) lists what is available. |
 | `check.type` | An expression or declaration is not well-typed: a return value of the wrong type, an operator applied to the wrong operand type, a name that is not in scope, or a value used where another type is required. |
-| `check.name_conflict` | Two declarations share a name in one scope: two functions in one module, or two declarations with one identifier. The message names both. |
+| `check.name_conflict` | Two declarations share a name in one scope: two functions in one module, two declarations with one identifier, or a member, parameter, type parameter, or key column declared twice in one layer. The message names the owner and the repeated name. |
 | `check.module_path` | A file's `module` header does not match the name derived from its path under `src`. `src/shelf/books.mw` declares `module shelf::books`; the message names the expected path. |
 | `check.import` | A `use` import names a module the project does not contain, or two imports in one module bind the same final segment. The message names the import. |
 | `check.visibility` | A call from one module names a function in another module that is not `pub`. A function without `pub` is callable only within its own module; mark it `pub` to call it from elsewhere. |

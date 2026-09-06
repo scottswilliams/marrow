@@ -212,11 +212,12 @@ test "a struct is built by name" {
 
 A struct declares each field name once; a repeated name is a
 `check.name_conflict` at the repeat. A struct is constructed by naming every
-field once, in any order. A field is read with `.` and yields the field's type. A `var` binding assigns a field with
-`s.to = Point(x: 1, y: 1)`. A field may name a struct or enum declared anywhere in
-the project, including later in the same file and in another module. A value type that contains itself, directly or through other types,
-is a `check.recursion` naming the cycle. Two structs have no `==`; compare their
-fields.
+field once, in any order. A field is read with `.` and yields the field's type.
+A `var` binding assigns a field with `s.to = Point(x: 1, y: 1)`. A field may
+name a struct or enum declared anywhere in the project, including later in the
+same file and in another module. A value type that contains itself, directly or
+through other types, is a `check.recursion` naming the cycle. Two structs have
+no `==`; compare their fields.
 
 A struct name is project-wide and is written bare from any module. A resource
 is the durable counterpart: it adds sparse fields, groups, and keyed branches,

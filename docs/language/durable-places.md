@@ -57,9 +57,9 @@ Copy` names one entry by the whole tuple, `^copies[isbn, number]`, in
 declaration order. Every read and write supplies one operand per component. A
 key tuple has at most 8 components, each with its own name; a component that
 repeats another is a `check.name_conflict` at that component. A root's key
-names are the store's own and may coincide with a field of the resource. `for` iterates one key component, so a
-composite-keyed layer is addressed and not iterated
-([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
+names are the store's own and may coincide with a field of the resource. `for`
+iterates one key component, so a composite-keyed layer is addressed and not
+iterated ([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
 A project declares as many roots as it needs, each with its own name. One
 transaction may write across several roots, and the writes commit together. Two
