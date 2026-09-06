@@ -14,7 +14,9 @@
 //! - the logical active [`LogicalHead`] recording the active binding, the FR01 reserved
 //!   sequencing and data-digest slots, and the head identity map;
 //! - the head identity map ([`HeadMap`]), the store-local ledger-id ↔ number bijection the
-//!   id-keyed cell layout is prefixed by.
+//!   id-keyed cell layout is prefixed by;
+//! - the read-only store audit ([`audit`]): the exact-binding open, the engine's integrity
+//!   audit, the kernel's logical walk, and the digest over the store's logical content.
 //!
 //! Every persisted artifact is a versioned, big-endian, length-prefixed container sealed by
 //! a domain-separated digest, decoded strictly (unknown version, over-bound length, unknown
@@ -24,6 +26,7 @@
 
 mod actor;
 mod attachment;
+mod audit;
 mod authority;
 mod codec;
 mod durable_fs;
@@ -50,6 +53,7 @@ pub use attachment::{
     Attachment, EphemeralOutcome, FreshTest, MemoryAttachment, MemoryEngine, NativeAttachment,
     PreparedImage, TestExecution, TestHost, fresh_test, mint_ephemeral, prepare,
 };
+pub use audit::{AuditError, AuditOutcome, Finding, StoreAudit, audit};
 pub use authority::{DemandExceedsCeiling, ExceedingDemand};
 pub use codec::FormatError;
 pub use envelope::{EngineKind, MAX_ENVELOPE_FILE_BYTES, StoreEnvelope};

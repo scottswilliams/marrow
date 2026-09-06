@@ -66,7 +66,7 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 
 | Crate | Owns | Read next |
 |---|---|---|
-| `marrow` | The CLI: `init`, `fmt`, `check`, `run`, `test`, `import`, `image`, and `client typescript` | [CLI](../tools/cli.md) |
+| `marrow` | The CLI: `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript` | [CLI](../tools/cli.md) |
 | `marrow-codes` | The diagnostic-code registry and the generated [error-code reference](../error-codes.md) | [Diagnostic voice](diagnostic-voice.md) |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and the diagnostic types every crate renders | [Syntax](syntax.md) |
 | `marrow-temporal` | The `date`, `instant`, and `duration` domain: calendar, range, canonical text, and arithmetic. Depends on nothing else in the workspace | [Types and values](../language/types-and-values.md) |
@@ -74,14 +74,14 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 | `marrow-image` | The program-image container, the validating `ImageDraft`, the canonical encoder, and the `ImageId` digest. Holds no decoder | [Compiled programs](../future/compiled-programs.md) |
 | `marrow-verify` | The only image decoder and the phased verifier that seals a `VerifiedImage`; rebuilds each export's durable access demand from the image alone | [Trust boundaries](../status.md#trust-boundaries) |
 | `marrow-vm` | The stack VM over a sealed image: source-mapped runtime faults, execution bounds, and durable execution of an export or a source test through the attachment the lifecycle prepared | [Execution limits](../language/execution-limits.md) |
-| `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, and commit recovery | [Storage](storage.md) |
+| `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, commit recovery, and the read-only audit walk | [Storage](storage.md) |
 | `marrow-store` | The ordered-byte engine contract, the in-memory and redb engines, and the conformance suite both must pass | [Storage](storage.md) |
-| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, and import of a persistent store: store identity, envelope, active head, admission, and recovery after an interrupted commit | [Operations](../operations/README.md) |
+| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, and audit of a persistent store: store identity, envelope, active head, admission, recovery after an interrupted commit, and the audit's digest | [Operations](../operations/README.md) |
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
 | `marrow-project` | Manifest schema, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, canonical JSON, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
-| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and classification of an outcome the client could not confirm | [Interrupted commits](../operations/README.md#interrupted-commits) |
+| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, classification of an outcome the client could not confirm, and the one-shot provision, import, and audit commands | [Interrupted commits](../operations/README.md#interrupted-commits) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
@@ -127,6 +127,12 @@ dropped when the test returns.
 admits the prepared image against the store's active binding, `marrow-store`
 takes the engine lock, and `marrow-runner` dispatches the export through the
 returned attachment over the persistent redb engine.
+
+`marrow doctor --store <dir>` stops before any export runs. The CLI compiles
+and hands the image to `marrow-runner audit`; `marrow-lifecycle` admits it as
+the store's exact active binding under the lock, runs the engine's integrity
+audit, and drives `marrow-kernel`'s read-only walk over every cell, rendering
+the findings and the digest ([storage](storage.md#auditing-a-store)).
 
 ## Guides
 

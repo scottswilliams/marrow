@@ -196,6 +196,14 @@ code is stable.
             Code::StoreContractChanged,
             Code::StoreDemandExceedsCeiling,
             Code::StoreImageNotActive,
+            Code::StoreAuditUndecodable,
+            Code::StoreAuditOutsideSchema,
+            Code::StoreAuditRequiredMissing,
+            Code::StoreAuditOrphanLeaf,
+            Code::StoreAuditMarkerInvalid,
+            Code::StoreAuditIndexOrphan,
+            Code::StoreAuditIndexStale,
+            Code::StoreAuditIndexMissing,
         ]),
         r#"
 ### `io.*`

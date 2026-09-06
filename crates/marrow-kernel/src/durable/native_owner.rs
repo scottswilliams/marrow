@@ -12,6 +12,7 @@ use marrow_store::{
     PendingNativeEngineOwner, StoreError,
 };
 
+use super::audit::{AuditReport, ContentDigest};
 use super::session_host::SessionHost;
 use super::store::{DurableStore, ReadSession, TxnSession};
 use super::{
@@ -98,6 +99,24 @@ impl NativeStoreOwner {
         }
         self.store = Some(reopened);
         (state, Some(self))
+    }
+
+    /// The engine's whole-file integrity audit: every stored checksum is verified, so an
+    /// externally altered byte in a cleanly closed store — which the fast open path does
+    /// not re-verify — is reported as [`StoreError::Corruption`]. A read-only inspection
+    /// runs it ahead of [`Self::logical_audit`], since the walk's reads are only as
+    /// trustworthy as the pages beneath them.
+    pub fn audit_integrity(&mut self) -> Result<(), StoreError> {
+        self.store_mut().audit_integrity()
+    }
+
+    /// The bounded read-only logical walk of [`DurableStore::logical_audit`] over this
+    /// store, under the retained owner lock and without a session.
+    pub fn logical_audit(&self, digest: &mut dyn ContentDigest) -> Result<AuditReport, StoreError> {
+        self.store
+            .as_ref()
+            .expect("a live native owner retains its semantic store")
+            .logical_audit(digest)
     }
 
     fn store_mut(&mut self) -> &mut DurableStore<NativeEngineOwner> {

@@ -16,6 +16,7 @@
 //! parked until their owners land them.
 
 mod attach;
+mod audit;
 mod native_owner;
 mod physical;
 mod plan;
@@ -26,6 +27,10 @@ mod store;
 
 pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
+};
+pub use audit::{
+    AuditFault, AuditFinding, AuditReport, AuditSite, AuditSummary, ContentDigest,
+    MAX_REPORTED_FINDINGS,
 };
 pub use native_owner::{NativeStoreOwner, PendingNativeStoreOwner};
 pub(crate) use schema::IndexComponentRef;

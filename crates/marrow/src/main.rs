@@ -6,6 +6,7 @@ use crate::term_style::{Stream, Style};
 
 mod cmd_check;
 mod cmd_client;
+mod cmd_doctor;
 mod cmd_fmt;
 mod cmd_image;
 mod cmd_import;
@@ -28,6 +29,7 @@ Usage:
   marrow check [--demand] [projectdir]
   marrow run <export> [--format jsonl] [-- <args>...]
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
+  marrow doctor --store <dir> [--format text|jsonl]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
   marrow image --out <dir> --accept-ceiling <id>
@@ -44,13 +46,16 @@ runs an exported function. `test` discovers `test \"name\"` declarations, runs
 each storeless through the verified image, and reports pass/fail/error. `import`
 compiles and verifies the project, then populates a native store from a
 flat-scalar JSONL corpus through the release-verified companion runner's trusted
-importer, provisioning the store on first use. `client
-typescript` compiles and verifies the project, then emits the generated strict
-TypeScript client and the pinned Node supervision module. `image` compiles and
-verifies the project and writes the verified program.image a deployment ships,
-requiring the owner to accept the image's deployment ceiling id. The data,
-doctor, evolve, serve, backup, and restore commands are being refounded and
-return through their later lanes; invoking one reports cli.command_unsupported.
+importer, provisioning the store on first use. `doctor` compiles and verifies
+the project, then audits a store bound to it read-only through the companion
+runner, reporting every cell that disagrees with the program and a digest over
+the store's contents. `client typescript` compiles and verifies the project, then
+emits the generated strict TypeScript client and the pinned Node supervision
+module. `image` compiles and verifies the project and writes the verified
+program.image a deployment ships, requiring the owner to accept the image's
+deployment ceiling id. The data, evolve, serve, backup, and restore commands are
+being refounded and return through their later lanes; invoking one reports
+cli.command_unsupported.
 ";
 
 fn main() -> ExitCode {
@@ -95,7 +100,7 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
 /// The command names whose owning capability is being refounded and returns
 /// through a later lane. Recognizing them keeps the not-yet-supported response
 /// distinct from an unknown-command usage error.
-const REFOUNDING_COMMANDS: &[&str] = &["data", "doctor", "evolve", "serve", "backup", "restore"];
+const REFOUNDING_COMMANDS: &[&str] = &["data", "evolve", "serve", "backup", "restore"];
 
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
     match command {
@@ -104,6 +109,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "init" => cmd_init::init(rest),
         "run" => cmd_run::run(rest),
         "import" => cmd_import::import(rest),
+        "doctor" => cmd_doctor::doctor(rest),
         "test" => cmd_test::test(rest),
         "client" => cmd_client::client(rest),
         "image" => cmd_image::image(rest),

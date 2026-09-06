@@ -5,11 +5,12 @@
 //! A counting byte engine shared by the kernel's engine-work witnesses.
 //!
 //! It wraps the in-memory backend and tallies store *opens* (`read_view`, `begin`,
-//! `audit_integrity`) and transaction *writes* (`put`, `remove`) through independent
-//! shared counters a test reads without owning the store. The tallies are the
-//! evidence: an authority rejection performs zero opens, an in-memory-rejected write
-//! performs zero writes, and exact field work is a constant number of writes
-//! independent of the resource's declared width.
+//! `audit_integrity`), transaction *writes* (`put`, `remove`), and *reads* (`get`,
+//! `scan_after` through a view or a transaction) through independent shared counters a
+//! test reads without owning the store. The tallies are the evidence: an authority
+//! rejection performs zero opens, an in-memory-rejected write performs zero writes, and
+//! exact field work is a constant number of writes independent of the resource's
+//! declared width.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -64,6 +65,24 @@ impl CountingEngine {
     }
 }
 
+/// A read-view wrapper that counts every read and delegates to the in-memory backend's
+/// view.
+pub struct CountingView<'a> {
+    inner: <MemoryEngine as ByteEngine>::View<'a>,
+    reads: Rc<Cell<usize>>,
+}
+
+impl ReadView for CountingView<'_> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.reads.set(self.reads.get() + 1);
+        self.inner.get(key)
+    }
+    fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<StoreCell>, StoreError> {
+        self.reads.set(self.reads.get() + 1);
+        self.inner.scan_after(prefix, cursor)
+    }
+}
+
 /// A transaction wrapper that counts every staged write and delegates reads and
 /// writes to the in-memory backend's transaction.
 pub struct CountingTxn<'a> {
@@ -98,12 +117,15 @@ impl WriteTxn for CountingTxn<'_> {
 }
 
 impl ByteEngine for CountingEngine {
-    type View<'a> = <MemoryEngine as ByteEngine>::View<'a>;
+    type View<'a> = CountingView<'a>;
     type Txn<'a> = CountingTxn<'a>;
 
     fn read_view(&self) -> Result<Self::View<'_>, StoreError> {
         self.count_open();
-        self.inner.read_view()
+        Ok(CountingView {
+            inner: self.inner.read_view()?,
+            reads: self.counters.reads.clone(),
+        })
     }
 
     fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError> {

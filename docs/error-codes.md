@@ -42,7 +42,7 @@ Refusals raised by the `marrow` command itself.
 
 | Code | Meaning |
 |---|---|
-| `cli.command_unsupported` | The command name is reserved and not implemented: `data`, `doctor`, `evolve`, `serve`, `backup`, and `restore`. `marrow --help` lists the implemented commands. |
+| `cli.command_unsupported` | The command name is reserved and not implemented: `data`, `evolve`, `serve`, `backup`, and `restore`. `marrow --help` lists the implemented commands. |
 | `cli.interface_unbuildable` | An export's signature cannot be projected onto the wire: it expands past the fixed interface budget, or it names a type the image does not declare. `marrow client typescript` and the runner refuse the whole program; the message names the export. |
 | `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. `marrow` itself opens no store; the companion runner does. Run the export against a provisioned store: `marrow run <export> --store <dir>`. A storeless export is unaffected. |
 | `cli.installation_damaged` | `marrow run --store` could not use the companion runner: the release manifest beside the toolchain is missing or malformed, names another release, or the runner binary is absent or does not match its recorded identity. The store is untouched. Reinstall the toolchain. |
@@ -144,7 +144,15 @@ code is stable.
 | `store.read_only` | A write was requested through a read-only store handle. |
 | `store.contract_changed` | The program image changes the durable contract or the exported interface versus the store's active binding, so it is not a code-only update. The store is intact and the prior program remains usable. Accepting a changed contract is future work; today a new store is provisioned from the new program. [Changing the program](operations/README.md#changing-the-program) describes the outcomes. |
 | `store.demand_exceeds_ceiling` | The program image's durable demand exceeds the ceiling the store was provisioned under. The message names, for each place beyond the ceiling, the export, the effect (read, write, presence, delete, or iterate), and the place. No store call is made and the store is intact. Expand the store's accepted ceiling to cover the named demand before running the new program. |
-| `store.image_not_active` | The program is a code-only edit of the store's active program, and the requested operation does not rebind. `marrow import` populates a store only under its active program; run `marrow run --store` with the current program first, which rebinds the store to the new code, then retry. The store is intact. |
+| `store.image_not_active` | The program is a code-only edit of the store's active program, and the requested operation does not rebind. `marrow import` and `marrow doctor` work only under the store's active program; run `marrow run --store` with the current program first, which rebinds the store to the new code, then retry. The store is intact. |
+| `store.audit_undecodable` | `marrow doctor` found a cell whose key or value does not decode under the store's layout or the declared shape of its field. The finding names the field or, for a key the layout cannot place, the raw cell. |
+| `store.audit_outside_schema` | `marrow doctor` found a well-formed cell that belongs to no declared root, field, group, branch, or index of the active program. The finding names the raw cell. |
+| `store.audit_required_missing` | `marrow doctor` found a present entry without one of its required fields. The finding names the entry and the field. |
+| `store.audit_orphan_leaf` | `marrow doctor` found a field or group leaf stored under an entry that has no presence marker. The finding names the entry; a read of it faults `run.corruption`. |
+| `store.audit_marker_invalid` | `marrow doctor` found an entry marker whose stored value is not the presence record. The finding names the entry. |
+| `store.audit_index_orphan` | `marrow doctor` found an index row whose source entry does not exist. The finding names the index by its ledger identity and the row's projected values. |
+| `store.audit_index_stale` | `marrow doctor` found an index row whose projected values disagree with the source entry it names. The finding names the index and the row. |
+| `store.audit_index_missing` | `marrow doctor` found a present entry whose projected values are complete but whose index row is absent. The finding names the index and the row the entry should have. |
 
 ### `io.*`
 

@@ -15,13 +15,13 @@ each behavior.
 | Transactions | One `transaction` block per mutating export. Every `return` inside it commits; a fault rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs every `test` block; a durable test runs against a fresh in-memory store. | [Tests](language/tests.md) |
-| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
+| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. | [Language server](tools/lsp.md) |
-| Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`. | [Operations](operations/README.md) |
+| Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`; `marrow doctor --store` audits a store read-only against its active program and reports a digest over its entries. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. | [TypeScript client](tools/typescript-client.md) |
 
-The command names `data`, `doctor`, `evolve`, `serve`, `backup`, and `restore`
-are recognized; each reports `cli.command_unsupported`.
+The command names `data`, `evolve`, `serve`, `backup`, and `restore` are
+recognized; each reports `cli.command_unsupported`.
 
 ### Applications
 
@@ -85,7 +85,9 @@ has its own platform and layout requirements
 - Filesystem permissions and the host process protect local store files.
 - Commit recovery assumes that no structurally valid foreign store or prior
   snapshot is substituted while the owner lock is held. Substitution or
-  rollback of a store file under the lock is not detected.
+  rollback of a store file under the lock is not detected. `marrow doctor`
+  compares a store's contents with its program and reports a digest; it does
+  not authenticate the engine file, and the digest is reported, not stored.
 - Checksums and structural checks detect selected corruption; they do not
   authenticate hostile storage or prove application validity.
 - Encryption at rest is delegated to the filesystem or substrate.

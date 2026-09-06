@@ -16,6 +16,9 @@
 //!   publishes the store, printing a one-line JSON receipt naming the store instance;
 //!   without `--yes` it prints the report and exits without writing, so a first provision is
 //!   an explicit, reviewable action.
+//! - `marrow-runner audit --image <path> --store <dir> [--format text|jsonl]` audits the
+//!   store read-only against the image, which must be its active binding, and prints the
+//!   findings and the logical digest; it opens no channel.
 //!
 //! Teardown of the listener, socket, and temp dir is explicit and runs on every
 //! non-panic exit path.
@@ -44,6 +47,12 @@ enum Command {
     },
     /// Attach the image to the persistent store at `store` and serve its exports.
     Attach { image: PathBuf, store: PathBuf },
+    /// Audit the persistent store at `store` read-only against the image.
+    Audit {
+        image: PathBuf,
+        store: PathBuf,
+        format: ReportFormat,
+    },
     /// Attach the image to a fresh process-local in-memory store and serve its exports. The
     /// store never persists — it is discarded when this process exits.
     AttachEphemeral { image: PathBuf },
@@ -58,9 +67,21 @@ enum Command {
     },
 }
 
+/// How `audit` renders its report.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReportFormat {
+    Text,
+    Jsonl,
+}
+
 fn main() -> ExitCode {
     match parse_args() {
         Some(Command::Serve { image }) => serve(&image),
+        Some(Command::Audit {
+            image,
+            store,
+            format,
+        }) => audit_command(&image, &store, format),
         Some(Command::Provision {
             image,
             store,
@@ -81,7 +102,8 @@ fn main() -> ExitCode {
                  <path> --store <dir> [--yes]\n       marrow-runner attach --image <path> \
                  --store <dir>\n       marrow-runner attach-ephemeral --image \
                  <path>\n       marrow-runner import --image <path> --store <dir> \
-                 --jsonl <path> --root <name> --keys <col,...>"
+                 --jsonl <path> --root <name> --keys <col,...>\n       marrow-runner audit \
+                 --image <path> --store <dir> [--format text|jsonl]"
             );
             ExitCode::from(2)
         }
@@ -331,6 +353,7 @@ fn parse_args() -> Option<Command> {
         Some("attach") => parse_attach(args),
         Some("attach-ephemeral") => parse_attach_ephemeral(args),
         Some("import") => parse_import(args),
+        Some("audit") => parse_audit(args),
         Some("--image") => args.next().map(|image| Command::Serve {
             image: PathBuf::from(image),
         }),
@@ -352,6 +375,33 @@ fn parse_attach(mut args: impl Iterator<Item = String>) -> Option<Command> {
     Some(Command::Attach {
         image: image?,
         store: store?,
+    })
+}
+
+/// Parse `audit --image <path> --store <dir> [--format text|jsonl]` in any flag order.
+/// `--image` and `--store` are required; the format defaults to text.
+fn parse_audit(mut args: impl Iterator<Item = String>) -> Option<Command> {
+    let mut image: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+    let mut format = ReportFormat::Text;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--image" => image = Some(PathBuf::from(args.next()?)),
+            "--store" => store = Some(PathBuf::from(args.next()?)),
+            "--format" => {
+                format = match args.next()?.as_str() {
+                    "text" => ReportFormat::Text,
+                    "jsonl" => ReportFormat::Jsonl,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(Command::Audit {
+        image: image?,
+        store: store?,
+        format,
     })
 }
 
@@ -537,6 +587,110 @@ fn import_command(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Audit the store read-only against the image (the `audit` command). The lifecycle takes
+/// the store's single-owner lock, admits the image as the exact active binding, runs the
+/// engine's integrity audit and the kernel's logical walk, and releases the lock; this
+/// command only renders the result. A clean store exits `0`; findings, a corrupt engine, or
+/// a refusal exit `1`.
+fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitCode {
+    let image = match load_image(image_path) {
+        Ok(image) => image,
+        Err(code) => return code,
+    };
+    let store_text = store.display().to_string();
+    let audit = match marrow_lifecycle::audit(store, marrow_lifecycle::prepare(image)) {
+        Ok(audit) => audit,
+        Err(error) => {
+            match format {
+                ReportFormat::Text => eprintln!("{}: {error}", error.code()),
+                ReportFormat::Jsonl => println!(
+                    "{}",
+                    encode(&Json::Object(vec![
+                        ("code".to_string(), Json::Str(error.code().to_string())),
+                        ("kind".to_string(), Json::Str("doctor".to_string())),
+                        ("outcome".to_string(), Json::Str("error".to_string())),
+                        ("store".to_string(), Json::Str(store_text)),
+                    ]))
+                ),
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    match format {
+        ReportFormat::Text => print!("{}", audit.render(store)),
+        ReportFormat::Jsonl => {
+            for line in audit_records(&audit, store_text) {
+                println!("{}", encode(&line));
+            }
+        }
+    }
+    if audit.is_clean() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The JSONL projection of an audit: one `doctor` record, then one `finding` record per
+/// retained finding.
+fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Json> {
+    let text = |value: &str| Json::Str(value.to_string());
+    let mut head = vec![
+        ("kind".to_string(), text("doctor")),
+        ("store".to_string(), Json::Str(store)),
+        ("instance".to_string(), Json::Str(audit.instance.to_hex())),
+        ("image".to_string(), Json::Str(hex32(&audit.image_id))),
+    ];
+    let mut records = Vec::new();
+    match &audit.outcome {
+        marrow_lifecycle::AuditOutcome::EngineCorrupt { .. } => {
+            head.push(("outcome".to_string(), text("corrupt")));
+            head.push((
+                "code".to_string(),
+                text(marrow_codes::Code::StoreCorruption.as_str()),
+            ));
+            records.push(Json::Object(head));
+        }
+        marrow_lifecycle::AuditOutcome::Walked {
+            summary,
+            findings,
+            digest,
+        } => {
+            let count = |value: u64| Json::Int(i64::try_from(value).unwrap_or(i64::MAX));
+            head.push((
+                "outcome".to_string(),
+                text(if summary.findings == 0 {
+                    "clean"
+                } else {
+                    "findings"
+                }),
+            ));
+            head.push(("digest".to_string(), Json::Str(digest.to_hex())));
+            head.push(("entries".to_string(), count(summary.entries)));
+            head.push((
+                "descendant_only".to_string(),
+                count(summary.descendant_only),
+            ));
+            head.push(("index_rows".to_string(), count(summary.index_rows)));
+            head.push(("cells".to_string(), count(summary.cells)));
+            head.push(("findings".to_string(), count(summary.findings)));
+            records.push(Json::Object(head));
+            for finding in findings {
+                records.push(Json::Object(vec![
+                    ("kind".to_string(), text("finding")),
+                    ("code".to_string(), text(finding.code.as_str())),
+                    ("place".to_string(), Json::Str(finding.place.clone())),
+                ]));
+            }
+        }
+    }
+    records
+}
+
+fn hex32(bytes: &[u8; 32]) -> String {
+    Id32::from_bytes(*bytes).to_hex()
 }
 
 fn nonce_from_env() -> Result<Option<Id32>, ()> {

@@ -13,5 +13,5 @@ serves editors.
 - [Machine-readable language facts](ai-legibility.md): the reserved words,
   token kinds, and structured outputs a tool consumes.
 
-`data`, `doctor`, `evolve`, `serve`, `backup`, and `restore` are recognized
-command names with no implementation today ([status](../status.md)).
+`data`, `evolve`, `serve`, `backup`, and `restore` are recognized command
+names with no implementation today ([status](../status.md)).

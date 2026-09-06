@@ -31,9 +31,12 @@ per test plus a summary. `marrow client typescript`
 compiles and verifies the project, reconstructs its wire interface (the one
 transfer/identity owner is `marrow-image`), and emits the deterministic strict
 TypeScript client beside the pinned Node supervision module (`src/supervisor/`,
-emitted verbatim and drift-gated). Every other command name (`data`,
-`doctor`, `evolve`, `serve`, `backup`, `restore`) is recognized and reports a
-typed `cli.command_unsupported` response until its refounding lane lands it.
+emitted verbatim and drift-gated). `marrow doctor --store <dir>` compiles and
+verifies the project and hands a read-only audit of the store to the companion
+runner (`marrow-runner audit`), relaying its findings and digest. Every other
+command name (`data`, `evolve`, `serve`, `backup`, `restore`) is recognized and
+reports a typed `cli.command_unsupported` response until its refounding lane
+lands it.
 The `marrow-lsp` package is a separate downstream tool. The CLI has no direct or
 transitive dependency on `marrow-lsp` or `lsp-types`; a dev-only, std-only
 `serde_json` edge in `tests/lsp_stdio.rs` decodes Cargo metadata to enforce that

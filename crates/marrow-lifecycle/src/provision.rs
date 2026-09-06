@@ -16,19 +16,18 @@
 //! error. The engine opens last, through the path kernel, and when the prior shutdown was
 //! unclean (a stale owner descriptor in the lock) it runs a full integrity audit.
 //!
-//! **Coverage honesty.** The unclean-open audit covers crash-path corruption only: the fast
-//! open path does not re-verify page checksums, so an externally flipped bit in a
-//! cleanly-closed store stays undetected here until the FR01 §2 data-root digest is populated
-//! by a later full-walk operation (audit/backup/restore at F04+). No mitigation is claimed
-//! for that class at open.
+//! The unclean-open audit covers crash-path corruption only: the fast open path does not
+//! re-verify page checksums, so an externally flipped bit in a cleanly-closed store is not
+//! detected at open. The read-only store audit (`crate::audit`) runs that full engine audit
+//! and the kernel's logical walk on demand.
 
 use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
 use marrow_kernel::durable::{
-    CommitRecovery, DemandCoverage, DurableCommitState, InvocationGrant, NativeOwnerAcquireError,
-    NativeOwnerOpenError, NativeStore, ReadSession, SessionError, SessionHost, StoreError,
-    StoreProjection, TxnSession,
+    AuditReport, CommitRecovery, ContentDigest, DemandCoverage, DurableCommitState,
+    InvocationGrant, NativeOwnerAcquireError, NativeOwnerOpenError, NativeStore, ReadSession,
+    SessionError, SessionHost, StoreError, StoreProjection, TxnSession,
 };
 
 use crate::durable_fs::{sync_dir, write_file};
@@ -252,6 +251,19 @@ impl SessionHost for OpenStore {
 }
 
 impl OpenStore {
+    /// The engine's whole-file integrity audit under the retained lock.
+    pub(crate) fn audit_integrity(&mut self) -> Result<(), StoreError> {
+        self.owner.audit_integrity()
+    }
+
+    /// The kernel's bounded read-only logical walk under the retained lock, with no session.
+    pub(crate) fn logical_audit(
+        &self,
+        digest: &mut dyn ContentDigest,
+    ) -> Result<AuditReport, StoreError> {
+        self.owner.logical_audit(digest)
+    }
+
     /// Consume an indeterminate commit's sole affine fact while retaining the
     /// same owner lock across old-engine close, fresh reopen, full integrity
     /// audit, and exact witness comparison. A known result returns the freshly

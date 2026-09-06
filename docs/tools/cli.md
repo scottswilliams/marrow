@@ -1,7 +1,7 @@
 # CLI
 
 `marrow` creates, formats, checks, runs, and tests a [project](projects.md),
-and it writes the artifacts a deployment ships.
+audits a store bound to it, and writes the artifacts a deployment ships.
 
 ```text
 marrow init <projectdir>
@@ -10,6 +10,7 @@ marrow check [--demand] [projectdir]
 marrow run <export> [--store <dir>] [--format text | jsonl] [-- <args>...]
 marrow test [--format text | jsonl] [--filter <substring>]
 marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
+marrow doctor --store <dir> [--format text | jsonl]
 marrow image --out <dir> --accept-ceiling <id>
 marrow client typescript [--out <dir>]
 marrow --version
@@ -219,6 +220,66 @@ provisioned a fresh store at ./store
 The file is read and committed in bounded batches. `import` writes no
 identity: a missing one is `check.durable_identity`.
 
+## marrow doctor
+
+`marrow doctor --store <dir>` audits a store read-only against the project at
+the working directory, which must be the store's active program: a code-only
+edit the store has not been rebound to is `store.image_not_active`, and a
+changed durable contract is `store.contract_changed`. Like `run --store` and
+`import`, the audit runs in the companion runner, which takes the store's lock
+for the audit and releases it when the report is printed.
+
+The audit first runs the engine's own integrity check over the whole file. When
+that passes, it walks every cell once, in key order, against the program's
+durable shape: each entry's marker, its field and group leaves, its branches to
+any depth, every managed-index row, and the commit witness. It reports each cell
+that disagrees with the program, and a digest over the store's logical content.
+This transcript is from the shelf program after `put(1, "Small Gods",
+"978-0552152976")`:
+
+```text
+$ marrow doctor --store ./store
+audited ./store
+instance 5e26a00385e614895055a64ef7a13aa5
+image 3bbeb4bc1dddf124e86af8b96a667b0c6dda3872368cda668ca15a9f4a7c8921
+entries 1, descendant-only 0, index rows 1, cells 5
+digest ec9b1a28fcffcdfed54439d087a577d13c83383442a43e5bff3e585858e3689a
+no findings
+```
+
+`entries` counts present entries at every level, `descendant-only` counts nodes
+that hold branch entries but no payload of their own, `index rows` counts
+managed-index rows, and `cells` counts every cell in the engine. The digest is
+a function of the store's entries and their values, in key order; two runs over
+an unchanged store print the same digest, and a committed write changes it. It
+is reported, not stored: comparing it with a value recorded earlier is how a
+store is checked against its own past.
+
+A finding names its code and place, one per line after `findings <n>`:
+
+```text
+findings 2
+  store.audit_required_missing at ^books[1].title
+  store.audit_index_orphan at ^books.index(37476822645b6802b40160c53d1a7fb6)["978-0552152976"]
+```
+
+An index row is named by the index's identity from `.marrow/ids`, since the
+compiled program carries no index name. The audit codes are listed under
+`store.*` in [error codes](../error-codes.md). An engine file whose bytes were
+altered outside Marrow fails the integrity check before any cell is read and is
+reported as `store.corruption`. A clean store exits `0`; findings, a corrupt
+engine, or a refusal exit `1`. `--format jsonl` prints one `doctor` record,
+then one `finding` record per finding:
+
+```text
+$ marrow doctor --store ./store --format jsonl
+{"cells":5,"descendant_only":0,"digest":"ec9b1a28fcffcdfed54439d087a577d13c83383442a43e5bff3e585858e3689a","entries":1,"findings":0,"image":"3bbeb4bc1dddf124e86af8b96a667b0c6dda3872368cda668ca15a9f4a7c8921","index_rows":1,"instance":"5e26a00385e614895055a64ef7a13aa5","kind":"doctor","outcome":"clean","store":"./store"}
+```
+
+`outcome` is `clean`, `findings`, `corrupt`, or `error`; a finding record
+carries `code` and `place`. A project that does not compile, or an installation
+without the companion layout, is reported on standard error in either format.
+
 ## marrow image
 
 `marrow image` compiles and verifies the project and writes `program.image`, the
@@ -263,9 +324,9 @@ transfer type, so a project that verifies also generates.
 | Code | Meaning |
 |---:|---|
 | `0` | The command completed. |
-| `1` | A diagnostic, fault, or operational error was reported, or the command has no implementation today. |
+| `1` | A diagnostic, fault, or operational error was reported, `doctor` found something wrong with the store, or the command has no implementation today. |
 | `2` | The command line was wrong: a bare `marrow`, an unknown command or export, a bad flag or argument, or a filter that matches nothing. |
 
-`data`, `doctor`, `evolve`, `serve`, `backup`, and `restore` are recognized
-names with no implementation today; each reports `cli.command_unsupported` and
-exits `1` ([status](../status.md)).
+`data`, `evolve`, `serve`, `backup`, and `restore` are recognized names with
+no implementation today; each reports `cli.command_unsupported` and exits `1`
+([status](../status.md)).

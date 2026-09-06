@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use marrow_store::{ByteEngine, ReadView, StoreError};
 
+use super::super::audit::{self, AuditReport, ContentDigest};
 use super::super::physical;
 use super::super::{
     AuthorizedSite, CommitRecovery, CommitRecoveryScope, DemandCoverage, Denied,
@@ -41,8 +42,8 @@ pub struct DurableStore<E: ByteEngine> {
     poisoned: bool,
 }
 
-/// Generic unscoped stores expose sessions but no persistent recovery
-/// classifier, semantic audit, or poison-state projection.
+/// Generic unscoped stores expose sessions and the read-only logical walk, but no
+/// persistent recovery classifier, physical integrity audit, or poison-state projection.
 ///
 /// ```compile_fail
 /// use marrow_kernel::durable::{CommitRecovery, DurableStore};
@@ -163,6 +164,21 @@ impl<E: ByteEngine> DurableStore<E> {
         self.engine
     }
 
+    /// One bounded read-only walk over every cell of the store against its projection
+    /// (see [`audit`]): the typed findings and counts, with the logical content streamed
+    /// to `digest` in key order. It opens a coherent read view and no session, so it
+    /// resolves no authority and stages nothing.
+    pub fn logical_audit(&self, digest: &mut dyn ContentDigest) -> Result<AuditReport, StoreError> {
+        let view = self.engine.read_view()?;
+        audit::walk(&view, &self.projection, &self.numbering, digest)
+    }
+
+    /// The engine's own whole-file integrity audit, for the native owner to run ahead of
+    /// the logical walk.
+    pub(crate) fn audit_integrity(&mut self) -> Result<(), StoreError> {
+        self.engine.audit_integrity()
+    }
+
     /// Refuse a session open on a poisoned handle. An earlier indeterminate commit sets
     /// the latch (its durability is unknown), and the handle then refuses every further
     /// read or write until the opaque recovery fact is resolved against a freshly opened
@@ -273,7 +289,7 @@ impl<E: ByteEngine> DurableStore<E> {
 }
 
 /// The witness meta-cell name in the `0x10` family.
-pub(super) const WITNESS: &str = "witness";
+pub(crate) const WITNESS: &str = "witness";
 
 /// Resolve effective authority: `demand ⊆ ceiling ∩ grant`. Demand never grants; it
 /// is only checked. Each coverage atom the demand requires must be permitted by both

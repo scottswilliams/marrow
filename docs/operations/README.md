@@ -2,7 +2,7 @@
 
 A durable program keeps its data in a store: a directory on disk bound to one
 program. This page covers creating a store, running against it, changing the
-program, and what an interrupted commit leaves behind.
+program, what an interrupted commit leaves behind, and auditing a store.
 
 Today, a store runs on one machine under one process at a time. Served
 execution, backup, restore, and schema evolution are future work
@@ -103,6 +103,37 @@ If no reply from the runner reaches `marrow`, the outcome is
 `run.outcome_unknown`: the call may have run, wholly or in part. In every
 uncertain case, run a read-only export to observe the store before acting again.
 
+## Auditing a store
+
+`marrow doctor --store <dir>` checks a store against the program it is bound
+to without running any export ([marrow doctor](../tools/cli.md#marrow-doctor)).
+The project at the working directory must be the store's active program. The
+audit takes the store's lock for its duration, verifies every checksum in the
+engine file, then reads every cell once against the program's durable shape,
+and prints what disagrees together with a digest over the store's entries:
+
+```sh
+marrow doctor --store ./store
+```
+
+A finding names a stable code and the place it concerns: a cell that does not
+decode as its field, a cell outside the program's shape, a present entry
+missing a required field, a field stored under an entry with no presence
+marker, an index row whose entry is absent or disagrees with it, or an entry
+whose index row is missing. An engine file altered outside Marrow is reported
+as `store.corruption` before any cell is read. A store that audits clean exits
+`0`.
+
+The digest is stable across runs over an unchanged store and changes with any
+committed write. Marrow does not store it; recording it after a backup or
+before a maintenance step, and comparing it afterwards, is how the store's
+contents are checked against a known state. The audit compares contents with
+the program and does not establish which store an engine file came from: an
+engine file swapped between two stores of one program under one identity
+ledger has the same entries and audits the same way, while one from a store
+provisioned under another ledger is reported at its index rows, whose cells
+carry the ledger's index identities.
+
 ## Durability
 
 A confirmed commit is written with `fsync` before it is reported. It survives a
@@ -113,7 +144,7 @@ drive-cache reset is not established: the commit path issues `fsync`, not
 ## Locks
 
 One process owns a store at a time. The runner takes the store's lock when it
-attaches and releases it when it exits. A second process opening a held store is
-`store.locked`. The lock excludes other Marrow processes; it does not detect a
+attaches and releases it when it exits; an audit holds it until its report is
+printed. A second process opening a held store is `store.locked`. The lock excludes other Marrow processes; it does not detect a
 store file replaced or rolled back underneath it by another program.
 [Status](../status.md#trust-boundaries) lists the trust boundaries.
