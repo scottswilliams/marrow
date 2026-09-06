@@ -343,3 +343,85 @@ fn a_family_presence_probe_costs_one_seek_regardless_of_descendant_only_siblings
         "a family probe is one seek into the presence namespace"
     );
 }
+
+// --- The required-completeness class: an incomplete payload never reaches the engine. ---
+
+/// A `books` root with a required `title` and a `details` group whose `pages` leaf is
+/// required. Site 0 is the entry, site 1 the group.
+fn grouped_schema() -> StoreSchema {
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Int]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_group("details");
+    builder.scalar_field("pages", ScalarKind::Int, true);
+    builder.close_group();
+    builder.finish().expect("the grouped schema builds")
+}
+
+fn grouped_sites() -> Vec<SiteTarget> {
+    vec![SiteTarget::whole_payload(), SiteTarget::group_entry(0)]
+}
+
+fn pages(value: Option<i64>) -> EntryValue {
+    EntryValue {
+        fields: vec![value.map(|n| ValueDomain::Scalar(RuntimeScalar::Int(n)))],
+        groups: Vec::new(),
+    }
+}
+
+fn book(title: Option<&str>, group: EntryValue) -> EntryValue {
+    EntryValue {
+        fields: vec![title.map(|t| ValueDomain::Scalar(RuntimeScalar::Str(t.into())))],
+        groups: vec![group],
+    }
+}
+
+/// The kernel checks required completeness itself: an entry write missing a required
+/// field, an entry write whose group misses a required leaf, and a group write missing
+/// a required leaf each return a typed fault before any engine write, so an image
+/// supplied without the compiler's proofs cannot leave a present entry incomplete.
+/// Today each write succeeds and the incomplete payload commits.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_write_missing_a_required_field_is_a_typed_kernel_fault_before_any_engine_write() {
+    let counters = Counters::new();
+    let mut store = DurableStore::from_projection_with_ceiling(
+        CountingEngine::new(counters.clone()),
+        project(&grouped_schema(), grouped_sites()),
+        writing_demand(),
+    );
+    let mut txn = store
+        .txn_session(InvocationGrant::full_store(), writing_demand())
+        .expect("txn session");
+    let entry = txn.site(0);
+    let group = txn.site(1);
+    let key = [KeyScalar::Int(1)];
+
+    txn.create_entry(&entry, &key, book(Some("Small Gods"), pages(Some(381))))
+        .expect("a complete entry writes");
+    let staged = counters.writes();
+
+    assert!(
+        txn.create_entry(&entry, &[KeyScalar::Int(2)], book(None, pages(Some(1))))
+            .is_err(),
+        "an entry write missing its required `title` is refused",
+    );
+    assert!(
+        txn.create_entry(&entry, &[KeyScalar::Int(3)], book(Some("t"), pages(None)))
+            .is_err(),
+        "an entry write whose group misses the required `pages` is refused",
+    );
+    assert!(
+        txn.replace_entry(&entry, &key, book(None, pages(Some(1))))
+            .is_err(),
+        "a replace missing its required `title` is refused",
+    );
+    assert!(
+        txn.replace_group(&group, &key, pages(None)).is_err(),
+        "a group write missing the required `pages` is refused",
+    );
+    assert_eq!(
+        counters.writes(),
+        staged,
+        "every refused write stages zero engine writes",
+    );
+}

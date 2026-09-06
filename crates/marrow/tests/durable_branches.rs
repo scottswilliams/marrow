@@ -1159,3 +1159,148 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
         diagnostic.message()
     );
 }
+
+// --- Complete entries, design v2: branch places and sibling-family erases. ---
+
+/// Compile `source` against `ids`: the verified image, or the diagnostic codes.
+fn compile_source_ids(source: &str, ids: &str) -> Result<VerifiedImage, Vec<String>> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(ids.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(compiled) => Ok(marrow_verify::verify(&compiled.image.bytes).expect("verify")),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            Err(diagnostics.iter().map(|d| d.code().to_string()).collect())
+        }
+        Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
+    }
+}
+
+fn strict_key_paths(image: &VerifiedImage, name: &str) -> Vec<Vec<u16>> {
+    function_instrs(image, name)
+        .iter()
+        .filter_map(|instr| match instr {
+            SealedInstr::DurSetSparsePresent { key_slots, .. } => Some(key_slots.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whole-entry assignment through a branch place proves the branch entry present for
+/// the rest of the block, exactly as it does through a root place: the sparse set after
+/// `note = Book.notes(...)` is strict over the whole `[root, branch]` key-path. Today
+/// only a single-slot root place is marked by an upsert, so the set is bare.
+#[test]
+#[ignore = "B2 complete entries"]
+fn an_upsert_through_a_branch_place_proves_the_branch_entry_present() {
+    let source = format!(
+        "{FIELD_SOURCE}
+pub fn addPinnedNote(id: int, nid: string, body: string) {{
+    transaction {{
+        place note = ^books[id].notes[nid]
+        note = Book.notes(text: body)
+        note.pinned = true
+    }}
+}}
+"
+    );
+    let image = compile_source_ids(&source, IDS).expect("the post-upsert set is proven");
+    let strict = strict_key_paths(&image, "addPinnedNote");
+    assert_eq!(
+        strict.len(),
+        1,
+        "one strict set follows the branch-place upsert"
+    );
+    assert_eq!(
+        strict[0].len(),
+        2,
+        "the strict set carries the whole `[root, branch]` key-path"
+    );
+}
+
+// The root gains a sparse `subtitle` so a root-place set has a sparse target.
+const IDS_SUBTITLE: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Book.subtitle 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root Book.notes 30303030303030303030303030303030\n\
+     id key Book.notes.noteId 31313131313131313131313131313131\n\
+     id field Book.notes.text 32323232323232323232323232323232\n\
+     id field Book.notes.pinned 33333333333333333333333333333333\n\
+     high-water 0\n\
+     end\n";
+
+const SUBTITLE_SCHEMA: &str = r#"resource Book {
+    required title: string
+    subtitle: string
+
+    notes[noteId: string] {
+        required text: string
+        pinned: bool
+    }
+}
+
+store ^books[id: int]: Book
+"#;
+
+/// An erase in a child family leaves the parent's fact in place: `delete b.notes[nid]`
+/// erases a `notes` entry, so the set through `b` after it is strict; `delete b`
+/// erases `b`'s own family and the same set is refused. This holds because an erase
+/// touches only the entry's own payload (children survive their parent today).
+/// Today the erasing form compiles clean and the set is bare.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_sibling_family_erase_keeps_the_fact_while_a_same_family_erase_ends_it() {
+    let child_erase = format!(
+        "{SUBTITLE_SCHEMA}
+pub fn dropNoteThenRetitle(id: int, nid: string, sub: string) {{
+    transaction {{
+        place b = ^books[id]
+        if exists(b) {{
+            delete b.notes[nid]
+            b.subtitle = sub
+        }}
+    }}
+}}
+"
+    );
+    let image = compile_source_ids(&child_erase, IDS_SUBTITLE)
+        .expect("a child-family erase keeps the fact");
+    assert_eq!(
+        strict_key_paths(&image, "dropNoteThenRetitle").len(),
+        1,
+        "the set after the child-family erase is strict"
+    );
+
+    let own_erase = format!(
+        "{SUBTITLE_SCHEMA}
+pub fn dropThenRetitle(id: int, sub: string) {{
+    transaction {{
+        place b = ^books[id]
+        if exists(b) {{
+            delete b
+            b.subtitle = sub
+        }}
+    }}
+}}
+"
+    );
+    assert_eq!(
+        compile_source_ids(&own_erase, IDS_SUBTITLE).err(),
+        Some(vec!["check.requires_presence".to_string()]),
+        "the discriminator: an erase of the entry's own family ends the fact"
+    );
+}

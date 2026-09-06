@@ -719,3 +719,229 @@ pub fn valueOf(n: int): int {
     let image = compile_verify(&source);
     assert!(has_function(&image, "valueOf"));
 }
+
+// --- Complete entries, design v2: proof lifetime and the one clearing spelling. ---
+
+/// A loop body is one region: a write through `p` inside the loop precedes, on the
+/// back edge, the erase of `p`'s family later in the same body, so the write is
+/// refused at check time when the loop closes. Both the direct erase and a helper
+/// whose demand writes the family are refused. Today the direct form compiles to a
+/// strict set the verifier then rejects (`image.flow`), and the helper form verifies
+/// and faults at runtime.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_field_write_inside_a_loop_that_erases_the_family_is_refused_at_check() {
+    let direct = format!(
+        "{HEADER}{}",
+        r#"
+pub fn writeThenEraseInLoop(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            for k in ^counters at most 10 {
+                p.label = "in loop"
+                delete p
+            } on more {
+            }
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&direct, "p.label = \"in loop\"");
+    assert_eq!(
+        compile_diagnostics(&direct),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "the write precedes the erase on the loop's back edge"
+    );
+
+    let through_helper = format!(
+        "{HEADER}{}",
+        r#"
+fn wipe(n: int) {
+    delete ^counters[n]
+}
+
+pub fn writeThenHelperInLoop(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            for k in ^counters at most 10 {
+                p.label = "in loop"
+                wipe(k)
+            } on more {
+            }
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&through_helper, "p.label = \"in loop\"");
+    assert_eq!(
+        compile_diagnostics(&through_helper),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "a call whose demand writes the family inside the loop ends the fact on the back edge"
+    );
+}
+
+/// An erase of the family ends the fact whatever key it names: `delete ^counters[n + 1]`
+/// may or may not be `p`'s entry, and the rule does not reason about keys. Today the
+/// inline erase leaves the compiler's fact in place and the set is emitted strict.
+#[test]
+#[ignore = "B2 complete entries"]
+fn an_inline_erase_of_another_key_in_the_family_is_refused_at_check() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn eraseNeighbourThenSet(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            delete ^counters[n + 1]
+            p.label = "after neighbour erase"
+            return true
+        }
+        return false
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = \"after neighbour erase\"");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "an erase of the family, on any key, ends every fact in the family"
+    );
+}
+
+/// `if not exists(p) { return … }` proves `p` present for the rest of the block, the
+/// same way a let-else does: the guarded block diverges, so control reaches the
+/// continuation only with the entry present. The set after the guard compiles and is
+/// strict. Today the continuation carries no fact and the set is bare.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_negative_diverging_guard_carries_the_fact_into_the_continuation() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn setLabelIfPresent(n: int): bool {
+    transaction {
+        place p = ^counters[n]
+        if not exists(p) {
+            return false
+        }
+        p.label = "after the guard"
+        return true
+    }
+}
+"#
+    );
+    assert_eq!(
+        compile_diagnostics(&source),
+        Vec::<(String, u32, u32)>::new(),
+        "the continuation of a diverging negative guard is proven"
+    );
+    let image = compile_verify(&source);
+    let instrs = export_instrs(&image, "setLabelIfPresent");
+    assert_eq!(
+        count_strict(instrs),
+        1,
+        "the set after the guard is the present-entry form"
+    );
+}
+
+/// A field is cleared by `delete p.f` and by nothing else: assigning `absent` to a
+/// durable field is `check.type` at the write. Today the assignment compiles as a
+/// sparse set of `absent`.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_durable_field_assigned_absent_is_refused_naming_delete() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn clearLabel(n: int) {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            p.label = absent
+        }
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&source, "p.label = absent");
+    assert_eq!(
+        compile_diagnostics(&source),
+        vec![("check.type".to_string(), line, column)],
+        "`= absent` on a durable field is refused; `delete p.label` is the clearing form"
+    );
+}
+
+/// A call whose demand only reads the family keeps the fact: `peek(n)` reads
+/// `^counters` between the guard and the set, and the set stays strict; the same
+/// program with an erasing helper is refused. Today the erasing form compiles clean.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_read_only_helper_keeps_the_fact_while_an_erasing_helper_ends_it() {
+    let reading = format!(
+        "{HEADER}{}",
+        r#"
+fn peek(n: int): int? {
+    return ^counters[n].value
+}
+
+pub fn peekThenSet(n: int): int {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            const seen = peek(n) ?? 0
+            p.label = "after peek"
+            return seen
+        }
+        return 0
+    }
+}
+"#
+    );
+    assert_eq!(
+        compile_diagnostics(&reading),
+        Vec::<(String, u32, u32)>::new()
+    );
+    let image = compile_verify(&reading);
+    assert_eq!(
+        count_strict(export_instrs(&image, "peekThenSet")),
+        1,
+        "a read-only call leaves the fact in place"
+    );
+
+    let erasing = format!(
+        "{HEADER}{}",
+        r#"
+fn wipe(n: int) {
+    delete ^counters[n]
+}
+
+pub fn wipeThenSet(n: int): int {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            wipe(n)
+            p.label = "after wipe"
+            return 1
+        }
+        return 0
+    }
+}
+"#
+    );
+    let (line, column) = position_of(&erasing, "p.label = \"after wipe\"");
+    assert_eq!(
+        compile_diagnostics(&erasing),
+        vec![(REQUIRES_PRESENCE.to_string(), line, column)],
+        "the discriminator: a call whose demand writes the family ends the fact"
+    );
+}

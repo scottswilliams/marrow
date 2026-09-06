@@ -247,3 +247,107 @@ fn a_cross_root_guarded_write_does_not_phantom_the_sibling_root() {
         "the guard did not phantom-write ^aaa's own note",
     );
 }
+
+// --- Complete entries, design v2: a call ends facts by family, not by any write. ---
+
+/// Compile `source` against the two-root ledger: the verified image, or the
+/// diagnostic codes when it does not compile.
+fn compile_source(source: &str) -> Result<VerifiedImage, Vec<String>> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(compiled) => Ok(marrow_verify::verify(&compiled.image.bytes).expect("verify")),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            Err(diagnostics.iter().map(|d| d.code().to_string()).collect())
+        }
+        Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
+    }
+}
+
+const TWO_ROOT_SCHEMA: &str = r#"resource Aaa {
+    required tag: string
+    note: string
+}
+
+resource Bbb {
+    required tag: string
+    note: string
+}
+
+store ^aaa[k: int]: Aaa
+store ^bbb[k: int]: Bbb
+"#;
+
+/// A helper that writes `^bbb` leaves a fact on `^aaa[k]` in place — the set through
+/// `a` after `touchBbb(k)` is strict — while the same helper writing `^aaa` ends it.
+/// Today the `^aaa`-writing form compiles clean.
+#[test]
+#[ignore = "B2 complete entries"]
+fn an_other_root_helper_keeps_the_fact_while_a_same_root_helper_ends_it() {
+    let other_root = format!(
+        "{TWO_ROOT_SCHEMA}
+fn touchBbb(k: int) {{
+    ^bbb[k] = Bbb(tag: \"b\")
+}}
+
+pub fn setAaaNote(k: int, n: string) {{
+    transaction {{
+        place a = ^aaa[k]
+        if exists(a) {{
+            touchBbb(k)
+            a.note = n
+        }}
+    }}
+}}
+"
+    );
+    let image = compile_source(&other_root).expect("a write to another root keeps the fact");
+    let strict = image
+        .functions()
+        .iter()
+        .find(|function| function.name() == "setAaaNote")
+        .expect("export present")
+        .instrs()
+        .iter()
+        .filter(|instr| {
+            matches!(
+                instr,
+                marrow_verify::SealedInstr::DurSetSparsePresent { .. }
+            )
+        })
+        .count();
+    assert_eq!(strict, 1, "the set after the other-root helper is strict");
+
+    let same_root = format!(
+        "{TWO_ROOT_SCHEMA}
+fn touchAaa(k: int) {{
+    ^aaa[k] = Aaa(tag: \"a\")
+}}
+
+pub fn setAaaNote(k: int, n: string) {{
+    transaction {{
+        place a = ^aaa[k]
+        if exists(a) {{
+            touchAaa(k)
+            a.note = n
+        }}
+    }}
+}}
+"
+    );
+    assert_eq!(
+        compile_source(&same_root).err(),
+        Some(vec!["check.requires_presence".to_string()]),
+        "the discriminator: a helper whose demand writes `^aaa` ends the fact"
+    );
+}

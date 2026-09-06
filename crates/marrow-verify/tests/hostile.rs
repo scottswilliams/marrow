@@ -5464,3 +5464,79 @@ fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_de
 const AT_BUDGET_DETAIL: &str = "root member tree fields do not match the record fields";
 const AT_DEPTH_DETAIL: &str = "a root group slot is not a group record";
 const AT_COMPONENTS_DETAIL: &str = "durable index repeats a projection component";
+
+// --- Complete entries, design v2: a call whose closure writes the family ends the fact. ---
+
+/// A strict present-entry sparse set whose dominating `exists` guard is separated from
+/// it by a call to a helper that erases the guarded entry is refused at the flow phase:
+/// the presence lattice consults the callee's demand closure at the `Call` and drops
+/// every fact in a family that closure writes. The verifier establishes this on its own,
+/// with no compiler proof in the image. Today calls are transparent to the lattice and
+/// the image verifies.
+#[test]
+#[ignore = "B2 complete entries"]
+fn a_strict_sparse_set_after_a_call_that_erases_the_family_rejects() {
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let sites = durable_schema(&mut draft);
+    let src = ok(draft.intern_string("src/main.mw"));
+    let text = ok(draft.intern_text("x"));
+    // The helper erases the entry its one key parameter names.
+    let eraser_name = ok(draft.intern_string("eraser"));
+    let eraser_code = vec![
+        Instr::LocalGet(0),
+        Instr::DurEraseEntry(sites.entry.clone()),
+        Instr::Return,
+    ];
+    let eraser = draft
+        .add_function(FunctionDef {
+            name: eraser_name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Text)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&eraser_code),
+            code: eraser_code,
+        })
+        .expect("every site operand is live");
+    // Instruction-index layout:
+    //   0 TxnBegin
+    //   1 LocalGet(0); 2 DurExists(entry); 3 JumpIfFalse(9) — present edge proves slot 0.
+    //   4 LocalGet(0); 5 Call(eraser) — the callee's closure erases `^counters`.
+    //   6 ConstLoad; 7 SomeWrap; 8 strict set on slot 0 (rejected: the call ended the fact).
+    //   9 TxnCommit; 10 Return.
+    let put_code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::DurExists(sites.entry.clone()),
+        Instr::JumpIfFalse(9),
+        Instr::LocalGet(0),
+        Instr::Call(eraser.index()),
+        Instr::ConstLoad(text),
+        Instr::SomeWrap,
+        Instr::DurSetSparsePresent {
+            site: sites.label,
+            key_slots: vec![0],
+        },
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let put_name = ok(draft.intern_string("put"));
+    let put = draft
+        .add_function(FunctionDef {
+            name: put_name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Text),
+            ],
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&put_code),
+            code: put_code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(ExportId::of_local("", "e"), put);
+    let bytes = draft.encode().expect("encode").bytes;
+    assert_eq!(code_of(&bytes), "image.flow");
+}

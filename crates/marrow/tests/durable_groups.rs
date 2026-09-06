@@ -723,3 +723,64 @@ fn a_group_leaf_write_through_a_place_proven_present_updates_the_leaf() {
         None
     );
 }
+
+// The same ledger over a `details` group whose `pages` leaf is required.
+const REQUIRED_LEAF_SCHEMA: &str = r#"resource Book {
+    required title: string
+
+    details {
+        required pages: int
+        language: string
+    }
+
+    notes[noteId: string] {
+        required text: string
+    }
+}
+
+store ^books[shelf: int, id: int]: Book
+"#;
+
+/// A group with a required leaf is part of every present entry, so it is erased only
+/// with its entry: `delete b.details` is `check.type` when `details` holds a required
+/// leaf. Today the erase compiles and leaves the entry short of `pages`.
+#[test]
+#[ignore = "B2 complete entries"]
+fn an_erase_of_a_group_with_a_required_leaf_is_refused_at_check() {
+    let source = format!(
+        "{REQUIRED_LEAF_SCHEMA}
+pub fn dropDetails(shelf: int, id: int) {{
+    transaction {{
+        place b = ^books[shelf, id]
+        if exists(b) {{
+            delete b.details
+        }}
+    }}
+}}
+"
+    );
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let codes: Vec<String> = match marrow_compile::compile(&project) {
+        Ok(_) => Vec::new(),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            diagnostics.iter().map(|d| d.code().to_string()).collect()
+        }
+        Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
+    };
+    assert_eq!(
+        codes,
+        vec!["check.type".to_string()],
+        "a group holding a required leaf is erased only with its entry"
+    );
+}
