@@ -6,6 +6,7 @@ use marrow_image::{
     RootOccurrenceDef, Scalar, SemanticPath, SemanticTarget, SpanEntry,
 };
 use std::cell::Cell;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 #[path = "../../../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
@@ -57,20 +58,16 @@ pub(super) fn record_comparison() {
 }
 
 fn observe<T>(run: impl FnOnce() -> T) -> (T, Counts) {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            COUNTS.with(|slot| slot.set(None));
-        }
-    }
     COUNTS.with(|slot| {
         assert!(slot.get().is_none(), "observations do not nest");
         slot.set(Some(Counts::default()));
     });
-    let _reset = Reset;
-    let result = run();
-    let counts = COUNTS.with(|slot| slot.get().expect("observation is active"));
-    (result, counts)
+    let result = catch_unwind(AssertUnwindSafe(run));
+    let counts = COUNTS.with(|slot| slot.take().expect("observation is active"));
+    match result {
+        Ok(result) => (result, counts),
+        Err(panic) => resume_unwind(panic),
+    }
 }
 
 fn id(kind: u8, index: usize) -> LedgerIdBytes {
