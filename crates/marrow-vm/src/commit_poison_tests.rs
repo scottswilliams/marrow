@@ -42,13 +42,8 @@ fn vm_spans(code: &[Instr]) -> Vec<SpanEntry> {
         .collect()
 }
 
-#[derive(Clone, Copy)]
-enum VmWrite {
-    Create,
-}
-
 /// The encoded fixture image; every consumer seals it through the verifier.
-fn vm_commit_image(write: VmWrite) -> Vec<u8> {
+fn vm_commit_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
     let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
@@ -118,18 +113,15 @@ fn vm_commit_image(write: VmWrite) -> Vec<u8> {
         .expect("the binding is live");
     let key = draft.intern_text("vm").expect("a within-domain mint");
     let value = draft.intern_int(7).expect("a within-domain mint");
-    let mut code = vec![
+    let code = vec![
         Instr::TxnBegin,
         Instr::ConstLoad(key),
         Instr::ConstLoad(value),
+        Instr::RecordNew(record),
+        Instr::DurCreateEntry(entry_site),
+        Instr::TxnCommit,
+        Instr::Return,
     ];
-    match write {
-        VmWrite::Create => {
-            code.push(Instr::RecordNew(record));
-            code.push(Instr::DurCreateEntry(entry_site));
-        }
-    }
-    code.extend([Instr::TxnCommit, Instr::Return]);
     let name = draft.intern_string("write").expect("a within-domain mint");
     let source = draft
         .intern_string("src/main.mw")
@@ -168,7 +160,7 @@ fn run_vm_write(
 
 #[test]
 fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
-    let image = verify(&vm_commit_image(VmWrite::Create)).expect("verify VM fixture");
+    let image = verify(&vm_commit_image()).expect("verify VM fixture");
     let export = image
         .export_by_id(ExportId::of_local("", "write"))
         .expect("write export");
@@ -251,14 +243,14 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
 /// fault engine through `DurableStore::from_engine` as the commit-outcome matrix above;
 /// neither failure poisons the handle, and a later independent invocation can commit.
 #[test]
-fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
+fn vm_preserves_staging_and_witness_failures_without_poisoning() {
     // A create plan writes the entry marker then its value leaf. Failing the value write
     // happens before TxnCommit and remains an ordinary typed runtime fault.
     {
         let mode = ModeHandle::new(Mode::Confirm);
         let write_fault = WriteFaultHandle::inert();
         let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
-        let image = verify(&vm_commit_image(VmWrite::Create)).expect("verify VM fixture");
+        let image = verify(&vm_commit_image()).expect("verify VM fixture");
         write_fault.set(Some(2));
         let fault = run_vm_write(&mut store, &image).expect_err("stage write must fault");
         let DurableExecutionFault::Runtime(fault) = fault else {
@@ -279,7 +271,7 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
         let mode = ModeHandle::new(Mode::Confirm);
         let write_fault = WriteFaultHandle::inert();
         let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
-        let image = verify(&vm_commit_image(VmWrite::Create)).expect("verify VM fixture");
+        let image = verify(&vm_commit_image()).expect("verify VM fixture");
         write_fault.set(Some(3));
         let fault = run_vm_write(&mut store, &image).expect_err("witness write must fault");
         let DurableExecutionFault::Incomplete(incomplete) = fault else {

@@ -333,7 +333,7 @@ pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
             | Instr::DurSetField { .. }
             | Instr::DurCreateEntry(_)
             | Instr::DurReplaceEntry(_)
-            | Instr::DurReplaceGroup(_)
+            | Instr::DurReplaceGroup { .. }
             | Instr::DurEraseField(_)
             | Instr::DurEraseEntry(_)
             | Instr::DurEraseGroup(_)
@@ -355,7 +355,7 @@ pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
         Instr::DurSetField { .. }
         | Instr::DurCreateEntry(_)
         | Instr::DurReplaceEntry(_)
-        | Instr::DurReplaceGroup(_)
+        | Instr::DurReplaceGroup { .. }
         | Instr::DurEraseField(_)
         | Instr::DurEraseEntry(_)
         | Instr::DurEraseGroup(_) => true,
@@ -472,7 +472,7 @@ pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
 }
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
-    // --- durable places (design §D) ---
+    // --- Durable places ---
 
     /// Detect the inline durable shape of a place expression: a whole-entry address
     /// `^root(key)….b(bkey)` at any depth, or a field-exact address `<entry-address>.field`.
@@ -2846,7 +2846,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         match &place.target {
             DurTarget::Entry { node, handle } => {
                 let (handle, record) = (handle.clone(), node.record());
-                self.write_family(family);
                 self.lower_upsert(&place.keys, &handle, record, value, place.span)?;
                 // A whole-entry assignment through a place leaves the entry present on
                 // every path from here, so the rest of the block may write through it.
@@ -2856,24 +2855,23 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             DurTarget::Field { handle, ty, .. } => {
                 let ty = *ty;
-                let key_slots = self.require_present(family, place.bound_key_path(), place.span)?;
+                let key_slots = place.bound_key_path();
                 let site = self
                     .site_operand(handle)
                     .ok_or(LoweringFailure::Recoverable)?;
                 self.lower_definite_field_value(value, garg_to_lty(ty), place.span)?;
+                let key_slots = self.require_present(family, key_slots, place.span)?;
                 self.push(Instr::DurSetField { site, key_slots }, place.span)?;
             }
             // `p.group = R.group(…)`: an exact whole-group replacement, group-scoped (the
             // entry's other groups, top-level fields, and branches are untouched). The
-            // key-path is pushed first, then the group record, the order
-            // `DurReplaceGroup` reads.
+            // key slots are captured before the RHS; proof use follows its effects.
             DurTarget::Group { handle, record, .. } => {
                 let record = *record;
-                self.require_present(family, place.bound_key_path(), place.span)?;
+                let key_slots = place.bound_key_path();
                 let site = self
                     .site_operand(handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.emit_key_path(&place.keys, place.span)?;
                 self.lower_as(
                     value,
                     LTy::Record {
@@ -2881,15 +2879,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         optional: false,
                     },
                 )?;
-                self.push(Instr::DurReplaceGroup(site), place.span)?;
+                let key_slots = self.require_present(family, key_slots, place.span)?;
+                self.push(Instr::DurReplaceGroup { site, key_slots }, place.span)?;
             }
             // `p.group.leaf = value`: a whole-group read-modify-write over the proven entry.
             DurTarget::GroupLeaf {
                 handle, slot, ty, ..
             } => {
                 let (handle, slot, ty) = (handle.clone(), *slot, *ty);
-                let key_slots = self.require_present(family, place.bound_key_path(), place.span)?;
-                self.lower_group_leaf_set(&key_slots, &handle, slot, value, ty, place.span)?;
+                self.lower_group_leaf_set(
+                    (family, place.bound_key_path()),
+                    &handle,
+                    slot,
+                    value,
+                    ty,
+                    place.span,
+                )?;
             }
         }
         Ok(())
@@ -3011,7 +3016,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.push(Instr::DurEraseEntry(site), place.span)?;
                 // The erased entry may be any entry of the family a proof covers, so every
                 // proof over the family ends here.
-                self.write_family(family);
                 self.erase_family(family);
             }
             DurTarget::Field {

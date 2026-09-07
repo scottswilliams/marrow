@@ -11,6 +11,9 @@
 
 use marrow_verify::{SealedInstr, VerifiedImage};
 
+#[path = "durable_places/presence_lifetime.rs"]
+mod presence_lifetime;
+
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -34,49 +37,37 @@ fn keyOf(n: int): int {
 }
 "#;
 
-fn compile_verify(source: &str) -> VerifiedImage {
+fn capture_source(source: &str, ids: &str) -> marrow_project::ProjectInput {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
         source.as_bytes().to_vec(),
     )];
-    let project = marrow_project::capture(
+    marrow_project::capture(
         &manifest,
         files,
-        Some(IDS.as_bytes()),
+        Some(ids.as_bytes()),
         &marrow_project::CaptureLimits::DEFAULT,
     )
-    .expect("capture");
+    .expect("capture")
+}
+
+fn compile_verify(source: &str) -> VerifiedImage {
+    compile_verify_with_ids(source, IDS)
+}
+
+fn compile_verify_with_ids(source: &str, ids: &str) -> VerifiedImage {
+    let project = capture_source(source, ids);
     let compiled = marrow_compile::compile(&project).expect("compile");
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
 }
 
 /// The typed diagnostic codes a source that fails to compile carries.
 fn compile_error_codes(source: &str) -> Vec<String> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match marrow_compile::compile(&project) {
-        Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            diagnostics.iter().map(|d| d.code().to_string()).collect()
-        }
-        Err(
-            marrow_compile::CompileFailure::Invariant(_)
-            | marrow_compile::CompileFailure::ResourceLimit(_),
-        ) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
+    compile_diagnostics(source)
+        .into_iter()
+        .map(|(code, _, _)| code)
+        .collect()
 }
 
 /// The instruction stream of the function named `name`.
@@ -563,26 +554,17 @@ pub fn edit(n: int, v: int) {
 
 // --- Complete entries: a field write updates an entry the compiler has proved present. ---
 //
-// Every test in this section is red until the B2 complete-entries vertical lands. Each
-// asserts the rule the design predicts through the production capture -> compile path:
-// a field write through a place needs a presence fact that no erase of the entry's
-// family — direct, through another binding, or inside a called helper — has ended, and
-// a required field read through such a place has its declared type.
+// A field write through a place needs a presence fact that no entry erase in the
+// family — direct, through another binding, or inside a called helper — has ended.
+// The ignored required-read case records the separate deferred provenance rule.
 
 /// `(code, line, column)` of every diagnostic a source that fails to compile carries.
 fn compile_diagnostics(source: &str) -> Vec<(String, u32, u32)> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
+    compile_diagnostics_with_ids(source, IDS)
+}
+
+fn compile_diagnostics_with_ids(source: &str, ids: &str) -> Vec<(String, u32, u32)> {
+    let project = capture_source(source, ids);
     match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
@@ -609,10 +591,9 @@ fn position_of(source: &str, needle: &str) -> (u32, u32) {
 /// The refusal a field write without a live presence fact reports.
 const REQUIRES_PRESENCE: &str = "check.requires_presence";
 
-/// A presence fact ends at a call whose composed demand writes the entry's family:
+/// A presence fact ends at a call that can erase an entry in the guarded family:
 /// `wipe(n)` erases `^counters[n]` inside the guarded block, so the sparse set after it
-/// is refused at check time with a typed code at the write. Today the program checks
-/// clean and faults at runtime with `run.corruption`.
+/// is refused at check time with a typed code at the write.
 #[test]
 fn a_sparse_set_after_a_helper_erase_of_the_family_is_refused_at_check() {
     let source = format!(
@@ -645,8 +626,7 @@ pub fn provedThenHelperErase(n: int): bool {
 
 /// A presence fact ends at any erase of the entry's family in the same region, whichever
 /// binding spells it: `delete b` erases the entry `a` was proven for, so the sparse set
-/// through `a` is refused at check time. Today the program checks clean and faults at
-/// runtime with `run.corruption`.
+/// through `a` is refused at check time.
 #[test]
 fn a_sparse_set_after_an_erase_through_another_place_is_refused_at_check() {
     let source = format!(
@@ -675,9 +655,7 @@ pub fn provedThenAliasErase(n: int): bool {
 }
 
 /// Whole-entry assignment is the only way an entry comes into existence: a required
-/// field write on an entry no fact proves present is refused at check time rather than
-/// creating the entry at commit. Today the write compiles to the bare set and the entry
-/// is minted by the commit reconcile.
+/// field write on an entry no fact proves present is refused at check time.
 #[test]
 fn a_field_write_on_an_unproven_entry_is_refused_at_check() {
     let source = format!(
@@ -698,11 +676,11 @@ pub fn create(n: int, v: int) {
     );
 }
 
-/// A present entry has every required field, so inside `if exists(p)` the required
-/// `p.value` reads as a plain `int`, while the sparse `p.label` stays `string?`. Today
-/// every durable field read is optional and the annotated binding is `check.type`.
+/// Deferred required-read/provenance case: `p.value` should read as `int` inside
+/// `if exists(p)`, while `p.label` stays `string?`. Required durable reads are
+/// currently optional, so the annotated binding still reports `check.type`.
 #[test]
-#[ignore = "B2 complete entries"]
+#[ignore = "deferred required-read/provenance slice: required durable reads remain optional"]
 fn a_required_field_reads_bare_through_a_place_proven_present() {
     let source = format!(
         "{HEADER}{}",
@@ -727,14 +705,10 @@ pub fn valueOf(n: int): int {
     assert!(has_function(&image, "valueOf"));
 }
 
-// --- Complete entries, design v2: proof lifetime and the one clearing spelling. ---
-
 /// A loop body is one region: a write through `p` inside the loop precedes, on the
 /// back edge, the erase of `p`'s family later in the same body, so the write is
 /// refused at check time when the loop closes. Both the direct erase and a helper
-/// whose demand writes the family are refused. Today the direct form compiles to a
-/// strict set the verifier then rejects (`image.flow`), and the helper form verifies
-/// and faults at runtime.
+/// that erases an entry in the family end the proof.
 #[test]
 fn a_field_write_inside_a_loop_that_erases_the_family_is_refused_at_check() {
     let direct = format!(
@@ -790,13 +764,12 @@ pub fn writeThenHelperInLoop(n: int): bool {
     assert_eq!(
         compile_diagnostics(&through_helper),
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
-        "a call whose demand writes the family inside the loop ends the fact on the back edge"
+        "a call that erases an entry in the family ends the fact on the loop's back edge"
     );
 }
 
 /// An erase of the family ends the fact whatever key it names: `delete ^counters[n + 1]`
-/// may or may not be `p`'s entry, and the rule does not reason about keys. Today the
-/// inline erase leaves the compiler's fact in place and the set is emitted strict.
+/// may or may not be `p`'s entry, and the rule does not reason about keys.
 #[test]
 fn an_inline_erase_of_another_key_in_the_family_is_refused_at_check() {
     let source = format!(
@@ -826,7 +799,7 @@ pub fn eraseNeighbourThenSet(n: int): bool {
 /// `if not exists(p) { return … }` proves `p` present for the rest of the block, the
 /// same way a let-else does: the guarded block diverges, so control reaches the
 /// continuation only with the entry present. The set after the guard compiles and is
-/// strict. Today the continuation carries no fact and the set is bare.
+/// strict.
 #[test]
 fn a_negative_diverging_guard_carries_the_fact_into_the_continuation() {
     let source = format!(
@@ -858,9 +831,8 @@ pub fn setLabelIfPresent(n: int): bool {
     );
 }
 
-/// A field is cleared by `delete p.f` and by nothing else: assigning `absent` to a
-/// durable field is `check.type` at the write. Today the assignment compiles as a
-/// sparse set of `absent`.
+/// A sparse field is cleared by `delete p.f`: assigning `absent` to a durable
+/// field is `check.type` at the write.
 #[test]
 fn a_durable_field_assigned_absent_is_refused_naming_delete() {
     let source = format!(
@@ -886,7 +858,7 @@ pub fn clearLabel(n: int) {
 
 /// A call whose demand only reads the family keeps the fact: `peek(n)` reads
 /// `^counters` between the guard and the set, and the set stays strict; the same
-/// program with an erasing helper is refused. Today the erasing form compiles clean.
+/// program with an erasing helper is refused.
 #[test]
 fn a_read_only_helper_keeps_the_fact_while_an_erasing_helper_ends_it() {
     let reading = format!(
@@ -944,15 +916,12 @@ pub fn wipeThenSet(n: int): int {
     assert_eq!(
         compile_diagnostics(&erasing),
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
-        "the discriminator: a call whose demand writes the family ends the fact"
+        "a call that erases an entry in the family ends the fact"
     );
 }
 
-// --- Complete entries, design v3: loop regions of every loop kind, and the guards. ---
-
 /// A `while` body is a loop region like a bounded traversal: the write through `p`
-/// precedes `delete p` on the back edge, so it is refused at the loop's close. Today
-/// the compiler emits the strict set and the verifier rejects the image (`image.flow`).
+/// precedes `delete p` on the back edge, so it is refused at the loop's close.
 #[test]
 fn a_field_write_inside_a_while_loop_that_erases_the_family_is_refused_at_check() {
     let source = format!(
@@ -984,9 +953,8 @@ pub fn whileErase(n: int): bool {
 }
 
 /// A write inside an inner loop is refused when the outer loop's body erases the
-/// family after it: the obligation is recorded against every loop entered after the
-/// fact was established, and the outer loop's close resolves it. Today the compiler
-/// emits the strict set and the verifier rejects the image (`image.flow`).
+/// family after it: the obligation covers the outermost loop entered after the
+/// fact was established, including its nested work, and that loop's close resolves it.
 #[test]
 fn a_field_write_inside_nested_loops_that_erase_the_family_is_refused_at_check() {
     let source = format!(
@@ -1019,9 +987,7 @@ pub fn nestedErase(n: int): bool {
 }
 
 /// A loop whose body erases the family ends the fact for everything after the loop,
-/// whichever key the erase names. Today the inline erase leaves the compiler's fact
-/// and the verifier's exact-key kill misses it, so the program verifies and faults at
-/// runtime.
+/// whichever key the erase names.
 #[test]
 fn a_field_write_after_a_loop_that_erases_the_family_is_refused_at_check() {
     let source = format!(
@@ -1052,8 +1018,7 @@ pub fn eraseAllThenSet(n: int): bool {
 }
 
 /// Only a diverging negative guard proves its continuation: when the block of
-/// `if not exists(p)` falls through, the write after it has no proof. Today the write
-/// compiles as a bare set.
+/// `if not exists(p)` falls through, the write after it has no proof.
 #[test]
 fn a_non_diverging_negative_guard_does_not_prove_the_continuation() {
     let source = format!(
@@ -1081,8 +1046,7 @@ pub fn noteThenSet(n: int): int {
 }
 
 /// A durable field set takes a bare value: an optional operand is `check.type` at the
-/// write, naming `delete`, so clearing has one spelling. Today the optional operand
-/// is accepted and an absent value clears the field.
+/// write, naming `delete`, so clearing has one spelling.
 #[test]
 fn a_durable_field_assigned_an_optional_value_is_refused_naming_delete() {
     let source = format!(
@@ -1110,9 +1074,9 @@ pub fn setMaybe(n: int, flag: bool) {
     );
 }
 
-/// The loop rule refuses only a write that an erase or a family-writing call in the
-/// same region can precede on the back edge: a loop body that only writes keeps its
-/// fact, and the set stays strict. This holds today and must keep holding.
+/// The loop rule refuses a write that an entry erase in the same family, direct or
+/// through a call, can precede on the back edge. A loop body that only updates
+/// fields keeps its fact, and the set stays strict.
 #[test]
 fn a_field_write_inside_a_loop_with_no_erase_stays_accepted() {
     let source = format!(
@@ -1144,7 +1108,7 @@ pub fn relabelInLoop(n: int): bool {
 /// A fact established inside the loop body — `if exists(pin)` on each iteration — is
 /// never refused by the loop rule, even when the same body erases the family after the
 /// write: the fact was established after the loop was entered, so the back edge cannot
-/// place the erase before the proof. This holds today and must keep holding.
+/// place the erase before the proof.
 #[test]
 fn a_per_iteration_pin_proof_stays_accepted() {
     let source = format!(

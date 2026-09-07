@@ -636,3 +636,230 @@ fn memory_and_redb_agree_on_the_group_operation_trace() {
         ]
     );
 }
+
+/// Entry markers survive an empty payload, replacement, and deletion of the last
+/// sparse leaf. A zero-field child and its all-sparse parent have independent
+/// presence, including when either payload is erased.
+#[test]
+fn empty_payload_marker_lifetime_agrees_across_engines() {
+    fn empty() -> EntryValue {
+        EntryValue {
+            fields: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
+
+    fn sparse(value: Option<i64>) -> EntryValue {
+        EntryValue {
+            fields: vec![value.map(|n| ValueDomain::Scalar(RuntimeScalar::Int(n)))],
+            groups: Vec::new(),
+        }
+    }
+
+    // Every checkpoint opens a fresh committed read view and checks both the
+    // materialized records and the marker-based traversal/presence owners.
+    fn assert_state<E: ByteEngine>(
+        store: &mut DurableStore<E>,
+        expected_root: Option<EntryValue>,
+        expected_child: Option<EntryValue>,
+    ) {
+        let mut reader = store
+            .read_session(InvocationGrant::full_store(), read())
+            .expect("read committed marker state");
+        let root = reader.site(0);
+        let field = reader.site(1);
+        let child = reader.site(2);
+        let root_keys = [key("parent")];
+        let child_keys = [key("parent"), KeyScalar::Int(7)];
+        assert_eq!(
+            reader.read_entry(&root, &root_keys),
+            Ok(expected_root.clone()),
+        );
+        assert_eq!(
+            reader.read_entry(&child, &child_keys),
+            Ok(expected_child.clone()),
+        );
+        assert_eq!(
+            reader.read_field(&field, &root_keys),
+            Ok(expected_root
+                .as_ref()
+                .and_then(|entry| entry.fields[0].clone())),
+        );
+        assert_eq!(
+            reader.presence(&root, &root_keys),
+            Ok(if expected_root.is_some() {
+                Presence::Present
+            } else {
+                Presence::Absent
+            }),
+        );
+        assert_eq!(
+            reader.presence(&child, &child_keys),
+            Ok(if expected_child.is_some() {
+                Presence::Present
+            } else {
+                Presence::Absent
+            }),
+        );
+        assert_eq!(
+            dump_keys(&mut reader, &root),
+            if expected_root.is_some() {
+                vec![key("parent")]
+            } else {
+                Vec::new()
+            },
+        );
+        let children = reader
+            .iterate_bounded(
+                &child,
+                &root_keys,
+                None,
+                BoundedLimit::new(2).expect("positive fixture bound"),
+            )
+            .expect("child traversal");
+        assert!(!children.more);
+        assert_eq!(
+            children.keys,
+            if expected_child.is_some() {
+                vec![KeyScalar::Int(7)]
+            } else {
+                Vec::new()
+            },
+        );
+    }
+
+    fn replay<E: ByteEngine>(mut store: DurableStore<E>) {
+        let root_keys = [key("parent")];
+        let child_keys = [key("parent"), KeyScalar::Int(7)];
+        assert_state(&mut store, None, None);
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("create child transaction");
+            let child = txn.site(2);
+            assert_eq!(
+                txn.create_entry(&child, &child_keys, empty()),
+                Ok(CreateOutcome::Created),
+            );
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, None, Some(empty()));
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("create parent transaction");
+            let root = txn.site(0);
+            assert_eq!(
+                txn.create_entry(&root, &root_keys, sparse(None)),
+                Ok(CreateOutcome::Created),
+            );
+            assert_eq!(
+                txn.create_entry(&root, &root_keys, sparse(Some(99))),
+                Ok(CreateOutcome::AlreadyPresent),
+            );
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, Some(sparse(None)), Some(empty()));
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("set sparse leaf transaction");
+            let field = txn.site(1);
+            txn.set_field(
+                &field,
+                &root_keys,
+                ValueDomain::Scalar(RuntimeScalar::Int(9)),
+            )
+            .expect("set the only sparse leaf");
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, Some(sparse(Some(9))), Some(empty()));
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("erase sparse leaf transaction");
+            let field = txn.site(1);
+            assert_eq!(
+                txn.erase_field(&field, &root_keys),
+                Ok(EraseOutcome::Erased)
+            );
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, Some(sparse(None)), Some(empty()));
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("repopulate sparse leaf transaction");
+            let field = txn.site(1);
+            txn.set_field(
+                &field,
+                &root_keys,
+                ValueDomain::Scalar(RuntimeScalar::Int(11)),
+            )
+            .expect("repopulate the sparse leaf");
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, Some(sparse(Some(11))), Some(empty()));
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("empty replacement transaction");
+            let root = txn.site(0);
+            let child = txn.site(2);
+            txn.replace_entry(&root, &root_keys, sparse(None))
+                .expect("replace parent with its vacant payload");
+            txn.replace_entry(&child, &child_keys, empty())
+                .expect("replace the zero-field child");
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, Some(sparse(None)), Some(empty()));
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("erase child transaction");
+            let child = txn.site(2);
+            assert_eq!(
+                txn.erase_entry(&child, &child_keys),
+                Ok(EraseOutcome::Erased)
+            );
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, Some(sparse(None)), None);
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("erase parent transaction");
+            let root = txn.site(0);
+            let child = txn.site(2);
+            assert_eq!(
+                txn.create_entry(&child, &child_keys, empty()),
+                Ok(CreateOutcome::Created),
+            );
+            assert_eq!(txn.erase_entry(&root, &root_keys), Ok(EraseOutcome::Erased));
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        assert_state(&mut store, None, Some(empty()));
+    }
+
+    let mut builder = StoreSchemaBuilder::root("parents", vec![ScalarKind::Str]);
+    builder.scalar_field("value", ScalarKind::Int, false);
+    builder.open_branch("children", vec![ScalarKind::Int]);
+    builder.close_branch();
+    let schema = builder
+        .finish()
+        .expect("sparse root and empty child schema");
+    let sites = vec![
+        SiteTarget::whole_payload(),
+        SiteTarget::field_leaf(0),
+        SiteTarget::branch_entry(vec![0]),
+    ];
+    replay(DurableStore::from_engine(
+        MemoryEngine::new(),
+        project(&schema, sites.clone()),
+    ));
+    let temp = TempDir::new("empty-payload-markers");
+    replay(DurableStore::from_engine(
+        native_owner(&temp.store()),
+        project(&schema, sites),
+    ));
+}

@@ -241,10 +241,17 @@ fn groups_image() -> VerifiedImage {
         let code = vec![
             Instr::TxnBegin,
             Instr::ConstLoad(key),
+            Instr::LocalSet(0),
+            Instr::LocalGet(0),
+            Instr::DurExists(root_entry.clone()),
+            Instr::JumpIfFalse(10),
             Instr::ConstLoad(pages_const),
             Instr::SomeWrap,
             Instr::RecordNew(details_record),
-            Instr::DurReplaceGroup(group_entry.clone()),
+            Instr::DurReplaceGroup {
+                site: group_entry.clone(),
+                key_slots: vec![0],
+            },
             Instr::TxnCommit,
             Instr::Return,
         ];
@@ -254,7 +261,7 @@ fn groups_image() -> VerifiedImage {
                 source: src,
                 params: Vec::new(),
                 ret: ImageType::Unit,
-                local_count: 0,
+                local_count: 1,
                 spans: spans(&code),
                 code,
             })

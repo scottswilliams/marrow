@@ -2083,7 +2083,12 @@ store ^charts[mrn: int]: Chart
 
 pub fn recordName(mrn: int, name: string) {
     transaction {
-        ^charts[mrn] = Chart(name: name)
+        place chart = ^charts[mrn]
+        if exists(chart) {
+            chart.name = name
+        } else {
+            chart = Chart(name: name)
+        }
     }
 }
 

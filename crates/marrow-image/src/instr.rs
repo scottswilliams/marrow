@@ -84,7 +84,7 @@ pub const OP_EQ_ID: u8 = 0x2A;
 // `group` node, addressed by its containing entry's key-path. The group-scoped
 // payload-only law scopes replace/erase to the group's own field set.
 pub const OP_DUR_READ_GROUP: u8 = 0x2B;
-pub const OP_DUR_REPLACE_GROUP: u8 = 0x2C;
+pub const OP_DUR_REPLACE_GROUP: u8 = 0xBB;
 pub const OP_DUR_ERASE_GROUP: u8 = 0x2D;
 pub const OP_DUR_EXISTS: u8 = 0x30;
 pub const OP_DUR_READ_FIELD: u8 = 0x31;
@@ -96,8 +96,8 @@ pub const OP_DUR_ERASE_ENTRY: u8 = 0x38;
 pub const OP_DUR_FAMILY_EXISTS: u8 = 0x39;
 // The present-entry field set and group read: both address a stored node through the
 // containing entry's pre-evaluated key slots and assert that entry is present.
-pub const OP_DUR_SET_FIELD: u8 = 0x3A;
-pub const OP_DUR_READ_GROUP_PRESENT: u8 = 0x33;
+pub const OP_DUR_SET_FIELD: u8 = 0xB9;
+pub const OP_DUR_READ_GROUP_PRESENT: u8 = 0xBA;
 pub const OP_DUR_ITERATE_BOUNDED: u8 = 0x3B;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
 pub const OP_TXN_COMMIT: u8 = 0x3D;
@@ -391,10 +391,13 @@ pub enum Instr {
         site: PlannedSiteRef,
         key_slots: Vec<u16>,
     },
-    /// `K, Rec →`: replace the whole materialized value of the group the `GroupEntry`
-    /// site `_0` names, under the group-scoped payload-only law (the group's own field
-    /// set only; sibling groups, top-level fields, and branches untouched).
-    DurReplaceGroup(PlannedSiteRef),
+    /// `Rec →`: replace the group at `site`, reading the containing entry's key path
+    /// from `key_slots` (root-first). The presence lattice proves the entry present;
+    /// only this group's fields change, preserving sibling groups and branches.
+    DurReplaceGroup {
+        site: PlannedSiteRef,
+        key_slots: Vec<u16>,
+    },
     /// `K →`: erase the group the `GroupEntry` site `_0` names — clears only that
     /// group's leaves (no-op on an absent entry).
     DurEraseGroup(PlannedSiteRef),
@@ -585,7 +588,7 @@ impl Instr {
             Instr::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
             Instr::DurReadGroup(_) => OP_DUR_READ_GROUP,
             Instr::DurReadGroupPresent { .. } => OP_DUR_READ_GROUP_PRESENT,
-            Instr::DurReplaceGroup(_) => OP_DUR_REPLACE_GROUP,
+            Instr::DurReplaceGroup { .. } => OP_DUR_REPLACE_GROUP,
             Instr::DurEraseGroup(_) => OP_DUR_ERASE_GROUP,
             Instr::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
             Instr::TxnBegin => OP_TXN_BEGIN,
@@ -630,7 +633,6 @@ impl Instr {
             | Instr::DurEraseField(_)
             | Instr::DurEraseEntry(_)
             | Instr::DurReadGroup(_)
-            | Instr::DurReplaceGroup(_)
             | Instr::DurEraseGroup(_)
             | Instr::ListNew(_)
             | Instr::MapNew(_)
@@ -663,7 +665,9 @@ impl Instr {
             Instr::EnumConstruct { .. } | Instr::EnumPayloadGet { .. } => 4,
             // A big-endian `u16` site, a big-endian `u16` key-path length, then one
             // big-endian `u16` per key-path slot.
-            Instr::DurSetField { key_slots, .. } | Instr::DurReadGroupPresent { key_slots, .. } => {
+            Instr::DurSetField { key_slots, .. }
+            | Instr::DurReadGroupPresent { key_slots, .. }
+            | Instr::DurReplaceGroup { key_slots, .. } => {
                 4 + 2 * key_slots.len()
             }
             // A big-endian `u16` site, a big-endian `u32` bound, a one-byte
@@ -703,7 +707,7 @@ impl Instr {
             | Instr::DurEraseEntry(site)
             | Instr::DurReadGroup(site)
             | Instr::DurReadGroupPresent { site, .. }
-            | Instr::DurReplaceGroup(site)
+            | Instr::DurReplaceGroup { site, .. }
             | Instr::DurEraseGroup(site)
             | Instr::DurIterateBounded { site, .. }
             | Instr::DurIndexScan { site, .. }

@@ -194,6 +194,13 @@ fn clinical_records_and_reads_a_required_field() {
         call(&mut s, "nameOf", vec![i(1)]),
         some_text("Ada Lovelace")
     );
+    call(&mut s, "setWeight", vec![i(1), i(80000)]);
+    call(&mut s, "setHeight", vec![i(1), i(2000)]);
+    call(&mut s, "setVital", vec![i(1), i(120), i(80), i(66)]);
+    call(&mut s, "recordName", vec![i(1), t("Ada")]);
+    assert_eq!(call(&mut s, "nameOf", vec![i(1)]), some_text("Ada"));
+    assert_eq!(call(&mut s, "systolicOf", vec![i(1)]), some_int(120));
+    assert_eq!(int_of(&ok_payload(s.call("bmiTimesTen", vec![i(1)]))), 200);
 }
 
 #[test]

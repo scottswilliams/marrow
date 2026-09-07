@@ -7,27 +7,27 @@ use super::*;
 /// A loop's patch targets — where `continue` jumps, and the jumps `break` emits that
 /// must be patched to the loop's exit once it is known — and its proof region: a loop
 /// body is one region, so a write through a fact older than the loop is refused when
-/// the body erases the fact's family or calls a function that writes it, because the
+/// the body erases the fact's family or calls a function that erases it, because the
 /// back edge puts that erase before the write.
 pub(super) struct LoopCtx<'a> {
     pub(super) continue_target: usize,
     pub(super) break_jumps: Vec<usize>,
     /// Families an entry erase inside this body (or a nested body) ended.
     pub(super) erased_families: Vec<&'a Family>,
-    /// Functions called inside this body (or a nested body).
-    pub(super) callees: Vec<u16>,
+    /// Start of the repeating region in the function's ordered call log.
+    pub(super) call_start: usize,
     /// Present-form writes inside this body through facts established before it was
     /// entered: the write's span and its family, resolved when the loop closes.
     pub(super) obligations: Vec<(SourceSpan, &'a Family)>,
 }
 
 impl<'a> LoopCtx<'a> {
-    pub(super) fn new(continue_target: usize) -> Self {
+    pub(super) fn new(continue_target: usize, call_start: usize) -> Self {
         Self {
             continue_target,
             break_jumps: Vec::new(),
             erased_families: Vec::new(),
-            callees: Vec::new(),
+            call_start,
             obligations: Vec::new(),
         }
     }
@@ -36,40 +36,39 @@ impl<'a> LoopCtx<'a> {
 /// A presence proof over one durable entry: the compiler knows the entry addressed by
 /// `key_slots` (its whole key-path as pre-evaluated place slots, root-first) in
 /// `family` is present from here to the end of the block that established the fact,
-/// unless an erase of the family or a call that writes it ends it first. `depth` is
+/// unless an erase of the family or a call that erases it ends it first. `depth` is
 /// the loop nesting at establishment, so a write inside a loop entered later records
-/// an obligation on that loop; `callees` are the functions called since establishment,
-/// each checked after lowering against its written-family closure.
+/// an obligation on that loop. `call_start` indexes the single ordered call log;
+/// calls after that point are checked against their erased-family closures.
 pub(super) struct PresenceFact<'a> {
     pub(super) family: &'a Family,
     pub(super) key_slots: Vec<u16>,
     pub(super) depth: usize,
-    pub(super) callees: Vec<u16>,
+    pub(super) call_start: usize,
 }
 
 /// A present-form write whose proof a call may have ended: the write's span, its
-/// family, and the functions called between the proof and the write (or, for a write
-/// inside a loop, inside that loop). Resolved after lowering, when every callee's
-/// written-family closure is known.
+/// family, and an interval in its function's ordered call log. A second interval
+/// may cover the outermost repeating region entered after the proof.
 pub(crate) struct PresenceObligation {
     pub span: SourceSpan,
     pub family: Family,
-    pub callees: Vec<u16>,
+    pub calls: std::ops::Range<usize>,
 }
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Record that the entry `key_slots` addresses in `family` is known present from
     /// here (a dominating guard or a completed upsert) until the enclosing block ends,
-    /// the family is erased, or a call writes it. A fact re-established inside a loop
+    /// the family is erased, or a call erases it. A fact re-established inside a loop
     /// is a fresh fact at the loop's depth, so a per-iteration guard is never charged
     /// with an outer fact's obligations.
     pub(super) fn mark_present(&mut self, family: &'a Family, key_slots: Vec<u16>) {
-        self.present_places.push(PresenceFact {
+        self.present_places.push(Some(PresenceFact {
             family,
             key_slots,
             depth: self.loops.len(),
-            callees: Vec::new(),
-        });
+            call_start: self.calls.len(),
+        }));
     }
 
     /// The newest presence fact over the entry `key_slots` addresses in `family`.
@@ -81,15 +80,12 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.present_places
             .iter()
             .rev()
+            .filter_map(Option::as_ref)
             .find(|fact| fact.family == family && fact.key_slots == key_slots)
     }
 
-    /// Consume a presence proof for a present-form operation at `span`: the write is
-    /// emitted only when a fact dominates the entry, and each loop entered after the
-    /// fact was established records the write as an obligation it resolves when it
-    /// closes, since its back edge may put an erase of the family before the write.
-    /// A fact's callees carry into the post-lowering check the same way. Without a
-    /// fact the write is refused here.
+    /// Require a dominating fact after operand effects, recording the calls since
+    /// its establishment and at most one outermost crossed-loop obligation.
     pub(super) fn require_present(
         &mut self,
         family: &'a Family,
@@ -107,14 +103,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Err(LoweringFailure::Recoverable);
         };
         let depth = fact.depth;
-        if !fact.callees.is_empty() {
+        let calls = fact.call_start..self.calls.len();
+        if !calls.is_empty() {
             self.presence_obligations.push(PresenceObligation {
                 span,
                 family: family.clone(),
-                callees: fact.callees.clone(),
+                calls,
             });
         }
-        for ctx in &mut self.loops[depth..] {
+        if let Some(ctx) = self.loops.get_mut(depth) {
             ctx.obligations.push((span, family));
         }
         Ok(key_slots)
@@ -124,18 +121,20 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// records the erase, so a write earlier in its body through an older fact is
     /// refused when the loop closes.
     pub(super) fn erase_family(&mut self, family: &'a Family) {
-        self.present_places.retain(|fact| fact.family != family);
+        if !self.erased_families.contains(&family) {
+            self.erased_families.push(family);
+        }
+        // Lexical scope marks are vector positions, so erasure must not move
+        // surviving facts below a mark that will later truncate the scope.
+        for fact in &mut self.present_places {
+            if fact.as_ref().is_some_and(|fact| fact.family == family) {
+                *fact = None;
+            }
+        }
         for ctx in &mut self.loops {
             if !ctx.erased_families.contains(&family) {
                 ctx.erased_families.push(family);
             }
-        }
-    }
-
-    /// Record that this body creates, replaces, or erases an entry of `family`.
-    pub(super) fn write_family(&mut self, family: &'a Family) {
-        if !self.written_families.contains(&family) {
-            self.written_families.push(family);
         }
     }
 
@@ -151,16 +150,22 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     "the loop body erases an entry of the family after this write, so \
                      the next iteration writes an entry the proof no longer covers",
                 ));
-            } else if !ctx.callees.is_empty() {
+            } else if ctx.call_start < self.calls.len() {
                 self.presence_obligations.push(PresenceObligation {
                     span,
                     family: family.clone(),
-                    callees: ctx.callees.clone(),
+                    calls: ctx.call_start..self.calls.len(),
                 });
             }
         }
-        self.present_places
-            .retain(|fact| !ctx.erased_families.contains(&fact.family));
+        for fact in &mut self.present_places {
+            if fact
+                .as_ref()
+                .is_some_and(|fact| ctx.erased_families.contains(&fact.family))
+            {
+                *fact = None;
+            }
+        }
         ctx.break_jumps
     }
 

@@ -292,7 +292,7 @@ fn apply(
         | SealedInstr::DurEraseEntry(_)
         | SealedInstr::DurReadGroup(_)
         | SealedInstr::DurReadGroupPresent { .. }
-        | SealedInstr::DurReplaceGroup(_)
+        | SealedInstr::DurReplaceGroup { .. }
         | SealedInstr::DurEraseGroup(_)
         | SealedInstr::DurIterateBounded { .. }
         | SealedInstr::DurIndexScan { .. }
@@ -1199,7 +1199,7 @@ pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurEraseEntry(site)
         | SealedInstr::DurReadGroup(site)
         | SealedInstr::DurReadGroupPresent { site, .. }
-        | SealedInstr::DurReplaceGroup(site)
+        | SealedInstr::DurReplaceGroup { site, .. }
         | SealedInstr::DurEraseGroup(site)
         | SealedInstr::DurIterateBounded { site, .. }
         | SealedInstr::DurIndexScan { site, .. }
@@ -1232,7 +1232,7 @@ pub(super) fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         SealedInstr::DurSetField { .. }
         | SealedInstr::DurCreateEntry(_)
         | SealedInstr::DurReplaceEntry(_)
-        | SealedInstr::DurReplaceGroup(_) => Some(OperationClass::Write),
+        | SealedInstr::DurReplaceGroup { .. } => Some(OperationClass::Write),
         SealedInstr::DurEraseField(_)
         | SealedInstr::DurEraseEntry(_)
         | SealedInstr::DurEraseGroup(_) => Some(OperationClass::Erase),
@@ -1541,10 +1541,10 @@ fn apply_durable(
             require_key_slots(frame, key_slots, &key_path, site_root)?;
             frame.stack.push(VType::bare_record(entry_record));
         }
-        SealedInstr::DurReplaceGroup(_) => {
+        SealedInstr::DurReplaceGroup { key_slots, .. } => {
             require_group(site_target)?;
             expect(pop(stack)?, VType::bare_record(entry_record))?;
-            pop_key_path(stack, &key_path, site_root)?;
+            require_key_slots(frame, key_slots, &key_path, site_root)?;
         }
         SealedInstr::DurEraseGroup(_) => {
             // A group holding a required leaf is part of every present entry and is

@@ -185,9 +185,8 @@ fn workshop_journey_over_the_companion_path() {
     );
     assert_eq!(terminal.value("moveCount", vec![]), Some(Value::Int(1)));
 
-    // Cross-root rollback: an add reusing asset 1's tag collides in the unique `byTag` index
-    // at the write, before the commit, and rolls the whole staged region back across both
-    // roots — proven by fresh processes reopening the store.
+    // The catalogued tally is staged before the duplicate asset tag faults at its write.
+    // Fresh processes must observe rollback of that earlier mutation of the other root.
     assert_eq!(
         terminal.fault(
             "add",

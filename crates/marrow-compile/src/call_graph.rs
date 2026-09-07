@@ -56,6 +56,12 @@ pub(crate) struct AcyclicCallOrder {
 }
 
 impl AcyclicCallOrder {
+    /// The minted function domain in callee-before-caller order. Retained call IDs
+    /// outside this domain still belong to reference validation, not this order.
+    pub(crate) fn callee_before_caller(&self) -> &[usize] {
+        &self.reverse_topological
+    }
+
     /// Settle a monotone boolean property over an acyclic call subrelation.
     ///
     /// `base` decides the direct value at a function. `successors` visits the

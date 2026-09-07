@@ -155,9 +155,8 @@ fn workshop_journey_over_one_ephemeral_session() {
     );
     assert_eq!(session.value("moveCount", vec![]), Some(Value::Int(1)));
 
-    // Cross-root rollback: an add reusing asset 1's tag collides in the unique `byTag` index
-    // at the write, before the commit, and rolls the whole staged region back across both
-    // roots.
+    // The catalogued tally is staged before the duplicate asset tag faults at its write.
+    // Rollback must discard that earlier mutation of the other root.
     assert_eq!(
         session.fault(
             "add",

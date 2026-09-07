@@ -159,9 +159,9 @@ pub(crate) fn capture_scaling_counts<T>(run: impl FnOnce() -> T) -> (T, ScalingC
     (result, counts)
 }
 
-/// Deterministic relation-work counts for the direct-call graph. These observe the
-/// production compile path only in unit tests and cannot change a graph, closure,
-/// diagnostic, or image byte.
+/// Deterministic relation-work counts and logical scratch populations for the
+/// direct-call graph. These observe the production compile path only in unit
+/// tests and cannot change a graph, closure, diagnostic, or image byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CallGraphCounts {
     /// Function rows classified by the cycle analysis.
@@ -172,6 +172,36 @@ pub(crate) struct CallGraphCounts {
     pub(crate) propagation_visits: usize,
     /// Direct-call edges examined by the three propagated semantic relations.
     pub(crate) propagation_edge_visits: usize,
+    /// Fixed-width family stripes settled by presence checking.
+    pub(crate) presence_stripes: usize,
+    /// Function summary rows visited across all presence stripes.
+    pub(crate) presence_row_visits: usize,
+    /// Direct-call occurrences read while propagating presence summaries.
+    pub(crate) presence_edge_visits: usize,
+    /// Call positions visited by the queried function/stripe prefix sweeps.
+    pub(crate) presence_query_positions: usize,
+    /// Query-side callee lookups made while at least one query is pending.
+    pub(crate) presence_summary_lookups: usize,
+    /// Nonempty presence queries inserted into pending chains.
+    pub(crate) presence_queries_queued: usize,
+    /// Pending query items consumed by matching erasing calls.
+    pub(crate) presence_queries_drained: usize,
+    /// Peak logical length of the reused presence summary vector, in words.
+    pub(crate) presence_summary_words: usize,
+    /// Peak retained borrowed query records, excluding vector spare capacity.
+    pub(crate) presence_query_rows: usize,
+    /// Peak retained direct erase seeds for tracked families.
+    pub(crate) presence_erase_rows: usize,
+    /// Peak logical length of the reused pending-chain link vector.
+    pub(crate) presence_next_slots: usize,
+    /// Peak retained failed obligation positions before diagnostic deduplication.
+    pub(crate) presence_failure_rows: usize,
+    /// Peak distinct directly erased families, including unqueried families.
+    pub(crate) presence_erased_families: usize,
+    /// Nonempty deferred presence obligations supplied to stripe settlement.
+    pub(crate) presence_obligations: usize,
+    /// Queried semantic families also directly erased by a retained function.
+    pub(crate) presence_families: usize,
 }
 
 impl CallGraphCounts {

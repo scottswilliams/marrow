@@ -3,10 +3,9 @@
 //! The fixture source and its committed `.marrow/ids` ledger are read from disk and
 //! driven through the whole production path — capture -> compile -> verify -> attach
 //! -> VM — the same path `marrow test` and a terminal invocation take. One test
-//! drives add/read/correct-rollback/final-read over a single *persistent* ephemeral
-//! attachment: because the attachment survives across invocations, a committed write
-//! is observable by a later read, and a faulting invocation rolls back its own region
-//! while leaving a prior commit intact.
+//! drives add/read/move/absent-move/final-read over a single persistent ephemeral
+//! attachment: committed writes are observable by later reads, and a move of an absent
+//! asset stops at its guard without changing either root.
 //!
 //! The demand tests read the catalog's verifier-reconstructed access demand off the
 //! sealed image: a mutating export demands writes, a read-only export does not, and
@@ -96,7 +95,7 @@ fn present_name(name: &str) -> Option<Value> {
 /// guard and writes nothing on either root, and a final read shows both roots at their
 /// prior committed values with no asset created.
 #[test]
-fn add_read_rollback_final_read() {
+fn add_read_move_and_absent_move_preserve_committed_state() {
     let image = compile_verify();
     let mut att = attach(&image);
 
@@ -156,8 +155,7 @@ fn add_read_rollback_final_read() {
     );
 
     // Neither root moved: the prior asset and its location stand, no asset 2 exists,
-    // and the ^tallies tallies (catalogued and moves) are exactly what committed before
-    // the fault — the moves tally was NOT advanced by the rolled-back region.
+    // and the catalogued and moves tallies retain their prior committed values.
     assert_eq!(
         run(&image, &mut att, "assetName", vec![Value::Int(1)]),
         present_name("Cordless Drill"),

@@ -52,7 +52,7 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
         is_test: false,
         unwrapped_mutations: Vec::new(),
         unwrapped_calls: Vec::new(),
-        written_families: Vec::new(),
+        erased_families: Vec::new(),
         presence_obligations: Vec::new(),
         has_direct_durable_op: false,
         owns_transaction: false,

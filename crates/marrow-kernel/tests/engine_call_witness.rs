@@ -243,10 +243,10 @@ fn an_in_range_write_advances_the_write_counter() {
 
 // --- The layer-walk bound class: a family walk costs its bound, not its population. ---
 //
-// Both witnesses are red until the B2 complete-entries vertical relocates entry presence
-// into an ordered family namespace. Today `layer_step` meets every descendant-only
-// sibling in the marker walk and seeks past each one, so a bound on frozen keys is not a
-// bound on engine seeks.
+// These witnesses specify the deferred presence-seek bounds. The current marker walk
+// seeks past each descendant-only sibling, so acquisition costs O(limit + 1 + d)
+// seeks and family presence costs O(1 + d), where d counts skipped descendant-only
+// siblings. A bound on frozen keys does not establish the stronger seek bound.
 
 /// A `books` root keyed by string with a required `title`, and a `notes` branch keyed by
 /// int with a required `text`. Site 0 is the root entry, site 1 the branch entry.
@@ -312,12 +312,12 @@ fn bound(n: u32) -> BoundedLimit {
     BoundedLimit::new(n).expect("positive bound")
 }
 
-/// `at most 1` over `[k1 present, k2 and k3 descendant-only, k4 present]` freezes `k1`
-/// and flags `more` in exactly two seeks: one per frozen key plus the one that finds the
-/// `(N + 1)`th present key. Today the walk also seeks past `k2` and `k3` (four seeks),
+/// The deferred presence-seek bound: `at most 1` over
+/// `[k1 present, k2 and k3 descendant-only, k4 present]` freezes `k1` and flags
+/// `more` in two seeks. The current walk also seeks past `k2` and `k3` (four seeks),
 /// so the count grows with the descendant-only population the bound never names.
 #[test]
-#[ignore = "B2 complete entries"]
+#[ignore = "deferred presence-seek slice: acquisition still seeks past descendant-only siblings"]
 fn a_bounded_layer_walk_costs_the_bound_plus_one_seek_regardless_of_descendant_only_siblings() {
     let (mut store, counters) = layered_store(&["k1", "k4"], &["k2", "k3"]);
     let mut txn = store
@@ -337,11 +337,11 @@ fn a_bounded_layer_walk_costs_the_bound_plus_one_seek_regardless_of_descendant_o
     );
 }
 
-/// A family presence probe over `[a1, a2, a3 descendant-only, a4 present]` answers
-/// `Present` in exactly one seek. Today it seeks past each descendant-only sibling first
-/// (four seeks), so `exists(^books)` costs the population, not the probe.
+/// The deferred presence-seek bound: a family presence probe over
+/// `[a1, a2, a3 descendant-only, a4 present]` answers `Present` in one seek. The current
+/// walk seeks past each descendant-only sibling first (four seeks).
 #[test]
-#[ignore = "B2 complete entries"]
+#[ignore = "deferred presence-seek slice: family presence still seeks past descendant-only siblings"]
 fn a_family_presence_probe_costs_one_seek_regardless_of_descendant_only_siblings() {
     let (mut store, counters) = layered_store(&["a4"], &["a1", "a2", "a3"]);
     let mut txn = store
@@ -397,13 +397,10 @@ fn assert_incomplete<T: std::fmt::Debug>(result: Result<T, KernelFault>, what: &
     }
 }
 
-/// The kernel checks required completeness itself, before the slot probe and before
-/// any engine write: an entry write missing a required field, an entry write whose
-/// group misses a required leaf, an entry write whose `groups` vector is shorter than
-/// the schema, a replace of a present entry, and a group write missing a required
-/// leaf each return `KernelFault::Incomplete` with zero engine writes, so an image
-/// supplied without the compiler's proofs cannot leave a present entry incomplete.
-/// Today each write succeeds and the incomplete payload commits.
+/// Entry and group writes check exact record widths, required fields, group count,
+/// and the absence of nested groups before engine access. Both create and replace
+/// refuse malformed values as `KernelFault::Incomplete`, including create over a
+/// present slot, with no reads or writes.
 #[test]
 fn a_write_missing_a_required_field_is_a_typed_kernel_fault_before_any_engine_write() {
     let counters = Counters::new();
@@ -455,6 +452,44 @@ fn a_write_missing_a_required_field_is_a_typed_kernel_fault_before_any_engine_wr
         txn.replace_group(&group, &key, pages(None)),
         "a group write missing the required `pages`",
     );
+
+    let mut short_record = book(Some("t"), pages(Some(1)));
+    short_record.fields.clear();
+    let mut long_record = book(Some("t"), pages(Some(1)));
+    long_record.fields.push(None);
+    let mut extra_groups = book(Some("t"), pages(Some(1)));
+    extra_groups.groups.push(pages(Some(2)));
+    for (value, what) in [
+        (short_record, "a short top-level record"),
+        (long_record, "a long top-level record"),
+        (extra_groups, "more groups than the schema declares"),
+    ] {
+        assert_incomplete(
+            txn.create_entry(&entry, &[KeyScalar::Int(5)], value.clone()),
+            what,
+        );
+        assert_incomplete(txn.replace_entry(&entry, &key, value), what);
+    }
+
+    let mut short_group = pages(Some(1));
+    short_group.fields.clear();
+    let mut long_group = pages(Some(1));
+    long_group.fields.push(None);
+    let mut nested_group = pages(Some(1));
+    nested_group.groups.push(pages(Some(2)));
+    for (value, what) in [
+        (short_group, "a short group record"),
+        (long_group, "a long group record"),
+        (nested_group, "a group containing a nested group"),
+    ] {
+        let whole = book(Some("t"), value.clone());
+        assert_incomplete(
+            txn.create_entry(&entry, &[KeyScalar::Int(5)], whole.clone()),
+            what,
+        );
+        assert_incomplete(txn.replace_entry(&entry, &key, whole), what);
+        assert_incomplete(txn.replace_group(&group, &key, value), what);
+    }
     assert_eq!(
         counters.writes(),
         staged,
@@ -469,8 +504,7 @@ fn a_write_missing_a_required_field_is_a_typed_kernel_fault_before_any_engine_wr
 
 /// Erasing what a present entry must hold is refused the same way: `erase_field` on a
 /// required field site and `erase_group` on a group with a required leaf return
-/// `KernelFault::Incomplete` with zero engine writes. Today the field erase is guarded
-/// only by a debug assertion (`store/address.rs:94`) and the group erase succeeds.
+/// `KernelFault::Incomplete` with zero engine reads or writes.
 #[test]
 fn an_erase_of_a_required_field_or_group_is_a_typed_kernel_fault() {
     let counters = Counters::new();
@@ -496,6 +530,7 @@ fn an_erase_of_a_required_field_or_group_is_a_typed_kernel_fault() {
     txn.create_entry(&entry, &key, book(Some("Small Gods"), pages(Some(381))))
         .expect("a complete entry writes");
     let staged = counters.writes();
+    let probed = counters.reads();
 
     assert_incomplete(
         txn.erase_field(&title, &key),
@@ -509,5 +544,10 @@ fn an_erase_of_a_required_field_or_group_is_a_typed_kernel_fault() {
         counters.writes(),
         staged,
         "every refused erase stages zero engine writes",
+    );
+    assert_eq!(
+        counters.reads(),
+        probed,
+        "every refused erase reads nothing",
     );
 }

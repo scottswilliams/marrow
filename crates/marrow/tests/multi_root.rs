@@ -1255,12 +1255,11 @@ pub fn readA(id: int): int? {
     assert_eq!(control_leaves, 1, "one occurrence, one field-leaf site");
     // A single root over an unshared Product is outside the repeated-Product domain, so
     // its whole image — site table included — is pinned byte-exactly: the two-root image
-    // above adds rows; it may not renumber this one. The digest is the encoding of this
-    // source under the proven-place field write; it was last recorded when the inline
-    // field-write spelling left the language.
+    // above adds rows; it may not renumber this one. The digest pins the current definite
+    // field operand and strict field-write encoding along with the site numbering.
     assert_eq!(
         control.image_id().to_hex(),
-        "00fdce97f135f2db1e72ac0ffbff12edeb886e997d5807e5fd08827fd9a2b0cc",
+        "5425b40bfc1fc9601b8d3cbb3638b2132f919b9f662e4ac3da4fcab3174b1fe1",
         "the fitting single-root image is byte-exact outside the repeated-Product domain",
     );
 }

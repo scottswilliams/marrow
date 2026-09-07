@@ -177,9 +177,9 @@ pub(crate) struct Lowered {
     /// Whether this body owns a `transaction` block (emits a begin). A test body that
     /// drives such a function mixes invocation boundaries and is refused.
     pub owns_transaction: bool,
-    /// The entry families this body creates, replaces, or erases directly. A caller's
-    /// presence proofs over a family end at a call whose closure writes it.
-    pub written_families: Vec<Family>,
+    /// Entry families directly erased by this body. Calls inherit only these
+    /// erasures when checking the lifetime of a presence fact.
+    pub erased_families: Vec<Family>,
     /// Present-form writes whose proofs a call may have ended.
     pub presence_obligations: Vec<PresenceObligation>,
     /// Full source spans parallel to the instructions owned by `func` in the draft.
@@ -389,10 +389,10 @@ pub(crate) struct FnLowerer<'a, 'd> {
     /// The presence proofs currently in force, newest last. Scoped like `locals` (a
     /// fact established in a guarded block or after an upsert does not outlive its
     /// block); the verifier rechecks each present-form operation independently.
-    present_places: Vec<PresenceFact<'a>>,
+    present_places: Vec<Option<PresenceFact<'a>>>,
     loops: Vec<LoopCtx<'a>>,
-    /// The entry families this body writes directly.
-    written_families: Vec<&'a Family>,
+    /// The entry families this body erases directly.
+    erased_families: Vec<&'a Family>,
     presence_obligations: Vec<PresenceObligation>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
@@ -501,7 +501,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             poisoned_bindings: BTreeSet::new(),
             places: Vec::new(),
             present_places: Vec::new(),
-            written_families: Vec::new(),
+            erased_families: Vec::new(),
             presence_obligations: Vec::new(),
             loops: Vec::new(),
             slot_count: 0,
@@ -1005,13 +1005,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.draft
                 .function_code(func_id)
                 .expect("the successful append is present"),
+            &self.calls,
+            &self.presence_obligations,
         );
         Ok(BodyOutcome::Lowered(Lowered {
             func: func_id,
             callees: std::mem::take(&mut self.calls),
             unwrapped_mutations: std::mem::take(&mut self.unwrapped_mutations),
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
-            written_families: self.written_families.drain(..).cloned().collect(),
+            erased_families: self.erased_families.drain(..).cloned().collect(),
             presence_obligations: std::mem::take(&mut self.presence_obligations),
             has_direct_durable_op,
             owns_transaction,
@@ -1056,14 +1058,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
         if let Instr::Call(target) = &instr {
-            // A callee may erase an entry a live proof covers; the proof's obligation is
-            // settled once the callee's written-family closure is known.
-            for fact in &mut self.present_places {
-                fact.callees.push(*target);
-            }
-            for ctx in &mut self.loops {
-                ctx.callees.push(*target);
-            }
+            self.calls.push(*target);
         }
         let index = self.code.len() as u32;
         self.code_bytes = next_code_bytes;

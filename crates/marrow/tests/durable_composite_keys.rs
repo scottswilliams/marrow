@@ -322,6 +322,73 @@ fn a_composite_key_root_keys_by_the_ordered_tuple() {
     );
 }
 
+#[test]
+fn complete_create_proves_a_composite_root_for_a_following_field_set() {
+    let source = format!(
+        "{SOURCE_A}\n{}",
+        r#"pub fn createThenSet(student: string, course: string) {
+    transaction {
+        place entry = ^enrollments[student, course]
+        entry = Enrollment(grade: 1)
+        entry.grade = 2
+    }
+}
+"#
+    );
+    let image = compile_verify(&source, IDS_A);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "createThenSet",
+        vec![s("amy"), s("cs")],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "gradeOf", vec![s("amy"), s("cs")]),
+        some_int(2)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "gradeOf", vec![s("cs"), s("amy")]),
+        absent()
+    );
+}
+
+#[test]
+fn complete_create_proves_a_composite_branch_for_a_following_field_set() {
+    let source = format!(
+        "{SOURCE_A}\n{}",
+        r#"pub fn createThenSet(student: string, course: string, term: int, slot: int) {
+    transaction {
+        place entry = ^enrollments[student, course].sessions[term, slot]
+        entry = Enrollment.sessions(room: "first")
+        entry.room = "second"
+    }
+}
+"#
+    );
+    let image = compile_verify(&source, IDS_A);
+    let mut attachment = attach(&image);
+    let keys = || vec![s("amy"), s("cs"), Value::Int(3), Value::Int(7)];
+    run(&image, &mut attachment, "createThenSet", keys());
+    assert_eq!(
+        run(&image, &mut attachment, "sessionRoom", keys()),
+        some_text("second")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "enrolled", vec![s("amy"), s("cs")]),
+        present(false)
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sessionRoom",
+            vec![s("amy"), s("cs"), Value::Int(7), Value::Int(3)],
+        ),
+        absent()
+    );
+}
+
 /// A composite-key *branch* keys by its own tuple under a composite-key root, so the whole
 /// key-path is four columns `[student, course, term, slot]`. A transposed branch tuple
 /// `(slot, term)` is a distinct, absent branch entry.

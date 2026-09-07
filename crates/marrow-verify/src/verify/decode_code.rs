@@ -173,7 +173,10 @@ pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> 
             OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
             OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(&mut reader)?),
             OP_DUR_READ_GROUP => SealedInstr::DurReadGroup(operand_u16(&mut reader)?),
-            OP_DUR_REPLACE_GROUP => SealedInstr::DurReplaceGroup(operand_u16(&mut reader)?),
+            OP_DUR_REPLACE_GROUP => {
+                let (site, key_slots) = operand_site_key_slots(&mut reader)?;
+                SealedInstr::DurReplaceGroup { site, key_slots }
+            }
             OP_DUR_ERASE_GROUP => SealedInstr::DurEraseGroup(operand_u16(&mut reader)?),
             OP_DUR_ITERATE_BOUNDED => SealedInstr::DurIterateBounded {
                 site: operand_u16(&mut reader)?,
@@ -487,7 +490,9 @@ mod opcode_bijection {
             SealedInstr::DurEraseField(_) => u16op(OP_DUR_ERASE_FIELD),
             SealedInstr::DurEraseEntry(_) => u16op(OP_DUR_ERASE_ENTRY),
             SealedInstr::DurReadGroup(_) => u16op(OP_DUR_READ_GROUP),
-            SealedInstr::DurReplaceGroup(_) => u16op(OP_DUR_REPLACE_GROUP),
+            SealedInstr::DurReplaceGroup { .. } => {
+                vec![OP_DUR_REPLACE_GROUP, 0, 0, 0, 1, 0, 0]
+            }
             SealedInstr::DurEraseGroup(_) => u16op(OP_DUR_ERASE_GROUP),
             SealedInstr::DurIterateBounded { .. } => {
                 let mut bytes = vec![OP_DUR_ITERATE_BOUNDED];
@@ -636,7 +641,10 @@ mod opcode_bijection {
             SealedInstr::DurEraseField(0),
             SealedInstr::DurEraseEntry(0),
             SealedInstr::DurReadGroup(0),
-            SealedInstr::DurReplaceGroup(0),
+            SealedInstr::DurReplaceGroup {
+                site: 0,
+                key_slots: vec![0],
+            },
             SealedInstr::DurEraseGroup(0),
             SealedInstr::DurIterateBounded {
                 site: 0,
@@ -697,6 +705,106 @@ mod opcode_bijection {
                     previous, want,
                     "opcode {opcode:#04x} decodes to two different variants",
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn strict_place_tags_retain_site_and_ordered_key_slots() {
+        assert_eq!(
+            [
+                OP_DUR_SET_FIELD,
+                OP_DUR_READ_GROUP_PRESENT,
+                OP_DUR_REPLACE_GROUP,
+            ],
+            [0xB9, 0xBA, 0xBB],
+        );
+        for (opcode, expected) in [
+            (
+                0xB9,
+                SealedInstr::DurSetField {
+                    site: 0x1234,
+                    key_slots: vec![7, 165, 254],
+                },
+            ),
+            (
+                0xBA,
+                SealedInstr::DurReadGroupPresent {
+                    site: 0x1234,
+                    key_slots: vec![7, 165, 254],
+                },
+            ),
+            (
+                0xBB,
+                SealedInstr::DurReplaceGroup {
+                    site: 0x1234,
+                    key_slots: vec![7, 165, 254],
+                },
+            ),
+        ] {
+            let bytes = [
+                opcode, 0x12, 0x34, 0x00, 0x03, 0x00, 0x07, 0x00, 0xA5, 0x00, 0xFE, OP_RETURN,
+            ];
+            let decoded = decode_code(&bytes).expect("complete strict-place operands decode");
+            assert_eq!(decoded.len(), 2);
+            assert_eq!(decoded[0].offset, 0);
+            assert_eq!(decoded[0].instr, expected);
+            assert_eq!(decoded[1].offset, 11);
+            assert_eq!(decoded[1].instr, SealedInstr::Return);
+        }
+    }
+
+    #[test]
+    fn every_truncated_strict_place_operand_is_refused() {
+        for opcode in [0xB9, 0xBA, 0xBB] {
+            let bytes = [
+                opcode, 0x12, 0x34, 0x00, 0x03, 0x00, 0x07, 0x00, 0xA5, 0x00, 0xFE,
+            ];
+            // Empty code has no instruction to truncate. Every nonempty proper
+            // prefix loses some part of the site, count or ordered slot tuple.
+            for end in 1..bytes.len() {
+                let rejection = decode_code(&bytes[..end])
+                    .err()
+                    .expect("an incomplete operand cannot produce a decoded instruction");
+                assert_eq!(
+                    rejection.phase(),
+                    VerifyPhase::Function,
+                    "opcode {opcode:#04x}, prefix length {end}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn strict_place_key_counts_accept_the_limit_and_refuse_zero_or_excess() {
+        let limit =
+            marrow_image::bounds::MAX_KEY_COLUMNS * marrow_image::bounds::MAX_SITE_PATH_STEPS;
+        for opcode in [0xB9, 0xBA, 0xBB] {
+            for (count, accepted) in [(0, false), (limit, true), (limit + 1, false)] {
+                let count_operand = u16::try_from(count).expect("the policy boundary fits u16");
+                let mut bytes = vec![opcode, 0x12, 0x34];
+                bytes.extend_from_slice(&count_operand.to_be_bytes());
+                // Supply every claimed slot so an excessive count cannot pass
+                // this test by being rejected only as truncated input.
+                bytes.resize(5 + 2 * count, 0);
+                let result = decode_code(&bytes);
+                if accepted {
+                    let decoded = result.expect("the key-count ceiling is inclusive");
+                    assert_eq!(decoded.len(), 1);
+                    let (site, key_slots) = match &decoded[0].instr {
+                        SealedInstr::DurSetField { site, key_slots }
+                        | SealedInstr::DurReadGroupPresent { site, key_slots }
+                        | SealedInstr::DurReplaceGroup { site, key_slots } => (*site, key_slots),
+                        other => panic!("unexpected strict-place variant: {other:?}"),
+                    };
+                    assert_eq!(site, 0x1234);
+                    assert_eq!(key_slots.as_slice(), vec![0; limit]);
+                } else {
+                    let rejection = result
+                        .err()
+                        .expect("zero and excessive key counts are invalid");
+                    assert_eq!(rejection.phase(), VerifyPhase::Function);
+                }
             }
         }
     }
@@ -787,7 +895,7 @@ mod index_site_partition {
             | SealedInstr::DurSetField { .. }
             | SealedInstr::DurCreateEntry(_)
             | SealedInstr::DurReplaceEntry(_)
-            | SealedInstr::DurReplaceGroup(_)
+            | SealedInstr::DurReplaceGroup { .. }
             | SealedInstr::DurEraseField(_)
             | SealedInstr::DurEraseEntry(_)
             | SealedInstr::DurEraseGroup(_)

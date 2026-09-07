@@ -7,7 +7,7 @@
 //! `interrupted` class exercised for real (one call in flight, one queued, then a
 //! fail-closed terminate in the same synchronous turn — the reply cannot have
 //! been processed, so the classification is deterministic). A native durable
-//! required-field failure also proves the byte-frozen incomplete reply reaches
+//! fault after a confirmed commit also proves the incomplete reply reaches
 //! `MarrowIncomplete` and retires the Node session without dispatching its queue.
 //!
 //! Each test spawns Node and Unix-socket traffic, which the command sandbox
@@ -147,10 +147,15 @@ const DURABLE_FIXTURE: &str = r#"resource Counter {
 
 store ^counters[id: int]: Counter
 
-pub fn labelOnly(id: int, text: string) {
+pub fn writeThenFault(): int {
     transaction {
-        ^counters[id].label = text
+        ^counters[1] = Counter(value: 7)
     }
+    return 1 / 0
+}
+
+pub fn value(): int? {
+    return ^counters[1].value
 }
 
 pub fn two(): int {
@@ -195,8 +200,8 @@ fn prepare(temp: &TempDir) -> PathBuf {
     project
 }
 
-/// Generate and provision the native fixture whose label-only write reaches the
-/// required-field commit reconciliation boundary.
+/// Generate and provision the native fixture whose complete entries collide in
+/// a runtime fault after a confirmed commit.
 fn prepare_durable(temp: &TempDir) -> PathBuf {
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
@@ -310,18 +315,18 @@ fn durable_incomplete_is_typed_and_retires_the_node_session() {
         r#"
 const client = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
 
-const incomplete = client.labelOnly(1n, "orphan");
+const incomplete = client.writeThenFault();
 const queued = client.two();
 
 try {
   await incomplete;
-  ok("incomplete", false, "required-missing returned");
+  ok("incomplete", false, "division by zero returned");
 } catch (error) {
   ok(
     "incomplete",
     error instanceof M.MarrowIncomplete &&
-      error.code === "run.required_missing" &&
-      error.durable === M.DURABLE_STATE.KNOWN_OLD &&
+      error.code === "run.divide_by_zero" &&
+      error.durable === M.DURABLE_STATE.KNOWN_NEW &&
       error.line > 0n &&
       error.column > 0n,
     String(error),
@@ -349,6 +354,10 @@ try {
     String(error),
   );
 }
+
+const readback = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
+ok("confirmed-commit-readback", (await readback.value()) === 7n);
+await readback.close();
 
 finish();
 "#

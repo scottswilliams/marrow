@@ -242,13 +242,11 @@ fn number_branches(
 }
 
 /// One field of a resolved node: the cell-key [`NodeNumber`] the physical layer keys leaves
-/// by (never the source spelling), the value shape and required flag the ops need, and the
-/// field's source name; no cell key is ever built from the name. The resolver produces
-/// these from a [`FieldSchema`] and its [`NodeNumber`].
+/// by (never the source spelling), and the value shape and required flag the ops need.
+/// The resolver produces these from a [`FieldSchema`] and its [`NodeNumber`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResolvedField {
     pub(super) number: NodeNumber,
-    pub(super) name: String,
     pub(super) shape: ValueShape,
     pub(super) required: bool,
 }

@@ -7,7 +7,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// group so a sibling leaf is preserved.
     pub(super) fn lower_group_leaf_set(
         &mut self,
-        key_slots: &[u16],
+        (family, key_slots): (&'a Family, Option<Vec<u16>>),
         handle: &OccurrenceSiteHandle,
         slot: u16,
         value: &Expression,
@@ -20,16 +20,17 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let value_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
         self.lower_as(value, garg_to_lty(ty))?;
         self.push(Instr::LocalSet(value_slot), span)?;
+        let key_slots = self.require_present(family, key_slots, span)?;
         self.push(
             Instr::DurReadGroupPresent {
                 site: site.clone(),
-                key_slots: key_slots.to_vec(),
+                key_slots: key_slots.clone(),
             },
             span,
         )?;
         self.push(Instr::LocalGet(value_slot), span)?;
         self.push(Instr::FieldSet(slot), span)?;
-        self.replace_group_from_stack(key_slots, site, span)
+        self.push(Instr::DurReplaceGroup { site, key_slots }, span)
     }
 
     /// Lower `delete p.group.leaf` / `delete ^root(k).group.leaf`: a delete needs no
@@ -50,29 +51,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.push(Instr::DurReadGroup(site.clone()), span)?;
         let to_end = self.push_branch_present(span)?;
         self.push(Instr::FieldUnset(slot), span)?;
-        self.replace_group_from_stack(&key_slots, site, span)?;
+        self.push(Instr::DurReplaceGroup { site, key_slots }, span)?;
         let end = self.here();
         self.patch(to_end, end);
         Ok(())
     }
 
-    /// Replace the group at `site` with the rewritten record on top of the stack, keyed
-    /// by the containing entry's `key_slots`.
-    fn replace_group_from_stack(
-        &mut self,
-        key_slots: &[u16],
-        site: PlannedSiteRef,
-        span: SourceSpan,
-    ) -> ConstructResult<()> {
-        let rec_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
-        self.push(Instr::LocalSet(rec_slot), span)?;
-        self.emit_slots(key_slots, span)?;
-        self.push(Instr::LocalGet(rec_slot), span)?;
-        self.push(Instr::DurReplaceGroup(site), span)
-    }
-
     /// Lower `^r(k) = record` or `^r(k).branch(bk) = Resource.branch(...)` to the
-    /// transaction-local presence branch (design §D): `DurExists` over the entry's whole
+    /// transaction-local presence branch: `DurExists` over the entry's whole
     /// key-path decides `replace` vs `create` against the coherent staged view. The
     /// key-path is materialized into slots (one per column, root first) so the exists,
     /// replace, and create ops all key off the same evaluated columns.

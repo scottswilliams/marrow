@@ -1180,7 +1180,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // name, not an uninitialized-slot image rejection) and restore them for the
         // continuation. A `var` let-else binds mutably.
         let mut bound_locals = self.locals.split_off(mark);
-        let bound_present = self.present_places.split_off(present_mark);
+        let mut bound_present = self.present_places.split_off(present_mark);
         if is_var {
             for local in &mut bound_locals {
                 local.mutable = true;
@@ -1213,6 +1213,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // Restore the binding and presence fact for the continuation: past the
         // statement `x` is always present, because the absent edge diverged.
         self.locals.extend(bound_locals);
+        for fact in bound_present.iter_mut().flatten() {
+            fact.call_start = self.calls.len();
+        }
         self.present_places.extend(bound_present);
         Ok(Flow::Fallthrough)
     }
@@ -1647,7 +1650,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             mutable: false,
             slot: counter_slot,
         });
-        self.loops.push(LoopCtx::new(advance));
+        self.loops.push(LoopCtx::new(advance, self.calls.len()));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
@@ -2569,7 +2572,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::CodeLimitReached);
             }
         }
-        self.loops.push(LoopCtx::new(top));
+        self.loops.push(LoopCtx::new(top, self.calls.len()));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
@@ -2601,9 +2604,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(Flow::Rejected);
         }
         let top = self.here();
+        let call_start = self.calls.len();
         self.lower_condition(condition)?;
         let exit = self.push_jif(condition.span())?;
-        self.loops.push(LoopCtx::new(top));
+        self.loops.push(LoopCtx::new(top, call_start));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,

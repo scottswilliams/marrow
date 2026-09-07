@@ -144,7 +144,7 @@ pub fn faultBeforeCommit(id: int, divisor: int): int {
     }
 }
 
-pub fn faultAtCommit(id: int, isbn: string) {
+pub fn uniqueWriteFault(id: int, isbn: string) {
     transaction {
         ^books[id] = Book(title: "Small Gods", isbn: isbn)
     }
@@ -158,23 +158,23 @@ pub fn faultAfterCommit(id: int, divisor: int): int {
 }
 ```
 
-Three tests call `faultBeforeCommit(1, 0)`, then `faultAtCommit(1, "111")`
-followed by `faultAtCommit(2, "111")`, then `faultAfterCommit(3, 0)`, each
+Three tests call `faultBeforeCommit(1, 0)`, then `uniqueWriteFault(1, "111")`
+followed by `uniqueWriteFault(2, "111")`, then `faultAfterCommit(3, 0)`, each
 against a fresh store. `marrow test` reports them in name order, each with the
 line and column of the faulting operation in the module above:
 
 ```text
 ERROR fault after commit (run.divide_by_zero at 29:16; incomplete, durable known_new)
-ERROR fault at commit (run.unique_index at 21:9)
 ERROR fault before commit (run.divide_by_zero at 15:20)
+ERROR unique write fault (run.unique_index at 21:9)
 0 passed, 0 failed, 3 errored (3/3 selected)
 ```
 
 `faultBeforeCommit` faults on the division before the block commits. The staged
-entry is discarded and the report carries the fault alone. `faultAtCommit`
-writes a second book under an ISBN that the `unique` index already holds; the
-commit faults with `run.unique_index` and the whole block rolls back, so the
-second book is not in place
+entry is discarded and the report carries the fault alone. `uniqueWriteFault`
+writes a second book under an ISBN that the `unique` index already holds. The
+write faults with `run.unique_index` before commit and the whole block rolls back,
+so the second book is not in place
 ([index declarations](traversal-and-indexes.md#index-declarations)).
 `faultAfterCommit` commits the entry and then faults. The entry stays in place
 and the report says `known_new`.

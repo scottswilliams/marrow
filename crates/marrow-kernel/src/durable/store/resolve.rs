@@ -126,7 +126,6 @@ fn resolve_fields(fields: &[FieldSchema], numbers: &[u32]) -> Vec<ResolvedField>
         .zip(numbers)
         .map(|(field, number)| ResolvedField {
             number: *number,
-            name: field.name().to_string(),
             shape: field.shape().clone(),
             required: field.required(),
         })

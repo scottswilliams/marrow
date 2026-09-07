@@ -1469,7 +1469,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.lower_as(&argument.value, *param)?;
         }
         self.push(Instr::Call(index), span)?;
-        self.calls.push(index);
         Ok(match ret {
             RetType::Unit => CallResult::Unit,
             RetType::Value(ty) => CallResult::Value(ty),
@@ -1667,7 +1666,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     }
                 };
                 self.push(Instr::Call(func), span)?;
-                self.calls.push(func);
                 Ok(match ret {
                     RetType::Unit => CallResult::Unit,
                     RetType::Value(ty) => CallResult::Value(ty),

@@ -1061,8 +1061,6 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
     );
 }
 
-// --- Complete entries, design v2: branch places and sibling-family erases. ---
-
 /// Compile `source` against `ids`: the verified image, or the diagnostic codes.
 fn compile_source_ids(source: &str, ids: &str) -> Result<VerifiedImage, Vec<String>> {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -1098,8 +1096,7 @@ fn strict_key_paths(image: &VerifiedImage, name: &str) -> Vec<Vec<u16>> {
 
 /// Whole-entry assignment through a branch place proves the branch entry present for
 /// the rest of the block, exactly as it does through a root place: the sparse set after
-/// `note = Book.notes(...)` is strict over the whole `[root, branch]` key-path. Today
-/// only a single-slot root place is marked by an upsert, so the set is bare.
+/// `note = Book.notes(...)` is strict over the whole `[root, branch]` key-path.
 #[test]
 fn an_upsert_through_a_branch_place_proves_the_branch_entry_present() {
     let source = format!(
@@ -1159,8 +1156,7 @@ store ^books[id: int]: Book
 /// An erase in a child family leaves the parent's fact in place: `delete b.notes[nid]`
 /// erases a `notes` entry, so the set through `b` after it is strict; `delete b`
 /// erases `b`'s own family and the same set is refused. This holds because an erase
-/// touches only the entry's own payload (children survive their parent today).
-/// Today the erasing form compiles clean and the set is bare.
+/// touches only the entry's own payload; children survive their parent.
 #[test]
 fn a_sibling_family_erase_keeps_the_fact_while_a_same_family_erase_ends_it() {
     let child_erase = format!(

@@ -10,8 +10,50 @@ use super::spans::map_spans;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
 use crate::vtype::VType;
-use marrow_image::SemanticPath;
+use marrow_image::{OperationClass, SemanticPath};
 use std::collections::BTreeSet;
+
+#[cfg(test)]
+#[path = "presence/family_lookup_tests.rs"]
+mod family_lookup_tests;
+
+/// The validated entry sites indexed by canonical path for the presence phase.
+/// Rows borrow both paths and branch coordinates; no key-column reconstruction is
+/// needed to invalidate a family. The index is built once and is not published.
+pub(super) struct EntryFamilies<'a> {
+    rows: Vec<(&'a SemanticPath, u16, &'a [u16])>,
+}
+
+impl<'a> EntryFamilies<'a> {
+    pub(super) fn new(sites: &'a [SealedSite], paths: &'a [SemanticPath]) -> Self {
+        let mut rows = Vec::new();
+        for (site, path) in sites.iter().zip(paths) {
+            if let Some((root, branch)) = entry_family(site) {
+                rows.push((path, root, branch));
+            }
+        }
+        rows.sort_unstable_by(|left, right| left.0.cmp(right.0));
+        #[cfg(test)]
+        family_lookup_tests::record_build(rows.len(), rows.capacity());
+        Self { rows }
+    }
+
+    fn get(&self, path: &SemanticPath) -> Option<(u16, &'a [u16])> {
+        #[cfg(test)]
+        family_lookup_tests::record_lookup();
+        self.rows
+            .binary_search_by(|(candidate, _, _)| {
+                #[cfg(test)]
+                family_lookup_tests::record_comparison();
+                candidate.cmp(&path)
+            })
+            .ok()
+            .map(|index| {
+                let (_, root, branch) = self.rows[index];
+                (root, branch)
+            })
+    }
+}
 
 /// Phase 4: reject any cycle in the direct-call graph (recursion is not admitted).
 /// A three-colour DFS over the recorded calls; a back edge to a node on the current
@@ -89,8 +131,8 @@ pub(super) fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> 
     }
 }
 
-/// Phase 5 (presence): the place-slot presence lattice (design §D). A present-form
-/// instruction — the field set and the group read that key off place slots — asserts
+/// Phase 5 (presence): the place-slot presence lattice. A present-form
+/// instruction — field set, group read or replacement through place slots — asserts
 /// its containing entry is present; this recheck proves that independently of the
 /// compiler, so a forged or mis-lowered present-form op whose graph cannot imply its
 /// payload is refused.
@@ -98,11 +140,11 @@ pub(super) fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> 
 /// The lattice state at each program point is the set of proven-present entries, each
 /// its family and its key-path slots. A fact is *established* by a guard that tests the
 /// entry keyed by the slots — `LocalGet(S…); DurExists(entry); JumpIfFalse` on its
-/// present (fallthrough) edge, or `LocalGet(S…); DurReadEntry; BranchPresent` on its
+/// present (fallthrough) edge, or an optional entry/group read followed by `BranchPresent` on its
 /// present edge — or by a whole-entry `DurCreateEntry` keyed by those slots (create
 /// leaves the entry present whether it was created or already present). It is *killed*
 /// by any entry erase of the fact's family, whatever key the erase names; by a call
-/// whose demand closure writes the family; and by any `LocalSet` of a slot the fact
+/// whose demand closure erases an entry of the family; and by any `LocalSet` of a slot the fact
 /// reads (a `place` key slot is bind-once, so a rebind never fires on compiler output —
 /// it hardens the recheck against a mutated tape). Facts join by intersection at
 /// merges: an entry is present only if it holds on every incoming edge.
@@ -111,13 +153,15 @@ pub(super) fn check_presence_flow(
     ctx: &Ctx,
     non_fallthrough_entries: &[bool],
     effects: &Effects,
-    site_paths: &[SemanticPath],
+    entry_families: &EntryFamilies<'_>,
 ) -> Result<(), VerifyRejection> {
     let code = function.instrs();
     if !code.iter().any(|instr| {
         matches!(
             instr,
-            SealedInstr::DurSetField { .. } | SealedInstr::DurReadGroupPresent { .. }
+            SealedInstr::DurSetField { .. }
+                | SealedInstr::DurReadGroupPresent { .. }
+                | SealedInstr::DurReplaceGroup { .. }
         )
     }) {
         return Ok(());
@@ -130,7 +174,8 @@ pub(super) fn check_presence_flow(
             .clone()
             .expect("worklist only enqueues reached instructions");
         if let SealedInstr::DurSetField { site, key_slots }
-        | SealedInstr::DurReadGroupPresent { site, key_slots } = &code[index]
+        | SealedInstr::DurReadGroupPresent { site, key_slots }
+        | SealedInstr::DurReplaceGroup { site, key_slots } = &code[index]
         {
             // The present form is proven only if a dominating fact names the exact
             // containing entry — its family and its whole key-path — not merely a
@@ -151,7 +196,7 @@ pub(super) fn check_presence_flow(
             ctx,
             non_fallthrough_entries,
             effects,
-            site_paths,
+            entry_families,
             index,
             &present,
         ) {
@@ -183,20 +228,20 @@ pub(super) fn check_presence_flow(
 /// slot tuple or branch path alone — keeps entries under distinct roots distinct even
 /// when they share a key slot; keying on the branch path distinguishes sibling
 /// branches of equal key arity that share slot values under one root. The first two
-/// components are the entry's *family*, the unit an erase or a family-writing call
+/// components are the entry's *family*, the unit an erase or an entry-erasing call
 /// ends proofs over.
 type PresenceFact = (u16, Vec<u16>, Vec<u16>);
 
 /// The presence-set carried on each successor edge of the instruction at `index`.
 /// Most instructions pass the set through unchanged; guards split the set (adding the
-/// proven entry only on the present edge); create adds; an erase, a family-writing
+/// proven entry only on the present edge); create adds; an erase, an entry-erasing
 /// call, and a slot rebind remove.
 fn presence_edges(
     code: &[SealedInstr],
     ctx: &Ctx,
     non_fallthrough_entries: &[bool],
     effects: &Effects,
-    site_paths: &[SemanticPath],
+    entry_families: &EntryFamilies<'_>,
     index: usize,
     present: &BTreeSet<PresenceFact>,
 ) -> Vec<(usize, BTreeSet<PresenceFact>)> {
@@ -231,11 +276,11 @@ fn presence_edges(
         }
         SealedInstr::DurCreateEntry(site) => {
             let mut next = present.clone();
-            if let Some((root, branch, _)) = entry_site(ctx, *site)
-                && branch.is_empty()
-                && let Some(slot) = entry_write_key_slot(code, non_fallthrough_entries, index)
+            if let Some((root, branch, arity)) = entry_site(ctx, *site)
+                && let Some(keys) =
+                    entry_write_key_slots(code, non_fallthrough_entries, index, arity)
             {
-                next.insert((root, Vec::new(), vec![slot]));
+                next.insert((root, branch, keys));
             }
             vec![(index + 1, next)]
         }
@@ -246,26 +291,24 @@ fn presence_edges(
             // not reason about key equality. Facts of other families survive: an erase
             // touches only the entry's own payload, so a child family's entry outlives
             // its parent's erase.
-            if let Some((root, branch, _)) = entry_site(ctx, *site) {
+            if let Some((root, branch)) = ctx.sites.get(*site as usize).and_then(entry_family) {
                 next.retain(|(fact_root, fact_branch, _)| {
-                    (*fact_root, fact_branch) != (root, &branch)
+                    (*fact_root, fact_branch.as_slice()) != (root, branch)
                 });
             }
             vec![(index + 1, next)]
         }
         SealedInstr::Call(callee) => {
             let mut next = present.clone();
-            // A call whose demand closure writes a family — creates, replaces, or
-            // erases an entry of it — ends every fact of that family: the callee may
-            // have erased the proven entry. A call that only reads, or only updates
-            // fields of present entries, leaves every fact in place.
+            // Only entry erasure removes a presence fact. Complete replacement
+            // and field/group updates preserve the entry marker.
             for atom in &effects.atoms_closure[*callee as usize] {
-                if !atom.class().mutates() {
+                if atom.class() != OperationClass::Erase {
                     continue;
                 }
-                if let Some((root, branch)) = family_of_path(ctx, site_paths, atom.path()) {
+                if let Some((root, branch)) = entry_families.get(atom.path()) {
                     next.retain(|(fact_root, fact_branch, _)| {
-                        (*fact_root, fact_branch) != (root, &branch)
+                        (*fact_root, fact_branch.as_slice()) != (root, branch)
                     });
                 }
             }
@@ -284,20 +327,16 @@ fn presence_edges(
     }
 }
 
-/// The family `(root, branch path)` of the entry site whose semantic path is `path`, or
-/// `None` when no entry site carries that path (a field, group, or index atom names no
-/// family of its own).
-fn family_of_path(
-    ctx: &Ctx,
-    site_paths: &[SemanticPath],
-    path: &SemanticPath,
-) -> Option<(u16, Vec<u16>)> {
-    site_paths
-        .iter()
-        .zip(0u16..)
-        .find(|(site_path, _)| *site_path == path)
-        .and_then(|(_, site)| entry_site(ctx, site))
-        .map(|(root, branch, _)| (root, branch))
+/// Exact entry identity; field, group and index sites are not entry families.
+fn entry_family(site: &SealedSite) -> Option<(u16, &[u16])> {
+    let SealedSite::Flat { root, target } = site else {
+        return None;
+    };
+    match target {
+        SealedSiteTarget::WholePayload => Some((*root, &[])),
+        SealedSiteTarget::BranchEntry(branch) => Some((*root, branch)),
+        _ => None,
+    }
 }
 
 /// The containing entry a flat entry (whole-payload or branch-entry) `site` names: the
@@ -305,26 +344,10 @@ fn family_of_path(
 /// key-path column arity. `None` for a non-entry site (a field leaf or index), which
 /// names no entry to prove present.
 fn entry_site(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>, usize)> {
-    let SealedSite::Flat {
-        root: root_index,
-        target,
-    } = ctx.sites.get(site as usize)?
-    else {
-        return None;
-    };
-    let root = ctx.roots.get(*root_index as usize)?;
-    match target {
-        SealedSiteTarget::WholePayload => Some((*root_index, Vec::new(), root.keys.len())),
-        SealedSiteTarget::BranchEntry(path) => {
-            let extra = branch_key_columns(root, path).ok()?;
-            Some((*root_index, path.to_vec(), root.keys.len() + extra.len()))
-        }
-        SealedSiteTarget::FieldLeaf(_)
-        | SealedSiteTarget::BranchField { .. }
-        | SealedSiteTarget::GroupEntry(_)
-        | SealedSiteTarget::IndexScan(_)
-        | SealedSiteTarget::IndexLookup(_) => None,
-    }
+    let (root_index, branch) = entry_family(ctx.sites.get(site as usize)?)?;
+    let root = ctx.roots.get(root_index as usize)?;
+    let extra = branch_key_columns(root, branch).ok()?;
+    Some((root_index, branch.to_vec(), root.keys.len() + extra.len()))
 }
 
 /// The family of the entry a flat payload `site` belongs to: the root index and the
@@ -345,8 +368,8 @@ fn payload_site_family(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>)> {
 }
 
 /// The `arity` key-path slots pushed immediately before position `at` (root-first): each
-/// must be a `LocalGet`, or the guard establishes no fact. `at` is the position of the
-/// consuming `DurExists`/`DurReadEntry`.
+/// must be a `LocalGet`, or the guard establishes no fact. `at` is the position
+/// immediately after the key loads.
 fn read_key_path_before(code: &[SealedInstr], at: usize, arity: usize) -> Option<Vec<u16>> {
     if arity == 0 || at < arity {
         return None;
@@ -391,8 +414,8 @@ fn exists_guard_fact(
     Some((root, branch, keys))
 }
 
-/// The presence fact an `if const x = p` guard proves at a `BranchPresent`:
-/// `LocalGet(S0); …; LocalGet(Sn); DurReadEntry(entry site); BranchPresent`.
+/// An optional entry or group read proves its containing entry at `BranchPresent`
+/// only through the complete `LocalGet(keys...); read; BranchPresent` window.
 fn read_entry_guard_fact(
     code: &[SealedInstr],
     ctx: &Ctx,
@@ -402,10 +425,24 @@ fn read_entry_guard_fact(
     if index < 1 {
         return None;
     }
-    let SealedInstr::DurReadEntry(site) = &code[index - 1] else {
-        return None;
+    let (root, branch, arity) = match &code[index - 1] {
+        SealedInstr::DurReadEntry(site) => entry_site(ctx, *site)?,
+        SealedInstr::DurReadGroup(site) => {
+            let SealedSite::Flat {
+                root,
+                target: SealedSiteTarget::GroupEntry(_),
+            } = ctx.sites.get(usize::from(*site))?
+            else {
+                return None;
+            };
+            (
+                *root,
+                Vec::new(),
+                ctx.roots.get(usize::from(*root))?.keys.len(),
+            )
+        }
+        _ => return None,
     };
-    let (root, branch, arity) = entry_site(ctx, *site)?;
     let keys = read_key_path_before(code, index - 1, arity)?;
     if !window_has_only_fallthrough(non_fallthrough_entries, index - arity - 1, index) {
         return None;
@@ -413,27 +450,23 @@ fn read_entry_guard_fact(
     Some((root, branch, keys))
 }
 
-/// The key slot below a locally loaded create record. Only a root create uses
-/// this one-slot fact; a composite root cannot consume it as a whole-key proof.
-/// Every instruction after the key load must execute by fallthrough.
-fn entry_write_key_slot(
+/// The whole key tuple below a locally loaded create record. Every instruction
+/// after the first key load must execute by fallthrough through the create.
+fn entry_write_key_slots(
     code: &[SealedInstr],
     non_fallthrough_entries: &[bool],
     index: usize,
-) -> Option<u16> {
-    if index < 2 {
-        return None;
-    }
-    let SealedInstr::LocalGet(_) = &code[index - 1] else {
-        return None;
-    };
-    let SealedInstr::LocalGet(slot) = &code[index - 2] else {
+    arity: usize,
+) -> Option<Vec<u16>> {
+    let record_at = index.checked_sub(1)?;
+    let SealedInstr::LocalGet(_) = &code[record_at] else {
         return None;
     };
-    if !window_has_only_fallthrough(non_fallthrough_entries, index - 2, index) {
+    let keys = read_key_path_before(code, record_at, arity)?;
+    if !window_has_only_fallthrough(non_fallthrough_entries, record_at - arity, index) {
         return None;
     }
-    Some(*slot)
+    Some(keys)
 }
 
 /// The successor edges for a two-way branch that keeps the current stack on the
@@ -498,7 +531,7 @@ mod presence_root_discrimination {
     use marrow_image::Scalar;
 
     use super::super::context::{Ctx, Effects};
-    use super::presence_edges;
+    use super::{EntryFamilies, presence_edges};
     use crate::sealed::{SealedInstr, SealedRoot, SealedSite, SealedSiteTarget};
 
     fn keyed_root(name: &str) -> SealedRoot {
@@ -546,16 +579,26 @@ mod presence_root_discrimination {
         ];
         let entries = [false; 6];
         let effects = Effects::compute(&[], &[]);
-        let after_first = presence_edges(&code, &ctx, &entries, &effects, &[], 2, &BTreeSet::new())
-            .into_iter()
-            .find(|(successor, _)| *successor == 3)
-            .expect("a create falls through to the next instruction")
-            .1;
-        let after_second = presence_edges(&code, &ctx, &entries, &effects, &[], 5, &after_first)
-            .into_iter()
-            .find(|(successor, _)| *successor == 6)
-            .expect("a create falls through to the next instruction")
-            .1;
+        let families = EntryFamilies::new(&[], &[]);
+        let after_first = presence_edges(
+            &code,
+            &ctx,
+            &entries,
+            &effects,
+            &families,
+            2,
+            &BTreeSet::new(),
+        )
+        .into_iter()
+        .find(|(successor, _)| *successor == 3)
+        .expect("a create falls through to the next instruction")
+        .1;
+        let after_second =
+            presence_edges(&code, &ctx, &entries, &effects, &families, 5, &after_first)
+                .into_iter()
+                .find(|(successor, _)| *successor == 6)
+                .expect("a create falls through to the next instruction")
+                .1;
         assert_eq!(
             after_second.len(),
             2,

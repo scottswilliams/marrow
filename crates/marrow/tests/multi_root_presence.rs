@@ -246,15 +246,14 @@ store ^aaa[k: int]: Aaa
 store ^bbb[k: int]: Bbb
 "#;
 
-/// A helper that writes `^bbb` leaves a fact on `^aaa[k]` in place — the set through
-/// `a` after `touchBbb(k)` is strict — while the same helper writing `^aaa` ends it.
-/// Today the `^aaa`-writing form compiles clean.
+/// A helper that erases `^bbb` leaves a fact on `^aaa[k]` in place, while the
+/// same helper erasing `^aaa` ends it.
 #[test]
 fn an_other_root_helper_keeps_the_fact_while_a_same_root_helper_ends_it() {
     let other_root = format!(
         "{TWO_ROOT_SCHEMA}
 fn touchBbb(k: int) {{
-    ^bbb[k] = Bbb(tag: \"b\")
+    delete ^bbb[k]
 }}
 
 pub fn setAaaNote(k: int, n: string) {{
@@ -268,7 +267,7 @@ pub fn setAaaNote(k: int, n: string) {{
 }}
 "
     );
-    let image = compile_source(&other_root).expect("a write to another root keeps the fact");
+    let image = compile_source(&other_root).expect("an erase of another root keeps the fact");
     let strict = image
         .functions()
         .iter()
@@ -283,7 +282,7 @@ pub fn setAaaNote(k: int, n: string) {{
     let same_root = format!(
         "{TWO_ROOT_SCHEMA}
 fn touchAaa(k: int) {{
-    ^aaa[k] = Aaa(tag: \"a\")
+    delete ^aaa[k]
 }}
 
 pub fn setAaaNote(k: int, n: string) {{
@@ -300,6 +299,6 @@ pub fn setAaaNote(k: int, n: string) {{
     assert_eq!(
         compile_source(&same_root).err(),
         Some(vec!["check.requires_presence".to_string()]),
-        "the discriminator: a helper whose demand writes `^aaa` ends the fact"
+        "a helper that erases `^aaa` ends the fact"
     );
 }

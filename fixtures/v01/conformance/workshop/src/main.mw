@@ -60,10 +60,10 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
         if exists(^assets[id]) {
             return false
         }
-        ^assets[id] = Asset(tag: tag, name: name, category: category)
-        ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
         place catalogued = ^tallies["catalogued"]
         catalogued = Tally(count: (catalogued.count ?? 0) + 1)
+        ^assets[id] = Asset(tag: tag, name: name, category: category)
+        ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
     }
     return true
 }

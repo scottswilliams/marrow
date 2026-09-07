@@ -130,9 +130,9 @@ fn journey_source() -> String {
         pub fn add(id: int, tag: string, name: string): bool {{\n\
         \x20   transaction {{\n\
         \x20       if exists(^assets[id]) {{ return false }}\n\
-        \x20       ^assets[id] = Asset(tag: tag, name: name)\n\
         \x20       place catalogued = ^tallies[\"catalogued\"]\n\
         \x20       catalogued = Tally(count: (catalogued.count ?? 0) + 1)\n\
+        \x20       ^assets[id] = Asset(tag: tag, name: name)\n\
         \x20   }}\n\
         \x20   return true\n\
         }}\n\
@@ -355,23 +355,25 @@ ok("findByTag-miss", (await first.findByTag("NOPE")) === null);
 // identifies, closing the identity codec both directions through the unchanged runner.
 ok("nameByHandle", handle !== null && (await first.nameByHandle(handle)) === "Cordless Drill");
 
-// rollback: an unguarded move on an absent asset faults required-missing and rolls the whole
-// cross-root region back — the moves tally is not advanced by a move that never landed.
+// rollback: add stages the catalogued tally before a duplicate tag faults, so both
+// roots retain their committed state after the failed transaction.
 try {
-  await first.recordMove(2n, "Bay 9");
-  ok("rollback", false, "a move on an absent asset did not fault");
+  await first.add(2n, "T-100", "Duplicate");
+  ok("rollback", false, "duplicate tag did not fault");
 } catch (error) {
   ok(
     "rollback",
-    error instanceof M.MarrowIncomplete &&
-      error.code === "run.required_missing" &&
-      error.durable === M.DURABLE_STATE.KNOWN_OLD,
+    error instanceof M.MarrowFault && error.code === "run.unique_index",
     String(error),
   );
 }
 
-// An incomplete reply retires the Node session. A fresh attachment proves the exact
-// known-old rollback state before the independent restart/persistence proof below.
+ok("usable-after-fault", await first.present(1n));
+ok("same-session-rollback-catalogued", (await first.catalogued()) === 1n);
+await first.close();
+
+// Fresh attachments prove rollback independently of the first client's view,
+// before the additional restart/persistence proof below.
 const rollbackReadback = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
 ok("rollback-location", (await rollbackReadback.location(1n)) === "Bay 3");
 ok("rollback-moveCount", (await rollbackReadback.moveCount()) === 1n);

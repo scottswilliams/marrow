@@ -6,7 +6,9 @@ use super::durable::{
 };
 use super::flow::durable_op_class;
 use super::model::DecodedImage;
-use super::presence::{call_targets, check_presence_flow, reject_call_cycles, verify_function};
+use super::presence::{
+    EntryFamilies, call_targets, check_presence_flow, reject_call_cycles, verify_function,
+};
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
@@ -153,8 +155,11 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
 
     // Every present-entry operation requires an independently reconstructed fact.
     // Call effects and the executed-producer mask come from their existing owners.
-    for (function, entries) in functions.iter().zip(non_fallthrough_entries) {
-        check_presence_flow(function, &ctx, &entries, &effects, &decoded.site_paths)?;
+    {
+        let entry_families = EntryFamilies::new(&sites, &decoded.site_paths);
+        for (function, entries) in functions.iter().zip(non_fallthrough_entries) {
+            check_presence_flow(function, &ctx, &entries, &effects, &entry_families)?;
+        }
     }
 
     let exports = decoded

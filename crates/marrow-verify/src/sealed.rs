@@ -256,9 +256,12 @@ pub enum SealedInstr {
         site: u16,
         key_slots: Vec<u16>,
     },
-    /// `K, Rec →`: replace the group the `GroupEntry` site `_0` names, group-scoped
-    /// payload-only (transaction-region only).
-    DurReplaceGroup(u16),
+    /// `Rec →`: replace the group at `site`, with its containing entry's root-first
+    /// key path in `key_slots`. The presence lattice proves the entry present.
+    DurReplaceGroup {
+        site: u16,
+        key_slots: Vec<u16>,
+    },
     /// `K →`: erase the group the `GroupEntry` site `_0` names — clears only that
     /// group's leaves (no-op on an absent entry).
     DurEraseGroup(u16),

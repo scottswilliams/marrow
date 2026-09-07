@@ -20,16 +20,6 @@ not return the old value; a program reads it first when it needs it. An
 interrupted commit reopens as `known_old`, `known_new`, or `unknown`
 ([operations](../operations/README.md#interrupted-commits)).
 
-The complete-entry invariant is current: every present entry has its complete
-required payload. Whole-entry assignment creates or replaces an entry; a
-field, group, or group-leaf write updates an entry that a presence proof
-covers through a `place` or a traversal pin, and is refused otherwise; `delete`
-is the one clearing form; and a proof ends at its block, at an erase of the
-family, or at a call whose demand writes the family. The proof forms and the
-loop rule are defined in [durable places](../language/durable-places.md#named-places).
-The kernel refuses an incomplete entry from a hand-built image with
-`run.corruption`.
-
 ## Direction
 
 Provisioning creates control metadata and evaluates no application
@@ -67,12 +57,12 @@ source effect declaration, and add no first-class address values, reference
 parameters, borrow-region syntax, key-provenance analysis, or whole-program
 fixpoint.
 
-Older store/image formats are refused without changing their data; a matching
-older toolchain remains necessary to use them. General data migration is
-separate work. Ordinary exports initialize and change application data; the
-separate data-populating importer is retired. The EMR baseline data in the
-`marrow-acceptance` repository needs explicit application seed exports;
-replaying ordinary transitions changes its meaning. A source migration can
+Unsupported images are rejected without changing stored data. Images using
+retired instructions require recompilation. General migration of stored data
+is future work. Ordinary exports should initialize and change application data;
+retirement of the current data-populating importer is future work. The EMR
+baseline data in the `marrow-acceptance` repository needs explicit application
+seed exports; replaying ordinary transitions changes its meaning. A source migration can
 change demand, so a migrated program must still pass store admission.
 
 Work larger than one invocation advances by application-owned progress over

@@ -39,6 +39,11 @@ use admitted_plan::admitted_plan;
 #[path = "common/admitted.rs"]
 mod admitted_helper;
 
+#[path = "hostile/group_presence.rs"]
+mod group_presence;
+
+#[path = "hostile/complete_entries.rs"]
+mod complete_entries;
 #[path = "hostile/guard_provenance.rs"]
 mod guard_provenance;
 use admitted_helper::admitted;
@@ -1012,11 +1017,10 @@ fn a_traversal_list_type_naming_a_map_rejects() {
 }
 
 #[test]
-fn the_retired_next_key_opcode_byte_is_no_longer_decodable() {
-    // 0x39 was the unbounded `DurNextKey` opcode, deleted with the whole family when
-    // durable traversal became always-bounded. An image carrying that byte where an
-    // opcode is expected — re-digested so the envelope passes — is refused as an
-    // unknown opcode, so no forged image can resurrect the retired op.
+fn substituting_family_exists_leaves_invalid_bounded_traversal_operands() {
+    // Active 0x39 is DurFamilyExists and consumes only the site operand. Substituting
+    // it for a bounded traversal leaves that traversal's remaining operands on the
+    // instruction tape; those bytes do not form a valid instruction sequence.
     let mut bytes = iterate_root_export(2, false).encode().unwrap().bytes;
     // Locate the bounded-traversal opcode and overwrite its opcode byte with 0x39.
     let opcode = [0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00];
@@ -1026,7 +1030,7 @@ fn the_retired_next_key_opcode_byte_is_no_longer_decodable() {
         .expect("the bounded-traversal opcode is present");
     bytes[at] = 0x39;
     rehash(&mut bytes);
-    let rejection = verify(&bytes).expect_err("a retired opcode byte is refused");
+    let rejection = verify(&bytes).expect_err("the leftover traversal operands are refused");
     assert_eq!(rejection.code(), "image.function");
     assert_eq!(rejection.detail(), "unknown or not-yet-supported opcode");
 }

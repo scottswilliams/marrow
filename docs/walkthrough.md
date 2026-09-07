@@ -75,10 +75,10 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
         if exists(^assets[id]) {
             return false
         }
-        ^assets[id] = Asset(tag: tag, name: name, category: category)
-        ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
         place catalogued = ^tallies["catalogued"]
         catalogued = Tally(count: (catalogued.count ?? 0) + 1)
+        ^assets[id] = Asset(tag: tag, name: name, category: category)
+        ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
     }
     return true
 }
@@ -155,7 +155,7 @@ the same address. Nothing reads the whole asset, and the log branch beneath it
 is untouched. The `place` itself proves nothing: a write through `slot` with
 no such guard is refused at check time with `check.requires_presence`. The
 proof lasts to the end of the block, a `delete` of any asset, or a call to a
-function that writes `^assets`
+function that erases an entry of `^assets`
 ([named places](language/durable-places.md#named-places)).
 
 ## Copies

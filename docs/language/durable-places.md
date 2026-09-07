@@ -288,18 +288,27 @@ proof, including every inline `^books[id].subtitle = subtitle`, is
 `check.requires_presence` at the write. A function binds one place per entry
 and proves and writes through that name.
 
-A proof lasts until its block ends, until a `delete` of any entry in the same
-family, or until a call to a function whose demand writes the family. A family
-is one root and one branch path, so the erase may be spelled through any
-binding or key: `delete book`, `delete other` over the same root, or `delete
-^books[k]`. A function writes the family when it, or a function it calls,
-creates, replaces, or erases an entry of it. A loop body is one region: a
-write inside a `while` or `for` body that was entered after the proof was
-established is refused when that body, or a body nested in it, erases the
-family or calls a function that writes it, because the next iteration puts the
-erase before the write. A proof established inside the body, such as
-`if exists(pin)` on each iteration, is never refused by that rule. After such
-a loop the proof is gone.
+A proof lasts until its block ends or an entry in the same family is erased,
+directly or through a call. A family is one root and one branch path, so the
+erase may use any binding or key: `delete book`, `delete other` over the same
+root, or `delete ^books[k]`. Parent and child entry families are independent.
+Complete replacement, field and group updates, and deletion of sparse leaves
+preserve entry presence. The proof establishes no stable field value or sparse
+field presence.
+
+A write evaluates its right-hand side before consuming the proof. A helper
+that erases the family invalidates the proof even when it recreates the entry
+or returns an ordinary error value; such a return does not roll back the
+transaction. A completed whole-entry assignment through a named place
+establishes a new proof after its right-hand side has been evaluated.
+
+A write inside a `while` or `for` body entered after the proof was established
+also requires that proof to survive the repeating region, including nested
+bodies and a `while` condition. An entry erase in that region, directly or
+through a call, can precede the write on the next iteration and invalidates
+the proof. A proof established inside the body, such as `if exists(pin)` on
+each iteration, starts a new lifetime. One-time loop inputs follow ordinary
+evaluation order. After an erasing loop, an earlier proof cannot be reused.
 
 A branch beneath the entry is addressed through the name, so `book.notes[pos]`
 reads and writes the branch entry that `^books[id].notes[pos]` names. A place

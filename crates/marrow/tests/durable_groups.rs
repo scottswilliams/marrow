@@ -13,6 +13,9 @@
 //! VM — against one persistent ephemeral attachment, with a composite root key so the
 //! group ops are exercised over a multi-column key-path.
 
+#[path = "durable_groups/presence_lifetime.rs"]
+mod presence_lifetime;
+
 use marrow_compile::SourceDiagnostic;
 use marrow_verify::VerifiedImage;
 use marrow_vm::{
@@ -536,7 +539,7 @@ fn compile_diagnostics(body: &str) -> Vec<SourceDiagnostic> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(_) => {
-            panic!("a group-leaf-shaped projection over a stored field must be rejected")
+            panic!("the source must be rejected with a diagnostic")
         }
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
         Err(

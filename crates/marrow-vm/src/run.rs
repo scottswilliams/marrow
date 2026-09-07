@@ -334,8 +334,8 @@ fn execute_frame<'s>(
             SealedInstr::DurReadGroupPresent { site, key_slots } => {
                 frame.dur_read_group_present(require_session(&mut session), *site, key_slots)?
             }
-            SealedInstr::DurReplaceGroup(site) => {
-                frame.dur_replace_group(require_session(&mut session), *site)?
+            SealedInstr::DurReplaceGroup { site, key_slots } => {
+                frame.dur_replace_group(require_session(&mut session), *site, key_slots)?
             }
             SealedInstr::DurEraseGroup(site) => {
                 frame.dur_erase_group(require_session(&mut session), *site)?
@@ -1319,10 +1319,11 @@ impl<'i> Frame<'i> {
         &mut self,
         durable: &mut dyn Durable,
         site: u16,
+        key_slots: &[u16],
     ) -> Result<(), DurableExecutionFault> {
         let authorized = durable.site(site);
         let group = record_to_entry(pop(&mut self.stack), 0);
-        let keys = pop_key_path(&mut self.stack, authorized.key_arity());
+        let keys = self.place_key_path(key_slots);
         durable
             .replace_group(&authorized, &keys, group)
             .map_err(|kf| self.kernel_fault(&kf))?;

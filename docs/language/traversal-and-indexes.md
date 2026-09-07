@@ -170,7 +170,7 @@ test "each iteration proves its pin" {
 the rest of that block; it changes no later read. `shelveAll` proves each pin
 on its own iteration. A loop body is one proof region: a write inside a body
 that was entered after its proof was established is refused when that body,
-or a body nested in it, erases the family or calls a function that writes it,
+or a body nested in it, erases the family or calls a function that erases it,
 and after such a loop the proof is gone
 ([named places](durable-places.md#named-places)).
 

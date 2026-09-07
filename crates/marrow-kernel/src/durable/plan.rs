@@ -302,11 +302,10 @@ mod tests {
     }
 
     /// A resolved field with an arbitrary distinct number (the planner keys leaves by the
-    /// number, so structural tests only need distinctness); the name is diagnostics-only.
+    /// number, so structural tests only need distinctness).
     fn rf(number: NodeNumber, kind: ScalarKind, required: bool) -> ResolvedField {
         ResolvedField {
             number,
-            name: String::new(),
             shape: ValueShape::scalar(kind),
             required,
         }
@@ -349,7 +348,6 @@ mod tests {
     fn rf_named(number: NodeNumber, field: &FieldSchema) -> ResolvedField {
         ResolvedField {
             number,
-            name: field.name().to_string(),
             shape: field.shape().clone(),
             required: field.required(),
         }

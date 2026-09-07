@@ -296,7 +296,7 @@ fn branch_schema() -> (StoreSchema, Vec<SiteTarget>) {
 /// it), so a whole read of the root is payload-absent; a create over that
 /// descendant-only slot gives the root a payload without disturbing the branch
 /// descendant, and a replace over the branch keeps the branch's own record while a
-/// replace over the descendant-only root reports Missing.
+/// replace over the descendant-only root reports `KernelFault::Corruption`.
 #[test]
 fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() {
     let (schema, sites) = branch_schema();
@@ -324,7 +324,7 @@ fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() 
     }
 
     // The root `a` is descendant-only: no payload marker, so a whole read is
-    // payload-absent and presence is absent, while a replace reports Missing
+    // payload-absent and presence is absent, while a replace reports Corruption
     // without touching the descendant. The branch entry itself is present.
     {
         let mut read = store
@@ -632,12 +632,11 @@ fn a_bounded_acquisition_skips_a_run_of_descendant_only_entries_between_siblings
     }
 }
 
-// --- Field-exact branch operations and the branch commit reconcile (E03w slice A). ---
+// --- Field-exact branch operations. ---
 //
 // A field-exact set on a branch entry addresses one leaf of a branch node directly
 // (`BranchField`). Its engine write is one cell regardless of the branch record's
-// width (constant records), and the commit reconcile validates the *branch* node's
-// marker and required fields at its own stem — never the root's.
+// width. It checks the branch node's marker at its own stem — never the root's.
 
 /// A wide-record branch schema: root `books` keyed by string with a required
 /// `title`, and a branch `notes` keyed by int with a required `text` plus six sparse
@@ -1278,22 +1277,18 @@ fn a_branch_layer_traversal_with_a_wrong_ancestor_key_path_faults() {
 }
 
 // --- Nested (multi-level) branches: multi-hop stems, four-state probe at depth, the
-//     sub-branch uniform payload-only law, node-parametric reconcile at depth, and
-//     bounded traversal over an inner layer (E03w slice B). ---
+//     sub-branch uniform payload-only law, and bounded traversal over an inner layer. ---
 //
-// The verifier still parks nested branches, so these tests hand-build a multi-level
-// schema and multi-hop sites and drive the public store API directly — the kernel
-// executes any well-formed projection of schemas and site targets, the seam the verifier/compiler
-// admission of nested branches (checkpoint 1) will target. They pin the level-
-// independence of the durable laws: a sub-branch node's marker/field/cursor topology,
-// its slot classification, its whole-entry replace/erase confinement, and its commit
-// reconcile all behave one or two levels down exactly as they do at the root.
+// These tests build a multi-level schema and multi-hop sites and drive the public
+// store API directly. They pin the level independence of the durable laws: a
+// sub-branch node's marker/field/cursor topology, slot classification, and whole-entry
+// replace/erase confinement behave at depth exactly as they do at the root.
 
 /// A four-level nested-branch schema: root `books`(Str) → branch `notes`(Int) →
 /// sub-branch `tags`(Str) → sub-sub-branch `links`(Int). Each branch level carries a
 /// required and a sparse field so the payload-only law (replace erases omitted own
-/// fields; erase removes own cells; both preserve keyed descendants) and the node-
-/// parametric reconcile are exercised at depth. Sites: 0 root, 1 notes, 2 tags, 3
+/// fields; erase removes own cells; both preserve keyed descendants) is exercised
+/// at depth. Sites: 0 root, 1 notes, 2 tags, 3
 /// links, 4 tags.weight (sparse), 5 tags.label (required), 6 notes.color (sparse).
 fn nested_schema() -> (StoreSchema, Vec<SiteTarget>) {
     let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);

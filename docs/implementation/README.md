@@ -20,8 +20,26 @@ immediately preceding instruction. The presence pass uses those transient
 flags to require an uninterrupted
 key-load, producer and consumer sequence before establishing a guard fact.
 The flags are discarded before the verified image is returned; they add no
-encoded or public image field. Calls that erase a guarded entry remain subject
-to the kernel's runtime presence assertion.
+encoded or public image field. `verify/presence.rs` reconstructs entry-erasing
+calls from the existing effect closure and checks each strict field/group
+operation against its containing entry and complete key-slot tuple. Optional
+entry and group reads establish facts only on their present branch.
+The verifier's `EntryFamilies` borrows a sorted projection of validated entry
+paths and branch coordinates, built once for the presence phase. Calls use
+binary search without reconstructing key columns; direct erases use the same
+entry-family classifier. This transient lookup is dropped before publication.
+
+`marrow-compile/src/lower/presence.rs` owns scoped presence facts in stable
+optional slots. The lowerer logs each emitted call once and retains call-log
+intervals for protected uses. `compile/presence_calls.rs` settles entry-erasure
+closures with the existing acyclic call order, reusing one word per function
+for each stripe of 64 queried families. Its pending interval chains avoid
+copying calls into facts or rescanning a call slice for every use.
+
+`marrow-image/src/instr.rs` owns instruction tags and operand widths. Strict
+field set, strict group read and group replacement carry explicit key slots;
+replacement consumes only the group record from the operand stack. Retired
+encodings reject in the verifier and require recompilation.
 
 The compiler opens no store, and the VM accepts only an image the verifier
 sealed. `marrow-lifecycle` prepares a verified image once, deriving the store

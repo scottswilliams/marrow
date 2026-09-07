@@ -467,8 +467,8 @@ pub(crate) fn requires_presence(
             "this write updates an entry, but {detail}. Bind `place m = ^root[key]` and write \
              through `m` inside `if exists(m) {{ … }}`, after `if not exists(m) {{ return … }}`, \
              or after a whole-entry assignment `m = Resource(…)`; a proof ends at its block's \
-             end, at a `delete` of any entry in the same family, and at a call that writes \
-             the family. To create an entry, assign the whole record."
+             end, at a `delete` of any entry in the same family, and at a call that erases \
+             an entry of that family. To create an entry, assign the whole record."
         ),
     )
 }

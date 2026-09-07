@@ -205,10 +205,10 @@ impl DurableGroup {
 /// One durable entry family: a root's own entry family, or one keyed-branch family
 /// beneath it, named by the root and the declaration-order index of each branch hop.
 /// The unit a presence proof is scoped to: an erase of any entry in the family or a
-/// call whose demand writes the family ends every proof over it, whatever key the
+/// call whose closure erases the family ends every proof over it, whatever key the
 /// proof or the erase names, so two roots projecting one Product declaration are
 /// distinct families and sibling branches are distinct families.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Family {
     pub(crate) root: marrow_image::RootId,
     pub(crate) branch: Vec<usize>,
