@@ -149,7 +149,7 @@ fn an_empty_transaction_is_rejected_at_the_block() {
 /// already owns; refused at the reopening block.
 #[test]
 fn a_second_region_reopens_an_owned_transaction() {
-    let ops = "pub fn twoRegions(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    transaction {\n        ^counters[id].value = v\n    }\n}\n";
+    let ops = "pub fn twoRegions(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    transaction {\n        ^counters[id] = Counter(value: v + 1)\n    }\n}\n";
     let diagnostic = only(ops);
     assert_eq!(diagnostic.code(), "check.transaction_reopened");
     assert!(

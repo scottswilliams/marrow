@@ -35,7 +35,7 @@ store ^counters[id: int]: Counter
 
 pub fn setValue(n: int, v: int) {
     transaction {
-        ^counters[n].value = v
+        ^counters[n] = Counter(value: v)
     }
 }
 

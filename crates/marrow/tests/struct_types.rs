@@ -675,8 +675,8 @@ pub fn f(): int {
 }
 
 /// A dense struct and a durable resource coexist: the struct is a value the VM
-/// constructs and reads, while the resource is written under a transaction, both
-/// verifying in one image.
+/// constructs and reads, while the resource entry is written whole under a
+/// transaction, both verifying in one image.
 #[test]
 fn a_struct_and_a_resource_coexist() {
     let temp = TempDir::new("coexist");
@@ -699,7 +699,7 @@ pub fn pointX(): int {
 
 pub fn writer(id: int) {
     transaction {
-        ^books[id].title = "t"
+        ^books[id] = Book(title: "t")
     }
 }
 "#,

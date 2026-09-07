@@ -120,7 +120,7 @@ const DEMAND: &str = "graph_report.addEdge reads ^nodes and ^nodes.edges; writes
      graph_report.report reads ^config, ^nodes, ^nodes.color, ^nodes.edges, ^nodes.edges.weight, and ^nodes.label\n\
      graph_report.setColor reads ^nodes; writes ^nodes.color\n\
      graph_report.setRoot reads ^config; writes ^config\n\
-     graph_report.tint writes ^nodes.color\n";
+     graph_report.tint reads ^nodes; writes ^nodes.color\n";
 
 /// A rooted chain built across several committed transactions is observable by the
 /// read-only report and the read probes: each `addEdge`/`setRoot`/`setColor` commits to
@@ -211,13 +211,11 @@ fn removing_an_edge_is_observable_by_a_later_read() {
     );
 }
 
-/// The guarded `setColor` and the unguarded `tint` are the blessed sparse-set pair. The
-/// guard is a no-op on an absent node; the unguarded set over an absent node stages the
-/// color alone and the commit rolls the whole transaction back with `run.required_missing`
-/// because the required `label` is unset, so the graph is left unchanged. On a present
-/// node both land the color.
+/// `setColor` and `tint` are the two guarded sparse-set spellings: the positive
+/// `if exists` block and the diverging `if not exists` guard. Both are a no-op on an
+/// absent node, which stays absent, and both land the color on a present node.
 #[test]
-fn a_sparse_color_set_is_guarded_or_rolls_back_atomically() {
+fn a_sparse_color_set_is_guarded_either_way() {
     let mut s = session();
     s.call("addNode", vec![text("a"), text("Alpha")]);
 
@@ -235,10 +233,10 @@ fn a_sparse_color_set_is_guarded_or_rolls_back_atomically() {
         Some(Value::Bool(false))
     );
 
-    // Unguarded set on the absent node b faults at commit and rolls back atomically.
+    // The diverging-guard spelling on the absent node b is the same silent no-op.
     assert_eq!(
         s.try_call("tint", vec![text("b"), text("blue")]),
-        CallOutcome::Fault("run.required_missing".to_string())
+        CallOutcome::Value(None)
     );
     assert_eq!(
         s.call("nodeExists", vec![text("b")]),
@@ -246,7 +244,7 @@ fn a_sparse_color_set_is_guarded_or_rolls_back_atomically() {
     );
     assert_eq!(s.call("colorOf", vec![text("b")]), absent());
 
-    // Unguarded set on a present node updates it exactly like the guarded form.
+    // On a present node the diverging-guard spelling lands the color like `setColor`.
     assert_eq!(
         s.try_call("tint", vec![text("a"), text("amber")]),
         CallOutcome::Value(None)

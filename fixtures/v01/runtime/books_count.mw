@@ -7,7 +7,7 @@ resource Book {
 store ^books[id: int]: Book
 
 pub fn seed() {
-    ^books[1].title = "Mort"
+    ^books[1] = Book(title: "Mort")
     const a: int = append(^books[1].tags, "fiction")
     const b: int = append(^books[1].tags, "funny")
 }

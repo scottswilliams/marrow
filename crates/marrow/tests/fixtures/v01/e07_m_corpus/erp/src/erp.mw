@@ -117,7 +117,7 @@ pub fn placeOrder(customer: string, at: instant): Result<int, string> {
         }
         place seq = ^idseq["order"]
         const next = (seq.value ?? 0) + 1
-        seq.value = next
+        seq = Counter(value: next)
         ^orders[next] = Order(customer: customer, placedAt: at)
         return ok(next)
     }

@@ -313,14 +313,8 @@ fn execute_frame<'s>(
             SealedInstr::DurReadEntry(site) => {
                 frame.dur_read_entry(require_session(&mut session), *site)?
             }
-            SealedInstr::DurSetRequired(site) => {
-                frame.dur_set_required(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurSetSparse(site) => {
-                frame.dur_set_sparse(require_session(&mut session), *site)?
-            }
-            SealedInstr::DurSetSparsePresent { site, key_slots } => {
-                frame.dur_set_sparse_present(require_session(&mut session), *site, key_slots)?
+            SealedInstr::DurSetField { site, key_slots } => {
+                frame.dur_set_field(require_session(&mut session), *site, key_slots)?
             }
             SealedInstr::DurCreateEntry(site) => {
                 frame.dur_create_entry(require_session(&mut session), *site)?
@@ -336,6 +330,9 @@ fn execute_frame<'s>(
             }
             SealedInstr::DurReadGroup(site) => {
                 frame.dur_read_group(require_session(&mut session), *site)?
+            }
+            SealedInstr::DurReadGroupPresent { site, key_slots } => {
+                frame.dur_read_group_present(require_session(&mut session), *site, key_slots)?
             }
             SealedInstr::DurReplaceGroup(site) => {
                 frame.dur_replace_group(require_session(&mut session), *site)?
@@ -1101,10 +1098,6 @@ impl<'i> Frame<'i> {
                 self.pc += 1;
                 Ok(())
             }
-            CommitResult::RequiredMissing { .. } => Err(DurableExecutionFault::classified(
-                source_fault(self.function, self.pc, Code::RunRequiredMissing.as_str()),
-                DurableCommitState::KnownOld,
-            )),
             CommitResult::Aborted => Err(DurableExecutionFault::classified(
                 source_fault(self.function, self.pc, Code::RunCommit.as_str()),
                 DurableCommitState::KnownOld,
@@ -1191,48 +1184,11 @@ impl<'i> Frame<'i> {
         Ok(())
     }
 
-    fn dur_set_required(
-        &mut self,
-        durable: &mut dyn Durable,
-        site: u16,
-    ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
-        let value = value_to_domain(pop(&mut self.stack));
-        let keys = pop_key_path(&mut self.stack, authorized.key_arity());
-        durable
-            .set_required(&authorized, &keys, value)
-            .map_err(|kf| self.kernel_fault(&kf))?;
-        self.pc += 1;
-        Ok(())
-    }
-
-    fn dur_set_sparse(
-        &mut self,
-        durable: &mut dyn Durable,
-        site: u16,
-    ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
-        let value = as_optional(pop(&mut self.stack)).map(value_to_domain);
-        let keys = pop_key_path(&mut self.stack, authorized.key_arity());
-        durable
-            .set_sparse(&authorized, &keys, value)
-            .map_err(|kf| self.kernel_fault(&kf))?;
-        self.pc += 1;
-        Ok(())
-    }
-
-    fn dur_set_sparse_present(
-        &mut self,
-        durable: &mut dyn Durable,
-        site: u16,
-        key_slots: &[u16],
-    ) -> Result<(), DurableExecutionFault> {
-        let authorized = durable.site(site);
-        let value = as_optional(pop(&mut self.stack)).map(value_to_domain);
-        // The strict form reads its containing entry's whole key-path from the place's
-        // pre-evaluated slots (root-first); the verifier proved each slot definitely
-        // initialized with its column type here.
-        let keys: Vec<_> = key_slots
+    /// The key-path of a present-entry op: the containing entry's key columns read from
+    /// the place's pre-evaluated slots (root-first); the verifier proved each slot
+    /// definitely initialized with its column type here.
+    fn place_key_path(&self, key_slots: &[u16]) -> Vec<KeyScalar> {
+        key_slots
             .iter()
             .map(|slot| {
                 value_to_key(
@@ -1241,9 +1197,20 @@ impl<'i> Frame<'i> {
                         .expect("verifier proved definite init of the place key slot"),
                 )
             })
-            .collect();
+            .collect()
+    }
+
+    fn dur_set_field(
+        &mut self,
+        durable: &mut dyn Durable,
+        site: u16,
+        key_slots: &[u16],
+    ) -> Result<(), DurableExecutionFault> {
+        let authorized = durable.site(site);
+        let value = value_to_domain(pop(&mut self.stack));
+        let keys = self.place_key_path(key_slots);
         durable
-            .set_sparse_present(&authorized, &keys, value)
+            .set_field(&authorized, &keys, value)
             .map_err(|kf| self.kernel_fault(&kf))?;
         self.pc += 1;
         Ok(())
@@ -1326,6 +1293,24 @@ impl<'i> Frame<'i> {
         self.stack.push(Value::Optional(
             group.map(|group| Box::new(entry_to_record(ty, group, &[]))),
         ));
+        self.pc += 1;
+        Ok(())
+    }
+
+    fn dur_read_group_present(
+        &mut self,
+        durable: &mut dyn Durable,
+        site: u16,
+        key_slots: &[u16],
+    ) -> Result<(), DurableExecutionFault> {
+        let image = self.image;
+        let authorized = durable.site(site);
+        let keys = self.place_key_path(key_slots);
+        let group = durable
+            .read_group_present(&authorized, &keys)
+            .map_err(|kf| self.kernel_fault(&kf))?;
+        let ty = entry_record_type(image, site);
+        self.stack.push(entry_to_record(ty, group, &[]));
         self.pc += 1;
         Ok(())
     }

@@ -2,7 +2,7 @@
 //!
 //! This is the G02b exit-gate journey: the E06 Workshop image is attached to a *fresh in-memory*
 //! store held by one spawned `marrow-runner attach-ephemeral` process, and the whole
-//! add / read / correct / cross-root rollback / re-read journey runs over that one session. Unlike
+//! add / read / move / cross-root rollback / re-read journey runs over that one session. Unlike
 //! the native path — where each call is its own process against a persistent store — every call
 //! here shares one runner process and one in-RAM store, so a committed write is observable by a
 //! later call *in the same session* and is gone when the session ends. The terminal-side client
@@ -97,11 +97,13 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn incomplete(&mut self, name: &str, args: Vec<Json>) -> (String, marrow_runner::DurableState) {
+    fn fault(&mut self, name: &str, args: Vec<Json>) -> String {
         match self.call(name, args) {
-            CallOutcome::Incomplete { code, durable, .. } => (code, durable),
+            CallOutcome::Fault { code, .. } => code,
             CallOutcome::Value(_) => panic!("`{name}` completed"),
-            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted ordinarily: {code}"),
+            CallOutcome::Incomplete { code, durable, .. } => {
+                panic!("`{name}` was incomplete: {code} ({durable:?})")
+            }
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
             CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
@@ -110,9 +112,9 @@ impl<'a> Session<'a> {
 
 /// The full Workshop journey over one ephemeral session: add commits across both roots and is
 /// read back by a *later call on the same session* (the store lives in the runner's RAM for the
-/// session's life); a committed move advances the tally; an unguarded move on an absent asset
-/// faults and rolls its whole cross-root region back; the final reads show every root at its
-/// prior committed value — all within one in-memory store that never touched disk.
+/// session's life); a committed move advances the tally; an add whose tag collides in the
+/// unique index faults and rolls its whole cross-root region back; the final reads show every
+/// root at its prior committed value — all within one in-memory store that never touched disk.
 #[test]
 fn workshop_journey_over_one_ephemeral_session() {
     let (image, bytes) = compile_verify();
@@ -153,14 +155,21 @@ fn workshop_journey_over_one_ephemeral_session() {
     );
     assert_eq!(session.value("moveCount", vec![]), Some(Value::Int(1)));
 
-    // Cross-root rollback: a move on an absent asset faults required-missing and rolls the whole
-    // staged region back across both roots.
+    // Cross-root rollback: an add reusing asset 1's tag collides in the unique `byTag` index
+    // at the write, before the commit, and rolls the whole staged region back across both
+    // roots.
     assert_eq!(
-        session.incomplete("recordMove", vec![Json::Int(2), Json::Str("Bay 9".into())]),
-        (
-            "run.required_missing".to_string(),
-            marrow_runner::DurableState::KnownOld,
+        session.fault(
+            "add",
+            vec![
+                Json::Int(2),
+                Json::Str("T-100".into()),
+                Json::Str("Impostor".into()),
+                Json::Str("power".into()),
+                Json::Str(epoch),
+            ],
         ),
+        "run.unique_index",
     );
 
     // Every root stands at its prior committed value after the rolled-back fault.

@@ -62,8 +62,8 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
         }
         ^assets[id] = Asset(tag: tag, name: name, category: category)
         ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
-        const priorCatalogued = ^tallies["catalogued"].count ?? 0
-        ^tallies["catalogued"].count = priorCatalogued + 1
+        place catalogued = ^tallies["catalogued"]
+        catalogued = Tally(count: (catalogued.count ?? 0) + 1)
     }
     return true
 }
@@ -109,15 +109,17 @@ pub fn moveCount(): int {
 
 // A cross-root move record: relocating a tool sets its `location` on `^assets` and
 // advances the "moves" tally on `^tallies` in one region, so the tally can never drift
-// from the relocations that actually landed. Unguarded — when the asset is absent the
-// lone `location` cannot complete the required `tag`/`name`/`category`, so the whole
-// region rolls back across both roots with `run.required_missing` and the tally is not
-// advanced by a move that never happened.
+// from the relocations that actually landed. The presence proof covers both writes:
+// an absent asset takes no location and the tally is not advanced by a move that
+// never happened.
 pub fn recordMove(id: int, location: string) {
     transaction {
-        ^assets[id].location = location
-        const priorMoves = ^tallies["moves"].count ?? 0
-        ^tallies["moves"].count = priorMoves + 1
+        place slot = ^assets[id]
+        if exists(slot) {
+            slot.location = location
+            place moves = ^tallies["moves"]
+            moves = Tally(count: (moves.count ?? 0) + 1)
+        }
     }
 }
 
@@ -165,7 +167,7 @@ pub fn checkin(id: int): bool {
         if not exists(slot) {
             return false
         }
-        slot.checkedOutTo = absent
+        delete slot.checkedOutTo
     }
     return true
 }

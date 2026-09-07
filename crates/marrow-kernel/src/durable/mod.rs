@@ -243,9 +243,8 @@ fn number_branches(
 
 /// One field of a resolved node: the cell-key [`NodeNumber`] the physical layer keys leaves
 /// by (never the source spelling), the value shape and required flag the ops need, and the
-/// field's source name retained for diagnostics only — the `RequiredMissing` reconcile fault
-/// names the missing required field, but no cell key is ever built from the name. The
-/// resolver produces these from a [`FieldSchema`] and its [`NodeNumber`].
+/// field's source name; no cell key is ever built from the name. The resolver produces
+/// these from a [`FieldSchema`] and its [`NodeNumber`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ResolvedField {
     pub(super) number: NodeNumber,
@@ -376,13 +375,6 @@ pub enum Presence {
 pub enum CreateOutcome {
     Created,
     AlreadyPresent,
-}
-
-/// The outcome of `replace_entry`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplaceOutcome {
-    Replaced,
-    Missing,
 }
 
 /// The outcome of an erase (field or entry). Both are legal (no-op on absent).
@@ -522,9 +514,6 @@ impl std::fmt::Debug for CommitRecovery {
 pub enum CommitResult {
     /// The engine confirmed the commit.
     Committed,
-    /// An entry the transaction created or staged still leaves a required field
-    /// unset; the transaction rolled back instead of committing a partial entry.
-    RequiredMissing { key: KeyScalar, field: String },
     /// The transaction is proven not to have committed: a pre-commit operation failed or
     /// the engine explicitly reported an abort. The handle remains usable.
     Aborted,
@@ -543,6 +532,12 @@ pub enum CommitResult {
 pub enum KernelFault {
     /// The store is internally inconsistent (orphan leaf, undecodable cell).
     Corruption,
+    /// A write would leave a present entry incomplete: an entry or group value short of
+    /// its record width or missing a required field, or an erase of a required field or
+    /// of a group holding a required leaf. The compiler's constructors and refusals make
+    /// this unreachable from a verified image; the kernel refuses it before any engine
+    /// access as defense in depth, so a present entry is complete on every path.
+    Incomplete,
     /// The handle was poisoned by an earlier failed commit.
     Poisoned,
     /// A value reaching the store codec is outside its supported range.
@@ -559,7 +554,9 @@ impl KernelFault {
     /// The stable dotted code a tool reports for this fault.
     pub fn code(&self) -> &'static str {
         match self {
-            KernelFault::Corruption => marrow_codes::Code::RunCorruption.as_str(),
+            KernelFault::Corruption | KernelFault::Incomplete => {
+                marrow_codes::Code::RunCorruption.as_str()
+            }
             KernelFault::Poisoned => marrow_codes::Code::RunCommit.as_str(),
             KernelFault::ValueRange => marrow_codes::Code::ValueRange.as_str(),
             KernelFault::UniqueIndexViolation => marrow_codes::Code::RunUniqueIndex.as_str(),
@@ -628,9 +625,9 @@ enum AuthTarget {
         shape: ValueShape,
         required: bool,
         /// The addressed field's containing node record — the root's fields for a
-        /// top-level field, a branch's fields for a branch field. A staged sparse or
-        /// required set carries this so the commit reconcile validates the *node's*
-        /// marker and required fields, node-parametrically, one level down for a branch.
+        /// top-level field, a branch's fields for a branch field. A field write reads the
+        /// sibling leaves a managed index projects from it, node-parametrically, one
+        /// level down for a branch.
         record: Vec<ResolvedField>,
     },
     /// A whole-group target: the group's cell-key number (which keys its physical leaf

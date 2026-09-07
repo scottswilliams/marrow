@@ -151,10 +151,10 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         )?;
     }
 
-    // Phase 5 (presence): every present-entry sparse set is dominated by a presence
-    // fact on its key slot, rechecked independently of the compiler.
+    // Every present-entry operation requires an independently reconstructed fact.
+    // Call effects and the executed-producer mask come from their existing owners.
     for (function, entries) in functions.iter().zip(non_fallthrough_entries) {
-        check_presence_flow(function, &ctx, &entries)?;
+        check_presence_flow(function, &ctx, &entries, &effects, &decoded.site_paths)?;
     }
 
     let exports = decoded

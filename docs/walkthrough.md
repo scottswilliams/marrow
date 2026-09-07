@@ -77,8 +77,8 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
         }
         ^assets[id] = Asset(tag: tag, name: name, category: category)
         ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
-        const priorCatalogued = ^tallies["catalogued"].count ?? 0
-        ^tallies["catalogued"].count = priorCatalogued + 1
+        place catalogued = ^tallies["catalogued"]
+        catalogued = Tally(count: (catalogued.count ?? 0) + 1)
     }
     return true
 }
@@ -86,29 +86,37 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
 
 `Asset(tag: ..., name: ..., category: ...)` constructs a value of the resource
 by naming its fields, and `Asset.log(...)` constructs a value of the `log`
-branch the same way. `exists(^assets[id])` asks whether the entry is present
-without reading its fields. When the id is already taken, the guard returns
-before any write. The three writes that follow span two roots and commit as
-one. `??` supplies a default for an absent value, so the first catalogued asset
-reads a prior count of `0`.
+branch the same way. Every entry is written whole, and a constructor names
+every required field, so a present entry is complete from its first commit.
+`exists(^assets[id])` asks whether the entry is present without reading its
+fields. When the id is already taken, the guard returns before any write. The
+three writes that follow span two roots and commit as one. `place catalogued =
+^tallies["catalogued"]` names the counter once; `??` supplies a default for an
+absent value, so the first catalogued asset reads a prior count of `0`, and the
+whole-entry assignment creates the counter or replaces it.
 
-`recordMove` writes a sparse `location` and advances a counter with no guard:
+`recordMove` updates a sparse `location` and advances a counter:
 
 ```text
 pub fn recordMove(id: int, location: string) {
     transaction {
-        ^assets[id].location = location
-        const priorMoves = ^tallies["moves"].count ?? 0
-        ^tallies["moves"].count = priorMoves + 1
+        place slot = ^assets[id]
+        if exists(slot) {
+            slot.location = location
+            place moves = ^tallies["moves"]
+            moves = Tally(count: (moves.count ?? 0) + 1)
+        }
     }
 }
 ```
 
-If no such asset exists, the write creates an entry with only `location` set. Its
-required `tag`, `name`, and `category` are still absent when the block ends, so the
-commit fails with `run.required_missing` and the whole block rolls back, counter
-included. The report names the durable outcome, `known_old`: nothing changed
-([rollback](language/errors-and-transactions.md#rollback-and-isolation)).
+A field write updates an entry the compiler has proved present and never
+creates one. `place slot = ^assets[id]` names the asset, and `exists(slot)`
+proves it for its block, so `slot.location = location` is a proved write.
+Without that proof the write is a compile-time `check.requires_presence`. The
+counter is written whole, as in `add`. For an absent asset the block writes
+nothing, and otherwise the two writes commit as one
+([writing](language/durable-places.md#writing)).
 
 ## Presence
 
@@ -141,11 +149,13 @@ pub fn setLocation(id: int, location: string): bool {
 ```
 
 `place slot = ^assets[id]` names the entry. `exists(slot)` asks whether it is
-present. `slot.location = location` writes one field through the same address.
-Nothing reads the whole asset, and the log branch beneath it is untouched. The
-`place` itself proves nothing: without the guard, a write through `slot` on an
-absent id creates an incomplete entry, and the block rolls back with
-`run.required_missing` as in `recordMove`
+present, and because the guard returns when it is not, the rest of the block
+is covered by that proof. `slot.location = location` writes one field through
+the same address. Nothing reads the whole asset, and the log branch beneath it
+is untouched. The `place` itself proves nothing: a write through `slot` with
+no such guard is refused at check time with `check.requires_presence`. The
+proof lasts to the end of the block, a `delete` of any asset, or a call to a
+function that writes `^assets`
 ([named places](language/durable-places.md#named-places)).
 
 ## Copies
@@ -273,10 +283,10 @@ pub fn pinnedCount(): int {
 ```
 
 `for id, asset in ^assets` binds the key and a pin. The pin `asset` is a
-per-iteration address for `^assets[id]`; it reads nothing and proves nothing.
-The frozen keys are taken before the body runs, and an entry erased by an
-earlier iteration keeps its key, so `exists(asset)` asks whether the entry is
-still present. `at most 4096` is a bound written as an integer literal: the loop
+per-iteration address for `^assets[id]`; it reads nothing and proves nothing
+by itself. The frozen keys are taken before the body runs, and an entry erased
+by an earlier iteration keeps its key, so `exists(asset)` asks whether the
+entry is still present; a write through the pin would sit inside that guard. `at most 4096` is a bound written as an integer literal: the loop
 freezes the first 4096 keys and runs the body once per frozen key in key order.
 `on more` is mandatory and handles overflow explicitly, here by returning `-1`
 when a further key existed. To go on past the

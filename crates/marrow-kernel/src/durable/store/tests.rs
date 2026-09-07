@@ -5,9 +5,8 @@ use marrow_store::{
 use super::super::physical;
 use super::super::{
     BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, EntryValue,
-    EraseOutcome, IndexComponent, InvocationGrant, KernelFault, Presence, ReplaceOutcome,
-    RootNumbering, SessionError, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder,
-    number_store,
+    EraseOutcome, IndexComponent, InvocationGrant, KernelFault, Presence, RootNumbering,
+    SessionError, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder, number_store,
 };
 use super::{Durable, DurableStore};
 use crate::codec::key::KeyScalar;
@@ -222,7 +221,7 @@ fn a_field_leaf_without_a_marker_is_corruption() {
 #[test]
 fn a_branch_field_write_with_a_root_only_key_path_faults() {
     // A branch-field site addresses the two-element key-path [root_key, branch_key].
-    // A forged image that drives the strict present set over it with a single-element
+    // A forged image that drives the field set over it with a single-element
     // key path must fault at the trust boundary rather than drop the branch hop and
     // mis-address the write to the root node. This is the release backstop over
     // `node_stem`'s key-path arity that the verifier's proof stands on.
@@ -240,31 +239,13 @@ fn a_branch_field_write_with_a_root_only_key_path_faults() {
     let branch_field = txn.site(0);
     // One key where the branch-field node needs two ([root_key, branch_key]).
     assert_eq!(
-        txn.set_sparse_present(
+        txn.set_field(
             &branch_field,
             &[KeyScalar::Str("root".into())],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("note".into()))),
+            ValueDomain::Scalar(RuntimeScalar::Str("note".into())),
         ),
         Err(KernelFault::Corruption)
     );
-}
-
-#[test]
-fn a_required_field_missing_at_commit_rolls_back() {
-    // Stage only the sparse label on a fresh entry: the required value is unset,
-    // so commit reports RequiredMissing and rolls back.
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
-    let mut txn = store
-        .txn_session(InvocationGrant::full_store(), write_demand())
-        .expect("txn session");
-    let label = txn.site(2);
-    txn.set_sparse(
-        &label,
-        &[KeyScalar::Str("x".into())],
-        Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into()))),
-    )
-    .expect("set sparse");
-    assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
 }
 
 #[test]
@@ -293,30 +274,6 @@ fn a_committed_orphan_reads_as_corruption() {
     assert_eq!(
         read.read_entry(&entry, &[KeyScalar::Str("x".into())]),
         Err(KernelFault::Corruption),
-    );
-}
-
-#[test]
-fn a_transaction_tolerates_a_staged_sparse_field_as_payload_absent() {
-    // Inside a transaction a sparse field staged before its entry's marker is
-    // reconcile-pending, not corruption: a whole-entry read observes it as
-    // payload-absent, matching the pre-probe behavior the reconcile model needs.
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
-    let mut txn = store
-        .txn_session(InvocationGrant::full_store(), write_demand())
-        .expect("txn session");
-    let label = txn.site(2);
-    let entry = txn.site(0);
-    txn.set_sparse(
-        &label,
-        &[KeyScalar::Str("x".into())],
-        Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into()))),
-    )
-    .expect("set sparse");
-    assert_eq!(
-        txn.read_entry(&entry, &[KeyScalar::Str("x".into())]),
-        Ok(None),
-        "a staged sparse field reads as payload-absent, not corruption",
     );
 }
 
@@ -392,8 +349,8 @@ fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() 
         );
     }
 
-    // A replace over the descendant-only root reports Missing (no payload to
-    // replace) and leaves the branch untouched.
+    // A replace over the descendant-only root is a marker/payload mismatch (a replace
+    // runs only on a present edge) and leaves the branch untouched.
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -404,9 +361,8 @@ fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() 
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("late".into())))],
         };
         assert_eq!(
-            txn.replace_entry(&root, std::slice::from_ref(&book), entry)
-                .expect("root replace"),
-            ReplaceOutcome::Missing,
+            txn.replace_entry(&root, std::slice::from_ref(&book), entry),
+            Err(KernelFault::Corruption),
         );
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
@@ -718,16 +674,6 @@ fn all_cells(store: &DurableStore<MemoryEngine>) -> std::collections::BTreeMap<V
         .collect()
 }
 
-/// The physical marker stem of note `note` under book `book`. The `notes` branch is the
-/// root's first branch; it numbers to 2 in the branch and wide-branch schemas alike.
-fn note_stem(book: &str, note: i64) -> Vec<u8> {
-    physical::branch_child_stem(
-        &book_stem(book),
-        branch_num(&branch_schema().0, &[0]),
-        &[KeyScalar::Int(note)],
-    )
-}
-
 /// A field-exact set on a present wide-record branch entry writes exactly one new
 /// leaf cell, independent of the branch record's width, and leaves every other cell
 /// (the marker, the required `text`, and the untouched sparse fields) byte-identical.
@@ -766,12 +712,8 @@ fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
             .txn_session(InvocationGrant::full_store(), write_demand())
             .expect("txn session");
         let f2 = txn.site(2);
-        txn.set_sparse(
-            &f2,
-            &note,
-            Some(ValueDomain::Scalar(RuntimeScalar::Int(42))),
-        )
-        .expect("field-exact set");
+        txn.set_field(&f2, &note, ValueDomain::Scalar(RuntimeScalar::Int(42)))
+            .expect("field-exact set");
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let after = all_cells(&store);
@@ -794,68 +736,6 @@ fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
             "a field-exact set left every prior cell untouched",
         );
     }
-}
-
-/// The branch commit reconcile creates the *branch* node's marker (never the root's)
-/// when a field-exact required set stages the branch node with all required fields
-/// present. Site 3 is the required `text` branch field; setting it on an absent
-/// branch entry reconcile-creates the branch marker, and the root gains no marker.
-#[test]
-fn a_field_exact_required_branch_set_reconcile_creates_the_branch_marker() {
-    let (schema, sites) = wide_branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
-    let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
-
-    {
-        let mut txn = store
-            .txn_session(InvocationGrant::full_store(), write_demand())
-            .expect("txn session");
-        let text = txn.site(3);
-        txn.set_required(
-            &text,
-            &note,
-            ValueDomain::Scalar(RuntimeScalar::Str("made".into())),
-        )
-        .expect("required branch set");
-        assert!(matches!(txn.commit(), CommitResult::Committed));
-    }
-
-    let cells = all_cells(&store);
-    assert!(
-        cells.contains_key(&note_stem("a", 7)),
-        "the reconcile created the branch node's marker",
-    );
-    assert!(
-        !cells.contains_key(&physical::marker_key(0, &[KeyScalar::Str("a".into())])),
-        "a field-exact branch set does not create the root marker",
-    );
-}
-
-/// A staged sparse branch-field set whose branch node's required field is missing
-/// rolls the transaction back with `RequiredMissing` — validated at the branch node's
-/// own stem and record, not the root's. Nothing persists, proving the reconcile
-/// checked the branch node's required `text` rather than the root's `title`.
-#[test]
-fn a_sparse_branch_set_missing_the_branch_required_field_rolls_back() {
-    let (schema, sites) = wide_branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
-    let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
-    let before = all_cells(&store);
-
-    let mut txn = store
-        .txn_session(InvocationGrant::full_store(), write_demand())
-        .expect("txn session");
-    let f2 = txn.site(2);
-    txn.set_sparse(&f2, &note, Some(ValueDomain::Scalar(RuntimeScalar::Int(9))))
-        .expect("field-exact sparse set");
-    // The branch node's required `text` is missing, so commit rolls back.
-    assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
-    // The whole transaction aborted, including the profile provision: nothing persists.
-    assert_eq!(
-        all_cells(&store),
-        before,
-        "the rolled-back set persisted nothing"
-    );
 }
 
 // --- E04 bounded acquisition law (the freeze-then-run kernel primitive). ---
@@ -1664,18 +1544,15 @@ fn a_replace_of_a_branch_entry_erases_omitted_fields_and_preserves_its_sub_branc
             .txn_session(InvocationGrant::full_store(), write_demand())
             .expect("txn session");
         let notes = txn.site(1);
-        assert_eq!(
-            txn.replace_entry(
-                &notes,
-                &note,
-                EntryValue {
-                    groups: Vec::new(),
-                    fields: vec![vs("bye"), None],
-                },
-            )
-            .expect("replace"),
-            ReplaceOutcome::Replaced,
-        );
+        txn.replace_entry(
+            &notes,
+            &note,
+            EntryValue {
+                groups: Vec::new(),
+                fields: vec![vs("bye"), None],
+            },
+        )
+        .expect("replace");
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
@@ -1833,63 +1710,6 @@ fn a_root_erase_preserves_the_whole_nested_branch_subtree() {
             fields: vec![vs("home"), None],
         })),
         "the level-2 descendant survived",
-    );
-}
-
-/// The node-parametric commit reconcile at a level-2 (tags) node: a field-exact set
-/// stages the sub-branch node and reconcile validates its OWN required fields at its
-/// OWN stem. A sparse `weight` set with the required `label` missing rolls back
-/// (validated against the tags record, not the note's or root's); a required `label`
-/// set reconcile-creates the tags marker two levels down and no shallower marker.
-#[test]
-fn a_field_exact_set_on_a_sub_branch_node_reconciles_at_its_own_stem() {
-    let mut store = nested_store();
-    let tag = [ks("a"), ki(1), ks("x")];
-
-    // A sparse weight set leaves the tags required `label` unset: reconcile validates
-    // the tags node's own record and rolls back, persisting nothing.
-    let before = all_cells(&store);
-    {
-        let mut txn = store
-            .txn_session(InvocationGrant::full_store(), write_demand())
-            .expect("txn session");
-        let weight = txn.site(4);
-        txn.set_sparse(&weight, &tag, vi(9)).expect("sparse set");
-        assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
-    }
-    assert_eq!(
-        all_cells(&store),
-        before,
-        "the rolled-back sub-branch set persisted nothing",
-    );
-
-    // A required label set stages the tags node with its required field present:
-    // reconcile creates the tags marker at its own 3-hop stem, never a shallower one.
-    {
-        let mut txn = store
-            .txn_session(InvocationGrant::full_store(), write_demand())
-            .expect("txn session");
-        let label = txn.site(5);
-        txn.set_required(
-            &label,
-            &tag,
-            ValueDomain::Scalar(RuntimeScalar::Str("home".into())),
-        )
-        .expect("required set");
-        assert!(matches!(txn.commit(), CommitResult::Committed));
-    }
-    let cells = all_cells(&store);
-    assert!(
-        cells.contains_key(&nested_tag_stem("a", 1, "x")),
-        "reconcile created the sub-branch marker at its own stem",
-    );
-    assert!(
-        !cells.contains_key(&nested_note_stem("a", 1)),
-        "the parent note node gained no marker",
-    );
-    assert!(
-        !cells.contains_key(&nested_book_stem("a")),
-        "the root book node gained no marker",
     );
 }
 
@@ -2504,10 +2324,10 @@ fn changing_a_projected_field_moves_only_its_index_row() {
         let e = txn.site(0);
         let label = txn.site(2);
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
-        txn.set_sparse(
+        txn.set_field(
             &label,
             &[ks("a")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("y".into()))),
+            ValueDomain::Scalar(RuntimeScalar::Str("y".into())),
         )
         .unwrap();
         assert!(matches!(txn.commit(), CommitResult::Committed));
@@ -2556,7 +2376,7 @@ fn clearing_a_projected_field_removes_its_row() {
         let e = txn.site(0);
         let label = txn.site(2);
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
-        txn.set_sparse(&label, &[ks("a")], None).unwrap();
+        txn.erase_field(&label, &[ks("a")]).unwrap();
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     // Only the unique byValue row survives; byLabel has no row for an absent label.
@@ -2574,11 +2394,8 @@ fn replacing_an_entry_rewrites_its_rows() {
             .unwrap();
         let e = txn.site(0);
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
-        assert_eq!(
-            txn.replace_entry(&e, &[ks("a")], ent(9, Some("z")))
-                .unwrap(),
-            ReplaceOutcome::Replaced,
-        );
+        txn.replace_entry(&e, &[ks("a")], ent(9, Some("z")))
+            .unwrap();
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
@@ -2654,10 +2471,10 @@ fn setting_an_absent_projected_field_adds_a_row() {
         let label = txn.site(2);
         // Created with no label: only the unique byValue row exists.
         txn.create_entry(&e, &[ks("a")], ent(1, None)).unwrap();
-        txn.set_sparse(
+        txn.set_field(
             &label,
             &[ks("a")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into()))),
+            ValueDomain::Scalar(RuntimeScalar::Str("x".into())),
         )
         .unwrap();
         assert!(matches!(txn.commit(), CommitResult::Committed));
@@ -2665,38 +2482,6 @@ fn setting_an_absent_projected_field_adds_a_row() {
     assert_eq!(
         index_cells(&store),
         sorted(vec![label_cell("a", "x"), value_cell("a", 1)]),
-    );
-}
-
-/// An index row staged for an entry that fails commit rolls back with the entry: setting
-/// only the projected sparse `label` of an entry whose required `value` is unset stages a
-/// `byLabel` row, but the commit reconcile faults `RequiredMissing` and the whole
-/// transaction — index row included — rolls back, leaving no index cell behind.
-#[test]
-fn a_required_missing_rollback_leaves_no_index_row() {
-    let mut store =
-        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
-    let result = {
-        let mut txn = store
-            .txn_session(InvocationGrant::full_store(), write_demand())
-            .unwrap();
-        let label = txn.site(2);
-        // Set the projected sparse label without ever setting the required value.
-        txn.set_sparse(
-            &label,
-            &[ks("a")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into()))),
-        )
-        .unwrap();
-        txn.commit()
-    };
-    assert!(
-        matches!(result, CommitResult::RequiredMissing { field, .. } if field == "value"),
-        "the commit rolls back on the unset required field",
-    );
-    assert!(
-        index_cells(&store).is_empty(),
-        "the staged byLabel row rolled back with the transaction",
     );
 }
 
@@ -2731,10 +2516,10 @@ fn a_corrupt_projected_leaf_faults_corruption() {
         .unwrap();
     let label = txn.site(2);
     assert_eq!(
-        txn.set_sparse(
+        txn.set_field(
             &label,
             &[ks("a")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("y".into()))),
+            ValueDomain::Scalar(RuntimeScalar::Str("y".into())),
         ),
         Err(KernelFault::Corruption),
     );
@@ -2752,10 +2537,10 @@ fn index_maintenance_agrees_across_engines() {
         let label = txn.site(2);
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
         txn.create_entry(&e, &[ks("b")], ent(2, Some("y"))).unwrap();
-        txn.set_sparse(
+        txn.set_field(
             &label,
             &[ks("a")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("z".into()))),
+            ValueDomain::Scalar(RuntimeScalar::Str("z".into())),
         )
         .unwrap();
         txn.erase_entry(&e, &[ks("b")]).unwrap();
@@ -2817,6 +2602,24 @@ fn group_store() -> DurableStore<MemoryEngine> {
     DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites))
 }
 
+/// A complete `books` entry over the group schema: top-level `title` and `summary`,
+/// with both groups supplied and every group leaf vacant.
+fn book_with_vacant_groups(title: &str, summary: Option<&str>) -> EntryValue {
+    EntryValue {
+        fields: vec![vs(title), summary.and_then(vs)],
+        groups: vec![
+            EntryValue {
+                fields: vec![None, None],
+                groups: Vec::new(),
+            },
+            EntryValue {
+                fields: vec![None],
+                groups: Vec::new(),
+            },
+        ],
+    }
+}
+
 /// The physical prefix of book `book`'s `details` group — the byte range its leaves
 /// occupy.
 fn details_prefix(book: &str) -> Vec<u8> {
@@ -2862,10 +2665,7 @@ fn a_group_write_never_disturbs_siblings() {
         txn.create_entry(
             &root,
             &book,
-            EntryValue {
-                groups: Vec::new(),
-                fields: vec![vs("Small Gods"), vs("a novel")],
-            },
+            book_with_vacant_groups("Small Gods", Some("a novel")),
         )
         .expect("create root");
         let details = txn.site(1);
@@ -2914,18 +2714,15 @@ fn a_group_write_never_disturbs_siblings() {
             .txn_session(InvocationGrant::full_store(), write_demand())
             .expect("txn");
         let details = txn.site(1);
-        assert_eq!(
-            txn.replace_group(
-                &details,
-                &book,
-                EntryValue {
-                    groups: Vec::new(),
-                    fields: vec![vi(999), None],
-                },
-            )
-            .expect("replace details"),
-            ReplaceOutcome::Replaced,
-        );
+        txn.replace_group(
+            &details,
+            &book,
+            EntryValue {
+                groups: Vec::new(),
+                fields: vec![vi(999), None],
+            },
+        )
+        .expect("replace details");
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
@@ -2996,7 +2793,8 @@ fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
     let mut store = group_store();
     let book = [ks("a")];
 
-    // No entry: the group reads absent, and a replace is Missing (touches nothing).
+    // No entry: the group reads absent, and a replace is a marker/payload mismatch
+    // that touches nothing.
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -3014,16 +2812,15 @@ fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
                     groups: Vec::new(),
                     fields: vec![vi(1), vs("en")],
                 },
-            )
-            .expect("replace"),
-            ReplaceOutcome::Missing,
+            ),
+            Err(KernelFault::Corruption),
         );
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let entry = physical::marker_key(0, &[ks("a")]);
     assert!(
         all_cells(&store).keys().all(|key| !key.starts_with(&entry)),
-        "a Missing group replace wrote no entry cell",
+        "a refused group replace wrote no entry cell",
     );
 
     // Create the entry; the group now reads present with vacant leaves.
@@ -3032,15 +2829,8 @@ fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
             .txn_session(InvocationGrant::full_store(), write_demand())
             .expect("txn");
         let root = txn.site(0);
-        txn.create_entry(
-            &root,
-            &book,
-            EntryValue {
-                groups: Vec::new(),
-                fields: vec![vs("t"), None],
-            },
-        )
-        .expect("create");
+        txn.create_entry(&root, &book, book_with_vacant_groups("t", None))
+            .expect("create");
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     {
@@ -3392,27 +3182,24 @@ fn a_whole_entry_replace_drops_omitted_group_leaves() {
             .txn_session(InvocationGrant::full_store(), write_demand())
             .expect("txn");
         let root = txn.site(0);
-        assert_eq!(
-            txn.replace_entry(
-                &root,
-                &book,
-                EntryValue {
-                    fields: vec![vs("t"), None],
-                    groups: vec![
-                        EntryValue {
-                            fields: vec![vi(999), None],
-                            groups: Vec::new(),
-                        },
-                        EntryValue {
-                            fields: vec![None],
-                            groups: Vec::new(),
-                        },
-                    ],
-                },
-            )
-            .expect("replace"),
-            ReplaceOutcome::Replaced,
-        );
+        txn.replace_entry(
+            &root,
+            &book,
+            EntryValue {
+                fields: vec![vs("t"), None],
+                groups: vec![
+                    EntryValue {
+                        fields: vec![vi(999), None],
+                        groups: Vec::new(),
+                    },
+                    EntryValue {
+                        fields: vec![None],
+                        groups: Vec::new(),
+                    },
+                ],
+            },
+        )
+        .expect("replace");
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 

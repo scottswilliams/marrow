@@ -81,13 +81,19 @@ pub fn addFullTag(id: int, nid: string, tid: int, w: int, h: bool) {
 
 pub fn setTagWeight(id: int, nid: string, tid: int, w: int) {
     transaction {
-        ^books[id].notes[nid].tags[tid].weight = w
+        place tag = ^books[id].notes[nid].tags[tid]
+        if exists(tag) {
+            tag.weight = w
+        }
     }
 }
 
 pub fn setTagHot(id: int, nid: string, tid: int, h: bool) {
     transaction {
-        ^books[id].notes[nid].tags[tid].hot = h
+        place tag = ^books[id].notes[nid].tags[tid]
+        if exists(tag) {
+            tag.hot = h
+        }
     }
 }
 
@@ -208,20 +214,6 @@ fn run(
     }
 }
 
-fn run_fault(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> &'static str {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => fault.code(),
-        other => panic!("{name} did not fault as expected: {:?}", DebugRun(&other)),
-    }
-}
-
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
     match mint_ephemeral(prepare(image.clone())) {
         EphemeralOutcome::Ready(attachment) => attachment,
@@ -291,10 +283,9 @@ fn a_nested_branch_constructor_and_field_reads_round_trip() {
     );
 }
 
-/// Adjudication 2: a deep write on the sub-branch under absent ancestors is admitted and
-/// creates the tag node, while both ancestors (note and root) stay descendant-only — no
-/// ancestor markers, presence facts only from explicit probes. Holds for a whole-entry
-/// create and for a field-exact required set that reconcile-creates the node.
+/// Adjudication 2: a deep whole-entry write on the sub-branch under absent ancestors is
+/// admitted and creates the tag node, while both ancestors (note and root) stay
+/// descendant-only — no ancestor markers, presence facts only from explicit probes.
 #[test]
 fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
     let image = compile_verify(SOURCE);
@@ -330,63 +321,6 @@ fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
         run(&image, &mut attachment, "rootPresent", vec![Value::Int(2)]),
         present(false),
         "the root ancestor has no marker: descendant-only",
-    );
-
-    // Field-exact required set on a fresh tag under absent ancestors reconcile-creates the
-    // tag node, still leaving both ancestors descendant-only.
-    run(
-        &image,
-        &mut attachment,
-        "setTagWeight",
-        vec![Value::Int(3), s("m"), Value::Int(1), Value::Int(4)],
-    );
-    let tag2 = || vec![Value::Int(3), s("m"), Value::Int(1)];
-    assert_eq!(
-        run(&image, &mut attachment, "tagWeight", tag2()),
-        some_int(4)
-    );
-    assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "notePresent",
-            vec![Value::Int(3), s("m")]
-        ),
-        present(false)
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(3)]),
-        present(false)
-    );
-}
-
-/// Reconcile soundness at depth: staging a *sparse* tag field on an absent tag whose
-/// required `weight` is missing rolls the whole transaction back with
-/// `run.required_missing` — the reconcile validates the tag node's own required fields two
-/// levels down, not an ancestor's.
-#[test]
-fn a_deep_sparse_set_missing_the_required_field_rolls_back() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-
-    assert_eq!(
-        run_fault(
-            &image,
-            &mut attachment,
-            "setTagHot",
-            vec![Value::Int(4), s("n"), Value::Int(1), Value::Bool(true)],
-        ),
-        marrow_codes::Code::RunRequiredMissing.as_str(),
-    );
-    assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "tagPresent",
-            vec![Value::Int(4), s("n"), Value::Int(1)]
-        ),
-        present(false),
-        "the rolled-back deep set persisted nothing",
     );
 }
 

@@ -48,15 +48,14 @@ fn guard_provenance_rejects_entry_at_exists() {
             Instr::Jump(6),                // 4
             Instr::LocalGet(0),            // 5
             Instr::DurExists(sites.entry), // 6
-            Instr::JumpIfFalse(11),        // 7
+            Instr::JumpIfFalse(10),        // 7
             Instr::ConstLoad(text),        // 8
-            Instr::SomeWrap,               // 9
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 10
-            Instr::TxnCommit,              // 11
-            Instr::Return,                 // 12
+            }, // 9
+            Instr::TxnCommit,              // 10
+            Instr::Return,                 // 11
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -79,15 +78,14 @@ fn guard_provenance_rejects_entry_at_exists_conditional() {
             Instr::Jump(7),                // 4
             Instr::LocalGet(0),            // 5
             Instr::DurExists(sites.entry), // 6
-            Instr::JumpIfFalse(11),        // 7
+            Instr::JumpIfFalse(10),        // 7
             Instr::ConstLoad(text),        // 8
-            Instr::SomeWrap,               // 9
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 10
-            Instr::TxnCommit,              // 11
-            Instr::Return,                 // 12
+            }, // 9
+            Instr::TxnCommit,              // 10
+            Instr::Return,                 // 11
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -110,16 +108,15 @@ fn guard_provenance_rejects_entry_at_read_entry() {
             Instr::Jump(6),                   // 4
             Instr::LocalGet(0),               // 5
             Instr::DurReadEntry(sites.entry), // 6
-            Instr::BranchPresent(12),         // 7
+            Instr::BranchPresent(11),         // 7
             Instr::Pop,                       // 8
             Instr::ConstLoad(text),           // 9
-            Instr::SomeWrap,                  // 10
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 11
-            Instr::TxnCommit,                 // 12
-            Instr::Return,                    // 13
+            }, // 10
+            Instr::TxnCommit,                 // 11
+            Instr::Return,                    // 12
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -143,16 +140,15 @@ fn guard_provenance_rejects_entry_at_read_entry_conditional() {
             Instr::Jump(8),                           // 5
             Instr::LocalGet(0),                       // 6
             Instr::DurReadEntry(sites.entry),         // 7
-            Instr::BranchPresent(13),                 // 8
+            Instr::BranchPresent(12),                 // 8
             Instr::Pop,                               // 9
             Instr::ConstLoad(text),                   // 10
-            Instr::SomeWrap,                          // 11
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 12
-            Instr::TxnCommit,                         // 13
-            Instr::Return,                            // 14
+            }, // 11
+            Instr::TxnCommit,                         // 12
+            Instr::Return,                            // 13
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -188,13 +184,12 @@ fn guard_provenance_rejects_entry_at_create_record_load() {
             Instr::LocalGet(2),                 // 11
             Instr::DurCreateEntry(sites.entry), // 12
             Instr::ConstLoad(text),             // 13
-            Instr::SomeWrap,                    // 14
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 15
-            Instr::TxnCommit,                   // 16
-            Instr::Return,                      // 17
+            }, // 14
+            Instr::TxnCommit,                   // 15
+            Instr::Return,                      // 16
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -231,13 +226,12 @@ fn guard_provenance_rejects_entry_at_create() {
             Instr::LocalGet(2),                 // 12
             Instr::DurCreateEntry(sites.entry), // 13
             Instr::ConstLoad(text),             // 14
-            Instr::SomeWrap,                    // 15
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 16
-            Instr::TxnCommit,                   // 17
-            Instr::Return,                      // 18
+            }, // 15
+            Instr::TxnCommit,                   // 16
+            Instr::Return,                      // 17
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -279,15 +273,14 @@ fn guard_provenance_rejects_entry_at_composite_exists_second_key() {
             Instr::LocalGet(0),            // 5
             Instr::LocalGet(1),            // 6
             Instr::DurExists(sites.entry), // 7
-            Instr::JumpIfFalse(12),        // 8
+            Instr::JumpIfFalse(11),        // 8
             Instr::ConstLoad(text),        // 9
-            Instr::SomeWrap,               // 10
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0, 1],
-            }, // 11
-            Instr::TxnCommit,              // 12
-            Instr::Return,                 // 13
+            }, // 10
+            Instr::TxnCommit,              // 11
+            Instr::Return,                 // 12
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -329,16 +322,15 @@ fn guard_provenance_rejects_entry_at_composite_read_second_key() {
             Instr::LocalGet(0),               // 5
             Instr::LocalGet(1),               // 6
             Instr::DurReadEntry(sites.entry), // 7
-            Instr::BranchPresent(13),         // 8
+            Instr::BranchPresent(12),         // 8
             Instr::Pop,                       // 9
             Instr::ConstLoad(text),           // 10
-            Instr::SomeWrap,                  // 11
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0, 1],
-            }, // 12
-            Instr::TxnCommit,                 // 13
-            Instr::Return,                    // 14
+            }, // 11
+            Instr::TxnCommit,                 // 12
+            Instr::Return,                    // 13
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");
@@ -361,15 +353,14 @@ fn guard_provenance_allows_entry_at_exists_first_key() {
             Instr::Pop,                    // 4
             Instr::LocalGet(0),            // 5
             Instr::DurExists(sites.entry), // 6
-            Instr::JumpIfFalse(11),        // 7
+            Instr::JumpIfFalse(10),        // 7
             Instr::ConstLoad(text),        // 8
-            Instr::SomeWrap,               // 9
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 10
-            Instr::TxnCommit,              // 11
-            Instr::Return,                 // 12
+            }, // 9
+            Instr::TxnCommit,              // 10
+            Instr::Return,                 // 11
         ],
     );
     assert_eq!(code_of(&bytes), "VERIFIED");
@@ -392,16 +383,15 @@ fn guard_provenance_allows_entry_at_read_first_key() {
             Instr::Pop,                       // 4
             Instr::LocalGet(0),               // 5
             Instr::DurReadEntry(sites.entry), // 6
-            Instr::BranchPresent(12),         // 7
+            Instr::BranchPresent(11),         // 7
             Instr::Pop,                       // 8
             Instr::ConstLoad(text),           // 9
-            Instr::SomeWrap,                  // 10
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 11
-            Instr::TxnCommit,                 // 12
-            Instr::Return,                    // 13
+            }, // 10
+            Instr::TxnCommit,                 // 11
+            Instr::Return,                    // 12
         ],
     );
     assert_eq!(code_of(&bytes), "VERIFIED");
@@ -437,13 +427,12 @@ fn guard_provenance_allows_entry_at_create_first_key() {
             Instr::LocalGet(2),                 // 11
             Instr::DurCreateEntry(sites.entry), // 12
             Instr::ConstLoad(text),             // 13
-            Instr::SomeWrap,                    // 14
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 15
-            Instr::TxnCommit,                   // 16
-            Instr::Return,                      // 17
+            }, // 14
+            Instr::TxnCommit,                   // 15
+            Instr::Return,                      // 16
         ],
     );
     assert_eq!(code_of(&bytes), "VERIFIED");
@@ -485,15 +474,14 @@ fn guard_provenance_allows_entry_at_composite_exists_first_key() {
             Instr::LocalGet(0),            // 5
             Instr::LocalGet(1),            // 6
             Instr::DurExists(sites.entry), // 7
-            Instr::JumpIfFalse(12),        // 8
+            Instr::JumpIfFalse(11),        // 8
             Instr::ConstLoad(text),        // 9
-            Instr::SomeWrap,               // 10
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0, 1],
-            }, // 11
-            Instr::TxnCommit,              // 12
-            Instr::Return,                 // 13
+            }, // 10
+            Instr::TxnCommit,              // 11
+            Instr::Return,                 // 12
         ],
     );
     assert_eq!(code_of(&bytes), "VERIFIED");
@@ -535,16 +523,15 @@ fn guard_provenance_allows_entry_at_composite_read_first_key() {
             Instr::LocalGet(0),               // 5
             Instr::LocalGet(1),               // 6
             Instr::DurReadEntry(sites.entry), // 7
-            Instr::BranchPresent(13),         // 8
+            Instr::BranchPresent(12),         // 8
             Instr::Pop,                       // 9
             Instr::ConstLoad(text),           // 10
-            Instr::SomeWrap,                  // 11
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0, 1],
-            }, // 12
-            Instr::TxnCommit,                 // 13
-            Instr::Return,                    // 14
+            }, // 11
+            Instr::TxnCommit,                 // 12
+            Instr::Return,                    // 13
         ],
     );
     assert_eq!(code_of(&bytes), "VERIFIED");
@@ -562,20 +549,19 @@ fn guard_provenance_rejects_late_backward_entry_with_unchanged_frame() {
         vec![
             Instr::TxnBegin,               // 0
             Instr::ConstLoad(falseflag),   // 1
-            Instr::JumpIfFalse(11),        // 2
+            Instr::JumpIfFalse(10),        // 2
             Instr::LocalGet(0),            // 3
             Instr::DurExists(sites.entry), // 4
-            Instr::JumpIfFalse(9),         // 5
+            Instr::JumpIfFalse(8),         // 5
             Instr::ConstLoad(text),        // 6
-            Instr::SomeWrap,               // 7
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
-            }, // 8
-            Instr::TxnCommit,              // 9
-            Instr::Return,                 // 10
-            Instr::LocalGet(1),            // 11
-            Instr::Jump(4),                // 12
+            }, // 7
+            Instr::TxnCommit,              // 8
+            Instr::Return,                 // 9
+            Instr::LocalGet(1),            // 10
+            Instr::Jump(4),                // 11
         ],
     );
     assert_eq!(code_of(&bytes), "image.flow");

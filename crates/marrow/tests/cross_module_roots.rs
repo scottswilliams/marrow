@@ -87,11 +87,12 @@ fn check_reports_cross_module_root_demand() {
 }
 
 /// The frozen per-export demand report, one line per export in `module.item` order.
-/// `teller.deposit` reading and writing `^accounts.balance` — and `teller.balanceOf`
-/// reading it — pins that a root declared in `bank` is demandable from `teller`.
+/// `teller.deposit` reading `^accounts.balance` and writing the whole `^accounts` entry
+/// — and `teller.balanceOf` reading the field — pins that a root declared in `bank` is
+/// demandable from `teller`.
 const CROSS_MODULE_DEMAND_REPORT: &str = "\
 bank.openAccount reads ^accounts; writes ^accounts
 bank.ownerBalance reads ^accounts.balance
 teller.balanceOf reads ^accounts.balance
-teller.deposit reads ^accounts.balance; writes ^accounts.balance
+teller.deposit reads ^accounts and ^accounts.balance; writes ^accounts
 ";

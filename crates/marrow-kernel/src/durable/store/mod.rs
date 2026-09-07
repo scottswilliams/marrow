@@ -2,7 +2,7 @@
 
 use super::{
     AuthorizedSite, BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, EntryValue,
-    EraseOutcome, KernelFault, Presence, ReplaceOutcome,
+    EraseOutcome, KernelFault, Presence,
 };
 use crate::codec::key::KeyScalar;
 use crate::equality::ValueDomain;
@@ -64,23 +64,34 @@ pub trait Durable {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault>;
+    /// Materialize one group of an entry the caller has statically proven present, as a
+    /// bare record: the group's leaves under a present entry marker. An absent marker is
+    /// a marker/payload mismatch ([`KernelFault::Corruption`]).
+    fn read_group_present(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<EntryValue, KernelFault>;
     /// Exact replacement of one group of the entry `keys` addresses, scoped to the
     /// group's own field set: remove every one of the group's leaves, then write the
     /// leaf for each present field of `value`. Omitted sparse leaves do not survive
-    /// (replace, not merge). A group has no independent existence, so a replace over a
-    /// payload-absent entry is [`ReplaceOutcome::Missing`] and touches nothing; over a
-    /// present entry the entry marker, its top-level fields, its sibling groups, and its
-    /// branches are all left intact (the group-scoped payload-only law).
+    /// (replace, not merge). A group has no independent existence, so its entry must be
+    /// present (an absent marker is [`KernelFault::Corruption`]) and `value` must supply
+    /// every required leaf ([`KernelFault::Incomplete`] otherwise), both checked before
+    /// any engine write; the entry marker, its top-level fields, its sibling groups, and
+    /// its branches are all left intact (the group-scoped payload-only law).
     fn replace_group(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         value: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault>;
+    ) -> Result<(), KernelFault>;
     /// Erase one group of the entry `keys` addresses: remove every one of the group's own
     /// leaves and nothing else. [`EraseOutcome::Erased`] when any leaf existed, else
     /// [`EraseOutcome::Missing`]. The entry marker, its top-level fields, its sibling
-    /// groups, and its branches are preserved.
+    /// groups, and its branches are preserved. A group holding a required leaf is part
+    /// of every present entry and is erased only with it: [`KernelFault::Incomplete`],
+    /// before any engine access.
     fn erase_group(
         &mut self,
         site: &AuthorizedSite,
@@ -145,40 +156,37 @@ pub trait Durable {
         site: &AuthorizedSite,
         ancestor_keys: &[KeyScalar],
     ) -> Result<Presence, KernelFault>;
-    fn set_required(
+    /// Set a field (required or sparse) of an entry the caller has statically proven
+    /// present to a definite value. Asserts the entry marker is present — a violation
+    /// is a marker/field mismatch ([`KernelFault::Corruption`]), never implicit
+    /// creation — then writes the leaf. A field is cleared only by
+    /// [`Self::erase_field`].
+    fn set_field(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         value: ValueDomain,
     ) -> Result<(), KernelFault>;
-    fn set_sparse(
-        &mut self,
-        site: &AuthorizedSite,
-        keys: &[KeyScalar],
-        value: Option<ValueDomain>,
-    ) -> Result<(), KernelFault>;
-    /// Set (present) or clear (vacant) a sparse field of an entry the caller has
-    /// statically proven present. Asserts the entry marker is present — a violation
-    /// is a marker/field mismatch ([`KernelFault::Corruption`]), never implicit
-    /// creation — then stages the leaf exactly like [`Self::set_sparse`].
-    fn set_sparse_present(
-        &mut self,
-        site: &AuthorizedSite,
-        keys: &[KeyScalar],
-        value: Option<ValueDomain>,
-    ) -> Result<(), KernelFault>;
+    /// Write `entry` as the payload of an absent slot, or leave a present payload as it
+    /// is. `entry` must be complete — every required field and every group supplied —
+    /// or the write is [`KernelFault::Incomplete`] before the slot is probed.
     fn create_entry(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault>;
+    /// Replace the payload of a present entry with the complete `entry`. An incomplete
+    /// value is [`KernelFault::Incomplete`] and an absent marker
+    /// [`KernelFault::Corruption`], both before any engine write.
     fn replace_entry(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         entry: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault>;
+    ) -> Result<(), KernelFault>;
+    /// Erase a sparse field's leaf. A required field is present whenever its entry is:
+    /// erasing one is [`KernelFault::Incomplete`], before any engine access.
     fn erase_field(
         &mut self,
         site: &AuthorizedSite,

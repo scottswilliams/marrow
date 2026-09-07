@@ -91,7 +91,7 @@ pub fn add(id: int, text: string): bool {
         if exists(^notes[id]) {
             return false
         }
-        ^notes[id].text = text
+        ^notes[id] = Note(text: text)
     }
     return true
 }
@@ -122,10 +122,12 @@ test "add and read back" {
 `pinned` is sparse. `store ^notes[id: int]: Note` declares a durable root keyed
 by an `int`; `^notes[id]` is one entry. Every durable write sits inside a
 `transaction` block, and `exists(^notes[id])` inside the block tests presence
-before `add` writes. `^notes[id].text = text` creates the entry: assigning a
-field of an absent entry brings it into being, and its required fields must all
-be set when the block ends. `place slot = ^notes[id]` in `pin` names the entry
-once; `exists(slot)` proves it is present, and `slot.pinned = true` writes one field.
+before `add` writes. `^notes[id] = Note(text: text)` creates the entry as a
+whole: the constructor names every required field, so a present entry is
+complete from its first commit. `place slot = ^notes[id]` in `pin` names the
+entry once; the guard on `exists(slot)` returns when it is absent, which proves
+it present for the rest of the block, and `slot.pinned = true` updates one
+field of the present entry. A field write never creates an entry.
 `textOf` returns `string?` because the entry may be absent, and `??` supplies a
 default. The test drives the exports and checks the round trip against a fresh
 in-memory store.

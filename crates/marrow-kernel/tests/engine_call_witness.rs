@@ -69,6 +69,14 @@ fn sites() -> Vec<SiteTarget> {
     vec![SiteTarget::whole_payload(), SiteTarget::field_leaf(0)]
 }
 
+/// A complete `counters` entry, the entry a field set updates.
+fn seed_entry() -> EntryValue {
+    EntryValue {
+        fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(1)))],
+        groups: Vec::new(),
+    }
+}
+
 fn read_only_ceiling() -> DemandCoverage {
     DemandCoverage {
         read: true,
@@ -180,11 +188,14 @@ fn a_value_range_rejection_stages_zero_engine_writes() {
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), writing_demand())
         .expect("txn session");
+    let entry = txn.site(0);
     let field = txn.site(1);
+    txn.create_entry(&entry, &[KeyScalar::Int(1)], seed_entry())
+        .expect("create the entry the set updates");
     let writes_before = counters.writes();
     // A date beyond the year-9999 canonical bound cannot encode; the op must reject
     // it before any engine write.
-    let rejected = txn.set_required(
+    let rejected = txn.set_field(
         &field,
         &[KeyScalar::Int(1)],
         ValueDomain::Scalar(RuntimeScalar::Date(i32::MAX)),
@@ -213,9 +224,12 @@ fn an_in_range_write_advances_the_write_counter() {
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), writing_demand())
         .expect("txn session");
+    let entry = txn.site(0);
     let field = txn.site(1);
+    txn.create_entry(&entry, &[KeyScalar::Int(1)], seed_entry())
+        .expect("create the entry the set updates");
     let writes_before = counters.writes();
-    txn.set_required(
+    txn.set_field(
         &field,
         &[KeyScalar::Int(1)],
         ValueDomain::Scalar(RuntimeScalar::Int(7)),
@@ -375,12 +389,11 @@ fn book(title: Option<&str>, group: EntryValue) -> EntryValue {
     }
 }
 
-/// The predicted fault of an incomplete write, matched by its rendering because the
-/// variant does not exist yet: `KernelFault::Incomplete`, reported as `run.corruption`.
-fn assert_incomplete<T>(result: Result<T, KernelFault>, what: &str) {
+/// The typed fault of an incomplete write, reported as `run.corruption`.
+fn assert_incomplete<T: std::fmt::Debug>(result: Result<T, KernelFault>, what: &str) {
     match result {
-        Err(fault) => assert_eq!(format!("{fault:?}"), "Incomplete", "{what}"),
-        Ok(_) => panic!("{what}: the write was accepted"),
+        Err(KernelFault::Incomplete) => {}
+        other => panic!("{what}: expected KernelFault::Incomplete, got {other:?}"),
     }
 }
 
@@ -392,7 +405,6 @@ fn assert_incomplete<T>(result: Result<T, KernelFault>, what: &str) {
 /// supplied without the compiler's proofs cannot leave a present entry incomplete.
 /// Today each write succeeds and the incomplete payload commits.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_write_missing_a_required_field_is_a_typed_kernel_fault_before_any_engine_write() {
     let counters = Counters::new();
     let mut store = DurableStore::from_projection_with_ceiling(
@@ -460,7 +472,6 @@ fn a_write_missing_a_required_field_is_a_typed_kernel_fault_before_any_engine_wr
 /// `KernelFault::Incomplete` with zero engine writes. Today the field erase is guarded
 /// only by a debug assertion (`store/address.rs:94`) and the group erase succeeds.
 #[test]
-#[ignore = "B2 complete entries"]
 fn an_erase_of_a_required_field_or_group_is_a_typed_kernel_fault() {
     let counters = Counters::new();
     let mut store = DurableStore::from_projection_with_ceiling(

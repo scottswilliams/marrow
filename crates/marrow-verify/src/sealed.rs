@@ -229,18 +229,12 @@ pub enum SealedInstr {
     DurReadField(u16),
     /// `K → Rec?`: read the whole entry at site `_0`.
     DurReadEntry(u16),
-    /// `K, T →`: set the required field site `_0` (transaction-region only).
-    DurSetRequired(u16),
-    /// `K, T? →`: set (present) or clear (vacant) the sparse field site `_0`.
-    DurSetSparse(u16),
-    /// `T? →`: set (present) or clear (vacant) the sparse field `site`, reading the
-    /// containing entry's key-path from local slots `key_slots` (root-first) and
-    /// asserting that entry is present. The strict form: emitted only for a sparse set
-    /// through a `place` a presence fact dominates, so the verifier's place-slot
-    /// presence lattice proves the `key_slots` tuple's entry is present on every path
-    /// here, and the kernel faults `run.corruption` if the marker is absent (defense in
-    /// depth).
-    DurSetSparsePresent {
+    /// `T →`: set the field `site` (required or sparse) to a definite value, reading
+    /// the containing entry's key-path from local slots `key_slots` (root-first) and
+    /// asserting that entry is present. The one field-set form: the presence lattice
+    /// proves the `key_slots` tuple's entry present on every path here, and the kernel
+    /// faults `run.corruption` if the marker is absent (defense in depth).
+    DurSetField {
         site: u16,
         key_slots: Vec<u16>,
     },
@@ -255,6 +249,13 @@ pub enum SealedInstr {
     /// `K → Rec?`: read the whole materialized value of the group the `GroupEntry` site
     /// `_0` names.
     DurReadGroup(u16),
+    /// `→ Rec`: read the whole materialized value of the group the `GroupEntry` site
+    /// names as a bare record, reading the containing entry's key-path from local slots
+    /// `key_slots` (root-first); the presence lattice proves that entry present here.
+    DurReadGroupPresent {
+        site: u16,
+        key_slots: Vec<u16>,
+    },
     /// `K, Rec →`: replace the group the `GroupEntry` site `_0` names, group-scoped
     /// payload-only (transaction-region only).
     DurReplaceGroup(u16),

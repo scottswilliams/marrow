@@ -54,8 +54,8 @@ const RESOURCE: &str = "resource Book {\n\
     \x20   }\n\
 }\n\n";
 
-/// Two keyed roots over one `Book`, each with its own export writing its own root's nested
-/// branch.
+/// Two keyed roots over one `Book`, each with its own export writing a field of its own
+/// root's nested branch through a place its `exists` guard proves.
 fn shared() -> Project {
     Project::single(&format!(
         "{RESOURCE}\
@@ -63,12 +63,18 @@ fn shared() -> Project {
          store ^b[id: int]: Book\n\n\
          pub fn addA(id: int, t: string) {{\n\
          \x20   transaction {{\n\
-         \x20       ^a[id].notes[1].text = t\n\
+         \x20       place n = ^a[id].notes[1]\n\
+         \x20       if exists(n) {{\n\
+         \x20           n.text = t\n\
+         \x20       }}\n\
          \x20   }}\n\
          }}\n\n\
          pub fn addB(id: int, t: string) {{\n\
          \x20   transaction {{\n\
-         \x20       ^b[id].notes[1].text = t\n\
+         \x20       place n = ^b[id].notes[1]\n\
+         \x20       if exists(n) {{\n\
+         \x20           n.text = t\n\
+         \x20       }}\n\
          \x20   }}\n\
          }}\n"
     ))
@@ -82,7 +88,10 @@ fn single() -> Project {
          store ^a[id: int]: Book\n\n\
          pub fn addA(id: int, t: string) {{\n\
          \x20   transaction {{\n\
-         \x20       ^a[id].notes[1].text = t\n\
+         \x20       place n = ^a[id].notes[1]\n\
+         \x20       if exists(n) {{\n\
+         \x20           n.text = t\n\
+         \x20       }}\n\
          \x20   }}\n\
          }}\n"
     ))
@@ -109,27 +118,30 @@ fn check_reports_a_clean_two_export_summary_for_two_roots_over_one_resource() {
          \n\
          main: 2 exports\n\
          \x20 addA\n\
+         \x20   reads ^a (+1 place)\n\
          \x20   writes ^a (+1 place)\n\
          \x20 addB\n\
+         \x20   reads ^b (+1 place)\n\
          \x20   writes ^b (+1 place)\n",
     );
 }
 
 /// Red R27: each occurrence's demand sentence stays qualified by the root it names.
 ///
-/// The two exports touch the same Product-scoped declaration nodes — `Book.notes` and
-/// `Book.notes.text` carry one ledger identity between them — so a demand keyed on the
-/// declaration rather than the occurrence would render one sentence for both roots, or the
-/// same root twice. The sentences must name `^a` and `^b`, and the child place each
-/// reaches must be spelled identically from either root.
+/// The two exports touch the same Product-scoped declaration nodes — `Book.notes` (the
+/// guard's presence probe) and `Book.notes.text` (the field write) carry one ledger
+/// identity between them — so a demand keyed on the declaration rather than the
+/// occurrence would render one sentence for both roots, or the same root twice. The
+/// sentences must name `^a` and `^b`, and the child places each reaches must be spelled
+/// identically from either root.
 #[test]
 fn each_occurrence_demand_sentence_names_its_own_root() {
     let output = shared().run_cli("shared-demand", &["check", "--demand"]);
     assert!(output.success(), "{}", output.stderr_text());
     assert_eq!(
         output.stdout_text(),
-        "main.addA writes ^a.notes.text\n\
-         main.addB writes ^b.notes.text\n",
+        "main.addA reads ^a.notes; writes ^a.notes.text\n\
+         main.addB reads ^b.notes; writes ^b.notes.text\n",
     );
 }
 

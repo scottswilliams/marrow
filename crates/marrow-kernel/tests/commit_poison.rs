@@ -274,48 +274,6 @@ fn a_witness_put_failure_is_known_old_and_leaves_the_handle_usable() {
     assert_eq!(read_value(&mut store, "b"), None);
 }
 
-/// Reconcile writes an absent marker for a markerless entry whose required fields are all
-/// staged. If that marker put fails, the result is known-old `Aborted` and rolls back. Stage a required field
-/// through `set_required` (which stages a leaf but no marker) and fail reconcile's marker
-/// put — the second write of the commit, after the leaf — then confirm a later session can
-/// commit and the partially staged entry is absent.
-#[test]
-fn a_reconcile_marker_put_failure_is_known_old_and_leaves_the_handle_usable() {
-    let mode = ModeHandle::new(Mode::Confirm);
-    let write_fault = WriteFaultHandle::inert();
-    let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
-
-    let seeded = commit_one(&mut store, "a", 1);
-    assert!(matches!(seeded, CommitResult::Committed));
-
-    // Write 1 = the value-leaf put; write 2 = reconcile's marker put for the markerless
-    // entry. Fail the marker put.
-    write_fault.set(Some(2));
-    let faulted = {
-        let mut txn = store
-            .txn_session(InvocationGrant::full_store(), write())
-            .expect("txn session");
-        let value = txn.site(1);
-        txn.set_required(
-            &value,
-            &[KeyScalar::Str("b".into())],
-            ValueDomain::Scalar(RuntimeScalar::Int(2)),
-        )
-        .expect("stage required field");
-        txn.commit()
-    };
-    assert!(matches!(faulted, CommitResult::Aborted));
-
-    // The reconcile write failed before commit, so dropping the transaction proves known-old
-    // and a later session may proceed.
-    write_fault.set(None);
-    assert!(matches!(
-        commit_one(&mut store, "c", 3),
-        CommitResult::Committed
-    ));
-    assert_eq!(read_value(&mut store, "b"), None);
-}
-
 /// An `apply` put or remove that fails mid-plan (`store.rs` ~646-660) faults the durable
 /// op with `KernelFault::Engine` and does not commit, so the still-live transaction aborts
 /// on drop and the prior committed state is intact. Exercises both the `Put` arm (a

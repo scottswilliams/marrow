@@ -18,10 +18,9 @@ store ^books[id: int]: Book {
 
 pub fn seed() {
     const author: Id(^authors) = nextId(^authors)
-    ^authors[author].name = "Ursula K. Le Guin"
+    ^authors[author] = Author(name: "Ursula K. Le Guin")
     transaction {
-        ^books[10].title = "A Wizard of Earthsea"
-        ^books[10].author = author
+        ^books[10] = Book(title: "A Wizard of Earthsea", author: author)
         ^books[10].tags[1] = "fantasy"
     }
 }

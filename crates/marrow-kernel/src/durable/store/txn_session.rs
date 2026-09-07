@@ -1,20 +1,19 @@
 //! The transaction session: one implicit single-writer engine transaction the export's
-//! call graph joins, its Durable impl, commit reconcile, and managed-index maintenance.
-
-use std::collections::BTreeMap;
+//! call graph joins, its Durable impl, the completeness law every payload write is held
+//! to, and managed-index maintenance.
 
 use marrow_store::{ByteEngine, CommitOutcome, WriteTxn};
 
 use super::super::physical;
 use super::super::plan::{CellWrite, IndexOp, Planner};
 use super::super::{
-    AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, CommitRecovery, CommitRecoveryScope,
-    CommitResult, CreateOutcome, EntryValue, EraseOutcome, IndexComponentRef, IndexSchema,
-    KernelFault, Presence, ReplaceOutcome, ResolvedField,
+    AuthorizedSite, BoundedKeys, BoundedLimit, CommitRecovery, CommitRecoveryScope, CommitResult,
+    CreateOutcome, EntryValue, EraseOutcome, IndexComponentRef, IndexSchema, KernelFault, Presence,
+    ResolvedField, ResolvedGroup,
 };
 use super::Durable;
 use super::address::{
-    field_index_in_record, field_number, group_target, node_shape, node_stem, read_raw, site_record,
+    field_index_in_record, field_target, group_target, node_shape, node_stem, read_raw, site_record,
 };
 use super::handle::WITNESS;
 use super::index_ops::{op_index_lookup, op_index_scan};
@@ -50,22 +49,46 @@ where
     /// root R keeps `indexes[R]` coherent as a consequence of the source write; a root
     /// with no index carries an empty list and skips maintenance entirely.
     pub(super) indexes: Vec<Vec<IndexSchema>>,
-    /// The durable nodes whose fields were staged this transaction, keyed by the
-    /// node's marker stem so several field sets on one node stage it once. Each is
-    /// reconciled at commit to decide created vs required-missing — a root node or a
-    /// branch node identically, since the stem and record are resolved when the field
-    /// is staged rather than re-derived from the root schema.
-    pub(super) pending: BTreeMap<Vec<u8>, PendingNode>,
 }
 
-/// A durable node staged for commit reconcile: its own record fields and the leaf-most
-/// key of its address (for a `RequiredMissing` report). The node's marker stem is the
-/// map key. This is what makes reconcile node-parametric — it validates the staged
-/// node's marker and required fields at its own physical stem, one level down for a
-/// branch node.
-pub(super) struct PendingNode {
-    fields: Vec<ResolvedField>,
-    key: KeyScalar,
+/// Require that `values` fills the record `fields` completely: one slot per declared
+/// field, every required one present. A width mismatch or a missing required value is
+/// [`KernelFault::Incomplete`].
+fn require_record_complete(
+    fields: &[ResolvedField],
+    values: &[Option<ValueDomain>],
+) -> Result<(), KernelFault> {
+    if values.len() != fields.len() {
+        return Err(KernelFault::Incomplete);
+    }
+    let complete = fields
+        .iter()
+        .zip(values)
+        .all(|(field, value)| value.is_some() || !field.required);
+    complete.then_some(()).ok_or(KernelFault::Incomplete)
+}
+
+/// Require that `entry` is a complete payload for a node of `fields` and `groups`: its
+/// record is complete, it carries exactly one sub-record per declared group, and each
+/// sub-record is complete for its group (a group nests no further group). Runs before
+/// the slot probe and before any engine access, so a refused write reads and stages
+/// nothing: present implies complete, whatever image drives the kernel.
+fn require_complete(
+    fields: &[ResolvedField],
+    groups: &[ResolvedGroup],
+    entry: &EntryValue,
+) -> Result<(), KernelFault> {
+    require_record_complete(fields, &entry.fields)?;
+    if entry.groups.len() != groups.len() {
+        return Err(KernelFault::Incomplete);
+    }
+    for (group, value) in groups.iter().zip(&entry.groups) {
+        require_record_complete(&group.fields, &value.fields)?;
+        if !value.groups.is_empty() {
+            return Err(KernelFault::Incomplete);
+        }
+    }
+    Ok(())
 }
 
 /// The recovery material staged for this one transaction. It is private to the kernel and
@@ -108,17 +131,6 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         if *self.poisoned {
             return CommitResult::Aborted;
         }
-        match self.reconcile() {
-            Ok(()) => {}
-            Err(result @ CommitResult::RequiredMissing { .. }) => {
-                self.txn = None; // drop aborts the engine transaction.
-                return result;
-            }
-            Err(_) => {
-                self.txn = None;
-                return CommitResult::Aborted;
-            }
-        }
         // The witness rides in the same engine transaction as the staged data.
         let witness = self
             .recovery
@@ -158,72 +170,6 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             }
         }
     }
-
-    /// Validate every staged node: a node with any present leaf but a missing required
-    /// field is a `RequiredMissing` rollback; a markerless node whose required fields
-    /// are all present gets its marker (created at commit); a fully-erased staged node
-    /// is a no-op. Each staged node carries its own marker stem (the map key) and its
-    /// own record, so a root node and a branch node reconcile identically — the branch
-    /// node at its own stem one level down, never confused with the root's marker or
-    /// fields. A node reached only by whole-entry create/replace/erase writes its
-    /// marker directly and never stages, so it needs no reconcile.
-    fn reconcile(&mut self) -> Result<(), CommitResult> {
-        let pending = std::mem::take(&mut self.pending);
-        for (stem, node) in &pending {
-            let marker_present = read_raw(self.txn(), stem)
-                .map_err(|_| CommitResult::Aborted)?
-                .is_some();
-            let mut any_leaf = false;
-            let mut missing_required: Option<String> = None;
-            for field in &node.fields {
-                let leaf = physical::stem_field_leaf(stem, field.number);
-                let present = read_raw(self.txn(), &leaf)
-                    .map_err(|_| CommitResult::Aborted)?
-                    .is_some();
-                any_leaf |= present;
-                if field.required && !present && missing_required.is_none() {
-                    missing_required = Some(field.name.clone());
-                }
-            }
-            if !marker_present && !any_leaf {
-                continue; // fully erased; nothing to reconcile.
-            }
-            if let Some(field) = missing_required {
-                return Err(CommitResult::RequiredMissing {
-                    key: node.key.clone(),
-                    field,
-                });
-            }
-            if !marker_present {
-                self.txn_mut()
-                    .put(stem, physical::MARKER_VALUE.to_vec())
-                    .map_err(|_| CommitResult::Aborted)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Stage the node a field set touches for commit reconcile, keyed by its marker
-    /// stem so several sets on one node stage it once. The node's own record (root or
-    /// branch) and reporting key are read from the field-target site, so reconcile
-    /// validates the addressed node rather than the root — the field-exact branch tail's
-    /// soundness rests here. A whole-entry op carries no field target and stages nothing
-    /// (it writes its marker directly).
-    fn stage_node(&mut self, site: &AuthorizedSite, keys: &[KeyScalar]) -> Result<(), KernelFault> {
-        let AuthTarget::Field { record, .. } = &site.target else {
-            return Ok(());
-        };
-        let stem = node_stem(site, keys)?;
-        let key = keys
-            .last()
-            .cloned()
-            .expect("a durable key-path is non-empty");
-        self.pending.entry(stem).or_insert_with(|| PendingNode {
-            fields: record.clone(),
-            key,
-        });
-        Ok(())
-    }
 }
 
 impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
@@ -253,30 +199,38 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault> {
-        // A transaction may hold sparse fields staged for reconcile at commit, so a
-        // markerless own field leaf is tolerated as payload-absent, not corruption.
-        op_read_entry(self.txn(), site, keys, true)
+        op_read_entry(self.txn(), site, keys)
     }
     fn read_group(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault> {
-        op_read_group(self.txn(), site, keys, true)
+        op_read_group(self.txn(), site, keys)
+    }
+    fn read_group_present(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<EntryValue, KernelFault> {
+        op_read_group(self.txn(), site, keys)?.ok_or(KernelFault::Corruption)
     }
     fn replace_group(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         value: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault> {
-        let stem = node_stem(site, keys)?;
+    ) -> Result<(), KernelFault> {
         let (number, fields) = group_target(site);
-        // A group has no independent existence: replacing a group of a payload-absent
-        // entry is Missing and touches nothing (symmetric with a whole-entry replace over
-        // a markerless node).
+        require_record_complete(fields, &value.fields)?;
+        if !value.groups.is_empty() {
+            return Err(KernelFault::Incomplete);
+        }
+        let stem = node_stem(site, keys)?;
+        // A group has no independent existence: the compiler's presence proof makes an
+        // absent marker unreachable, so one here is a marker/payload mismatch.
         if read_raw(self.txn(), &stem)?.is_none() {
-            return Ok(ReplaceOutcome::Missing);
+            return Err(KernelFault::Corruption);
         }
         let group_stem = physical::group_stem(&stem, number);
         let planner = Planner::new();
@@ -287,16 +241,20 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         // index maintenance runs.
         let mut ops = planner.group_erase(&group_stem, fields);
         ops.extend(planner.group_write(&group_stem, fields, &value)?);
-        self.apply(ops)?;
-        Ok(ReplaceOutcome::Replaced)
+        self.apply(ops)
     }
     fn erase_group(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
-        let stem = node_stem(site, keys)?;
         let (number, fields) = group_target(site);
+        // A group holding a required leaf is part of every present entry; it is erased
+        // only with its entry.
+        if fields.iter().any(|field| field.required) {
+            return Err(KernelFault::Incomplete);
+        }
+        let stem = node_stem(site, keys)?;
         let group_stem = physical::group_stem(&stem, number);
         let planner = Planner::new();
         // A group carries no marker, so erasing it removes only its own field leaves. It
@@ -347,63 +305,27 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     ) -> Result<Presence, KernelFault> {
         op_family_populated(self.txn(), site, ancestor_keys)
     }
-    fn set_required(
+    fn set_field(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         value: ValueDomain,
     ) -> Result<(), KernelFault> {
+        // The compiler's presence proof makes an absent marker unreachable; assert it
+        // here as defense in depth over the trust boundary. A field leaf without an
+        // entry marker is corruption, never implicit creation (the marker law).
         let stem = node_stem(site, keys)?;
-        let leaf = physical::stem_field_leaf(&stem, field_number(site, true));
+        if read_raw(self.txn(), &stem)?.is_none() {
+            return Err(KernelFault::Corruption);
+        }
+        let (number, _) = field_target(site);
+        let leaf = physical::stem_field_leaf(&stem, number);
         let bytes = encode_domain(&value).map_err(|_| KernelFault::ValueRange)?;
         let maintenance = self.field_maintenance_before(site, &stem)?;
         self.txn_mut()
             .put(&leaf, bytes)
             .map_err(KernelFault::Engine)?;
-        self.stage_node(site, keys)?;
-        self.maintain_field_write(site, keys, maintenance, Some(value))?;
-        Ok(())
-    }
-    fn set_sparse(
-        &mut self,
-        site: &AuthorizedSite,
-        keys: &[KeyScalar],
-        value: Option<ValueDomain>,
-    ) -> Result<(), KernelFault> {
-        let stem = node_stem(site, keys)?;
-        let leaf = physical::stem_field_leaf(&stem, field_number(site, false));
-        let maintenance = self.field_maintenance_before(site, &stem)?;
-        match value {
-            Some(value) => {
-                let bytes = encode_domain(&value).map_err(|_| KernelFault::ValueRange)?;
-                self.txn_mut()
-                    .put(&leaf, bytes)
-                    .map_err(KernelFault::Engine)?;
-                self.stage_node(site, keys)?;
-                self.maintain_field_write(site, keys, maintenance, Some(value))?;
-            }
-            None => {
-                self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
-                self.maintain_field_write(site, keys, maintenance, None)?;
-            }
-        }
-        Ok(())
-    }
-    fn set_sparse_present(
-        &mut self,
-        site: &AuthorizedSite,
-        keys: &[KeyScalar],
-        value: Option<ValueDomain>,
-    ) -> Result<(), KernelFault> {
-        // The compiler's place-slot presence proof makes an absent marker
-        // unreachable; assert it here as defense in depth over the trust boundary.
-        // A present field leaf without a present entry marker is corruption, never
-        // implicit creation (the marker law).
-        let marker = node_stem(site, keys)?;
-        if read_raw(self.txn(), &marker)?.is_none() {
-            return Err(KernelFault::Corruption);
-        }
-        self.set_sparse(site, keys, value)
+        self.maintain_field_write(site, keys, maintenance, Some(value))
     }
     fn create_entry(
         &mut self,
@@ -411,20 +333,20 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
-        let stem = node_stem(site, keys)?;
         let (fields, groups) = node_shape(site);
+        require_complete(fields, groups, &entry)?;
+        let stem = node_stem(site, keys)?;
         let planner = Planner::new();
         // Marker-first precedence through the one bounded prefix probe: a create over
         // a present payload is a no-op, while a create over an absent or
         // descendant-only slot writes the payload. `node_write` stages only the marker
         // and the node's own present field leaves — never a branch tag — so a
         // descendant-only node gains a payload without its branch descendants being
-        // touched. A markerless own field leaf staged earlier in this transaction is
-        // reconcile-pending, not a create barrier, so it is written through like an
-        // absent slot.
+        // touched. A markerless own leaf is a marker/payload mismatch in every session.
         match probe_slot(self.txn(), &stem)? {
             SlotClass::Present => Ok(CreateOutcome::AlreadyPresent),
-            SlotClass::DescendantOnly | SlotClass::Absent | SlotClass::Orphan => {
+            SlotClass::Orphan => Err(KernelFault::Corruption),
+            SlotClass::DescendantOnly | SlotClass::Absent => {
                 let maintains = self.maintains_root(site);
                 let old = if maintains {
                     self.read_projected(
@@ -449,16 +371,16 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         entry: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault> {
-        let stem = node_stem(site, keys)?;
+    ) -> Result<(), KernelFault> {
         let (fields, groups) = node_shape(site);
+        require_complete(fields, groups, &entry)?;
+        let stem = node_stem(site, keys)?;
         let planner = Planner::new();
-        // A markerless node (absent or descendant-only) has no payload to replace, so
-        // it reports Missing without touching any descendants (the compiler lowers a
-        // whole assignment as exists?→replace:create, so this is the defense-in-depth
-        // arm the create path complements).
+        // The compiler lowers a whole assignment as exists?→replace:create, so replace
+        // runs only on the present edge; a markerless node here is a marker/payload
+        // mismatch, refused before any descendant could be touched.
         if read_raw(self.txn(), &stem)?.is_none() {
-            return Ok(ReplaceOutcome::Missing);
+            return Err(KernelFault::Corruption);
         }
         let maintains = self.maintains_root(site);
         let old = if maintains {
@@ -479,15 +401,21 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         if maintains {
             self.maintain_indexes(site, keys, &old, &entry.fields)?;
         }
-        Ok(ReplaceOutcome::Replaced)
+        Ok(())
     }
     fn erase_field(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
+        // A required field is present whenever its entry is, so it is never erased on
+        // its own.
+        let (number, required) = field_target(site);
+        if required {
+            return Err(KernelFault::Incomplete);
+        }
         let stem = node_stem(site, keys)?;
-        let leaf = physical::stem_field_leaf(&stem, field_number(site, false));
+        let leaf = physical::stem_field_leaf(&stem, number);
         let existed = read_raw(self.txn(), &leaf)?.is_some();
         let maintenance = self.field_maintenance_before(site, &stem)?;
         self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;

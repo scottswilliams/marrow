@@ -20,6 +20,16 @@ not return the old value; a program reads it first when it needs it. An
 interrupted commit reopens as `known_old`, `known_new`, or `unknown`
 ([operations](../operations/README.md#interrupted-commits)).
 
+The complete-entry invariant is current: every present entry has its complete
+required payload. Whole-entry assignment creates or replaces an entry; a
+field, group, or group-leaf write updates an entry that a presence proof
+covers through a `place` or a traversal pin, and is refused otherwise; `delete`
+is the one clearing form; and a proof ends at its block, at an erase of the
+family, or at a call whose demand writes the family. The proof forms and the
+loop rule are defined in [durable places](../language/durable-places.md#named-places).
+The kernel refuses an incomplete entry from a hand-built image with
+`run.corruption`.
+
 ## Direction
 
 Provisioning creates control metadata and evaluates no application
@@ -30,24 +40,16 @@ A mutating invocation's whole call graph performs its host work before its
 first durable access. No host effect exists today
 ([path effects and authority](path-effects-and-authority.md)).
 
-The next durable-language increment keeps serial execution and establishes one
-invariant: every present entry has complete required payload. Whole-entry
-assignment creates or replaces that payload; field and group assignment update
-an entry whose presence has been checked. Required group leaves participate in
-the same invariant. Partial field-created entries and their commit-time
-completion protocol are removed together.
-
-A place binding captures keys once; an ordinary value binding copies data.
-One place-binding family replaces the separate address keyword and traversal
-pins in one migration. A presence-tested binding gives required fields their
-ordinary declared types; sparse fields remain optional. A traversal binding
-uses the same field types and retains its presence fact when the loop region
-cannot erase entries in that family. Otherwise the body must recheck before a
-required read or update. A subsequent erase through a possibly matching
-alias or helper invalidates proof-dependent uses before execution. Copied values
-remain valid. Types stay stable: validity checking does not retroactively turn a
-required read into an optional one. An untested address supports optional reads
-without a presence assumption.
+The next durable-language increments keep serial execution and build on the
+complete-entry invariant. A place binding captures keys once; an ordinary value
+binding copies data. A presence-tested binding is to give required fields their
+ordinary declared types; sparse fields remain optional. Today every read
+through a place is optional. A traversal binding is to use the same field types
+and retain its presence fact when the loop region cannot erase entries in that
+family; today a pin is proved inside its own iteration. Types stay stable:
+validity checking does not retroactively turn a required read into an optional
+one. An untested address supports optional reads without a presence
+assumption.
 
 Whole-entry reads through a tested or traversal binding consume its presence
 fact and yield a complete value. Reads through untested bindings remain optional;
@@ -58,25 +60,20 @@ mark identifies which state is affected. Reference examples, direct-touch tests
 and both applications migrate with these rules.
 
 The compiler composes callee effects once and checks proof uses over resolved
-operations in a forward pass. The image verifier checks types, demand and
-transaction ownership; the kernel checks operation preconditions even for an
-image supplied without source proofs. An entry erase invalidates only its exact
-entry family; parent, descendant and sibling families retain their independent
-presence. The first implementation may conservatively lose knowledge about
-different keys in that same family. It must preserve ordinary storeless
-work without another source effect declaration. It adds no first-class address
-values, reference parameters, borrow-region syntax, key-provenance analysis, or
-whole-program fixpoint.
+operations in a forward pass; an entry erase invalidates only its exact entry
+family, and the current implementation loses knowledge about every key of that
+family. Later increments must preserve ordinary storeless work without another
+source effect declaration, and add no first-class address values, reference
+parameters, borrow-region syntax, key-provenance analysis, or whole-program
+fixpoint.
 
-The first release of this invariant provisions new stores. Older store/image
-formats are refused without changing their data; a matching older toolchain
-remains necessary to use them. General data migration is separate work.
-Ordinary exports initialize and change application data; the separate
-data-populating importer is retired. The EMR baseline data in the
-`marrow-acceptance` repository needs explicit application seed exports; replaying ordinary transitions changes its meaning.
-Source migration changes address bindings, guarded updates and implicit counter
-creation. It can change demand, so the migrated program must still pass store
-admission. This is selected direction, not current syntax or implemented behavior.
+Older store/image formats are refused without changing their data; a matching
+older toolchain remains necessary to use them. General data migration is
+separate work. Ordinary exports initialize and change application data; the
+separate data-populating importer is retired. The EMR baseline data in the
+`marrow-acceptance` repository needs explicit application seed exports;
+replaying ordinary transitions changes its meaning. A source migration can
+change demand, so a migrated program must still pass store admission.
 
 Work larger than one invocation advances by application-owned progress over
 repeated bounded exports. A non-idempotent batch that can be submitted twice
@@ -111,14 +108,12 @@ as absence. A separate entry-presence check supplies the distinction when needed
 
 ## Evidence
 
-The first evidence lane checks stable place-binding types and destructive-use
-refusal through the production compiler before the full migration. Include
-possibly equal keys, late-declared and generic helpers, loops and copied values.
-Record distinct return, break and continue transfers during lowering; preserve
-direct required-field reads in non-erasing traversals without redundant probes.
-No fixpoint or repeated source resolution is an acceptable shortcut. Separate
-evidence must establish complete required groups and kernel preconditions for
-images that omit presence guards; such images may be refused at execution.
+Evidence for typed reads through a proved place checks stable place-binding
+types through the production compiler. Include possibly equal keys,
+late-declared and generic helpers, loops and copied values. Record distinct
+return, break and continue transfers during lowering; preserve direct
+required-field reads in non-erasing traversals without redundant probes. No
+fixpoint or repeated source resolution is an acceptable shortcut.
 
 Compare current whole-value reads, current direct optional-field reads and
 checked address reads. Measure allocations and work as declared field width,

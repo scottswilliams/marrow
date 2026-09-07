@@ -127,7 +127,8 @@ A write sits inside a `transaction` block owned by the exported function. The
 block's writes commit together when it ends, and a `return` inside the block
 commits them ([transactions](errors-and-transactions.md#transactions)).
 
-Assigning one field changes that field and leaves the others as they are:
+An entry is written whole, and one field of a present entry is written through
+a proved place:
 
 ```mw
 module docs::durable::fields
@@ -141,14 +142,17 @@ store ^books[id: int]: Book
 
 pub fn create(id: int, title: string) {
     transaction {
-        ^books[id].title = title
+        ^books[id] = Book(title: title)
     }
 }
 
 pub fn retitle(id: int, title: string): string? {
     transaction {
-        ^books[id].title = title
-        return ^books[id].title
+        place m = ^books[id]
+        if exists(m) {
+            m.title = title
+        }
+        return m.title
     }
 }
 
@@ -156,21 +160,26 @@ pub fn present(id: int): bool {
     return exists(^books[id])
 }
 
-test "a field write creates the entry" {
+test "a field write updates a present entry" {
     create(1, "Small Gods")
     assert present(1)
     assert retitle(1, "Pyramids") ?? "" == "Pyramids"
+    assert retitle(2, "Pyramids") ?? "none" == "none"
+    assert not present(2)
 }
 ```
 
-`create` writes one field of an entry that does not exist yet. The write is
-staged, and at commit the entry is created because every required field is
-present. A required field left unset at commit rolls the whole block back with
-`run.required_missing`. `retitle` reads the field it just wrote: inside the
-block, a read sees the writes staged before it.
+`create` assigns a whole entry. The constructor names every required field, so
+the entry is complete from its first commit, and a present entry is always
+complete. `retitle` binds `place m = ^books[id]`, proves the entry present
+with `exists(m)`, and writes one field through `m` inside that block. A field
+write updates a present entry and never creates one: `retitle(2, "Pyramids")`
+writes nothing, and `present(2)` stays false. The read of `m.title` after the
+write sees the write staged before it and is `string?` like every durable read
+([named places](#named-places)).
 
 A sparse field may stay unset, and `delete` clears it ([deleting](#deleting)).
-A required field is present at every commit.
+A required field is present whenever its entry is.
 
 Assigning a whole entry replaces its fields exactly:
 
@@ -259,21 +268,49 @@ test "a place writes one field" {
 
 The right-hand side is a whole entry address, `^root[key]`. The key is evaluated
 once, at the binding, and every later use of the name goes to that one address.
-A place proves nothing. `exists(book)` proves presence, and the guard returns
-before any write when the entry is absent. `book.subtitle = subtitle` then writes
-one field and reads nothing else.
+`exists(book)` proves presence, and the guard returns before any write when the
+entry is absent. `book.subtitle = subtitle` then writes one field and reads
+nothing else.
+
+A field write, a whole-group write, or a group-leaf write goes through a place,
+or a [traversal pin](traversal-and-indexes.md#bounded-durable-traversal), that
+a presence proof covers. The proof forms are:
+
+- the block of `if exists(p)`;
+- the block of `if const x = p`;
+- the rest of the block after `const x = p else { … }`;
+- the rest of the block after `if not exists(p) { … }` when that block returns
+  or throws, as in `setSubtitle`;
+- the rest of the block after a whole-entry assignment `p = Book(…)`.
+
+A negative guard whose block falls through proves nothing. A write with no
+proof, including every inline `^books[id].subtitle = subtitle`, is
+`check.requires_presence` at the write. A function binds one place per entry
+and proves and writes through that name.
+
+A proof lasts until its block ends, until a `delete` of any entry in the same
+family, or until a call to a function whose demand writes the family. A family
+is one root and one branch path, so the erase may be spelled through any
+binding or key: `delete book`, `delete other` over the same root, or `delete
+^books[k]`. A function writes the family when it, or a function it calls,
+creates, replaces, or erases an entry of it. A loop body is one region: a
+write inside a `while` or `for` body that was entered after the proof was
+established is refused when that body, or a body nested in it, erases the
+family or calls a function that writes it, because the next iteration puts the
+erase before the write. A proof established inside the body, such as
+`if exists(pin)` on each iteration, is never refused by that rule. After such
+a loop the proof is gone.
 
 A branch beneath the entry is addressed through the name, so `book.notes[pos]`
-reads and writes the branch entry that `^books[id].notes[pos]` names.
+reads and writes the branch entry that `^books[id].notes[pos]` names. A place
+over a branch entry, `place n = ^books[id].notes[pos]`, is proved and written
+by the same forms, and its whole-entry assignment proves it for the rest of
+the block.
 
 A place is a constant, and its bare name is not a value: read a field through
 it, bind the whole entry with `if const`, or test it with `exists`. A field
 address or another place on the right-hand side is a `check.type` error.
-
-Two bindings to the same entry keep separate proofs. Deleting through one leaves
-the other's proof stale: a sparse field written through it leaves the entry short
-of a required field, so the block rolls back with `run.required_missing`. Prove
-presence, delete, and write through one binding.
+`reads` and `writes` are reserved words and do not name a place.
 
 ## Groups
 
@@ -298,21 +335,28 @@ pub fn pages(id: int): int? {
 }
 
 test "a group is one value of the entry" {
-    ^books[1] = Book(title: "Small Gods", details: Book.details(pages: 381, language: "en"))
-    ^books[1].details.pages = 400
-    assert ^books[1].details.language ?? "" == "en"
-    ^books[1].details = Book.details(language: "de")
-    assert ^books[1].details.pages ?? 0 == 0
-    assert ^books[1].title ?? "" == "Small Gods"
+    place b = ^books[1]
+    b = Book(title: "Small Gods", details: Book.details(pages: 381, language: "en"))
+    b.details.pages = 400
+    assert b.details.language ?? "" == "en"
+    b.details = Book.details(language: "de")
+    assert b.details.pages ?? 0 == 0
+    assert b.title ?? "" == "Small Gods"
+    delete b.details.language
+    assert b.details.language ?? "none" == "none"
 }
 ```
 
-`details` is part of the entry: it is present when the entry is present, and it
+`details` is part of the entry: it is present exactly when the entry is, and it
 is addressed by the entry's key. `^books[id].details.pages` reads one leaf and
-yields `int?`. The test writes one leaf and keeps `language`, then assigns the
-whole group exactly, so the omitted `pages` is dropped. `title` is untouched
-either way. A group leaf write over an absent entry writes nothing, while a
-field write stages the field and creates the entry at commit.
+yields `int?`. The test binds `place b = ^books[1]`, and the whole-entry
+assignment through `b` proves it for the rest of the body, so the group writes
+that follow need no further guard. The test writes one leaf and keeps
+`language`, then assigns the whole group exactly, so the omitted `pages` is
+dropped. `title` is untouched either way, and `delete b.details.language`
+clears one sparse leaf. A group whose leaves are all sparse is cleared with
+`delete b.details`; a group that declares a required leaf is erased only with
+its entry ([deleting](#deleting)).
 
 ## Keyed branches
 
@@ -363,11 +407,21 @@ later leaves the tag in place.
 
 ## Deleting
 
-`delete` removes a sparse field or an entry's own fields. `delete
-^books[id].subtitle` clears the field, and clearing a field that is already
-absent does nothing. Deleting a required field is a `check.type` error. `delete
-^books[id]` removes the entry's own fields, and `exists(^books[id])` turns
-false. A note under the entry stays, because a branch entry is its own node.
+`delete` is the one way to clear durable state, and it needs no presence
+proof. `delete ^books[id].subtitle` clears a sparse field, `delete
+^books[id].details.language` a sparse group leaf, `delete ^books[id].details`
+a group whose leaves are all sparse, and `delete ^books[id]` the entry's own
+fields, after which `exists(^books[id])` is false. Each form is also written
+through a place, `delete book.subtitle`. Clearing a field that is already
+absent does nothing. A note under the entry stays, because a branch entry is
+its own node.
+
+A durable field set takes a definite value of the field's type. Assigning
+`absent`, or an operand of an optional type `T?`, is a `check.type` error
+whose message names `delete`. Deleting a required field is a `check.type`
+error, and so is `delete` of a group that declares a required leaf: a required
+field is present whenever its entry is, so such a group is erased only with
+its entry.
 
 Deleting visited entries uses nested bounded traversals. These traversals visit
 only present entry payloads, so they do not by themselves implement
@@ -451,9 +505,10 @@ docs.durable.shelf.put reads ^books; writes ^books
 docs.durable.shelf.title reads ^books.title
 ```
 
-A whole-entry write is listed as a read and a write. Demand describes the access
-a program requires; it grants nothing
-([`marrow check`](../tools/cli.md)).
+A whole-entry write is listed as a read and a write. `writes ^books` names
+creation, replacement, and erase of an entry; `writes ^books.title` names an
+update of a present entry. Demand describes the access a program requires; it
+grants nothing ([`marrow check`](../tools/cli.md)).
 
 ## Durable identity
 

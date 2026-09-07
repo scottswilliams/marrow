@@ -9,6 +9,7 @@ const IDS: &str = "marrow ids v0\n\
      id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
      id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
      id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id index counters.byValue 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
      high-water 0\n\
      end\n";
 
@@ -17,11 +18,13 @@ const SOURCE: &str = r#"resource Counter {
     label: string
 }
 
-store ^counters[id: int]: Counter
+store ^counters[id: int]: Counter {
+    index byValue[value] unique
+}
 
-pub fn labelOnly(id: int, text: string) {
+pub fn set(id: int, v: int) {
     transaction {
-        ^counters[id].label = text
+        ^counters[id] = Counter(value: v)
     }
 }
 
@@ -31,7 +34,7 @@ pub fn two(): int {
 
 pub fn writeThenFault(id: int): int {
     transaction {
-        ^counters[id].value = 7
+        ^counters[id] = Counter(value: 7)
     }
     return 1 / 0
 }
@@ -96,30 +99,36 @@ fn id_of(ids: &[(String, Id32)], name: &str) -> Id32 {
         .unwrap_or_else(|| panic!("missing export {name}"))
 }
 
+/// A unique-index collision faults at the colliding write, before the commit: the wire
+/// carries it as an ordinary typed `Fault` with no durable state, the transaction rolls
+/// back, and the owner stays usable.
 #[test]
-fn known_old_incomplete_is_typed_and_does_not_retire_a_healthy_ephemeral_owner() {
+fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner() {
     let (image, ids) = compile();
     let mut service = AttachedEphemeralService::mint(marrow_lifecycle::prepare(image));
 
+    // A committed value, then a second entry whose `value` collides in the unique index.
+    match service.handle(ClientMessage::Request {
+        export: id_of(&ids, "set"),
+        args: vec![Json::Int(1), Json::Int(5)],
+    }) {
+        ServerMessage::Value { .. } => {}
+        other => panic!("the first entry commits, got {other:?}"),
+    }
     let response = service.handle(ClientMessage::Request {
-        export: id_of(&ids, "labelOnly"),
-        args: vec![Json::Int(1), Json::Str("orphan".to_string())],
+        export: id_of(&ids, "set"),
+        args: vec![Json::Int(2), Json::Int(5)],
     });
     match response {
-        ServerMessage::Incomplete {
-            code,
-            durable,
-            span,
-        } => {
-            assert_eq!(code, "run.required_missing");
-            assert_eq!(durable, DurableState::KnownOld);
+        ServerMessage::Fault { code, span } => {
+            assert_eq!(code, "run.unique_index");
             assert!(span.line > 0);
         }
-        other => panic!("expected typed incomplete response, got {other:?}"),
+        other => panic!("expected typed fault response, got {other:?}"),
     }
     assert!(
         !service.close_after_response(),
-        "known-old has no live recovery fact and leaves the owner usable",
+        "a pre-commit fault has no live recovery fact and leaves the owner usable",
     );
 
     assert_eq!(
@@ -128,6 +137,14 @@ fn known_old_incomplete_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
             args: Vec::new(),
         }),
         ServerMessage::Value { data: Json::Int(2) },
+    );
+    assert_eq!(
+        service.handle(ClientMessage::Request {
+            export: id_of(&ids, "readValue"),
+            args: vec![Json::Int(1)],
+        }),
+        ServerMessage::Value { data: Json::Int(5) },
+        "the first entry stands after the rolled-back collision",
     );
 }
 

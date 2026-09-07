@@ -5,9 +5,8 @@
 //! production path — capture -> compile -> verify -> attach -> VM — against a single
 //! *persistent* ephemeral attachment, so a later read invocation observes the
 //! committed effect of an earlier mutating one. That persistence is what makes the
-//! transaction region observable: a committed transaction is visible afterward, a
-//! rolled-back one is not, and a required field left unset at commit rolls the whole
-//! region back rather than publishing a partial entry.
+//! transaction region observable: a committed transaction is visible afterward and a
+//! rolled-back one is not.
 //!
 //! `marrow run --store` dispatches durable exports through the supervised runner.
 //! These tests exercise the same VM transaction semantics directly over an ephemeral
@@ -46,7 +45,10 @@ pub fn set(id: int, v: int) {
 
 pub fn setLabel(id: int, text: string) {
     transaction {
-        ^counters[id].label = text
+        place c = ^counters[id]
+        if exists(c) {
+            c.label = text
+        }
     }
 }
 
@@ -56,16 +58,11 @@ pub fn eraseEntry(id: int) {
     }
 }
 
-pub fn labelOnly(id: int, text: string) {
-    transaction {
-        ^counters[id].label = text
-    }
-}
-
 pub fn setThenOverflow(id: int, big: int) {
     transaction {
-        ^counters[id] = Counter(value: 1)
-        ^counters[id].value = big + big
+        place c = ^counters[id]
+        c = Counter(value: 1)
+        c.value = big + big
     }
 }
 
@@ -435,8 +432,9 @@ fn a_committed_transaction_is_observable_by_a_later_read() {
     );
 }
 
-/// A sparse field committed in its own transaction reads back; a second transaction
-/// replacing the whole entry drops the earlier sparse leaf (exact replacement).
+/// A sparse field written through a proven place and committed in its own transaction
+/// reads back; a second transaction replacing the whole entry drops the earlier sparse
+/// leaf (exact replacement).
 #[test]
 fn a_committed_field_write_reads_back_and_replacement_is_exact() {
     let image = compile_verify(SOURCE);
@@ -528,34 +526,6 @@ fn a_fault_before_commit_rolls_the_transaction_back() {
         run(&image, &mut attachment, "getValue", vec![Value::Int(4)]),
         Some(Value::Optional(Some(Box::new(Value::Int(1))))),
         "a fault before commit must restore the pre-transaction state"
-    );
-}
-
-/// A transaction that leaves a required field unset rolls back at commit with
-/// `run.required_missing` rather than publishing a partial entry; a later read
-/// observes nothing was written.
-#[test]
-fn a_required_field_unset_at_commit_rolls_back() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-
-    let code = run_faulting(
-        &image,
-        &mut attachment,
-        "labelOnly",
-        vec![Value::Int(5), Value::Text("hi".into())],
-    );
-    assert_eq!(code, "run.required_missing");
-
-    // Neither the label nor a marker survived the rolled-back commit.
-    assert_eq!(
-        run(&image, &mut attachment, "getValue", vec![Value::Int(5)]),
-        Some(Value::Optional(None))
-    );
-    assert_eq!(
-        run(&image, &mut attachment, "getLabel", vec![Value::Int(5)]),
-        Some(Value::Optional(None)),
-        "the whole transaction rolled back, so the staged label is gone"
     );
 }
 
@@ -1077,7 +1047,7 @@ fn an_unreachable_fault_inside_a_transaction_rolls_back() {
 /// committed by an earlier invocation survives the faulting one, and a *subsequent*
 /// mutating invocation on the same attachment commits normally. This is the
 /// budget-family instance of the rollback-isolation law already pinned above for
-/// overflow, required-missing, and unreachable faults; it fixes budget exhaustion as
+/// overflow and unreachable faults; it fixes budget exhaustion as
 /// an ordinary rolling-back terminal fault before the E07 taxonomy freeze.
 ///
 /// Ignored in the default suite: the instruction budget is a private VM constant

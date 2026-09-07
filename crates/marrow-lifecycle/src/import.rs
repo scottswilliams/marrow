@@ -258,9 +258,6 @@ pub enum CommitFault {
     /// A non-engine kernel fault surfaced during a write (corruption, value range, or poison),
     /// carried as its stable dotted code.
     Kernel { code: &'static str },
-    /// A staged entry left a required field unset (a defense-in-depth reconcile fault; the
-    /// mapper normally rejects such a row before staging).
-    RequiredMissing { field: String },
     /// The engine confirmed that the batch did not commit.
     Aborted,
     /// The batch invocation did not complete; recovery classified whether its
@@ -279,9 +276,6 @@ impl std::fmt::Display for CommitFault {
             }
             CommitFault::Engine(error) => write!(f, "the engine transaction failed: {error}"),
             CommitFault::Kernel { code } => write!(f, "a durable write faulted ({code})"),
-            CommitFault::RequiredMissing { field } => {
-                write!(f, "a staged entry left required field `{field}` unset")
-            }
             CommitFault::Aborted => write!(f, "the batch commit aborted"),
             CommitFault::Incomplete { durable } => {
                 let state = match durable {
@@ -836,11 +830,6 @@ fn commit_batch<H: SessionHost>(
             report.batches_committed += 1;
             Ok(())
         }
-        CommitResult::RequiredMissing { field, .. } => Err(ImportError::Commit {
-            fault: CommitFault::RequiredMissing { field },
-            committed: *report,
-        }
-        .into()),
         CommitResult::Aborted => Err(ImportError::Commit {
             fault: CommitFault::Aborted,
             committed: *report,

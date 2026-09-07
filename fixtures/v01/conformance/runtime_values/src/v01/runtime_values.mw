@@ -18,8 +18,8 @@ resource Book {
 store ^books[id: int]: Book
 
 pub fn identityLoopOutput(): string {
-    ^books[2].title = "Sourcery"
-    ^books[1].title = "Mort"
+    ^books[2] = Book(title: "Sourcery")
+    ^books[1] = Book(title: "Mort")
     const tag: int = append(^books[1].tags, "fiction")
     var output: string = ""
     for id in ^books {

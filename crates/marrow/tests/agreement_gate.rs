@@ -233,7 +233,7 @@ fn matrix() -> Vec<Row> {
         },
         Row {
             label: "whole-entry read / inside a mutating region (read-modify-write)",
-            ops: "pub fn weReadTxn(id: int) {\n    transaction {\n        if const b = ^books[id] {\n            ^books[id].subtitle = b.title\n        }\n    }\n}",
+            ops: "pub fn weReadTxn(id: int) {\n    transaction {\n        place m = ^books[id]\n        if const b = m {\n            m.subtitle = b.title\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
@@ -248,12 +248,12 @@ fn matrix() -> Vec<Row> {
         },
         Row {
             label: "field write / inside a mutating region",
-            ops: "pub fn fieldWrite(id: int) {\n    transaction {\n        ^books[id].subtitle = \"x\"\n    }\n}",
+            ops: "pub fn fieldWrite(id: int) {\n    transaction {\n        place m = ^books[id]\n        if exists(m) {\n            m.subtitle = \"x\"\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
             label: "group-leaf write / inside a mutating region",
-            ops: "pub fn groupWrite(id: int) {\n    transaction {\n        ^books[id].details.pages = 3\n    }\n}",
+            ops: "pub fn groupWrite(id: int) {\n    transaction {\n        place m = ^books[id]\n        if exists(m) {\n            m.details.pages = 3\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
@@ -273,7 +273,7 @@ fn matrix() -> Vec<Row> {
         },
         Row {
             label: "identity field write / inside a mutating region",
-            ops: "pub fn identityFieldWrite(isbn: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found].subtitle = \"x\"\n        }\n    }\n}",
+            ops: "pub fn identityFieldWrite(isbn: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            place m = ^books[found]\n            if exists(m) {\n                m.subtitle = \"x\"\n            }\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         Row {
@@ -283,7 +283,7 @@ fn matrix() -> Vec<Row> {
         },
         Row {
             label: "field write + read-back / in a test body directly",
-            ops: "test \"direct field round trip\" {\n    ^books[1].subtitle = \"x\"\n    assert ^books[1].subtitle ?? \"n\" == \"x\"\n}",
+            ops: "test \"direct field round trip\" {\n    place m = ^books[1]\n    m = Book(title: \"t\", isbn: \"i\")\n    m.subtitle = \"x\"\n    assert ^books[1].subtitle ?? \"n\" == \"x\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
         Row {
@@ -297,7 +297,7 @@ fn matrix() -> Vec<Row> {
         // binding from the canonical resolved durable node, independent of key-operand count.
         Row {
             label: "composite-root place field read + write / read outside, write inside a region",
-            ops: "pub fn crPlaceRead(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\npub fn crPlaceWrite(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        g.score = score\n    }\n}",
+            ops: "pub fn crPlaceRead(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\npub fn crPlaceWrite(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
         // Driven end to end: a seed export writes a composite-root entry, a composite-root
@@ -306,7 +306,7 @@ fn matrix() -> Vec<Row> {
         // the read-back both resolve the root field through their own place binding.
         Row {
             label: "composite-root place field write round trip / driver test",
-            ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crWriteVia(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        g.score = score\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\ntest \"composite-root place writes then reads a score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    crWriteVia(\"amy\", \"cs\", 75)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 75\n}",
+            ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crWriteVia(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\ntest \"composite-root place writes then reads a score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    crWriteVia(\"amy\", \"cs\", 75)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // ---- Resource values at function boundaries. ----
@@ -396,6 +396,17 @@ fn matrix() -> Vec<Row> {
                 code: "check.transaction_empty",
             },
         },
+        // A field write with no presence proof over its entry — the inline form — is
+        // refused at check time, so it never reaches the verifier: a field write updates
+        // an entry and never creates one, and the checker carries that law before an
+        // image is minted.
+        Row {
+            label: "inline field write without a presence proof (checker-rejected)",
+            ops: "pub fn inlineFieldWrite(id: int) {\n    transaction {\n        ^books[id].subtitle = \"x\"\n    }\n}",
+            expect: Expect::CheckerRejects {
+                code: "check.requires_presence",
+            },
+        },
         // ---- REQ01: the `require` guard mirrors the try transaction law. ----
         // A `require` inside an owned region: its implicit `err` exit carries no
         // commit, so the checker refuses it (`check.transaction_uncommitted`)
@@ -455,14 +466,14 @@ fn matrix() -> Vec<Row> {
         // group, rewrites the leaf, and writes the group back off the same slots.
         Row {
             label: "IDK01: group-leaf write through an identity key / driver test",
-            ops: "pub fn glWrite(id: int, pages: int) {\n    transaction {\n        ^books[Id(^books, id)] = Book(title: \"t\", isbn: \"i\")\n        ^books[Id(^books, id)].details.pages = pages\n    }\n}\n\npub fn glPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf write through an identity key round trips\" {\n    glWrite(22, 7)\n    assert glPages(22) ?? 0 == 7\n}",
+            ops: "pub fn glWrite(id: int, pages: int) {\n    transaction {\n        place m = ^books[Id(^books, id)]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.details.pages = pages\n    }\n}\n\npub fn glPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf write through an identity key round trips\" {\n    glWrite(22, 7)\n    assert glPages(22) ?? 0 == 7\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A group-leaf delete through an identity key: the same read-modify-write, clearing
         // the leaf. The sibling of the write above, from the same capturing helper.
         Row {
             label: "IDK01: group-leaf delete through an identity key / driver test",
-            ops: "pub fn gdSet(id: int, pages: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n        ^books[id].details.pages = pages\n    }\n}\n\npub fn gdClear(id: int) {\n    transaction {\n        delete ^books[Id(^books, id)].details.pages\n    }\n}\n\npub fn gdPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf delete through an identity key round trips\" {\n    gdSet(23, 7)\n    gdClear(23)\n    assert gdPages(23) ?? 0 == 0\n}",
+            ops: "pub fn gdSet(id: int, pages: int) {\n    transaction {\n        place m = ^books[id]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.details.pages = pages\n    }\n}\n\npub fn gdClear(id: int) {\n    transaction {\n        delete ^books[Id(^books, id)].details.pages\n    }\n}\n\npub fn gdPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf delete through an identity key round trips\" {\n    gdSet(23, 7)\n    gdClear(23)\n    assert gdPages(23) ?? 0 == 0\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A composite-root `place` bound to a single identity operand: the identity spreads
@@ -471,7 +482,7 @@ fn matrix() -> Vec<Row> {
         // through the place resolve the root's field off the pre-evaluated address.
         Row {
             label: "IDK01: composite-root place bound to a single identity operand / driver test",
-            ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdPlaceWrite(s: string, c: string, score: int) {\n    transaction {\n        place g = ^grades[Id(^grades, s, c)]\n        g.score = score\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root place over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdPlaceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
+            ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdPlaceWrite(s: string, c: string, score: int) {\n    transaction {\n        place g = ^grades[Id(^grades, s, c)]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root place over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdPlaceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // ---- DX02: a named place or per-iteration pin as a bounded-traversal base. ----
@@ -517,7 +528,7 @@ fn matrix() -> Vec<Row> {
         // A root place composes a group-leaf write and read (whole-group read-modify-write).
         Row {
             label: "DX06: root place composes a group-leaf write + read / driver test",
-            ops: "pub fn eAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn eSetPagesVia(id: int, p: int) {\n    transaction {\n        place b = ^books[id]\n        b.details.pages = p\n    }\n}\n\npub fn ePagesVia(id: int): int? {\n    place b = ^books[id]\n    return b.details.pages\n}\n\ntest \"root place composes a group-leaf write then reads it back\" {\n    eAddBook(101)\n    eSetPagesVia(101, 7)\n    assert ePagesVia(101) ?? 0 == 7\n}",
+            ops: "pub fn eAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn eSetPagesVia(id: int, p: int) {\n    transaction {\n        place b = ^books[id]\n        if exists(b) {\n            b.details.pages = p\n        }\n    }\n}\n\npub fn ePagesVia(id: int): int? {\n    place b = ^books[id]\n    return b.details.pages\n}\n\ntest \"root place composes a group-leaf write then reads it back\" {\n    eAddBook(101)\n    eSetPagesVia(101, 7)\n    assert ePagesVia(101) ?? 0 == 7\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // `exists(place.branch)` is the family-populated probe, not a missing-field error.
@@ -708,15 +719,17 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
     // and TX02 promoted the last divergence — the empty (no-op) transaction — to a check-time
     // diagnostic, so the checker-accept/verify-reject ledger is now empty. A new divergence
     // added without a ledger row fails an individual row above; these counts fail if a
-    // closed checker-rejected row silently changes verdict. The two rejections are the
-    // TX02-promoted empty transaction and the REQ01 require-inside-an-owned-region law.
+    // closed checker-rejected row silently changes verdict. The three rejections are the
+    // TX02-promoted empty transaction, the REQ01 require-inside-an-owned-region law, and
+    // the unproven inline field write.
     assert_eq!(
         known_divergent, 0,
         "the divergence ledger is empty after TX02"
     );
     assert_eq!(
-        checker_rejected, 2,
-        "expected exactly the empty-transaction and require-in-region check-time rejections",
+        checker_rejected, 3,
+        "expected exactly the empty-transaction, require-in-region, and unproven-field-write \
+         check-time rejections",
     );
 }
 
@@ -752,8 +765,9 @@ fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
         "pub fn shelve(id: int, title: string, isbn: string) {\n    \
              transaction {\n        ^books[id] = Book(title: title, isbn: isbn)\n    }\n}\n\n\
          pub fn badUpdate(id: int, divisor: int) {\n    transaction {\n        \
-             ^books[id].title = \"changed\"\n        \
-             ^books[id].details.pages = 100 / divisor\n    }\n}\n\n\
+             place m = ^books[id]\n        if exists(m) {\n            \
+             m.title = \"changed\"\n            \
+             m.details.pages = 100 / divisor\n        }\n    }\n}\n\n\
          pub fn titleOf(id: int): string? {\n    return ^books[id].title\n}",
     ) else {
         panic!("the rollback-journey program must verify");

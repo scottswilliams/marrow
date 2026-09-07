@@ -7,7 +7,6 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::durable::{
     AuthorizedSite, BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage,
     Durable, DurableCommitState, EntryValue, EraseOutcome, InvocationGrant, KernelFault, Presence,
-    ReplaceOutcome,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{EphemeralOutcome, MemoryAttachment, mint_ephemeral, prepare};
@@ -253,8 +252,16 @@ impl<D: Durable> Durable for CommitOverride<D> {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         value: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault> {
+    ) -> Result<(), KernelFault> {
         self.inner.replace_group(site, keys, value)
+    }
+
+    fn read_group_present(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<EntryValue, KernelFault> {
+        self.inner.read_group_present(site, keys)
     }
 
     fn erase_group(
@@ -301,31 +308,13 @@ impl<D: Durable> Durable for CommitOverride<D> {
         self.inner.family_populated(site, ancestor_keys)
     }
 
-    fn set_required(
+    fn set_field(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         value: ValueDomain,
     ) -> Result<(), KernelFault> {
-        self.inner.set_required(site, keys, value)
-    }
-
-    fn set_sparse(
-        &mut self,
-        site: &AuthorizedSite,
-        keys: &[KeyScalar],
-        value: Option<ValueDomain>,
-    ) -> Result<(), KernelFault> {
-        self.inner.set_sparse(site, keys, value)
-    }
-
-    fn set_sparse_present(
-        &mut self,
-        site: &AuthorizedSite,
-        keys: &[KeyScalar],
-        value: Option<ValueDomain>,
-    ) -> Result<(), KernelFault> {
-        self.inner.set_sparse_present(site, keys, value)
+        self.inner.set_field(site, keys, value)
     }
 
     fn create_entry(
@@ -342,7 +331,7 @@ impl<D: Durable> Durable for CommitOverride<D> {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
         entry: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault> {
+    ) -> Result<(), KernelFault> {
         self.inner.replace_entry(site, keys, entry)
     }
 

@@ -29,8 +29,10 @@ pub fn add(id: int, title: string) {
 
 pub fn bump(id: int) {
     transaction {
-        const current = ^books[id].loans ?? 0
-        ^books[id].loans = current + 1
+        place m = ^books[id]
+        if exists(m) {
+            m.loans = (m.loans ?? 0) + 1
+        }
     }
 }
 
@@ -46,9 +48,10 @@ test "each call commits one increment" {
 }
 ```
 
-`add` and `bump` each own one block. In `bump`, the read and the write of
-`loans` sit in the same block, so the two calls in the test commit one after
-the other. `loans` only reads and needs no block. The test drives the exports,
+`add` and `bump` each own one block. In `bump`, `exists(m)` proves the entry
+present, and the read and the write of `loans` through the place sit in the
+same block, so the two calls in the test commit one after the other
+([named places](durable-places.md#named-places)). `loans` only reads and needs no block. The test drives the exports,
 and each call is its own invocation.
 
 A durable write sits inside a `transaction` block, or inside a helper the block
@@ -127,10 +130,12 @@ module docs::errors::rollback
 
 resource Book {
     required title: string
-    copies: int
+    isbn: string
 }
 
-store ^books[id: int]: Book
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+}
 
 pub fn faultBeforeCommit(id: int, divisor: int): int {
     transaction {
@@ -139,9 +144,9 @@ pub fn faultBeforeCommit(id: int, divisor: int): int {
     }
 }
 
-pub fn faultAtCommit(id: int, copies: int) {
+pub fn faultAtCommit(id: int, isbn: string) {
     transaction {
-        ^books[id].copies = copies
+        ^books[id] = Book(title: "Small Gods", isbn: isbn)
     }
 }
 
@@ -153,22 +158,24 @@ pub fn faultAfterCommit(id: int, divisor: int): int {
 }
 ```
 
-Three tests call `faultBeforeCommit(1, 0)`, `faultAtCommit(2, 3)`, and
-`faultAfterCommit(3, 0)` against a fresh store. `marrow test` reports them in
-name order, each with the line and column of the faulting operation in the
-module above:
+Three tests call `faultBeforeCommit(1, 0)`, then `faultAtCommit(1, "111")`
+followed by `faultAtCommit(2, "111")`, then `faultAfterCommit(3, 0)`, each
+against a fresh store. `marrow test` reports them in name order, each with the
+line and column of the faulting operation in the module above:
 
 ```text
-ERROR fault after commit (run.divide_by_zero at 27:16; incomplete, durable known_new)
-ERROR fault at commit (run.required_missing at 18:17; incomplete, durable known_old)
-ERROR fault before commit (run.divide_by_zero at 13:20)
+ERROR fault after commit (run.divide_by_zero at 29:16; incomplete, durable known_new)
+ERROR fault at commit (run.unique_index at 21:9)
+ERROR fault before commit (run.divide_by_zero at 15:20)
 0 passed, 0 failed, 3 errored (3/3 selected)
 ```
 
 `faultBeforeCommit` faults on the division before the block commits. The staged
-entry is discarded and the report carries the fault alone. `faultAtCommit` sets
-a sparse field of an absent book; at commit the required `title` is unset, so
-the block rolls back with `run.required_missing` and durable state `known_old`.
+entry is discarded and the report carries the fault alone. `faultAtCommit`
+writes a second book under an ISBN that the `unique` index already holds; the
+commit faults with `run.unique_index` and the whole block rolls back, so the
+second book is not in place
+([index declarations](traversal-and-indexes.md#index-declarations)).
 `faultAfterCommit` commits the entry and then faults. The entry stays in place
 and the report says `known_new`.
 

@@ -13,11 +13,10 @@
 //! rather than copied.
 
 use marrow_image::{
-    AdmittedRoot, CollectionTypeDef, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, DraftTxn, DurableIndexComponent, DurableIndexShape, EnumTypeDef,
-    ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticStepKind,
-    SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId, VariantDef,
+    AdmittedRoot, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn,
+    DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, PlannedSiteRef, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticStepKind, SemanticTarget, SpanEntry, TypeId, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -44,113 +43,13 @@ mod admitted_helper;
 mod guard_provenance;
 use admitted_helper::admitted;
 
-/// One within-domain draft mint, unwrapped: every fixture mint here is far inside
-/// the checked carrier domain.
-fn ok<T>(minted: Result<T, marrow_image::DraftStateError>) -> T {
-    minted.expect("a within-domain mint")
-}
-
-/// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
-/// the byte-forgery helpers so a hostile mutation can target one precisely.
-const APPLICATION_ID: [u8; 16] = [0x0a; 16];
-const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
-const ROOT_KEY_ID: [u8; 16] = [0x0c; 16];
-const PRODUCT_ID: [u8; 16] = [0x0d; 16];
-const VALUE_FIELD_ID: [u8; 16] = [0x0e; 16];
-const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
-
-/// The direct members of the Product every fixture in this file declares, in
-/// declaration order.
-fn product_members(draft: &ImageDraft) -> Vec<DeclarationMember> {
-    draft
-        .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
-        .expect("the fixture Product is declared")
-}
-
-/// One flat declaration command for a stored scalar field of `parent` (`None` is a
-/// direct member of the Product).
-fn field_member(
-    shapes: ScalarShapes,
-    parent: Option<u32>,
-    id: [u8; 16],
-    required: bool,
-    scalar: Scalar,
-) -> DeclarationMemberDef {
-    DeclarationMemberDef {
-        parent,
-        shape: DeclarationMemberShape::Field {
-            id: LedgerIdBytes::from_bytes(id),
-            required,
-            value: shapes.of(scalar),
-        },
-    }
-}
-
-/// The bare scalar value shapes of one draft's arena.
-///
-/// A member row references a value shape rather than owning one, so a fixture mints the
-/// closed scalar set into its draft first and then states its members. Minting is
-/// interning, so this is idempotent and every fixture of one draft shares the same ids.
-#[derive(Clone, Copy)]
-struct ScalarShapes {
-    int: ValueShapeNodeId,
-    text: ValueShapeNodeId,
-    bool_: ValueShapeNodeId,
-    bytes: ValueShapeNodeId,
-    date: ValueShapeNodeId,
-    instant: ValueShapeNodeId,
-    duration: ValueShapeNodeId,
-}
-
-impl ScalarShapes {
-    fn of(self, scalar: Scalar) -> ValueShapeNodeId {
-        match scalar {
-            Scalar::Int => self.int,
-            Scalar::Text => self.text,
-            Scalar::Bool => self.bool_,
-            Scalar::Bytes => self.bytes,
-            Scalar::Date => self.date,
-            Scalar::Instant => self.instant,
-            Scalar::Duration => self.duration,
-        }
-    }
-}
-
-fn scalar_shapes(draft: &mut DraftTxn<'_>) -> ScalarShapes {
-    ScalarShapes {
-        int: draft
-            .value_scalar(Scalar::Int)
-            .expect("the test arena mints"),
-        text: draft
-            .value_scalar(Scalar::Text)
-            .expect("the test arena mints"),
-        bool_: draft
-            .value_scalar(Scalar::Bool)
-            .expect("the test arena mints"),
-        bytes: draft
-            .value_scalar(Scalar::Bytes)
-            .expect("the test arena mints"),
-        date: draft
-            .value_scalar(Scalar::Date)
-            .expect("the test arena mints"),
-        instant: draft
-            .value_scalar(Scalar::Instant)
-            .expect("the test arena mints"),
-        duration: draft
-            .value_scalar(Scalar::Duration)
-            .expect("the test arena mints"),
-    }
-}
-
-/// The tracer `Counter` record's declaration commands: `value:int` required then
-/// `label:string` sparse, matching the `durable_schema` record fields so the
-/// verifier's member-tree/record cross-check passes.
-fn counters_members(shapes: ScalarShapes) -> Vec<DeclarationMemberDef> {
-    vec![
-        field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Int),
-        field_member(shapes, None, LABEL_FIELD_ID, false, Scalar::Text),
-    ]
-}
+#[path = "common/tracer_schema.rs"]
+#[allow(
+    dead_code,
+    reason = "each verifier test binary uses the slice of the shared tracer fixture its pins need"
+)]
+mod tracer_schema;
+use tracer_schema::*;
 
 /// A well-formed multi-function image: a caller exporting `main` that calls a helper,
 /// plus a couple of constants. Every hostile case derives from this.
@@ -187,23 +86,6 @@ fn good_image() -> Vec<u8> {
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     draft.encode().expect("encode").bytes
-}
-
-fn spans(code: &[Instr]) -> Vec<SpanEntry> {
-    (0..code.len())
-        .map(|index| SpanEntry {
-            instr_index: index as u32,
-            line: 1,
-            column: 1,
-        })
-        .collect()
-}
-
-fn code_of(bytes: &[u8]) -> String {
-    verify(bytes)
-        .err()
-        .map(|r| r.code().to_string())
-        .unwrap_or_else(|| "VERIFIED".to_string())
 }
 
 /// The ten section frames as `(id, body_offset, body_len)` (header is 38 bytes).
@@ -569,101 +451,6 @@ fn closure_phase_mutual_recursion() {
 }
 
 // --- Phase-5 durable transaction-flow hostiles (design §E phase 5). ---
-
-/// The tracer schema's three durable operation sites. A site operand is minted only by
-/// [`ImageDraft::request_site`], so a test names one of these sites by threading the
-/// operand its own draft returned; there is no way to write a site number by hand.
-struct Sites {
-    record: TypeId,
-    /// The root entry's whole-payload site.
-    entry: PlannedSiteRef,
-    /// The required `value:int` field leaf.
-    value: PlannedSiteRef,
-    /// The sparse `label:string` field leaf.
-    label: PlannedSiteRef,
-}
-
-/// Build the tracer-like durable schema into `draft`: a `Counter { value:int
-/// required, label:string sparse }` at root `^counters(name:string)`, returning the
-/// entry, required-field, and sparse-field site operands.
-fn durable_schema(draft: &mut DraftTxn<'_>) -> Sites {
-    durable_schema_with_keys(
-        draft,
-        vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
-        }],
-    )
-}
-
-fn durable_schema_with_keys(draft: &mut DraftTxn<'_>, keys: Vec<KeyColumn>) -> Sites {
-    let counter = ok(draft.intern_string("Counter"));
-    let value = ok(draft.intern_string("value"));
-    let label = ok(draft.intern_string("label"));
-    let record = ok(draft.add_record_type(RecordTypeDef {
-        name: counter,
-        fields: vec![
-            FieldDef {
-                name: value,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            },
-            FieldDef {
-                name: label,
-                ty: ImageType::scalar(Scalar::Text),
-                required: false,
-            },
-        ],
-    }));
-    let root = ok(draft.intern_string("counters"));
-    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let shapes = scalar_shapes(draft);
-    draft
-        .declare_product(
-            &admitted_plan(),
-            LedgerIdBytes::from_bytes(PRODUCT_ID),
-            record,
-            counters_members(shapes),
-        )
-        .expect("a well-formed declaration");
-    let admitted = draft
-        .add_root_occurrence(
-            &admitted_plan(),
-            LedgerIdBytes::from_bytes(PRODUCT_ID),
-            RootOccurrenceDef {
-                name: root,
-                keys,
-                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new().into(),
-            },
-        )
-        .expect("the Product is declared");
-    let members = product_members(draft);
-    let entry = site(
-        draft,
-        admitted.occurrence(),
-        admitted.placement_path(),
-        SemanticTarget::WholePayload,
-    );
-    let value = site(
-        draft,
-        admitted.occurrence(),
-        members[0].path(),
-        SemanticTarget::FieldLeaf,
-    );
-    let label = site(
-        draft,
-        admitted.occurrence(),
-        members[1].path(),
-        SemanticTarget::FieldLeaf,
-    );
-    Sites {
-        record,
-        entry,
-        value,
-        label,
-    }
-}
 
 /// Encode a single mutating export `put(k:string, v:int)` over the tracer schema whose
 /// body is what `code` builds from that schema's site operands.
@@ -1134,8 +921,7 @@ fn a_bounded_traversal_after_commit_rejects() {
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(sites.value),
+        Instr::DurEraseEntry(sites.entry.clone()),
         Instr::TxnCommit,
         Instr::DurIterateBounded {
             site: sites.entry,
@@ -1274,8 +1060,7 @@ fn durable_put_export_verifies() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ]
@@ -1290,8 +1075,7 @@ fn good_durable_image() -> Vec<u8> {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ]
@@ -1377,7 +1161,7 @@ fn rehashed_mutated_key_id_breaks_the_contract_id() {
 #[test]
 fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
     // A composite-key root is executable, addressed by its whole two-column key tuple. A
-    // forged write whose body supplies the value plus only one key column — too few for
+    // forged erase whose body supplies only one key column — too few for
     // the two-column key-path the verifier derives from the schema — cannot satisfy the
     // operand stack, so it is refused during per-function typing (the write-path
     // counterpart of the read-path truncation hostile).
@@ -1431,20 +1215,18 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
             },
         )
         .expect("the Product is declared");
-    let members = product_members(&draft);
-    let value_site = site(
+    let entry_site = site(
         &mut draft,
         admitted.occurrence(),
-        members[0].path(),
-        SemanticTarget::FieldLeaf,
+        admitted.placement_path(),
+        SemanticTarget::WholePayload,
     );
     let src = ok(draft.intern_string("src/main.mw"));
     let name = ok(draft.intern_string("put"));
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
+        Instr::DurEraseEntry(entry_site),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -2894,8 +2676,7 @@ fn rehashed_mutated_site_path_id_rejects_at_table() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ]
@@ -2913,8 +2694,7 @@ fn flow_mutation_outside_transaction_rejects() {
     let draft = put_export(|sites| {
         vec![
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::Return,
         ]
     });
@@ -2927,8 +2707,7 @@ fn flow_return_without_commit_rejects() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::Return,
         ]
     });
@@ -2954,8 +2733,7 @@ fn flow_in_region_return_commits_then_returns_verifies() {
             Instr::TxnCommit,
             Instr::Return,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ]
@@ -2970,8 +2748,7 @@ fn flow_double_begin_rejects() {
             Instr::TxnBegin,
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ]
@@ -2989,8 +2766,7 @@ fn flow_durable_read_after_commit_rejects() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::TxnCommit,
             Instr::LocalGet(0),
             Instr::DurReadField(sites.value.clone()),
@@ -3011,12 +2787,10 @@ fn flow_mutation_after_commit_rejects() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::TxnCommit,
             Instr::LocalGet(0),
-            Instr::LocalGet(1),
-            Instr::DurSetRequired(sites.value.clone()),
+            Instr::DurEraseEntry(sites.entry.clone()),
             Instr::Return,
         ]
     });
@@ -3046,8 +2820,7 @@ fn mutating_helper_and_caller(
     let helper_name = ok(draft.intern_string("writer"));
     let helper_code = vec![
         Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(sites.value.clone()),
+        Instr::DurEraseEntry(sites.entry.clone()),
         Instr::Return,
     ];
     let helper = draft
@@ -3138,8 +2911,7 @@ fn flow_calling_a_valid_owner_export_rejects() {
     let owner_code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(sites.value),
+        Instr::DurEraseEntry(sites.entry),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -3177,31 +2949,6 @@ fn flow_calling_a_valid_owner_export_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
-/// Add a single mutating export with two `string` key params (slots 0 and 1) over
-/// the tracer schema in `draft`, whose body is `code`, and encode it. Used by the
-/// presence-lattice hostiles, where the guard proves one slot and the strict set
-/// names a slot. The caller interns any consts in the same draft first.
-fn finish_two_key(mut draft: DraftTxn<'_>, code: Vec<Instr>) -> Vec<u8> {
-    let src = ok(draft.intern_string("src/main.mw"));
-    let name = ok(draft.intern_string("put"));
-    let func = draft
-        .add_function(FunctionDef {
-            name,
-            source: src,
-            params: vec![
-                ImageType::scalar(Scalar::Text),
-                ImageType::scalar(Scalar::Text),
-            ],
-            ret: ImageType::Unit,
-            local_count: 2,
-            spans: spans(&code),
-            code,
-        })
-        .expect("every site operand is live");
-    draft.add_export(ExportId::of_local("", "e"), func);
-    draft.encode().expect("encode").bytes
-}
-
 /// The well-formed shape: `if exists(p)` (LocalGet(S); DurExists(entry);
 /// JumpIfFalse) dominates the strict set on its present edge, so the present-entry
 /// sparse set verifies. The positive control the presence-lattice hostiles perturb.
@@ -3211,7 +2958,7 @@ fn a_guarded_strict_sparse_set_verifies() {
     let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
     let text = ok(draft.intern_text("x"));
-    // JumpIfFalse targets the TxnCommit at instruction index 7 (the guard's absent
+    // JumpIfFalse targets the TxnCommit at instruction index 6 (the guard's absent
     // edge); the encoder maps the index to a byte offset.
     let bytes = finish_two_key(
         draft,
@@ -3219,10 +2966,9 @@ fn a_guarded_strict_sparse_set_verifies() {
             Instr::TxnBegin,
             Instr::LocalGet(0),
             Instr::DurExists(sites.entry),
-            Instr::JumpIfFalse(7),
+            Instr::JumpIfFalse(6),
             Instr::ConstLoad(text),
-            Instr::SomeWrap,
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
             },
@@ -3246,8 +2992,7 @@ fn a_strict_sparse_set_without_a_presence_fact_rejects() {
         vec![
             Instr::TxnBegin,
             Instr::ConstLoad(text),
-            Instr::SomeWrap,
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
             },
@@ -3273,11 +3018,10 @@ fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
             Instr::TxnBegin,
             Instr::LocalGet(0),
             Instr::DurExists(sites.entry),
-            Instr::JumpIfFalse(7),
+            Instr::JumpIfFalse(6),
             Instr::ConstLoad(text),
-            Instr::SomeWrap,
             // Slot 0 is proven present by the guard; naming slot 1 is unproven.
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![1],
             },
@@ -3302,19 +3046,20 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
     let text = ok(draft.intern_text("x"));
     // Instruction-index layout (targets are draft-form indices):
     //   0 TxnBegin
-    //   1 LocalGet(0); 2 DurExists(0); 3 JumpIfFalse(15) — present edge proves slot 0.
+    //   1 LocalGet(0); 2 DurExists(0); 3 JumpIfFalse(14) — present edge proves slot 0.
     //   4 loop header (merge of the pre-loop edge and the back edge at 9).
     //   4 LocalGet(1); 5 DurExists(0); 6 JumpIfFalse(10) — loop-continue test on slot 1.
     //   7 LocalGet(0); 8 DurEraseEntry(0) — body erases the entry keyed by slot 0.
     //   9 Jump(4) — back edge; slot 0 is absent on this edge.
-    //   10 strict set on slot 0 (rejected: killed by the header intersection).
+    //   10 ConstLoad; 11 field set on slot 0 (rejected: killed by the header
+    //   intersection).
     let bytes = finish_two_key(
         draft,
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
             Instr::DurExists(sites.entry.clone()),
-            Instr::JumpIfFalse(15),
+            Instr::JumpIfFalse(14),
             Instr::LocalGet(1),
             Instr::DurExists(sites.entry.clone()),
             Instr::JumpIfFalse(10),
@@ -3322,8 +3067,7 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
             Instr::DurEraseEntry(sites.entry),
             Instr::Jump(4),
             Instr::ConstLoad(text),
-            Instr::SomeWrap,
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
             },
@@ -3350,22 +3094,21 @@ fn a_strict_sparse_set_after_a_key_rebind_rejects() {
     let text = ok(draft.intern_text("x"));
     // Instruction-index layout:
     //   0 TxnBegin
-    //   1 LocalGet(0); 2 DurExists(0); 3 JumpIfFalse(9) — present edge proves slot 0.
+    //   1 LocalGet(0); 2 DurExists(0); 3 JumpIfFalse(8) — present edge proves slot 0.
     //   4 LocalGet(1); 5 LocalSet(0) — rebind slot 0 to the next iteration's key.
-    //   6 ConstLoad; 7 SomeWrap; 8 strict set on slot 0 (rejected: killed by the rebind).
-    //   9 TxnCommit; 10 Return.
+    //   6 ConstLoad; 7 field set on slot 0 (rejected: killed by the rebind).
+    //   8 TxnCommit; 9 Return.
     let bytes = finish_two_key(
         draft,
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
             Instr::DurExists(sites.entry),
-            Instr::JumpIfFalse(9),
+            Instr::JumpIfFalse(8),
             Instr::LocalGet(1),
             Instr::LocalSet(0),
             Instr::ConstLoad(text),
-            Instr::SomeWrap,
-            Instr::DurSetSparsePresent {
+            Instr::DurSetField {
                 site: sites.label,
                 key_slots: vec![0],
             },
@@ -3538,9 +3281,8 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
         Instr::LocalGet(2), // branch record
         Instr::DurCreateEntry(branch_entry),
         Instr::ConstLoad(text),
-        Instr::SomeWrap,
         // Claims slot 1's *root* entry is present, relying on the branch create above.
-        Instr::DurSetSparsePresent {
+        Instr::DurSetField {
             site: label_site,
             key_slots: vec![1],
         },
@@ -3657,10 +3399,9 @@ fn a_strict_sparse_set_over_a_branch_field_with_a_single_root_key_rejects() {
         Instr::TxnBegin,
         Instr::LocalGet(0),
         Instr::DurExists(root_entry),
-        Instr::JumpIfFalse(7),
+        Instr::JumpIfFalse(6),
         Instr::ConstLoad(text),
-        Instr::SomeWrap,
-        Instr::DurSetSparsePresent {
+        Instr::DurSetField {
             site: branch_field,
             key_slots: vec![0],
         },
@@ -3697,10 +3438,9 @@ fn a_two_slot_branch_strict_set_without_a_presence_fact_rejects() {
     let code = vec![
         Instr::TxnBegin,
         Instr::ConstLoad(text),
-        Instr::SomeWrap,
         // Slots 0,1 are the [root, branch] key params — arity- and type-correct for the
         // branch-field site — but no guard proves the branch entry present.
-        Instr::DurSetSparsePresent {
+        Instr::DurSetField {
             site: branch_field,
             key_slots: vec![0, 1],
         },
@@ -3734,13 +3474,11 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
     let sites = durable_schema(&mut draft);
     let src = ok(draft.intern_string("src/main.mw"));
     let key = ok(draft.intern_text("x"));
-    let val = ok(draft.intern_int(1));
     let helper_name = ok(draft.intern_string("helper"));
     let helper_code = vec![
         Instr::TxnBegin,
         Instr::ConstLoad(key),
-        Instr::ConstLoad(val),
-        Instr::DurSetRequired(sites.value),
+        Instr::DurEraseEntry(sites.entry),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -3773,15 +3511,14 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
 }
 
 #[test]
-fn set_sparse_on_a_required_field_rejects_at_function() {
-    // Targeting the required `value` field with the sparse opcode is a phase-3
-    // site/target error.
+fn erase_field_on_a_required_field_rejects_at_function() {
+    // A required field is present whenever its entry is; erasing the required `value`
+    // field on its own is a phase-3 site/target error.
     let draft = put_export(|sites| {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)),
-            Instr::DurSetSparse(sites.value.clone()),
+            Instr::DurEraseField(sites.value.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ]
@@ -5464,90 +5201,3 @@ fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_de
 const AT_BUDGET_DETAIL: &str = "root member tree fields do not match the record fields";
 const AT_DEPTH_DETAIL: &str = "a root group slot is not a group record";
 const AT_COMPONENTS_DETAIL: &str = "durable index repeats a projection component";
-
-/// The verdict of `if exists(slot 0) { <between>; strict sparse set on slot 0 }`, where
-/// `between` may add functions to the draft and returns the instructions inside the guard.
-fn strict_set_after(between: impl FnOnce(&mut DraftTxn<'_>, &Sites) -> Vec<Instr>) -> String {
-    let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
-    let sites = durable_schema(&mut draft);
-    let text = ok(draft.intern_text("x"));
-    let middle = between(&mut draft, &sites);
-    let commit_at = (4 + middle.len() + 3) as u32; // the TxnCommit after the set
-    let mut code = vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::DurExists(sites.entry.clone()),
-        Instr::JumpIfFalse(commit_at),
-    ];
-    code.extend(middle);
-    code.extend([
-        Instr::ConstLoad(text),
-        Instr::SomeWrap,
-        Instr::DurSetSparsePresent {
-            site: sites.label.clone(),
-            key_slots: vec![0],
-        },
-        Instr::TxnCommit,
-        Instr::Return,
-    ]);
-    code_of(&finish_two_key(draft, code))
-}
-
-/// A call to a helper that erases the guarded entry ends the fact (the lattice consults the
-/// callee's demand closure at the `Call`). Today calls are transparent and the image verifies.
-#[test]
-#[ignore = "B2 complete entries"]
-fn a_strict_sparse_set_after_a_call_that_erases_the_family_rejects() {
-    let verdict = strict_set_after(|draft, sites| {
-        let src = ok(draft.intern_string("src/main.mw"));
-        let name = ok(draft.intern_string("eraser"));
-        let code = vec![
-            Instr::LocalGet(0),
-            Instr::DurEraseEntry(sites.entry.clone()),
-            Instr::Return,
-        ];
-        let eraser = draft
-            .add_function(FunctionDef {
-                name,
-                source: src,
-                params: vec![ImageType::scalar(Scalar::Text)],
-                ret: ImageType::Unit,
-                local_count: 1,
-                spans: spans(&code),
-                code,
-            })
-            .expect("every site operand is live");
-        vec![Instr::LocalGet(0), Instr::Call(eraser.index())]
-    });
-    assert_eq!(verdict, "image.flow");
-}
-
-/// An erase of the family keyed by a constant, no slot at all, ends the fact. Today the
-/// exact-key kill finds no slot to match and the image verifies.
-#[test]
-#[ignore = "B2 complete entries"]
-fn a_strict_sparse_set_after_an_inline_keyed_erase_of_the_family_rejects() {
-    let verdict = strict_set_after(|draft, sites| {
-        let other_key = ok(draft.intern_text("k"));
-        vec![
-            Instr::ConstLoad(other_key),
-            Instr::DurEraseEntry(sites.entry.clone()),
-        ]
-    });
-    assert_eq!(verdict, "image.flow");
-}
-
-/// An erase of the family through a different key slot ends the fact (the slots may hold
-/// one key). Today only the fact on slot 1 is removed and the image verifies.
-#[test]
-#[ignore = "B2 complete entries"]
-fn a_strict_sparse_set_after_an_erase_through_another_slot_of_the_family_rejects() {
-    let verdict = strict_set_after(|_, sites| {
-        vec![
-            Instr::LocalGet(1),
-            Instr::DurEraseEntry(sites.entry.clone()),
-        ]
-    });
-    assert_eq!(verdict, "image.flow");
-}

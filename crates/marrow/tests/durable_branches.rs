@@ -216,11 +216,10 @@ fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr
         .instrs()
 }
 
-/// A sparse-field set through a two-key branch `place` dominated by an `exists(p)`
-/// guard lowers to the strict present-entry form (`DurSetSparsePresent`) carrying the
-/// place's whole `[root, branch]` key-path, not the bare create-or-reconcile
-/// `DurSetSparse`: a presence-guarded set over a branch place lowers to the strict
-/// form, so the guard is enforced at the kernel marker rather than silently widened.
+/// A field set through a two-key branch `place` dominated by an `exists(p)` guard
+/// lowers to the present-entry form (`DurSetField`) carrying the place's whole
+/// `[root, branch]` key-path, so the guard is enforced at the kernel marker rather
+/// than silently widened.
 #[test]
 fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
@@ -228,25 +227,19 @@ fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
     let strict: Vec<&[u16]> = instrs
         .iter()
         .filter_map(|instr| match instr {
-            SealedInstr::DurSetSparsePresent { key_slots, .. } => Some(key_slots.as_slice()),
+            SealedInstr::DurSetField { key_slots, .. } => Some(key_slots.as_slice()),
             _ => None,
         })
         .collect();
     assert_eq!(
         strict.len(),
         1,
-        "the guarded branch-place set lowers strict"
+        "the guarded branch-place set lowers to the present-entry form"
     );
     assert_eq!(
         strict[0].len(),
         2,
-        "the strict branch set carries the whole `[root, branch]` key-path",
-    );
-    assert!(
-        !instrs
-            .iter()
-            .any(|instr| matches!(instr, SealedInstr::DurSetSparse(_))),
-        "no bare create-or-reconcile set remains",
+        "the branch set carries the whole `[root, branch]` key-path",
     );
 }
 
@@ -777,7 +770,10 @@ pub fn addNote(id: int, nid: string, body: string) {
 
 pub fn setPinned(id: int, nid: string, flag: bool) {
     transaction {
-        ^books[id].notes[nid].pinned = flag
+        place note = ^books[id].notes[nid]
+        if exists(note) {
+            note.pinned = flag
+        }
     }
 }
 
@@ -789,7 +785,10 @@ pub fn clearPinned(id: int, nid: string) {
 
 pub fn setText(id: int, nid: string, body: string) {
     transaction {
-        ^books[id].notes[nid].text = body
+        place note = ^books[id].notes[nid]
+        if exists(note) {
+            note.text = body
+        }
     }
 }
 
@@ -826,21 +825,6 @@ pub fn rootPresent(id: int): bool {
     return exists(^books[id])
 }
 "#;
-
-/// Run an export whose commit is expected to fault, returning the runtime fault code.
-fn run_fault(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> &'static str {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => fault.code(),
-        other => panic!("{name} did not fault as expected: {:?}", DebugRun(&other)),
-    }
-}
 
 /// A field-exact sparse set and clear on a present branch entry change only that
 /// field, and its field read and presence test observe it, while the branch's other
@@ -900,89 +884,6 @@ fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
         run(&image, &mut attachment, "noteText", key()),
         some_text("hi"),
         "a field-exact clear preserves the branch's required field"
-    );
-}
-
-/// A field-exact set of a branch entry's *required* field on an absent branch stages
-/// that leaf and reconcile-creates the branch node's marker at commit (all required
-/// fields present), leaving the root descendant-only. This proves the commit reconcile
-/// extends to a branch node's marker and record, not the root's.
-#[test]
-fn a_field_exact_required_set_reconcile_creates_the_branch_node() {
-    let image = compile_verify_ids(FIELD_SOURCE, IDS);
-    let mut attachment = attach(&image);
-
-    assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(7)]),
-        present(false)
-    );
-    run(
-        &image,
-        &mut attachment,
-        "setText",
-        vec![
-            Value::Int(7),
-            Value::Text("a".into()),
-            Value::Text("made".into()),
-        ],
-    );
-    // The branch marker was created by the reconcile, so a whole-entry read materializes.
-    assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(7), Value::Text("a".into())]
-        ),
-        some_text("made"),
-        "the branch node's marker was created by the commit reconcile"
-    );
-    // The branch set did not create the root: it stays descendant-only.
-    assert_eq!(
-        run(&image, &mut attachment, "rootPresent", vec![Value::Int(7)]),
-        present(false),
-        "a field-exact branch set does not create the root node"
-    );
-}
-
-/// Reconcile soundness: staging a *sparse* branch field on an absent branch entry
-/// whose required field is missing rolls the whole transaction back with
-/// `run.required_missing`, and nothing persists. If the reconcile mistakenly checked
-/// the root node's required fields (the root's `title`) instead of the branch node's
-/// (`text`), it would not roll back here.
-#[test]
-fn a_branch_sparse_set_missing_the_required_branch_field_rolls_back() {
-    let image = compile_verify_ids(FIELD_SOURCE, IDS);
-    let mut attachment = attach(&image);
-
-    assert_eq!(
-        run_fault(
-            &image,
-            &mut attachment,
-            "setPinned",
-            vec![Value::Int(8), Value::Text("a".into()), Value::Bool(true)]
-        ),
-        marrow_codes::Code::RunRequiredMissing.as_str(),
-        "a staged branch sparse set with the branch's required field missing rolls back",
-    );
-    // The rolled-back transaction persisted nothing: the branch field is absent.
-    assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "pinnedPresent",
-            vec![Value::Int(8), Value::Text("a".into())]
-        ),
-        present(false),
-    );
-    assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "noteText",
-            vec![Value::Int(8), Value::Text("a".into())]
-        ),
-        absent(),
     );
 }
 
@@ -1189,7 +1090,7 @@ fn strict_key_paths(image: &VerifiedImage, name: &str) -> Vec<Vec<u16>> {
     function_instrs(image, name)
         .iter()
         .filter_map(|instr| match instr {
-            SealedInstr::DurSetSparsePresent { key_slots, .. } => Some(key_slots.clone()),
+            SealedInstr::DurSetField { key_slots, .. } => Some(key_slots.clone()),
             _ => None,
         })
         .collect()
@@ -1200,7 +1101,6 @@ fn strict_key_paths(image: &VerifiedImage, name: &str) -> Vec<Vec<u16>> {
 /// `note = Book.notes(...)` is strict over the whole `[root, branch]` key-path. Today
 /// only a single-slot root place is marked by an upsert, so the set is bare.
 #[test]
-#[ignore = "B2 complete entries"]
 fn an_upsert_through_a_branch_place_proves_the_branch_entry_present() {
     let source = format!(
         "{FIELD_SOURCE}
@@ -1262,7 +1162,6 @@ store ^books[id: int]: Book
 /// touches only the entry's own payload (children survive their parent today).
 /// Today the erasing form compiles clean and the set is bare.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_sibling_family_erase_keeps_the_fact_while_a_same_family_erase_ends_it() {
     let child_erase = format!(
         "{SUBTITLE_SCHEMA}

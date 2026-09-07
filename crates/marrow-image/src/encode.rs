@@ -532,8 +532,6 @@ fn encode_code<S: ImageByteSink>(
             | Instr::DurFamilyExists(s)
             | Instr::DurReadField(s)
             | Instr::DurReadEntry(s)
-            | Instr::DurSetRequired(s)
-            | Instr::DurSetSparse(s)
             | Instr::DurCreateEntry(s)
             | Instr::DurReplaceEntry(s)
             | Instr::DurEraseField(s)
@@ -569,7 +567,8 @@ fn encode_code<S: ImageByteSink>(
                 push_u16(sink, *variant);
                 push_u16(sink, *field);
             }
-            Instr::DurSetSparsePresent { site, key_slots } => {
+            Instr::DurSetField { site, key_slots }
+            | Instr::DurReadGroupPresent { site, key_slots } => {
                 push_u16(sink, sites.ordinal(site)?);
                 // The slot count fits its `u16` prefix: each slot is two more bytes of
                 // this instruction's operand, and `encode_functions` has already

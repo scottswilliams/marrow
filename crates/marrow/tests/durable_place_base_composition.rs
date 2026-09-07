@@ -90,12 +90,15 @@ pub fn noteTextViaPlace(id: int, nid: string): string? {
     return b.notes[nid].text
 }
 
-// --- branch field set through a place, read inline ---
+// --- branch field set through a branch place proven by `const … else`, read inline ---
 
 pub fn setPinnedViaPlace(id: int, nid: string, v: bool) {
     transaction {
-        place b = ^books[id]
-        b.notes[nid].pinned = v
+        place n = ^books[id].notes[nid]
+        const note = n else {
+            return
+        }
+        n.pinned = v
     }
 }
 
@@ -135,12 +138,14 @@ pub fn tagWeightInline(id: int, nid: string, tid: int): int? {
     return ^books[id].notes[nid].tags[tid].weight
 }
 
-// --- group leaf: set through a place, read inline ---
+// --- group leaf: set through a place proven by `exists`, read inline ---
 
 pub fn setPagesViaPlace(id: int, p: int) {
     transaction {
         place b = ^books[id]
-        b.details.pages = p
+        if exists(b) {
+            b.details.pages = p
+        }
     }
 }
 
@@ -148,11 +153,15 @@ pub fn pagesInline(id: int): int? {
     return ^books[id].details.pages
 }
 
-// --- group leaf: set inline, read through a place ---
+// --- group leaf: set after a diverging `if not exists` guard, read through a place ---
 
-pub fn setPagesInline(id: int, p: int) {
+pub fn setPagesGuardedByReturn(id: int, p: int) {
     transaction {
-        ^books[id].details.pages = p
+        place b = ^books[id]
+        if not exists(b) {
+            return
+        }
+        b.details.pages = p
     }
 }
 
@@ -187,7 +196,9 @@ pub fn clearPagesViaPlace(id: int) {
 pub fn replaceDetailsViaPlace(id: int, p: int) {
     transaction {
         place b = ^books[id]
-        b.details = Book.details(pages: p)
+        if exists(b) {
+            b.details = Book.details(pages: p)
+        }
     }
 }
 
@@ -390,7 +401,8 @@ fn branch_entry_write_through_a_place_addresses_the_inline_node() {
     );
 }
 
-/// A branch-field set and a guarded whole-entry read through a place hit the inline node.
+/// A branch-field set through a branch place proven by `const note = n else { return }` and
+/// a guarded whole-entry read through a place hit the inline node.
 #[test]
 fn branch_field_and_guarded_read_through_a_place_match_inline() {
     let image = compile_verify();
@@ -530,7 +542,8 @@ fn a_branch_entry_deleted_through_a_place_is_gone_inline() {
 }
 
 /// A group leaf set, read, cleared, and whole-group replaced through a place all address
-/// the same group cells the inline form does.
+/// the same group cells the inline read form does. The sets are proven by `exists(b)` and
+/// by a diverging `if not exists(b) { return }` guard.
 #[test]
 fn group_leaf_operations_through_a_place_match_inline() {
     let image = compile_verify();
@@ -556,7 +569,7 @@ fn group_leaf_operations_through_a_place_match_inline() {
     run(
         &image,
         &mut a,
-        "setPagesInline",
+        "setPagesGuardedByReturn",
         vec![Value::Int(1), Value::Int(7)],
     );
     assert_eq!(
@@ -648,29 +661,22 @@ fn exists_over_a_branch_family_named_through_a_place_matches_inline() {
 }
 
 /// A per-iteration pin's presence participates in the presence lattice exactly where the
-/// equivalent branch `place` binding's does: a sparse-field set guarded by `exists(p)` or
-/// by an `if const` binding of the pin lowers to the strict present-entry form
-/// (`DurSetSparsePresent`), never the bare create-or-reconcile `DurSetSparse`. This pins
-/// the parity DX06 item 4 verified as already-held, so a regression is conspicuous.
+/// equivalent branch `place` binding's does: a field set guarded by `exists(p)` or by an
+/// `if const` binding of the pin lowers to the present-entry form (`DurSetField`). This
+/// pins the parity DX06 item 4 verified as already-held, so a regression is conspicuous.
 #[test]
 fn a_pin_guarded_sparse_set_lowers_strict_at_parity_with_a_place() {
     let image = compile_verify();
-    let counts = |name: &str| -> (usize, usize) {
-        let instrs = image
+    let strict = |name: &str| -> usize {
+        image
             .functions()
             .iter()
             .find(|f| f.name() == name)
             .expect("function present")
-            .instrs();
-        let strict = instrs
+            .instrs()
             .iter()
-            .filter(|i| matches!(i, SealedInstr::DurSetSparsePresent { .. }))
-            .count();
-        let bare = instrs
-            .iter()
-            .filter(|i| matches!(i, SealedInstr::DurSetSparse(_)))
-            .count();
-        (strict, bare)
+            .filter(|i| matches!(i, SealedInstr::DurSetField { .. }))
+            .count()
     };
     for name in [
         "touchNotesPinExists",
@@ -678,9 +684,9 @@ fn a_pin_guarded_sparse_set_lowers_strict_at_parity_with_a_place() {
         "setPinnedGuardedViaPlace",
     ] {
         assert_eq!(
-            counts(name),
-            (1, 0),
-            "`{name}` lowers the guarded branch set strict, with no bare create-or-reconcile set",
+            strict(name),
+            1,
+            "`{name}` lowers the guarded branch set to the present-entry form",
         );
     }
 }

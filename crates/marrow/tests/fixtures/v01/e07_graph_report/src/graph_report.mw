@@ -370,13 +370,16 @@ pub fn setColor(name: string, color: string) {
     }
 }
 
-// Set a node's color without a presence guard. On a present node it updates the color;
-// on an absent node it stages the color alone, and the commit rolls the whole
-// transaction back with `run.required_missing` because the required label is unset —
-// the graph is left unchanged.
+// Set a node's color behind a diverging guard: the negative presence test returns
+// before any write, so an absent node is left absent and a present node takes the
+// color exactly as `setColor` lands it.
 pub fn tint(name: string, color: string) {
     transaction {
-        ^nodes[name].color = color
+        place n = ^nodes[name]
+        if not exists(n) {
+            return
+        }
+        n.color = color
     }
 }
 

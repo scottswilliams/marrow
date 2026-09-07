@@ -82,21 +82,14 @@ pub(super) fn field_index_in_record(site: &AuthorizedSite, record: &[ResolvedFie
         .expect("a field site names a record field")
 }
 
-/// The cell-key number of a field-target site, checking the required flag matches the
-/// operation. The verifier already restricts required vs sparse ops to the right
-/// site target; this reads the token's own flag as defense-in-depth over the trust
-/// boundary rather than trusting a caller assertion.
-pub(super) fn field_number(site: &AuthorizedSite, want_required: bool) -> physical::NodeNumber {
+/// The cell-key number and required flag of a field-target site. The flag is the
+/// token's own, read here so an erase of a required field is refused from the site the
+/// kernel resolved rather than from a caller assertion.
+pub(super) fn field_target(site: &AuthorizedSite) -> (physical::NodeNumber, bool) {
     match &site.target {
         AuthTarget::Field {
             number, required, ..
-        } => {
-            debug_assert_eq!(
-                *required, want_required,
-                "site required-ness must match the operation the verifier admitted"
-            );
-            *number
-        }
+        } => (*number, *required),
         AuthTarget::Entry { .. } | AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a field-target site")
         }

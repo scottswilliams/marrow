@@ -316,13 +316,13 @@ fn a_durable_image() -> Vec<u8> {
         )
         .expect("the Product is declared");
     let members = draft.product_members(product).expect("declared");
-    site(
+    let entry_site = site(
         &mut draft,
         occurrence.occurrence(),
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
     );
-    let value_site = site(
+    site(
         &mut draft,
         occurrence.occurrence(),
         members[0].path(),
@@ -335,8 +335,7 @@ fn a_durable_image() -> Vec<u8> {
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
+        Instr::DurEraseEntry(entry_site),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -510,7 +509,7 @@ fn mutated_indexed_durable_images_never_panic_the_verifier() {
 }
 
 /// A good durable image whose mutating export carries a strict present-entry sparse
-/// set guarded by `if exists(p)`. Mutating it reaches the DurSetSparsePresent decode
+/// set guarded by `if exists(p)`. Mutating it reaches the DurSetField decode
 /// (a `u16` site, a `u16` key-path length, then one `u16` per key-path slot) and the
 /// place-slot presence lattice, which a bare-set image never exercises.
 fn a_strict_durable_image() -> Vec<u8> {
@@ -617,10 +616,9 @@ fn a_strict_durable_image() -> Vec<u8> {
         Instr::TxnBegin,
         Instr::LocalGet(0),
         Instr::DurExists(entry_site),
-        Instr::JumpIfFalse(7),
+        Instr::JumpIfFalse(6),
         Instr::ConstLoad(text),
-        Instr::SomeWrap,
-        Instr::DurSetSparsePresent {
+        Instr::DurSetField {
             site: label_site,
             key_slots: vec![0],
         },

@@ -1,6 +1,6 @@
 //! Phase 3+ call-graph and presence-flow checking over sealed functions.
 
-use super::context::Ctx;
+use super::context::{Ctx, Effects};
 use super::decode_code::decode_code;
 use super::decode_code::resolve_jumps;
 use super::flow::{Frame, branch_key_columns, check_flow};
@@ -10,6 +10,7 @@ use super::spans::map_spans;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
 use crate::vtype::VType;
+use marrow_image::SemanticPath;
 use std::collections::BTreeSet;
 
 /// Phase 4: reject any cycle in the direct-call graph (recursion is not admitted).
@@ -88,33 +89,37 @@ pub(super) fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> 
     }
 }
 
-/// Phase 5 (presence): the place-slot presence lattice (design §D). A
-/// `DurSetSparsePresent` (the strict sparse set) asserts its containing entry is
-/// present; this recheck proves that independently of the compiler, so a forged or
-/// mis-lowered strict set whose graph cannot imply its payload is refused.
+/// Phase 5 (presence): the place-slot presence lattice (design §D). A present-form
+/// instruction — the field set and the group read that key off place slots — asserts
+/// its containing entry is present; this recheck proves that independently of the
+/// compiler, so a forged or mis-lowered present-form op whose graph cannot imply its
+/// payload is refused.
 ///
-/// The lattice state at each program point is the set of key-slot locals whose entry
-/// a dominating fact has proven present. A fact is *established* by a guard that
-/// tests the entry keyed by a slot — `LocalGet(S); DurExists(entry); JumpIfFalse` on
-/// its present (fallthrough) edge, or `LocalGet(S); DurReadEntry; BranchPresent` on
-/// its present edge — or by a whole-entry `DurCreateEntry` keyed by that slot (create
-/// leaves the entry present whether it was created or already present). It is
-/// *killed* by an entry erase keyed by the slot or by any `LocalSet` of the slot (a
-/// rebind; a `place` key slot is bind-once, so this never fires on compiler output —
+/// The lattice state at each program point is the set of proven-present entries, each
+/// its family and its key-path slots. A fact is *established* by a guard that tests the
+/// entry keyed by the slots — `LocalGet(S…); DurExists(entry); JumpIfFalse` on its
+/// present (fallthrough) edge, or `LocalGet(S…); DurReadEntry; BranchPresent` on its
+/// present edge — or by a whole-entry `DurCreateEntry` keyed by those slots (create
+/// leaves the entry present whether it was created or already present). It is *killed*
+/// by any entry erase of the fact's family, whatever key the erase names; by a call
+/// whose demand closure writes the family; and by any `LocalSet` of a slot the fact
+/// reads (a `place` key slot is bind-once, so a rebind never fires on compiler output —
 /// it hardens the recheck against a mutated tape). Facts join by intersection at
-/// merges: a slot is present only if it holds on every incoming edge. Calls are
-/// transparent (no aliasing model): a mutation reached through a call that erases the
-/// entry is caught by the kernel's runtime presence assertion, not here.
+/// merges: an entry is present only if it holds on every incoming edge.
 pub(super) fn check_presence_flow(
     function: &SealedFunction,
     ctx: &Ctx,
     non_fallthrough_entries: &[bool],
+    effects: &Effects,
+    site_paths: &[SemanticPath],
 ) -> Result<(), VerifyRejection> {
     let code = function.instrs();
-    if !code
-        .iter()
-        .any(|instr| matches!(instr, SealedInstr::DurSetSparsePresent { .. }))
-    {
+    if !code.iter().any(|instr| {
+        matches!(
+            instr,
+            SealedInstr::DurSetField { .. } | SealedInstr::DurReadGroupPresent { .. }
+        )
+    }) {
         return Ok(());
     }
     let mut entry: Vec<Option<BTreeSet<PresenceFact>>> = vec![None; code.len()];
@@ -124,23 +129,32 @@ pub(super) fn check_presence_flow(
         let present = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        if let SealedInstr::DurSetSparsePresent { site, key_slots } = &code[index] {
-            // The strict set is proven only if a dominating fact names the exact
-            // containing entry — its branch path and its whole key-path — not merely a
+        if let SealedInstr::DurSetField { site, key_slots }
+        | SealedInstr::DurReadGroupPresent { site, key_slots } = &code[index]
+        {
+            // The present form is proven only if a dominating fact names the exact
+            // containing entry — its family and its whole key-path — not merely a
             // matching slot tuple (sibling branches of equal arity share slot tuples).
-            let (root, branch) = field_site_branch_path(ctx, *site).ok_or(reject(
+            let (root, branch) = payload_site_family(ctx, *site).ok_or(reject(
                 VerifyPhase::Flow,
-                "a present-entry sparse set does not resolve to a field site",
+                "a present-entry operation does not resolve to a field or group site",
             ))?;
             if !present.contains(&(root, branch, key_slots.clone())) {
                 return Err(reject(
                     VerifyPhase::Flow,
-                    "a present-entry sparse set is not dominated by a presence fact on its containing entry",
+                    "a present-entry operation is not dominated by a presence fact on its containing entry",
                 ));
             }
         }
-        for (successor, set) in presence_edges(code, ctx, non_fallthrough_entries, index, &present)
-        {
+        for (successor, set) in presence_edges(
+            code,
+            ctx,
+            non_fallthrough_entries,
+            effects,
+            site_paths,
+            index,
+            &present,
+        ) {
             if successor >= code.len() {
                 return Err(reject(VerifyPhase::Flow, "presence edge out of range"));
             }
@@ -168,16 +182,21 @@ pub(super) fn check_presence_flow(
 /// key-path as pre-evaluated local slots (root-first). Keying on the root — not the
 /// slot tuple or branch path alone — keeps entries under distinct roots distinct even
 /// when they share a key slot; keying on the branch path distinguishes sibling
-/// branches of equal key arity that share slot values under one root.
+/// branches of equal key arity that share slot values under one root. The first two
+/// components are the entry's *family*, the unit an erase or a family-writing call
+/// ends proofs over.
 type PresenceFact = (u16, Vec<u16>, Vec<u16>);
 
 /// The presence-set carried on each successor edge of the instruction at `index`.
 /// Most instructions pass the set through unchanged; guards split the set (adding the
-/// proven slot only on the present edge); create adds and erase/rebind remove.
+/// proven entry only on the present edge); create adds; an erase, a family-writing
+/// call, and a slot rebind remove.
 fn presence_edges(
     code: &[SealedInstr],
     ctx: &Ctx,
     non_fallthrough_entries: &[bool],
+    effects: &Effects,
+    site_paths: &[SemanticPath],
     index: usize,
     present: &BTreeSet<PresenceFact>,
 ) -> Vec<(usize, BTreeSet<PresenceFact>)> {
@@ -212,13 +231,8 @@ fn presence_edges(
         }
         SealedInstr::DurCreateEntry(site) => {
             let mut next = present.clone();
-            // Only a single-key root whole-entry create establishes root-entry
-            // presence for its key slot (`entry_write_key_slot` reads one adjacent key).
-            // A branch create (a `BranchEntry` site) leaves the root descendant-only, and
-            // a composite-root create's misread single slot never matches a set's full
-            // key-path — so neither falsely establishes a fact a strict set relies on.
-            if is_entry_site(ctx, *site)
-                && let Some(root) = site_root(ctx, *site)
+            if let Some((root, branch, _)) = entry_site(ctx, *site)
+                && branch.is_empty()
                 && let Some(slot) = entry_write_key_slot(code, non_fallthrough_entries, index)
             {
                 next.insert((root, Vec::new(), vec![slot]));
@@ -227,13 +241,33 @@ fn presence_edges(
         }
         SealedInstr::DurEraseEntry(site) => {
             let mut next = present.clone();
-            // An entry erase whose whole key-path is pre-evaluated slots kills that exact
-            // entry's presence fact (its root, branch path, and key-path): a root erase
-            // kills the root fact, a branch erase kills only its own branch entry.
-            if let Some((root, branch, arity)) = entry_site(ctx, *site)
-                && let Some(keys) = read_key_path_before(code, index, arity)
-            {
-                next.remove(&(root, branch, keys));
+            // An entry erase ends every fact of the erased family whatever key operand
+            // it names — a slot, another slot, or a constant — because the lattice does
+            // not reason about key equality. Facts of other families survive: an erase
+            // touches only the entry's own payload, so a child family's entry outlives
+            // its parent's erase.
+            if let Some((root, branch, _)) = entry_site(ctx, *site) {
+                next.retain(|(fact_root, fact_branch, _)| {
+                    (*fact_root, fact_branch) != (root, &branch)
+                });
+            }
+            vec![(index + 1, next)]
+        }
+        SealedInstr::Call(callee) => {
+            let mut next = present.clone();
+            // A call whose demand closure writes a family — creates, replaces, or
+            // erases an entry of it — ends every fact of that family: the callee may
+            // have erased the proven entry. A call that only reads, or only updates
+            // fields of present entries, leaves every fact in place.
+            for atom in &effects.atoms_closure[*callee as usize] {
+                if !atom.class().mutates() {
+                    continue;
+                }
+                if let Some((root, branch)) = family_of_path(ctx, site_paths, atom.path()) {
+                    next.retain(|(fact_root, fact_branch, _)| {
+                        (*fact_root, fact_branch) != (root, &branch)
+                    });
+                }
             }
             vec![(index + 1, next)]
         }
@@ -250,24 +284,20 @@ fn presence_edges(
     }
 }
 
-/// Whether `site` is a flat whole-payload (entry marker) site — the presence a
-/// containing-payload fact is about.
-fn is_entry_site(ctx: &Ctx, site: u16) -> bool {
-    matches!(
-        ctx.sites.get(site as usize),
-        Some(SealedSite::Flat {
-            target: SealedSiteTarget::WholePayload,
-            ..
-        })
-    )
-}
-
-/// The root index a flat `site` resolves to. `None` for a non-flat (parked) site.
-pub(super) fn site_root(ctx: &Ctx, site: u16) -> Option<u16> {
-    match ctx.sites.get(site as usize)? {
-        SealedSite::Flat { root, .. } => Some(*root),
-        SealedSite::Parked { .. } => None,
-    }
+/// The family `(root, branch path)` of the entry site whose semantic path is `path`, or
+/// `None` when no entry site carries that path (a field, group, or index atom names no
+/// family of its own).
+fn family_of_path(
+    ctx: &Ctx,
+    site_paths: &[SemanticPath],
+    path: &SemanticPath,
+) -> Option<(u16, Vec<u16>)> {
+    site_paths
+        .iter()
+        .zip(0u16..)
+        .find(|(site_path, _)| *site_path == path)
+        .and_then(|(_, site)| entry_site(ctx, site))
+        .map(|(root, branch, _)| (root, branch))
 }
 
 /// The containing entry a flat entry (whole-payload or branch-entry) `site` names: the
@@ -297,15 +327,18 @@ fn entry_site(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>, usize)> {
     }
 }
 
-/// The root index and branch path of a flat field-leaf `site`: the branch path is empty
-/// for a root field, the branch placement path for a branch field. `None` for a
-/// non-field site.
-fn field_site_branch_path(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>)> {
+/// The family of the entry a flat payload `site` belongs to: the root index and the
+/// branch path of a field leaf (empty for a root field, the branch placement path for a
+/// branch field), or the root and an empty path for a root-level group. `None` for a
+/// site that is not a field or group.
+fn payload_site_family(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>)> {
     let SealedSite::Flat { root, target } = ctx.sites.get(site as usize)? else {
         return None;
     };
     match target {
-        SealedSiteTarget::FieldLeaf(_) => Some((*root, Vec::new())),
+        SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::GroupEntry(_) => {
+            Some((*root, Vec::new()))
+        }
         SealedSiteTarget::BranchField { branch, .. } => Some((*root, branch.to_vec())),
         _ => None,
     }
@@ -380,20 +413,9 @@ fn read_entry_guard_fact(
     Some((root, branch, keys))
 }
 
-/// The key slot of a single-key whole-entry create at `index`: `LocalGet(S);
-/// LocalGet(record); DurCreateEntry`. The key is the operand below the record, so the
-/// create's key comes from the `LocalGet` two back when the record is a single local
-/// push. Type flow also establishes that no edge enters after the key load.
-///
-/// Soundness of shape-adjacent slot identification: the caller applies this only to a
-/// root `WholePayload` create (it gates on `is_entry_site`), so a branch create — whose
-/// key-path leaves a *branch* key adjacent to the op — never reaches here and never
-/// establishes root-entry presence, and a composite-root create's misread single slot
-/// forms a 1-tuple fact no full-key-path strict set ever matches. The caller pairs this
-/// slot with the create's own root (`site_root`), so the established fact is keyed on
-/// (root, slot): two writes through the same slot value under different roots establish
-/// distinct facts, and a strict sparse set over one root is never proven by a create on
-/// another.
+/// The key slot below a locally loaded create record. Only a root create uses
+/// this one-slot fact; a composite root cannot consume it as a whole-key proof.
+/// Every instruction after the key load must execute by fallthrough.
 fn entry_write_key_slot(
     code: &[SealedInstr],
     non_fallthrough_entries: &[bool],
@@ -475,7 +497,7 @@ mod presence_root_discrimination {
 
     use marrow_image::Scalar;
 
-    use super::super::context::Ctx;
+    use super::super::context::{Ctx, Effects};
     use super::presence_edges;
     use crate::sealed::{SealedInstr, SealedRoot, SealedSite, SealedSiteTarget};
 
@@ -523,12 +545,13 @@ mod presence_root_discrimination {
             SealedInstr::DurCreateEntry(1),
         ];
         let entries = [false; 6];
-        let after_first = presence_edges(&code, &ctx, &entries, 2, &BTreeSet::new())
+        let effects = Effects::compute(&[], &[]);
+        let after_first = presence_edges(&code, &ctx, &entries, &effects, &[], 2, &BTreeSet::new())
             .into_iter()
             .find(|(successor, _)| *successor == 3)
             .expect("a create falls through to the next instruction")
             .1;
-        let after_second = presence_edges(&code, &ctx, &entries, 5, &after_first)
+        let after_second = presence_edges(&code, &ctx, &entries, &effects, &[], 5, &after_first)
             .into_iter()
             .find(|(successor, _)| *successor == 6)
             .expect("a create falls through to the next instruction")

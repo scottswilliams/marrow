@@ -23,8 +23,8 @@ store ^tallies[name: string]: Tally\n\
 \n\
 pub fn bump(name: string) {\n\
 \x20   transaction {\n\
-\x20       const prior = ^tallies[name].count ?? 0\n\
-\x20       ^tallies[name].count = prior + 1\n\
+\x20       place c = ^tallies[name]\n\
+\x20       c = Tally(count: (c.count ?? 0) + 1)\n\
 \x20   }\n\
 }\n\
 \n\

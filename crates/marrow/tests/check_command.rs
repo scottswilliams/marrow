@@ -119,13 +119,14 @@ fn check_summary_dedups_collapses_and_rolls_up() {
     // A storeless export inside a durable module collapses to one note.
     assert!(report.contains("  storeless: double"));
 
-    // The `--demand` form of the same project keeps every atom the summary rolled away.
+    // The `--demand` form of the same project keeps every atom the summary rolled away:
+    // the presence probe on `^accounts` that proves the entry, then each field.
     let full = Project::from_fixture("demand_summary")
         .run_cli("demand-summary-full", &["check", "--demand"]);
     assert!(full.success(), "{}", full.stderr_text());
     let atoms = full.stdout_text();
     assert!(
-        atoms.contains("ledger.alpha reads ^accounts.balance"),
+        atoms.contains("ledger.alpha reads ^accounts, ^accounts.balance"),
         "{atoms}"
     );
     assert!(atoms.contains("^accounts.name"), "{atoms}");

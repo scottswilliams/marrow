@@ -2083,7 +2083,7 @@ store ^charts[mrn: int]: Chart
 
 pub fn recordName(mrn: int, name: string) {
     transaction {
-        ^charts[mrn].name = name
+        ^charts[mrn] = Chart(name: name)
     }
 }
 
@@ -2109,15 +2109,15 @@ pub fn setHeight(mrn: int, mm: int) {
     }
 }
 
-// A group-leaf write addresses the inline `^root[key].group.leaf` path: a group
-// leaf is not reachable through a named `place` binding, so the three vitals are
-// each written at their full inline path under one presence guard.
+// A group-leaf write goes through the entry's `place`: one presence proof covers
+// the three vitals, each written as `chart.vitals.leaf`.
 pub fn setVital(mrn: int, systolic: int, diastolic: int, heartRate: int) {
     transaction {
-        if exists(^charts[mrn]) {
-            ^charts[mrn].vitals.systolic = systolic
-            ^charts[mrn].vitals.diastolic = diastolic
-            ^charts[mrn].vitals.heartRate = heartRate
+        place chart = ^charts[mrn]
+        if exists(chart) {
+            chart.vitals.systolic = systolic
+            chart.vitals.diastolic = diastolic
+            chart.vitals.heartRate = heartRate
         }
     }
 }

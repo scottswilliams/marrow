@@ -285,14 +285,13 @@ fn apply(
         | SealedInstr::DurFamilyExists(_)
         | SealedInstr::DurReadField(_)
         | SealedInstr::DurReadEntry(_)
-        | SealedInstr::DurSetRequired(_)
-        | SealedInstr::DurSetSparse(_)
-        | SealedInstr::DurSetSparsePresent { .. }
+        | SealedInstr::DurSetField { .. }
         | SealedInstr::DurCreateEntry(_)
         | SealedInstr::DurReplaceEntry(_)
         | SealedInstr::DurEraseField(_)
         | SealedInstr::DurEraseEntry(_)
         | SealedInstr::DurReadGroup(_)
+        | SealedInstr::DurReadGroupPresent { .. }
         | SealedInstr::DurReplaceGroup(_)
         | SealedInstr::DurEraseGroup(_)
         | SealedInstr::DurIterateBounded { .. }
@@ -1193,14 +1192,13 @@ pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurFamilyExists(site)
         | SealedInstr::DurReadField(site)
         | SealedInstr::DurReadEntry(site)
-        | SealedInstr::DurSetRequired(site)
-        | SealedInstr::DurSetSparse(site)
-        | SealedInstr::DurSetSparsePresent { site, .. }
+        | SealedInstr::DurSetField { site, .. }
         | SealedInstr::DurCreateEntry(site)
         | SealedInstr::DurReplaceEntry(site)
         | SealedInstr::DurEraseField(site)
         | SealedInstr::DurEraseEntry(site)
         | SealedInstr::DurReadGroup(site)
+        | SealedInstr::DurReadGroupPresent { site, .. }
         | SealedInstr::DurReplaceGroup(site)
         | SealedInstr::DurEraseGroup(site)
         | SealedInstr::DurIterateBounded { site, .. }
@@ -1213,7 +1211,7 @@ pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
 
 /// The single owner of the durable-opcode → [`OperationClass`] partition. The
 /// closed projection of the durable operation algebra onto authority atoms:
-/// `create`, `replace`, and required/sparse field sets are all writes; the two
+/// `create`, `replace`, and the field set are all writes; the two
 /// erases are erases; presence is a probe; field/entry reads are reads; and the
 /// bounded traversal is ordered traversal. Transaction markers and every pure opcode
 /// make no atom.
@@ -1229,10 +1227,9 @@ pub(super) fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         }
         SealedInstr::DurReadField(_)
         | SealedInstr::DurReadEntry(_)
-        | SealedInstr::DurReadGroup(_) => Some(OperationClass::Read),
-        SealedInstr::DurSetRequired(_)
-        | SealedInstr::DurSetSparse(_)
-        | SealedInstr::DurSetSparsePresent { .. }
+        | SealedInstr::DurReadGroup(_)
+        | SealedInstr::DurReadGroupPresent { .. } => Some(OperationClass::Read),
+        SealedInstr::DurSetField { .. }
         | SealedInstr::DurCreateEntry(_)
         | SealedInstr::DurReplaceEntry(_)
         | SealedInstr::DurReplaceGroup(_) => Some(OperationClass::Write),
@@ -1536,98 +1533,53 @@ fn apply_durable(
             pop_key_path(stack, &key_path, site_root)?;
             stack.push(VType::bare_record(entry_record).to_optional());
         }
+        SealedInstr::DurReadGroupPresent { key_slots, .. } => {
+            // The present-entry group read keys off the place's pre-evaluated slots and
+            // pushes the bare group record: the presence lattice proves the containing
+            // entry present here, so the read cannot be absent.
+            require_group(site_target)?;
+            require_key_slots(frame, key_slots, &key_path, site_root)?;
+            frame.stack.push(VType::bare_record(entry_record));
+        }
         SealedInstr::DurReplaceGroup(_) => {
             require_group(site_target)?;
             expect(pop(stack)?, VType::bare_record(entry_record))?;
             pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurEraseGroup(_) => {
+            // A group holding a required leaf is part of every present entry and is
+            // erased only with its entry.
             require_group(site_target)?;
-            pop_key_path(stack, &key_path, site_root)?;
-        }
-        SealedInstr::DurSetRequired(_) => {
-            let field = field_of(ctx, site_target, root)?;
-            if !field.required {
+            let holds_required = ctx
+                .types
+                .get(entry_record.index() as usize)
+                .is_some_and(|record| record.fields.iter().any(|field| field.required));
+            if holds_required {
                 return Err(reject(
                     VerifyPhase::Function,
-                    "set-required targets a sparse field",
+                    "erase targets a group with a required leaf",
                 ));
             }
-            let value = durable_field_vtype(field);
-            expect(pop(stack)?, value)?;
             pop_key_path(stack, &key_path, site_root)?;
         }
-        SealedInstr::DurSetSparse(_) => {
-            let field = field_of(ctx, site_target, root)?;
-            if field.required {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "set-sparse targets a required field",
-                ));
-            }
-            let value = durable_field_vtype(field).to_optional();
-            expect(pop(stack)?, value)?;
-            pop_key_path(stack, &key_path, site_root)?;
-        }
-        SealedInstr::DurSetSparsePresent { key_slots, .. } => {
-            // The strict present form reads its containing entry's whole key-path from
-            // place slots rather than the stack. It addresses a stored field leaf — a
-            // root field (`FieldLeaf`) or a branch field (`BranchField`); a whole-payload,
-            // branch-entry, or index site is not a field set and is refused. The field's
-            // containing entry is the root (root field) or the branch (branch field), and
-            // either way the site's full key-path is `columns` (root-first).
+        SealedInstr::DurSetField { key_slots, .. } => {
+            // The field set reads its containing entry's whole key-path from place slots
+            // rather than the stack and takes a definite (bare) value for a required or a
+            // sparse field alike. It addresses a stored field leaf — a root field
+            // (`FieldLeaf`) or a branch field (`BranchField`); a whole-payload,
+            // branch-entry, or index site is not a field set and is refused.
             if !matches!(
                 site_target,
                 SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. }
             ) {
                 return Err(reject(
                     VerifyPhase::Function,
-                    "set-sparse-present requires a field-leaf site",
-                ));
-            }
-            // The opcode's key-path must address the field's containing entry exactly:
-            // one slot per key column of every node from the root down (the root-first
-            // `columns` sequence). A forged image with too few or too many slots — e.g. a
-            // single root key over a branch-field site, the slice-A write-safety concern —
-            // is refused here so the kernel is never handed a mis-arity key-path.
-            let columns_root_first: Vec<VType> = key_path.iter().rev().cloned().collect();
-            if key_slots.len() != columns_root_first.len() {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "set-sparse-present key-path arity does not match its field site",
+                    "set-field requires a field-leaf site",
                 ));
             }
             let field = field_of(ctx, site_target, root)?;
-            if field.required {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "set-sparse-present targets a required field",
-                ));
-            }
-            // The strict form reads its key-path from the place's pre-evaluated local
-            // slots rather than the stack, so only the value is popped. Each slot must be
-            // definitely initialized with its column's key type, root-first. A slot captured
-            // from an entry identity carries its root as an identity column, re-proven here
-            // against the site root exactly as the stack key-path pop does.
-            let value = durable_field_vtype(field).to_optional();
-            expect(pop(stack)?, value)?;
-            for (slot, column_ty) in key_slots.iter().zip(&columns_root_first) {
-                match frame.locals.get(*slot as usize) {
-                    Some(Some(slot_ty)) if slot_keys_column(*slot_ty, *column_ty, site_root) => {}
-                    Some(Some(_)) => {
-                        return Err(reject(
-                            VerifyPhase::Function,
-                            "set-sparse-present key slot has the wrong type",
-                        ));
-                    }
-                    _ => {
-                        return Err(reject(
-                            VerifyPhase::Function,
-                            "set-sparse-present key slot is uninitialized or out of range",
-                        ));
-                    }
-                }
-            }
+            expect(pop(&mut frame.stack)?, durable_field_vtype(field))?;
+            require_key_slots(frame, key_slots, &key_path, site_root)?;
         }
         SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
             require_entry(site_target)?;
@@ -1912,6 +1864,46 @@ fn pop_key_path(
 ) -> Result<(), VerifyRejection> {
     for ty in key_path {
         pop_key_column(stack, *ty, site_root)?;
+    }
+    Ok(())
+}
+
+/// Require that a present-entry op's `key_slots` name its containing entry's whole
+/// key-path exactly: one definitely-initialized local per key column of every node from
+/// the root down (the root-first `columns` sequence, which `key_path` carries reversed),
+/// each holding its column's key type. A forged image with too few or too many slots —
+/// a single root key over a branch-field site — is refused here so the kernel is never
+/// handed a mis-arity key-path. A slot captured from an entry identity carries its root
+/// as an identity column, re-proven against the site root exactly as the stack pop does.
+fn require_key_slots(
+    frame: &Frame,
+    key_slots: &[u16],
+    key_path: &[VType],
+    site_root: u16,
+) -> Result<(), VerifyRejection> {
+    let columns_root_first = key_path.iter().rev();
+    if key_slots.len() != key_path.len() {
+        return Err(reject(
+            VerifyPhase::Function,
+            "present-entry key-path arity does not match its site",
+        ));
+    }
+    for (slot, column_ty) in key_slots.iter().zip(columns_root_first) {
+        match frame.locals.get(*slot as usize) {
+            Some(Some(slot_ty)) if slot_keys_column(*slot_ty, *column_ty, site_root) => {}
+            Some(Some(_)) => {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "present-entry key slot has the wrong type",
+                ));
+            }
+            _ => {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "present-entry key slot is uninitialized or out of range",
+                ));
+            }
+        }
     }
     Ok(())
 }

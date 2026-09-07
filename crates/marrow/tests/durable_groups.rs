@@ -2,12 +2,12 @@
 //!
 //! A root-level unkeyed `group` is a markerless value unit of its containing entry: its
 //! presence is the entry's presence, and it is addressed by the root's own key-path. A
-//! whole entry read joins the group's leaves; a group is read, replaced, and erased whole
-//! through `^root(key).group`; a group leaf is read and rewritten through
-//! `^root(key).group.leaf` as a whole-group read-modify-write (read the group, update the
-//! leaf, replace the group), so a sibling leaf survives. Whole-entry and whole-group
-//! replacement are exact — they rewrite the payload's own fields and drop omitted sparse
-//! leaves — while leaving the entry's keyed `branch` descendants in place.
+//! whole entry read joins the group's leaves; a group is read and erased whole through
+//! `^root(key).group` and a group leaf is read through `^root(key).group.leaf`. A whole-group
+//! write and a group-leaf write go through a `place` the compiler has proved present; a
+//! group-leaf write rewrites one leaf, so a sibling leaf survives. Whole-entry and
+//! whole-group replacement are exact — they rewrite the payload's own fields and drop
+//! omitted sparse leaves — while leaving the entry's keyed `branch` descendants in place.
 //!
 //! These tests drive the whole production path — capture -> compile -> verify -> attach ->
 //! VM — against one persistent ephemeral attachment, with a composite root key so the
@@ -82,7 +82,10 @@ pub fn readLanguage(shelf: int, id: int): string? {
 
 pub fn setPages(shelf: int, id: int, p: int) {
     transaction {
-        ^books[shelf, id].details.pages = p
+        place b = ^books[shelf, id]
+        if exists(b) {
+            b.details.pages = p
+        }
     }
 }
 
@@ -94,7 +97,10 @@ pub fn clearPages(shelf: int, id: int) {
 
 pub fn replaceDetails(shelf: int, id: int, p: int) {
     transaction {
-        ^books[shelf, id].details = Book.details(pages: p)
+        place b = ^books[shelf, id]
+        if exists(b) {
+            b.details = Book.details(pages: p)
+        }
     }
 }
 
@@ -268,8 +274,8 @@ fn a_group_bearing_entry_stores_and_reads_whole_and_by_leaf() {
     );
 }
 
-/// A group-leaf assignment is a whole-group read-modify-write: it updates the addressed
-/// leaf and preserves the sibling leaf.
+/// A group-leaf assignment through a place proved present updates the addressed leaf and
+/// preserves the sibling leaf.
 #[test]
 fn a_group_leaf_assignment_preserves_the_sibling_leaf() {
     let image = compile_verify(SOURCE, IDS);
@@ -463,9 +469,8 @@ fn a_whole_entry_assignment_erases_omitted_group_leaves() {
 }
 
 /// A group has no independent existence: a group-leaf read over an absent entry reads
-/// absent, and a group-leaf write (a whole-group read-modify-write) over an absent entry
-/// is a no-op — the group replace over a payload-absent entry is Missing and touches
-/// nothing, so no entry is conjured from a leaf write.
+/// absent, and the guarded group-leaf write is a no-op over an absent entry — the guard
+/// fails, nothing is written, and no entry is conjured from a leaf write.
 #[test]
 fn a_group_leaf_over_an_absent_entry_reads_absent_and_writes_are_no_ops() {
     let image = compile_verify(SOURCE, IDS);
@@ -475,7 +480,7 @@ fn a_group_leaf_over_an_absent_entry_reads_absent_and_writes_are_no_ops() {
         None
     );
 
-    // A leaf write over the absent entry runs cleanly but stores nothing.
+    // The guarded leaf write over the absent entry runs cleanly but stores nothing.
     match run_result(&image, &mut store, "setPages", vec![i(9), i(9), i(1)]) {
         DurableRun::Ran(Ok(_)) => {}
         other => panic!(
@@ -644,11 +649,9 @@ fn compile_codes(body: &str) -> Vec<String> {
 /// A group is present exactly when its entry is present, so a group-leaf write needs the
 /// same presence fact a field write does: the inline `^books[shelf, id].details.pages = p`
 /// with no fact is refused at check time, and the same write through a place inside
-/// `if exists(b)` updates the leaf, keeps the sibling leaf, and compiles without the
-/// absent-entry branch the read-modify-write carries today. Today the inline write
-/// compiles and runs as a silent no-op over an absent entry.
+/// `if exists(b)` updates the leaf, keeps the sibling leaf, and compiles without an
+/// absent-entry branch.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_group_leaf_write_through_a_place_proven_present_updates_the_leaf() {
     assert_eq!(
         compile_codes(
@@ -743,9 +746,8 @@ store ^books[shelf: int, id: int]: Book
 
 /// A group with a required leaf is part of every present entry, so it is erased only
 /// with its entry: `delete b.details` is `check.type` when `details` holds a required
-/// leaf. Today the erase compiles and leaves the entry short of `pages`.
+/// leaf.
 #[test]
-#[ignore = "B2 complete entries"]
 fn an_erase_of_a_group_with_a_required_leaf_is_refused_at_check() {
     let source = format!(
         "{REQUIRED_LEAF_SCHEMA}

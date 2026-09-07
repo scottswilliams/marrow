@@ -528,13 +528,13 @@ store ^b[id: int]: R
 
 pub fn setA(id: int, v: int) {
     transaction {
-        ^a[id].v = v
+        ^a[id] = R(v: v)
     }
 }
 
 pub fn setB(id: int, v: int) {
     transaction {
-        ^b[id].v = v
+        ^b[id] = R(v: v)
     }
 }
 "#;
@@ -588,13 +588,13 @@ store ^b[id: int]: Book
 
 pub fn addA(id: int, t: string) {
     transaction {
-        ^a[id].notes[1].text = t
+        ^a[id].notes[1] = Book.notes(text: t)
     }
 }
 
 pub fn addB(id: int, t: string) {
     transaction {
-        ^b[id].notes[1].text = t
+        ^b[id].notes[1] = Book.notes(text: t)
     }
 }
 "#;
@@ -609,7 +609,7 @@ store ^a[id: int]: Book
 
 pub fn addA(id: int, t: string) {
     transaction {
-        ^a[id].notes[1].text = t
+        ^a[id].notes[1] = Book.notes(text: t)
     }
 }
 "#;
@@ -659,9 +659,10 @@ const BYTE_ORDER_IDS: &str = "marrow ids v0\n\
 /// A Product's branch entry record is materialized once, at that Product's first root in
 /// canonical store-traversal order. Keying it on resource declaration order instead would
 /// move the mint whenever the two orders differ, and every TypeId ordinal after it with
-/// it. This corpus fixes the whole image byte-exactly against the bytes the encoder
-/// produced before a Product declaration had a table of its own, so a later owner that
-/// moves the mint point fails here rather than silently re-numbering an accepted image.
+/// it. This corpus fixes the whole image byte-exactly, so a later owner that moves the
+/// mint point fails here rather than silently re-numbering an accepted image. The pinned
+/// digest is the encoding of this source under the whole-entry branch write; it was
+/// last recorded when the field-write spelling left the language.
 #[test]
 fn the_fitting_byte_order_corpus_is_byte_exact() {
     let source = r#"resource Alpha {
@@ -683,20 +684,20 @@ store ^x[id: int]: Alpha
 
 pub fn putY(id: int, t: string) {
     transaction {
-        ^y[id].marks[1].tag = t
+        ^y[id].marks[1] = Beta.marks(tag: t)
     }
 }
 
 pub fn putX(id: int, t: string) {
     transaction {
-        ^x[id].notes[1].text = t
+        ^x[id].notes[1] = Alpha.notes(text: t)
     }
 }
 "#;
     let image = verify(source, BYTE_ORDER_IDS);
     assert_eq!(
         image.image_id().to_hex(),
-        "779f79eeef2f855c74537a80f0aa2db9655945f7a85df604ad07fe79e36f2521",
+        "47bebe6b396c22942384f188d543712e0bd1a77c546ff567f52ec2b944e0b905",
         "the whole image, and so every table in it, is byte-exact"
     );
     // `^y` is the first store, so `Beta.marks` mints its entry record before
@@ -723,13 +724,13 @@ store ^b[id: int]: R
 
 pub fn setA(id: int, v: int) {
     transaction {
-        ^a[id].v = v
+        ^a[id] = R(v: v)
     }
 }
 
 pub fn setB(id: int, v: int) {
     transaction {
-        ^b[id].v = v
+        ^b[id] = R(v: v)
     }
 }
 
@@ -791,13 +792,13 @@ store ^b[id: int]: Book
 
 pub fn addA(id: int, t: string) {
     transaction {
-        ^a[id].notes[1].text = t
+        ^a[id].notes[1] = Book.notes(text: t)
     }
 }
 
 pub fn addB(id: int, t: string) {
     transaction {
-        ^b[id].notes[1].text = t
+        ^b[id].notes[1] = Book.notes(text: t)
     }
 }
 
@@ -936,7 +937,9 @@ const SHARED_NESTED_IDS: &str = "marrow ids v0\n\
 /// A `Book` with a `notes` branch that itself holds a `tags` branch, projected by two
 /// roots. Every export addresses `^b` through a `place` bound to `^b`'s branch entry, so
 /// the branch's own materialized record type — a Product declaration fact both
-/// occurrences share — is never enough to decide which root an operation lands on.
+/// occurrences share — is never enough to decide which root an operation lands on. The
+/// text setters create the entry whole when it is absent and write the field through
+/// the proven place when it is present, so a repeated call takes the field-write path.
 const SHARED_NESTED_SOURCE: &str = r#"resource Book {
     required title: string
     notes[noteId: int] {
@@ -953,14 +956,22 @@ store ^b[id: int]: Book
 pub fn placeSetTextB(id: int, n: int, t: string) {
     transaction {
         place p = ^b[id].notes[n]
-        p.text = t
+        if exists(p) {
+            p.text = t
+        } else {
+            p = Book.notes(text: t)
+        }
     }
 }
 
 pub fn placeSetTextA(id: int, n: int, t: string) {
     transaction {
         place p = ^a[id].notes[n]
-        p.text = t
+        if exists(p) {
+            p.text = t
+        } else {
+            p = Book.notes(text: t)
+        }
     }
 }
 
@@ -997,6 +1008,14 @@ pub fn tagWeightB(id: int, n: int, g: int): int? {
 fn a_place_bound_branch_addresses_its_own_occurrence() {
     let image = verify(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
     let mut attachment = attach(&image);
+    // The first call creates `^b`'s note whole; the second is the field write through
+    // the proven place, and its value is the one read back.
+    run(
+        &image,
+        &mut attachment,
+        "placeSetTextB",
+        vec![Value::Int(1), Value::Int(2), Value::Text("seed".into())],
+    );
     run(
         &image,
         &mut attachment,
@@ -1107,15 +1126,21 @@ store ^b[id: int]: R
 
 pub fn setA(id: int, v: int) {
     transaction {
-        ^a[id].v = v
-        ^a[id].v = v
+        place m = ^a[id]
+        if exists(m) {
+            m.v = v
+            m.v = v
+        }
     }
 }
 
 pub fn setB(id: int, v: int) {
     transaction {
-        ^b[id].v = v
-        ^b[id].v = v
+        place m = ^b[id]
+        if exists(m) {
+            m.v = v
+            m.v = v
+        }
     }
 }
 
@@ -1137,15 +1162,21 @@ store ^b[id: int]: R
 
 pub fn setB(id: int, v: int) {
     transaction {
-        ^b[id].v = v
-        ^b[id].v = v
+        place m = ^b[id]
+        if exists(m) {
+            m.v = v
+            m.v = v
+        }
     }
 }
 
 pub fn setA(id: int, v: int) {
     transaction {
-        ^a[id].v = v
-        ^a[id].v = v
+        place m = ^a[id]
+        if exists(m) {
+            m.v = v
+            m.v = v
+        }
     }
 }
 
@@ -1195,8 +1226,11 @@ store ^a[id: int]: R
 
 pub fn setA(id: int, v: int) {
     transaction {
-        ^a[id].v = v
-        ^a[id].v = v
+        place m = ^a[id]
+        if exists(m) {
+            m.v = v
+            m.v = v
+        }
     }
 }
 
@@ -1220,14 +1254,13 @@ pub fn readA(id: int): int? {
         .count();
     assert_eq!(control_leaves, 1, "one occurrence, one field-leaf site");
     // A single root over an unshared Product is outside the repeated-Product domain, so
-    // its whole image — site table included — is the exact bytes it was at the lane base
-    // `3bd8a909`, before a Product declaration had a table of its own and before every
-    // site was minted through one plan. The value below was recomputed from that base,
-    // not read off this tree. The two-root image above adds rows; it may not renumber
-    // this one.
+    // its whole image — site table included — is pinned byte-exactly: the two-root image
+    // above adds rows; it may not renumber this one. The digest is the encoding of this
+    // source under the proven-place field write; it was last recorded when the inline
+    // field-write spelling left the language.
     assert_eq!(
         control.image_id().to_hex(),
-        "731697f2fd78bfbf8f952a07f2458974a0fc493e166c31e163dde18a683e8f84",
+        "00fdce97f135f2db1e72ac0ffbff12edeb886e997d5807e5fd08827fd9a2b0cc",
         "the fitting single-root image is byte-exact outside the repeated-Product domain",
     );
 }
@@ -1268,13 +1301,16 @@ store ^b[id: int]: Book
 
 pub fn addA(id: int, t: string) {
     transaction {
-        ^a[id].notes[1].text = t
+        ^a[id].notes[1] = Book.notes(text: t)
     }
 }
 
 pub fn setB(id: int, t: string) {
     transaction {
-        ^b[id].title = t
+        place m = ^b[id]
+        if exists(m) {
+            m.title = t
+        }
     }
 }
 "#;
@@ -1346,7 +1382,10 @@ store ^a[id: int]: Book
 
 pub fn setA(id: int, t: string) {
     transaction {
-        ^a[id].title = t
+        place m = ^a[id]
+        if exists(m) {
+            m.title = t
+        }
     }
 }
 "#;

@@ -131,8 +131,8 @@ fn journey_source() -> String {
         \x20   transaction {{\n\
         \x20       if exists(^assets[id]) {{ return false }}\n\
         \x20       ^assets[id] = Asset(tag: tag, name: name)\n\
-        \x20       const prior = ^tallies[\"catalogued\"].count ?? 0\n\
-        \x20       ^tallies[\"catalogued\"].count = prior + 1\n\
+        \x20       place catalogued = ^tallies[\"catalogued\"]\n\
+        \x20       catalogued = Tally(count: (catalogued.count ?? 0) + 1)\n\
         \x20   }}\n\
         \x20   return true\n\
         }}\n\
@@ -151,9 +151,12 @@ fn journey_source() -> String {
         \n\
         pub fn recordMove(id: int, location: string) {{\n\
         \x20   transaction {{\n\
-        \x20       ^assets[id].location = location\n\
-        \x20       const prior = ^tallies[\"moves\"].count ?? 0\n\
-        \x20       ^tallies[\"moves\"].count = prior + 1\n\
+        \x20       place slot = ^assets[id]\n\
+        \x20       if exists(slot) {{\n\
+        \x20           slot.location = location\n\
+        \x20           place moves = ^tallies[\"moves\"]\n\
+        \x20           moves = Tally(count: (moves.count ?? 0) + 1)\n\
+        \x20       }}\n\
         \x20   }}\n\
         }}\n\
         \n\

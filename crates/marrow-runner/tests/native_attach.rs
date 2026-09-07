@@ -1,7 +1,7 @@
 //! The persistent terminal path over a real native store and a real companion process.
 //!
 //! This is the F02b exit-gate journey: the E06 Workshop image is provisioned to a native
-//! store, then driven through add / read / correct / cross-root rollback / re-read entirely
+//! store, then driven through add / read / move / cross-root rollback / re-read entirely
 //! over the companion path — each call spawning a fresh `marrow-runner attach` process that
 //! opens the store, runs one call against a durable session, commits, and closes. Because
 //! every call is its own process, a committed write observed by a later call proves the
@@ -120,11 +120,13 @@ impl Terminal {
         }
     }
 
-    fn incomplete(&self, name: &str, args: Vec<Json>) -> (String, marrow_runner::DurableState) {
+    fn fault(&self, name: &str, args: Vec<Json>) -> String {
         match self.call(name, args) {
-            CallOutcome::Incomplete { code, durable, .. } => (code, durable),
+            CallOutcome::Fault { code, .. } => code,
             CallOutcome::Value(_) => panic!("`{name}` completed"),
-            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted ordinarily: {code}"),
+            CallOutcome::Incomplete { code, durable, .. } => {
+                panic!("`{name}` was incomplete: {code} ({durable:?})")
+            }
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
             CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
@@ -137,9 +139,9 @@ fn present_name(name: &str) -> Option<Value> {
 
 /// The full Workshop journey over the companion path, each step a separate process attaching
 /// to the persistent store: add commits across both roots and is read back by a later
-/// process; a committed move advances the tally; an unguarded move on an absent asset faults
-/// and rolls its whole cross-root region back; the final reads show every root at its prior
-/// committed value — all surviving the close/reopen between every call.
+/// process; a committed move advances the tally; an add whose tag collides in the unique
+/// index faults and rolls its whole cross-root region back; the final reads show every root
+/// at its prior committed value — all surviving the close/reopen between every call.
 #[test]
 fn workshop_journey_over_the_companion_path() {
     let (image, bytes) = compile_verify();
@@ -183,14 +185,21 @@ fn workshop_journey_over_the_companion_path() {
     );
     assert_eq!(terminal.value("moveCount", vec![]), Some(Value::Int(1)));
 
-    // Cross-root rollback: a move on an absent asset faults required-missing and rolls the
-    // whole staged region back across both roots.
+    // Cross-root rollback: an add reusing asset 1's tag collides in the unique `byTag` index
+    // at the write, before the commit, and rolls the whole staged region back across both
+    // roots — proven by fresh processes reopening the store.
     assert_eq!(
-        terminal.incomplete("recordMove", vec![Json::Int(2), Json::Str("Bay 9".into())],),
-        (
-            "run.required_missing".to_string(),
-            marrow_runner::DurableState::KnownOld,
+        terminal.fault(
+            "add",
+            vec![
+                Json::Int(2),
+                Json::Str("T-100".into()),
+                Json::Str("Impostor".into()),
+                Json::Str("power".into()),
+                Json::Str(epoch),
+            ],
         ),
+        "run.unique_index",
     );
 
     // Every root stands at its prior committed value after the rolled-back fault — proven by

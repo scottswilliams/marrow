@@ -20,6 +20,6 @@ store ^enrollments[student: string, course: string]: Enrollment
 
 pub fn bump(name: string) {
     transaction {
-        ^counters[name].value = 1
+        ^counters[name] = Counter(value: 1)
     }
 }

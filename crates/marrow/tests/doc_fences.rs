@@ -422,7 +422,7 @@ fn a_source_rejected_fence_is_caught() {
 // retries — the boundary this probe exercises. (Before TX02 this same class of fault
 // was reported one layer later, at `image.flow`; the independent verifier still rejects
 // a tampered image there, but a compiler now refuses it first.)
-const POST_MINT_REJECTED_DURABLE_BODY: &str = "resource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn setAndGet(id: int, value: string): string? {\n    transaction {\n        ^items[id].value = value\n    }\n    return ^items[id].value\n}\n";
+const POST_MINT_REJECTED_DURABLE_BODY: &str = "resource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn setAndGet(id: int, value: string): string? {\n    transaction {\n        ^items[id] = Item(value: value)\n    }\n    return ^items[id].value\n}\n";
 
 // The gate's `artifact_rejected` branch (a fence that compiles clean but the independent
 // verifier rejects) is no longer reachable through an honest fence: after TX02 the

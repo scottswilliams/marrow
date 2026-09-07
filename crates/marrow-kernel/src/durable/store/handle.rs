@@ -1,8 +1,6 @@
 //! The durable store handle: session opening over a coherent read view or a write
 //! transaction after resolving effective authority, plus checked witness-generation minting.
 
-use std::collections::BTreeMap;
-
 use marrow_store::{ByteEngine, ReadView, StoreError};
 
 use super::super::audit::{self, AuditReport, ContentDigest};
@@ -281,7 +279,6 @@ impl<E: ByteEngine> DurableStore<E> {
                 after,
             }),
             indexes,
-            pending: BTreeMap::new(),
         })
     }
 }

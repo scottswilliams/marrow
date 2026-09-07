@@ -5,12 +5,9 @@
 //! read as proving `^bbb[k]` present (no phantom marker), and a write named on `^bbb[k]`
 //! must address `^bbb`, never `^aaa`.
 //!
-//! The negative case exercises both at once: guarded by `^aaa[k]` presence, a sparse write
-//! to the *absent* `^bbb[k]` stages a field leaf on an unmarked entry whose required `tag`
-//! is unset, so the transaction rolls back with `run.required_missing` — which is only
-//! reachable if the write went to `^bbb` (not a phantom write to the present `^aaa`) and if
-//! `^bbb[k]` was NOT mis-proven present (a strict present write would instead fault as a
-//! marker mismatch). Both roots are clean afterward.
+//! The negative case: guarded by `^aaa[k]` presence, a field write to `^bbb[k]` has no
+//! proof of its own and is refused at check time — the guard over one root never proves
+//! the sibling root's entry present.
 
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
@@ -72,16 +69,9 @@ pub fn bbbNote(k: int): string? {
 
 pub fn setAaaNoteIfPresent(k: int, n: string) {
     transaction {
-        if const a = ^aaa[k] {
-            ^aaa[k].note = n
-        }
-    }
-}
-
-pub fn setBbbNoteUnderAaaGuard(k: int, n: string) {
-    transaction {
-        if const a = ^aaa[k] {
-            ^bbb[k].note = n
+        place a = ^aaa[k]
+        if const found = a {
+            a.note = n
         }
     }
 }
@@ -138,20 +128,6 @@ fn run(
     }
 }
 
-fn run_faulting(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> String {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => fault.code().to_string(),
-        other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
-    }
-}
-
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
     match mint_ephemeral(prepare(image.clone())) {
         EphemeralOutcome::Ready(attachment) => attachment,
@@ -205,46 +181,28 @@ fn a_present_guarded_write_addresses_its_own_root_only() {
     );
 }
 
-/// A presence guard proving `^aaa[k]` present does not phantom-mark `^bbb[k]` present, and a
-/// write named on `^bbb[k]` addresses `^bbb`, not `^aaa`. With `^bbb[k]` absent, the sparse
-/// write stages a leaf on an unmarked entry whose required `tag` is unset, so the
-/// transaction rolls back with `run.required_missing`. Both roots are clean afterward.
+/// A presence guard proving `^aaa[k]` present does not phantom-mark `^bbb[k]` present: a
+/// write through a `^bbb` place inside the `^aaa` guard has no proof and is refused at
+/// check time, so no write to the sibling root can rest on the wrong root's guard.
 #[test]
 fn a_cross_root_guarded_write_does_not_phantom_the_sibling_root() {
-    let image = compile_verify();
-    let mut store = attach(&image);
-
-    // ^aaa[1] is present; ^bbb[1] is deliberately absent.
-    run(&image, &mut store, "putAaa", vec![Value::Int(1), text("a")]);
-
-    let code = run_faulting(
-        &image,
-        &mut store,
-        "setBbbNoteUnderAaaGuard",
-        vec![Value::Int(1), text("leak")],
+    let source = format!(
+        "{TWO_ROOT_SCHEMA}
+pub fn setBbbNoteUnderAaaGuard(k: int, n: string) {{
+    transaction {{
+        place a = ^aaa[k]
+        place b = ^bbb[k]
+        if exists(a) {{
+            b.note = n
+        }}
+    }}
+}}
+"
     );
     assert_eq!(
-        code, "run.required_missing",
-        "the write addressed the absent ^bbb (not the present ^aaa) and ^bbb[k] was not \
-         mis-proven present, so the unmarked sparse leaf rolls back at commit",
-    );
-
-    // The rolled-back transaction left both roots clean: ^bbb[1] never came into existence,
-    // and the guard never wrote ^aaa's own note.
-    assert_eq!(
-        run(&image, &mut store, "bbbTag", vec![Value::Int(1)]),
-        absent(),
-        "^bbb[1] was never created",
-    );
-    assert_eq!(
-        run(&image, &mut store, "bbbNote", vec![Value::Int(1)]),
-        absent(),
-        "no phantom ^bbb note survived the rollback",
-    );
-    assert_eq!(
-        run(&image, &mut store, "aaaNote", vec![Value::Int(1)]),
-        absent(),
-        "the guard did not phantom-write ^aaa's own note",
+        compile_source(&source).err(),
+        Some(vec!["check.requires_presence".to_string()]),
+        "a guard over ^aaa[k] proves nothing about ^bbb[k]",
     );
 }
 
@@ -292,7 +250,6 @@ store ^bbb[k: int]: Bbb
 /// `a` after `touchBbb(k)` is strict — while the same helper writing `^aaa` ends it.
 /// Today the `^aaa`-writing form compiles clean.
 #[test]
-#[ignore = "B2 complete entries"]
 fn an_other_root_helper_keeps_the_fact_while_a_same_root_helper_ends_it() {
     let other_root = format!(
         "{TWO_ROOT_SCHEMA}
@@ -319,12 +276,7 @@ pub fn setAaaNote(k: int, n: string) {{
         .expect("export present")
         .instrs()
         .iter()
-        .filter(|instr| {
-            matches!(
-                instr,
-                marrow_verify::SealedInstr::DurSetSparsePresent { .. }
-            )
-        })
+        .filter(|instr| matches!(instr, marrow_verify::SealedInstr::DurSetField { .. }))
         .count();
     assert_eq!(strict, 1, "the set after the other-root helper is strict");
 

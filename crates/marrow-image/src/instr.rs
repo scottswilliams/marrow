@@ -89,14 +89,15 @@ pub const OP_DUR_ERASE_GROUP: u8 = 0x2D;
 pub const OP_DUR_EXISTS: u8 = 0x30;
 pub const OP_DUR_READ_FIELD: u8 = 0x31;
 pub const OP_DUR_READ_ENTRY: u8 = 0x32;
-pub const OP_DUR_SET_REQUIRED: u8 = 0x33;
-pub const OP_DUR_SET_SPARSE: u8 = 0x34;
 pub const OP_DUR_CREATE_ENTRY: u8 = 0x35;
 pub const OP_DUR_REPLACE_ENTRY: u8 = 0x36;
 pub const OP_DUR_ERASE_FIELD: u8 = 0x37;
 pub const OP_DUR_ERASE_ENTRY: u8 = 0x38;
 pub const OP_DUR_FAMILY_EXISTS: u8 = 0x39;
-pub const OP_DUR_SET_SPARSE_PRESENT: u8 = 0x3A;
+// The present-entry field set and group read: both address a stored node through the
+// containing entry's pre-evaluated key slots and assert that entry is present.
+pub const OP_DUR_SET_FIELD: u8 = 0x3A;
+pub const OP_DUR_READ_GROUP_PRESENT: u8 = 0x33;
 pub const OP_DUR_ITERATE_BOUNDED: u8 = 0x3B;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
 pub const OP_TXN_COMMIT: u8 = 0x3D;
@@ -174,7 +175,7 @@ pub const OP_DUR_INDEX_EXISTS: u8 = 0xB8;
 /// payload plus its niche-packed discriminant. Asserting it here is what keeps a new
 /// or widened variant from silently multiplying the transient body term by the
 /// instruction count instead of failing this crate's build.
-pub(crate) const INSTR_BYTES: usize = 80;
+pub(crate) const INSTR_BYTES: usize = 88;
 
 const _: () = assert!(
     size_of::<Instr>() == INSTR_BYTES,
@@ -360,19 +361,16 @@ pub enum Instr {
     DurFamilyExists(PlannedSiteRef),
     DurReadField(PlannedSiteRef),
     DurReadEntry(PlannedSiteRef),
-    DurSetRequired(PlannedSiteRef),
-    DurSetSparse(PlannedSiteRef),
-    /// `T? →`: set (present) or clear (vacant) the sparse field `site`, reading the
-    /// containing entry's key-path from local slots `key_slots` (root-first, one slot
-    /// per key column of every node from the root down to the field's containing entry)
-    /// and asserting that entry is present. The strict form of a sparse-field set:
-    /// emitted only for a set through a `place` binding a presence fact dominates, so
-    /// the key-path is the place's pre-evaluated slots rather than a stack operand. The
-    /// key-path generalizes the root-only single slot to a branch or composite-keyed
-    /// containing entry. The compiler proves the entry present; the runtime faults
-    /// `run.corruption` if the marker is absent (defense in depth over the trust
-    /// boundary).
-    DurSetSparsePresent {
+    /// `T →`: set the field `site` (required or sparse) to a definite value, reading
+    /// the containing entry's key-path from local slots `key_slots` (root-first, one
+    /// slot per key column of every node from the root down to the field's containing
+    /// entry) and asserting that entry is present. The one field-set form: emitted only
+    /// for a set through a `place` binding a presence fact dominates, so the key-path is
+    /// the place's pre-evaluated slots rather than a stack operand. The compiler proves
+    /// the entry present; the runtime faults `run.corruption` if the marker is absent
+    /// (defense in depth over the trust boundary). A field is cleared only by
+    /// [`Instr::DurEraseField`].
+    DurSetField {
         site: PlannedSiteRef,
         key_slots: Vec<u16>,
     },
@@ -384,6 +382,15 @@ pub enum Instr {
     /// `GroupEntry` site `_0` names, as one record, or absent when the containing entry
     /// is absent.
     DurReadGroup(PlannedSiteRef),
+    /// `→ Rec`: read the whole materialized value of the unkeyed `group` the
+    /// `GroupEntry` site names, as a bare record, reading the containing entry's
+    /// key-path from local slots `key_slots` (root-first) and asserting that entry is
+    /// present. The read half of a group-leaf rewrite through a proven place; the
+    /// runtime faults `run.corruption` if the marker is absent.
+    DurReadGroupPresent {
+        site: PlannedSiteRef,
+        key_slots: Vec<u16>,
+    },
     /// `K, Rec →`: replace the whole materialized value of the group the `GroupEntry`
     /// site `_0` names, under the group-scoped payload-only law (the group's own field
     /// set only; sibling groups, top-level fields, and branches untouched).
@@ -571,14 +578,13 @@ impl Instr {
             Instr::DurFamilyExists(_) => OP_DUR_FAMILY_EXISTS,
             Instr::DurReadField(_) => OP_DUR_READ_FIELD,
             Instr::DurReadEntry(_) => OP_DUR_READ_ENTRY,
-            Instr::DurSetRequired(_) => OP_DUR_SET_REQUIRED,
-            Instr::DurSetSparse(_) => OP_DUR_SET_SPARSE,
-            Instr::DurSetSparsePresent { .. } => OP_DUR_SET_SPARSE_PRESENT,
+            Instr::DurSetField { .. } => OP_DUR_SET_FIELD,
             Instr::DurCreateEntry(_) => OP_DUR_CREATE_ENTRY,
             Instr::DurReplaceEntry(_) => OP_DUR_REPLACE_ENTRY,
             Instr::DurEraseField(_) => OP_DUR_ERASE_FIELD,
             Instr::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
             Instr::DurReadGroup(_) => OP_DUR_READ_GROUP,
+            Instr::DurReadGroupPresent { .. } => OP_DUR_READ_GROUP_PRESENT,
             Instr::DurReplaceGroup(_) => OP_DUR_REPLACE_GROUP,
             Instr::DurEraseGroup(_) => OP_DUR_ERASE_GROUP,
             Instr::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
@@ -619,8 +625,6 @@ impl Instr {
             | Instr::DurFamilyExists(_)
             | Instr::DurReadField(_)
             | Instr::DurReadEntry(_)
-            | Instr::DurSetRequired(_)
-            | Instr::DurSetSparse(_)
             | Instr::DurCreateEntry(_)
             | Instr::DurReplaceEntry(_)
             | Instr::DurEraseField(_)
@@ -659,7 +663,9 @@ impl Instr {
             Instr::EnumConstruct { .. } | Instr::EnumPayloadGet { .. } => 4,
             // A big-endian `u16` site, a big-endian `u16` key-path length, then one
             // big-endian `u16` per key-path slot.
-            Instr::DurSetSparsePresent { key_slots, .. } => 4 + 2 * key_slots.len(),
+            Instr::DurSetField { key_slots, .. } | Instr::DurReadGroupPresent { key_slots, .. } => {
+                4 + 2 * key_slots.len()
+            }
             // A big-endian `u16` site, a big-endian `u32` bound, a one-byte
             // `from`-present flag, and a big-endian `u16` frozen-`List[K]` COLLTYPES
             // index.
@@ -690,14 +696,13 @@ impl Instr {
             | Instr::DurFamilyExists(site)
             | Instr::DurReadField(site)
             | Instr::DurReadEntry(site)
-            | Instr::DurSetRequired(site)
-            | Instr::DurSetSparse(site)
-            | Instr::DurSetSparsePresent { site, .. }
+            | Instr::DurSetField { site, .. }
             | Instr::DurCreateEntry(site)
             | Instr::DurReplaceEntry(site)
             | Instr::DurEraseField(site)
             | Instr::DurEraseEntry(site)
             | Instr::DurReadGroup(site)
+            | Instr::DurReadGroupPresent { site, .. }
             | Instr::DurReplaceGroup(site)
             | Instr::DurEraseGroup(site)
             | Instr::DurIterateBounded { site, .. }

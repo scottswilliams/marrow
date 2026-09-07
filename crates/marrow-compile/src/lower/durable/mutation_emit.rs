@@ -1,70 +1,74 @@
 use super::*;
 
 impl<'a, 'd> FnLowerer<'a, 'd> {
-    /// Lower a group-leaf read-modify-write `^root(k).group.leaf = value` or
-    /// `delete ^root(k).group.leaf`: evaluate the key-path once into slots, read the whole
-    /// group, and — only when the entry (and so the group) is present — rewrite the leaf
-    /// slot (set present, or unset to vacant) on the materialized group record and replace
-    /// the whole group. An absent entry short-circuits to a no-op: a group is a value unit
-    /// of an existing entry, never created on its own. The group is materialized whole and
-    /// written back, so a sibling leaf is preserved.
-    pub(super) fn lower_group_leaf_rmw(
+    /// Lower `p.group.leaf = value` on an entry a presence proof covers: evaluate the
+    /// leaf value once, read the whole group through the place's key slots (a bare
+    /// record — the entry is present), rewrite the leaf slot, and replace the whole
+    /// group so a sibling leaf is preserved.
+    pub(super) fn lower_group_leaf_set(
+        &mut self,
+        key_slots: &[u16],
+        handle: &OccurrenceSiteHandle,
+        slot: u16,
+        value: &Expression,
+        ty: GArg,
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
+        let site = self
+            .site_operand(handle)
+            .ok_or(LoweringFailure::Recoverable)?;
+        let value_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+        self.lower_as(value, garg_to_lty(ty))?;
+        self.push(Instr::LocalSet(value_slot), span)?;
+        self.push(
+            Instr::DurReadGroupPresent {
+                site: site.clone(),
+                key_slots: key_slots.to_vec(),
+            },
+            span,
+        )?;
+        self.push(Instr::LocalGet(value_slot), span)?;
+        self.push(Instr::FieldSet(slot), span)?;
+        self.replace_group_from_stack(key_slots, site, span)
+    }
+
+    /// Lower `delete p.group.leaf` / `delete ^root(k).group.leaf`: a delete needs no
+    /// proof, so the group is read through the optional form and only a present entry
+    /// has its leaf cleared and the group replaced; an absent entry is a no-op.
+    pub(super) fn lower_group_leaf_unset(
         &mut self,
         keys: &[DurKey],
         handle: &OccurrenceSiteHandle,
         slot: u16,
-        edit: GroupLeafEdit,
         span: SourceSpan,
     ) -> ConstructResult<()> {
-        let entry_site = self
+        let site = self
             .site_operand(handle)
             .ok_or(LoweringFailure::Recoverable)?;
-        // Evaluate each key column once into a fresh slot (root-first) so the read and the
-        // replace key off the same evaluated columns. A group is a root-level value unit, so
-        // its key-path is the root's — an identity operand spreads into the root's columns.
         let key_slots = self.capture_key_slots(keys, span)?;
-        // A set evaluates its bare leaf value once into a slot before the read, so the read
-        // record is on top of the stack when the leaf op runs.
-        let value_slot = match &edit {
-            GroupLeafEdit::Set { value, ty } => {
-                let value_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
-                self.lower_as(value, garg_to_lty(*ty))?;
-                self.push(Instr::LocalSet(value_slot), span)?;
-                Some(value_slot)
-            }
-            GroupLeafEdit::Unset => None,
-        };
-        // Read the group; present -> its materialized record is on the stack and the write
-        // back runs; absent -> jump past the write back, a clean no-op (the group was never
-        // there to modify).
         self.emit_slots(&key_slots, span)?;
-        self.push(Instr::DurReadGroup(entry_site.clone()), span)?;
+        self.push(Instr::DurReadGroup(site.clone()), span)?;
         let to_end = self.push_branch_present(span)?;
-        // Present: rewrite the leaf slot on the materialized record, then replace the group.
-        match edit {
-            GroupLeafEdit::Set { .. } => {
-                #[allow(
-                    clippy::expect_used,
-                    reason = "lowering bookkeeping: a `Set` edit lowers its value expression before this emit, so its result slot is bound"
-                )]
-                self.push(
-                    Instr::LocalGet(value_slot.expect("a set evaluates its value")),
-                    span,
-                )?;
-                self.push(Instr::FieldSet(slot), span)?;
-            }
-            GroupLeafEdit::Unset => {
-                self.push(Instr::FieldUnset(slot), span)?;
-            }
-        }
-        let rec_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
-        self.push(Instr::LocalSet(rec_slot), span)?;
-        self.emit_slots(&key_slots, span)?;
-        self.push(Instr::LocalGet(rec_slot), span)?;
-        self.push(Instr::DurReplaceGroup(entry_site), span)?;
+        self.push(Instr::FieldUnset(slot), span)?;
+        self.replace_group_from_stack(&key_slots, site, span)?;
         let end = self.here();
         self.patch(to_end, end);
         Ok(())
+    }
+
+    /// Replace the group at `site` with the rewritten record on top of the stack, keyed
+    /// by the containing entry's `key_slots`.
+    fn replace_group_from_stack(
+        &mut self,
+        key_slots: &[u16],
+        site: PlannedSiteRef,
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
+        let rec_slot = self.alloc_slot(span).ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::LocalSet(rec_slot), span)?;
+        self.emit_slots(key_slots, span)?;
+        self.push(Instr::LocalGet(rec_slot), span)?;
+        self.push(Instr::DurReplaceGroup(site), span)
     }
 
     /// Lower `^r(k) = record` or `^r(k).branch(bk) = Resource.branch(...)` to the

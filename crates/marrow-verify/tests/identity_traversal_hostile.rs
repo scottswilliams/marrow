@@ -379,7 +379,7 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
     );
 }
 
-/// The strict present-entry set sibling: `DurSetSparsePresent` reads its key-path from local
+/// The strict present-entry set sibling: `DurSetField` reads its key-path from local
 /// slots rather than the stack, so a forged image stores a foreign-root identity into the key
 /// slot it names. The slot-type re-proof (`slot_keys_column`) rejects the cross-root confusion
 /// during the per-instruction pass — before the flow-phase presence check runs — so a
@@ -401,8 +401,7 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
         Instr::IdentityKeyPath(1),
         Instr::LocalSet(1),
         Instr::ConstLoad(value),
-        Instr::SomeWrap,
-        Instr::DurSetSparsePresent {
+        Instr::DurSetField {
             site: subtitle_site,
             key_slots: vec![1],
         },
@@ -433,6 +432,6 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
     );
     assert_eq!(
         rejection.detail(),
-        "set-sparse-present key slot has the wrong type",
+        "present-entry key slot has the wrong type",
     );
 }

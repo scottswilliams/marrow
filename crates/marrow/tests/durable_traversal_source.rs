@@ -251,7 +251,9 @@ pub fn noteState(id: int): string {
 pub fn shelveAll(s: string) {
     transaction {
         for vid, visit in ^books at most 100 {
-            visit.shelf = s
+            if const book = visit {
+                visit.shelf = s
+            }
         } on more {}
     }
 }
@@ -499,8 +501,9 @@ fn a_two_binding_traversal_pins_each_entry_as_a_writable_address() {
         Some(Value::Text("unshelved".into()))
     );
 
-    // `for vid, visit in ^books { visit.shelf = s }`: the second binding pins each frozen
-    // entry as a place, and the write lands on that entry's field.
+    // `for vid, visit in ^books { if const book = visit { visit.shelf = s } }`: the second
+    // binding pins each frozen entry as a place; the per-iteration `if const` proves the pin
+    // present, and the write lands on that entry's field.
     run(
         &image,
         &mut attachment,

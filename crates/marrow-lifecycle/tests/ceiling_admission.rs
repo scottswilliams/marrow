@@ -255,8 +255,9 @@ store ^tallies[name: string]: Tally
         "{TWO_ROOT_SHAPE}\npub fn assetName(id: int): string? {{\n    \
          var found: string? = absent\n    transaction {{\n        \
          found = ^assets[id].name\n        \
-         const prior = ^tallies[\"reads\"].count ?? 0\n        \
-         ^tallies[\"reads\"].count = prior + 1\n    }}\n    return found\n}}\n"
+         place tally = ^tallies[\"reads\"]\n        \
+         if exists(tally) {{\n            \
+         tally.count = (tally.count ?? 0) + 1\n        }}\n    }}\n    return found\n}}\n"
     );
 
     let compile_with = |source: &str| -> VerifiedImage {

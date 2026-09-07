@@ -21,9 +21,8 @@ pub(super) enum SlotClass {
     /// no payload). It reads as payload-absent; a create gives it a payload without
     /// disturbing the descendants.
     DescendantOnly,
-    /// No marker, but an own field leaf exists — a marker/field mismatch. A persisted
-    /// orphan is corruption; a sparse field staged earlier in the same transaction is
-    /// reconcile-pending, so a mutating session tolerates it (see [`op_read_entry`]).
+    /// No marker, but an own field or group leaf exists — a marker/payload mismatch,
+    /// corruption in every session: no write path stages a leaf without its marker.
     Orphan,
     /// No marker and nothing beneath: the slot is absent.
     Absent,
@@ -97,25 +96,16 @@ pub(super) fn op_read_entry<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
     keys: &[KeyScalar],
-    tolerate_pending: bool,
 ) -> Result<Option<EntryValue>, KernelFault> {
     let stem = node_stem(site, keys)?;
     let (fields, groups) = node_shape(site);
     // Marker-first precedence through the one bounded prefix probe. A node with no
     // payload marker reads as payload-absent whether it is empty or a descendant-only
-    // node (branch children, no payload). A markerless slot carrying an own field
-    // leaf is a marker/field mismatch: in a committed read session it is a persisted
-    // orphan (corruption); inside a transaction it may be a sparse field staged for
-    // reconcile at commit, so a mutating session tolerates it as payload-absent.
+    // node (branch children, no payload). A markerless slot carrying an own leaf is a
+    // marker/payload mismatch.
     match probe_slot(cells, &stem)? {
         SlotClass::DescendantOnly | SlotClass::Absent => return Ok(None),
-        SlotClass::Orphan => {
-            return if tolerate_pending {
-                Ok(None)
-            } else {
-                Err(KernelFault::Corruption)
-            };
-        }
+        SlotClass::Orphan => return Err(KernelFault::Corruption),
         SlotClass::Present => {}
     }
     let values = read_record_leaves(cells, &stem, fields)?;
@@ -198,27 +188,20 @@ fn read_record_leaves<V: ReadView>(
 /// Materialize one group's record from the entry `keys` addresses: one slot per group
 /// field, present or vacant. A group's presence is its containing entry's presence, so
 /// this probes the entry marker exactly as [`op_read_entry`] does — a markerless slot is
-/// payload-absent (or, for a persisted own-payload leaf with no marker, corruption in a
-/// committed read and pending inside a transaction). A present entry then reads the
+/// payload-absent, or corruption when an own-payload leaf sits beneath it. A present
+/// entry then reads the
 /// group's own leaves under the group prefix; a present entry missing a `required` group
 /// leaf is a marker/payload mismatch (corruption), and an absent sparse leaf reads vacant.
 pub(super) fn op_read_group<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
     keys: &[KeyScalar],
-    tolerate_pending: bool,
 ) -> Result<Option<EntryValue>, KernelFault> {
     let stem = node_stem(site, keys)?;
     let (number, fields) = group_target(site);
     match probe_slot(cells, &stem)? {
         SlotClass::DescendantOnly | SlotClass::Absent => return Ok(None),
-        SlotClass::Orphan => {
-            return if tolerate_pending {
-                Ok(None)
-            } else {
-                Err(KernelFault::Corruption)
-            };
-        }
+        SlotClass::Orphan => return Err(KernelFault::Corruption),
         SlotClass::Present => {}
     }
     let group_stem = physical::group_stem(&stem, number);

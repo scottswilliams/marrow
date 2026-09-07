@@ -135,8 +135,9 @@ test "digits counts decimal digits" {
 }
 ```
 
-The condition is evaluated before every iteration. `while` has no bound of its
-own. A loop that does not terminate exhausts the invocation's instruction budget
+The condition is evaluated before every iteration. A `while` body is one proof
+region for durable writes ([named places](durable-places.md#named-places)).
+`while` has no bound of its own. A loop that does not terminate exhausts the invocation's instruction budget
 and stops with `run.budget` ([execution limits](execution-limits.md#limits)).
 
 ## For
@@ -186,7 +187,8 @@ body.
 A durable `for` states its bound:
 `for id in ^books at most 100 { ... } on more { ... }`.
 [Traversal and indexes](traversal-and-indexes.md#bounded-durable-traversal)
-defines it.
+defines it. A `for` body is one proof region for durable writes
+([named places](durable-places.md#named-places)).
 
 ## Loop exits
 

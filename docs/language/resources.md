@@ -32,8 +32,7 @@ store ^books[id: int]: Book
 
 pub fn add(id: int, title: string, author: string) {
     transaction {
-        ^books[id].title = title
-        ^books[id].author = author
+        ^books[id] = Book(title: title, author: author)
     }
 }
 
@@ -51,15 +50,15 @@ test "describe falls back to the title" {
 }
 ```
 
-`title` and `author` are required; `subtitle` is sparse. `add` writes the two
-required fields and no subtitle. `describe` reads the whole entry with
+`title` and `author` are required; `subtitle` is sparse. `add` writes the whole
+entry with the two required fields and no subtitle. `describe` reads the whole entry with
 `if const` and falls back with `??`, because a sparse read is a `string?`
 ([optionals](types-and-values.md#optionals)).
 
 A required field is present in every valid value. A constructor names each
-required field, and a missing one is a `check.type` error. What a required
-field means at commit is in [Writing](durable-places.md#writing). A sparse field
-may be absent, and reading one yields `T?`. A sparse field already models absence, so
+required field, and a missing one is a `check.type` error. A required field of
+a durable entry is present whenever the entry is
+([Writing](durable-places.md#writing)). A sparse field may be absent, and reading one yields `T?`. A sparse field already models absence, so
 declare a field `Option<T>` only when a stored `none` must differ from an unset
 field ([Option and Result](types-and-values.md#option-and-result)).
 
@@ -219,4 +218,5 @@ is no whole-family read, replace, or delete.
 Whole assignment stores exactly the fields the value carries. Assigning a `Book`
 to `^books[id]` rewrites the entry's fields, drops every sparse field and group
 leaf the value omits, and leaves the `notes` entries in place. To change one
-field, assign it at its own path ([Writing](durable-places.md#writing)).
+field of a present entry, write it through a proved place
+([Writing](durable-places.md#writing)).

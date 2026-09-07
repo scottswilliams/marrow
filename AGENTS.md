@@ -103,10 +103,11 @@ history is the archive.
   HTTP, principals/policy, replication, broad online evolution, and
   institutional readiness remain future until separately evidenced.
 
-Complete entries and checked durable places are selected direction in
-`docs/future/durable-programming.md`. Current field-created entries and
-commit-time required-field validation remain implemented until their
-replacement lands with code, tests, application migration, and reference updates.
+Complete entries are current: an entry is written whole, a field or group write
+updates an entry the compiler has proved present through a `place`, and `delete`
+is the one clearing form (`docs/language/durable-places.md`). Typed required
+reads through a proved place and the family presence namespace remain selected
+direction in `docs/future/durable-programming.md`.
 
 ## Working rules
 

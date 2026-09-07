@@ -86,31 +86,15 @@ fn run(
     }
 }
 
-fn run_faulting(
-    image: &VerifiedImage,
-    attachment: &mut MemoryAttachment,
-    name: &str,
-    args: Vec<Value>,
-) -> String {
-    match run_export(attachment, export(image, name).id(), args)
-        .expect("the export is in the image")
-    {
-        DurableRun::Ran(Err(fault)) => fault.code().to_string(),
-        DurableRun::Ran(Ok(_)) => panic!("{name} did not fault"),
-        DurableRun::Parked => panic!("{name} parked"),
-        DurableRun::Failed(code) => panic!("{name} failed: {code}"),
-    }
-}
-
 fn present_name(name: &str) -> Option<Value> {
     Some(Value::Optional(Some(Box::new(Value::Text(name.into())))))
 }
 
 /// One ephemeral attachment serves a sequence of invocations: `add` commits an asset
 /// across both roots, a later `assetName` reads it back, a committed `recordMove`
-/// advances the moves tally, then an unguarded `recordMove` on an absent asset faults
-/// `run.required_missing` and rolls its whole cross-root region back, and a final read
-/// shows both roots at their prior committed values with no asset created by the fault.
+/// advances the moves tally, then a `recordMove` on an absent asset fails its presence
+/// guard and writes nothing on either root, and a final read shows both roots at their
+/// prior committed values with no asset created.
 #[test]
 fn add_read_rollback_final_read() {
     let image = compile_verify();
@@ -159,17 +143,16 @@ fn add_read_rollback_final_read() {
         Some(Value::Int(1))
     );
 
-    // Cross-root rollback: recordMove on an absent asset stages a lone `location` on
-    // ^assets and a "moves" increment on ^tallies; the required-missing fault rolls the
-    // whole region back across BOTH roots.
+    // A move on an absent asset fails its presence guard before either root is written:
+    // no `location` lands on ^assets and the "moves" tally does not advance.
     assert_eq!(
-        run_faulting(
+        run(
             &image,
             &mut att,
             "recordMove",
             vec![Value::Int(2), Value::Text("Bay 9".into())],
         ),
-        "run.required_missing",
+        None,
     );
 
     // Neither root moved: the prior asset and its location stand, no asset 2 exists,

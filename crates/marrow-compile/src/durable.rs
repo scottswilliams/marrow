@@ -202,6 +202,18 @@ impl DurableGroup {
     }
 }
 
+/// One durable entry family: a root's own entry family, or one keyed-branch family
+/// beneath it, named by the root and the declaration-order index of each branch hop.
+/// The unit a presence proof is scoped to: an erase of any entry in the family or a
+/// call whose demand writes the family ends every proof over it, whatever key the
+/// proof or the erase names, so two roots projecting one Product declaration are
+/// distinct families and sibling branches are distinct families.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Family {
+    pub(crate) root: marrow_image::RootId,
+    pub(crate) branch: Vec<usize>,
+}
+
 /// One executable keyed `branch` of a flat-executable root: a scalar-field keyed
 /// scalar-field subtree one or more levels below the root, carrying its own nested
 /// branches recursively. Its whole-entry operations address the key-path
@@ -210,6 +222,7 @@ impl DurableGroup {
 /// `record` from `fields` in declaration order.
 pub(crate) struct DurableBranch {
     pub(crate) name: String,
+    pub(crate) family: Family,
     /// The branch's ordered key columns (one or more), the whole composite branch key.
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
@@ -241,6 +254,8 @@ pub(crate) struct DurableRoot {
     /// an entry identity `Id(^root)` carries, so two identities over different roots are
     /// distinct values and an identity addressed to the wrong root is a type error.
     pub(crate) root_id: marrow_image::RootId,
+    /// This root's own entry family.
+    pub(crate) family: Family,
     /// The resource (product) name backing this store — the head of a branch's
     /// qualified constructor path `Resource.branch(…)`.
     pub(crate) resource: String,
@@ -785,6 +800,7 @@ impl DurableRegistry {
                 )?;
                 let occurrence = match built {
                     StoreBuild::Admitted(built) => {
+                        let built = *built;
                         registry.naming.extend(built.naming);
                         let executable = built.executable.map(|root| {
                             registry.roots.push(root);
@@ -854,8 +870,9 @@ impl DurableRegistry {
 /// One store declaration's build outcome.
 enum StoreBuild {
     /// The graph is admissible: its identity is complete and its root (with any executable
-    /// descriptor) entered the draft.
-    Admitted(BuiltRoot),
+    /// descriptor) entered the draft. Boxed: the descriptor carries the root's whole
+    /// member tree, while a refusal is a small summary.
+    Admitted(Box<BuiltRoot>),
     /// The store was refused, with the cause its declaration reported. There is one
     /// refusal outcome and no silent one: a store that leaves no trace in the registry
     /// is what makes every later `^name` reference read as a name never written.
@@ -1439,7 +1456,7 @@ fn build_one(
     let executable = keyed && all_fields_executable && members_flat;
     let (branches, groups) = if executable {
         (
-            build_executable_branches(records, group_rows, &captured.branches)?,
+            build_executable_branches(records, group_rows, &captured.branches, root_id)?,
             build_executable_groups(&record.groups, &captured.groups),
         )
     } else {
@@ -1447,10 +1464,10 @@ fn build_one(
     };
 
     if !executable {
-        return Ok(StoreBuild::Admitted(BuiltRoot {
+        return Ok(StoreBuild::Admitted(Box::new(BuiltRoot {
             executable: None,
             naming,
-        }));
+        })));
     }
     // A flat root's top-level fields map positionally to the captured field paths, so
     // `captured.fields[i]` is the canonical declaration path of `record.fields[i]` (both
@@ -1470,11 +1487,15 @@ fn build_one(
         })
         .collect();
 
-    Ok(StoreBuild::Admitted(BuiltRoot {
+    Ok(StoreBuild::Admitted(Box::new(BuiltRoot {
         naming,
         executable: Some(DurableRoot {
             name: store.root.root.clone(),
             root_id,
+            family: Family {
+                root: root_id,
+                branch: Vec::new(),
+            },
             resource: row.resource.to_string(),
             key: key_scalars.clone(),
             record: record.type_id,
@@ -1485,7 +1506,7 @@ fn build_one(
             branches,
             indexes: lowered_indexes,
         }),
-    }))
+    })))
 }
 
 /// Resolves durable `(kind, path)` anchors against the committed ledger, pushing a
@@ -2712,8 +2733,9 @@ fn build_executable_branches(
     records: &TypeRegistry,
     groups: &[GroupRow<'_>],
     top_branches: &[BranchSites],
+    root_id: marrow_image::RootId,
 ) -> Result<Vec<DurableBranch>, GenericInvariant> {
-    build_branches(records, groups, top_branches)
+    build_branches(records, groups, top_branches, root_id, &[])
 }
 
 /// Build the [`DurableBranch`] descriptors for the keyed branches among `members`, zipped
@@ -2724,12 +2746,17 @@ fn build_branches(
     records: &TypeRegistry,
     groups: &[GroupRow<'_>],
     sites: &[BranchSites],
+    root_id: marrow_image::RootId,
+    parent: &[usize],
 ) -> Result<Vec<DurableBranch>, GenericInvariant> {
     groups
         .iter()
         .filter_map(|row| row.keys.as_ref().map(|keys| (row, keys)))
         .zip(sites)
-        .map(|((row, keys), sites)| {
+        .enumerate()
+        .map(|(index, ((row, keys), sites))| {
+            let mut branch_path = parent.to_vec();
+            branch_path.push(index);
             // The key scalars were resolved once, when the row was taken; the graph
             // build consumed a refusal as this branch's own diagnostic, so a branch
             // reaching the executable derivation reads the settled tuple.
@@ -2754,9 +2781,14 @@ fn build_branches(
                     })
                 })
                 .collect::<Result<_, GenericInvariant>>()?;
-            let branches = build_branches(records, &row.groups, &sites.branches)?;
+            let branches =
+                build_branches(records, &row.groups, &sites.branches, root_id, &branch_path)?;
             Ok(DurableBranch {
                 name: row.name.to_string(),
+                family: Family {
+                    root: root_id,
+                    branch: branch_path,
+                },
                 key,
                 record: sites.record,
                 path: sites.path.clone(),

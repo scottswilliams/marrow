@@ -49,6 +49,17 @@ fn sites() -> Vec<SiteTarget> {
     vec![SiteTarget::whole_payload(), SiteTarget::field_leaf(0)]
 }
 
+/// An entry with only its required field present against a resource declaring
+/// `1 + extra` fields.
+fn narrow_entry(extra: usize) -> EntryValue {
+    let mut fields = vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(7)))];
+    fields.extend(std::iter::repeat_n(None, extra));
+    EntryValue {
+        groups: Vec::new(),
+        fields,
+    }
+}
+
 fn write() -> DemandCoverage {
     DemandCoverage {
         read: true,
@@ -68,14 +79,17 @@ fn writes_for_single_field_set(extra: usize) -> usize {
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), write())
         .expect("txn session");
+    let entry = txn.site(0);
     let field = txn.site(1);
+    txn.create_entry(&entry, &[KeyScalar::Int(1)], narrow_entry(extra))
+        .expect("create the entry the set updates");
     let before = counters.writes();
-    txn.set_required(
+    txn.set_field(
         &field,
         &[KeyScalar::Int(1)],
         ValueDomain::Scalar(RuntimeScalar::Int(7)),
     )
-    .expect("set required");
+    .expect("set field");
     counters.writes() - before
 }
 
@@ -93,19 +107,10 @@ fn writes_for_narrow_create(extra: usize) -> usize {
         .expect("txn session");
     let entry = txn.site(0);
     // Only field 0 is present; every declared optional field is vacant.
-    let mut fields = vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(7)))];
-    fields.extend(std::iter::repeat_n(None, extra));
     let before = counters.writes();
     assert_eq!(
-        txn.create_entry(
-            &entry,
-            &[KeyScalar::Int(1)],
-            EntryValue {
-                groups: Vec::new(),
-                fields
-            }
-        )
-        .expect("create"),
+        txn.create_entry(&entry, &[KeyScalar::Int(1)], narrow_entry(extra))
+            .expect("create"),
         CreateOutcome::Created
     );
     counters.writes() - before
@@ -115,10 +120,7 @@ fn writes_for_narrow_create(extra: usize) -> usize {
 fn a_single_field_set_stages_constant_writes_regardless_of_declared_width() {
     let narrow = writes_for_single_field_set(0);
     let wide = writes_for_single_field_set(19);
-    assert_eq!(
-        narrow, 1,
-        "a required-field set stages exactly its one leaf"
-    );
+    assert_eq!(narrow, 1, "a field set stages exactly its one leaf");
     assert_eq!(
         narrow, wide,
         "declared width must not change the work of setting one field",

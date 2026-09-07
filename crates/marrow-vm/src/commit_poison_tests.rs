@@ -45,7 +45,6 @@ fn vm_spans(code: &[Instr]) -> Vec<SpanEntry> {
 #[derive(Clone, Copy)]
 enum VmWrite {
     Create,
-    SetRequired,
 }
 
 /// The encoded fixture image; every consumer seals it through the verifier.
@@ -107,7 +106,6 @@ fn vm_commit_image(write: VmWrite) -> Vec<u8> {
             },
         )
         .expect("the Product is declared");
-    let members = draft.product_members(product).expect("declared");
     let entry_handle = draft
         .bind_occurrence_site(
             counters.occurrence(),
@@ -117,16 +115,6 @@ fn vm_commit_image(write: VmWrite) -> Vec<u8> {
         .expect("the root placement is a canonical path of this occurrence");
     let entry_site = draft
         .request_site(&entry_handle)
-        .expect("the binding is live");
-    let field_handle = draft
-        .bind_occurrence_site(
-            counters.occurrence(),
-            members[0].path(),
-            SemanticTarget::FieldLeaf,
-        )
-        .expect("the value field is a canonical path of this occurrence");
-    let field_site = draft
-        .request_site(&field_handle)
         .expect("the binding is live");
     let key = draft.intern_text("vm").expect("a within-domain mint");
     let value = draft.intern_int(7).expect("a within-domain mint");
@@ -140,7 +128,6 @@ fn vm_commit_image(write: VmWrite) -> Vec<u8> {
             code.push(Instr::RecordNew(record));
             code.push(Instr::DurCreateEntry(entry_site));
         }
-        VmWrite::SetRequired => code.push(Instr::DurSetRequired(field_site)),
     }
     code.extend([Instr::TxnCommit, Instr::Return]);
     let name = draft.intern_string("write").expect("a within-domain mint");
@@ -310,35 +297,6 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
         store
             .read_session(InvocationGrant::full_store(), write())
             .expect("a witness-put failure does not poison the handle");
-
-        write_fault.set(None);
-        assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));
-    }
-
-    // A required-field write produces a markerless staged entry. Reconcile's second write
-    // supplies the absent marker; failing it is likewise a pre-engine known-old outcome.
-    {
-        let mode = ModeHandle::new(Mode::Confirm);
-        let write_fault = WriteFaultHandle::inert();
-        let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
-        let image = verify(&vm_commit_image(VmWrite::SetRequired)).expect("verify VM fixture");
-        write_fault.set(Some(2));
-        let fault = run_vm_write(&mut store, &image).expect_err("reconcile write must fault");
-        let DurableExecutionFault::Incomplete(incomplete) = fault else {
-            panic!("a reconcile abort was flattened to an ordinary runtime fault");
-        };
-        match incomplete.into_disposition() {
-            IncompleteDisposition::Classified { fault, durable } => {
-                assert_eq!(fault.code(), "run.commit");
-                assert_eq!(durable, DurableCommitState::KnownOld);
-            }
-            IncompleteDisposition::Pending { .. } => {
-                panic!("a pre-engine reconcile failure minted a recovery fact");
-            }
-        }
-        store
-            .read_session(InvocationGrant::full_store(), write())
-            .expect("a reconcile failure does not poison the handle");
 
         write_fault.set(None);
         assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));

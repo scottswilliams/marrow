@@ -85,7 +85,9 @@ const PLACE_EXPORTS: &str = r#"pub fn gradeViaPlace(student: string, course: str
 pub fn setGradeViaPlace(student: string, course: string, grade: int) {
     transaction {
         place e = ^enrollments[student, course]
-        e.grade = grade
+        if exists(e) {
+            e.grade = grade
+        }
     }
 }
 
@@ -397,8 +399,9 @@ fn a_composite_root_place_reads_and_writes_its_fields_by_the_root_node() {
         "a composite-root place reads `grade` off the root node",
     );
 
-    // A field write through the composite-root place resolves the same root `grade`; the
-    // read-back through the place observes the newly written value.
+    // A field write through the composite-root place, proven present by `exists(e)`,
+    // resolves the same root `grade`; the read-back through the place observes the newly
+    // written value.
     run(
         &image,
         &mut attachment,

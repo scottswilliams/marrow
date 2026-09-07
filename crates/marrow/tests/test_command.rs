@@ -202,7 +202,7 @@ test "field absent on a fresh attachment" {
 }
 
 test "field present after a write" {
-    ^counters[1].value = 5
+    ^counters[1] = Counter(value: 5)
     assert exists(^counters[1].value)
 }
 
@@ -211,17 +211,21 @@ test "field coalesce returns the default when absent" {
 }
 
 test "field coalesce returns the value when present" {
-    ^counters[1].value = 5
+    ^counters[1] = Counter(value: 5)
     assert ^counters[1].value ?? 0 == 5
 }
 
 test "required field write persists and reads back" {
-    ^counters[1].value = 7
+    place c = ^counters[1]
+    c = Counter(value: 1)
+    c.value = 7
     assert ^counters[1].value ?? 0 == 7
 }
 
 test "sparse field write persists and reads back" {
-    ^counters[1].label = "hi"
+    place c = ^counters[1]
+    c = Counter(value: 1)
+    c.label = "hi"
     assert ^counters[1].label ?? "x" == "hi"
 }
 
@@ -230,8 +234,9 @@ test "sparse field coalesce returns the default when absent" {
 }
 
 test "overwrite keeps the last write" {
-    ^counters[1].value = 1
-    ^counters[1].value = 2
+    place c = ^counters[1]
+    c = Counter(value: 1)
+    c.value = 2
     assert ^counters[1].value ?? 0 == 2
 }
 
@@ -243,7 +248,7 @@ test "binding guard skips an absent field" {
 }
 
 test "binding guard reads a present field" {
-    ^counters[1].value = 42
+    ^counters[1] = Counter(value: 42)
     if const v = ^counters[1].value {
         assert v == 42
     } else {
@@ -252,12 +257,12 @@ test "binding guard reads a present field" {
 }
 
 test "one test writes a field" {
-    ^counters[77].value = 1
+    ^counters[77] = Counter(value: 1)
     assert ^counters[77].value ?? 0 == 1
 }
 
 test "a fresh attachment does not observe another test's write" {
-    ^counters[88].value = 2
+    ^counters[88] = Counter(value: 2)
     assert ^counters[88].value ?? -1 == 2
     assert ^counters[77].value ?? -1 == -1
 }

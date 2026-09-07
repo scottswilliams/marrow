@@ -162,7 +162,7 @@ store ^books[id: int]: Book
 
 pub fn add(id: Id(^books), title: string) {
     transaction {
-        ^books[id].title = title
+        ^books[id] = Book(title: title)
     }
 }
 

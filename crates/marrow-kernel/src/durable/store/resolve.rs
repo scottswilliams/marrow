@@ -86,7 +86,7 @@ pub(super) fn resolve_site(
     };
     // A whole-entry site enumerates the container's footprint, so it carries the
     // container's numbered record and its numbered groups; a field-target site carries its
-    // field plus the container record so a staged set can reconcile the node at commit. A
+    // field plus the container record so a field write can maintain the node's indexes. A
     // root entry's footprint includes its groups (its own payload); a branch entry carries
     // none, since group-in-branch is not yet executable.
     let target = match target {

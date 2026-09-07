@@ -23,7 +23,7 @@ pub fn add(id: int, title: string): bool {
         if exists(^tasks[id]) {
             return false
         }
-        ^tasks[id].title = title
+        ^tasks[id] = Task(title: title)
     }
     return true
 }
@@ -113,8 +113,9 @@ store ^tallies[name: string]: Tally
 
 pub fn add(id: int, title: string) {
     transaction {
-        ^tasks[id].title = title
-        ^tallies["tasks"].count = (^tallies["tasks"].count ?? 0) + 1
+        ^tasks[id] = Task(title: title)
+        place tally = ^tallies["tasks"]
+        tally = Tally(count: (tally.count ?? 0) + 1)
     }
 }
 
@@ -130,7 +131,8 @@ test "each add advances the tally" {
 ```
 
 `add` writes to two roots, and either both writes become durable or neither
-does. A fault before the block ends rolls back every write in it. A `return`
+does. The tally is written as a whole entry through a place, so the first call
+creates it and each later call replaces it. A fault before the block ends rolls back every write in it. A `return`
 inside the block commits what was written before it, so `add` in the first look
 leaves a duplicate key untouched. A durable write in an export body outside a
 `transaction` block is a compile error, `check.requires_transaction`; a test
@@ -175,7 +177,7 @@ pub fn add(id: int, title: string): bool {
         if exists(^tasks[id]) {
             return false
         }
-        ^tasks[id].title = title
+        ^tasks[id] = Task(title: title)
     }
     return true
 }

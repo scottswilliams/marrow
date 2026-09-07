@@ -111,8 +111,9 @@ store ^books[id: int]: Book
 
 pub fn recordLoan(id: Id(^books)) {
     transaction {
-        if exists(^books[id]) {
-            ^books[id].loans = (^books[id].loans ?? 0) + 1
+        place book = ^books[id]
+        if exists(book) {
+            book.loans = (book.loans ?? 0) + 1
         }
     }
 }
@@ -240,7 +241,7 @@ pub fn createBook(title: string): Id(^books) {
     transaction {
         place seq = ^idseq["book"]
         const next = (seq.value ?? 0) + 1
-        seq.value = next
+        seq = Counter(value: next)
         const bid = Id(^books, next)
         ^books[bid] = Book(title: title)
         return bid
@@ -260,9 +261,10 @@ test "example: createBook" {
 ```
 
 `seq.value ?? 0` supplies the first value when the counter entry is absent, so
-no separate initialization is needed. The increment and the create share one
-block, so they commit or roll back together: a key is never advanced without
-its entry. `Id(^books, next)` constructs the [entry identity](types-and-values.md#entry-identity)
+no separate initialization is needed, and `seq = Counter(value: next)` writes
+the counter whole: the first call creates it and each later call replaces it.
+The increment and the create share one block, so they commit or roll back
+together: a key is never advanced without its entry. `Id(^books, next)` constructs the [entry identity](types-and-values.md#entry-identity)
 from the allocated key without reading the store, and the returned `Id(^books)`
 is the key of a later read. The program keeps the counter in step with
 `^books`; the language guarantees only that the two writes commit together.

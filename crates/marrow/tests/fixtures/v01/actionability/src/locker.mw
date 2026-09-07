@@ -40,7 +40,7 @@ pub fn registerMember(name: string, joined: date): int {
     transaction {
         place seq = ^idseq["member"]
         const next = (seq.value ?? 0) + 1
-        seq.value = next
+        seq = Counter(value: next)
         ^members[next] = Member(name: name, joined: joined, standing: Standing::active)
         return next
     }

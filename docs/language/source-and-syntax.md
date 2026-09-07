@@ -27,7 +27,7 @@ pub fn shelfOf(id: int): string {
 }
 
 test "an unshelved book" {
-    ^books[1].title = "Small Gods"
+    ^books[1] = Book(title: "Small Gods")
     assert shelfOf(1) == "unsorted"
 }
 ```

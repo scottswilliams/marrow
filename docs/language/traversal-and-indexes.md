@@ -118,10 +118,61 @@ body ran to completion. A `break`, a `return`, or a fault leaves the loop
 without running it. `from f` starts the frozen set at `f`, inclusive.
 
 A pin `p` is a [place](durable-places.md#named-places) over the entry at the
-current key, scoped to the body. It reads nothing on its own. A read through
-the pin is optional like any durable read, and a write through it sits inside
-a `transaction`. `exists(p)` reports whether the entry is still present; it
-changes no later read or write.
+current key, scoped to the body. It reads nothing and proves nothing by
+itself. A read through the pin is optional like any durable read. A write
+through it sits inside a `transaction` and needs a proof the body establishes
+before the write, `if exists(p)` or `if const x = p`:
+
+```mw
+module docs::traversal::pins
+
+resource Book {
+    required title: string
+    shelf: string
+}
+
+store ^books[id: int]: Book
+
+pub fn shelveAll(shelf: string): int {
+    var moved = 0
+    transaction {
+        for id, book in ^books at most 100 {
+            if exists(book) {
+                book.shelf = shelf
+                moved += 1
+            }
+        } on more {
+            return moved
+        }
+    }
+    return moved
+}
+
+pub fn add(id: int, title: string) {
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+}
+
+pub fn shelfOf(id: int): string? {
+    return ^books[id].shelf
+}
+
+test "each iteration proves its pin" {
+    add(1, "Small Gods")
+    add(2, "Pyramids")
+    assert shelveAll("top") == 2
+    assert shelfOf(2) ?? "" == "top"
+}
+```
+
+`exists(book)` reports whether the entry is still present and proves it for
+the rest of that block; it changes no later read. `shelveAll` proves each pin
+on its own iteration. A loop body is one proof region: a write inside a body
+that was entered after its proof was established is refused when that body,
+or a body nested in it, erases the family or calls a function that writes it,
+and after such a loop the proof is gone
+([named places](durable-places.md#named-places)).
 
 Writes in the body do not change the frozen set. An entry created in the body
 is not visited. An entry erased by an earlier iteration keeps its frozen key,
@@ -234,8 +285,11 @@ pub fn isbnTaken(isbn: string): bool {
 pub fn moveByIsbn(isbn: string, shelf: string): bool {
     transaction {
         if const found = ^books.byIsbn[isbn] {
-            ^books[found].shelf = shelf
-            return true
+            place m = ^books[found]
+            if exists(m) {
+                m.shelf = shelf
+                return true
+            }
         }
         return false
     }
@@ -257,8 +311,9 @@ test "indexes" {
 
 `byShelf[shelf, id]` orders books by shelf, then by key, so two books on one
 shelf stay distinct. `byIsbn[isbn] unique` maps each ISBN to one book. `add`
-writes the entry once; both indexes follow. `moveByIsbn` changes `shelf`, and
-the last two assertions show `byShelf` moved with it.
+writes the entry once; both indexes follow. `moveByIsbn` binds a place over
+the found identity, proves it with `exists(m)`, and changes `shelf`; the last
+two assertions show `byShelf` moved with it.
 
 Each component names one key of the root or one top-level field of the
 resource, and no component repeats. A root's key names are the store's own and
@@ -323,6 +378,7 @@ index has no `exists`; the `for` head is its only read, and `exists` over it
 is a `check.type` error.
 
 A found identity is an address. Inside a `transaction`,
-`^books[found].shelf = shelf` writes one field of the entry the lookup found,
-and `^books[found] = Book(...)` replaces it, exactly as a key in brackets
-would.
+`place m = ^books[found]` binds it, `m.shelf = shelf` under `if exists(m)`
+writes one field of the entry the lookup found, and `^books[found] = Book(...)`
+replaces it, exactly as a key in brackets would
+([named places](durable-places.md#named-places)).

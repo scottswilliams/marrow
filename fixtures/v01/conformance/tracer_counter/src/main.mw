@@ -20,14 +20,21 @@ pub fn get(name: string): int? {
 
 pub fn bump(name: string) {
     transaction {
-        const current = ^counters[name].value ?? 0
-        ^counters[name].value = current + 1
+        place c = ^counters[name]
+        if exists(c) {
+            c.value = (c.value ?? 0) + 1
+        } else {
+            c = Counter(value: 1)
+        }
     }
 }
 
 pub fn label(name: string, text: string) {
     transaction {
-        ^counters[name].label = text
+        place c = ^counters[name]
+        if exists(c) {
+            c.label = text
+        }
     }
 }
 

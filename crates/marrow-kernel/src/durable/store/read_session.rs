@@ -5,7 +5,7 @@ use marrow_store::ByteEngine;
 
 use super::super::{
     AuthorizedSite, BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, EntryValue,
-    EraseOutcome, KernelFault, Presence, ReplaceOutcome,
+    EraseOutcome, KernelFault, Presence,
 };
 use super::Durable;
 use super::index_ops::{op_index_lookup, op_index_scan};
@@ -54,21 +54,28 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     ) -> Result<Option<EntryValue>, KernelFault> {
         // A coherent read session observes committed state with no staging, so a
         // markerless own field leaf is a persisted orphan (corruption), not pending.
-        op_read_entry(&self.view, site, keys, false)
+        op_read_entry(&self.view, site, keys)
     }
     fn read_group(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault> {
-        op_read_group(&self.view, site, keys, false)
+        op_read_group(&self.view, site, keys)
+    }
+    fn read_group_present(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<EntryValue, KernelFault> {
+        op_read_group(&self.view, site, keys)?.ok_or(KernelFault::Corruption)
     }
     fn replace_group(
         &mut self,
         _site: &AuthorizedSite,
         _keys: &[KeyScalar],
         _value: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault> {
+    ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
     fn erase_group(
@@ -110,27 +117,11 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     ) -> Result<Presence, KernelFault> {
         op_family_populated(&self.view, site, ancestor_keys)
     }
-    fn set_required(
+    fn set_field(
         &mut self,
         _site: &AuthorizedSite,
         _keys: &[KeyScalar],
         _value: ValueDomain,
-    ) -> Result<(), KernelFault> {
-        unreachable!("verifier proved a read-only session performs no mutation")
-    }
-    fn set_sparse(
-        &mut self,
-        _site: &AuthorizedSite,
-        _keys: &[KeyScalar],
-        _value: Option<ValueDomain>,
-    ) -> Result<(), KernelFault> {
-        unreachable!("verifier proved a read-only session performs no mutation")
-    }
-    fn set_sparse_present(
-        &mut self,
-        _site: &AuthorizedSite,
-        _keys: &[KeyScalar],
-        _value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
@@ -147,7 +138,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         _site: &AuthorizedSite,
         _keys: &[KeyScalar],
         _entry: EntryValue,
-    ) -> Result<ReplaceOutcome, KernelFault> {
+    ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
     fn erase_field(

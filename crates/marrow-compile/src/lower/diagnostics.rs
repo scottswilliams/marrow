@@ -451,6 +451,28 @@ fn present_idiom_steer(message: &mut String) {
     );
 }
 
+/// The refusal of a field or group write no presence proof covers at the write: the
+/// entry may be absent there, and a write never creates one. `detail` names why no
+/// proof holds at this write.
+pub(crate) fn requires_presence(
+    file: &FileIdentity,
+    span: SourceSpan,
+    detail: &str,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckRequiresPresence.as_str(),
+        file,
+        span,
+        format!(
+            "this write updates an entry, but {detail}. Bind `place m = ^root[key]` and write \
+             through `m` inside `if exists(m) {{ … }}`, after `if not exists(m) {{ return … }}`, \
+             or after a whole-entry assignment `m = Resource(…)`; a proof ends at its block's \
+             end, at a `delete` of any entry in the same family, and at a call that writes \
+             the family. To create an entry, assign the whole record."
+        ),
+    )
+}
+
 pub(super) fn type_mismatch(
     records: &TypeRegistry,
     file: &FileIdentity,

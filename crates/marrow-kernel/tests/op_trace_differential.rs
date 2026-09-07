@@ -11,7 +11,7 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     AuthorizedSite, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, Durable,
-    DurableStore, EntryValue, EraseOutcome, InvocationGrant, Presence, ReplaceOutcome, SiteTarget,
+    DurableStore, EntryValue, EraseOutcome, InvocationGrant, KernelFault, Presence, SiteTarget,
     StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
@@ -169,27 +169,26 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
             let outcome = txn.create_entry(&e, &[key(name)], entry(2, None)).unwrap();
             assert_eq!(outcome, CreateOutcome::Created);
         }
-        // replace outcomes: present vs missing.
+        // replace outcomes: present vs missing (a replace runs only on the present
+        // edge, so a markerless slot is a marker/payload mismatch).
         transcript.push(format!(
             "replace a = {:?}",
             txn.replace_entry(&e, &[key("a")], entry(5, Some("first")))
-                .unwrap()
         ));
         transcript.push(format!(
             "replace ghost = {:?}",
             txn.replace_entry(&e, &[key("ghost")], entry(0, None))
-                .unwrap()
         ));
         // sparse set then clear.
-        txn.set_sparse(
+        txn.set_field(
             &label,
             &[key("ab")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("mark".into()))),
+            ValueDomain::Scalar(RuntimeScalar::Str("mark".into())),
         )
         .unwrap();
-        txn.set_sparse(&label, &[key("ab")], None).unwrap();
+        txn.erase_field(&label, &[key("ab")]).unwrap();
         // required field update.
-        txn.set_required(
+        txn.set_field(
             &value,
             &[key("ab")],
             ValueDomain::Scalar(RuntimeScalar::Int(20)),
@@ -280,8 +279,8 @@ fn memory_and_redb_agree_on_the_operation_trace() {
         vec![
             "create a = Created".to_string(),
             "create a again = AlreadyPresent".to_string(),
-            "replace a = Replaced".to_string(),
-            "replace ghost = Missing".to_string(),
+            "replace a = Ok(())".to_string(),
+            "replace ghost = Err(Corruption)".to_string(),
             "erase entry empty-key = Erased".to_string(),
             "erase entry ghost = Missing".to_string(),
             "commit = Committed".to_string(),
@@ -301,12 +300,12 @@ fn memory_and_redb_agree_on_the_operation_trace() {
     );
 }
 
-/// The strict present-entry sparse set (`set_sparse_present`) sets a leaf of an
-/// entry the caller proved present. Over both engines it must set the leaf exactly
-/// like `set_sparse` and leave the same final state; on an absent marker it faults
-/// `Corruption` (the marker law: a leaf never implies an absent entry into being).
+/// The present-entry field set (`set_field`) sets a leaf of an entry the caller
+/// proved present. Over both engines it must set the leaf and leave the same final
+/// state; on an absent marker it faults `Corruption` (the marker law: a leaf never
+/// implies an absent entry into being).
 #[test]
-fn set_sparse_present_agrees_across_engines() {
+fn set_field_agrees_across_engines() {
     fn probe<E: ByteEngine>(mut store: DurableStore<E>) -> (Presence, Dump) {
         {
             let mut txn = store
@@ -315,19 +314,19 @@ fn set_sparse_present_agrees_across_engines() {
             let e = txn.site(ENTRY);
             let label = txn.site(LABEL);
             txn.create_entry(&e, &[key("p")], entry(7, None)).unwrap();
-            // The entry is present in the staged view, so the strict set assumes the
-            // marker and writes the leaf.
-            txn.set_sparse_present(
+            // The entry is present in the staged view, so the set asserts the marker
+            // and writes the leaf.
+            txn.set_field(
                 &label,
                 &[key("p")],
-                Some(ValueDomain::Scalar(RuntimeScalar::Str("strict".into()))),
+                ValueDomain::Scalar(RuntimeScalar::Str("strict".into())),
             )
             .unwrap();
-            // A strict clear of a present entry removes the leaf without touching the
+            // A field erase of a present entry removes the leaf without touching the
             // marker.
             txn.create_entry(&e, &[key("q")], entry(8, Some("x")))
                 .unwrap();
-            txn.set_sparse_present(&label, &[key("q")], None).unwrap();
+            txn.erase_field(&label, &[key("q")]).unwrap();
             assert!(matches!(txn.commit(), CommitResult::Committed));
         }
         let mut reader = store
@@ -384,23 +383,23 @@ fn set_sparse_present_agrees_across_engines() {
     );
 }
 
-/// A strict set whose entry marker is absent is corruption, never implicit
+/// A field set whose entry marker is absent is corruption, never implicit
 /// creation. The compiler's presence proof makes this unreachable; the kernel
 /// asserts it as defense in depth.
 #[test]
-fn set_sparse_present_on_an_absent_marker_is_corruption() {
+fn set_field_on_an_absent_marker_is_corruption() {
     let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), write())
         .expect("txn");
     let label = txn.site(LABEL);
     assert_eq!(
-        txn.set_sparse_present(
+        txn.set_field(
             &label,
             &[key("missing")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into())))
+            ValueDomain::Scalar(RuntimeScalar::Str("x".into()))
         ),
-        Err(marrow_kernel::durable::KernelFault::Corruption)
+        Err(KernelFault::Corruption)
     );
 }
 
@@ -440,34 +439,6 @@ fn rollback_discards_staged_writes_on_both_backends() {
 }
 
 #[test]
-fn required_missing_commit_agrees_on_both_backends() {
-    fn probe<E: ByteEngine>(mut store: DurableStore<E>) -> bool {
-        let mut txn = store
-            .txn_session(InvocationGrant::full_store(), write())
-            .expect("txn");
-        let label = txn.site(LABEL);
-        // Stage only the sparse label on a fresh entry; the required value is unset.
-        txn.set_sparse(
-            &label,
-            &[key("x")],
-            Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into()))),
-        )
-        .unwrap();
-        matches!(txn.commit(), CommitResult::RequiredMissing { .. })
-    }
-    assert!(probe(DurableStore::from_engine(
-        MemoryEngine::new(),
-        project(&schema(), sites()),
-    )));
-    let temp = TempDir::new("required-missing");
-    let native = native_owner(&temp.store());
-    assert!(probe(DurableStore::from_engine(
-        native,
-        project(&schema(), sites())
-    )));
-}
-
-#[test]
 fn a_replaced_entry_drops_unlisted_sparse_leaves() {
     // Exact replacement: a replace with no label removes a previously set label.
     fn probe<E: ByteEngine>(mut store: DurableStore<E>) -> Option<String> {
@@ -478,10 +449,7 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
             let e = txn.site(ENTRY);
             txn.create_entry(&e, &[key("k")], entry(1, Some("keep")))
                 .unwrap();
-            assert_eq!(
-                txn.replace_entry(&e, &[key("k")], entry(2, None)).unwrap(),
-                ReplaceOutcome::Replaced
-            );
+            txn.replace_entry(&e, &[key("k")], entry(2, None)).unwrap();
             assert!(matches!(txn.commit(), CommitResult::Committed));
         }
         let mut reader = store
@@ -598,14 +566,13 @@ fn replay_groups<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Vec
         transcript.push(format!(
             "replace group = {:?}",
             txn.replace_group(&details_site, &[key("b")], details(Some(512), None))
-                .unwrap()
         ));
         reads.push(dump(txn.read_group(&details_site, &[key("b")]).unwrap()));
-        // A group replace over an absent entry is Missing and touches nothing.
+        // A group replace over an absent entry is a marker/payload mismatch and touches
+        // nothing.
         transcript.push(format!(
             "replace ghost group = {:?}",
             txn.replace_group(&details_site, &[key("ghost")], details(Some(1), None))
-                .unwrap()
         ));
         transcript.push(format!(
             "erase group = {:?}",
@@ -644,15 +611,18 @@ fn memory_and_redb_agree_on_the_group_operation_trace() {
         "the two backends disagree on materialized group reads"
     );
 
-    // The algebra is frozen: create present, replace present, replace-ghost missing, erase
+    // The algebra is frozen: create present, replace present, replace-ghost refused, erase
     // present, and the three reads (full group, pages-only after the exact replace that
     // dropped `language`, absent after the erase).
     assert_eq!(
         mem_transcript,
         vec![
             format!("create = {:?}", CreateOutcome::Created),
-            format!("replace group = {:?}", ReplaceOutcome::Replaced),
-            format!("replace ghost group = {:?}", ReplaceOutcome::Missing),
+            "replace group = Ok(())".to_string(),
+            format!(
+                "replace ghost group = {:?}",
+                Err::<(), _>(KernelFault::Corruption)
+            ),
             format!("erase group = {:?}", EraseOutcome::Erased),
             format!("commit = {:?}", CommitResult::Committed),
         ]

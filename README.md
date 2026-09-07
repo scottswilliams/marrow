@@ -4,13 +4,13 @@ Marrow is a statically typed compiled language in which durable data is
 ordinary program state.
 
 ```text
-task.status = Status::done
-^tasks[id].status = Status::done
+task = Task(title: title, status: Status::done)
+^tasks[id] = Task(title: title, status: Status::done)
 ```
 
 The first assignment changes a local value. The second changes durable state.
-The `^` is the whole difference: both lines resolve `status` through the same
-type, and a durable place is read and assigned like a local one.
+The `^` is the whole difference: both lines build the same `Task`, and a
+durable place is read and assigned like a local one.
 
 ## Example
 
@@ -33,18 +33,18 @@ store ^tasks[id: int]: Task
 
 pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
     transaction {
-        ^tasks[id].title = title
-        ^tasks[id].status = Status::open
+        ^tasks[id] = Task(title: title, status: Status::open)
     }
     return id
 }
 
 pub fn complete(id: Id(^tasks)): bool {
     transaction {
-        if not exists(^tasks[id]) {
+        place task = ^tasks[id]
+        if not exists(task) {
             return false
         }
-        ^tasks[id].status = Status::done
+        task.status = Status::done
         return true
     }
 }
@@ -53,9 +53,11 @@ pub fn complete(id: Id(^tasks)): bool {
 `resource Task` is an ordinary value shape, and `store ^tasks[id: int]: Task`
 gives it a durable root keyed by an `int`. `^tasks[id]` is one entry and
 `^tasks[id].title` is one field of it. Every durable write sits inside a
-`transaction`; when the block ends, its writes commit together.
-`exists(^tasks[id])` tests presence, so `complete` returns `false` for an
-absent entry. The caller passes the entry identity as an `Id(^tasks)`, the
+`transaction`; when the block ends, its writes commit together. `add` writes
+the entry whole, so it is complete from its first commit. `place task =
+^tasks[id]` names the entry once, and `exists(task)` proves it present, so
+`complete` returns `false` for an absent entry and updates `status` only on a
+present one. The caller passes the entry identity as an `Id(^tasks)`, the
 identity type of that root; `Id(^tasks, 7)` builds one from a key, so a caller
 writes `add(Id(^tasks, 7), "write docs")`.
 

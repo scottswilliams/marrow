@@ -83,8 +83,8 @@ fn atom_shape(export: &SealedExport) -> Vec<([u8; 16], OperationClass)> {
 }
 
 /// A two-export program: `readValue` reads the `value` field of an entry, `bump`
-/// reads then writes it inside a transaction. Optional extra lines let a test insert
-/// a pure body change or an added read.
+/// reads then writes it inside a transaction, through a place the `exists` guard
+/// proves. Optional extra lines let a test insert a pure body change or an added read.
 fn two_export_source(read_body_extra: &str, bump_body_extra: &str) -> String {
     format!(
         "{HEADER}pub fn readValue(n: int): int {{\n\
@@ -93,8 +93,11 @@ fn two_export_source(read_body_extra: &str, bump_body_extra: &str) -> String {
          \n\
          pub fn bump(n: int) {{\n\
          \x20   transaction {{\n\
-         \x20       {bump_body_extra}const current = ^counters[n].value ?? 0\n\
-         \x20       ^counters[n].value = current + 1\n\
+         \x20       place c = ^counters[n]\n\
+         \x20       if exists(c) {{\n\
+         \x20           {bump_body_extra}const current = c.value ?? 0\n\
+         \x20           c.value = current + 1\n\
+         \x20       }}\n\
          \x20   }}\n\
          }}\n"
     )
@@ -111,13 +114,14 @@ fn each_export_demand_is_reconstructed_from_its_closure() {
     assert!(!read.demand().writes());
     assert!(!read.is_mutating());
 
-    // `bump` reads and writes the `value` field.
+    // `bump` proves the entry present, then reads and writes the `value` field.
     let bump = export_named(&image, "bump");
     let mut shape = atom_shape(bump);
     shape.sort();
     assert_eq!(
         shape,
         vec![
+            (ROOT_NODE, OperationClass::Presence),
             (VALUE_FIELD, OperationClass::Read),
             (VALUE_FIELD, OperationClass::Write),
         ]
@@ -205,7 +209,8 @@ fn adding_a_durable_read_changes_the_demand_id() {
 fn the_demand_union_admits_the_whole_program() {
     let (image, _) = compile_verify(&two_export_source("", ""));
     let union = image.demand_union();
-    // The union covers both a read and a write of the `value` field.
+    // The union covers `bump`'s presence probe and both a read and a write of the
+    // `value` field.
     assert!(union.reads());
     assert!(union.writes());
     let mut shape: Vec<_> = union
@@ -217,6 +222,7 @@ fn the_demand_union_admits_the_whole_program() {
     assert_eq!(
         shape,
         vec![
+            (ROOT_NODE, OperationClass::Presence),
             (VALUE_FIELD, OperationClass::Read),
             (VALUE_FIELD, OperationClass::Write),
         ]
@@ -257,11 +263,18 @@ fn demand_incidence_reverses_the_export_map() {
     let (image, _) = compile_verify(&two_export_source("", ""));
     let incidence = image.demand_incidence();
 
-    // Both exports touch only the `value` field, so there is exactly one incidence
-    // node, and it is that field.
-    assert_eq!(incidence.len(), 1);
-    let node = &incidence[0];
-    assert_eq!(*node.path.node_id().bytes(), VALUE_FIELD);
+    // Both exports touch the `value` field and `bump`'s guard probes the root, so there
+    // are exactly two incidence nodes; the field node carries the export map below.
+    assert_eq!(incidence.len(), 2);
+    let node = incidence
+        .iter()
+        .find(|node| *node.path.node_id().bytes() == VALUE_FIELD)
+        .expect("the value field is an incidence node");
+    let root = incidence
+        .iter()
+        .find(|node| *node.path.node_id().bytes() == ROOT_NODE)
+        .expect("the probed root is an incidence node");
+    assert_eq!(root.touched_by.len(), 1, "only `bump` probes the root");
 
     // The node is read by both exports and written by `bump` — the reverse of the
     // per-export demand, derived from the call closure.

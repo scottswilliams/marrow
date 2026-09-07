@@ -858,18 +858,23 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if self.terminal_rejection() {
             return Ok(Flow::Rejected);
         }
+        if let ([(cond, block)], None) = (branches, else_block)
+            && let Some((exists, fact)) = self.negative_exists_guard(cond)
+        {
+            return self.lower_negative_guard(exists, fact, block);
+        }
         let mut end_jumps: Vec<usize> = Vec::new();
         let mut all_terminate = else_block.is_some();
 
         for (cond, block) in branches {
             // `exists(p)` over a named place proves the entry present in the guarded
-            // block: a sparse-field set through `p` there lowers to the strict form.
-            let guard_path = self.exists_guard_path(cond);
+            // block, so a write through `p` there is admitted.
+            let guard = self.exists_guard_fact(cond);
             self.lower_condition(cond)?;
             let jif = self.push_jif(cond.span())?;
             let present_mark = self.present_places.len();
-            if let Some(path) = guard_path {
-                self.mark_present(path);
+            if let Some((family, key_slots)) = guard {
+                self.mark_present(family, key_slots);
             }
             let flow = self.lower_block(block)?;
             self.present_places.truncate(present_mark);
@@ -899,6 +904,35 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } else {
             Ok(Flow::Fallthrough)
         }
+    }
+
+    /// Lower a lone `if not exists(p) { … }` as the absent edge of a let-else: the
+    /// `exists(p)` guard falls through to the continuation on its present edge (the
+    /// shape the verifier's presence lattice recognizes) and jumps to the block when
+    /// the entry is absent. A block that diverges proves `p` present for the rest of
+    /// the enclosing block; a block that falls through joins the continuation and
+    /// proves nothing.
+    fn lower_negative_guard(
+        &mut self,
+        exists: &Expression,
+        (family, key_slots): (&'a Family, Vec<u16>),
+        block: &Block,
+    ) -> ConstructResult<Flow> {
+        self.lower_condition(exists)?;
+        let to_absent = self.push_jif(exists.span())?;
+        let to_after = self.push_jump(exists.span())?;
+        let absent = self.here();
+        self.patch(to_absent, absent);
+        let flow = self.lower_block(block)?;
+        if flow == Flow::Rejected {
+            return Ok(Flow::Rejected);
+        }
+        let after = self.here();
+        self.patch(to_after, after);
+        if flow == Flow::Terminates {
+            self.mark_present(family, key_slots);
+        }
+        Ok(Flow::Fallthrough)
     }
 
     fn lower_if_const(
@@ -1013,9 +1047,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             // A whole durable entry address (`if const book = ^books(id)` or the named
             // `place` form) reads the entry here and proves it present on the guarded
-            // edge, so a sparse-field set through the same place in the then block
-            // lowers strict; a bare place name is otherwise not a value.
-            let mut guard_path: Option<Vec<u16>> = None;
+            // edge, so a write through the same place in the then block is admitted; a
+            // bare place name is otherwise not a value.
+            let mut guard: Option<(&'a Family, Vec<u16>)> = None;
             let access = match self.durable_access(value) {
                 Ok(shape) => shape,
                 Err(drift) => {
@@ -1027,7 +1061,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let place = self
                     .resolve_durable(value)
                     .ok_or(LoweringFailure::Recoverable)?;
-                guard_path = place.bound_key_path();
+                guard = place.bound_key_path().map(|slots| (place.family, slots));
                 self.lower_durable_read(place)?
             } else {
                 self.lower_expr(value)?
@@ -1078,8 +1112,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 mutable: false,
                 slot,
             });
-            if let Some(path) = guard_path {
-                self.mark_present(path);
+            if let Some((family, key_slots)) = guard {
+                self.mark_present(family, key_slots);
             }
         }
 
@@ -1613,16 +1647,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             mutable: false,
             slot: counter_slot,
         });
-        self.loops.push(LoopCtx {
-            continue_target: advance,
-            break_jumps: Vec::new(),
-        });
+        self.loops.push(LoopCtx::new(advance));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
         )]
         let ctx = self.loops.pop().expect("loop was pushed");
+        let break_jumps = self.close_loop(ctx);
         self.locals.truncate(mark);
         self.places.truncate(place_mark);
         if body_flow == Flow::Rejected {
@@ -1636,7 +1668,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.patch(exit_jif, after_loop);
         // Reaching the integer domain boundary ends the loop at the same exit.
         self.patch(advance_at, after_loop);
-        self.patch_all(ctx.break_jumps, after_loop);
+        self.patch_all(break_jumps, after_loop);
         Ok(Flow::Fallthrough)
     }
 
@@ -2537,16 +2569,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Err(LoweringFailure::CodeLimitReached);
             }
         }
-        self.loops.push(LoopCtx {
-            continue_target: top,
-            break_jumps: Vec::new(),
-        });
+        self.loops.push(LoopCtx::new(top));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
         )]
         let ctx = self.loops.pop().expect("loop was pushed");
+        let break_jumps = self.close_loop(ctx);
         self.locals.truncate(mark);
         // A two-binding durable traversal binds a per-iteration address pin as a place;
         // drop it with the loop-variable locals so it does not escape the body.
@@ -2560,7 +2590,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
         let after_loop = self.here();
         self.patch(exit, after_loop);
-        Ok(PositionalWalkOutcome::Complete(ctx.break_jumps))
+        Ok(PositionalWalkOutcome::Complete(break_jumps))
     }
 
     fn lower_while(&mut self, condition: &Expression, body: &Block) -> ConstructResult<Flow> {
@@ -2573,16 +2603,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let top = self.here();
         self.lower_condition(condition)?;
         let exit = self.push_jif(condition.span())?;
-        self.loops.push(LoopCtx {
-            continue_target: top,
-            break_jumps: Vec::new(),
-        });
+        self.loops.push(LoopCtx::new(top));
         let body_flow = self.lower_block(body)?;
         #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
         )]
         let ctx = self.loops.pop().expect("loop was pushed");
+        let break_jumps = self.close_loop(ctx);
         if body_flow == Flow::Rejected {
             return Ok(Flow::Rejected);
         }
@@ -2591,7 +2619,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         let end = self.here();
         self.patch(exit, end);
-        self.patch_all(ctx.break_jumps, end);
+        self.patch_all(break_jumps, end);
         Ok(Flow::Fallthrough)
     }
 

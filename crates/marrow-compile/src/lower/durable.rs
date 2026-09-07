@@ -50,30 +50,17 @@ pub(super) struct DurKey<'e> {
 pub(super) struct DurablePlace<'a, 'e> {
     keys: Vec<DurKey<'e>>,
     target: DurTarget<'a>,
+    /// The family of the entry the operation addresses: the node's own for a whole
+    /// entry or a field, the root's for a group or a group leaf.
+    pub(super) family: &'a Family,
     span: SourceSpan,
 }
 
 impl DurablePlace<'_, '_> {
-    /// The single root key slot when this place's whole key-path is one pre-evaluated
-    /// `Bound` column. `None` for an inline key or any multi-column key path — a branch
-    /// or a composite-key root. Used only by the whole-entry root upsert, which
-    /// establishes root presence for that one slot.
-    fn root_bound_slot(&self) -> Option<u16> {
-        match self.keys.as_slice() {
-            [
-                DurKey {
-                    key: PlaceKey::Bound(slot),
-                    ..
-                },
-            ] => Some(*slot),
-            _ => None,
-        }
-    }
-
     /// This place's whole key-path as pre-evaluated slots (root-first) when *every*
-    /// column is a `Bound` slot — the shape a strict present-entry field set and a
-    /// place-entry presence guard require, for a root or a branch place. `None` if any
-    /// column is an inline key expression (the strict form needs pre-evaluated slots).
+    /// column is a `Bound` slot — the shape a present-form operation and a place-entry
+    /// presence guard require, for a root or a branch place. `None` if any column is an
+    /// inline key expression (a present-form operation needs pre-evaluated slots).
     pub(super) fn bound_key_path(&self) -> Option<Vec<u16>> {
         self.keys
             .iter()
@@ -111,12 +98,15 @@ pub(super) struct IndexRead<'a, 'e> {
     pub(super) keys: &'e [Expression],
 }
 
-impl PlaceLocal<'_> {
-    /// This place's whole key-path as pre-evaluated slots (root-first) — the key-path a
-    /// strict present-entry field set reads and a presence guard proves, for a root or a
-    /// branch place uniformly.
-    fn key_path_slots(&self) -> Vec<u16> {
-        self.key_slots.iter().map(|(slot, _)| *slot).collect()
+impl<'a> PlaceLocal<'a> {
+    /// The entry this place addresses as a presence fact's key: its family and its
+    /// whole key-path as pre-evaluated slots (root-first), for a root or a branch place
+    /// uniformly.
+    pub(super) fn fact_key(&self) -> (&'a Family, Vec<u16>) {
+        (
+            self.node.family(),
+            self.key_slots.iter().map(|(slot, _)| *slot).collect(),
+        )
     }
 
     /// This place's key-path as resolved [`DurKey`] columns reading the pre-evaluated
@@ -161,6 +151,9 @@ enum DurTarget<'a> {
     Group {
         handle: OccurrenceSiteHandle,
         record: TypeId,
+        /// Whether a leaf of the group is `required`: such a group is part of every
+        /// present entry and is erased only with it.
+        holds_required: bool,
     },
     /// One leaf of a root-level group (`^root(k).group.leaf`). A read materializes the
     /// whole group through the group's `GroupEntry` site and projects `slot`; a write or
@@ -172,13 +165,6 @@ enum DurTarget<'a> {
         ty: GArg,
         required: bool,
     },
-}
-
-/// The leaf edit a group-leaf read-modify-write applies to the materialized group record:
-/// set the leaf present to a bare value, or clear a sparse leaf to vacant.
-enum GroupLeafEdit<'e> {
-    Set { value: &'e Expression, ty: GArg },
-    Unset,
 }
 
 /// A node reached along a resolved durable entry address: the root, or a keyed branch on
@@ -233,6 +219,14 @@ impl<'a> DurNode<'a> {
         match self {
             DurNode::Root(root) => root.record,
             DurNode::Branch { branch, .. } => branch.record,
+        }
+    }
+
+    /// The entry family this node belongs to.
+    pub(super) fn family(&self) -> &'a Family {
+        match self {
+            DurNode::Root(root) => &root.family,
+            DurNode::Branch { branch, .. } => &branch.family,
         }
     }
 
@@ -335,9 +329,8 @@ pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
             | Instr::DurReadField(_)
             | Instr::DurReadEntry(_)
             | Instr::DurReadGroup(_)
-            | Instr::DurSetRequired(_)
-            | Instr::DurSetSparse(_)
-            | Instr::DurSetSparsePresent { .. }
+            | Instr::DurReadGroupPresent { .. }
+            | Instr::DurSetField { .. }
             | Instr::DurCreateEntry(_)
             | Instr::DurReplaceEntry(_)
             | Instr::DurReplaceGroup(_)
@@ -359,9 +352,7 @@ pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
 /// classified here, welding this owner to the instruction set.
 pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
     match instr {
-        Instr::DurSetRequired(_)
-        | Instr::DurSetSparse(_)
-        | Instr::DurSetSparsePresent { .. }
+        Instr::DurSetField { .. }
         | Instr::DurCreateEntry(_)
         | Instr::DurReplaceEntry(_)
         | Instr::DurReplaceGroup(_)
@@ -458,6 +449,7 @@ pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::DurReadField(_)
         | Instr::DurReadEntry(_)
         | Instr::DurReadGroup(_)
+        | Instr::DurReadGroupPresent { .. }
         | Instr::DurIterateBounded { .. }
         | Instr::TxnBegin
         | Instr::TxnCommit
@@ -548,56 +540,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// The most recent in-scope `place` binding named `name`, if any.
     pub(super) fn lookup_place(&self, name: &str) -> Option<&PlaceLocal<'a>> {
         self.places.iter().rev().find(|place| place.name == name)
-    }
-
-    /// Record that the entry of the `place` addressed by `key_path` (its whole key-path
-    /// as pre-evaluated slots, root-first) is known present from here (a dominating guard
-    /// or a completed upsert). Idempotent.
-    pub(super) fn mark_present(&mut self, key_path: Vec<u16>) {
-        if !self.present_places.contains(&key_path) {
-            self.present_places.push(key_path);
-        }
-    }
-
-    /// Whether a presence fact currently dominates the entry addressed by `key_path`.
-    fn is_present_path(&self, key_path: &[u16]) -> bool {
-        self.present_places.iter().any(|path| path == key_path)
-    }
-
-    /// Drop the presence fact on the entry addressed by `key_path` (its entry may no
-    /// longer be present, e.g. after `delete p`).
-    fn clear_present_path(&mut self, key_path: &[u16]) {
-        self.present_places.retain(|path| path != key_path);
-    }
-
-    /// If `cond` is `exists(p)` over an in-scope named `place`, that place's whole
-    /// key-path slots (root-first). The guarded (then) block may set the place's sparse
-    /// fields in the strict form. Both root and branch places carry a strict-set
-    /// presence consumer — the key-path form addresses either uniformly.
-    pub(super) fn exists_guard_path(&self, cond: &Expression) -> Option<Vec<u16>> {
-        let Expression::Call { callee, args, .. } = cond else {
-            return None;
-        };
-        let Expression::Name { segments, .. } = &**callee else {
-            return None;
-        };
-        if !matches!(&segments[..], [callee] if callee.text() == "exists") {
-            return None;
-        }
-        let [arg] = args.as_slice() else {
-            return None;
-        };
-        if arg.name.is_some() {
-            return None;
-        }
-        let Expression::Name { segments, .. } = &arg.value else {
-            return None;
-        };
-        let [name] = &segments[..] else {
-            return None;
-        };
-        self.lookup_place(name.text())
-            .map(PlaceLocal::key_path_slots)
     }
 
     /// Whether `name` names an in-scope `place`.
@@ -907,6 +849,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Some(DurablePlace {
                     keys,
                     target: DurTarget::Entry { node, handle },
+                    family: node.family(),
                     span: *span,
                 })
             }
@@ -936,6 +879,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             ty: leaf.ty,
                             required: leaf.required,
                         },
+                        family: &root.family,
                         span: *span,
                     });
                 }
@@ -949,6 +893,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             ty: field.ty,
                             required: field.required,
                         },
+                        family: node.family(),
                         span: *span,
                     });
                 }
@@ -963,7 +908,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         target: DurTarget::Group {
                             handle,
                             record: group.record,
+                            holds_required: group.fields.iter().any(|leaf| leaf.required),
                         },
+                        family: &root.family,
                         span: *span,
                     });
                 }
@@ -1370,6 +1317,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Some(DurablePlace {
                     keys,
                     target: DurTarget::Entry { node, handle },
+                    family: node.family(),
                     span: *span,
                 })
             }
@@ -1399,6 +1347,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             ty: leaf.ty,
                             required: leaf.required,
                         },
+                        family: &root.family,
                         span: *span,
                     });
                 }
@@ -1412,6 +1361,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             ty: field.ty,
                             required: field.required,
                         },
+                        family: node.family(),
                         span: *span,
                     });
                 }
@@ -1426,7 +1376,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         target: DurTarget::Group {
                             handle,
                             record: group.record,
+                            holds_required: group.fields.iter().any(|leaf| leaf.required),
                         },
+                        family: &root.family,
                         span: *span,
                     });
                 }
@@ -1632,7 +1584,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             // A whole root-level group materializes as one optional group record: the
             // group's own leaves, present exactly when the entry is present.
-            DurTarget::Group { handle, record } => {
+            DurTarget::Group { handle, record, .. } => {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
@@ -2883,70 +2835,41 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(CallResult::Diverges)
     }
 
-    /// Lower a durable assignment: a whole-entry upsert (root or branch) or a root
-    /// field set.
+    /// Lower a durable assignment: a whole-entry upsert (root or branch), or a field,
+    /// group, or group-leaf write on an entry a presence proof covers.
     pub(super) fn lower_durable_assign(
         &mut self,
-        place: DurablePlace,
+        place: DurablePlace<'a, '_>,
         value: &Expression,
     ) -> ConstructResult<()> {
+        let family = place.family;
         match &place.target {
             DurTarget::Entry { node, handle } => {
-                let root_slot = place.root_bound_slot();
                 let (handle, record) = (handle.clone(), node.record());
+                self.write_family(family);
                 self.lower_upsert(&place.keys, &handle, record, value, place.span)?;
-                if let Some(slot) = root_slot {
-                    // A root upsert leaves the root entry present on every path from
-                    // here, so subsequent sparse sets through the root place lower to the
-                    // strict form. A key-path with more than one bound key slot — whether a
-                    // branch or a composite-key root — has no single root slot here and so
-                    // marks nothing; a guarded set through such a place uses the
-                    // `exists`/`if const` presence path instead.
-                    self.mark_present(vec![slot]);
+                // A whole-entry assignment through a place leaves the entry present on
+                // every path from here, so the rest of the block may write through it.
+                if let Some(key_slots) = place.bound_key_path() {
+                    self.mark_present(family, key_slots);
                 }
             }
-            DurTarget::Field {
-                handle,
-                ty,
-                required,
-            } => {
-                let (ty, required) = (*ty, *required);
+            DurTarget::Field { handle, ty, .. } => {
+                let ty = *ty;
+                let key_slots = self.require_present(family, place.bound_key_path(), place.span)?;
                 let site = self
                     .site_operand(handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                // A sparse set through a `place` a presence fact dominates lowers to the
-                // strict present-entry form: it reads the containing entry's whole
-                // key-path from the place's pre-evaluated slots and asserts the entry is
-                // present, so it pushes no key operand. A root or a branch field is
-                // handled uniformly by the key-path. Every other field set keeps the bare
-                // form (create-or-reconcile at commit for a sparse set).
-                let bare = garg_to_lty(ty);
-                if !required
-                    && let Some(key_slots) = place.bound_key_path()
-                    && self.is_present_path(&key_slots)
-                {
-                    let expected = bare.to_optional();
-                    self.lower_as(value, expected)?;
-                    self.push(Instr::DurSetSparsePresent { site, key_slots }, place.span)?;
-                    return Ok(());
-                }
-                self.emit_key_path(&place.keys, place.span)?;
-                let expected = if required { bare } else { bare.to_optional() };
-                self.lower_as(value, expected)?;
-                let instr = if required {
-                    Instr::DurSetRequired(site)
-                } else {
-                    Instr::DurSetSparse(site)
-                };
-                self.push(instr, place.span)?;
+                self.lower_definite_field_value(value, garg_to_lty(ty), place.span)?;
+                self.push(Instr::DurSetField { site, key_slots }, place.span)?;
             }
-            // `^root(k).group = R.group(…)`: an exact whole-group replacement, group-scoped
-            // (the entry's other groups, top-level fields, and branches are untouched). The
-            // key-path is pushed first, then the group record, the order `DurReplaceGroup`
-            // reads. A replace over an absent entry is Missing and touches nothing — a group
-            // is a value unit of an existing entry, never created on its own.
-            DurTarget::Group { handle, record } => {
+            // `p.group = R.group(…)`: an exact whole-group replacement, group-scoped (the
+            // entry's other groups, top-level fields, and branches are untouched). The
+            // key-path is pushed first, then the group record, the order
+            // `DurReplaceGroup` reads.
+            DurTarget::Group { handle, record, .. } => {
                 let record = *record;
+                self.require_present(family, place.bound_key_path(), place.span)?;
                 let site = self
                     .site_operand(handle)
                     .ok_or(LoweringFailure::Recoverable)?;
@@ -2960,19 +2883,62 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 )?;
                 self.push(Instr::DurReplaceGroup(site), place.span)?;
             }
-            // `^root(k).group.leaf = value`: a whole-group read-modify-write.
+            // `p.group.leaf = value`: a whole-group read-modify-write over the proven entry.
             DurTarget::GroupLeaf {
                 handle, slot, ty, ..
             } => {
                 let (handle, slot, ty) = (handle.clone(), *slot, *ty);
-                self.lower_group_leaf_rmw(
-                    &place.keys,
-                    &handle,
-                    slot,
-                    GroupLeafEdit::Set { value, ty },
-                    place.span,
-                )?;
+                let key_slots = self.require_present(family, place.bound_key_path(), place.span)?;
+                self.lower_group_leaf_set(&key_slots, &handle, slot, value, ty, place.span)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Lower the operand of a durable field set: a definite value of the field's bare
+    /// type. `absent` and any optional operand are refused naming `delete`, so a field
+    /// has one clearing spelling.
+    fn lower_definite_field_value(
+        &mut self,
+        value: &Expression,
+        bare: LTy,
+        span: SourceSpan,
+    ) -> ConstructResult<()> {
+        // A built-in or collection constructor is directed by the bare expected type;
+        // every other operand is lowered and its own type judged, so an optional operand
+        // is refused at the write rather than reported as a mismatch at the operand.
+        let optional = match value {
+            Expression::Absent { .. } => true,
+            _ if constructor_kind(value).is_some() || collection_ctor_call(value).is_some() => {
+                return self.lower_as(value, bare);
+            }
+            _ => {
+                let got = self.lower_expr(value)?;
+                if !got.is_optional() && got != bare {
+                    self.fail(type_mismatch(
+                        self.records,
+                        self.file,
+                        value.span(),
+                        got,
+                        bare,
+                    ));
+                    return Err(LoweringFailure::Recoverable);
+                }
+                got.is_optional()
+            }
+        };
+        if optional {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "a durable field is set to a definite {} value; to clear it, write \
+                     `delete` on the field",
+                    bare.spelling(self.records)
+                ),
+            ));
+            return Err(LoweringFailure::Recoverable);
         }
         Ok(())
     }
@@ -3017,10 +2983,25 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return Ok(());
             }
             let (handle, slot, span) = (handle.clone(), *slot, place.span);
-            self.lower_group_leaf_rmw(&place.keys, &handle, slot, GroupLeafEdit::Unset, span)?;
+            self.lower_group_leaf_unset(&place.keys, &handle, slot, span)?;
             return Ok(());
         }
-        let key_path = place.bound_key_path();
+        let family = place.family;
+        // A group holding a required leaf is part of every present entry; it is erased
+        // only with its entry. Refused before any key operand is evaluated.
+        if let DurTarget::Group {
+            holds_required: true,
+            ..
+        } = &place.target
+        {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                place.span,
+                "a group with a required leaf is erased only with its entry".to_string(),
+            ));
+            return Ok(());
+        }
         self.emit_key_path(&place.keys, place.span)?;
         match place.target {
             DurTarget::Entry { handle, .. } => {
@@ -3028,11 +3009,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
                 self.push(Instr::DurEraseEntry(site), place.span)?;
-                // The entry's payload is gone; a later sparse set through the same place
-                // must not assume presence.
-                if let Some(path) = &key_path {
-                    self.clear_present_path(path);
-                }
+                // The erased entry may be any entry of the family a proof covers, so every
+                // proof over the family ends here.
+                self.write_family(family);
+                self.erase_family(family);
             }
             DurTarget::Field {
                 handle, required, ..
@@ -3051,8 +3031,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     .ok_or(LoweringFailure::Recoverable)?;
                 self.push(Instr::DurEraseField(site), place.span)?;
             }
-            // `delete ^root(k).group`: erase only that group's leaves; the entry's other
-            // groups, top-level fields, and branches are untouched.
+            // `delete p.group` over all-sparse leaves: erase only that group's leaves; the
+            // entry's other groups, top-level fields, and branches are untouched.
             DurTarget::Group { handle, .. } => {
                 let site = self
                     .site_operand(&handle)

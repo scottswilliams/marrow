@@ -27,12 +27,12 @@ use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
 };
-use crate::durable::DurableRegistry;
+use crate::durable::{DurableRegistry, Family};
 use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, ModuleBinding,
-    ModuleLedger, SignatureOutcome, is_durable_place_op, is_mutation_instr,
-    is_reserved_builtin_name, reserved_builtin_name,
+    ModuleLedger, PresenceObligation, SignatureOutcome, is_durable_place_op, is_mutation_instr,
+    is_reserved_builtin_name, requires_presence, reserved_builtin_name,
 };
 use crate::types::BuildError;
 use crate::types::{GenericInvariant, GenericOwnerTxn, TypeRegistry};
@@ -623,6 +623,10 @@ struct LoweredFn {
     unwrapped_mutations: Vec<SourceSpan>,
     /// Calls this body performs outside any `transaction` block, with their spans.
     unwrapped_calls: Vec<(u16, SourceSpan)>,
+    /// The entry families this body creates, replaces, or erases directly.
+    written_families: Vec<Family>,
+    /// Present-form writes whose proofs a call may have ended.
+    presence_obligations: Vec<PresenceObligation>,
     /// Whether this body performs a durable-place operation directly.
     has_direct_durable_op: bool,
     /// Whether this body owns a `transaction` block.
@@ -1781,7 +1785,10 @@ fn run_semantic(
     let transactions = lowered_set
         .as_ref()
         .zip(call_graph.as_ref())
-        .and_then(|(set, acyclic)| reject_missing_transaction(set, acyclic, &mut diagnostics));
+        .and_then(|(set, acyclic)| {
+            reject_unproven_writes(set, acyclic, &mut diagnostics);
+            reject_missing_transaction(set, acyclic, &mut diagnostics)
+        });
 
     // The remaining transaction-ownership laws — exactly one region per mutating export,
     // committed on every path with no durable operation after the commit; a `transaction`
@@ -2067,6 +2074,8 @@ fn registry_phases(
                 is_test: false,
                 unwrapped_mutations: result.unwrapped_mutations,
                 unwrapped_calls: result.unwrapped_calls,
+                written_families: result.written_families,
+                presence_obligations: result.presence_obligations,
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
@@ -2207,6 +2216,8 @@ fn lower_declared_functions(
                 is_test: false,
                 unwrapped_mutations: result.unwrapped_mutations,
                 unwrapped_calls: result.unwrapped_calls,
+                written_families: result.written_families,
+                presence_obligations: result.presence_obligations,
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
@@ -2338,6 +2349,8 @@ fn lower_declared_tests(
                 is_test: true,
                 unwrapped_mutations: result.unwrapped_mutations,
                 unwrapped_calls: result.unwrapped_calls,
+                written_families: result.written_families,
+                presence_obligations: result.presence_obligations,
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
@@ -2563,6 +2576,81 @@ fn reject_recursion(
         analysis
             .into_acyclic_order()
             .map(|order| AcyclicCallGraph { order })
+    }
+}
+
+/// Report `check.requires_presence` for every present-form write whose proof a call
+/// ended: a call between the proof and the write (or inside the loop the write sits
+/// in) to a function whose closure creates, replaces, or erases an entry of the
+/// write's family. The written-family closure settles in one callee-before-caller
+/// pass per distinct family over the acyclic call graph, so no function body is
+/// re-walked.
+fn reject_unproven_writes(
+    lowered: &CompleteLoweredFunctionSet,
+    acyclic: &AcyclicCallGraph,
+    diagnostics: &mut DiagnosticCollector,
+) {
+    let lowered = lowered.functions();
+    let count = lowered.len();
+    let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
+    for function in lowered {
+        if usize::from(function.func.index()) < count {
+            by_index[usize::from(function.func.index())] = Some(function);
+        }
+    }
+    let mut families: Vec<&Family> = Vec::new();
+    for function in lowered {
+        for family in &function.written_families {
+            if !families.contains(&family) {
+                families.push(family);
+            }
+        }
+    }
+    for family in families {
+        let writes = acyclic.order().propagate(
+            |index| {
+                by_index
+                    .get(index)
+                    .and_then(|entry| *entry)
+                    .is_some_and(|function| function.written_families.contains(family))
+            },
+            |index, visit| {
+                if let Some(Some(function)) = by_index.get(index) {
+                    for &callee in &function.callees {
+                        visit(usize::from(callee));
+                    }
+                }
+            },
+        );
+        for function in lowered {
+            let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
+            for obligation in &function.presence_obligations {
+                if obligation.family != *family {
+                    continue;
+                }
+                let Some(callee) = obligation
+                    .callees
+                    .iter()
+                    .find(|callee| writes.get(usize::from(**callee)).copied().unwrap_or(false))
+                else {
+                    continue;
+                };
+                if !seen.insert((obligation.span.line, obligation.span.column)) {
+                    continue;
+                }
+                let name = by_index[usize::from(*callee)]
+                    .map(|f| f.name.as_str())
+                    .unwrap_or("a function");
+                diagnostics.push(requires_presence(
+                    &function.file,
+                    obligation.span,
+                    &format!(
+                        "the call to `{name}` before it writes the entry's family, so the \
+                         proof ended at the call"
+                    ),
+                ));
+            }
+        }
     }
 }
 

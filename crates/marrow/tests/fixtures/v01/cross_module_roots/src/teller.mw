@@ -7,7 +7,7 @@ pub fn deposit(id: int, amount: int): int {
     transaction {
         place account = ^accounts[id]
         const updated = (account.balance ?? 0) + amount
-        account.balance = updated
+        account = Account(balance: updated)
         return updated
     }
 }

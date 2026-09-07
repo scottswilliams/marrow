@@ -29,28 +29,20 @@ store ^books[id: int]: Book {
 
 pub fn add(id: Id(^books), title: string, author: string, shelf: string, changedAt: instant) {
     transaction {
-        ^books[id].title = title
-        ^books[id].author = author
-        ^books[id].shelf = shelf
-        ^books[id].currentVersion = 1
-        ^books[id].versions[1].title = title
-        ^books[id].versions[1].shelf = shelf
-        ^books[id].versions[1].changedAt = changedAt
+        ^books[id] = Book(title: title, author: author, shelf: shelf, currentVersion: 1)
+        ^books[id].versions[1] = Book.versions(title: title, shelf: shelf, changedAt: changedAt)
     }
 }
 
 pub fn moveToShelf(id: Id(^books), shelf: string, changedAt: instant): bool {
     transaction {
-        if const currentVersion = ^books[id].currentVersion {
-            if const title = ^books[id].title {
-                const version: int = currentVersion + 1
-                ^books[id].shelf = shelf
-                ^books[id].currentVersion = version
-                ^books[id].versions[version].title = title
-                ^books[id].versions[version].shelf = shelf
-                ^books[id].versions[version].changedAt = changedAt
-                return true
-            }
+        place book = ^books[id]
+        if const current = book {
+            const version: int = current.currentVersion + 1
+            book.shelf = shelf
+            book.currentVersion = version
+            book.versions[version] = Book.versions(title: current.title, shelf: shelf, changedAt: changedAt)
+            return true
         }
         return false
     }
@@ -61,7 +53,7 @@ pub fn addNote(id: Id(^books), noteId: string, text: string): bool {
         if not exists(^books[id]) {
             return false
         }
-        ^books[id].notes[noteId].text = text
+        ^books[id].notes[noteId] = Book.notes(text: text)
         return true
     }
 }
@@ -96,11 +88,11 @@ pub fn label(id: Id(^books)): string {
 
 `store ^books[id: int]: Book` gives the shape a durable root keyed by an `int`. `index byShelf[shelf, id]` adds a second path to the same entries, ordered by shelf and then by identity.
 
-`add` takes the identity as an [`Id(^books)`](types-and-values.md#entry-identity); the caller chooses it, and `Id(^books, 1)` spells the first one. The block writes the book and its first version, and the writes commit together when the block ends. `title` is required, so a block that leaves it unset rolls back with `run.required_missing`.
+`add` takes the identity as an [`Id(^books)`](types-and-values.md#entry-identity); the caller chooses it, and `Id(^books, 1)` spells the first one. The block writes the book and its first version as whole entries, and the writes commit together when the block ends. Each constructor names every required field, so a present entry is complete from its first commit; a constructor that omits one is a `check.type` error ([writing](durable-places.md#writing)).
 
-`moveToShelf` reads before it writes. `if const` proves `currentVersion` and `title` present and binds them. The new version number, the shelf, and the history entry are written in one [transaction](errors-and-transactions.md#transactions), and `return true` commits it. If either field is absent, the block returns `false` and writes nothing. After a move, `^books[id].versions[1].shelf` still reads the old shelf: the history keeps every version.
+`moveToShelf` binds `place book = ^books[id]` and reads before it writes. `if const current = book` proves the entry present and binds a copy, so `current.currentVersion` and `current.title` are bare values. Inside that block the shelf, the new version number, and the history entry are written through the proved place in one [transaction](errors-and-transactions.md#transactions), and `return true` commits it. For an absent book, the block returns `false` and writes nothing. After a move, `^books[id].versions[1].shelf` still reads the old shelf: the history keeps every version.
 
-`addNote` checks `exists(^books[id])` before writing under the book. `add` has already committed by then, so the entry is present and the note is written. For an absent book, `addNote` returns `false`.
+`addNote` checks `exists(^books[id])` before writing under the book, and writes the note as a whole branch entry. `add` has already committed by then, so the entry is present and the note is written. For an absent book, `addNote` returns `false`.
 
 `remove` deletes the book's own fields. Its `notes` and `versions` stay at their own addresses until a program deletes them there ([deleting](durable-places.md#deleting)). After `remove`, `label` reports the book absent, `shelfCount` no longer counts it, and `^books[id].notes["n1"].text` still reads its value.
 
@@ -111,12 +103,12 @@ pub fn label(id: Id(^books)): string {
 `marrow check --demand .` lists the durable places each export reads and writes:
 
 ```text
-shelf.sample.add writes ^books.author, ^books.currentVersion, ^books.shelf, ^books.title, ^books.versions.changedAt, ^books.versions.shelf, and ^books.versions.title
-shelf.sample.addNote reads ^books; writes ^books.notes.text
+shelf.sample.add reads ^books and ^books.versions; writes ^books and ^books.versions
+shelf.sample.addNote reads ^books and ^books.notes; writes ^books.notes
 shelf.sample.label reads ^books.title
-shelf.sample.moveToShelf reads ^books.currentVersion and ^books.title; writes ^books.currentVersion, ^books.shelf, ^books.versions.changedAt, ^books.versions.shelf, and ^books.versions.title
+shelf.sample.moveToShelf reads ^books and ^books.versions; writes ^books.currentVersion, ^books.shelf, and ^books.versions
 shelf.sample.remove writes ^books
 shelf.sample.shelfCount reads ^books.byShelf
 ```
 
-`remove` demands the whole entry. Every other export names the exact fields it touches, and `shelfCount` touches only the index.
+A whole-entry write is listed as a read and a write of its family, so `add`, `addNote`, and `remove` demand whole entries. `moveToShelf` names the two fields it updates and the `versions` family it creates an entry in, and `shelfCount` touches only the index.

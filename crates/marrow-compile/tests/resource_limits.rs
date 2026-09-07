@@ -914,7 +914,8 @@ const _: () = assert!(
 /// The site plan holds one eager whole-payload site per root plus one lazily demanded
 /// field leaf per distinct `(root, written field)` pair, so the corpus demands
 /// `roots * (1 + touched)` sites, plus one more when `extra_demand` is set. A declared
-/// but unwritten field mints nothing.
+/// but unwritten field mints nothing. Each root's writes go through one place the
+/// export proves present, as every field write does.
 fn site_policy_source(roots: usize, touched: usize, extra_demand: bool) -> String {
     let mut source = String::from("module main\n\nresource R {\n");
     for field in 0..POLICY_FIELDS {
@@ -927,15 +928,16 @@ fn site_policy_source(roots: usize, touched: usize, extra_demand: bool) -> Strin
     source.push('\n');
     for root in 0..roots {
         source.push_str(&format!(
-            "pub fn w{root}(id: int, v: int) {{\n    transaction {{\n"
+            "pub fn w{root}(id: int, v: int) {{\n    transaction {{\n        \
+             place m = ^r{root}[id]\n        if exists(m) {{\n"
         ));
         for field in 0..touched {
-            source.push_str(&format!("        ^r{root}[id].f{field} = v\n"));
+            source.push_str(&format!("            m.f{field} = v\n"));
         }
         if extra_demand && root == 0 {
-            source.push_str(&format!("        ^r0[id].f{} = v\n", POLICY_FIELDS - 1));
+            source.push_str(&format!("            m.f{} = v\n", POLICY_FIELDS - 1));
         }
-        source.push_str("    }\n}\n\n");
+        source.push_str("        }\n    }\n}\n\n");
     }
     source
 }

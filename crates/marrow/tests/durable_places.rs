@@ -175,8 +175,7 @@ pub fn readIt(n: int): int {
             SealedInstr::DurExists(_)
                 | SealedInstr::DurReadField(_)
                 | SealedInstr::DurReadEntry(_)
-                | SealedInstr::DurSetRequired(_)
-                | SealedInstr::DurSetSparse(_)
+                | SealedInstr::DurSetField { .. }
                 | SealedInstr::DurCreateEntry(_)
                 | SealedInstr::DurReplaceEntry(_)
                 | SealedInstr::DurEraseField(_)
@@ -236,26 +235,19 @@ pub fn writeIt(n: int, v: int) {
     );
 }
 
-// --- Structured presence analysis: the strict present-entry sparse set. ---
+// --- Structured presence analysis: every field set is the present-entry form. ---
 
 fn count_strict(instrs: &[SealedInstr]) -> usize {
     instrs
         .iter()
-        .filter(|i| matches!(i, SealedInstr::DurSetSparsePresent { .. }))
+        .filter(|i| matches!(i, SealedInstr::DurSetField { .. }))
         .count()
 }
 
-fn count_bare(instrs: &[SealedInstr]) -> usize {
-    instrs
-        .iter()
-        .filter(|i| matches!(i, SealedInstr::DurSetSparse(_)))
-        .count()
-}
-
-/// A sparse-field set through a `place` dominated by an `exists(p)` guard lowers to
-/// the strict present-entry form (`DurSetSparsePresent`), which reads the key from
-/// the place's slot and assumes the entry present; the same set with no dominating
-/// guard stays the bare `DurSetSparse` (create-or-reconcile at commit).
+/// A field set through a `place` dominated by an `exists(p)` guard lowers to the
+/// present-entry form (`DurSetField`), which reads the key from the place's slot and
+/// asserts the entry present; the same set with no dominating guard is refused at
+/// check time, since a write never creates an entry.
 #[test]
 fn an_exists_guarded_sparse_set_is_strict() {
     let guarded = format!(
@@ -274,7 +266,6 @@ pub fn tag(n: int) {
     let instrs = compile_verify(&guarded);
     let instrs = export_instrs(&instrs, "tag");
     assert_eq!(count_strict(instrs), 1, "the guarded set lowers strict");
-    assert_eq!(count_bare(instrs), 0, "no bare set remains");
 
     let unguarded = format!(
         "{HEADER}{}",
@@ -287,10 +278,11 @@ pub fn tag(n: int) {
 }
 "#
     );
-    let image = compile_verify(&unguarded);
-    let instrs = export_instrs(&image, "tag");
-    assert_eq!(count_strict(instrs), 0, "an unguarded set is not strict");
-    assert_eq!(count_bare(instrs), 1, "the unguarded set stays bare");
+    assert_eq!(
+        compile_error_codes(&unguarded),
+        vec!["check.requires_presence".to_string()],
+        "an unguarded set is refused"
+    );
 }
 
 /// An `if const c = p` entry read proves the entry present in its then-block, so a
@@ -337,9 +329,9 @@ pub fn tag(n: int, v: int) {
 }
 
 /// Presence facts attach to a lexical `place` binding only: an inline `^root(k)`
-/// address never carries one, so an inline sparse set stays bare even under a guard.
+/// address never carries one, so an inline field set is refused even under a guard.
 #[test]
-fn an_inline_sparse_set_is_never_strict() {
+fn an_inline_sparse_set_is_never_proven() {
     let source = format!(
         "{HEADER}{}",
         r#"
@@ -352,17 +344,17 @@ pub fn tag(n: int) {
 }
 "#
     );
-    let image = compile_verify(&source);
-    let instrs = export_instrs(&image, "tag");
-    assert_eq!(count_strict(instrs), 0);
-    assert_eq!(count_bare(instrs), 1);
+    assert_eq!(
+        compile_error_codes(&source),
+        vec!["check.requires_presence".to_string()]
+    );
 }
 
-/// A presence fact does not survive a `delete p`: a sparse set after the entry is
-/// erased is bare again (the compiler drops the fact; the verifier would reject a
-/// strict set there).
+/// A presence fact does not survive a `delete p`: a field set after the entry is
+/// erased is refused (the compiler drops the fact; the verifier would reject a
+/// present-entry set there).
 #[test]
-fn a_sparse_set_after_delete_is_not_strict() {
+fn a_sparse_set_after_delete_is_refused() {
     let source = format!(
         "{HEADER}{}",
         r#"
@@ -377,14 +369,15 @@ pub fn tag(n: int) {
 }
 "#
     );
-    let image = compile_verify(&source);
-    let instrs = export_instrs(&image, "tag");
-    assert_eq!(count_strict(instrs), 0, "presence is killed by the erase");
-    assert_eq!(count_bare(instrs), 1);
+    assert_eq!(
+        compile_error_codes(&source),
+        vec!["check.requires_presence".to_string()],
+        "presence is killed by the erase"
+    );
 }
 
-/// The fact does not leak past the guarded block: a sparse set after the `if
-/// exists(p)` block closes is bare, since the entry is not known present there.
+/// The fact does not leak past the guarded block: a field set after the `if
+/// exists(p)` block closes is refused, since the entry is not known present there.
 #[test]
 fn the_presence_fact_does_not_outlive_its_block() {
     let source = format!(
@@ -401,20 +394,21 @@ pub fn tag(n: int) {
 }
 "#
     );
-    let image = compile_verify(&source);
-    let instrs = export_instrs(&image, "tag");
-    assert_eq!(count_strict(instrs), 1, "only the in-block set is strict");
-    assert_eq!(count_bare(instrs), 1, "the post-block set is bare");
+    assert_eq!(
+        compile_error_codes(&source),
+        vec!["check.requires_presence".to_string()],
+        "the post-block set is refused"
+    );
 }
 
 /// Two places over distinct entries, each guarded and set in its own block,
 /// interleaved: the presence fact is keyed to the place it was proven for, so inside
-/// `if exists(p)` only the set through `p` is strict — a set through the co-resident,
-/// unguarded `q` stays bare — and the mirror holds inside `if exists(q)`. The two
+/// `if exists(p)` only a set through `p` is admitted — a set through the co-resident,
+/// unguarded `q` is refused — and the mirror holds inside `if exists(q)`. The two
 /// facts never merge across places, and neither survives past its own block.
 #[test]
 fn interleaved_guarded_places_keep_independent_presence_facts() {
-    let source = format!(
+    let own = format!(
         "{HEADER}{}",
         r#"
 pub fn tag(a: int, b: int) {
@@ -423,29 +417,45 @@ pub fn tag(a: int, b: int) {
         place q = ^counters[b]
         if exists(p) {
             p.label = "p-strict"
-            q.label = "q-bare"
         }
         if exists(q) {
             q.label = "q-strict"
-            p.label = "p-bare"
         }
     }
 }
 "#
     );
-    let image = compile_verify(&source);
-    let instrs = export_instrs(&image, "tag");
-    // Two strict sets (p in its guard, q in its guard); two bare sets (the
-    // co-resident place in each block, whose fact is not proven there).
+    let image = compile_verify(&own);
     assert_eq!(
-        count_strict(instrs),
+        count_strict(export_instrs(&image, "tag")),
         2,
-        "each place is strict only inside its own guard"
+        "each place is written inside its own guard"
+    );
+
+    let crossed = format!(
+        "{HEADER}{}",
+        r#"
+pub fn tag(a: int, b: int) {
+    transaction {
+        place p = ^counters[a]
+        place q = ^counters[b]
+        if exists(p) {
+            q.label = "q-unproven"
+        }
+        if exists(q) {
+            p.label = "p-unproven"
+        }
+    }
+}
+"#
     );
     assert_eq!(
-        count_bare(instrs),
-        2,
-        "a co-resident place's set is bare; one place's fact never covers another"
+        compile_error_codes(&crossed),
+        vec![
+            "check.requires_presence".to_string(),
+            "check.requires_presence".to_string()
+        ],
+        "one place's fact never covers another"
     );
 }
 
@@ -604,7 +614,6 @@ const REQUIRES_PRESENCE: &str = "check.requires_presence";
 /// is refused at check time with a typed code at the write. Today the program checks
 /// clean and faults at runtime with `run.corruption`.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_sparse_set_after_a_helper_erase_of_the_family_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
@@ -639,7 +648,6 @@ pub fn provedThenHelperErase(n: int): bool {
 /// through `a` is refused at check time. Today the program checks clean and faults at
 /// runtime with `run.corruption`.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_sparse_set_after_an_erase_through_another_place_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
@@ -671,7 +679,6 @@ pub fn provedThenAliasErase(n: int): bool {
 /// creating the entry at commit. Today the write compiles to the bare set and the entry
 /// is minted by the commit reconcile.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_field_write_on_an_unproven_entry_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
@@ -729,7 +736,6 @@ pub fn valueOf(n: int): int {
 /// strict set the verifier then rejects (`image.flow`), and the helper form verifies
 /// and faults at runtime.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_field_write_inside_a_loop_that_erases_the_family_is_refused_at_check() {
     let direct = format!(
         "{HEADER}{}",
@@ -792,7 +798,6 @@ pub fn writeThenHelperInLoop(n: int): bool {
 /// may or may not be `p`'s entry, and the rule does not reason about keys. Today the
 /// inline erase leaves the compiler's fact in place and the set is emitted strict.
 #[test]
-#[ignore = "B2 complete entries"]
 fn an_inline_erase_of_another_key_in_the_family_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
@@ -823,7 +828,6 @@ pub fn eraseNeighbourThenSet(n: int): bool {
 /// continuation only with the entry present. The set after the guard compiles and is
 /// strict. Today the continuation carries no fact and the set is bare.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_negative_diverging_guard_carries_the_fact_into_the_continuation() {
     let source = format!(
         "{HEADER}{}",
@@ -858,7 +862,6 @@ pub fn setLabelIfPresent(n: int): bool {
 /// durable field is `check.type` at the write. Today the assignment compiles as a
 /// sparse set of `absent`.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_durable_field_assigned_absent_is_refused_naming_delete() {
     let source = format!(
         "{HEADER}{}",
@@ -885,7 +888,6 @@ pub fn clearLabel(n: int) {
 /// `^counters` between the guard and the set, and the set stays strict; the same
 /// program with an erasing helper is refused. Today the erasing form compiles clean.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_read_only_helper_keeps_the_fact_while_an_erasing_helper_ends_it() {
     let reading = format!(
         "{HEADER}{}",
@@ -952,7 +954,6 @@ pub fn wipeThenSet(n: int): int {
 /// precedes `delete p` on the back edge, so it is refused at the loop's close. Today
 /// the compiler emits the strict set and the verifier rejects the image (`image.flow`).
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_field_write_inside_a_while_loop_that_erases_the_family_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
@@ -987,7 +988,6 @@ pub fn whileErase(n: int): bool {
 /// fact was established, and the outer loop's close resolves it. Today the compiler
 /// emits the strict set and the verifier rejects the image (`image.flow`).
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_field_write_inside_nested_loops_that_erase_the_family_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
@@ -1023,7 +1023,6 @@ pub fn nestedErase(n: int): bool {
 /// and the verifier's exact-key kill misses it, so the program verifies and faults at
 /// runtime.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_field_write_after_a_loop_that_erases_the_family_is_refused_at_check() {
     let source = format!(
         "{HEADER}{}",
@@ -1056,7 +1055,6 @@ pub fn eraseAllThenSet(n: int): bool {
 /// `if not exists(p)` falls through, the write after it has no proof. Today the write
 /// compiles as a bare set.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_non_diverging_negative_guard_does_not_prove_the_continuation() {
     let source = format!(
         "{HEADER}{}",
@@ -1086,7 +1084,6 @@ pub fn noteThenSet(n: int): int {
 /// write, naming `delete`, so clearing has one spelling. Today the optional operand
 /// is accepted and an absent value clears the field.
 #[test]
-#[ignore = "B2 complete entries"]
 fn a_durable_field_assigned_an_optional_value_is_refused_naming_delete() {
     let source = format!(
         "{HEADER}{}",

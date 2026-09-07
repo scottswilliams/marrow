@@ -63,7 +63,7 @@ use crate::decl::{
     DeclarationRefusalSummary, MemberNamespace, declaration_refused,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
-use crate::durable::{DurableRegistry, ProductBinding, RootBinding};
+use crate::durable::{DurableRegistry, Family, ProductBinding, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
@@ -177,6 +177,11 @@ pub(crate) struct Lowered {
     /// Whether this body owns a `transaction` block (emits a begin). A test body that
     /// drives such a function mixes invocation boundaries and is refused.
     pub owns_transaction: bool,
+    /// The entry families this body creates, replaces, or erases directly. A caller's
+    /// presence proofs over a family end at a call whose closure writes it.
+    pub written_families: Vec<Family>,
+    /// Present-form writes whose proofs a call may have ended.
+    pub presence_obligations: Vec<PresenceObligation>,
     /// Full source spans parallel to the instructions owned by `func` in the draft.
     /// Transaction-ownership validation borrows that code after body settlement.
     pub code_spans: Vec<SourceSpan>,
@@ -243,13 +248,6 @@ struct PlaceChain {
     root_name: String,
     ty: LTy,
     indices: Vec<u16>,
-}
-
-/// A loop's patch targets: where `continue` jumps, and the jumps `break` emits that
-/// must be patched to the loop's exit once it is known.
-struct LoopCtx {
-    continue_target: usize,
-    break_jumps: Vec<usize>,
 }
 
 /// The refusal a handle addresses, from the namespace ledger that minted it.
@@ -388,15 +386,14 @@ pub(crate) struct FnLowerer<'a, 'd> {
     poisoned_bindings: BTreeSet<String>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
     places: Vec<PlaceLocal<'a>>,
-    /// The key-paths of `place` bindings a presence fact currently dominates: the
-    /// containing entry is known present here, so a sparse-field set through the
-    /// place lowers to the strict present-entry form. Each fact is the place's whole
-    /// key-path as pre-evaluated slots (root-first), so a root and a branch place are
-    /// tracked uniformly. Scoped like `locals` (a fact established in a guarded block or
-    /// after an upsert does not outlive its block); the verifier rechecks each strict
-    /// set independently.
-    present_places: Vec<Vec<u16>>,
-    loops: Vec<LoopCtx>,
+    /// The presence proofs currently in force, newest last. Scoped like `locals` (a
+    /// fact established in a guarded block or after an upsert does not outlive its
+    /// block); the verifier rechecks each present-form operation independently.
+    present_places: Vec<PresenceFact<'a>>,
+    loops: Vec<LoopCtx<'a>>,
+    /// The entry families this body writes directly.
+    written_families: Vec<&'a Family>,
+    presence_obligations: Vec<PresenceObligation>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
     /// The frame's first over-bound request is a source-located terminal refusal.
@@ -416,6 +413,7 @@ mod durable;
 mod exprs;
 mod literals;
 mod ltype;
+mod presence;
 mod registry;
 mod stmts;
 mod types;
@@ -424,13 +422,16 @@ pub(in crate::lower) use self::builtins::*;
 pub(in crate::lower) use self::diagnostics::*;
 pub(in crate::lower) use self::durable::*;
 pub(in crate::lower) use self::ltype::*;
+pub(in crate::lower) use self::presence::*;
 pub(in crate::lower) use self::registry::*;
 pub(in crate::lower) use self::types::*;
 
 pub(crate) use self::builtins::{
     builtin_const_int, builtin_value_names, is_reserved_builtin_name, reserved_builtin_name,
 };
+pub(crate) use self::diagnostics::requires_presence;
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
+pub(crate) use self::presence::PresenceObligation;
 pub(crate) use self::registry::{
     DeclaredFn, FunctionRegistry, GenericRegistry, GenericTemplate, ModuleBinding, ModuleLedger,
     SignatureOutcome,
@@ -500,6 +501,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             poisoned_bindings: BTreeSet::new(),
             places: Vec::new(),
             present_places: Vec::new(),
+            written_families: Vec::new(),
+            presence_obligations: Vec::new(),
             loops: Vec::new(),
             slot_count: 0,
             local_limit_reached: false,
@@ -1008,6 +1011,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             callees: std::mem::take(&mut self.calls),
             unwrapped_mutations: std::mem::take(&mut self.unwrapped_mutations),
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
+            written_families: self.written_families.drain(..).cloned().collect(),
+            presence_obligations: std::mem::take(&mut self.presence_obligations),
             has_direct_durable_op,
             owns_transaction,
             code_spans,
@@ -1048,6 +1053,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Instr::Call(target) => self.unwrapped_calls.push((*target, span)),
                 _ if is_mutation_instr(&instr) => self.unwrapped_mutations.push(span),
                 _ => {}
+            }
+        }
+        if let Instr::Call(target) = &instr {
+            // A callee may erase an entry a live proof covers; the proof's obligation is
+            // settled once the callee's written-family closure is known.
+            for fact in &mut self.present_places {
+                fact.callees.push(*target);
+            }
+            for ctx in &mut self.loops {
+                ctx.callees.push(*target);
             }
         }
         let index = self.code.len() as u32;
