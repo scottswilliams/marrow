@@ -1,12 +1,8 @@
 use super::{BodyKind, Instr, LowerMode, PresenceObligation};
+use crate::{test_ledger as ledger, test_project as project_capture};
 use marrow_syntax::SourceSpan;
 use std::cell::RefCell;
 use std::ops::Range;
-
-#[path = "../../tests/common/ledger.rs"]
-mod ledger;
-#[path = "../../tests/common/project.rs"]
-mod project_capture;
 
 #[derive(Debug, Default)]
 struct Observed {

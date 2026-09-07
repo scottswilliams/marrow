@@ -7,11 +7,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::compile::{CompileFailure, ResourceLimitKind, check, compile, compile_with_tests};
 use crate::types::{CallGraphCounts, capture_call_graph_counts};
-
-#[path = "../tests/common/ledger.rs"]
-mod ledger;
-#[path = "../tests/common/project.rs"]
-mod project_capture;
+use crate::{test_ledger as ledger, test_project as project_capture};
 
 fn project(source: String) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");

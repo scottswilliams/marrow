@@ -43,6 +43,13 @@ mod lower;
 mod scalar;
 mod types;
 
+#[cfg(test)]
+#[path = "../tests/common/ledger.rs"]
+mod test_ledger;
+#[cfg(test)]
+#[path = "../tests/common/project.rs"]
+mod test_project;
+
 pub use analysis::{
     ActiveCall, ActiveCallOutcome, AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot,
     Candidate, CandidateKind, CompletionOutcome, Completions, DeclKind, DeclSymbol, Definition,

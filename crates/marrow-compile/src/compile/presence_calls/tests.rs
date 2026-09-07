@@ -109,7 +109,7 @@ fn a_drain_distinguishes_expired_live_empty_and_future_intervals() {
 
 #[test]
 fn an_unavailable_callee_does_not_discard_a_pending_query() {
-    let obligations = obligations(&[0..2]);
+    let obligations = obligations(std::slice::from_ref(&(0..2)));
     let queries = queries(&obligations);
     let mut failures = Vec::new();
     settle(
