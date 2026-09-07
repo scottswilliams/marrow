@@ -108,6 +108,7 @@ pub(super) fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> 
 pub(super) fn check_presence_flow(
     function: &SealedFunction,
     ctx: &Ctx,
+    non_fallthrough_entries: &[bool],
 ) -> Result<(), VerifyRejection> {
     let code = function.instrs();
     if !code
@@ -138,7 +139,8 @@ pub(super) fn check_presence_flow(
                 ));
             }
         }
-        for (successor, set) in presence_edges(code, ctx, index, &present) {
+        for (successor, set) in presence_edges(code, ctx, non_fallthrough_entries, index, &present)
+        {
             if successor >= code.len() {
                 return Err(reject(VerifyPhase::Flow, "presence edge out of range"));
             }
@@ -175,44 +177,49 @@ type PresenceFact = (u16, Vec<u16>, Vec<u16>);
 fn presence_edges(
     code: &[SealedInstr],
     ctx: &Ctx,
+    non_fallthrough_entries: &[bool],
     index: usize,
     present: &BTreeSet<PresenceFact>,
 ) -> Vec<(usize, BTreeSet<PresenceFact>)> {
     match &code[index] {
-        SealedInstr::JumpIfFalse(target) => match exists_guard_fact(code, ctx, index) {
-            // The present (true) edge falls through into the guarded block; the false
-            // edge (target) is the absent branch.
-            Some(fact) => {
-                let mut present_edge = present.clone();
-                present_edge.insert(fact);
-                vec![(*target, present.clone()), (index + 1, present_edge)]
+        SealedInstr::JumpIfFalse(target) => {
+            match exists_guard_fact(code, ctx, non_fallthrough_entries, index) {
+                // The present (true) edge falls through into the guarded block; the false
+                // edge (target) is the absent branch.
+                Some(fact) => {
+                    let mut present_edge = present.clone();
+                    present_edge.insert(fact);
+                    vec![(*target, present.clone()), (index + 1, present_edge)]
+                }
+                None => flow_successors(code, index)
+                    .into_iter()
+                    .map(|s| (s, present.clone()))
+                    .collect(),
             }
-            None => flow_successors(code, index)
-                .into_iter()
-                .map(|s| (s, present.clone()))
-                .collect(),
-        },
-        SealedInstr::BranchPresent(target) => match read_entry_guard_fact(code, ctx, index) {
-            Some(fact) => {
-                let mut present_edge = present.clone();
-                present_edge.insert(fact);
-                vec![(*target, present.clone()), (index + 1, present_edge)]
+        }
+        SealedInstr::BranchPresent(target) => {
+            match read_entry_guard_fact(code, ctx, non_fallthrough_entries, index) {
+                Some(fact) => {
+                    let mut present_edge = present.clone();
+                    present_edge.insert(fact);
+                    vec![(*target, present.clone()), (index + 1, present_edge)]
+                }
+                None => flow_successors(code, index)
+                    .into_iter()
+                    .map(|s| (s, present.clone()))
+                    .collect(),
             }
-            None => flow_successors(code, index)
-                .into_iter()
-                .map(|s| (s, present.clone()))
-                .collect(),
-        },
+        }
         SealedInstr::DurCreateEntry(site) => {
             let mut next = present.clone();
-            // Only a single-column root whole-entry create establishes root-entry
+            // Only a single-key root whole-entry create establishes root-entry
             // presence for its key slot (`entry_write_key_slot` reads one adjacent key).
             // A branch create (a `BranchEntry` site) leaves the root descendant-only, and
             // a composite-root create's misread single slot never matches a set's full
             // key-path — so neither falsely establishes a fact a strict set relies on.
             if is_entry_site(ctx, *site)
                 && let Some(root) = site_root(ctx, *site)
-                && let Some(slot) = entry_write_key_slot(code, index)
+                && let Some(slot) = entry_write_key_slot(code, non_fallthrough_entries, index)
             {
                 next.insert((root, Vec::new(), vec![slot]));
             }
@@ -321,11 +328,22 @@ fn read_key_path_before(code: &[SealedInstr], at: usize, arity: usize) -> Option
     Some(keys)
 }
 
+/// Entry at the first load is valid; entry into each later instruction must come
+/// from its immediate predecessor. Type flow supplies the mask for this tape.
+fn window_has_only_fallthrough(entries: &[bool], first: usize, last: usize) -> bool {
+    !entries[first + 1..=last].iter().any(|entry| *entry)
+}
+
 /// The presence fact an `exists`-guard proves at a `JumpIfFalse`: `LocalGet(S0); …;
 /// LocalGet(Sn); DurExists(entry site); JumpIfFalse`. The fact is the entry site's
 /// branch path paired with the whole key-path it reads. `None` when the shape does not
 /// match (a non-entry site, a non-local key, or an unrelated condition).
-fn exists_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<PresenceFact> {
+fn exists_guard_fact(
+    code: &[SealedInstr],
+    ctx: &Ctx,
+    non_fallthrough_entries: &[bool],
+    index: usize,
+) -> Option<PresenceFact> {
     if index < 1 {
         return None;
     }
@@ -334,12 +352,20 @@ fn exists_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<Pr
     };
     let (root, branch, arity) = entry_site(ctx, *site)?;
     let keys = read_key_path_before(code, index - 1, arity)?;
+    if !window_has_only_fallthrough(non_fallthrough_entries, index - arity - 1, index) {
+        return None;
+    }
     Some((root, branch, keys))
 }
 
 /// The presence fact an `if const x = p` guard proves at a `BranchPresent`:
 /// `LocalGet(S0); …; LocalGet(Sn); DurReadEntry(entry site); BranchPresent`.
-fn read_entry_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<PresenceFact> {
+fn read_entry_guard_fact(
+    code: &[SealedInstr],
+    ctx: &Ctx,
+    non_fallthrough_entries: &[bool],
+    index: usize,
+) -> Option<PresenceFact> {
     if index < 1 {
         return None;
     }
@@ -348,13 +374,16 @@ fn read_entry_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Optio
     };
     let (root, branch, arity) = entry_site(ctx, *site)?;
     let keys = read_key_path_before(code, index - 1, arity)?;
+    if !window_has_only_fallthrough(non_fallthrough_entries, index - arity - 1, index) {
+        return None;
+    }
     Some((root, branch, keys))
 }
 
-/// The key slot of a single-column whole-entry create at `index`: `LocalGet(S);
+/// The key slot of a single-key whole-entry create at `index`: `LocalGet(S);
 /// LocalGet(record); DurCreateEntry`. The key is the operand below the record, so the
 /// create's key comes from the `LocalGet` two back when the record is a single local
-/// push.
+/// push. Type flow also establishes that no edge enters after the key load.
 ///
 /// Soundness of shape-adjacent slot identification: the caller applies this only to a
 /// root `WholePayload` create (it gates on `is_entry_site`), so a branch create — whose
@@ -365,7 +394,11 @@ fn read_entry_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Optio
 /// (root, slot): two writes through the same slot value under different roots establish
 /// distinct facts, and a strict sparse set over one root is never proven by a create on
 /// another.
-fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
+fn entry_write_key_slot(
+    code: &[SealedInstr],
+    non_fallthrough_entries: &[bool],
+    index: usize,
+) -> Option<u16> {
     if index < 2 {
         return None;
     }
@@ -375,6 +408,9 @@ fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
     let SealedInstr::LocalGet(slot) = &code[index - 2] else {
         return None;
     };
+    if !window_has_only_fallthrough(non_fallthrough_entries, index - 2, index) {
+        return None;
+    }
     Some(*slot)
 }
 
@@ -404,22 +440,26 @@ pub(super) fn verify_function(
     function: &DecodedFunction,
     ctx: &Ctx,
     decoded: &DecodedImage,
-) -> Result<SealedFunction, VerifyRejection> {
+) -> Result<(SealedFunction, Vec<bool>), VerifyRejection> {
     let mut decoded_code = decode_code(&function.code)?;
     resolve_jumps(&mut decoded_code)?;
-    let (instrs, max_stack) = check_flow(function, ctx, &decoded_code, &decoded.consts)?;
+    let (instrs, max_stack, non_fallthrough_entries) =
+        check_flow(function, ctx, &decoded_code, &decoded.consts)?;
     let spans = map_spans(function, &decoded_code)?;
-    Ok(SealedFunction {
-        name: decoded.strings[function.name as usize].clone(),
-        source: decoded.strings[function.source as usize].clone(),
-        params: function.params.clone(),
-        ret: function.ret,
-        local_count: function.local_count,
-        instrs,
-        spans,
-        max_stack,
-        mutating: false,
-    })
+    Ok((
+        SealedFunction {
+            name: decoded.strings[function.name as usize].clone(),
+            source: decoded.strings[function.source as usize].clone(),
+            params: function.params.clone(),
+            ret: function.ret,
+            local_count: function.local_count,
+            instrs,
+            spans,
+            max_stack,
+            mutating: false,
+        },
+        non_fallthrough_entries,
+    ))
 }
 
 #[cfg(test)]
@@ -482,12 +522,13 @@ mod presence_root_discrimination {
             SealedInstr::LocalGet(3),
             SealedInstr::DurCreateEntry(1),
         ];
-        let after_first = presence_edges(&code, &ctx, 2, &BTreeSet::new())
+        let entries = [false; 6];
+        let after_first = presence_edges(&code, &ctx, &entries, 2, &BTreeSet::new())
             .into_iter()
             .find(|(successor, _)| *successor == 3)
             .expect("a create falls through to the next instruction")
             .1;
-        let after_second = presence_edges(&code, &ctx, 5, &after_first)
+        let after_second = presence_edges(&code, &ctx, &entries, 5, &after_first)
             .into_iter()
             .find(|(successor, _)| *successor == 6)
             .expect("a create falls through to the next instruction")

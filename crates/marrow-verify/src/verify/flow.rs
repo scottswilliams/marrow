@@ -46,13 +46,14 @@ pub(super) struct Frame {
 
 /// Phase-3 structural, type, and local-init checks via a CFG worklist over the
 /// typed operand stack and locals. Returns the sealed instruction tape and the true
-/// max stack depth (computed here, never read from the image).
+/// max stack depth (computed here, never read from the image), and destinations
+/// reached from a predecessor other than their immediately prior instruction.
 pub(super) fn check_flow(
     function: &DecodedFunction,
     ctx: &Ctx,
     code: &[Decoded],
     consts: &[SealedConst],
-) -> Result<(Vec<SealedInstr>, usize), VerifyRejection> {
+) -> Result<(Vec<SealedInstr>, usize, Vec<bool>), VerifyRejection> {
     if code.is_empty() {
         return Err(reject(VerifyPhase::Function, "function has no code"));
     }
@@ -69,6 +70,7 @@ pub(super) fn check_flow(
         stack: Vec::new(),
         locals: initial_locals,
     });
+    let mut non_fallthrough_entries = vec![false; code.len()];
     let mut max_stack = 0usize;
     let mut worklist = vec![0usize];
 
@@ -107,6 +109,10 @@ pub(super) fn check_flow(
                     "execution falls off the end without returning",
                 ));
             }
+            // Record every edge even when its type frame causes no worklist change.
+            if successor != index + 1 {
+                non_fallthrough_entries[successor] = true;
+            }
             propagate(&mut entry, &mut worklist, successor, &edge_frame)?;
         }
     }
@@ -116,7 +122,7 @@ pub(super) fn check_flow(
     }
 
     let instrs = code.iter().map(|decoded| decoded.instr.clone()).collect();
-    Ok((instrs, max_stack))
+    Ok((instrs, max_stack, non_fallthrough_entries))
 }
 
 /// Merge `frame` into the entry state of `successor`, enqueueing it when its state

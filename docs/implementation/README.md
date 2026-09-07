@@ -15,6 +15,14 @@ it rebuilds every executable claim from the bytes and seals a `VerifiedImage`.
 writes leave the VM through `marrow-kernel`, which encodes keys and values and
 drives a transaction against an engine in `marrow-store`.
 
+Verifier type flow records destinations reached from anywhere except the
+immediately preceding instruction. The presence pass uses those transient
+flags to require an uninterrupted
+key-load, producer and consumer sequence before establishing a guard fact.
+The flags are discarded before the verified image is returned; they add no
+encoded or public image field. Calls that erase a guarded entry remain subject
+to the kernel's runtime presence assertion.
+
 The compiler opens no store, and the VM accepts only an image the verifier
 sealed. `marrow-lifecycle` prepares a verified image once, deriving the store
 projection every engine opens under, and pairs the image with the store it

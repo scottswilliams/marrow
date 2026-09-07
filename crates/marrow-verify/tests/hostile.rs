@@ -39,6 +39,9 @@ use admitted_plan::admitted_plan;
 
 #[path = "common/admitted.rs"]
 mod admitted_helper;
+
+#[path = "hostile/guard_provenance.rs"]
+mod guard_provenance;
 use admitted_helper::admitted;
 
 /// One within-domain draft mint, unwrapped: every fixture mint here is far inside
@@ -571,6 +574,7 @@ fn closure_phase_mutual_recursion() {
 /// [`ImageDraft::request_site`], so a test names one of these sites by threading the
 /// operand its own draft returned; there is no way to write a site number by hand.
 struct Sites {
+    record: TypeId,
     /// The root entry's whole-payload site.
     entry: PlannedSiteRef,
     /// The required `value:int` field leaf.
@@ -583,6 +587,16 @@ struct Sites {
 /// required, label:string sparse }` at root `^counters(name:string)`, returning the
 /// entry, required-field, and sparse-field site operands.
 fn durable_schema(draft: &mut DraftTxn<'_>) -> Sites {
+    durable_schema_with_keys(
+        draft,
+        vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+        }],
+    )
+}
+
+fn durable_schema_with_keys(draft: &mut DraftTxn<'_>, keys: Vec<KeyColumn>) -> Sites {
     let counter = ok(draft.intern_string("Counter"));
     let value = ok(draft.intern_string("value"));
     let label = ok(draft.intern_string("label"));
@@ -618,10 +632,7 @@ fn durable_schema(draft: &mut DraftTxn<'_>) -> Sites {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
-                keys: vec![KeyColumn {
-                    scalar: Scalar::Text,
-                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
-                }],
+                keys,
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
                 indexes: Vec::new().into(),
             },
@@ -647,6 +658,7 @@ fn durable_schema(draft: &mut DraftTxn<'_>) -> Sites {
         SemanticTarget::FieldLeaf,
     );
     Sites {
+        record,
         entry,
         value,
         label,

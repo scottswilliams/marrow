@@ -114,8 +114,11 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         signatures: &signatures,
     };
     let mut functions = Vec::with_capacity(decoded.functions.len());
+    let mut non_fallthrough_entries = Vec::with_capacity(decoded.functions.len());
     for function in &decoded.functions {
-        functions.push(verify_function(function, &ctx, &decoded)?);
+        let (verified, entries) = verify_function(function, &ctx, &decoded)?;
+        functions.push(verified);
+        non_fallthrough_entries.push(entries);
     }
 
     // Phase 4: the call graph over the recorded direct calls must be acyclic
@@ -150,8 +153,8 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
 
     // Phase 5 (presence): every present-entry sparse set is dominated by a presence
     // fact on its key slot, rechecked independently of the compiler.
-    for function in &functions {
-        check_presence_flow(function, &ctx)?;
+    for (function, entries) in functions.iter().zip(non_fallthrough_entries) {
+        check_presence_flow(function, &ctx, &entries)?;
     }
 
     let exports = decoded
