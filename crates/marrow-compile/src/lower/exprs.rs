@@ -95,10 +95,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ));
             return Err(LoweringFailure::Recoverable);
         }
-        // Inline `^root(key)` addresses read here. A place-rooted composed read — a field,
-        // group, group leaf, or whole branch entry off a named `place`/pin — reads the same
-        // way its inline `^root…` equivalent does. A bare place name is a durable
-        // designation, not a value, and falls through to its own diagnostic below.
+        // Inline addresses and composed reads off a named place or pin use the same
+        // durable resolver. Required fields and group leaves have their declared type
+        // when presence is proved. A bare place name is a durable designation, not a
+        // value, and falls through to its own diagnostic below.
         let durable_here = match self.durable_shape_here(expr) {
             Ok(shape) => shape,
             Err(drift) => {
