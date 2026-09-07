@@ -524,7 +524,11 @@ store ^books[shelf: int, id: int]: Book
 /// Compile `SCHEMA` plus `body` and return the diagnostics; the caller asserts the
 /// expected rejection. `body` is expected to fail to compile.
 fn compile_diagnostics(body: &str) -> Vec<SourceDiagnostic> {
-    let source = format!("{SCHEMA}\n{body}");
+    compile_diagnostics_with_schema(SCHEMA, body)
+}
+
+fn compile_diagnostics_with_schema(schema: &str, body: &str) -> Vec<SourceDiagnostic> {
+    let source = format!("{schema}\n{body}");
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -746,6 +750,95 @@ const REQUIRED_LEAF_SCHEMA: &str = r#"resource Book {
 
 store ^books[shelf: int, id: int]: Book
 "#;
+
+#[test]
+fn proved_required_root_group_and_branch_reads_return_bare_values() {
+    let source = format!(
+        "{REQUIRED_LEAF_SCHEMA}{}",
+        r#"
+pub fn put(shelf: int, id: int): string {
+    transaction {
+        place b = ^books[shelf, id]
+        b = Book(title: "Small Gods", details: Book.details(pages: 381))
+        const title: string = b.title
+        ^books[shelf, id].notes["review"] = Book.notes(text: "read")
+        return title
+    }
+}
+
+pub fn pages(shelf: int, id: int): int {
+    place b = ^books[shelf, id]
+    if not exists(b) { return -1 }
+    const pages: int = b.details.pages
+    const language: string? = b.details.language
+    if (language ?? "") == "en" { return pages + 1 }
+    return pages
+}
+
+pub fn note(shelf: int, id: int): string {
+    place n = ^books[shelf, id].notes["review"]
+    if exists(n) {
+        const text: string = n.text
+        return text
+    }
+    return "missing"
+}
+"#,
+    );
+    let image = compile_verify(&source, IDS);
+    for (name, keys) in [("put", 2), ("note", 3)] {
+        let code = image.function(export(&image, name).function()).instrs();
+        let slots: Vec<_> = code
+            .iter()
+            .filter_map(|op| match op {
+                marrow_verify::SealedInstr::DurReadFieldPresent { key_slots, .. } => {
+                    Some(key_slots)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].len(), keys);
+    }
+    let code = image.function(export(&image, "pages").function()).instrs();
+    assert_eq!(
+        code.iter()
+            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadGroupPresent { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        code.iter()
+            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadGroup(_)))
+            .count(),
+        1
+    );
+    let mut store = attach(&image);
+    assert_eq!(
+        run(&image, &mut store, "pages", vec![i(1), i(7)]),
+        Some(i(-1))
+    );
+    assert_eq!(
+        run(&image, &mut store, "note", vec![i(1), i(7)]),
+        Some(s("missing"))
+    );
+    assert_eq!(
+        run(&image, &mut store, "put", vec![i(1), i(7)]),
+        Some(s("Small Gods"))
+    );
+    assert_eq!(
+        run(&image, &mut store, "pages", vec![i(1), i(7)]),
+        Some(i(381))
+    );
+    assert_eq!(
+        run(&image, &mut store, "note", vec![i(1), i(7)]),
+        Some(s("read"))
+    );
+    assert_eq!(
+        run(&image, &mut store, "pages", vec![i(7), i(1)]),
+        Some(i(-1))
+    );
+}
 
 /// A group with a required leaf is part of every present entry, so it is erased only
 /// with its entry: `delete b.details` is `check.type` when `details` holds a required

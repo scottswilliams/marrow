@@ -105,8 +105,10 @@ history is the archive.
 
 Complete entries are current: an entry is written whole, a field or group write
 updates an entry the compiler has proved present through a `place`, and `delete`
-is the one clearing form (`docs/language/durable-places.md`). Typed required
-reads through a proved place and the family presence namespace remain selected
+is the one clearing form (`docs/language/durable-places.md`). Required fields and
+required group leaves read through a proved place have their declared types;
+sparse and untested reads remain optional. Whole-value read ergonomics,
+automatic traversal facts and the family presence namespace remain selected
 direction in `docs/future/durable-programming.md`.
 
 ## Working rules

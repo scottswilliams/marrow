@@ -160,6 +160,7 @@ pub(super) fn check_presence_flow(
         matches!(
             instr,
             SealedInstr::DurSetField { .. }
+                | SealedInstr::DurReadFieldPresent { .. }
                 | SealedInstr::DurReadGroupPresent { .. }
                 | SealedInstr::DurReplaceGroup { .. }
         )
@@ -174,6 +175,7 @@ pub(super) fn check_presence_flow(
             .clone()
             .expect("worklist only enqueues reached instructions");
         if let SealedInstr::DurSetField { site, key_slots }
+        | SealedInstr::DurReadFieldPresent { site, key_slots }
         | SealedInstr::DurReadGroupPresent { site, key_slots }
         | SealedInstr::DurReplaceGroup { site, key_slots } = &code[index]
         {

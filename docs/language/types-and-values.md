@@ -121,7 +121,7 @@ outside the type's range faults `run.temporal_overflow`.
 parse error, and a struct field holds a bare type. `List<T>?` is an optional
 whose value is a whole list.
 
-A sparse field read, a bracket lookup, a durable read, and a function returning
+A sparse field read, a bracket lookup, an untested durable read, and a function returning
 `T?` produce an optional. Four forms consume one. `value ?? fallback` selects the
 present value or the fallback. `if const name = value` enters its block with
 `name` bound to the present value. A [let-else](control-flow.md#let-else-bindings)
@@ -129,7 +129,9 @@ binding diverges when the value is absent. `value?.field` reads a field through
 an optional struct or resource and yields an optional.
 
 `exists(place)` is not one of them: it tests a durable place and yields a `bool`.
-It narrows nothing, and the read after it is still `T?`.
+An explicit guard over a named place proves its entry present and gives required
+field reads their declared types ([named places](durable-places.md#named-places)).
+It does not unwrap a local optional or make a sparse field required.
 
 ```mw
 module docs::types::optionals
@@ -173,8 +175,8 @@ test "optionals" {
 absent `origin(false)` yields an absent `int?` without faulting. The
 optional-producing call runs once in each form.
 
-A durable read is optional even when the field is `required`, because the entry
-itself may be absent. `^books[id].title` is a `string?`, and
+An untested durable read is optional even when the field is `required`, because
+the entry itself may be absent. `^books[id].title` is a `string?`, and
 `if const book = ^books[id]` binds a whole `Book` whose required fields are
 bare. Reading is described under [durable places](durable-places.md#reading).
 

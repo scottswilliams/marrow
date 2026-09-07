@@ -227,6 +227,11 @@ pub enum SealedInstr {
     DurFamilyExists(u16),
     /// `K → T?`: read field site `_0`.
     DurReadField(u16),
+    /// Read a required field as a bare value using independently proved place slots.
+    DurReadFieldPresent {
+        site: u16,
+        key_slots: Vec<u16>,
+    },
     /// `K → Rec?`: read the whole entry at site `_0`.
     DurReadEntry(u16),
     /// `T →`: set the field `site` (required or sparse) to a definite value, reading

@@ -31,17 +31,13 @@ first durable access. No host effect exists today
 ([path effects and authority](path-effects-and-authority.md)).
 
 The next durable-language increments keep serial execution and build on the
-complete-entry invariant. A place binding captures keys once; an ordinary value
-binding copies data. A presence-tested binding is to give required fields their
-ordinary declared types; sparse fields remain optional. Today every read
-through a place is optional. A traversal binding is to use the same field types
-and retain its presence fact when the loop region cannot erase entries in that
-family; today a pin is proved inside its own iteration. Types stay stable:
-validity checking does not retroactively turn a required read into an optional
-one. An untested address supports optional reads without a presence
-assumption.
+complete-entry invariant. Place bindings capture keys once, and required fields
+and group leaves read through explicit proofs have their declared types today
+([named places](../language/durable-places.md#named-places)). A traversal binding
+is to retain an automatic presence fact when its region cannot erase entries in
+that family; today a pin needs an explicit proof inside its own iteration.
 
-Whole-entry reads through a tested or traversal binding consume its presence
+Whole-entry and whole-group reads through a tested or traversal binding are to consume its presence
 fact and yield a complete value. Reads through untested bindings remain optional;
 an invalidated tested binding must be rechecked or recaptured without a presence
 assumption. Detached copies remain valid. One clearing operation covers
@@ -98,8 +94,8 @@ as absence. A separate entry-presence check supplies the distinction when needed
 
 ## Evidence
 
-Evidence for typed reads through a proved place checks stable place-binding
-types through the production compiler. Include possibly equal keys,
+Evidence for whole-value reads and automatic traversal proofs checks stable
+place-binding types through the production compiler. Include possibly equal keys,
 late-declared and generic helpers, loops and copied values. Record distinct
 return, break and continue transfers during lowering; preserve direct
 required-field reads in non-erasing traversals without redundant probes. No

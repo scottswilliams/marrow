@@ -451,9 +451,7 @@ fn present_idiom_steer(message: &mut String) {
     );
 }
 
-/// The refusal of a field or group write no presence proof covers at the write: the
-/// entry may be absent there, and a write never creates one. `detail` names why no
-/// proof holds at this write.
+/// The refusal of a presence-dependent use. `detail` names why no proof holds here.
 pub(crate) fn requires_presence(
     file: &FileIdentity,
     span: SourceSpan,
@@ -464,7 +462,7 @@ pub(crate) fn requires_presence(
         file,
         span,
         format!(
-            "this write updates an entry, but {detail}. Bind `place m = ^root[key]` and write \
+            "this use requires a present entry, but {detail}. Bind `place m = ^root[key]` and use \
              through `m` inside `if exists(m) {{ … }}`, after `if not exists(m) {{ return … }}`, \
              or after a whole-entry assignment `m = Resource(…)`; a proof ends at its block's \
              end, at a `delete` of any entry in the same family, and at a call that erases \

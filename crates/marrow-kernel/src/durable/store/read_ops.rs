@@ -64,7 +64,7 @@ pub(super) fn op_presence<V: ReadView>(
     let stem = node_stem(site, keys)?;
     let physical_key = match &site.target {
         AuthTarget::Entry { .. } => stem,
-        AuthTarget::Field { number, .. } => physical::stem_field_leaf(&stem, *number),
+        AuthTarget::Field { payload } => physical::stem_field_leaf(&stem, payload.number),
         AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a presence op targets a node site")
         }
@@ -80,13 +80,13 @@ pub(super) fn op_read_field<V: ReadView>(
     site: &AuthorizedSite,
     keys: &[KeyScalar],
 ) -> Result<Option<ValueDomain>, KernelFault> {
-    let AuthTarget::Field { number, shape, .. } = &site.target else {
+    let AuthTarget::Field { payload } = &site.target else {
         unreachable!("verifier proved a field read targets a field site")
     };
-    let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, *number);
+    let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, payload.number);
     match read_raw(cells, &leaf)? {
         None => Ok(None),
-        Some(bytes) => decode_domain(&bytes, shape)
+        Some(bytes) => decode_domain(&bytes, &payload.shape)
             .map(Some)
             .ok_or(KernelFault::Corruption),
     }

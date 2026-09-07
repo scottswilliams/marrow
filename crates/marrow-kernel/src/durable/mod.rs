@@ -61,6 +61,7 @@ pub type NativeStore = NativeStoreOwner;
 pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = marrow_store::NATIVE_ENGINE_FORMAT_VERSION;
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{ScalarKind, ValueShape};
@@ -619,14 +620,7 @@ enum AuthTarget {
         groups: Vec<ResolvedGroup>,
     },
     Field {
-        number: NodeNumber,
-        shape: ValueShape,
-        required: bool,
-        /// The addressed field's containing node record — the root's fields for a
-        /// top-level field, a branch's fields for a branch field. A field write reads the
-        /// sibling leaves a managed index projects from it, node-parametrically, one
-        /// level down for a branch.
-        record: Vec<ResolvedField>,
+        payload: Arc<FieldPayload>,
     },
     /// A whole-group target: the group's cell-key number (which keys its physical leaf
     /// namespace under the containing entry) and its own resolved record fields. A group
@@ -651,14 +645,31 @@ enum AuthTarget {
     },
 }
 
+/// Immutable field metadata prepared at session setup. Token copies share both the
+/// selected shape and containing record, so they do not copy recursive schema data
+/// in proportion to the record's width. The payload has no independent clone route.
+#[derive(Debug)]
+struct FieldPayload {
+    number: NodeNumber,
+    shape: ValueShape,
+    required: bool,
+    /// The addressed field's containing node record — the root's fields for a
+    /// top-level field, a branch's fields for a branch field. A field write reads the
+    /// sibling leaves a managed index projects from it, node-parametrically, one
+    /// level down for a branch.
+    record: Vec<ResolvedField>,
+}
+
 impl AuthTarget {
     /// A field target from a resolved field and its containing resolved record.
     fn field(field: &ResolvedField, record: &[ResolvedField]) -> Self {
         Self::Field {
-            number: field.number,
-            shape: field.shape.clone(),
-            required: field.required,
-            record: record.to_vec(),
+            payload: Arc::new(FieldPayload {
+                number: field.number,
+                shape: field.shape.clone(),
+                required: field.required,
+                record: record.to_vec(),
+            }),
         }
     }
 

@@ -1,14 +1,14 @@
 //! Presence proofs over durable entries: the facts a guard or a whole-entry write
 //! establishes, the loop regions and calls that end them, and the refusal of a
-//! present-form write no fact covers.
+//! presence-dependent use no fact covers.
 
 use super::*;
 
 /// A loop's patch targets — where `continue` jumps, and the jumps `break` emits that
 /// must be patched to the loop's exit once it is known — and its proof region: a loop
-/// body is one region, so a write through a fact older than the loop is refused when
+/// body is one region, so a use through a fact older than the loop is refused when
 /// the body erases the fact's family or calls a function that erases it, because the
-/// back edge puts that erase before the write.
+/// back edge puts that erase before the use.
 pub(super) struct LoopCtx<'a> {
     pub(super) continue_target: usize,
     pub(super) break_jumps: Vec<usize>,
@@ -16,8 +16,8 @@ pub(super) struct LoopCtx<'a> {
     pub(super) erased_families: Vec<&'a Family>,
     /// Start of the repeating region in the function's ordered call log.
     pub(super) call_start: usize,
-    /// Present-form writes inside this body through facts established before it was
-    /// entered: the write's span and its family, resolved when the loop closes.
+    /// Protected uses inside this body through facts established before it was
+    /// entered: the use's span and its family, resolved when the loop closes.
     pub(super) obligations: Vec<(SourceSpan, &'a Family)>,
 }
 
@@ -36,18 +36,26 @@ impl<'a> LoopCtx<'a> {
 /// A presence proof over one durable entry: the compiler knows the entry addressed by
 /// `key_slots` (its whole key-path as pre-evaluated place slots, root-first) in
 /// `family` is present from here to the end of the block that established the fact,
-/// unless an erase of the family or a call that erases it ends it first. `depth` is
-/// the loop nesting at establishment, so a write inside a loop entered later records
-/// an obligation on that loop. `call_start` indexes the single ordered call log;
-/// calls after that point are checked against their erased-family closures.
+/// unless an erase of the family or a call that erases it ends it first. Retain
+/// invalidated identity until lexical exit so a required read cannot silently
+/// revert to an untested optional read after losing its proof.
 pub(super) struct PresenceFact<'a> {
     pub(super) family: &'a Family,
     pub(super) key_slots: Vec<u16>,
-    pub(super) depth: usize,
-    pub(super) call_start: usize,
+    pub(super) state: PresenceState,
 }
 
-/// A present-form write whose proof a call may have ended: the write's span, its
+pub(super) enum PresenceState {
+    /// Loop nesting and the start of the single call log at establishment. Uses
+    /// record at most one crossed-loop interval in addition to their ordinary one.
+    Live {
+        depth: usize,
+        call_start: usize,
+    },
+    Invalidated,
+}
+
+/// A protected use whose proof a call may have ended: the use's span, its
 /// family, and an interval in its function's ordered call log. A second interval
 /// may cover the outermost repeating region entered after the proof.
 pub(crate) struct PresenceObligation {
@@ -63,12 +71,14 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// is a fresh fact at the loop's depth, so a per-iteration guard is never charged
     /// with an outer fact's obligations.
     pub(super) fn mark_present(&mut self, family: &'a Family, key_slots: Vec<u16>) {
-        self.present_places.push(Some(PresenceFact {
+        self.present_places.push(PresenceFact {
             family,
             key_slots,
-            depth: self.loops.len(),
-            call_start: self.calls.len(),
-        }));
+            state: PresenceState::Live {
+                depth: self.loops.len(),
+                call_start: self.calls.len(),
+            },
+        });
     }
 
     /// The newest presence fact over the entry `key_slots` addresses in `family`.
@@ -80,30 +90,32 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         self.present_places
             .iter()
             .rev()
-            .filter_map(Option::as_ref)
             .find(|fact| fact.family == family && fact.key_slots == key_slots)
     }
 
-    /// Require a dominating fact after operand effects, recording the calls since
-    /// its establishment and at most one outermost crossed-loop obligation.
-    pub(super) fn require_present(
+    /// Select the newest lexical fact before checking validity. An invalidated
+    /// checked view is a refusal; only a place never checked in scope is untested.
+    /// Record calls and crossed-loop obligations once for a live selected fact.
+    pub(super) fn checked_key_slots(
         &mut self,
         family: &'a Family,
         key_slots: Option<Vec<u16>>,
         span: SourceSpan,
-    ) -> ConstructResult<Vec<u16>> {
+    ) -> ConstructResult<Option<Vec<u16>>> {
         let Some((key_slots, fact)) =
             key_slots.and_then(|slots| self.present_fact(family, &slots).map(|fact| (slots, fact)))
         else {
+            return Ok(None);
+        };
+        let PresenceState::Live { depth, call_start } = fact.state else {
             self.fail(requires_presence(
                 self.file,
                 span,
-                "no presence proof covers the entry here",
+                "the entry's presence proof was invalidated",
             ));
             return Err(LoweringFailure::Recoverable);
         };
-        let depth = fact.depth;
-        let calls = fact.call_start..self.calls.len();
+        let calls = call_start..self.calls.len();
         if !calls.is_empty() {
             self.presence_obligations.push(PresenceObligation {
                 span,
@@ -114,11 +126,29 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if let Some(ctx) = self.loops.get_mut(depth) {
             ctx.obligations.push((span, family));
         }
-        Ok(key_slots)
+        Ok(Some(key_slots))
+    }
+
+    /// A mutation requires a checked view even when its address is untested.
+    pub(super) fn require_present(
+        &mut self,
+        family: &'a Family,
+        key_slots: Option<Vec<u16>>,
+        span: SourceSpan,
+    ) -> ConstructResult<Vec<u16>> {
+        if let Some(slots) = self.checked_key_slots(family, key_slots, span)? {
+            return Ok(slots);
+        }
+        self.fail(requires_presence(
+            self.file,
+            span,
+            "no presence proof covers the entry here",
+        ));
+        Err(LoweringFailure::Recoverable)
     }
 
     /// End every proof over `family`: its entry payload may be gone. Every open loop
-    /// records the erase, so a write earlier in its body through an older fact is
+    /// records the erase, so a protected use earlier in its body through an older fact is
     /// refused when the loop closes.
     pub(super) fn erase_family(&mut self, family: &'a Family) {
         if !self.erased_families.contains(&family) {
@@ -127,8 +157,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // Lexical scope marks are vector positions, so erasure must not move
         // surviving facts below a mark that will later truncate the scope.
         for fact in &mut self.present_places {
-            if fact.as_ref().is_some_and(|fact| fact.family == family) {
-                *fact = None;
+            if fact.family == family {
+                fact.state = PresenceState::Invalidated;
             }
         }
         for ctx in &mut self.loops {
@@ -147,8 +177,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 self.fail(requires_presence(
                     self.file,
                     span,
-                    "the loop body erases an entry of the family after this write, so \
-                     the next iteration writes an entry the proof no longer covers",
+                    "the loop body erases an entry of the family after this use, so \
+                     the next iteration uses an entry the proof no longer covers",
                 ));
             } else if ctx.call_start < self.calls.len() {
                 self.presence_obligations.push(PresenceObligation {
@@ -159,18 +189,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
         for fact in &mut self.present_places {
-            if fact
-                .as_ref()
-                .is_some_and(|fact| ctx.erased_families.contains(&fact.family))
-            {
-                *fact = None;
+            if ctx.erased_families.contains(&fact.family) {
+                fact.state = PresenceState::Invalidated;
             }
         }
         ctx.break_jumps
     }
 
     /// If `cond` is `exists(p)` over an in-scope named `place`, that place's presence
-    /// fact key: the guarded (then) block may write through the place.
+    /// fact key: the guarded (then) block may use the checked place.
     pub(super) fn exists_guard_fact(&self, cond: &Expression) -> Option<(&'a Family, Vec<u16>)> {
         let Expression::Call { callee, args, .. } = cond else {
             return None;

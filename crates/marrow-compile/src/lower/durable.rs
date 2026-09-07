@@ -327,6 +327,7 @@ pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
         Instr::DurExists(_)
             | Instr::DurFamilyExists(_)
             | Instr::DurReadField(_)
+            | Instr::DurReadFieldPresent { .. }
             | Instr::DurReadEntry(_)
             | Instr::DurReadGroup(_)
             | Instr::DurReadGroupPresent { .. }
@@ -447,6 +448,7 @@ pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::DurExists(_)
         | Instr::DurFamilyExists(_)
         | Instr::DurReadField(_)
+        | Instr::DurReadFieldPresent { .. }
         | Instr::DurReadEntry(_)
         | Instr::DurReadGroup(_)
         | Instr::DurReadGroupPresent { .. }
@@ -1562,8 +1564,21 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower a durable read (`^r(k)` entry, `^r(k).branch(bk)` branch entry, `^r(k).f`
     /// field, or the place forms).
-    pub(super) fn lower_durable_read(&mut self, place: DurablePlace) -> ConstructResult<LTy> {
-        self.emit_key_path(&place.keys, place.span)?;
+    pub(super) fn lower_durable_read(
+        &mut self,
+        place: DurablePlace<'a, '_>,
+    ) -> ConstructResult<LTy> {
+        let checked_slots = if matches!(
+            &place.target,
+            DurTarget::Field { required: true, .. } | DurTarget::GroupLeaf { required: true, .. }
+        ) {
+            self.checked_key_slots(place.family, place.bound_key_path(), place.span)?
+        } else {
+            None
+        };
+        if checked_slots.is_none() {
+            self.emit_key_path(&place.keys, place.span)?;
+        }
         Ok(match place.target {
             DurTarget::Entry { node, handle } => {
                 let site = self
@@ -1579,8 +1594,13 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
-                self.push(Instr::DurReadField(site), place.span)?;
-                garg_to_lty(ty).to_optional()
+                if let Some(key_slots) = checked_slots {
+                    self.push(Instr::DurReadFieldPresent { site, key_slots }, place.span)?;
+                    garg_to_lty(ty)
+                } else {
+                    self.push(Instr::DurReadField(site), place.span)?;
+                    garg_to_lty(ty).to_optional()
+                }
             }
             // A whole root-level group materializes as one optional group record: the
             // group's own leaves, present exactly when the entry is present.
@@ -1594,10 +1614,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     optional: true,
                 }
             }
-            // A group leaf reads as group-read-then-project: materialize the whole group,
-            // then project the leaf slot. An absent entry (absent group) short-circuits to
-            // a vacant of the leaf's optional type; a present group yields the leaf wrapped
-            // optional (a required leaf is `SomeWrap`ped, a sparse leaf already reads `T?`).
+            // A group leaf materializes the whole group before projecting one slot.
+            // A proved required leaf is bare. Untested and sparse reads retain the
+            // optional result and absent-entry branch.
             DurTarget::GroupLeaf {
                 handle,
                 slot,
@@ -1608,6 +1627,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let site = self
                     .site_operand(&handle)
                     .ok_or(LoweringFailure::Recoverable)?;
+                if let Some(key_slots) = checked_slots {
+                    self.push(Instr::DurReadGroupPresent { site, key_slots }, place.span)?;
+                    self.push(Instr::FieldGet(slot), place.span)?;
+                    return Ok(garg_to_lty(ty));
+                }
                 self.push(Instr::DurReadGroup(site), place.span)?;
                 let result = garg_to_lty(ty).to_optional();
                 let to_absent = self.push_branch_present(place.span)?;

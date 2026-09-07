@@ -22,19 +22,29 @@ key-load, producer and consumer sequence before establishing a guard fact.
 The flags are discarded before the verified image is returned; they add no
 encoded or public image field. `verify/presence.rs` reconstructs entry-erasing
 calls from the existing effect closure and checks each strict field/group
-operation against its containing entry and complete key-slot tuple. Optional
+operation, including required field reads, against its containing entry and
+complete key-slot tuple. Optional
 entry and group reads establish facts only on their present branch.
 The verifier's `EntryFamilies` borrows a sorted projection of validated entry
 paths and branch coordinates, built once for the presence phase. Calls use
 binary search without reconstructing key columns; direct erases use the same
 entry-family classifier. This transient lookup is dropped before publication.
 
-`marrow-compile/src/lower/presence.rs` owns scoped presence facts in stable
-optional slots. The lowerer logs each emitted call once and retains call-log
+`marrow-compile/src/lower/presence.rs` owns scoped presence facts with stable
+identities and typed live or invalidated state. Invalidated identities remain
+until lexical exit so a checked required read cannot become optional after
+losing its proof. `lower/durable.rs` emits `DurReadFieldPresent` for required
+fields through a live fact; optional field reads keep `DurReadField`. Required
+group leaves use `DurReadGroupPresent` followed by `FieldGet`.
+The lowerer logs each emitted call once and retains call-log
 intervals for protected uses. `compile/presence_calls.rs` settles entry-erasure
 closures with the existing acyclic call order, reusing one word per function
 for each stripe of 64 queried families. Its pending interval chains avoid
 copying calls into facts or rescanning a call slice for every use.
+
+The VM's strict field arm uses the existing kernel field read and faults
+`run.corruption` if the required value is missing. The read checks the selected
+value, not the integrity of the whole entry.
 
 `marrow-image/src/instr.rs` owns instruction tags and operand widths. Strict
 field set, strict group read and group replacement carry explicit key slots;

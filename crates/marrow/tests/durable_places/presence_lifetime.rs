@@ -24,6 +24,32 @@ fn assert_presence_diagnostic(source: &str, ids: &str, write: &str) {
     );
 }
 
+pub(super) fn assert_read_instead_of_write_requires_presence(source: &str, write: &str) {
+    assert!(source.contains(write), "the protected write is present");
+    let source = source.replace(write, "const value: int? = p.value");
+    assert_presence_diagnostic(&source, IDS, "p.value");
+}
+
+#[test]
+fn an_invalidated_required_read_refuses_an_optional_context() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn readAfterErase(n: int): int? {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            delete p
+            return p.value
+        }
+        return absent
+    }
+}
+"#
+    );
+    assert_presence_diagnostic(&source, IDS, "p.value");
+}
+
 #[test]
 fn an_inner_fact_cannot_escape_when_an_outer_family_is_erased() {
     let source = format!(
@@ -66,6 +92,7 @@ pub fn put(n: int) {
                 return
             }
             lifted.label = "fresh proof"
+            const proved: int = lifted.value
         }
     }
 }
@@ -92,6 +119,7 @@ pub fn put(n: int) {
                 return
             }
             lifted.label = "restored proof"
+            const proved: int = lifted.value
         }
     }
 }
@@ -118,6 +146,7 @@ pub fn put(n: int) {
             return
         }
         p.label = "the erase arm was skipped"
+        const proved: int = p.value
     }
 }
 "#
@@ -126,8 +155,7 @@ pub fn put(n: int) {
     assert_eq!(count_strict(export_instrs(&image, "put")), 1);
 }
 
-fn assignment_with_rhs(rhs: &str) -> String {
-    const HELPERS: &str = r#"
+const ERASE_HELPERS: &str = r#"
 fn eraseAndValue(n: int): string {
     delete ^counters[n]
     return "erased"
@@ -140,9 +168,20 @@ fn relay(n: int): string {
 fn identity(value: string): string {
     return value
 }
+
+fn eraseGeneric<T>(n: int, value: T): T {
+    delete ^counters[n]
+    return value
+}
+
+fn second(before: string, value: int): int {
+    return value
+}
 "#;
+
+fn assignment_with_rhs(rhs: &str) -> String {
     format!(
-        "{HEADER}{HELPERS}
+        "{HEADER}{ERASE_HELPERS}
 pub fn put(n: int) {{
     transaction {{
         place p = ^counters[n]
@@ -155,28 +194,142 @@ pub fn put(n: int) {{
     )
 }
 
+fn assert_operand_erase_invalidates_read(rhs: &str) {
+    let source = assignment_with_rhs(rhs).replace(
+        &format!("p.label = {rhs}"),
+        &format!("const evaluated = {rhs}\n            const read: int? = p.value"),
+    );
+    assert_presence_diagnostic(&source, IDS, "p.value");
+}
+
 #[test]
 fn a_direct_rhs_erase_requires_a_fresh_presence_fact() {
     let source = assignment_with_rhs("eraseAndValue(n)");
     assert_presence_diagnostic(&source, IDS, "p.label =");
+    assert_operand_erase_invalidates_read("eraseAndValue(n)");
 }
 
 #[test]
 fn a_transitive_rhs_erase_requires_a_fresh_presence_fact() {
     let source = assignment_with_rhs("relay(n)");
     assert_presence_diagnostic(&source, IDS, "p.label =");
+    assert_operand_erase_invalidates_read("relay(n)");
 }
 
 #[test]
 fn an_argument_erase_requires_a_fresh_presence_fact() {
     let source = assignment_with_rhs("identity(eraseAndValue(n))");
     assert_presence_diagnostic(&source, IDS, "p.label =");
+    assert_operand_erase_invalidates_read("identity(eraseAndValue(n))");
 }
 
 #[test]
 fn a_transitive_argument_erase_requires_a_fresh_presence_fact() {
     let source = assignment_with_rhs("identity(relay(n))");
     assert_presence_diagnostic(&source, IDS, "p.label =");
+    assert_operand_erase_invalidates_read("identity(relay(n))");
+}
+
+#[test]
+fn a_generic_erase_and_an_earlier_argument_invalidate_a_required_read() {
+    assert_operand_erase_invalidates_read("eraseGeneric(n, \"erased\")");
+    let source = assignment_with_rhs("identity(\"unused\")").replace(
+        "p.label = identity(\"unused\")",
+        "const read = second(eraseAndValue(n), p.value)",
+    );
+    assert_presence_diagnostic(&source, IDS, "p.value");
+}
+
+#[test]
+fn erasure_invalidates_hidden_outer_facts_after_a_fresh_inner_guard_ends() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn inspect(n: int): int? {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            if exists(p) { delete p }
+            if exists(p) { const fresh: int = p.value }
+            return p.value
+        }
+        return absent
+    }
+}
+"#
+    );
+    let (line, column) = super::position_of(&source, "return p.value");
+    assert_eq!(
+        compile_diagnostics_with_ids(&source, IDS),
+        vec![(
+            REQUIRES_PRESENCE.to_string(),
+            line,
+            column + "return ".len() as u32
+        )],
+    );
+}
+
+#[test]
+fn leaving_an_inner_proof_scope_restores_an_untested_optional_read() {
+    for inner in [
+        "if exists(p) { const proved: int = p.value }",
+        "if exists(p) { delete p }",
+    ] {
+        let source = format!(
+            "{HEADER}\npub fn inspect(n: int): int? {{
+    transaction {{
+        place p = ^counters[n]
+        {inner}
+        const untested: int? = p.value
+        return untested
+    }}
+}}\n"
+        );
+        let image = compile_verify(&source);
+        assert_eq!(
+            export_instrs(&image, "inspect")
+                .iter()
+                .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadField(_)))
+                .count(),
+            1,
+        );
+    }
+}
+
+#[test]
+fn copied_values_and_sparse_reads_survive_entry_erasure() {
+    let source = format!(
+        "{HEADER}{}",
+        r#"
+pub fn inspect(n: int): int? {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            const before: int = p.value
+            delete p
+            const sparse: string? = p.label
+            if (sparse ?? "") == "bonus" { return before + 1 }
+            return before
+        }
+        return absent
+    }
+}
+"#
+    );
+    let image = compile_verify(&source);
+    let code = export_instrs(&image, "inspect");
+    assert_eq!(
+        code.iter()
+            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadFieldPresent { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        code.iter()
+            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadField(_)))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -194,6 +347,8 @@ pub fn put(n: int) {
         if exists(p) {
             replace(n)
             p.label = "after replacement"
+            delete p.label
+            const proved: int = p.value
         }
     }
 }
@@ -231,6 +386,7 @@ pub fn put(n: int) {
 "#
     );
     assert_presence_diagnostic(&source, IDS, "p.label =");
+    assert_read_instead_of_write_requires_presence(&source, "p.label = \"after ordinary error\"");
 }
 
 #[test]
@@ -248,6 +404,7 @@ pub fn put(n: int) {
             kept = Counter(value: 3)
             delete erased
             kept.label = "other family"
+            const proved: int = kept.value
         }
     }
 }

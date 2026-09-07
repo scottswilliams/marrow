@@ -26,6 +26,8 @@ pub struct Counters {
     pub opens: Rc<Cell<usize>>,
     pub writes: Rc<Cell<usize>>,
     pub reads: Rc<Cell<usize>>,
+    pub gets: Rc<Cell<usize>>,
+    pub scans: Rc<Cell<usize>>,
 }
 
 impl Counters {
@@ -43,6 +45,14 @@ impl Counters {
 
     pub fn reads(&self) -> usize {
         self.reads.get()
+    }
+
+    pub fn gets(&self) -> usize {
+        self.gets.get()
+    }
+
+    pub fn scans(&self) -> usize {
+        self.scans.get()
     }
 }
 
@@ -70,15 +80,19 @@ impl CountingEngine {
 pub struct CountingView<'a> {
     inner: <MemoryEngine as ByteEngine>::View<'a>,
     reads: Rc<Cell<usize>>,
+    gets: Rc<Cell<usize>>,
+    scans: Rc<Cell<usize>>,
 }
 
 impl ReadView for CountingView<'_> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.reads.set(self.reads.get() + 1);
+        self.gets.set(self.gets.get() + 1);
         self.inner.get(key)
     }
     fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<StoreCell>, StoreError> {
         self.reads.set(self.reads.get() + 1);
+        self.scans.set(self.scans.get() + 1);
         self.inner.scan_after(prefix, cursor)
     }
 }
@@ -89,15 +103,19 @@ pub struct CountingTxn<'a> {
     inner: <MemoryEngine as ByteEngine>::Txn<'a>,
     writes: Rc<Cell<usize>>,
     reads: Rc<Cell<usize>>,
+    gets: Rc<Cell<usize>>,
+    scans: Rc<Cell<usize>>,
 }
 
 impl ReadView for CountingTxn<'_> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.reads.set(self.reads.get() + 1);
+        self.gets.set(self.gets.get() + 1);
         self.inner.get(key)
     }
     fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<StoreCell>, StoreError> {
         self.reads.set(self.reads.get() + 1);
+        self.scans.set(self.scans.get() + 1);
         self.inner.scan_after(prefix, cursor)
     }
 }
@@ -125,6 +143,8 @@ impl ByteEngine for CountingEngine {
         Ok(CountingView {
             inner: self.inner.read_view()?,
             reads: self.counters.reads.clone(),
+            gets: self.counters.gets.clone(),
+            scans: self.counters.scans.clone(),
         })
     }
 
@@ -134,6 +154,8 @@ impl ByteEngine for CountingEngine {
             inner: self.inner.begin()?,
             writes: self.counters.writes.clone(),
             reads: self.counters.reads.clone(),
+            gets: self.counters.gets.clone(),
+            scans: self.counters.scans.clone(),
         })
     }
 

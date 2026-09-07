@@ -79,8 +79,10 @@ go in a [keyed branch](#keyed-branches). A stored value nests at most 32 levels
 
 ## Reading
 
-A durable read yields `T?`, because the entry or the field may be absent
-([optionals](types-and-values.md#optionals)):
+An untested durable read yields `T?`, because the entry or field may be absent
+([optionals](types-and-values.md#optionals)). A required field or required group
+leaf read through a [proved named place](#named-places) has its declared type;
+sparse reads remain optional:
 
 ```mw
 module docs::durable::reading
@@ -111,8 +113,9 @@ test "an absent entry reads absent" {
 `^books[1].subtitle` is absent: the entry is present and the field is not.
 `titleOrNone` binds the whole entry with `if const`. Inside the block
 `book.title` is a plain `string`, because a present entry has every required
-field. `exists` answers presence with a `bool` and narrows nothing; a read after
-an `exists` guard is still optional.
+field. `exists` answers presence with a `bool`. An explicit guard over a named
+place establishes a presence proof; a guard over an inline path does not change
+the types of later reads.
 
 `exists(^books)` is true when some entry of `^books` has fields of its own, and
 `exists(^books[id].notes)` asks the same of a branch.
@@ -175,7 +178,8 @@ complete. `retitle` binds `place m = ^books[id]`, proves the entry present
 with `exists(m)`, and writes one field through `m` inside that block. A field
 write updates a present entry and never creates one: `retitle(2, "Pyramids")`
 writes nothing, and `present(2)` stays false. The read of `m.title` after the
-write sees the write staged before it and is `string?` like every durable read
+write sees the write staged before it and is `string?` because the guard's block
+has ended
 ([named places](#named-places)).
 
 A sparse field may stay unset, and `delete` clears it ([deleting](#deleting)).
@@ -258,11 +262,20 @@ pub fn subtitleOf(id: int): string? {
     return book.subtitle
 }
 
+pub fn titleOf(id: int): string {
+    place book = ^books[id]
+    if not exists(book) { return "none" }
+    const title: string = book.title
+    return title
+}
+
 test "a place writes one field" {
     put(1, "Small Gods")
     assert setSubtitle(1, "A novel")
     assert not setSubtitle(2, "A novel")
     assert subtitleOf(1) ?? "" == "A novel"
+    assert titleOf(1) == "Small Gods"
+    assert titleOf(2) == "none"
 }
 ```
 
@@ -288,6 +301,18 @@ proof, including every inline `^books[id].subtitle = subtitle`, is
 `check.requires_presence` at the write. A function binds one place per entry
 and proves and writes through that name.
 
+Within the proof's scope, a required field or required group leaf read through
+that name has its declared type. This includes a required struct, enum,
+`Option`, or `Result` field where that field shape is supported. Read a struct
+field into a local value before projecting its members. Sparse fields remain
+optional. Whole-entry and whole-group value reads remain optional.
+
+An untested place supports optional reads. If a required read's proof is
+invalidated within its lexical scope, the read is `check.requires_presence`,
+even where an optional value would fit. It needs a fresh guard or whole-entry
+assignment. After an inner proof block ends, an outer untested place supports
+optional reads again. Values already copied from a place remain ordinary values.
+
 A proof lasts until its block ends or an entry in the same family is erased,
 directly or through a call. A family is one root and one branch path, so the
 erase may use any binding or key: `delete book`, `delete other` over the same
@@ -302,13 +327,15 @@ or returns an ordinary error value; such a return does not roll back the
 transaction. A completed whole-entry assignment through a named place
 establishes a new proof after its right-hand side has been evaluated.
 
-A write inside a `while` or `for` body entered after the proof was established
+A protected read or write inside a `while` or `for` body entered after the proof was established
 also requires that proof to survive the repeating region, including nested
 bodies and a `while` condition. An entry erase in that region, directly or
-through a call, can precede the write on the next iteration and invalidates
+through a call, can precede the use on the next iteration and invalidates
 the proof. A proof established inside the body, such as `if exists(pin)` on
 each iteration, starts a new lifetime. One-time loop inputs follow ordinary
 evaluation order. After an erasing loop, an earlier proof cannot be reused.
+A traversal pin requires an explicit guard on each iteration to read required
+fields bare; traversal and index results establish no automatic presence proof.
 
 A branch beneath the entry is addressed through the name, so `book.notes[pos]`
 reads and writes the branch entry that `^books[id].notes[pos]` names. A place
@@ -350,7 +377,7 @@ test "a group is one value of the entry" {
     assert b.details.language ?? "" == "en"
     b.details = Book.details(language: "de")
     assert b.details.pages ?? 0 == 0
-    assert b.title ?? "" == "Small Gods"
+    assert b.title == "Small Gods"
     delete b.details.language
     assert b.details.language ?? "none" == "none"
 }

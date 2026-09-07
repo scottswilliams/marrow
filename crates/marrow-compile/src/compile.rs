@@ -38,7 +38,7 @@ use crate::types::BuildError;
 use crate::types::{GenericInvariant, GenericOwnerTxn, TypeRegistry};
 
 mod presence_calls;
-use presence_calls::reject_unproven_writes;
+use presence_calls::reject_unproven_uses;
 
 /// The armed transaction a fresh savepoint admits over `owner` — the one admission
 /// spelling for this crate's production batches and test fixtures alike.
@@ -628,7 +628,7 @@ struct LoweredFn {
     unwrapped_calls: Vec<(u16, SourceSpan)>,
     /// The entry families this body erases directly.
     erased_families: Vec<Family>,
-    /// Present-form writes whose proofs a call may have ended.
+    /// Protected uses whose proofs a call may have ended.
     presence_obligations: Vec<PresenceObligation>,
     /// Whether this body performs a durable-place operation directly.
     has_direct_durable_op: bool,
@@ -1789,7 +1789,7 @@ fn run_semantic(
         .as_ref()
         .zip(call_graph.as_ref())
         .and_then(|(set, acyclic)| {
-            reject_unproven_writes(set, acyclic, &mut diagnostics);
+            reject_unproven_uses(set, acyclic, &mut diagnostics);
             reject_missing_transaction(set, acyclic, &mut diagnostics)
         });
 

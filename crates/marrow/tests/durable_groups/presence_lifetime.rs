@@ -1,11 +1,16 @@
 //! Group writes consume presence after all RHS effects and evaluate the RHS once.
 
 use super::{
-    IDS, SCHEMA, SOURCE, as_int, as_str, attach, compile_diagnostics, compile_verify, i, run, s,
+    IDS, REQUIRED_LEAF_SCHEMA, SCHEMA, SOURCE, as_int, as_str, attach,
+    compile_diagnostics_with_schema, compile_verify, i, run, s,
 };
 
 fn assert_requires_presence(body: &str, place: &str) {
-    let source = format!("{SCHEMA}\n{body}");
+    assert_requires_presence_with_schema(SCHEMA, body, place);
+}
+
+fn assert_requires_presence_with_schema(schema: &str, body: &str, place: &str) {
+    let source = format!("{schema}\n{body}");
     let start = source.find(place).expect("the fixture contains the write");
     let line = source[..start]
         .bytes()
@@ -15,7 +20,7 @@ fn assert_requires_presence(body: &str, place: &str) {
     let column = source[..start]
         .rfind('\n')
         .map_or(start + 1, |newline| start - newline);
-    let diagnostics = compile_diagnostics(body);
+    let diagnostics = compile_diagnostics_with_schema(schema, body);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     let diagnostic = &diagnostics[0];
     assert_eq!(
@@ -33,6 +38,22 @@ fn assert_requires_presence(body: &str, place: &str) {
         ),
         (line, column, start, start + place.len()),
     );
+}
+
+#[test]
+fn an_invalidated_required_group_leaf_refuses_an_optional_context() {
+    let body = r#"pub fn pages(shelf: int, id: int): int? {
+    transaction {
+        place b = ^books[shelf, id]
+        if exists(b) {
+            delete b
+            return b.details.pages
+        }
+        return absent
+    }
+}
+"#;
+    assert_requires_presence_with_schema(REQUIRED_LEAF_SCHEMA, body, "b.details.pages");
 }
 
 #[test]

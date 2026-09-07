@@ -145,8 +145,9 @@ is no clock built-in: the current day or instant is passed in as an argument.
 ## Presence and identity
 
 `exists(place)` reports whether a durable place is present and yields a
-`bool`. Its argument is a `^` path: a store root, an entry, a field, a keyed
-branch family, or a complete key of a `unique` index. A local optional is
+`bool`. Its argument is a named place, a traversal pin, or a `^` path: a store
+root, an entry, a field, a keyed branch family, or a complete key of a `unique`
+index. A local optional is
 resolved with `??`, `if const`, or `?.` instead, described under
 [optionals](types-and-values.md#optionals).
 
@@ -181,8 +182,10 @@ test "presence" {
 `Id(^books, 7)` wraps a key as an identity and reads nothing: the entry is
 absent until `add` commits. `exists(^books[id].subtitle)` asks about one
 sparse field. `exists(^books.byIsbn[isbn])` asks a unique index whether some
-entry carries that key. `exists` narrows nothing; a read after it is still
-optional. Identity as a type is described under
+entry carries that key. An explicit guard over a named place or traversal pin
+proves its entry present; required field reads through that binding then have
+their declared types ([named places](durable-places.md#named-places)). Inline
+path guards do not change later read types. Identity as a type is described under
 [entry identity](types-and-values.md#entry-identity) and index reads under
 [reading an index](traversal-and-indexes.md#reading-an-index). An application
 that needs a fresh key keeps its own durable counter

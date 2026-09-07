@@ -5,10 +5,12 @@
 //! indeterminate result itself. Private to the VM so the executor is driven against an
 //! injected engine without any public bare-host execution route.
 
+mod required_reads;
+
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
-    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticTarget, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FunctionDef,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SemanticTarget, SpanEntry, TypeId,
 };
 use marrow_kernel::durable::{
     DemandCoverage, DurableCommitState, DurableStore, InvocationGrant, SessionError,
@@ -42,6 +44,21 @@ fn vm_spans(code: &[Instr]) -> Vec<SpanEntry> {
         .collect()
 }
 
+fn required_int_record(draft: &mut DraftTxn<'_>, name: &str) -> TypeId {
+    let name = draft.intern_string(name).expect("a within-domain mint");
+    let field_name = draft.intern_string("value").expect("a within-domain mint");
+    draft
+        .add_record_type(RecordTypeDef {
+            name,
+            fields: vec![FieldDef {
+                name: field_name,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }],
+        })
+        .expect("a within-domain mint")
+}
+
 /// The encoded fixture image; every consumer seals it through the verifier.
 fn vm_commit_image() -> Vec<u8> {
     let mut draft_owner = ImageDraft::new();
@@ -49,20 +66,7 @@ fn vm_commit_image() -> Vec<u8> {
     let mut draft = draft_owner
         .begin_transaction(savepoint)
         .expect("a fresh savepoint admits");
-    let record_name = draft
-        .intern_string("Counter")
-        .expect("a within-domain mint");
-    let field_name = draft.intern_string("value").expect("a within-domain mint");
-    let record = draft
-        .add_record_type(RecordTypeDef {
-            name: record_name,
-            fields: vec![FieldDef {
-                name: field_name,
-                ty: ImageType::scalar(Scalar::Int),
-                required: true,
-            }],
-        })
-        .expect("a within-domain mint");
+    let record = required_int_record(&mut draft, "Counter");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let root_name = draft
         .intern_string("counters")

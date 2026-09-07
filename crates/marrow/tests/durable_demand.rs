@@ -95,7 +95,7 @@ fn two_export_source(read_body_extra: &str, bump_body_extra: &str) -> String {
          \x20   transaction {{\n\
          \x20       place c = ^counters[n]\n\
          \x20       if exists(c) {{\n\
-         \x20           {bump_body_extra}const current = c.value ?? 0\n\
+         \x20           {bump_body_extra}const current = c.value\n\
          \x20           c.value = current + 1\n\
          \x20       }}\n\
          \x20   }}\n\

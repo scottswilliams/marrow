@@ -257,7 +257,7 @@ store ^tallies[name: string]: Tally
          found = ^assets[id].name\n        \
          place tally = ^tallies[\"reads\"]\n        \
          if exists(tally) {{\n            \
-         tally.count = (tally.count ?? 0) + 1\n        }}\n    }}\n    return found\n}}\n"
+         tally.count = tally.count + 1\n        }}\n    }}\n    return found\n}}\n"
     );
 
     let compile_with = |source: &str| -> VerifiedImage {

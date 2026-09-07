@@ -64,7 +64,7 @@ pub(super) fn take_columns<'a>(
 pub(super) fn site_record(site: &AuthorizedSite) -> &[ResolvedField] {
     match &site.target {
         AuthTarget::Entry { fields, .. } => fields,
-        AuthTarget::Field { record, .. } => record,
+        AuthTarget::Field { payload } => &payload.record,
         AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a node op targets a node site")
         }
@@ -73,12 +73,12 @@ pub(super) fn site_record(site: &AuthorizedSite) -> &[ResolvedField] {
 
 /// The position of a field site's field within its containing record, by cell-key number.
 pub(super) fn field_index_in_record(site: &AuthorizedSite, record: &[ResolvedField]) -> usize {
-    let AuthTarget::Field { number, .. } = &site.target else {
+    let AuthTarget::Field { payload } = &site.target else {
         unreachable!("a field op targets a field site")
     };
     record
         .iter()
-        .position(|field| field.number == *number)
+        .position(|field| field.number == payload.number)
         .expect("a field site names a record field")
 }
 
@@ -87,9 +87,7 @@ pub(super) fn field_index_in_record(site: &AuthorizedSite, record: &[ResolvedFie
 /// kernel resolved rather than from a caller assertion.
 pub(super) fn field_target(site: &AuthorizedSite) -> (physical::NodeNumber, bool) {
     match &site.target {
-        AuthTarget::Field {
-            number, required, ..
-        } => (*number, *required),
+        AuthTarget::Field { payload } => (payload.number, payload.required),
         AuthTarget::Entry { .. } | AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a field-target site")
         }

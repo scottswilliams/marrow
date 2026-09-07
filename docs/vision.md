@@ -49,9 +49,9 @@ be absent. The test runs against a fresh in-memory store.
 Durable data differs from local data in five ways, and the language shows each
 difference where it occurs.
 
-A read can find nothing. A durable read is optional, and the program says what
-happens when the entry or the field is absent: `??` supplies a default, `if const`
-proves presence, and `exists` asks directly.
+A read can find nothing. Untested and sparse durable reads are optional, and the
+program handles absence explicitly. Required fields read through a proved named
+place have their declared types ([durable places](language/durable-places.md#named-places)).
 
 The data can be larger than memory. A loop over a root, a branch, or an index
 says how many keys it visits with `at most N` and what to do when more remain

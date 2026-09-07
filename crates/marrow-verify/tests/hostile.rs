@@ -44,8 +44,11 @@ mod group_presence;
 
 #[path = "hostile/complete_entries.rs"]
 mod complete_entries;
+
 #[path = "hostile/guard_provenance.rs"]
 mod guard_provenance;
+#[path = "hostile/required_reads.rs"]
+mod required_reads;
 use admitted_helper::admitted;
 
 #[path = "common/tracer_schema.rs"]
@@ -3126,9 +3129,16 @@ fn a_strict_sparse_set_after_a_key_rebind_rejects() {
 /// The tracer schema plus a string-keyed `notes(noteId:string)` branch of one required
 /// `text` field. The branch key is `string` to match the root key type, so a strict
 /// root-field set naming the branch key slot type-checks — isolating the presence
-/// lattice as the sole gate. Returns (draft, label field-leaf site operand, branch entry
-/// site operand, branch record index).
-fn branch_presence_schema() -> (ImageDraft, PlannedSiteRef, PlannedSiteRef, TypeId) {
+/// lattice as the sole gate.
+struct BranchPresenceSchema {
+    owner: ImageDraft,
+    root: tracer_schema::Sites,
+    entry: PlannedSiteRef,
+    field: PlannedSiteRef,
+    record: TypeId,
+}
+
+fn branch_presence_schema() -> BranchPresenceSchema {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let counter = ok(draft.intern_string("Counter"));
@@ -3172,13 +3182,13 @@ fn branch_presence_schema() -> (ImageDraft, PlannedSiteRef, PlannedSiteRef, Type
     );
     let members = product_members(&draft);
     let branch_path = members[2].path().clone();
-    site(
+    let root_entry = site(
         &mut draft,
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
-    site(
+    let root_value = site(
         &mut draft,
         admitted.occurrence(),
         members[0].path(),
@@ -3196,8 +3206,28 @@ fn branch_presence_schema() -> (ImageDraft, PlannedSiteRef, PlannedSiteRef, Type
         &branch_path,
         SemanticTarget::WholePayload,
     );
+    let branch_field_path = draft.members_of(&branch_path).expect("branch members")[0]
+        .path()
+        .clone();
+    let branch_field = site(
+        &mut draft,
+        admitted.occurrence(),
+        &branch_field_path,
+        SemanticTarget::FieldLeaf,
+    );
     draft.commit();
-    (draft_owner, label_site, branch_entry, notes_record)
+    BranchPresenceSchema {
+        owner: draft_owner,
+        root: tracer_schema::Sites {
+            record,
+            entry: root_entry,
+            value: root_value,
+            label: label_site,
+        },
+        entry: branch_entry,
+        field: branch_field,
+        record: notes_record,
+    }
 }
 
 /// Declare the tracer `Counter` Product extended with a string-keyed `notes` branch of
@@ -3267,7 +3297,13 @@ fn declare_counters_with_notes_branch(
 /// is the sole gate.
 #[test]
 fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
-    let (mut draft_owner, label_site, branch_entry, notes_record) = branch_presence_schema();
+    let BranchPresenceSchema {
+        owner: mut draft_owner,
+        root,
+        entry: branch_entry,
+        record: notes_record,
+        ..
+    } = branch_presence_schema();
     let mut draft = admitted(&mut draft_owner);
     let text = ok(draft.intern_text("t"));
     let src = ok(draft.intern_string("src/main.mw"));
@@ -3287,7 +3323,7 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
         Instr::ConstLoad(text),
         // Claims slot 1's *root* entry is present, relying on the branch create above.
         Instr::DurSetField {
-            site: label_site,
+            site: root.label,
             key_slots: vec![1],
         },
         Instr::TxnCommit,

@@ -284,6 +284,7 @@ fn apply(
         SealedInstr::DurExists(_)
         | SealedInstr::DurFamilyExists(_)
         | SealedInstr::DurReadField(_)
+        | SealedInstr::DurReadFieldPresent { .. }
         | SealedInstr::DurReadEntry(_)
         | SealedInstr::DurSetField { .. }
         | SealedInstr::DurCreateEntry(_)
@@ -1191,6 +1192,7 @@ pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
         SealedInstr::DurExists(site)
         | SealedInstr::DurFamilyExists(site)
         | SealedInstr::DurReadField(site)
+        | SealedInstr::DurReadFieldPresent { site, .. }
         | SealedInstr::DurReadEntry(site)
         | SealedInstr::DurSetField { site, .. }
         | SealedInstr::DurCreateEntry(site)
@@ -1226,6 +1228,7 @@ pub(super) fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
             Some(OperationClass::Presence)
         }
         SealedInstr::DurReadField(_)
+        | SealedInstr::DurReadFieldPresent { .. }
         | SealedInstr::DurReadEntry(_)
         | SealedInstr::DurReadGroup(_)
         | SealedInstr::DurReadGroupPresent { .. } => Some(OperationClass::Read),
@@ -1522,6 +1525,17 @@ fn apply_durable(
             let value = durable_field_vtype(field).to_optional();
             pop_key_path(stack, &key_path, site_root)?;
             stack.push(value);
+        }
+        SealedInstr::DurReadFieldPresent { key_slots, .. } => {
+            let field = field_of(ctx, site_target, root)?;
+            if !field.required {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "a present field read requires a required field",
+                ));
+            }
+            require_key_slots(frame, key_slots, &key_path, site_root)?;
+            frame.stack.push(durable_field_vtype(field));
         }
         SealedInstr::DurReadEntry(_) => {
             require_entry(site_target)?;

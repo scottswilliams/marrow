@@ -11,7 +11,7 @@ each behavior.
 | Language core | Modules, functions, generics, `const` and `var`, `if` and `if const`, `match`, `while`, bounded `for`, let-else, `require`, prefix `try`, checked arithmetic, and `test` blocks. Braces delimit blocks. | [Source and syntax](language/source-and-syntax.md), [Control flow](language/control-flow.md) |
 | Values and types | Scalars, `date`, `instant`, `duration`, optionals `T?`, structs, enums, `Option` and `Result`, lists and maps, global name/optional-name aliases and nominal ints, generic types. Every value copies by value. | [Types and values](language/types-and-values.md) |
 | Resources | Required and sparse fields, groups, keyed branches nested to 16 levels, and local resource values. | [Resources](language/resources.md) |
-| Durable places | Keyed store roots with one or several key components, and several roots per project. Whole-entry creation and replacement, so a present entry is complete; field and group writes through a `place` or pin that a presence proof covers (`check.requires_presence` otherwise), with proofs ended by an erase of the family or a call that erases it; `delete` as the one clearing form; optional field reads; `exists`; entry identity `Id(^root)`; and each export's access demand from `marrow check`. | [Durable places](language/durable-places.md) |
+| Durable places | Keyed store roots with one or several key components, and several roots per project. Whole-entry creation and replacement, so a present entry is complete; field and group writes through a `place` or pin that a presence proof covers (`check.requires_presence` otherwise), with proofs ended by an erase of the family or a call that erases it; required field and group-leaf reads through a proved place have their declared types; sparse and untested reads are optional; `delete` as the one clearing form; `exists`; entry identity `Id(^root)`; and each export's access demand from `marrow check`. | [Durable places](language/durable-places.md) |
 | Transactions | One `transaction` block per mutating export. Every `return` inside it commits; a fault rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs every `test` block; a durable test runs against a fresh in-memory store. | [Tests](language/tests.md) |
@@ -53,10 +53,10 @@ conformance fixtures, and compiler-local regressions.
   validation followed by fresh admission before recovery resumes service. The
   logical audit does not establish these requirements
   ([auditing a store](operations/README.md#auditing-a-store)).
-- Typed bare required-field reads through a proved place, traversal-pin
+- Bare whole-entry/group reads through a proved place, automatic traversal-pin
   presence facts carried by region, and an ordered family presence namespace
-  for bounded navigation. Today every durable read is optional, and a pin is
-  proved inside its own iteration
+  for bounded navigation. Today required fields and group leaves read bare
+  through an explicit proof, and a pin is proved inside its own iteration
   ([durable programming](future/durable-programming.md)).
 - Local reader/writer overlap and served execution with several terminals and
   public paths. The selected one-store model keeps mutating invocations serial

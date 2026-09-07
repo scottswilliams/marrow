@@ -88,6 +88,7 @@ pub const OP_DUR_REPLACE_GROUP: u8 = 0xBB;
 pub const OP_DUR_ERASE_GROUP: u8 = 0x2D;
 pub const OP_DUR_EXISTS: u8 = 0x30;
 pub const OP_DUR_READ_FIELD: u8 = 0x31;
+pub const OP_DUR_READ_FIELD_PRESENT: u8 = 0xBC;
 pub const OP_DUR_READ_ENTRY: u8 = 0x32;
 pub const OP_DUR_CREATE_ENTRY: u8 = 0x35;
 pub const OP_DUR_REPLACE_ENTRY: u8 = 0x36;
@@ -360,6 +361,12 @@ pub enum Instr {
     /// no immediate child key: it is the family-populated probe, not a keyed presence.
     DurFamilyExists(PlannedSiteRef),
     DurReadField(PlannedSiteRef),
+    /// `→ T`: read a required field through captured place slots. The verifier
+    /// proves its containing entry present; a missing value faults as corruption.
+    DurReadFieldPresent {
+        site: PlannedSiteRef,
+        key_slots: Vec<u16>,
+    },
     DurReadEntry(PlannedSiteRef),
     /// `T →`: set the field `site` (required or sparse) to a definite value, reading
     /// the containing entry's key-path from local slots `key_slots` (root-first, one
@@ -580,6 +587,7 @@ impl Instr {
             Instr::DurExists(_) => OP_DUR_EXISTS,
             Instr::DurFamilyExists(_) => OP_DUR_FAMILY_EXISTS,
             Instr::DurReadField(_) => OP_DUR_READ_FIELD,
+            Instr::DurReadFieldPresent { .. } => OP_DUR_READ_FIELD_PRESENT,
             Instr::DurReadEntry(_) => OP_DUR_READ_ENTRY,
             Instr::DurSetField { .. } => OP_DUR_SET_FIELD,
             Instr::DurCreateEntry(_) => OP_DUR_CREATE_ENTRY,
@@ -666,6 +674,7 @@ impl Instr {
             // A big-endian `u16` site, a big-endian `u16` key-path length, then one
             // big-endian `u16` per key-path slot.
             Instr::DurSetField { key_slots, .. }
+            | Instr::DurReadFieldPresent { key_slots, .. }
             | Instr::DurReadGroupPresent { key_slots, .. }
             | Instr::DurReplaceGroup { key_slots, .. } => {
                 4 + 2 * key_slots.len()
@@ -699,6 +708,7 @@ impl Instr {
             Instr::DurExists(site)
             | Instr::DurFamilyExists(site)
             | Instr::DurReadField(site)
+            | Instr::DurReadFieldPresent { site, .. }
             | Instr::DurReadEntry(site)
             | Instr::DurSetField { site, .. }
             | Instr::DurCreateEntry(site)

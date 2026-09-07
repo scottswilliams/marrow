@@ -561,6 +561,21 @@ fn a_nested_multi_arg_generic_enum_field_pins_its_bracket_anchors() {
     // including the multi-argument comma, through compile + independent verify.
     let id = contract_of(OUTCOME_SOURCE, OUTCOME_IDS);
     assert_eq!(id, contract_of(OUTCOME_SOURCE, OUTCOME_IDS), "stable");
+    let with_read = format!(
+        "{OUTCOME_SOURCE}{}",
+        r#"
+pub fn resultOf(id: int): Result<Option<int>, string> {
+    place p = ^outcomes[id]
+    if exists(p) { return p.result }
+    return err("missing")
+}
+"#
+    );
+    assert_eq!(
+        id,
+        contract_of(&with_read, OUTCOME_IDS),
+        "a required read preserves the durable contract"
+    );
 }
 
 #[test]

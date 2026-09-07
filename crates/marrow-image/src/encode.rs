@@ -567,6 +567,7 @@ fn encode_code<S: ImageByteSink>(
                 push_u16(sink, *field);
             }
             Instr::DurSetField { site, key_slots }
+            | Instr::DurReadFieldPresent { site, key_slots }
             | Instr::DurReadGroupPresent { site, key_slots }
             | Instr::DurReplaceGroup { site, key_slots } => {
                 push_u16(sink, sites.ordinal(site)?);

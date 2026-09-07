@@ -1213,8 +1213,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // Restore the binding and presence fact for the continuation: past the
         // statement `x` is always present, because the absent edge diverged.
         self.locals.extend(bound_locals);
-        for fact in bound_present.iter_mut().flatten() {
-            fact.call_start = self.calls.len();
+        for fact in &mut bound_present {
+            if let PresenceState::Live { call_start, .. } = &mut fact.state {
+                *call_start = self.calls.len();
+            }
         }
         self.present_places.extend(bound_present);
         Ok(Flow::Fallthrough)

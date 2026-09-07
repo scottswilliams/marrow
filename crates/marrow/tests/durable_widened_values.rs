@@ -181,6 +181,76 @@ fn id(n: i64) -> Vec<Value> {
 }
 
 #[test]
+fn a_proved_place_reads_required_structs_and_enums_as_values() {
+    let source = format!(
+        "{SOURCE}{}",
+        r#"
+pub fn describe(id: int): string {
+    place a = ^accounts[id]
+    if not exists(a) { return "missing" }
+    const owner: Name = a.owner
+    const kind: Access = a.kind
+    const note: Option<string>? = a.note
+    if kind == Access::admin { return owner.last }
+    if const value = note {
+        match value {
+            some(text) => { return text }
+            none => { return "none" }
+        }
+    }
+    return owner.first
+}
+"#
+    );
+    let image = compile_verify(&source);
+    let code = image
+        .function(export(&image, "describe").function())
+        .instrs();
+    assert_eq!(
+        code.iter()
+            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadFieldPresent { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        code.iter()
+            .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadField(_)))
+            .count(),
+        1
+    );
+    let mut store = attach(&image);
+    assert_eq!(
+        run(&image, &mut store, "describe", id(1)),
+        Some(text("missing"))
+    );
+    run(&image, &mut store, "createReader", id(1));
+    assert_eq!(
+        run(&image, &mut store, "describe", id(1)),
+        Some(text("Ada"))
+    );
+    run(&image, &mut store, "createAdmin", id(1));
+    assert_eq!(
+        run(&image, &mut store, "describe", id(1)),
+        Some(text("Lovelace"))
+    );
+    run(&image, &mut store, "createNoteNone", id(1));
+    assert_eq!(
+        run(&image, &mut store, "describe", id(1)),
+        Some(text("none"))
+    );
+    run(
+        &image,
+        &mut store,
+        "createNoteSome",
+        vec![Value::Int(1), text("hello")],
+    );
+    assert_eq!(
+        run(&image, &mut store, "describe", id(1)),
+        Some(text("hello"))
+    );
+}
+
+#[test]
 fn a_required_enum_field_round_trips_and_drives_an_expression() {
     let image = compile_verify(SOURCE);
     let mut store = attach(&image);

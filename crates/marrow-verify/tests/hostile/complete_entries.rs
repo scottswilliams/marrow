@@ -121,6 +121,46 @@ fn a_required_field_set_through_a_proven_entry_verifies() {
     assert_eq!(code_of(&bytes), "VERIFIED");
 }
 
+#[test]
+fn a_read_only_required_field_read_needs_its_own_presence_check() {
+    for guarded in [false, true] {
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let sites = durable_schema(&mut draft);
+        let mut code = Vec::new();
+        if guarded {
+            code.extend([
+                Instr::LocalGet(0),
+                Instr::DurExists(sites.entry),
+                Instr::JumpIfFalse(6),
+            ]);
+        }
+        code.extend([
+            Instr::DurReadFieldPresent {
+                site: sites.value,
+                key_slots: vec![0],
+            },
+            Instr::IntNeg,
+            Instr::Pop,
+            Instr::Return,
+        ]);
+        let bytes = finish_two_key(draft, code);
+        assert_eq!(
+            code_of(&bytes),
+            if guarded { "VERIFIED" } else { "image.flow" }
+        );
+        if guarded {
+            let image = marrow_verify::verify(&bytes).expect("the guarded read verified");
+            assert!(
+                image
+                    .functions()
+                    .iter()
+                    .all(|function| !function.is_mutating())
+            );
+        }
+    }
+}
+
 /// A field set consumes a definite value; `DurEraseField` clears a sparse field.
 /// A wrapped set operand is rejected during function typing.
 #[test]

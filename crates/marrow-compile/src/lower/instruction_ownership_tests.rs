@@ -136,44 +136,55 @@ pub fn write(id: int, flag: bool) {
     }
 }
 "#;
-    let ids = ledger::ledger(&[
-        "application .",
-        "product R",
-        "field R.value",
-        "root r",
-        "key r.id",
-    ]);
-    let input = project_capture::project_with_ids(&[("src/main.mw", source)], Some(&ids));
-    OBSERVED.set(Some(Observed::default()));
-    let result = crate::compile(&input);
-    let observed = OBSERVED.take().expect("observation enabled");
-    let Err(crate::CompileFailure::Diagnostics(rows)) = result else {
-        panic!("the overlapping erased intervals must reject the write: {result:?}");
-    };
-    let start_byte = source.find("p.value").expect("the protected write exists");
-    let write_span = SourceSpan {
-        start_byte,
-        end_byte: start_byte + "p.value".len(),
-        line: 16,
-        column: 25,
-    };
-    assert_eq!(
-        rows.as_slice().len(),
-        1,
-        "overlapping intervals report their use once",
-    );
-    let row = &rows.as_slice()[0];
-    assert_eq!(row.code(), "check.requires_presence");
-    assert_eq!(row.file().as_str(), "src/main.mw");
-    assert_eq!(row.span(), write_span);
-    assert_eq!(observed.functions, [4, 0, 0, 0]);
-    assert_eq!(observed.calls, [5, 0, 0, 0]);
-    assert_eq!(observed.copied, [0; 4]);
-    // The ordinary use includes its RHS call. The while region starts before
-    // its condition and includes the tail eraser; neither nested range loop
-    // contributes another interval for the same older proof.
-    assert_eq!(
-        observed.intervals,
-        vec![(write_span, 0..4), (write_span, 1..5)],
-    );
+    for statement in [
+        "p.value = noop(id)",
+        "const evaluated = noop(id)\n                        const copied: int? = p.value",
+    ] {
+        let source = source.replace("p.value = noop(id)", statement);
+        let ids = ledger::ledger(&[
+            "application .",
+            "product R",
+            "field R.value",
+            "root r",
+            "key r.id",
+        ]);
+        let input = project_capture::project_with_ids(&[("src/main.mw", &source)], Some(&ids));
+        OBSERVED.set(Some(Observed::default()));
+        let result = crate::compile(&input);
+        let observed = OBSERVED.take().expect("observation enabled");
+        let Err(crate::CompileFailure::Diagnostics(rows)) = result else {
+            panic!("the overlapping erased intervals must reject the write: {result:?}");
+        };
+        let start_byte = source.find("p.value").expect("the protected write exists");
+        let write_span = SourceSpan {
+            start_byte,
+            end_byte: start_byte + "p.value".len(),
+            line: source[..start_byte]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count() as u32
+                + 1,
+            column: (start_byte - source[..start_byte].rfind('\n').expect("a preceding line"))
+                as u32,
+        };
+        assert_eq!(
+            rows.as_slice().len(),
+            1,
+            "overlapping intervals report their use once",
+        );
+        let row = &rows.as_slice()[0];
+        assert_eq!(row.code(), "check.requires_presence");
+        assert_eq!(row.file().as_str(), "src/main.mw");
+        assert_eq!(row.span(), write_span);
+        assert_eq!(observed.functions, [4, 0, 0, 0]);
+        assert_eq!(observed.calls, [5, 0, 0, 0]);
+        assert_eq!(observed.copied, [0; 4]);
+        // The ordinary use includes its RHS call. The while region starts before
+        // its condition and includes the tail eraser; neither nested range loop
+        // contributes another interval for the same older proof.
+        assert_eq!(
+            observed.intervals,
+            vec![(write_span, 0..4), (write_span, 1..5)],
+        );
+    }
 }

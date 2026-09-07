@@ -50,7 +50,7 @@ struct Failure {
 
 /// Reject protected uses whose ordinary or crossed-loop interval contains an
 /// entry-erasing call. No function body or graph analysis is repeated here.
-pub(super) fn reject_unproven_writes(
+pub(super) fn reject_unproven_uses(
     lowered: &CompleteLoweredFunctionSet,
     acyclic: &AcyclicCallGraph,
     diagnostics: &mut DiagnosticCollector,

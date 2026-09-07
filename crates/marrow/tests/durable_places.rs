@@ -197,6 +197,7 @@ pub fn writeIt(n: int, v: int) {
         p = Counter(value: v)
         p.label = "tag"
         delete p.label
+        const proved: int = p.value
     }
 }
 "#
@@ -210,6 +211,13 @@ pub fn writeIt(n: int, v: int) {
     assert_eq!(
         calls, 1,
         "the key is evaluated once even across several writes"
+    );
+    assert_eq!(
+        instrs
+            .iter()
+            .filter(|op| matches!(op, SealedInstr::DurReadFieldPresent { .. }))
+            .count(),
+        1
     );
     // The whole-entry upsert (create/replace) plus the sparse set and erase sites.
     assert!(
@@ -556,7 +564,6 @@ pub fn edit(n: int, v: int) {
 //
 // A field write through a place needs a presence fact that no entry erase in the
 // family — direct, through another binding, or inside a called helper — has ended.
-// The ignored required-read case records the separate deferred provenance rule.
 
 /// `(code, line, column)` of every diagnostic a source that fails to compile carries.
 fn compile_diagnostics(source: &str) -> Vec<(String, u32, u32)> {
@@ -676,11 +683,9 @@ pub fn create(n: int, v: int) {
     );
 }
 
-/// Deferred required-read/provenance case: `p.value` should read as `int` inside
-/// `if exists(p)`, while `p.label` stays `string?`. Required durable reads are
-/// currently optional, so the annotated binding still reports `check.type`.
+/// `p.value` reads as `int` inside
+/// `if exists(p)`, while `p.label` stays `string?`.
 #[test]
-#[ignore = "deferred required-read/provenance slice: required durable reads remain optional"]
 fn a_required_field_reads_bare_through_a_place_proven_present() {
     let source = format!(
         "{HEADER}{}",
@@ -690,7 +695,8 @@ pub fn valueOf(n: int): int {
     if exists(p) {
         const v: int = p.value
         const l: string? = p.label
-        return v + len(l ?? "")
+        if (l ?? "") == "bonus" { return v + 1 }
+        return v
     }
     return 0
 }
@@ -736,6 +742,10 @@ pub fn writeThenEraseInLoop(n: int): bool {
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
         "the write precedes the erase on the loop's back edge"
     );
+    presence_lifetime::assert_read_instead_of_write_requires_presence(
+        &direct,
+        "p.label = \"in loop\"",
+    );
 
     let through_helper = format!(
         "{HEADER}{}",
@@ -765,6 +775,10 @@ pub fn writeThenHelperInLoop(n: int): bool {
         compile_diagnostics(&through_helper),
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
         "a call that erases an entry in the family ends the fact on the loop's back edge"
+    );
+    presence_lifetime::assert_read_instead_of_write_requires_presence(
+        &through_helper,
+        "p.label = \"in loop\"",
     );
 }
 
@@ -950,6 +964,10 @@ pub fn whileErase(n: int): bool {
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
         "a while body is one proof region"
     );
+    presence_lifetime::assert_read_instead_of_write_requires_presence(
+        &source,
+        "p.label = \"in while\"",
+    );
 }
 
 /// A write inside an inner loop is refused when the outer loop's body erases the
@@ -984,6 +1002,10 @@ pub fn nestedErase(n: int): bool {
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
         "the outer loop's erase reaches the inner loop's write on the back edge"
     );
+    presence_lifetime::assert_read_instead_of_write_requires_presence(
+        &source,
+        "p.label = \"nested\"",
+    );
 }
 
 /// A loop whose body erases the family ends the fact for everything after the loop,
@@ -1014,6 +1036,10 @@ pub fn eraseAllThenSet(n: int): bool {
         compile_diagnostics(&source),
         vec![(REQUIRES_PRESENCE.to_string(), line, column)],
         "an erase of the family inside the loop ends the fact past the loop"
+    );
+    presence_lifetime::assert_read_instead_of_write_requires_presence(
+        &source,
+        "p.label = \"after the loop\"",
     );
 }
 
@@ -1088,6 +1114,7 @@ pub fn relabelInLoop(n: int): bool {
         if exists(p) {
             for k in ^counters at most 10 {
                 p.label = "each visit"
+                const proved: int = p.value
             } on more {
             }
             return true
@@ -1120,7 +1147,9 @@ pub fn relabelThenErase(): int {
         for k, pin in ^counters at most 10 {
             if exists(pin) {
                 pin.label = "visited"
+                const proved: int = pin.value
             }
+            const untested: int? = pin.value
             delete pin
             visited += 1
         } on more {

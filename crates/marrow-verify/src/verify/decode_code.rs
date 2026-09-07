@@ -12,23 +12,23 @@ use marrow_image::{
     OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_ERASE_GROUP,
     OP_DUR_EXISTS, OP_DUR_FAMILY_EXISTS, OP_DUR_INDEX_EXISTS, OP_DUR_INDEX_LOOKUP,
     OP_DUR_INDEX_SCAN, OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
-    OP_DUR_READ_GROUP, OP_DUR_READ_GROUP_PRESENT, OP_DUR_REPLACE_ENTRY, OP_DUR_REPLACE_GROUP,
-    OP_DUR_SET_FIELD, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
-    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
-    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID, OP_EQ_INSTANT,
-    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_IDENTITY_KEY_PATH,
-    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
-    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
-    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
-    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_INDEX, OP_LIST_LEN, OP_LIST_NEW,
-    OP_LOCAL_GET, OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT,
-    OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
-    OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
-    OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT,
-    OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
-    OPTIONAL_FLAG, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM,
-    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TypeId,
+    OP_DUR_READ_FIELD_PRESENT, OP_DUR_READ_GROUP, OP_DUR_READ_GROUP_PRESENT, OP_DUR_REPLACE_ENTRY,
+    OP_DUR_REPLACE_GROUP, OP_DUR_SET_FIELD, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
+    OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
+    OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID,
+    OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET,
+    OP_IDENTITY_KEY_PATH, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE,
+    OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
+    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
+    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
+    OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_INDEX, OP_LIST_LEN,
+    OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT,
+    OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD,
+    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE,
+    OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
+    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
+    OP_VACANT_LOAD, OPTIONAL_FLAG, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
+    TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TypeId,
 };
 
 /// A decoded instruction with resolved operands and its byte offset. Jump targets
@@ -159,6 +159,10 @@ pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> 
             OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(&mut reader)?),
             OP_DUR_FAMILY_EXISTS => SealedInstr::DurFamilyExists(operand_u16(&mut reader)?),
             OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_u16(&mut reader)?),
+            OP_DUR_READ_FIELD_PRESENT => {
+                let (site, key_slots) = operand_site_key_slots(&mut reader)?;
+                SealedInstr::DurReadFieldPresent { site, key_slots }
+            }
             OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_u16(&mut reader)?),
             OP_DUR_SET_FIELD => {
                 let (site, key_slots) = operand_site_key_slots(&mut reader)?;
@@ -480,6 +484,9 @@ mod opcode_bijection {
             SealedInstr::DurExists(_) => u16op(OP_DUR_EXISTS),
             SealedInstr::DurFamilyExists(_) => u16op(OP_DUR_FAMILY_EXISTS),
             SealedInstr::DurReadField(_) => u16op(OP_DUR_READ_FIELD),
+            SealedInstr::DurReadFieldPresent { .. } => {
+                vec![OP_DUR_READ_FIELD_PRESENT, 0, 0, 0, 1, 0, 0]
+            }
             SealedInstr::DurReadEntry(_) => u16op(OP_DUR_READ_ENTRY),
             SealedInstr::DurSetField { .. } => vec![OP_DUR_SET_FIELD, 0, 0, 0, 1, 0, 0],
             SealedInstr::DurReadGroupPresent { .. } => {
@@ -627,6 +634,10 @@ mod opcode_bijection {
             SealedInstr::DurExists(0),
             SealedInstr::DurFamilyExists(0),
             SealedInstr::DurReadField(0),
+            SealedInstr::DurReadFieldPresent {
+                site: 0,
+                key_slots: vec![0],
+            },
             SealedInstr::DurReadEntry(0),
             SealedInstr::DurSetField {
                 site: 0,
@@ -716,8 +727,9 @@ mod opcode_bijection {
                 OP_DUR_SET_FIELD,
                 OP_DUR_READ_GROUP_PRESENT,
                 OP_DUR_REPLACE_GROUP,
+                OP_DUR_READ_FIELD_PRESENT,
             ],
-            [0xB9, 0xBA, 0xBB],
+            [0xB9, 0xBA, 0xBB, 0xBC],
         );
         for (opcode, expected) in [
             (
@@ -741,6 +753,13 @@ mod opcode_bijection {
                     key_slots: vec![7, 165, 254],
                 },
             ),
+            (
+                0xBC,
+                SealedInstr::DurReadFieldPresent {
+                    site: 0x1234,
+                    key_slots: vec![7, 165, 254],
+                },
+            ),
         ] {
             let bytes = [
                 opcode, 0x12, 0x34, 0x00, 0x03, 0x00, 0x07, 0x00, 0xA5, 0x00, 0xFE, OP_RETURN,
@@ -756,7 +775,7 @@ mod opcode_bijection {
 
     #[test]
     fn every_truncated_strict_place_operand_is_refused() {
-        for opcode in [0xB9, 0xBA, 0xBB] {
+        for opcode in [0xB9, 0xBA, 0xBB, 0xBC] {
             let bytes = [
                 opcode, 0x12, 0x34, 0x00, 0x03, 0x00, 0x07, 0x00, 0xA5, 0x00, 0xFE,
             ];
@@ -779,7 +798,7 @@ mod opcode_bijection {
     fn strict_place_key_counts_accept_the_limit_and_refuse_zero_or_excess() {
         let limit =
             marrow_image::bounds::MAX_KEY_COLUMNS * marrow_image::bounds::MAX_SITE_PATH_STEPS;
-        for opcode in [0xB9, 0xBA, 0xBB] {
+        for opcode in [0xB9, 0xBA, 0xBB, 0xBC] {
             for (count, accepted) in [(0, false), (limit, true), (limit + 1, false)] {
                 let count_operand = u16::try_from(count).expect("the policy boundary fits u16");
                 let mut bytes = vec![opcode, 0x12, 0x34];
@@ -794,7 +813,10 @@ mod opcode_bijection {
                     let (site, key_slots) = match &decoded[0].instr {
                         SealedInstr::DurSetField { site, key_slots }
                         | SealedInstr::DurReadGroupPresent { site, key_slots }
-                        | SealedInstr::DurReplaceGroup { site, key_slots } => (*site, key_slots),
+                        | SealedInstr::DurReplaceGroup { site, key_slots }
+                        | SealedInstr::DurReadFieldPresent { site, key_slots } => {
+                            (*site, key_slots)
+                        }
                         other => panic!("unexpected strict-place variant: {other:?}"),
                     };
                     assert_eq!(site, 0x1234);
@@ -889,6 +911,7 @@ mod index_site_partition {
             SealedInstr::DurExists(_)
             | SealedInstr::DurFamilyExists(_)
             | SealedInstr::DurReadField(_)
+            | SealedInstr::DurReadFieldPresent { .. }
             | SealedInstr::DurReadEntry(_)
             | SealedInstr::DurReadGroup(_)
             | SealedInstr::DurReadGroupPresent { .. }

@@ -310,6 +310,9 @@ fn execute_frame<'s>(
             SealedInstr::DurReadField(site) => {
                 frame.dur_read_field(require_session(&mut session), *site)?
             }
+            SealedInstr::DurReadFieldPresent { site, key_slots } => {
+                frame.dur_read_field_present(require_session(&mut session), *site, key_slots)?
+            }
             SealedInstr::DurReadEntry(site) => {
                 frame.dur_read_entry(require_session(&mut session), *site)?
             }
@@ -1160,6 +1163,23 @@ impl<'i> Frame<'i> {
             .map_err(|kf| self.kernel_fault(&kf))?;
         self.stack
             .push(Value::Optional(value.map(|s| Box::new(domain_to_value(s)))));
+        self.pc += 1;
+        Ok(())
+    }
+
+    fn dur_read_field_present(
+        &mut self,
+        durable: &mut dyn Durable,
+        site: u16,
+        key_slots: &[u16],
+    ) -> Result<(), DurableExecutionFault> {
+        let authorized = durable.site(site);
+        let keys = self.place_key_path(key_slots);
+        let value = durable
+            .read_field(&authorized, &keys)
+            .and_then(|value| value.ok_or(marrow_kernel::durable::KernelFault::Corruption))
+            .map_err(|kf| self.kernel_fault(&kf))?;
+        self.stack.push(domain_to_value(value));
         self.pc += 1;
         Ok(())
     }

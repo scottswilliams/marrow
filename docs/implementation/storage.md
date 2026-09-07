@@ -66,6 +66,16 @@ gap is recorded in [project status](../status.md#trust-boundaries); the
 [audit](#auditing-a-store) reports what a substituted file's contents disagree
 with, not where the file came from.
 
+## Reading a field
+
+`durable/store/address.rs` prepares each field site with one private immutable
+`FieldPayload` behind `Arc`. Cloning field tokens from read or transaction
+sessions shares the containing record and selected value shape. Session setup
+still resolves and copies metadata; path/key cloning and stored-value decoding
+remain separate work. `read_ops.rs` reads a field with one point read and no
+scan or write after setup. A preceding entry-presence guard performs its own
+marker read. Group reads retain the materialization cost below.
+
 ## Reading a whole entry
 
 Reading a whole entry or group (`marrow-kernel`'s `read_record_leaves`, the

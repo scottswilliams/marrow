@@ -22,7 +22,7 @@ pub fn bump(name: string) {
     transaction {
         place c = ^counters[name]
         if exists(c) {
-            c.value = (c.value ?? 0) + 1
+            c.value = c.value + 1
         } else {
             c = Counter(value: 1)
         }

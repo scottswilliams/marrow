@@ -386,10 +386,10 @@ pub(crate) struct FnLowerer<'a, 'd> {
     poisoned_bindings: BTreeSet<String>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
     places: Vec<PlaceLocal<'a>>,
-    /// The presence proofs currently in force, newest last. Scoped like `locals` (a
+    /// Lexically scoped presence proofs, including invalidated ones, newest last. A
     /// fact established in a guarded block or after an upsert does not outlive its
-    /// block); the verifier rechecks each present-form operation independently.
-    present_places: Vec<Option<PresenceFact<'a>>>,
+    /// block. The verifier rechecks each present-form operation independently.
+    present_places: Vec<PresenceFact<'a>>,
     loops: Vec<LoopCtx<'a>>,
     /// The entry families this body erases directly.
     erased_families: Vec<&'a Family>,

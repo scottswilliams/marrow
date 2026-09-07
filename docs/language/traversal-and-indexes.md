@@ -119,7 +119,8 @@ without running it. `from f` starts the frozen set at `f`, inclusive.
 
 A pin `p` is a [place](durable-places.md#named-places) over the entry at the
 current key, scoped to the body. It reads nothing and proves nothing by
-itself. A read through the pin is optional like any durable read. A write
+itself. Untested and sparse reads through the pin are optional; required reads
+through an explicitly proved pin have their declared types. A write
 through it sits inside a `transaction` and needs a proof the body establishes
 before the write, `if exists(p)` or `if const x = p`:
 
@@ -167,8 +168,8 @@ test "each iteration proves its pin" {
 ```
 
 `exists(book)` reports whether the entry is still present and proves it for
-the rest of that block; it changes no later read. `shelveAll` proves each pin
-on its own iteration. A loop body is one proof region: a write inside a body
+the rest of that block. `shelveAll` proves each pin
+on its own iteration. A loop body is one proof region: a protected read or write inside a body
 that was entered after its proof was established is refused when that body,
 or a body nested in it, erases the family or calls a function that erases it,
 and after such a loop the proof is gone
@@ -377,7 +378,7 @@ when it is present, and `^books[found].title` reads through it.
 index has no `exists`; the `for` head is its only read, and `exists` over it
 is a `check.type` error.
 
-A found identity is an address. Inside a `transaction`,
+A found identity is an address and supplies no automatic presence proof. Inside a `transaction`,
 `place m = ^books[found]` binds it, `m.shelf = shelf` under `if exists(m)`
 writes one field of the entry the lookup found, and `^books[found] = Book(...)`
 replaces it, exactly as a key in brackets would
