@@ -401,6 +401,15 @@ pub struct PendingNativeEngineOwner {
     directory: PathBuf,
 }
 
+/// The engine capability requested under an existing store's owner lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeOpenAccess {
+    /// Open for service; discharge any inherited physical-audit obligation.
+    ReadWrite,
+    /// Inspect without repairing the engine or discharging an inherited obligation.
+    ReadOnly,
+}
+
 impl PendingNativeEngineOwner {
     /// The canonical store directory this owner holds. The owner above reads the
     /// directory's own artifacts from here under the exclusion already taken.
@@ -409,12 +418,13 @@ impl PendingNativeEngineOwner {
     }
 
     /// Publish `instance` in the owner marker, run the zero-capability admission
-    /// callback, then open and — when this owner inherited an unclean obligation
-    /// — fully audit the existing engine. The callback runs after the marker
+    /// callback, then open with the requested access. A read-write open fully audits
+    /// an inherited unclean engine; inspection preserves that obligation. The callback runs after the marker
     /// names the store and before any engine call, so a refusal makes zero engine
     /// calls and hands the obligation on intact.
     pub fn bind_and_open_existing<R>(
         mut self,
+        access: NativeOpenAccess,
         instance: [u8; 16],
         admit: impl FnOnce() -> Result<(), R>,
     ) -> Result<NativeEngineOwner, NativeOwnerOpenError<R>> {
@@ -423,9 +433,13 @@ impl PendingNativeEngineOwner {
             .map_err(NativeOwnerOpenError::Lock)?;
         admit().map_err(NativeOwnerOpenError::Refused)?;
 
-        let mut engine = NativeEngine::open_existing(&self.directory.join(NATIVE_ENGINE_FILE))
-            .map_err(NativeOwnerOpenError::Store)?;
-        if self.prior_unclean {
+        let path = self.directory.join(NATIVE_ENGINE_FILE);
+        let mut engine = match access {
+            NativeOpenAccess::ReadWrite => NativeEngine::open_existing(&path),
+            NativeOpenAccess::ReadOnly => NativeEngine::open_read_only(&path),
+        }
+        .map_err(NativeOwnerOpenError::Store)?;
+        if self.prior_unclean && access == NativeOpenAccess::ReadWrite {
             engine
                 .audit_integrity()
                 .map_err(NativeOwnerOpenError::Store)?;
@@ -433,9 +447,12 @@ impl PendingNativeEngineOwner {
         let Self {
             mut lock,
             directory,
+            prior_unclean,
             ..
         } = self;
-        lock.mark_clean();
+        if !prior_unclean || access == NativeOpenAccess::ReadWrite {
+            lock.mark_clean();
+        }
         Ok(NativeEngineOwner {
             engine: Some(engine),
             lock,
@@ -478,6 +495,7 @@ impl NativeEngineOwner {
     /// the existing file under the same lock, and run a full integrity audit.
     /// No successful result can restore clean-on-drop behavior.
     pub fn reopen_existing_and_audit(mut self) -> Result<Self, StoreError> {
+        self.engine().require_write_access("recovery")?;
         self.lock.quarantine();
         drop(self.engine.take());
         let mut engine = NativeEngine::open_existing(&self.directory.join(NATIVE_ENGINE_FILE))?;
@@ -782,11 +800,84 @@ mod tests {
     ) -> Result<NativeEngineOwner, NativeOwnerOpenError<std::convert::Infallible>> {
         NativeEngineOwner::acquire_existing(dir)
             .expect("acquire the owner lock")
-            .bind_and_open_existing(instance, || Ok(()))
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, || Ok(()))
     }
 
     fn marker_bytes(dir: &Path) -> Vec<u8> {
         std::fs::read(dir.join(NATIVE_LOCK_FILE)).expect("read the owner marker")
+    }
+
+    #[test]
+    fn read_only_ownership_cannot_write_upgrade_or_clear_an_inherited_obligation() {
+        for inherited in [false, true] {
+            let scratch = Scratch::new("read-only");
+            NativeEngineOwner::provision(&scratch.0).expect("provision");
+            if inherited {
+                std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("stale marker");
+            }
+            let path = scratch.0.join(NATIVE_ENGINE_FILE);
+            let before = std::fs::read(&path).expect("engine before");
+            let mut owner = NativeEngineOwner::acquire_existing(&scratch.0)
+                .expect("acquire")
+                .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x41; 16], || Ok::<(), ()>(()))
+                .expect("inspect");
+            assert!(
+                owner
+                    .read_view()
+                    .expect("read view")
+                    .get(b"missing")
+                    .expect("read")
+                    .is_none()
+            );
+            assert!(matches!(owner.begin(), Err(StoreError::ReadOnly { .. })));
+            assert!(matches!(
+                owner.audit_integrity(),
+                Err(StoreError::ReadOnly { .. })
+            ));
+            assert!(matches!(
+                owner.reopen_existing_and_audit(),
+                Err(StoreError::ReadOnly { op: "recovery" })
+            ));
+            assert!(before == std::fs::read(&path).expect("engine after"));
+            assert_eq!(!marker_bytes(&scratch.0).is_empty(), inherited);
+        }
+    }
+
+    #[test]
+    fn a_read_only_open_refuses_required_repair_without_changing_the_engine() {
+        let scratch = Scratch::new("read-only-recovery");
+        NativeEngineOwner::provision(&scratch.0).expect("provision");
+        let path = scratch.0.join(NATIVE_ENGINE_FILE);
+        let mut bytes = std::fs::read(&path).expect("engine");
+        // The redb 4 header keeps the recovery-required flag immediately after its
+        // nine-byte magic. Leave both commit slots intact and require an opener to
+        // repair; this fixture must never silently become a clean-open case.
+        assert_eq!(&bytes[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+        bytes[9] |= 2;
+        std::fs::write(&path, &bytes).expect("require physical recovery");
+        let refused = NativeEngineOwner::acquire_existing(&scratch.0)
+            .expect("acquire")
+            .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x43; 16], || Ok::<(), ()>(()));
+        assert!(matches!(
+            refused,
+            Err(NativeOwnerOpenError::Store(StoreError::RecoveryRequired))
+        ));
+        assert!(bytes == std::fs::read(path).expect("engine after"));
+        assert!(!marker_bytes(&scratch.0).is_empty());
+    }
+
+    #[test]
+    fn a_read_only_open_refusal_preserves_the_engine_and_unclean_obligation() {
+        let scratch = Scratch::new("read-only-malformed");
+        NativeEngineOwner::provision(&scratch.0).expect("provision");
+        let path = scratch.0.join(NATIVE_ENGINE_FILE);
+        std::fs::write(&path, b"not an engine").expect("malformed engine");
+        let refused = NativeEngineOwner::acquire_existing(&scratch.0)
+            .expect("acquire")
+            .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x42; 16], || Ok::<(), ()>(()));
+        assert!(matches!(refused, Err(NativeOwnerOpenError::Store(_))));
+        assert_eq!(std::fs::read(path).expect("engine after"), b"not an engine");
+        assert!(!marker_bytes(&scratch.0).is_empty());
     }
 
     fn contend(dir: &Path) -> NativeOwnerAcquireError {
@@ -838,7 +929,9 @@ mod tests {
         }
 
         let owner = pending
-            .bind_and_open_existing([0x5B; 16], || Ok::<_, std::convert::Infallible>(()))
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x5B; 16], || {
+                Ok::<_, std::convert::Infallible>(())
+            })
             .expect("bind and open");
         match contend(&scratch.0) {
             NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { owner: Some(named) }) => {
@@ -1026,7 +1119,9 @@ mod tests {
                 NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire the owner");
             if bind_before_death {
                 let refused = pending
-                    .bind_and_open_existing([0x6C; 16], || Err::<(), _>("refused"))
+                    .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x6C; 16], || {
+                        Err::<(), _>("refused")
+                    })
                     .err()
                     .expect("the admission refusal is the death point");
                 assert!(matches!(refused, NativeOwnerOpenError::Refused("refused")));
@@ -1041,7 +1136,9 @@ mod tests {
             // Inheriting it and refusing again hands the same obligation on.
             let inherited = NativeEngineOwner::acquire_existing(&scratch.0)
                 .expect("inherit the obligation")
-                .bind_and_open_existing([0x6D; 16], || Err::<(), _>("refused again"))
+                .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x6D; 16], || {
+                    Err::<(), _>("refused again")
+                })
                 .err()
                 .expect("the second admission also refuses");
             assert!(matches!(
@@ -1098,7 +1195,7 @@ mod tests {
         NativeEngineOwner::provision(&scratch.0).expect("provision");
         let error = NativeEngineOwner::acquire_existing(&scratch.0)
             .expect("acquire the owner")
-            .bind_and_open_existing([9; 16], || {
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, [9; 16], || {
                 assert!(matches!(
                     contend(&scratch.0),
                     NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),

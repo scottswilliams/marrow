@@ -42,8 +42,8 @@ pub use mem::MemoryEngine;
 #[cfg(feature = "native")]
 pub use native_owner::{
     NATIVE_ENGINE_FILE, NATIVE_ENGINE_FORMAT_VERSION, NATIVE_LOCK_FILE, NativeEngineOwner,
-    NativeLockError, NativeLockOwner, NativeOwnerAcquireError, NativeOwnerOpenError,
-    NativeOwnerTxn, NativeOwnerView, PendingNativeEngineOwner,
+    NativeLockError, NativeLockOwner, NativeOpenAccess, NativeOwnerAcquireError,
+    NativeOwnerOpenError, NativeOwnerTxn, NativeOwnerView, PendingNativeEngineOwner,
 };
 
 /// Freezes the crate's public surface against removal and rename: every `pub`
@@ -84,6 +84,7 @@ mod public_surface_audit {
             fn native_engine<E: ByteEngine>() {}
             let _owner = native_engine::<NativeEngineOwner>;
             let _format = NATIVE_ENGINE_FORMAT_VERSION;
+            let _access = [NativeOpenAccess::ReadOnly, NativeOpenAccess::ReadWrite];
             let _engine_file = NATIVE_ENGINE_FILE;
             let _lock_file = NATIVE_LOCK_FILE;
             let _acquire: fn(

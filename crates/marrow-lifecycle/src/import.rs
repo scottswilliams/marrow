@@ -479,28 +479,29 @@ pub fn import_jsonl(
     // and writes nothing. The pin is derived over the reprojection the engine actually opens
     // under; its numbering is the roots', which the reprojection keeps.
     let admission = ImageAdmission::derive(&image, &projection);
-    let mut opened =
-        open_admitted(dir, projection, |head| admission.admit_exact(head)).map_err(|error| {
-            match error {
-                AdmitError::Open(error) => ImportError::Open(error),
-                AdmitError::Refused(ExactRefusal::NotActive) => ImportError::ImageNotActive,
-                AdmitError::Refused(ExactRefusal::InconsistentBinding) => {
-                    ImportError::InconsistentBinding
-                }
-                AdmitError::Refused(ExactRefusal::ContractChanged(refusal)) => {
-                    ImportError::ContractChanged(refusal)
-                }
-                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Exceeds(
-                    refusal,
-                ))) => ImportError::DemandExceedsCeiling(refusal),
-                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::CeilingCorrupt)) => {
-                    ImportError::Open(AdmissionRefusal::ceiling_corrupt())
-                }
-                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
-                    ImportError::HeadMapPin(refusal)
-                }
-            }
-        })?;
+    let mut opened = open_admitted(
+        dir,
+        projection,
+        marrow_kernel::durable::NativeOpenAccess::ReadWrite,
+        |head| admission.admit_exact(head),
+    )
+    .map_err(|error| match error {
+        AdmitError::Open(error) => ImportError::Open(error),
+        AdmitError::Refused(ExactRefusal::NotActive) => ImportError::ImageNotActive,
+        AdmitError::Refused(ExactRefusal::InconsistentBinding) => ImportError::InconsistentBinding,
+        AdmitError::Refused(ExactRefusal::ContractChanged(refusal)) => {
+            ImportError::ContractChanged(refusal)
+        }
+        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Exceeds(refusal))) => {
+            ImportError::DemandExceedsCeiling(refusal)
+        }
+        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::CeilingCorrupt)) => {
+            ImportError::Open(AdmissionRefusal::ceiling_corrupt())
+        }
+        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
+            ImportError::HeadMapPin(refusal)
+        }
+    })?;
 
     match import_rows_into(&mut opened, &plan, source, grant, limits) {
         Ok(report) => Ok(report),

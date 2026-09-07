@@ -591,9 +591,9 @@ fn import_command(
 
 /// Audit the store read-only against the image (the `audit` command). The lifecycle takes
 /// the store's single-owner lock, admits the image as the exact active binding, runs the
-/// engine's integrity audit and the kernel's logical walk, and releases the lock; this
-/// command only renders the result. A clean store exits `0`; findings, a corrupt engine, or
-/// a refusal exit `1`.
+/// kernel's logical walk through a read-only engine, and releases the lock; this command
+/// only renders the result. A logically clean report exits `0`; findings, engine errors,
+/// and refusals exit `1`. Physical integrity is not checked.
 fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitCode {
     let image = match load_image(image_path) {
         Ok(image) => image,
@@ -633,45 +633,36 @@ fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitC
     }
 }
 
-/// The audit in the command line's one voice: the store, its instance and image, then the
-/// engine verdict or the counts, the digest, and each retained finding.
+/// The logical report and its physical-integrity limitation.
 fn render_audit(audit: &marrow_lifecycle::StoreAudit, store: &Path) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    let _ = writeln!(out, "audited {}", store.display());
+    let _ = writeln!(out, "Logical store audit: {}", store.display());
+    let _ = writeln!(out, "Physical integrity was not checked.");
     let _ = writeln!(out, "instance {}", audit.instance.to_hex());
     let _ = writeln!(out, "image {}", audit.image_id.to_hex());
-    match &audit.outcome {
-        marrow_lifecycle::AuditOutcome::EngineCorrupt { message } => {
-            let _ = writeln!(
-                out,
-                "{}: the store is corrupt: {message}",
-                marrow_codes::Code::StoreCorruption.as_str()
-            );
+    let marrow_lifecycle::StoreAudit {
+        summary,
+        findings,
+        digest,
+        ..
+    } = audit;
+    let _ = writeln!(
+        out,
+        "entries {}, descendant-only {}, index cells {}, cells {}",
+        summary.entries, summary.descendant_only, summary.index_cells, summary.cells,
+    );
+    let _ = writeln!(out, "digest {}", digest.to_hex());
+    if summary.findings == 0 {
+        out.push_str("no findings\n");
+    } else {
+        let _ = writeln!(out, "findings {}", summary.findings);
+        for finding in findings {
+            let _ = writeln!(out, "  {} at {}", finding.code.as_str(), finding.place);
         }
-        marrow_lifecycle::AuditOutcome::Walked {
-            summary,
-            findings,
-            digest,
-        } => {
-            let _ = writeln!(
-                out,
-                "entries {}, descendant-only {}, index rows {}, cells {}",
-                summary.entries, summary.descendant_only, summary.index_rows, summary.cells,
-            );
-            let _ = writeln!(out, "digest {}", digest.to_hex());
-            if summary.findings == 0 {
-                out.push_str("no findings\n");
-            } else {
-                let _ = writeln!(out, "findings {}", summary.findings);
-                for finding in findings {
-                    let _ = writeln!(out, "  {} at {}", finding.code.as_str(), finding.place);
-                }
-                let unlisted = summary.findings - findings.len() as u64;
-                if unlisted > 0 {
-                    let _ = writeln!(out, "  ... {unlisted} more not listed");
-                }
-            }
+        let unlisted = summary.findings - findings.len() as u64;
+        if unlisted > 0 {
+            let _ = writeln!(out, "  ... {unlisted} more not listed");
         }
     }
     out
@@ -684,53 +675,45 @@ fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Jso
     let text = |value: &str| Json::Str(value.to_string());
     let mut head = vec![
         ("kind".to_string(), text("doctor")),
+        ("scope".to_string(), text("logical")),
+        ("physical_integrity".to_string(), text("not_checked")),
         ("store".to_string(), Json::Str(store)),
         ("instance".to_string(), Json::Str(audit.instance.to_hex())),
         ("image".to_string(), Json::Str(audit.image_id.to_hex())),
     ];
     let mut records = Vec::new();
-    match &audit.outcome {
-        marrow_lifecycle::AuditOutcome::EngineCorrupt { .. } => {
-            head.push(("outcome".to_string(), text("corrupt")));
-            head.push((
-                "code".to_string(),
-                text(marrow_codes::Code::StoreCorruption.as_str()),
-            ));
-            records.push(Json::Object(head));
-        }
-        marrow_lifecycle::AuditOutcome::Walked {
-            summary,
-            findings,
-            digest,
-        } => {
-            let count = |value: u64| Json::Int(i64::try_from(value).unwrap_or(i64::MAX));
-            head.push((
-                "outcome".to_string(),
-                text(if summary.findings == 0 {
-                    "clean"
-                } else {
-                    "findings"
-                }),
-            ));
-            head.push(("digest".to_string(), Json::Str(digest.to_hex())));
-            head.push(("entries".to_string(), count(summary.entries)));
-            head.push((
-                "descendant_only".to_string(),
-                count(summary.descendant_only),
-            ));
-            head.push(("index_rows".to_string(), count(summary.index_rows)));
-            head.push(("cells".to_string(), count(summary.cells)));
-            head.push(("findings".to_string(), count(summary.findings)));
-            head.push(("listed".to_string(), count(findings.len() as u64)));
-            records.push(Json::Object(head));
-            for finding in findings {
-                records.push(Json::Object(vec![
-                    ("kind".to_string(), text("finding")),
-                    ("code".to_string(), text(finding.code.as_str())),
-                    ("place".to_string(), Json::Str(finding.place.clone())),
-                ]));
-            }
-        }
+    let marrow_lifecycle::StoreAudit {
+        summary,
+        findings,
+        digest,
+        ..
+    } = audit;
+    let count = |value: u64| Json::Int(i64::try_from(value).unwrap_or(i64::MAX));
+    head.push((
+        "outcome".to_string(),
+        text(if summary.findings == 0 {
+            "clean"
+        } else {
+            "findings"
+        }),
+    ));
+    head.push(("digest".to_string(), Json::Str(digest.to_hex())));
+    head.push(("entries".to_string(), count(summary.entries)));
+    head.push((
+        "descendant_only".to_string(),
+        count(summary.descendant_only),
+    ));
+    head.push(("index_cells".to_string(), count(summary.index_cells)));
+    head.push(("cells".to_string(), count(summary.cells)));
+    head.push(("findings".to_string(), count(summary.findings)));
+    head.push(("listed".to_string(), count(findings.len() as u64)));
+    records.push(Json::Object(head));
+    for finding in findings {
+        records.push(Json::Object(vec![
+            ("kind".to_string(), text("finding")),
+            ("code".to_string(), text(finding.code.as_str())),
+            ("place".to_string(), Json::Str(finding.place.clone())),
+        ]));
     }
     records
 }

@@ -222,65 +222,51 @@ identity: a missing one is `check.durable_identity`.
 
 ## marrow doctor
 
-`marrow doctor --store <dir>` audits a store read-only against the project at
-the working directory, which must be the store's active program: a code-only
-edit the store has not been rebound to is `store.image_not_active`, and a
-changed durable contract is `store.contract_changed`. Like `run --store` and
-`import`, the audit runs in the companion runner, which takes the store's lock
-for the audit and releases it when the report is printed.
+`marrow doctor --store <dir>` performs a read-only logical audit against the
+project at the working directory, which must be the store's active program.
+A code-only edit the store has not been rebound to is `store.image_not_active`;
+a changed durable contract is `store.contract_changed`. The companion runner
+holds the owner lock through admission and inspection, then releases it before
+printing. The engine file, head, and envelope are unchanged.
 
-The audit first runs the engine's own integrity check over the whole file. When
-that passes, it walks every cell once, in key order, against the program's
-durable shape: each entry's marker, its field and group leaves, its branches to
-any depth, every managed-index row, and the commit witness. It reports each cell
-that disagrees with the program, and a digest over the store's logical content.
-This transcript is from the shelf program after `put(1, "Small Gods",
-"978-0552152976")`:
+The audit covers every cell, including an empty physical key and data beneath
+absent parents. It checks keys and values against their declared types, entry
+markers, required fields, managed-index correspondence, and the commit witness.
+An index must agree with its source entry, and every present entry with a
+complete index projection must have a corresponding index cell naming that
+entry. An entry whose fields are all sparse may have no populated fields.
 
-```text
-$ marrow doctor --store ./store
-audited ./store
-instance 5e26a00385e614895055a64ef7a13aa5
-image 3bbeb4bc1dddf124e86af8b96a667b0c6dda3872368cda668ca15a9f4a7c8921
-entries 1, descendant-only 0, index rows 1, cells 5
-digest ec9b1a28fcffcdfed54439d087a577d13c83383442a43e5bff3e585858e3689a
-no findings
-```
+The report lists at most 256 findings, each with a stable `store.*` code and a
+place ([error codes](../error-codes.md)). Findings follow deterministic scan
+and node-closure order: missing required fields are reported when their node
+closes. An index is named by its identity from `.marrow/ids`, because the
+compiled program carries no index name.
 
-`entries` counts present entries at every level, `descendant-only` counts nodes
-that hold branch entries but no payload of their own, `index rows` counts
-managed-index rows, and `cells` counts every cell in the engine. The digest is
-a function of the store's entries and their values, in key order; two runs over
-an unchanged store print the same digest, and a committed write changes it. It
-is reported, not stored: comparing it with a value recorded earlier is how a
-store is checked against its own past.
+`entries` counts present entries at every level; `descendant-only` counts nodes
+with descendants but no payload of their own; `index cells` counts managed-index
+cells; and `cells` counts stored cells once each. The digest covers entry-family
+keys and values in key order, including descendant-only data, and excludes
+index and metadata cells. It is reported, not persisted. An unchanged content
+stream has the same digest; a same-value commit need not change it.
 
-A finding names its code and place, one per line after `findings <n>`:
+Physical integrity is not checked. A changed scalar that still has a valid
+value can pass this audit even when its physical checksum is wrong. Inspection
+does not repair the engine or clear the unclean-shutdown status inherited from
+a prior owner, and it does not qualify the store for recovery
+([operations](../operations/README.md#auditing-a-store)).
+The text report starts with `Logical store audit:` and states
+`Physical integrity was not checked.` Exit `0` means the walk found no logical
+inconsistency; findings, engine errors, and refusals exit `1`.
 
-```text
-findings 2
-  store.audit_required_missing at ^books[1].title
-  store.audit_index_orphan at ^books.index(37476822645b6802b40160c53d1a7fb6)["978-0552152976"]
-```
-
-An index row is named by the index's identity from `.marrow/ids`, since the
-compiled program carries no index name. The audit codes are listed under
-`store.*` in [error codes](../error-codes.md). An engine file with a page that
-fails its checksum is reported as `store.corruption` before any cell is read;
-the engine's own contained assertion text precedes that line on standard
-error. A clean store exits `0`; findings, a corrupt engine, or a refusal exit
-`1`. `--format jsonl` prints one `doctor` record, then one `finding` record per
-listed finding:
-
-```text
-$ marrow doctor --store ./store --format jsonl
-{"cells":5,"descendant_only":0,"digest":"ec9b1a28fcffcdfed54439d087a577d13c83383442a43e5bff3e585858e3689a","entries":1,"findings":0,"image":"3bbeb4bc1dddf124e86af8b96a667b0c6dda3872368cda668ca15a9f4a7c8921","index_rows":1,"instance":"5e26a00385e614895055a64ef7a13aa5","kind":"doctor","listed":0,"outcome":"clean","store":"./store"}
-```
-
-`outcome` is `clean`, `findings`, `corrupt`, or `error`; `findings` counts
-every finding and `listed` the finding records that follow, since the report
-lists at most 256; a finding record carries `code` and `place`. A project that does not compile, or an installation
-without the companion layout, is reported on standard error in either format.
+`--format jsonl` prints one `doctor` record followed by one `finding` record per
+listed finding. A completed walk reports `scope: "logical"`,
+`physical_integrity: "not_checked"`, and `outcome: "clean"` or `"findings"`,
+together with its counts, instance, image, and digest. `findings` counts all
+findings and `listed` counts the records that follow; each finding carries
+`code` and `place`. A lifecycle refusal or engine read failure reports
+`outcome: "error"` and its `code`. Project compilation and companion-installation
+failures go to standard error in either format; compiler resource and invariant
+failures retain `cli.compiler_resource_limit` and `cli.compiler_invariant`.
 
 ## marrow image
 

@@ -1,12 +1,10 @@
-//! The logical audit's engine work is bounded by populated cells and never by declared
-//! width, and nothing larger than one engine page crosses the engine seam.
+//! The logical audit's engine-call counts and largest returned scan page.
 //!
-//! The walk reads the whole key space one page at a time and point-reads each index row's
-//! source and each indexed entry's row. So its scan count is the page count of the
-//! populated cells, its point-read count is proportional to index rows and indexed
-//! entries, and neither moves when the resource declares more fields. The counting engine
-//! measures the calls; a page-witness view measures the largest batch the walk ever
-//! holds, which is the bound its memory rests on beside the depth-bounded frame stack.
+//! The walk point-reads the empty key once, pages through the remaining key space, and
+//! point-reads each index cell's source and each indexed entry's index cell. The counting engine
+//! compares those calls across declared widths and entry populations. The page witness
+//! measures the largest returned batch; it does not measure retained pages, peak
+//! allocation, or native engine-cache residency.
 
 mod common;
 
@@ -110,9 +108,10 @@ fn audit_reads_are_flat_across_declared_width() {
 
 #[test]
 fn audit_reads_are_linear_in_populated_cells() {
-    // Each entry is 2 entry cells (marker, value) and 1 index row; the walk pays one
-    // scan per 64-cell page (plus the final empty page), one point read per index row
-    // (the source marker) and one per projected field of it, and one per indexed entry.
+    // Each entry is 2 entry cells (marker, value) and 1 index cell; the walk pays one
+    // scan per 64-cell page (plus the final empty page), one point read per index cell
+    // (the source marker) and one per projected field of it, one per indexed entry,
+    // and one initial point read for the empty key.
     let small = reads_for_audit(64, 2);
     let large = reads_for_audit(640, 2);
     assert!(
@@ -173,12 +172,11 @@ impl ByteEngine for WitnessEngine {
     }
 }
 
-/// The walk holds at most one engine page of cells at a time: on 10,000 entries (20,000
-/// entry cells and 10,000 index rows) the largest batch it received is the engine's page
-/// bound, not the store. With the depth-bounded frame stack and the capped finding list,
-/// this is the memory bound the walk rests on.
+/// On 10,000 entries (20,000 entry cells and 10,000 index cells), the largest page
+/// returned to the walk respects the engine's record bound. This witness observes one
+/// return at a time and makes no assertion about peak allocation or retained pages.
 #[test]
-fn the_walk_never_holds_more_than_one_engine_page() {
+fn the_largest_returned_audit_page_respects_the_engine_record_bound() {
     let largest = Rc::new(Cell::new(0));
     let mut store = DurableStore::from_projection_with_ceiling(
         WitnessEngine {
@@ -192,7 +190,7 @@ fn the_walk_never_holds_more_than_one_engine_page() {
     let report = store.logical_audit(&mut Discard).expect("audit");
     assert!(report.is_clean());
     assert_eq!(report.summary.entries, 10_000);
-    assert_eq!(report.summary.index_rows, 10_000);
+    assert_eq!(report.summary.index_cells, 10_000);
     assert!(
         largest.get() <= 64,
         "a page holds at most the engine's scan batch, saw {}",

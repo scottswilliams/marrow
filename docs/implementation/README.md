@@ -130,9 +130,13 @@ returned attachment over the persistent redb engine.
 
 `marrow doctor --store <dir>` stops before any export runs. The CLI compiles
 and hands the image to `marrow-runner audit`; `marrow-lifecycle` admits it as
-the store's exact active binding under the lock, runs the engine's integrity
-audit, and drives `marrow-kernel`'s read-only walk over every cell, rendering
-the findings and the digest ([storage](storage.md#auditing-a-store)).
+the store's exact active binding under the lock and opens the native engine
+with `NativeOpenAccess::ReadOnly`. The kernel's logical walk checks every cell,
+and the lifecycle returns findings and an entry-content digest. The owner lock
+is released before the runner renders the report. Physical integrity is not
+checked, and inspection leaves an inherited unclean-shutdown obligation
+undischarged ([storage](storage.md#auditing-a-store)). This report grants no
+recovery or admission permit.
 
 ## Guides
 

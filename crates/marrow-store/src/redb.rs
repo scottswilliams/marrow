@@ -51,7 +51,6 @@ use std::ops::Bound;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-#[cfg(test)]
 use redb::ReadOnlyDatabase;
 use redb::{
     Database, DatabaseError, Durability, ReadTransaction, ReadableDatabase, ReadableTable,
@@ -98,7 +97,6 @@ pub(crate) struct NativeEngine {
 
 enum DatabaseHandle {
     ReadWrite(Database),
-    #[cfg(test)]
     ReadOnly(ReadOnlyDatabase),
 }
 
@@ -106,7 +104,6 @@ impl DatabaseHandle {
     fn begin_read(&self, op: &'static str) -> Result<ReadTransaction, StoreError> {
         match self {
             Self::ReadWrite(db) => db.begin_read().map_err(io(op)),
-            #[cfg(test)]
             Self::ReadOnly(db) => db.begin_read().map_err(io(op)),
         }
     }
@@ -118,7 +115,6 @@ impl DatabaseHandle {
                 pin_write_durability(&mut write, op)?;
                 Ok(write)
             }
-            #[cfg(test)]
             Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
         }
     }
@@ -126,7 +122,6 @@ impl DatabaseHandle {
     fn require_write_access(&self, _op: &'static str) -> Result<(), StoreError> {
         match self {
             Self::ReadWrite(_) => Ok(()),
-            #[cfg(test)]
             Self::ReadOnly(_) => Err(StoreError::ReadOnly { op: _op }),
         }
     }
@@ -672,7 +667,6 @@ impl NativeEngine {
     /// than stamping it; write-capability operations fail before any write
     /// transaction begins. A malformed body surfaces redb's own open error as a
     /// typed [`StoreError`] through [`map_open_error`].
-    #[cfg(test)]
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
         contain_panic("open", || {
             let db = open_tolerating_creation_race(path, || {
@@ -728,7 +722,6 @@ impl ByteEngine for NativeEngine {
                     Err(error) => Err(error),
                 }
             }),
-            #[cfg(test)]
             DatabaseHandle::ReadOnly(_) => Err(StoreError::ReadOnly { op: "audit" }),
         };
         if result.is_err() {

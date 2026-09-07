@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use marrow_store::{
-    ByteEngine, NativeEngineOwner, NativeOwnerAcquireError, NativeOwnerOpenError,
+    ByteEngine, NativeEngineOwner, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError,
     PendingNativeEngineOwner, StoreError,
 };
 
@@ -101,18 +101,12 @@ impl NativeStoreOwner {
         (state, Some(self))
     }
 
-    /// The engine's whole-file integrity audit: every stored checksum is verified, so an
-    /// externally altered byte in a cleanly closed store — which the fast open path does
-    /// not re-verify — is reported as [`StoreError::Corruption`]. A read-only inspection
-    /// runs it ahead of [`Self::logical_audit`], since the walk's reads are only as
-    /// trustworthy as the pages beneath them.
-    pub fn audit_integrity(&mut self) -> Result<(), StoreError> {
-        self.store_mut().audit_integrity()
-    }
-
     /// The bounded read-only logical walk of [`DurableStore::logical_audit`] over this
     /// store, under the retained owner lock and without a session.
-    pub fn logical_audit(&self, digest: &mut dyn ContentDigest) -> Result<AuditReport, StoreError> {
+    pub fn logical_audit(
+        &self,
+        digest: &mut dyn ContentDigest,
+    ) -> Result<AuditReport, SessionError> {
         self.store
             .as_ref()
             .expect("a live native owner retains its semantic store")
@@ -149,18 +143,22 @@ impl PendingNativeStoreOwner {
     }
 
     /// Bind `instance` into the owner marker, run the zero-capability admission
-    /// callback, and open and audit the existing engine under the same lock. The
+    /// callback, and open the engine with the requested access under the same lock. Only
+    /// read-write access may discharge an inherited physical-audit obligation. The
     /// recovery scope is minted here, from the instance the caller bound and the
     /// directory the lock was taken over, so no scope can name a store this owner
     /// does not hold.
     pub fn bind_and_open_existing<R>(
         self,
+        access: NativeOpenAccess,
         instance: [u8; 16],
         projection: StoreProjection,
         admit: impl FnOnce() -> Result<(), R>,
     ) -> Result<NativeStoreOwner, NativeOwnerOpenError<R>> {
         let directory = self.pending.directory().to_path_buf();
-        let engine = self.pending.bind_and_open_existing(instance, admit)?;
+        let engine = self
+            .pending
+            .bind_and_open_existing(access, instance, admit)?;
         let ceiling = DemandCoverage {
             read: true,
             write: engine.require_write_access("open").is_ok(),
@@ -242,6 +240,7 @@ mod tests {
         NativeStoreOwner::acquire_existing(&scratch.0)
             .expect("acquire the owner lock")
             .bind_and_open_existing(
+                NativeOpenAccess::ReadWrite,
                 instance,
                 StoreProjection::builder()
                     .finish()
@@ -330,7 +329,9 @@ mod tests {
         NativeEngineOwner::provision(&scratch.0).expect("provision");
         let owner = NativeEngineOwner::acquire_existing(&scratch.0)
             .expect("acquire the owner lock")
-            .bind_and_open_existing([0x47; 16], || Ok::<_, std::convert::Infallible>(()))
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x47; 16], || {
+                Ok::<_, std::convert::Infallible>(())
+            })
             .expect("open lower owner")
             .reopen_existing_and_audit()
             .expect("enter irreversible lower quarantine");

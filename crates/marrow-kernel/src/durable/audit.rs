@@ -10,10 +10,10 @@
 //! classified exactly once, and a cell that belongs to no declared node or index is a
 //! typed finding rather than a skipped byte. A required leaf that is absent is found when
 //! the node it belongs to closes, so a missing cell is reported as precisely as a present
-//! one. Managed-index rows are checked against their source entries by point reads, and
-//! every present root entry with a complete projection is checked for its row, so the
+//! one. Managed-index cells are checked against their source entries by point reads, and
+//! every present root entry with a complete projection is checked for its index cell, so the
 //! walk's engine work is one page per engine scan batch plus a bounded number of point
-//! reads per index row and per indexed entry — never a read per declared field.
+//! reads per index cell and per indexed entry — never a read per declared field.
 //!
 //! The logical content the walk sees — every cell of a declared root's entry family, in
 //! key order — is handed to a caller-supplied [`ContentDigest`] one cell at a time, so the
@@ -30,7 +30,7 @@ use super::{
     IndexSchema, NodeNumber, RootNumbering, StoreProjection, StoreSchema,
 };
 use crate::codec::key::{KeyScalar, decode_key_value};
-use crate::codec::value::{ScalarKind, ValueShape, decode_domain};
+use crate::codec::value::{ScalarKind, ValueShape, decode_domain, scalar_key_matches_type};
 use crate::equality::ValueDomain;
 
 /// The most findings a report retains in full. Every finding is still counted in
@@ -59,11 +59,11 @@ pub enum AuditFault {
     OrphanLeaf,
     /// A marker cell whose value is not the presence record.
     MarkerInvalid,
-    /// An index row whose source entry is absent.
+    /// An index cell whose source entry is absent.
     IndexOrphan,
-    /// An index row whose projected values disagree with its source entry.
+    /// An index cell whose projected values disagree with its source entry.
     IndexStale,
-    /// A present entry with a complete projection has no index row.
+    /// A present entry with a complete projection has no index cell naming it.
     IndexMissing,
     /// The commit witness cell holds bytes no witness encoding this build reads.
     WitnessInvalid,
@@ -88,11 +88,11 @@ pub enum AuditSite {
         group: Option<u16>,
         field: u16,
     },
-    /// One row of a managed index: the index's root and position and its projected values.
-    IndexRow {
+    /// One cell of a managed index: the index's root and position and its projected values.
+    IndexCell {
         root: u16,
         index: u16,
-        row: Vec<KeyScalar>,
+        values: Vec<KeyScalar>,
     },
     /// The index family of a declared root under an identity the program does not declare.
     UndeclaredIndex { root: u16, id: [u8; 16] },
@@ -107,18 +107,18 @@ pub struct AuditFinding {
 }
 
 /// The counts the walk keeps: every cell scanned, present entries (markers), nodes with
-/// descendants but no payload, index rows, and findings (including those past the cap).
+/// descendants but no payload, index cells, and findings (including those past the cap).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AuditSummary {
     pub cells: u64,
     pub entries: u64,
     pub descendant_only: u64,
-    pub index_rows: u64,
+    pub index_cells: u64,
     pub findings: u64,
 }
 
-/// The walk's result: the counts and the first [`MAX_REPORTED_FINDINGS`] findings in key
-/// order.
+/// The walk's result: counts and the first [`MAX_REPORTED_FINDINGS`] findings in
+/// deterministic scan/closure order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditReport {
     pub summary: AuditSummary,
@@ -153,6 +153,10 @@ pub(super) fn walk<V: ReadView>(
         summary: AuditSummary::default(),
         findings: Vec::new(),
     };
+    // Paging is strictly after its cursor; the empty key has no preceding cursor.
+    if let Some(value) = view.get(&[])? {
+        walker.cell(&[], &value)?;
+    }
     let mut cursor: Vec<u8> = Vec::new();
     loop {
         let page = view.scan_after(&[], &cursor)?;
@@ -186,14 +190,14 @@ struct GroupSlot {
 }
 
 /// One declared branch below a node: its family suffix below the parent stem, its cell-key
-/// number, and the node table row of its children.
+/// number, and the node position of its children.
 struct BranchLink {
     suffix: Vec<u8>,
     number: NodeNumber,
     node: usize,
 }
 
-/// One node shape of a root's tree: the root entry (row 0) or a branch entry.
+/// One node shape of a root's tree: the root entry (position 0) or a branch entry.
 struct NodeShape {
     /// The branch positions from the root down to this node (empty for the root).
     branch_path: Vec<u16>,
@@ -357,7 +361,7 @@ fn group_slots(groups: &[GroupSchema], numbers: &[GroupNumbering]) -> Vec<GroupS
         .collect()
 }
 
-/// Append one node row per branch of a level (recursively) and return the level's links.
+/// Append one node position per branch of a level (recursively) and return the level's links.
 fn link_branches(
     nodes: &mut Vec<NodeShape>,
     parent_path: &[u16],
@@ -400,7 +404,7 @@ struct Frame {
     own: Vec<bool>,
     groups: Vec<Vec<bool>>,
     /// The decoded key projection of each top-level field (root entries of an indexed root
-    /// only), for the index-row check at close.
+    /// only), for the index-cell check at close.
     projected: Vec<Option<KeyScalar>>,
     any_leaf: bool,
     any_descendant: bool,
@@ -452,20 +456,20 @@ fn seek_prefix<T>(
     None
 }
 
-/// Decode `kinds.len()` key columns from the front of `bytes`, each of its declared kind,
-/// returning the columns and the bytes consumed.
-fn decode_columns(bytes: &[u8], kinds: &[ScalarKind]) -> Option<(Vec<KeyScalar>, usize)> {
-    let mut columns = Vec::with_capacity(kinds.len());
+/// Decode `kinds.len()` key components from the front of `bytes`, each of its declared kind,
+/// returning the keys and the bytes consumed.
+fn decode_keys(bytes: &[u8], kinds: &[ScalarKind]) -> Option<(Vec<KeyScalar>, usize)> {
+    let mut keys = Vec::with_capacity(kinds.len());
     let mut used = 0;
     for kind in kinds {
         let (column, n) = decode_key_value(bytes.get(used..)?)?;
-        if column.scalar_kind() != *kind {
+        if !scalar_key_matches_type(&column, *kind) {
             return None;
         }
-        columns.push(column);
+        keys.push(column);
         used += n;
     }
-    Some((columns, used))
+    Some((keys, used))
 }
 
 impl<V: ReadView> Walker<'_, V> {
@@ -484,7 +488,7 @@ impl<V: ReadView> Walker<'_, V> {
         }
     }
 
-    /// Classify a cell under no open node: a declared root's entry, a managed-index row,
+    /// Classify a cell under no open node: a declared root's entry, a managed-index cell,
     /// the commit witness, or a cell outside every declared family.
     fn top_level(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
         let tables = self.tables;
@@ -504,7 +508,7 @@ impl<V: ReadView> Walker<'_, V> {
             &mut self.index_cursor,
             key,
         ) {
-            return self.index_row(&tables.indexes[index], key, value);
+            return self.index_cell(&tables.indexes[index], key, value);
         }
         if key == tables.witness.as_slice() {
             if !witness_well_formed(value) {
@@ -537,8 +541,8 @@ impl<V: ReadView> Walker<'_, V> {
         Ok(())
     }
 
-    /// Open the child of `layer` that `key` addresses, whose columns begin at
-    /// `prefix_len`: the key's child columns are decoded to derive the child's marker
+    /// Open the child of `layer` that `key` addresses, whose keys begin at
+    /// `prefix_len`: the key's child keys are decoded to derive the child's marker
     /// stem, and the cell is that marker, a cell below it (a markerless child), or
     /// malformed.
     fn enter_layer(
@@ -553,7 +557,7 @@ impl<V: ReadView> Walker<'_, V> {
         let tables = self.tables;
         let root_shape = &tables.roots[root];
         let shape = &root_shape.nodes[node];
-        let Some((columns, _)) = decode_columns(&key[prefix_len..], &shape.key) else {
+        let Some((keys, _)) = decode_keys(&key[prefix_len..], &shape.key) else {
             self.finding(
                 AuditFault::Undecodable,
                 AuditSite::Cell { key: key.to_vec() },
@@ -561,11 +565,11 @@ impl<V: ReadView> Walker<'_, V> {
             return Ok(());
         };
         let stem = match layer {
-            Layer::Root => physical::marker_key(root_shape.number, &columns),
+            Layer::Root => physical::marker_key(root_shape.number, &keys),
             Layer::Branch {
                 parent_stem,
                 number,
-            } => physical::branch_child_stem(&parent_stem, number, &columns),
+            } => physical::branch_child_stem(&parent_stem, number, &keys),
         };
         if !key.starts_with(&stem) {
             self.finding(
@@ -576,7 +580,7 @@ impl<V: ReadView> Walker<'_, V> {
         }
         let marker = key == stem.as_slice();
         let path_len = self.path.len();
-        self.path.extend(columns);
+        self.path.extend(keys);
         self.frames.push(Frame {
             root,
             node,
@@ -743,7 +747,7 @@ impl<V: ReadView> Walker<'_, V> {
     }
 
     /// The checks a node admits only once every cell under it has been seen: the required
-    /// leaves and index rows of a present node, or its descendant-only standing.
+    /// leaves and index cells of a present node, or its descendant-only standing.
     fn check_closed(&mut self, frame: &Frame) -> Result<(), StoreError> {
         if !frame.marker {
             if !frame.any_leaf && frame.any_descendant {
@@ -767,20 +771,24 @@ impl<V: ReadView> Walker<'_, V> {
             }
         }
         if frame.node == 0 {
-            self.check_rows(frame)?;
+            self.check_index_cells(frame)?;
         }
         Ok(())
     }
 
     /// Every index of a present root entry whose projection is complete must hold the
-    /// entry's row.
-    fn check_rows(&mut self, frame: &Frame) -> Result<(), StoreError> {
+    /// entry's index cell.
+    fn check_index_cells(&mut self, frame: &Frame) -> Result<(), StoreError> {
         let tables = self.tables;
         let root = &tables.roots[frame.root];
+        if root.indexes.is_empty() {
+            return Ok(());
+        }
         let keys: Vec<KeyScalar> = self.path[frame.path_len..].to_vec();
+        let source = physical::index_cell_value(&keys);
         for &index in &root.indexes {
             let shape = &tables.indexes[index];
-            let row: Option<Vec<KeyScalar>> = shape
+            let values: Option<Vec<KeyScalar>> = shape
                 .components
                 .iter()
                 .map(|(component, _)| match component {
@@ -788,17 +796,17 @@ impl<V: ReadView> Walker<'_, V> {
                     Component::Field(field) => frame.projected.get(*field).cloned().flatten(),
                 })
                 .collect();
-            let Some(row) = row else {
+            let Some(values) = values else {
                 continue;
             };
-            let cell = physical::index_cell_key(root.number, &shape.id, &row);
-            if self.view.get(&cell)?.is_none() {
+            let cell = physical::index_cell_key(root.number, &shape.id, &values);
+            if self.view.get(&cell)?.as_deref() != Some(source.as_slice()) {
                 self.finding(
                     AuditFault::IndexMissing,
-                    AuditSite::IndexRow {
+                    AuditSite::IndexCell {
                         root: shape.root,
                         index: shape.position,
-                        row,
+                        values,
                     },
                 );
             }
@@ -806,19 +814,19 @@ impl<V: ReadView> Walker<'_, V> {
         Ok(())
     }
 
-    /// Check one managed-index row against its source entry.
-    fn index_row(
+    /// Check one managed-index cell against its source entry.
+    fn index_cell(
         &mut self,
         shape: &IndexShape,
         key: &[u8],
         value: &[u8],
     ) -> Result<(), StoreError> {
-        self.summary.index_rows += 1;
+        self.summary.index_cells += 1;
         let root = &self.tables.roots[usize::from(shape.root)];
         let kinds: Vec<ScalarKind> = shape.components.iter().map(|(_, kind)| *kind).collect();
         let rest = &key[shape.prefix.len()..];
-        let row = match decode_columns(rest, &kinds) {
-            Some((row, used)) if used == rest.len() => row,
+        let values = match decode_keys(rest, &kinds) {
+            Some((values, used)) if used == rest.len() => values,
             _ => {
                 self.finding(
                     AuditFault::Undecodable,
@@ -827,17 +835,17 @@ impl<V: ReadView> Walker<'_, V> {
                 return Ok(());
             }
         };
-        let site = AuditSite::IndexRow {
+        let site = AuditSite::IndexCell {
             root: shape.root,
             index: shape.position,
-            row: row.clone(),
+            values: values.clone(),
         };
         let root_key = &root.nodes[0].key;
         let source = physical::decode_index_source_key(value, root_key.len()).filter(|source| {
             source
                 .iter()
                 .zip(root_key)
-                .all(|(column, kind)| column.scalar_kind() == *kind)
+                .all(|(column, kind)| scalar_key_matches_type(column, *kind))
         });
         let Some(source) = source else {
             self.finding(AuditFault::Undecodable, site);
@@ -848,7 +856,7 @@ impl<V: ReadView> Walker<'_, V> {
             self.finding(AuditFault::IndexOrphan, site);
             return Ok(());
         }
-        for ((component, _), projected) in shape.components.iter().zip(&row) {
+        for ((component, _), projected) in shape.components.iter().zip(&values) {
             let agrees = match component {
                 Component::Key(column) => source.get(*column) == Some(projected),
                 Component::Field(field) => {
@@ -1127,11 +1135,11 @@ mod tests {
             report.summary,
             AuditSummary {
                 // markers 4 + leaves: a(title,pages,isbn,group pages)=4, b(title)=1, note
-                // text 1, tag weight 1; the witness and the 3 index rows are not entry cells.
+                // text 1, tag weight 1; the witness and the 3 index cells are not entry cells.
                 cells: 4 + 4 + 1 + 1 + 1 + 3 + 1,
                 entries: 4,
                 descendant_only: 0,
-                index_rows: 3,
+                index_cells: 3,
                 findings: 0,
             }
         );
@@ -1208,16 +1216,16 @@ mod tests {
     }
 
     #[test]
-    fn a_dangling_unique_index_row_and_a_stale_row_are_distinct_findings() {
+    fn a_dangling_unique_index_cell_and_a_stale_cell_are_distinct_findings() {
         let root = numbers().root();
         let store = tamper(populated(), |txn| {
-            // A row for isbn "999" naming a book that does not exist.
+            // An index cell for isbn "999" naming a book that does not exist.
             txn.put(
                 &physical::index_cell_key(root, &BY_ISBN, &[s("999")]),
                 physical::index_cell_value(&[s("nobody")]),
             )
             .expect("put");
-            // A row for isbn "222" naming book "a", whose isbn is "111".
+            // An index cell for isbn "222" naming book "a", whose isbn is "111".
             txn.put(
                 &physical::index_cell_key(root, &BY_ISBN, &[s("222")]),
                 physical::index_cell_value(&[s("a")]),
@@ -1230,21 +1238,160 @@ mod tests {
             vec![
                 AuditFinding {
                     fault: AuditFault::IndexStale,
-                    site: AuditSite::IndexRow {
+                    site: AuditSite::IndexCell {
                         root: 0,
                         index: 0,
-                        row: vec![s("222")],
+                        values: vec![s("222")],
                     },
                 },
                 AuditFinding {
                     fault: AuditFault::IndexOrphan,
-                    site: AuditSite::IndexRow {
+                    site: AuditSite::IndexCell {
                         root: 0,
                         index: 0,
-                        row: vec![s("999")],
+                        values: vec![s("999")],
                     },
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn an_empty_physical_key_is_reported_and_counted() {
+        let baseline = audit(&populated()).0.summary.cells;
+        let store = tamper(populated(), |txn| {
+            txn.put(&[], b"foreign".to_vec()).expect("empty key");
+        });
+        let (report, _) = audit(&store);
+        assert_eq!(
+            report.findings,
+            vec![AuditFinding {
+                fault: AuditFault::OutsideSchema,
+                site: AuditSite::Cell { key: Vec::new() },
+            }]
+        );
+        assert_eq!(report.summary.cells, baseline + 1);
+    }
+
+    #[test]
+    fn temporal_entry_keys_must_be_in_the_language_domain() {
+        for key in [KeyScalar::Date(i32::MAX), KeyScalar::Instant(i128::MAX)] {
+            let mut schema = StoreSchemaBuilder::root("dated", vec![key.scalar_kind()]);
+            schema.scalar_field("title", ScalarKind::Str, true);
+            let mut projection = StoreProjection::builder();
+            projection.root(schema.finish().expect("schema"));
+            let projection = projection.finish().expect("projection");
+            let numbers = number_store(&projection).remove(0);
+            let stem = physical::marker_key(numbers.root(), &[key]);
+            let mut engine = MemoryEngine::new();
+            {
+                let mut txn = engine.begin().expect("begin");
+                txn.put(&stem, physical::MARKER_VALUE.to_vec())
+                    .expect("marker");
+                txn.put(
+                    &physical::stem_field_leaf(&stem, numbers.fields()[0]),
+                    b"valid title".to_vec(),
+                )
+                .expect("payload");
+                assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+            }
+            let store = DurableStore::from_engine(engine, projection);
+            let (report, _) = audit(&store);
+            assert!(faults(&report).contains(&AuditFault::Undecodable));
+            assert_eq!(report.summary.cells, 2);
+        }
+    }
+
+    #[test]
+    fn temporal_branch_and_index_keys_use_the_same_domain_check() {
+        for (valid, invalid) in [
+            (KeyScalar::Date(0), KeyScalar::Date(i32::MAX)),
+            (KeyScalar::Instant(0), KeyScalar::Instant(i128::MAX)),
+        ] {
+            let mut schema = StoreSchemaBuilder::root("dated", vec![valid.scalar_kind()]);
+            schema.scalar_field("title", ScalarKind::Str, true);
+            schema.open_branch("edits", vec![valid.scalar_kind()]);
+            schema.scalar_field("title", ScalarKind::Str, true);
+            schema.close_branch();
+            schema.index(BY_ISBN, true, vec![IndexComponent::key(0)]);
+            let mut projection = StoreProjection::builder();
+            projection.root(schema.finish().expect("schema"));
+            let projection = projection.finish().expect("projection");
+            let numbers = number_store(&projection).remove(0);
+            let root = numbers.root();
+            let stem = physical::marker_key(root, std::slice::from_ref(&valid));
+            let branch = &numbers.branches()[0];
+            let child =
+                physical::branch_child_stem(&stem, branch.number(), std::slice::from_ref(&invalid));
+            let cases = [
+                (
+                    "branch",
+                    vec![
+                        (child.clone(), physical::MARKER_VALUE.to_vec()),
+                        (
+                            physical::stem_field_leaf(&child, branch.fields()[0]),
+                            b"valid title".to_vec(),
+                        ),
+                    ],
+                ),
+                (
+                    "index key",
+                    vec![(
+                        physical::index_cell_key(root, &BY_ISBN, std::slice::from_ref(&invalid)),
+                        physical::index_cell_value(std::slice::from_ref(&valid)),
+                    )],
+                ),
+                (
+                    "index source",
+                    vec![(
+                        physical::index_cell_key(root, &BY_ISBN, std::slice::from_ref(&valid)),
+                        physical::index_cell_value(std::slice::from_ref(&invalid)),
+                    )],
+                ),
+            ];
+            for (name, cells) in cases {
+                let count = cells.len();
+                let mut engine = MemoryEngine::new();
+                {
+                    let mut txn = engine.begin().expect("begin");
+                    for (key, value) in cells {
+                        txn.put(&key, value).expect("raw cell");
+                    }
+                    assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+                }
+                let store = DurableStore::from_engine(engine, projection.clone());
+                let (report, _) = audit(&store);
+                assert_eq!(
+                    faults(&report),
+                    vec![AuditFault::Undecodable; count],
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_unique_index_cell_cannot_represent_two_present_entries() {
+        let numbers = numbers();
+        let store = tamper(populated(), |txn| {
+            let stem = physical::marker_key(numbers.root(), &[s("b")]);
+            txn.put(
+                &physical::stem_field_leaf(&stem, numbers.fields()[2]),
+                b"111".to_vec(),
+            )
+            .expect("duplicate indexed value");
+        });
+        let (report, _) = audit(&store);
+        assert_eq!(
+            report.findings,
+            vec![AuditFinding {
+                fault: AuditFault::IndexMissing,
+                site: AuditSite::IndexCell {
+                    root: 0,
+                    index: 0,
+                    values: vec![s("111")],
+                },
+            }]
         );
     }
 
@@ -1264,14 +1411,14 @@ mod tests {
             report.findings,
             vec![AuditFinding {
                 fault: AuditFault::IndexMissing,
-                site: AuditSite::IndexRow {
+                site: AuditSite::IndexCell {
                     root: 0,
                     index: 1,
-                    row: vec![s("Beta"), s("b")],
+                    values: vec![s("Beta"), s("b")],
                 },
             }]
         );
-        assert_eq!(report.summary.index_rows, 2);
+        assert_eq!(report.summary.index_cells, 2);
     }
 
     #[test]
@@ -1309,13 +1456,13 @@ mod tests {
                         field: 0,
                     },
                 },
-                // Book "a" no longer has a title, so its title row is a stale row.
+                // Book "a" no longer has a title, so its title index cell is stale.
                 AuditFinding {
                     fault: AuditFault::IndexStale,
-                    site: AuditSite::IndexRow {
+                    site: AuditSite::IndexCell {
                         root: 0,
                         index: 1,
-                        row: vec![s("Alpha"), s("a")],
+                        values: vec![s("Alpha"), s("a")],
                     },
                 },
             ]
@@ -1494,9 +1641,9 @@ mod tests {
         assert_eq!(report.findings.len(), MAX_REPORTED_FINDINGS);
     }
 
-    /// An index row whose value is not a whole source key tuple is undecodable, not stale.
+    /// An index cell whose value is not a whole source key tuple is undecodable, not stale.
     #[test]
-    fn an_index_row_with_a_malformed_source_key_is_undecodable() {
+    fn an_index_cell_with_a_malformed_source_key_is_undecodable() {
         let root = numbers().root();
         let store = tamper(populated(), |txn| {
             let mut value = encode_key_tuple(&[s("a")]);
@@ -1511,10 +1658,10 @@ mod tests {
         assert_eq!(faults(&report), vec![AuditFault::Undecodable]);
         assert_eq!(
             report.findings[0].site,
-            AuditSite::IndexRow {
+            AuditSite::IndexCell {
                 root: 0,
                 index: 0,
-                row: vec![s("333")],
+                values: vec![s("333")],
             }
         );
     }

@@ -13,21 +13,21 @@
 //! directory within its own byte ceiling. Deciding exclusion ahead of every read is what
 //! keeps a contender's verdict independent of the holder's bytes — a malformed, truncated,
 //! or deleted artifact cannot turn "the store is locked" into a decode or completeness
-//! error. The engine opens last, through the path kernel, and when the prior shutdown was
-//! unclean (a stale owner descriptor in the lock) it runs a full integrity audit.
+//! error. The engine opens last, through the path kernel. A read-write open after an
+//! unclean shutdown (a stale owner descriptor in the lock) runs a full integrity audit.
 //!
 //! The unclean-open audit covers crash-path corruption only: the fast open path does not
 //! re-verify page checksums, so an externally flipped bit in a cleanly-closed store is not
-//! detected at open. The read-only store audit (`crate::audit`) runs that full engine audit
-//! and the kernel's logical walk on demand.
+//! detected at open. The read-only store audit (`crate::audit`) checks logical contents;
+//! it performs no repairing integrity call and preserves an inherited unclean obligation.
 
 use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
 use marrow_kernel::durable::{
     AuditReport, CommitRecovery, ContentDigest, DemandCoverage, DurableCommitState,
-    InvocationGrant, NativeOwnerAcquireError, NativeOwnerOpenError, NativeStore, ReadSession,
-    SessionError, SessionHost, StoreError, StoreProjection, TxnSession,
+    InvocationGrant, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError, NativeStore,
+    ReadSession, SessionError, SessionHost, StoreError, StoreProjection, TxnSession,
 };
 
 use crate::durable_fs::{sync_dir, write_file};
@@ -251,16 +251,11 @@ impl SessionHost for OpenStore {
 }
 
 impl OpenStore {
-    /// The engine's whole-file integrity audit under the retained lock.
-    pub(crate) fn audit_integrity(&mut self) -> Result<(), StoreError> {
-        self.owner.audit_integrity()
-    }
-
     /// The kernel's bounded read-only logical walk under the retained lock, with no session.
     pub(crate) fn logical_audit(
         &self,
         digest: &mut dyn ContentDigest,
-    ) -> Result<AuditReport, StoreError> {
+    ) -> Result<AuditReport, SessionError> {
         self.owner.logical_audit(digest)
     }
 
@@ -377,7 +372,8 @@ pub(crate) enum AdmitError<R> {
 /// engine call, so a refusal makes zero engine calls and releases the lock on return. A
 /// non-complete directory is refused without opening; a store held by another owner returns
 /// [`OpenError::Lock`] naming the owner. When the prior shutdown was unclean (a stale lock
-/// descriptor) a full integrity audit runs, mapping a failure to corruption. On success the
+/// descriptor), a read-write open runs the full integrity audit; read-only access preserves
+/// that obligation and never repairs. On success the
 /// returned [`OpenStore`] holds the lock for the store's whole open life. The lifecycle actor
 /// and the importer supply an `admit` that admits the presented image against the head; a
 /// refusal is surfaced as [`AdmitError::Refused`]. This is the only constructor of an
@@ -385,6 +381,7 @@ pub(crate) enum AdmitError<R> {
 pub(crate) fn open_admitted<R>(
     dir: &Path,
     projection: StoreProjection,
+    access: NativeOpenAccess,
     admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
 ) -> Result<OpenStore, AdmitError<R>> {
     decide_before_locking(dir).map_err(AdmitError::Open)?;
@@ -419,7 +416,7 @@ pub(crate) fn open_admitted<R>(
     // admission, and composes the existing-only engine open with any inherited audit without
     // exposing its lower owner.
     let owner = pending
-        .bind_and_open_existing(*envelope.instance.bytes(), projection, || {
+        .bind_and_open_existing(access, *envelope.instance.bytes(), projection, || {
             // Read and admit the mutable logical head under the same owner. The callback
             // receives no store capability.
             let head = decode_head(&admitted).map_err(Ok)?;
@@ -522,11 +519,12 @@ pub(crate) fn open_unadmitted(
     dir: &Path,
     projection: StoreProjection,
 ) -> Result<OpenStore, OpenError> {
-    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
-        match error {
-            AdmitError::Open(error) => error,
-            AdmitError::Refused(never) => match never {},
-        }
+    open_admitted(dir, projection, NativeOpenAccess::ReadWrite, |_| {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|error| match error {
+        AdmitError::Open(error) => error,
+        AdmitError::Refused(never) => match never {},
     })
 }
 
@@ -632,7 +630,7 @@ mod tests {
     fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
         NativeStore::acquire_existing(dir)
             .expect("acquire the owner")
-            .bind_and_open_existing(instance, rootless(), || {
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, rootless(), || {
                 Ok::<_, std::convert::Infallible>(())
             })
             .expect("bind and open")
@@ -664,7 +662,7 @@ mod tests {
         provision(&store, test_request(original)).expect("provision");
 
         let mut contended = None;
-        let opened = open_admitted(&store, rootless(), |head| {
+        let opened = open_admitted(&store, rootless(), NativeOpenAccess::ReadWrite, |head| {
             contended = Some(match open_unadmitted(&store, rootless()) {
                 Err(OpenError::Lock(error)) => error.code(),
                 Ok(_) => panic!("a competing open ran inside the admission callback"),

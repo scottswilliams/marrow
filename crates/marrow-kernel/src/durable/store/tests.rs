@@ -2187,7 +2187,11 @@ fn native_indexed() -> (DurableStore<NativeEngineOwner>, TempDir) {
     NativeEngineOwner::provision(&temp.store()).expect("provision native");
     let engine = NativeEngineOwner::acquire_existing(&temp.store())
         .expect("acquire the owner lock")
-        .bind_and_open_existing([0x31; 16], || Ok::<_, std::convert::Infallible>(()))
+        .bind_and_open_existing(
+            crate::durable::NativeOpenAccess::ReadWrite,
+            [0x31; 16],
+            || Ok::<_, std::convert::Infallible>(()),
+        )
         .expect("open native");
     (
         DurableStore::from_engine(engine, project(&indexed_schema(), sites())),

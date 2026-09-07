@@ -1,15 +1,17 @@
 //! `marrow doctor --store <dir> [--format text|jsonl]`: audit a store read-only against the
-//! program it is bound to.
+//! program it is bound to, reporting logical inconsistencies and a content digest.
 //!
 //! The terminal compiles the project at the working directory, exactly like `marrow run
 //! --store`, and never opens the store itself: it writes the compiled image to a private
 //! temporary file and hands the audit to the release-verified companion runner
 //! (`marrow-runner audit`), the sole opener of the store, which prints the report in the
 //! requested format. The runner takes the store's owner lock, admits the image as the
-//! store's exact active binding, runs the engine's integrity audit and the kernel's bounded
-//! logical walk, and releases the lock; a code-only edit the store has not been rebound to
-//! is `store.image_not_active`. The exit code is the runner's: `0` for a clean store, `1`
-//! for findings, a corrupt engine, or a refusal.
+//! store's exact active binding, and runs the kernel's bounded logical walk through a
+//! read-only engine. It releases the lock before printing. The report states that physical
+//! integrity was not checked; it cannot qualify recovery. A code-only edit the store has
+//! not been rebound to is `store.image_not_active`. The exit code is the runner's: `0`
+//! when the logical walk found no inconsistency, `1` for findings, engine errors, or a
+//! refusal.
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -55,10 +57,17 @@ pub(crate) fn doctor(rest: &[String]) -> ExitCode {
             eprintln!("the project does not compile; run `marrow check` before auditing a store");
             return ExitCode::FAILURE;
         }
-        Err(_) => {
+        Err(CompileFailure::ResourceLimit(limit)) => {
             crate::report_simple_error(
-                marrow_codes::Code::ConfigInvalid.as_str(),
-                "the project could not be compiled; run `marrow check` before auditing a store",
+                marrow_codes::Code::CliCompilerResourceLimit.as_str(),
+                &crate::resource_limit_message(limit.kind().description()),
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(CompileFailure::Invariant(_)) => {
+            crate::report_simple_error(
+                marrow_codes::Code::CliCompilerInvariant.as_str(),
+                "the compiler failed an internal consistency check",
             );
             return ExitCode::FAILURE;
         }

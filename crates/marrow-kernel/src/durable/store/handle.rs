@@ -168,21 +168,19 @@ impl<E: ByteEngine> DurableStore<E> {
     /// (see [`audit`]): the typed findings and counts, with the logical content streamed
     /// to `digest` in key order. It opens a coherent read view and no session, so it
     /// resolves no authority and stages nothing.
-    pub fn logical_audit(&self, digest: &mut dyn ContentDigest) -> Result<AuditReport, StoreError> {
-        let view = self.engine.read_view()?;
-        audit::walk(&view, &self.projection, &self.numbering, digest)
+    pub fn logical_audit(
+        &self,
+        digest: &mut dyn ContentDigest,
+    ) -> Result<AuditReport, SessionError> {
+        self.check_poison()?;
+        let view = self.engine.read_view().map_err(SessionError::Engine)?;
+        audit::walk(&view, &self.projection, &self.numbering, digest).map_err(SessionError::Engine)
     }
 
-    /// The engine's own whole-file integrity audit, for the native owner to run ahead of
-    /// the logical walk.
-    pub(crate) fn audit_integrity(&mut self) -> Result<(), StoreError> {
-        self.engine.audit_integrity()
-    }
-
-    /// Refuse a session open on a poisoned handle. An earlier indeterminate commit sets
+    /// Refuse a session or audit on a poisoned handle. An earlier indeterminate commit sets
     /// the latch (its durability is unknown), and the handle then refuses every further
     /// read or write until the opaque recovery fact is resolved against a freshly opened
-    /// store. Consulted at open on both session paths so a poisoned handle never opens a
+    /// store. Consulted before sessions and audits so a poisoned handle never opens a
     /// view or transaction that would observe an indeterminate state. Reachable only on a
     /// native handle whose engine can report
     /// [`CommitOutcome::Indeterminate`](marrow_store::CommitOutcome); the ephemeral memory

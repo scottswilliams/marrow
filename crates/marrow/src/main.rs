@@ -48,9 +48,9 @@ compiles and verifies the project, then populates a native store from a
 flat-scalar JSONL corpus through the release-verified companion runner's trusted
 importer, provisioning the store on first use. `doctor` compiles and verifies
 the project, then audits a store bound to it read-only through the companion
-runner, reporting every cell that disagrees with the program and a digest over
-the store's contents. `client typescript` compiles and verifies the project, then
-emits the generated strict TypeScript client and the pinned Node supervision
+runner, counting logical findings, listing at most 256, and reporting an
+entry-content digest. Physical integrity is not checked. `client typescript`
+compiles and verifies the project, then emits the generated strict TypeScript client and the pinned Node supervision
 module. `image` compiles and verifies the project and writes the verified
 program.image a deployment ships, requiring the owner to accept the image's
 deployment ceiling id. The data, evolve, serve, backup, and restore commands are

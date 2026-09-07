@@ -47,10 +47,12 @@ fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
     assert!(
         NativeStore::acquire_existing(&dir)
             .expect("acquire the owner over a store directory with no engine")
-            .bind_and_open_existing([0x61; 16], project(&schema(), sites()), || Ok::<
-                _,
-                std::convert::Infallible,
-            >(()))
+            .bind_and_open_existing(
+                marrow_kernel::durable::NativeOpenAccess::ReadWrite,
+                [0x61; 16],
+                project(&schema(), sites()),
+                || Ok::<_, std::convert::Infallible>(())
+            )
             .is_err(),
         "a scoped lifecycle reopen must refuse a missing engine",
     );
@@ -109,6 +111,36 @@ fn an_indeterminate_commit_poisons_and_every_later_session_open_refuses() {
         store.read_session(InvocationGrant::full_store(), write()),
         Err(SessionError::Poisoned),
     ));
+}
+
+#[test]
+fn a_logical_audit_cannot_observe_an_indeterminate_commit() {
+    struct Digest(usize);
+    impl marrow_kernel::durable::ContentDigest for Digest {
+        fn absorb(&mut self, _: &[u8], _: &[u8]) {
+            self.0 += 1;
+        }
+    }
+
+    for mode in [Mode::IndeterminatePersist, Mode::IndeterminateDrop] {
+        let mut store = unscoped_store(FaultEngine::new(ModeHandle::new(mode)));
+        let recovery = match commit_one(&mut store, "a", 1) {
+            CommitResult::Indeterminate(recovery) => recovery,
+            other => panic!("expected an indeterminate result, got {other:?}"),
+        };
+        let mut digest = Digest(0);
+        assert!(matches!(
+            store.logical_audit(&mut digest),
+            Err(SessionError::Poisoned)
+        ));
+        assert_eq!(digest.0, 0, "poison refusal precedes content streaming");
+        drop(recovery);
+        assert!(matches!(
+            store.logical_audit(&mut digest),
+            Err(SessionError::Poisoned)
+        ));
+        assert_eq!(digest.0, 0);
+    }
 }
 
 /// A transaction's commit boundary is one-shot even though the VM-facing trait takes

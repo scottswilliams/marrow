@@ -78,7 +78,11 @@ fn native_owner(path: &std::path::Path) -> NativeEngineOwner {
     NativeEngineOwner::provision(path).expect("provision native");
     NativeEngineOwner::acquire_existing(path)
         .expect("acquire the owner lock")
-        .bind_and_open_existing([0x32; 16], || Ok::<_, std::convert::Infallible>(()))
+        .bind_and_open_existing(
+            marrow_kernel::durable::NativeOpenAccess::ReadWrite,
+            [0x32; 16],
+            || Ok::<_, std::convert::Infallible>(()),
+        )
         .expect("open native")
 }
 

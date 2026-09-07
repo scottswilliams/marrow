@@ -47,7 +47,7 @@ pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 /// classify a native open/audit failure without a direct dependency on the byte-engine
 /// crate (the path kernel stays the engine's only consumer).
 pub use marrow_store::{
-    NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError, NativeLockOwner,
+    NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError, NativeLockOwner, NativeOpenAccess,
     NativeOwnerAcquireError, NativeOwnerOpenError, StoreError,
 };
 
@@ -331,15 +331,15 @@ impl PrincipalPredicate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Denied;
 
-/// A failure to open a durable session, before any instruction runs.
+/// A failure to open a durable session or inspect a store.
 #[derive(Debug)]
 pub enum SessionError {
     /// The export's demand exceeds ceiling ∩ grant (`run.authority`).
     Denied,
     /// The handle was poisoned by an earlier indeterminate commit: its durability is
-    /// unknown, so no further session may open on it until the opaque recovery fact is
-    /// resolved against a freshly opened store. Consulted at session open so a read or
-    /// write against a poisoned handle refuses rather than observing an indeterminate
+    /// unknown, so no further session or audit may open on it until the opaque recovery fact is
+    /// resolved against a freshly opened store. Consulted before reads, writes, and audits
+    /// so a poisoned handle refuses rather than observing an indeterminate
     /// state. Reachable only on a native handle whose engine can report an indeterminate
     /// commit; the ephemeral memory engine always confirms, so its handle is never
     /// poisoned. Renders `run.commit`, matching the execution-time

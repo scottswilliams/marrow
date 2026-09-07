@@ -1,6 +1,6 @@
 //! The read-only store audit end to end over a real provisioned store: the exact-binding
-//! gate, the engine's integrity audit, the kernel's walk rendered in source vocabulary, and
-//! the digest's stability.
+//! gate, engine-byte preservation, the kernel's walk rendered in source vocabulary, and
+//! the content digest's stability and physical-integrity limitation.
 
 use std::path::{Path, PathBuf};
 
@@ -9,9 +9,8 @@ use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{DemandCoverage, Durable, EntryValue, InvocationGrant};
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    AttachOutcome, AuditError, AuditOutcome, ChangedFact, ENGINE_FILE, EngineKind, LogicalHead,
-    ProvisionRequest, StoreEnvelope, StoreInstanceId, active_binding, attach, audit, head_map,
-    prepare, provision,
+    AttachOutcome, AuditError, ChangedFact, ENGINE_FILE, EngineKind, LogicalHead, ProvisionRequest,
+    StoreEnvelope, StoreInstanceId, active_binding, attach, audit, head_map, prepare, provision,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -132,15 +131,17 @@ struct Scratch {
 
 impl Scratch {
     fn new(tag: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let base = std::env::temp_dir().join(format!(
-            "marrow-audit-{tag}-{}-{}",
+            "marrow-audit-{tag}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
-        std::fs::create_dir_all(&base).expect("scratch base");
+        std::fs::create_dir(&base).expect("unique scratch base");
         Self { base }
     }
 
@@ -222,20 +223,56 @@ fn add_person(dir: &Path, image: &VerifiedImage, id: i64, name: &str, email: Opt
 
 fn walked(dir: &Path, image: &VerifiedImage) -> (marrow_lifecycle::StoreAudit, Vec<String>) {
     let audit = audit(dir, prepare(image.clone())).expect("the audit runs");
-    let findings = match &audit.outcome {
-        AuditOutcome::Walked { findings, .. } => findings
-            .iter()
-            .map(|finding| format!("{} at {}", finding.code.as_str(), finding.place))
-            .collect(),
-        AuditOutcome::EngineCorrupt { message } => panic!("engine corrupt: {message}"),
-    };
+    let findings = audit
+        .findings
+        .iter()
+        .map(|finding| format!("{} at {}", finding.code.as_str(), finding.place))
+        .collect();
     (audit, findings)
 }
 
 fn digest_of(audit: &marrow_lifecycle::StoreAudit) -> String {
-    match &audit.outcome {
-        AuditOutcome::Walked { digest, .. } => digest.to_hex(),
-        AuditOutcome::EngineCorrupt { message } => panic!("engine corrupt: {message}"),
+    audit.digest.to_hex()
+}
+
+#[test]
+fn logical_inspection_preserves_engine_head_and_envelope_bytes() {
+    for (tag, replacement) in [
+        ("clean", None),
+        ("scalar", Some(b'b')),
+        ("invalid", Some(0xff)),
+    ] {
+        let scratch = Scratch::new(tag);
+        let store = scratch.store("store");
+        let image = compile(SOURCE, IDS);
+        provision_from(&store, &image);
+        add_person(&store, &image, 1, "Ada Lovelace", None);
+        if let Some(replacement) = replacement {
+            let engine = store.join(ENGINE_FILE);
+            let mut bytes = std::fs::read(&engine).expect("engine");
+            let at = bytes
+                .windows(12)
+                .position(|v| v == b"Ada Lovelace")
+                .expect("name");
+            bytes[at + 2] = replacement;
+            std::fs::write(engine, bytes).expect("change scalar bytes");
+        }
+        let before: Vec<_> = [
+            ENGINE_FILE,
+            marrow_lifecycle::HEAD_FILE,
+            marrow_lifecycle::ENVELOPE_FILE,
+        ]
+        .into_iter()
+        .map(|name| (name, std::fs::read(store.join(name)).expect("before")))
+        .collect();
+        let outcome = audit(&store, prepare(image)).expect("logical inspection");
+        assert_eq!(outcome.is_clean(), replacement != Some(0xff));
+        for (name, bytes) in before {
+            assert!(
+                bytes == std::fs::read(store.join(name)).expect("after"),
+                "{tag}: audit changed {name}"
+            );
+        }
     }
 }
 
@@ -254,9 +291,10 @@ fn a_populated_store_audits_clean_with_a_stable_digest_that_tracks_writes() {
     assert_eq!(first.image_id, image.image_id());
     let (second, _) = walked(&store, &image);
     assert_eq!(digest_of(&first), digest_of(&second));
-    if let AuditOutcome::Walked { summary, .. } = &second.outcome {
+    {
+        let summary = &second.summary;
         assert_eq!(summary.entries, 2);
-        assert_eq!(summary.index_rows, 1);
+        assert_eq!(summary.index_cells, 1);
         assert_eq!(summary.descendant_only, 0);
     }
 
@@ -270,8 +308,8 @@ fn a_populated_store_audits_clean_with_a_stable_digest_that_tracks_writes() {
 }
 
 /// The same program under another ledger numbers its cells identically but keys its index
-/// rows by a different identity, so an engine swapped under the other provision's head
-/// audits with the rows of one index outside the schema and the rows of the other missing.
+/// cells by a different identity, so an engine swapped under the other provision's head
+/// audits with one index's cells outside the schema and the other's cells missing.
 #[test]
 fn an_engine_swapped_under_another_provisions_head_is_reported() {
     let scratch = Scratch::new("swap");
@@ -304,12 +342,13 @@ fn an_engine_swapped_under_another_provisions_head_is_reported() {
 }
 
 #[test]
-fn an_altered_engine_byte_is_engine_corruption_and_no_walk_runs() {
+fn a_same_shape_scalar_change_is_not_physical_integrity_evidence() {
     let scratch = Scratch::new("flip");
     let store = scratch.store("store");
     let image = compile(SOURCE, IDS);
     provision_from(&store, &image);
     add_person(&store, &image, 1, "Ada Lovelace", None);
+    let before = audit(&store, prepare(image.clone())).expect("initial logical audit");
 
     let engine = store.join(ENGINE_FILE);
     let mut bytes = std::fs::read(&engine).expect("read engine");
@@ -321,8 +360,14 @@ fn an_altered_engine_byte_is_engine_corruption_and_no_walk_runs() {
     std::fs::write(&engine, bytes).expect("write engine");
 
     let audit = audit(&store, prepare(image.clone())).expect("the audit reports");
-    assert!(!audit.is_clean());
-    assert!(matches!(audit.outcome, AuditOutcome::EngineCorrupt { .. }));
+    assert!(
+        audit.is_clean(),
+        "the changed scalar still has its declared type"
+    );
+    assert_ne!(
+        audit.digest, before.digest,
+        "a prior content digest detects the change"
+    );
 }
 
 #[test]

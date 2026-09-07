@@ -40,7 +40,11 @@ fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
     {
         let mut engine = NativeEngineOwner::acquire_existing(&path)
             .expect("acquire the owner lock")
-            .bind_and_open_existing([0x33; 16], || Ok::<_, std::convert::Infallible>(()))
+            .bind_and_open_existing(
+                marrow_kernel::durable::NativeOpenAccess::ReadWrite,
+                [0x33; 16],
+                || Ok::<_, std::convert::Infallible>(()),
+            )
             .expect("open native store");
         let mut txn = engine.begin().expect("begin");
         for key in scrambled {
@@ -58,7 +62,11 @@ fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
 
     let engine = NativeEngineOwner::acquire_existing(&path)
         .expect("acquire the owner lock")
-        .bind_and_open_existing([0x33; 16], || Ok::<_, std::convert::Infallible>(()))
+        .bind_and_open_existing(
+            marrow_kernel::durable::NativeOpenAccess::ReadWrite,
+            [0x33; 16],
+            || Ok::<_, std::convert::Infallible>(()),
+        )
         .expect("reopen native store");
     let view = engine.read_view().expect("read view");
     let cells = view.scan_after(&[], &[]).expect("scan");

@@ -3,11 +3,12 @@
 //! The audit opens the store exactly as an attach does — the single-owner lock, then the
 //! envelope and head admitted under it — but through the exact-binding gate the importer
 //! uses: the presented image must be the store's active binding, never rebound. It then
-//! runs the engine's whole-file integrity audit and, when that passes, the kernel's bounded
-//! logical walk ([`marrow_kernel::durable::DurableStore::logical_audit`]), and returns the
+//! opens the engine read-only and runs the kernel's bounded logical walk
+//! ([`marrow_kernel::durable::DurableStore::logical_audit`]), and returns the
 //! typed findings in source vocabulary together with a digest over the store's logical
 //! content. No session opens, no authority resolves, and no data write happens; the lock is
-//! released when the audit returns.
+//! released when the audit returns. Physical checksums are not verified, and an
+//! inherited physical-recovery obligation is not discharged.
 //!
 //! The digest is a hash chain over the kernel's canonical cell stream: it starts at the
 //! [`StoreDataDigest`] of the empty payload and, for each cell in key order, becomes the
@@ -20,14 +21,13 @@ use std::fmt::Write;
 use std::path::Path;
 
 use marrow_codes::Code;
-use marrow_image::{ImageId, LedgerIdBytes, StoreDataDigest};
+use marrow_image::{ImageId, StoreDataDigest};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, encode_value};
 use marrow_kernel::durable::{
-    AuditFault, AuditFinding, AuditSite, AuditSummary, ContentDigest, StoreError, StoreProjection,
-    StoreSchema,
+    AuditFault, AuditFinding, AuditSite, AuditSummary, ContentDigest, NativeOpenAccess,
+    SessionError, StoreProjection, StoreSchema,
 };
-use marrow_verify::VerifiedImage;
 
 use crate::actor::{AdmissionRefusal, ContractChanged, ExactRefusal, ImageAdmission};
 use crate::attachment::PreparedImage;
@@ -43,40 +43,26 @@ pub struct Finding {
     pub place: String,
 }
 
-/// What the audit established about the store's contents.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuditOutcome {
-    /// The engine's integrity audit failed, so no cell can be trusted and no walk ran.
-    EngineCorrupt { message: String },
-    /// The walk ran: its counts, its findings in key order, and the logical digest.
-    Walked {
-        summary: AuditSummary,
-        findings: Vec<Finding>,
-        digest: StoreDataDigest,
-    },
-}
-
-/// The audit of one store: the instance and active image it was audited under, and the
-/// outcome.
+/// A completed logical inspection under one store's exact active binding.
+/// Physical checksums are not verified; this report is not a recovery permit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreAudit {
     pub instance: StoreInstanceId,
     pub image_id: ImageId,
-    pub outcome: AuditOutcome,
+    pub summary: AuditSummary,
+    pub findings: Vec<Finding>,
+    pub digest: StoreDataDigest,
 }
 
 impl StoreAudit {
-    /// Whether the store audited clean: the engine passed and the walk found nothing.
+    /// Whether the logical walk found no inconsistency. Physical integrity is untested.
     pub fn is_clean(&self) -> bool {
-        match &self.outcome {
-            AuditOutcome::EngineCorrupt { .. } => false,
-            AuditOutcome::Walked { summary, .. } => summary.findings == 0,
-        }
+        self.summary.findings == 0
     }
 }
 
 /// Why a store could not be audited. Every variant is an operational refusal decided before
-/// any cell is read, except [`AuditError::Engine`].
+/// any cell is read, except an engine failure during [`AuditError::Read`].
 #[derive(Debug)]
 pub enum AuditError {
     /// The image's durable shape is not executable by the store kernel, so no store can be
@@ -95,8 +81,8 @@ pub enum AuditError {
     DemandExceedsCeiling(DemandExceedsCeiling),
     /// The persisted head-map pin disagrees with the derived numbering.
     HeadMapPin(HeadMapPinMismatch),
-    /// The engine failed while the walk read it.
-    Engine(StoreError),
+    /// The semantic handle refused inspection, or the engine failed during the walk.
+    Read(SessionError),
 }
 
 impl AuditError {
@@ -110,7 +96,9 @@ impl AuditError {
             AuditError::ContractChanged(refusal) => refusal.code(),
             AuditError::DemandExceedsCeiling(refusal) => refusal.code(),
             AuditError::HeadMapPin(refusal) => refusal.code(),
-            AuditError::Engine(error) => error.code(),
+            AuditError::Read(SessionError::Poisoned) => Code::RunCommit.as_str(),
+            AuditError::Read(SessionError::Denied) => Code::RunAuthority.as_str(),
+            AuditError::Read(SessionError::Engine(error)) => error.code(),
         }
     }
 }
@@ -128,8 +116,7 @@ impl std::fmt::Display for AuditError {
             AuditError::ImageNotActive => write!(
                 f,
                 "the program is not the store's active program: its code differs from the \
-                 bound program. Run `marrow run --store` with this program first to rebind the \
-                 store, then audit it"
+                 bound program. Present the store's active program and retry the audit"
             ),
             AuditError::InconsistentBinding => write!(
                 f,
@@ -139,7 +126,14 @@ impl std::fmt::Display for AuditError {
             AuditError::ContractChanged(refusal) => write!(f, "{refusal}"),
             AuditError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
             AuditError::HeadMapPin(refusal) => write!(f, "{refusal}"),
-            AuditError::Engine(error) => write!(f, "the store could not be read: {error}"),
+            AuditError::Read(SessionError::Poisoned) => write!(
+                f,
+                "the store cannot be inspected through a handle with an unresolved commit"
+            ),
+            AuditError::Read(SessionError::Denied) => write!(f, "store inspection was denied"),
+            AuditError::Read(SessionError::Engine(error)) => {
+                write!(f, "the store could not be read: {error}")
+            }
         }
     }
 }
@@ -153,54 +147,43 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
         return Err(AuditError::NotExecutable);
     };
     let admission = ImageAdmission::derive(&image, &projection);
-    let names = Names::new(&projection, &image);
-    let mut opened =
-        open_admitted(dir, projection, |head| admission.admit_exact(head)).map_err(|error| {
-            match error {
-                AdmitError::Open(error) => AuditError::Open(error),
-                AdmitError::Refused(ExactRefusal::NotActive) => AuditError::ImageNotActive,
-                AdmitError::Refused(ExactRefusal::InconsistentBinding) => {
-                    AuditError::InconsistentBinding
-                }
-                AdmitError::Refused(ExactRefusal::ContractChanged(refusal)) => {
-                    AuditError::ContractChanged(refusal)
-                }
-                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Exceeds(
-                    refusal,
-                ))) => AuditError::DemandExceedsCeiling(refusal),
-                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::CeilingCorrupt)) => {
-                    AuditError::Open(AdmissionRefusal::ceiling_corrupt())
-                }
-                AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
-                    AuditError::HeadMapPin(refusal)
-                }
-            }
-        })?;
+    let names = Names::new(&projection);
+    let opened = open_admitted(dir, projection, NativeOpenAccess::ReadOnly, |head| {
+        admission.admit_exact(head)
+    })
+    .map_err(|error| match error {
+        AdmitError::Open(error) => AuditError::Open(error),
+        AdmitError::Refused(ExactRefusal::NotActive) => AuditError::ImageNotActive,
+        AdmitError::Refused(ExactRefusal::InconsistentBinding) => AuditError::InconsistentBinding,
+        AdmitError::Refused(ExactRefusal::ContractChanged(refusal)) => {
+            AuditError::ContractChanged(refusal)
+        }
+        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Exceeds(refusal))) => {
+            AuditError::DemandExceedsCeiling(refusal)
+        }
+        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::CeilingCorrupt)) => {
+            AuditError::Open(AdmissionRefusal::ceiling_corrupt())
+        }
+        AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
+            AuditError::HeadMapPin(refusal)
+        }
+    })?;
     let instance = opened.envelope.instance;
     let image_id = image.image_id();
-    let outcome = match opened.audit_integrity() {
-        Err(StoreError::Corruption { message }) => AuditOutcome::EngineCorrupt { message },
-        Err(error) => return Err(AuditError::Engine(error)),
-        Ok(()) => {
-            let mut digest = ChainDigest::new();
-            let report = opened
-                .logical_audit(&mut digest)
-                .map_err(AuditError::Engine)?;
-            AuditOutcome::Walked {
-                summary: report.summary,
-                findings: report
-                    .findings
-                    .iter()
-                    .map(|finding| names.finding(finding))
-                    .collect(),
-                digest: digest.finish(),
-            }
-        }
-    };
+    let mut digest = ChainDigest::new();
+    let report = opened
+        .logical_audit(&mut digest)
+        .map_err(AuditError::Read)?;
     Ok(StoreAudit {
         instance,
         image_id,
-        outcome,
+        summary: report.summary,
+        findings: report
+            .findings
+            .iter()
+            .map(|finding| names.finding(finding))
+            .collect(),
+        digest: digest.finish(),
     })
 }
 
@@ -234,23 +217,17 @@ impl ContentDigest for ChainDigest {
 
 /// The source spellings a finding's site renders with: the projection's root, branch,
 /// group, and field names, and each index's ledger identity (the image carries no index
-/// name, so an index row is named by the identity `.marrow/ids` records for it). Raw
+/// name, so an index cell is named by the identity `.marrow/ids` records for it). Raw
 /// bytes — an identity or an unplaceable key — render as lowercase hex.
 struct Names {
     roots: Vec<StoreSchema>,
-    index_ids: Vec<Vec<LedgerIdBytes>>,
 }
 
 impl Names {
-    fn new(projection: &StoreProjection, image: &VerifiedImage) -> Self {
-        let roots = projection.roots().to_vec();
-        let mut index_ids = vec![Vec::new(); roots.len()];
-        for index in image.indexes() {
-            if let Some(ids) = index_ids.get_mut(usize::from(index.root())) {
-                ids.push(index.id());
-            }
+    fn new(projection: &StoreProjection) -> Self {
+        Self {
+            roots: projection.roots().to_vec(),
         }
-        Self { roots, index_ids }
     }
 
     fn finding(&self, finding: &AuditFinding) -> Finding {
@@ -285,15 +262,16 @@ impl Names {
                 out.push_str(fields[usize::from(*field)].name());
                 out
             }
-            AuditSite::IndexRow { root, index, row } => {
+            AuditSite::IndexCell {
+                root,
+                index,
+                values,
+            } => {
                 let schema = &self.roots[usize::from(*root)];
                 let mut out = format!("^{}.index(", schema.root_name());
-                match self.index_ids[usize::from(*root)].get(usize::from(*index)) {
-                    Some(id) => out.push_str(&hex(id.bytes())),
-                    None => out.push_str(&index.to_string()),
-                }
+                out.push_str(&hex(schema.indexes()[usize::from(*index)].id()));
                 out.push(')');
-                push_keys(&mut out, row);
+                push_keys(&mut out, values);
                 out
             }
             AuditSite::UndeclaredIndex { root, id } => {

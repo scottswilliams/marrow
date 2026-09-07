@@ -336,7 +336,12 @@ pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, Life
     // gate runs after the single-owner lock and before any engine call, so a refusal makes
     // zero engine calls.
     let admission = ImageAdmission::derive(&image, &projection);
-    let mut opened = match open_admitted(dir, projection, |head| admission.admit_compatible(head)) {
+    let mut opened = match open_admitted(
+        dir,
+        projection,
+        marrow_kernel::durable::NativeOpenAccess::ReadWrite,
+        |head| admission.admit_compatible(head),
+    ) {
         Ok(opened) => opened,
         Err(AdmitError::Open(error)) => return Err(LifecycleError::Open(error)),
         Err(AdmitError::Refused(AdmissionRefusal::Exceeds(refusal))) => {

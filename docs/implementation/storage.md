@@ -4,8 +4,9 @@
 to the workspace because `marrow-kernel` is its only dependent, and the two
 implementations behind it. Meaning comes from the kernel above it:
 `marrow-kernel` owns the codecs that turn a durable path into key
-bytes and a value into cell bytes, and every logical read and write reaches the
-engine through the kernel's sessions.
+bytes and a value into cell bytes. Program invocations reach the engine through
+kernel sessions; privileged logical inspection uses the kernel's audit walk
+under the native owner.
 
 ## From a path to a cell
 
@@ -25,7 +26,7 @@ in reverse, staged inside one engine transaction that commits with the
 | Byte-engine contract (`ByteEngine`, `ReadView`, `WriteTxn`, `CommitOutcome`, `Cell`) | `engine.rs` |
 | Errors (`StoreError`) | `error.rs` |
 | In-memory engine (`MemoryEngine`) | `mem.rs` |
-| Native redb engine (panic-contained adapter, integrity audit) | `redb.rs` |
+| Native redb engine (panic-contained adapter, read-only access, service integrity audit) | `redb.rs` |
 | Native engine owner: store directory, advisory lock, two-phase open, quarantine | `native_owner.rs` |
 | Bounded scan accumulation (`SCAN_MAX_RECORDS` cells per page) | `traversal.rs` |
 | Shared engine conformance laws | `conformance.rs` (test-only) |
@@ -53,7 +54,10 @@ directory and keeps the advisory lock inseparable from the engine. Provisioning
 calls a create-only operation that stamps the engine format. An open of an
 existing store has two phases: acquire the lock on the directory node with no
 engine call, then bind the store instance and open the engine under the same
-lock. An indeterminate commit quarantines the lock until process exit; the
+lock. `NativeOpenAccess` selects service read/write access or read-only
+inspection through that same opening path. Inspection cannot write or invoke
+the repairing integrity operation; it preserves any inherited unclean-shutdown
+obligation. An indeterminate commit quarantines the lock until process exit; the
 kernel classifies the outcome as known old, known new, or unknown
 ([interrupted commits](../operations/README.md#interrupted-commits)). The lock
 excludes cooperating Marrow processes and does not authenticate the engine
@@ -83,36 +87,59 @@ create, read, replace, and index-maintenance contract is written against it.
 
 ## Auditing a store
 
-`marrow-kernel`'s `durable/audit.rs` owns the read-only logical walk `marrow
-doctor` runs. It is one forward scan over the whole key space, one engine page
-at a time, that parses the cell stream in the order `physical.rs` sorts it: each
-root's entry family (an entry's marker, its own field leaves, its group leaves,
-then its branch descendants to any depth), then the managed-index families, then
-the commit witness. Every cell is classified once against fixed tables built
-from the projection; a cell that belongs to no declared node or index is a
-typed finding. The walk's retained state is a stack of open nodes, one frame per
-nesting level and so bounded by the durable depth cap, plus a presence bitmap per
-open node's declared fields and a capped finding list, so its memory does not
-grow with the store. It builds every key it compares through `physical.rs`'s
-constructors and classifiers and spells no layout byte of its own.
+`marrow-kernel`'s `durable/audit.rs` owns the logical walk used by `marrow
+doctor`. The walk first point-reads the empty key because `scan_after` excludes
+its cursor. It then scans the remaining key space forward in bounded pages.
+Together these cover every cell, including an empty key outside the schema and
+data beneath absent parents. Each scanned cell is classified against fixed
+tables derived from the admitted projection, using `physical.rs`'s constructors
+and classifiers. Keys also pass the canonical scalar-domain validator, including
+the supported ranges of dates and instants.
 
-A required leaf that is absent is found when its node closes. An index row is
-checked against its source entry by point reads (the marker, then each
-projected field leaf), and a present entry with a complete projection is
-checked for its row; the engine work is therefore one scan per page of
-populated cells plus a bounded number of point reads per index row and per
-indexed entry, never a read per declared field (`tests/audit_walk_work.rs`
-holds this flat across declared widths, and holds the largest batch the walk
-ever receives at the engine's page bound over 10,000 entries). That bound is
-the walk's own: the engine's page cache, and so the process's resident size
-over a whole-store scan, were not bounded by the lane that added the walk.
+The cell stream follows physical order: each root's entry family, with markers,
+own fields, group leaves, and branch descendants, followed by index families
+and metadata. The walk reports malformed markers, undecodable values, cells
+outside the schema, and orphaned leaves. A missing required field is reported
+when its node closes. A marker with no populated leaves is valid when all the
+entry's fields are sparse. Findings therefore follow deterministic scan and
+node-closure order, rather than sorted place order. Every finding is counted;
+only the first 256 in that order are retained.
 
-`marrow-lifecycle`'s `audit.rs` composes the audit: it opens the store under
-the owner lock through the exact-binding gate the importer uses, runs the
-engine's own integrity audit (redb's whole-file checksum walk, the same pass an
-unclean open runs), then the kernel walk, and renders each finding in source
-vocabulary. The digest is a hash chain over the walk's cell stream — starting
-from the store data digest of the empty payload, each cell in key order folds
-its key length, key, and value into the next state — so it is computed in the
-same pass with the same bounded memory. The head's data-digest slot stays
-reserved; the digest is reported, not persisted.
+Index correspondence is checked in both directions. Each index cell's source
+marker and projected fields are point-read and compared with the projection.
+Each present entry with a complete projection must have an index cell whose
+source payload names that exact entry. The engine work is one initial empty-key
+read, one scan per page plus the terminal empty scan, and a bounded number of
+point reads per index cell and indexed entry. It performs no point read per
+declared field. `tests/audit_walk_work.rs` compares engine-call counts across
+declared widths and populations and checks the largest returned page over
+10,000 entries. The page witness measures returned batch size, not peak
+allocation or how many pages remain retained.
+
+The walk retains per-schema tables, a stack bounded by durable depth with
+per-frame state proportional to declared node width, one scan page, and capped
+findings. The engine cache is a separate memory population; the page witness
+does not establish a native process residency bound. Large-store cache
+residency and full peak-allocation qualification remain open.
+
+`marrow-lifecycle`'s `audit.rs` uses the existing exact-binding admission gate
+and selects `NativeOpenAccess::ReadOnly` through the native opening path. It
+runs no repairing integrity check, changes no engine, head, or envelope bytes,
+and does not discharge an inherited unclean-shutdown obligation. The lifecycle
+maps findings to source names using the projection's schema and index
+identities. The owner lock is released before the runner renders the report.
+
+The digest is a hash chain over declared entry-family cells in key order. It
+starts from the store-data digest of an empty payload; each step hashes the
+previous state followed by the cell's key length, key, and value. Index and
+metadata cells are excluded. Identical entry content has the same digest, and
+a same-value commit need not change it. The head's data-digest slot remains
+reserved: this digest is reported, not persisted, and grants no admission or
+recovery permit.
+
+Physical checksum verification is not part of logical inspection. A scalar
+change that remains valid under its declared type can pass even when its
+physical checksum is wrong. Full physical and image/schema/store validation
+with fresh read-only admission before recovery resumes service remains
+unimplemented. The existing service recovery path and its limitations are
+unchanged ([operations](../operations/README.md#auditing-a-store)).

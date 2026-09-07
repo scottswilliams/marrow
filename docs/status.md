@@ -17,7 +17,7 @@ each behavior.
 | Tests | `marrow test` runs every `test` block; a durable test runs against a fresh in-memory store. | [Tests](language/tests.md) |
 | CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. | [Language server](tools/lsp.md) |
-| Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`; `marrow doctor --store` audits a store read-only against its active program and reports a digest over its entries. | [Operations](operations/README.md) |
+| Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`; `marrow doctor --store` performs read-only logical inspection against the active program and reports an entry-content digest, without checking physical integrity. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. | [TypeScript client](tools/typescript-client.md) |
 
 The command names `data`, `evolve`, `serve`, `backup`, and `restore` are
@@ -49,6 +49,10 @@ conformance fixtures, and compiler-local regressions.
   `store.contract_changed` refusal and the prior program stays usable
   ([admission and activation](future/admission-and-activation.md)).
 - Backup and restore ([local applications](future/local-applications.md)).
+- Full read-only physical-checksum verification and complete image/schema/store
+  validation followed by fresh admission before recovery resumes service. The
+  logical audit does not establish these requirements
+  ([auditing a store](operations/README.md#auditing-a-store)).
 - Checked durable place bindings, stable required-field reads through a
   presence-tested address, and complete-entry-only creation. The selected first
   increment keeps serial execution and requires a source/new-store migration
@@ -90,6 +94,12 @@ has its own platform and layout requirements
   not authenticate the engine file, and the digest is reported, not stored.
 - Checksums and structural checks detect selected corruption; they do not
   authenticate hostile storage or prove application validity.
+- `marrow doctor` does not verify physical checksums. A changed scalar that
+  remains valid under its declared type can pass logical inspection. The
+  inspection does not repair the engine or clear inherited unclean-shutdown
+  status. Its scan pages and finding list are bounded; total native cache
+  residency over large stores requires separate qualification
+  ([audit implementation](implementation/storage.md#auditing-a-store)).
 - Encryption at rest is delegated to the filesystem or substrate.
 - TLS, authentication, identity providers, operator credentials, and hardware
   durability are deployment responsibilities.
