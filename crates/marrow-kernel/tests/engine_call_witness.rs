@@ -312,12 +312,9 @@ fn bound(n: u32) -> BoundedLimit {
     BoundedLimit::new(n).expect("positive bound")
 }
 
-/// The deferred presence-seek bound: `at most 1` over
-/// `[k1 present, k2 and k3 descendant-only, k4 present]` freezes `k1` and flags
-/// `more` in two seeks. The current walk also seeks past `k2` and `k3` (four seeks),
-/// so the count grows with the descendant-only population the bound never names.
+/// Acquisition freezes one entry and flags the next with two scans, independent
+/// of child entries under absent parents between them.
 #[test]
-#[ignore = "deferred presence-seek slice: acquisition still seeks past descendant-only siblings"]
 fn a_bounded_layer_walk_costs_the_bound_plus_one_seek_regardless_of_descendant_only_siblings() {
     let (mut store, counters) = layered_store(&["k1", "k4"], &["k2", "k3"]);
     let mut txn = store
@@ -337,11 +334,8 @@ fn a_bounded_layer_walk_costs_the_bound_plus_one_seek_regardless_of_descendant_o
     );
 }
 
-/// The deferred presence-seek bound: a family presence probe over
-/// `[a1, a2, a3 descendant-only, a4 present]` answers `Present` in one seek. The current
-/// walk seeks past each descendant-only sibling first (four seeks).
+/// Family presence needs one scan, independent of child-only parent keys.
 #[test]
-#[ignore = "deferred presence-seek slice: family presence still seeks past descendant-only siblings"]
 fn a_family_presence_probe_costs_one_seek_regardless_of_descendant_only_siblings() {
     let (mut store, counters) = layered_store(&["a4"], &["a1", "a2", "a3"]);
     let mut txn = store

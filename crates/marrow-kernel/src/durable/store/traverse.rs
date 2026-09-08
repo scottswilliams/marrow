@@ -1,6 +1,4 @@
-//! Bounded forward traversal over a durable layer: the marker walk that skips
-//! descendant-only children, and the bounded key acquisition and family-populated probe
-//! built on it.
+//! Bounded forward traversal over one entry family's marker and own-payload range.
 
 use marrow_store::ReadView;
 
@@ -14,25 +12,22 @@ use crate::codec::value::{ScalarKind, scalar_key_matches_type};
 enum LayerSeek {
     /// At the layer's first child.
     Start,
-    /// Strictly after `key`'s whole subtree (an exclusive resume).
+    /// Strictly after `key`'s own payload (an exclusive resume).
     After(KeyScalar),
     /// At the first child whose key is `>= from` (an inclusive lower bound).
     From(KeyScalar),
 }
 
-/// One forward step over a durable `layer`: the first present (payload-bearing) child
-/// at or after `seek`, or [`NextKey::End`]. A descendant-only child — branch children
-/// but no payload marker — is skipped with one prefix-successor seek past its subtree,
-/// which passes its whole subtree regardless of branch fan-out. The single owner of the
-/// forward marker walk: the bounded layer acquisition steps through it for both the
-/// root and branch layers, so they walk identically.
+/// One bounded scan for the next marker key in a family. Other families, including
+/// children of absent entries, lie outside the prefix. Own payload encountered where
+/// a marker should be is corruption. Marker values are checked by logical inspection.
 fn layer_step<V: ReadView>(
     cells: &V,
     layer: &physical::Layer,
     key_kind: ScalarKind,
     seek: LayerSeek,
 ) -> Result<NextKey, KernelFault> {
-    let mut cursor = match seek {
+    let cursor = match seek {
         LayerSeek::Start => layer.prefix().to_vec(),
         LayerSeek::After(key) => layer.child_cursor(&key),
         LayerSeek::From(from) => {
@@ -42,24 +37,16 @@ fn layer_step<V: ReadView>(
             layer.seek_from(&from)
         }
     };
-    loop {
-        let page = cells
-            .scan_after(layer.prefix(), &cursor)
-            .map_err(KernelFault::Engine)?;
-        let Some((cell_key, _)) = page.into_iter().next() else {
-            return Ok(NextKey::End);
-        };
-        match layer.classify(&cell_key) {
-            CellKind::Marker(key) | CellKind::Descendant(key)
-                if !scalar_key_matches_type(&key, key_kind) =>
-            {
-                return Err(KernelFault::Corruption);
-            }
-            CellKind::Marker(key) => return Ok(NextKey::Next(key)),
-            CellKind::Descendant(key) => cursor = layer.child_cursor(&key),
-            CellKind::Orphan => return Err(KernelFault::Corruption),
-            CellKind::Foreign => return Ok(NextKey::End),
-        }
+    let page = cells
+        .scan_after(layer.prefix(), &cursor)
+        .map_err(KernelFault::Engine)?;
+    let Some((cell_key, _)) = page.into_iter().next() else {
+        return Ok(NextKey::End);
+    };
+    match layer.classify(&cell_key) {
+        CellKind::Marker(key) if scalar_key_matches_type(&key, key_kind) => Ok(NextKey::Next(key)),
+        CellKind::Marker(_) | CellKind::Orphan => Err(KernelFault::Corruption),
+        CellKind::Foreign => Ok(NextKey::End),
     }
 }
 
@@ -88,7 +75,7 @@ fn layer_of(
             if site.key.len() != 1 {
                 return Err(KernelFault::Corruption);
             }
-            Ok((physical::Layer::root(site.root_number), site.key[0]))
+            Ok((physical::Layer::new(site.root_number, &[]), site.key[0]))
         }
         Some((traversed, parent_hops)) => {
             // The traversed branch layer must be single-column (composite-keyed layers are
@@ -98,17 +85,15 @@ fn layer_of(
                 return Err(KernelFault::Corruption);
             }
             let mut cols = ancestor_keys;
-            let root_cols = take_columns(&mut cols, &site.key)?;
-            let mut stem = physical::marker_key(site.root_number, root_cols);
+            take_columns(&mut cols, &site.key)?;
             for hop in parent_hops {
-                let hop_cols = take_columns(&mut cols, &hop.key)?;
-                stem = physical::branch_child_stem(&stem, hop.number, hop_cols);
+                take_columns(&mut cols, &hop.key)?;
             }
             if !cols.is_empty() {
                 return Err(KernelFault::Corruption);
             }
             Ok((
-                physical::Layer::branch(&stem, traversed.number),
+                physical::Layer::new(traversed.number, ancestor_keys),
                 traversed.key[0],
             ))
         }
@@ -117,10 +102,10 @@ fn layer_of(
 
 /// Freeze the first `limit` immediate keys of the layer `site` traverses and report
 /// whether a further key existed. Acquires at most `limit + 1` distinct present keys —
-/// the frozen set plus one existence probe — through the bounded [`layer_step`] walk,
-/// costing `O(limit + 1 + d)` seeks, where `d` is the count of descendant-only siblings
-/// interspersed among them (each skipped by one prefix-successor seek without its
-/// fan-out being read). The frozen keys are captured before any caller runs a loop
+/// the frozen set plus one existence probe — through at most `limit + 1` bounded scans.
+/// Each scan can copy a page of own payload cells as well as marker keys; the count
+/// does not bound backend seek time or retained cache bytes.
+/// The frozen keys are captured before any caller runs a loop
 /// body, so writes a body performs cannot change the set.
 pub(super) fn op_iterate_bounded<V: ReadView>(
     cells: &V,
@@ -130,12 +115,10 @@ pub(super) fn op_iterate_bounded<V: ReadView>(
     limit: BoundedLimit,
 ) -> Result<BoundedKeys, KernelFault> {
     let (layer, key_kind) = layer_of(site, ancestor_keys)?;
-    // Reserve a bounded spine rather than the full `limit`: a sparse layer freezes far
-    // fewer keys than a large `at most N` permits, so the eager reservation is capped
-    // and the Vec grows on demand within `limit`. Peak freeze memory is the frozen key
-    // count times the maximum key size; the exact aggregate ceiling is enforced by the
-    // VM's one collection owner (`MAX_AGGREGATE_BYTES`) once the keys materialize as a
-    // `List[K]`.
+    // Cap the initial reservation. The result length stays within `limit`, while
+    // Vec capacity can exceed its length. The cursor, extra key and returned scan
+    // page add temporary storage. The VM checks its aggregate byte ceiling after
+    // these keys materialize as a List[K]; that is not a peak-memory bound here.
     let mut keys: Vec<KeyScalar> = Vec::with_capacity(limit.get().min(1024));
     // The first step honors an inclusive `from`; each later step resumes strictly after
     // the last frozen key.
@@ -161,9 +144,8 @@ pub(super) fn op_iterate_bounded<V: ReadView>(
 
 /// Whether the layer the whole-entry `site` names has at least one payload-bearing
 /// immediate child: one forward [`layer_step`] from the layer's start. A present child
-/// yields `Present`; an empty or purely descendant-only layer yields `Absent`. Reads at
-/// most one payload child key (descendant-only children are skipped by one seek each) and
-/// establishes no per-key presence fact — the bounded family-populated probe.
+/// yields `Present`; a family without its own markers yields `Absent` unless the scan
+/// encounters orphan payload. One bounded scan establishes no per-key presence fact.
 pub(super) fn op_family_populated<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,

@@ -569,12 +569,10 @@ impl KernelFault {
 /// one of these plus a key-path, never a caller-asserted address or expected type.
 ///
 /// A site addresses one durable node: the root entry (`branch` empty) or a keyed
-/// branch entry nested beneath it (one hop per nested branch, to any depth). The node's
-/// marker stem is the root marker
-/// followed by one `branch_child_stem` per hop, over the operation's key-path
-/// (`[root_key]` for a root node, `[root_key, branch_key, …]` for a branch node); the
-/// key-path's scalar kinds must match `key` and each hop's `key`, which the kernel
-/// asserts as defense in depth over the verifier's proof.
+/// branch entry beneath it (one hop per nested branch). The addressed root or final
+/// branch number selects its static family; the operation supplies every ancestor and
+/// own key column. Their exact arity and scalar domains must match `key` and each hop's
+/// `key`, defended by the kernel at the independently verified image boundary.
 #[derive(Debug, Clone)]
 pub struct AuthorizedSite {
     /// The addressed root's cell-key number (FR01 §3): the fixed-width component that keys
@@ -595,7 +593,7 @@ pub struct AuthorizedSite {
 }
 
 /// One hop of a site's branch path: the branch's cell-key number (which keys its physical
-/// child stem) and its ordered key column kinds (checked against the operation key columns).
+/// family) and its ordered key column kinds (checked against the operation key columns).
 #[derive(Debug, Clone)]
 struct BranchHop {
     number: NodeNumber,

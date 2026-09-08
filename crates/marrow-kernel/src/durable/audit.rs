@@ -1,12 +1,12 @@
 //! One bounded, read-only walk over every cell of a store against its admitted projection.
 //!
 //! The walk reads the whole key space forward, one engine page at a time, and parses the
-//! cell stream in the order the layout (`physical.rs`) sorts it: each declared root's entry
-//! family — every entry's marker, then its own field leaves, its group leaves, and its
-//! branch descendants nested to any depth — then the managed-index families, then the meta
-//! family. Its retained state is a stack of open nodes, one frame per nesting level and so
-//! bounded by [`MAX_DURABLE_DEPTH`](super::MAX_DURABLE_DEPTH), plus fixed per-schema tables
-//! and a capped finding list; nothing grows with the number of cells. Every cell is
+//! cell stream in the order the layout (`physical.rs`) sorts it: each declared root or
+//! branch entry family — every entry's marker, then its own field and group leaves —
+//! then the managed-index families and metadata. Its retained state is one open entry,
+//! fixed per-schema tables and a capped finding list; nothing grows with the number of
+//! stored entries. Key-kind paths borrow at most one slice per root and branch hop from
+//! the projection, so no ancestor key schema is copied per descendant. Every cell is
 //! classified exactly once, and a cell that belongs to no declared node or index is a
 //! typed finding rather than a skipped byte. A required leaf that is absent is found when
 //! the node it belongs to closes, so a missing cell is reported as precisely as a present
@@ -15,7 +15,7 @@
 //! walk's engine work is one page per engine scan batch plus a bounded number of point
 //! reads per index cell and per indexed entry — never a read per declared field.
 //!
-//! The logical content the walk sees — every cell of a declared root's entry family, in
+//! The logical content the walk sees — every cell of a declared entry family, in
 //! key order — is handed to a caller-supplied [`ContentDigest`] one cell at a time, so the
 //! digest is computed in the same single pass with the same bounded memory.
 
@@ -39,7 +39,7 @@ use crate::equality::ValueDomain;
 pub const MAX_REPORTED_FINDINGS: usize = 256;
 
 /// A consumer of the store's logical content stream: one call per cell of a declared
-/// root's entry family, in key order. The digest kind and hash live with the store's
+/// root or branch entry family, in key order. The digest kind and hash live with the store's
 /// durability identities downstream; the kernel only streams the canonical cells.
 pub trait ContentDigest {
     fn absorb(&mut self, key: &[u8], value: &[u8]);
@@ -106,13 +106,12 @@ pub struct AuditFinding {
     pub site: AuditSite,
 }
 
-/// The counts the walk keeps: every cell scanned, present entries (markers), nodes with
-/// descendants but no payload, index cells, and findings (including those past the cap).
+/// The counts the walk keeps: every cell scanned, present entries (markers), index cells,
+/// and findings (including those past the cap).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AuditSummary {
     pub cells: u64,
     pub entries: u64,
-    pub descendant_only: u64,
     pub index_cells: u64,
     pub findings: u64,
 }
@@ -145,9 +144,8 @@ pub(super) fn walk<V: ReadView>(
         view,
         tables: &tables,
         digest,
-        frames: Vec::new(),
-        path: Vec::new(),
-        root_cursor: 0,
+        frame: None,
+        family_cursor: 0,
         index_cursor: 0,
         index_family_cursor: 0,
         summary: AuditSummary::default(),
@@ -168,7 +166,7 @@ pub(super) fn walk<V: ReadView>(
             walker.cell(key, value)?;
         }
     }
-    walker.close_frames(0)?;
+    walker.close_entry()?;
     Ok(AuditReport {
         summary: walker.summary,
         findings: walker.findings,
@@ -189,23 +187,18 @@ struct GroupSlot {
     by_suffix: HashMap<Vec<u8>, usize>,
 }
 
-/// One declared branch below a node: its family suffix below the parent stem, its cell-key
-/// number, and the node position of its children.
-struct BranchLink {
-    suffix: Vec<u8>,
+/// One declared root or branch family. The complete key path borrows the root's key
+/// schema and each branch's own key schema, in order; ancestor presence is irrelevant.
+struct FamilyShape<'a> {
+    root: usize,
     number: NodeNumber,
-    node: usize,
-}
-
-/// One node shape of a root's tree: the root entry (position 0) or a branch entry.
-struct NodeShape {
+    prefix: Vec<u8>,
     /// The branch positions from the root down to this node (empty for the root).
     branch_path: Vec<u16>,
-    key: Vec<ScalarKind>,
+    key_segments: Vec<&'a [ScalarKind]>,
     fields: Vec<FieldSlot>,
     by_suffix: HashMap<Vec<u8>, usize>,
     groups: Vec<GroupSlot>,
-    branches: Vec<BranchLink>,
 }
 
 /// One projected component of a managed index, by position into the root's key tuple or
@@ -225,29 +218,31 @@ struct IndexShape {
     components: Vec<(Component, ScalarKind)>,
 }
 
-/// One declared root: its entry family prefix, the prefix every index family under it
-/// shares, its cell-key number, its node tree, the top-level field numbers (for index
+/// One declared root: its entry-family position, the prefix every index family under it
+/// shares, its cell-key number, the top-level field numbers (for index
 /// reads), and its indexes' table positions.
 struct RootShape {
-    family: Vec<u8>,
+    family: usize,
     index_family: Vec<u8>,
     number: NodeNumber,
-    nodes: Vec<NodeShape>,
     field_numbers: Vec<NodeNumber>,
     indexes: Vec<usize>,
 }
 
 /// The fixed tables the walk classifies against, built once from the projection.
-struct Tables {
-    /// Every root in declaration order, which is also family-prefix order.
+struct Tables<'a> {
+    /// Every entry family in store-number order, which is also physical prefix order.
+    families: Vec<FamilyShape<'a>>,
+    /// Every root in declaration order, for managed-index source identity.
     roots: Vec<RootShape>,
     /// Every index of every root, sorted by family prefix (the order their cells appear).
     indexes: Vec<IndexShape>,
     witness: Vec<u8>,
 }
 
-impl Tables {
-    fn new(projection: &StoreProjection, numbering: &[RootNumbering]) -> Self {
+impl<'a> Tables<'a> {
+    fn new(projection: &'a StoreProjection, numbering: &[RootNumbering]) -> Self {
+        let mut families = Vec::new();
         let mut indexes = Vec::new();
         let mut roots = Vec::with_capacity(projection.roots().len());
         for (position, (schema, numbers)) in projection.roots().iter().zip(numbering).enumerate() {
@@ -262,31 +257,43 @@ impl Tables {
                     index,
                 ));
             }
-            let mut nodes = vec![NodeShape {
+            let family = families.len();
+            let key_segments = [schema.key()];
+            families.push(FamilyShape {
+                root: position,
+                number: numbers.root(),
+                prefix: physical::entry_family_prefix(numbers.root()),
                 branch_path: Vec::new(),
-                key: schema.key().to_vec(),
+                key_segments: key_segments.to_vec(),
                 fields: field_slots(schema.fields()),
                 by_suffix: suffix_map(numbers.fields()),
                 groups: group_slots(schema.groups(), numbers.groups()),
-                branches: Vec::new(),
-            }];
-            nodes[0].branches =
-                link_branches(&mut nodes, &[], schema.branches(), numbers.branches());
+            });
+            append_branches(
+                &mut families,
+                position,
+                &[],
+                &key_segments,
+                schema.branches(),
+                numbers.branches(),
+            );
             // An index cell key is the index family byte, the root number, then the index's
             // 16-byte identity: every index family of one root shares the bytes ahead of
             // the identity.
             let any_index = physical::index_cell_key(numbers.root(), &[0; 16], &[]);
             roots.push(RootShape {
-                family: physical::entry_family_prefix(numbers.root()),
+                family,
                 index_family: any_index[..any_index.len() - 16].to_vec(),
                 number: numbers.root(),
-                nodes,
                 field_numbers: numbers.fields().to_vec(),
                 indexes: own,
             });
         }
+        // Root numbers increase in declaration order, so sorting permutes indexes only
+        // within each root's retained contiguous range.
         indexes.sort_by(|a, b| a.prefix.cmp(&b.prefix));
         Self {
+            families,
             roots,
             indexes,
             witness: physical::meta_key(WITNESS),
@@ -361,45 +368,48 @@ fn group_slots(groups: &[GroupSchema], numbers: &[GroupNumbering]) -> Vec<GroupS
         .collect()
 }
 
-/// Append one node position per branch of a level (recursively) and return the level's links.
-fn link_branches(
-    nodes: &mut Vec<NodeShape>,
+/// Append each branch family in the existing numbering's pre-order. The temporary path
+/// and borrowed key slices follow the schema's bounded depth, not stored ancestors.
+fn append_branches<'a>(
+    families: &mut Vec<FamilyShape<'a>>,
+    root: usize,
     parent_path: &[u16],
-    branches: &[BranchSchema],
+    parent_keys: &[&'a [ScalarKind]],
+    branches: &'a [BranchSchema],
     numbers: &[BranchNumbering],
-) -> Vec<BranchLink> {
-    let mut links = Vec::with_capacity(branches.len());
+) {
     for (position, (branch, numbering)) in branches.iter().zip(numbers).enumerate() {
         let mut branch_path = parent_path.to_vec();
         branch_path.push(position as u16);
-        let node = nodes.len();
-        nodes.push(NodeShape {
+        let mut key_segments = parent_keys.to_vec();
+        key_segments.push(branch.key());
+        families.push(FamilyShape {
+            root,
+            number: numbering.number(),
+            prefix: physical::entry_family_prefix(numbering.number()),
             branch_path: branch_path.clone(),
-            key: branch.key().to_vec(),
+            key_segments: key_segments.clone(),
             fields: field_slots(branch.fields()),
             by_suffix: suffix_map(numbering.fields()),
             groups: Vec::new(),
-            branches: Vec::new(),
         });
-        let children = link_branches(nodes, &branch_path, branch.branches(), numbering.branches());
-        nodes[node].branches = children;
-        links.push(BranchLink {
-            suffix: physical::branch_family_prefix(&[], numbering.number()),
-            number: numbering.number(),
-            node,
-        });
+        append_branches(
+            families,
+            root,
+            &branch_path,
+            &key_segments,
+            branch.branches(),
+            numbering.branches(),
+        );
     }
-    links
 }
 
-/// One open node of the walk. Its presence bitmaps are sized by the node's declared
-/// fields, so a frame costs the schema's width, never the store's.
+/// One open entry. Its presence flags follow the declared own/group width; its remaining
+/// storage holds this entry's encoded/decoded keys and indexed scalar projections.
 struct Frame {
-    root: usize,
-    node: usize,
+    family: usize,
     stem: Vec<u8>,
-    /// The walker's key path length before this node's own keys were pushed.
-    path_len: usize,
+    keys: Vec<KeyScalar>,
     marker: bool,
     own: Vec<bool>,
     groups: Vec<Vec<bool>>,
@@ -407,26 +417,14 @@ struct Frame {
     /// only), for the index-cell check at close.
     projected: Vec<Option<KeyScalar>>,
     any_leaf: bool,
-    any_descendant: bool,
-}
-
-/// The layer a scanned key enters a child of: a root's entry family, or a branch family
-/// under the open parent frame.
-enum Layer {
-    Root,
-    Branch {
-        parent_stem: Vec<u8>,
-        number: NodeNumber,
-    },
 }
 
 struct Walker<'a, V: ReadView> {
     view: &'a V,
-    tables: &'a Tables,
+    tables: &'a Tables<'a>,
     digest: &'a mut dyn ContentDigest,
-    frames: Vec<Frame>,
-    path: Vec<KeyScalar>,
-    root_cursor: usize,
+    frame: Option<Frame>,
+    family_cursor: usize,
     index_cursor: usize,
     index_family_cursor: usize,
     summary: AuditSummary,
@@ -456,10 +454,13 @@ fn seek_prefix<T>(
     None
 }
 
-/// Decode `kinds.len()` key components from the front of `bytes`, each of its declared kind,
+/// Decode the declared key components from the front of `bytes`, each at its declared kind,
 /// returning the keys and the bytes consumed.
-fn decode_keys(bytes: &[u8], kinds: &[ScalarKind]) -> Option<(Vec<KeyScalar>, usize)> {
-    let mut keys = Vec::with_capacity(kinds.len());
+fn decode_keys<'a>(
+    bytes: &[u8],
+    kinds: impl Iterator<Item = &'a ScalarKind>,
+) -> Option<(Vec<KeyScalar>, usize)> {
+    let mut keys = Vec::new();
     let mut used = 0;
     for kind in kinds {
         let (column, n) = decode_key_value(bytes.get(used..)?)?;
@@ -475,32 +476,33 @@ fn decode_keys(bytes: &[u8], kinds: &[ScalarKind]) -> Option<(Vec<KeyScalar>, us
 impl<V: ReadView> Walker<'_, V> {
     fn cell(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
         self.summary.cells += 1;
-        let mut depth = self.frames.len();
-        while depth > 0 && !key.starts_with(&self.frames[depth - 1].stem) {
-            depth -= 1;
-        }
-        self.close_frames(depth)?;
-        if self.frames.is_empty() {
-            self.top_level(key, value)
-        } else {
+        if self
+            .frame
+            .as_ref()
+            .is_some_and(|frame| key.starts_with(&frame.stem))
+        {
             self.digest.absorb(key, value);
-            self.within_node(key, value)
+            self.within_node(key, value);
+            Ok(())
+        } else {
+            self.close_entry()?;
+            self.top_level(key, value)
         }
     }
 
-    /// Classify a cell under no open node: a declared root's entry, a managed-index cell,
+    /// Classify a cell under no open entry: a declared entry family, a managed-index cell,
     /// the commit witness, or a cell outside every declared family.
     fn top_level(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
         let tables = self.tables;
-        if let Some(root) = seek_prefix(
-            &tables.roots,
-            |root| root.family.as_slice(),
-            &mut self.root_cursor,
+        if let Some(family) = seek_prefix(
+            &tables.families,
+            |family| family.prefix.as_slice(),
+            &mut self.family_cursor,
             key,
         ) {
             self.digest.absorb(key, value);
-            let prefix_len = tables.roots[root].family.len();
-            return self.enter_layer(root, 0, prefix_len, Layer::Root, key, value);
+            self.enter_entry(family, key, value);
+            return Ok(());
         }
         if let Some(index) = seek_prefix(
             &tables.indexes,
@@ -541,51 +543,33 @@ impl<V: ReadView> Walker<'_, V> {
         Ok(())
     }
 
-    /// Open the child of `layer` that `key` addresses, whose keys begin at
-    /// `prefix_len`: the key's child keys are decoded to derive the child's marker
-    /// stem, and the cell is that marker, a cell below it (a markerless child), or
-    /// malformed.
-    fn enter_layer(
-        &mut self,
-        root: usize,
-        node: usize,
-        prefix_len: usize,
-        layer: Layer,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), StoreError> {
+    /// Decode the full ancestor-and-own tuple once when entering a concrete entry.
+    /// Later cells share its validated marker stem; no ancestor entry is opened.
+    fn enter_entry(&mut self, family: usize, key: &[u8], value: &[u8]) {
         let tables = self.tables;
-        let root_shape = &tables.roots[root];
-        let shape = &root_shape.nodes[node];
-        let Some((keys, _)) = decode_keys(&key[prefix_len..], &shape.key) else {
+        let shape = &tables.families[family];
+        let root_shape = &tables.roots[shape.root];
+        let kinds = shape.key_segments.iter().flat_map(|segment| segment.iter());
+        let Some((keys, _)) = decode_keys(&key[shape.prefix.len()..], kinds) else {
             self.finding(
                 AuditFault::Undecodable,
                 AuditSite::Cell { key: key.to_vec() },
             );
-            return Ok(());
+            return;
         };
-        let stem = match layer {
-            Layer::Root => physical::marker_key(root_shape.number, &keys),
-            Layer::Branch {
-                parent_stem,
-                number,
-            } => physical::branch_child_stem(&parent_stem, number, &keys),
-        };
+        let stem = physical::marker_key(shape.number, &keys);
         if !key.starts_with(&stem) {
             self.finding(
                 AuditFault::Undecodable,
                 AuditSite::Cell { key: key.to_vec() },
             );
-            return Ok(());
+            return;
         }
         let marker = key == stem.as_slice();
-        let path_len = self.path.len();
-        self.path.extend(keys);
-        self.frames.push(Frame {
-            root,
-            node,
+        self.frame = Some(Frame {
+            family,
             stem,
-            path_len,
+            keys,
             marker,
             own: vec![false; shape.fields.len()],
             groups: shape
@@ -593,13 +577,12 @@ impl<V: ReadView> Walker<'_, V> {
                 .iter()
                 .map(|group| vec![false; group.fields.len()])
                 .collect(),
-            projected: if node == 0 && !root_shape.indexes.is_empty() {
+            projected: if family == root_shape.family && !root_shape.indexes.is_empty() {
                 vec![None; shape.fields.len()]
             } else {
                 Vec::new()
             },
             any_leaf: false,
-            any_descendant: false,
         });
         if marker {
             self.summary.entries += 1;
@@ -607,34 +590,31 @@ impl<V: ReadView> Walker<'_, V> {
                 let site = self.node_site();
                 self.finding(AuditFault::MarkerInvalid, site);
             }
-            Ok(())
         } else {
             self.within_node(key, value)
         }
     }
 
-    /// Classify a cell strictly below the top frame's marker stem.
-    fn within_node(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+    /// Classify a cell strictly below the current entry's marker stem.
+    fn within_node(&mut self, key: &[u8], value: &[u8]) {
         let tables = self.tables;
-        let top = self.frames.len() - 1;
-        let (root, node) = (self.frames[top].root, self.frames[top].node);
-        let shape = &tables.roots[root].nodes[node];
-        let stem_len = self.frames[top].stem.len();
+        let frame = self.frame.as_ref().expect("a cell below an open entry");
+        let shape = &tables.families[frame.family];
+        let stem_len = frame.stem.len();
         let rest = &key[stem_len..];
-        match physical::below_marker(&self.frames[top].stem, key) {
+        match physical::below_marker(&frame.stem, key) {
             BelowMarker::OwnField => {
-                self.own_leaf(top);
+                self.own_leaf();
                 match shape.by_suffix.get(rest) {
-                    Some(&field) => self.leaf(top, None, field, value),
+                    Some(&field) => self.leaf(None, field, value),
                     None => self.finding(
                         AuditFault::OutsideSchema,
                         AuditSite::Cell { key: key.to_vec() },
                     ),
                 }
-                Ok(())
             }
             BelowMarker::OwnGroup => {
-                self.own_leaf(top);
+                self.own_leaf();
                 let located = shape
                     .groups
                     .iter()
@@ -647,42 +627,11 @@ impl<V: ReadView> Walker<'_, V> {
                             .map(|&field| (index, field))
                     });
                 match located {
-                    Some((group, field)) => self.leaf(top, Some(group), field, value),
+                    Some((group, field)) => self.leaf(Some(group), field, value),
                     None => self.finding(
                         AuditFault::OutsideSchema,
                         AuditSite::Cell { key: key.to_vec() },
                     ),
-                }
-                Ok(())
-            }
-            BelowMarker::BranchDescendant => {
-                self.frames[top].any_descendant = true;
-                match shape
-                    .branches
-                    .iter()
-                    .find(|link| rest.starts_with(&link.suffix))
-                {
-                    Some(link) => {
-                        let layer = Layer::Branch {
-                            parent_stem: self.frames[top].stem.clone(),
-                            number: link.number,
-                        };
-                        self.enter_layer(
-                            root,
-                            link.node,
-                            stem_len + link.suffix.len(),
-                            layer,
-                            key,
-                            value,
-                        )
-                    }
-                    None => {
-                        self.finding(
-                            AuditFault::OutsideSchema,
-                            AuditSite::Cell { key: key.to_vec() },
-                        );
-                        Ok(())
-                    }
                 }
             }
             BelowMarker::Corrupt | BelowMarker::Foreign => {
@@ -690,15 +639,17 @@ impl<V: ReadView> Walker<'_, V> {
                     AuditFault::Undecodable,
                     AuditSite::Cell { key: key.to_vec() },
                 );
-                Ok(())
             }
         }
     }
 
-    /// Note an own payload leaf under the top frame; the first one under a markerless
+    /// Note an own payload leaf under the current entry; the first one under a markerless
     /// node is the orphan finding.
-    fn own_leaf(&mut self, top: usize) {
-        let frame = &mut self.frames[top];
+    fn own_leaf(&mut self) {
+        let frame = self
+            .frame
+            .as_mut()
+            .expect("a leaf belongs to an open entry");
         let first_orphan = !frame.marker && !frame.any_leaf;
         frame.any_leaf = true;
         if first_orphan {
@@ -707,17 +658,19 @@ impl<V: ReadView> Walker<'_, V> {
         }
     }
 
-    /// Decode one declared leaf of the top frame and record its presence.
-    fn leaf(&mut self, top: usize, group: Option<usize>, field: usize, value: &[u8]) {
+    /// Decode one declared leaf of the current entry and record its presence.
+    fn leaf(&mut self, group: Option<usize>, field: usize, value: &[u8]) {
         let tables = self.tables;
-        let (root, node) = (self.frames[top].root, self.frames[top].node);
-        let shape = &tables.roots[root].nodes[node];
+        let frame = self
+            .frame
+            .as_mut()
+            .expect("a leaf belongs to an open entry");
+        let shape = &tables.families[frame.family];
         let slot = match group {
             Some(group) => &shape.groups[group].fields[field],
             None => &shape.fields[field],
         };
         let decoded = decode_domain(value, &slot.shape);
-        let frame = &mut self.frames[top];
         match group {
             Some(group) => frame.groups[group][field] = true,
             None => {
@@ -736,26 +689,21 @@ impl<V: ReadView> Walker<'_, V> {
         }
     }
 
-    /// Close every frame above `depth`, checking each closed node.
-    fn close_frames(&mut self, depth: usize) -> Result<(), StoreError> {
-        while self.frames.len() > depth {
-            let frame = self.frames.pop().expect("a frame above depth remains");
+    /// Finish the current entry before moving to another concrete key or family.
+    fn close_entry(&mut self) -> Result<(), StoreError> {
+        if let Some(frame) = self.frame.take() {
             self.check_closed(&frame)?;
-            self.path.truncate(frame.path_len);
         }
         Ok(())
     }
 
     /// The checks a node admits only once every cell under it has been seen: the required
-    /// leaves and index cells of a present node, or its descendant-only standing.
+    /// leaves and index cells of a present node.
     fn check_closed(&mut self, frame: &Frame) -> Result<(), StoreError> {
         if !frame.marker {
-            if !frame.any_leaf && frame.any_descendant {
-                self.summary.descendant_only += 1;
-            }
             return Ok(());
         }
-        let shape = &self.tables.roots[frame.root].nodes[frame.node];
+        let shape = &self.tables.families[frame.family];
         for (field, slot) in shape.fields.iter().enumerate() {
             if slot.required && !frame.own[field] {
                 let site = self.site_of(frame, None, field);
@@ -770,7 +718,7 @@ impl<V: ReadView> Walker<'_, V> {
                 }
             }
         }
-        if frame.node == 0 {
+        if frame.family == self.tables.roots[shape.root].family {
             self.check_index_cells(frame)?;
         }
         Ok(())
@@ -780,12 +728,12 @@ impl<V: ReadView> Walker<'_, V> {
     /// entry's index cell.
     fn check_index_cells(&mut self, frame: &Frame) -> Result<(), StoreError> {
         let tables = self.tables;
-        let root = &tables.roots[frame.root];
+        let root = &tables.roots[tables.families[frame.family].root];
         if root.indexes.is_empty() {
             return Ok(());
         }
-        let keys: Vec<KeyScalar> = self.path[frame.path_len..].to_vec();
-        let source = physical::index_cell_value(&keys);
+        let keys = &frame.keys;
+        let source = physical::index_cell_value(keys);
         for &index in &root.indexes {
             let shape = &tables.indexes[index];
             let values: Option<Vec<KeyScalar>> = shape
@@ -823,9 +771,9 @@ impl<V: ReadView> Walker<'_, V> {
     ) -> Result<(), StoreError> {
         self.summary.index_cells += 1;
         let root = &self.tables.roots[usize::from(shape.root)];
-        let kinds: Vec<ScalarKind> = shape.components.iter().map(|(_, kind)| *kind).collect();
+        let kinds = shape.components.iter().map(|(_, kind)| kind);
         let rest = &key[shape.prefix.len()..];
-        let values = match decode_keys(rest, &kinds) {
+        let values = match decode_keys(rest, kinds) {
             Some((values, used)) if used == rest.len() => values,
             _ => {
                 self.finding(
@@ -840,7 +788,8 @@ impl<V: ReadView> Walker<'_, V> {
             index: shape.position,
             values: values.clone(),
         };
-        let root_key = &root.nodes[0].key;
+        let root_shape = &self.tables.families[root.family];
+        let root_key = root_shape.key_segments[0];
         let source = physical::decode_index_source_key(value, root_key.len()).filter(|source| {
             source
                 .iter()
@@ -864,7 +813,7 @@ impl<V: ReadView> Walker<'_, V> {
                     match self.view.get(&leaf)? {
                         None => false,
                         Some(bytes) => {
-                            match decode_domain(&bytes, &root.nodes[0].fields[*field].shape) {
+                            match decode_domain(&bytes, &root_shape.fields[*field].shape) {
                                 Some(ValueDomain::Scalar(scalar)) => {
                                     scalar.as_key().ok().flatten().as_ref() == Some(projected)
                                 }
@@ -890,34 +839,35 @@ impl<V: ReadView> Walker<'_, V> {
         }
     }
 
-    /// The node site of the top frame.
+    /// The node site of the current entry.
     fn node_site(&self) -> AuditSite {
-        let frame = self.frames.last().expect("a node site names an open frame");
+        let frame = self
+            .frame
+            .as_ref()
+            .expect("a node site names an open entry");
+        let family = &self.tables.families[frame.family];
         AuditSite::Node {
-            root: frame.root as u16,
-            branch: self.tables.roots[frame.root].nodes[frame.node]
-                .branch_path
-                .clone(),
-            keys: self.path.clone(),
+            root: family.root as u16,
+            branch: family.branch_path.clone(),
+            keys: frame.keys.clone(),
         }
     }
 
-    /// The field site of the top frame.
+    /// The field site of the current entry.
     fn field_site(&self, group: Option<usize>, field: usize) -> AuditSite {
         let frame = self
-            .frames
-            .last()
-            .expect("a field site names an open frame");
+            .frame
+            .as_ref()
+            .expect("a field site names an open entry");
         self.site_of(frame, group, field)
     }
 
     fn site_of(&self, frame: &Frame, group: Option<usize>, field: usize) -> AuditSite {
+        let family = &self.tables.families[frame.family];
         AuditSite::Field {
-            root: frame.root as u16,
-            branch: self.tables.roots[frame.root].nodes[frame.node]
-                .branch_path
-                .clone(),
-            keys: self.path.clone(),
+            root: family.root as u16,
+            branch: family.branch_path.clone(),
+            keys: frame.keys.clone(),
             group: group.map(|group| group as u16),
             field: field as u16,
         }
@@ -1082,6 +1032,21 @@ mod tests {
         (report, digest)
     }
 
+    fn raw_store(
+        projection: StoreProjection,
+        cells: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> DurableStore<MemoryEngine> {
+        let mut engine = MemoryEngine::new();
+        {
+            let mut txn = engine.begin().expect("begin");
+            for (key, value) in cells {
+                txn.put(&key, value).expect("raw cell");
+            }
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        DurableStore::from_engine(engine, projection)
+    }
+
     /// Apply raw cell edits to a populated store and reopen it under the same projection.
     fn tamper(
         store: DurableStore<MemoryEngine>,
@@ -1119,10 +1084,6 @@ mod tests {
                 physical::group_stem(&stem, number),
                 [stem.clone(), physical::group_stem(&[], number)].concat()
             );
-            assert_eq!(
-                physical::branch_family_prefix(&stem, number),
-                [stem.clone(), physical::branch_family_prefix(&[], number)].concat()
-            );
         }
     }
 
@@ -1138,7 +1099,6 @@ mod tests {
                 // text 1, tag weight 1; the witness and the 3 index cells are not entry cells.
                 cells: 4 + 4 + 1 + 1 + 1 + 3 + 1,
                 entries: 4,
-                descendant_only: 0,
                 index_cells: 3,
                 findings: 0,
             }
@@ -1169,11 +1129,28 @@ mod tests {
 
     #[test]
     fn an_own_leaf_without_a_marker_is_an_orphan_named_by_its_node() {
-        let field = numbers().fields()[0];
+        let numbers = numbers();
         let store = tamper(populated(), |txn| {
             let stem = physical::marker_key(0, &[s("z")]);
-            txn.put(&physical::stem_field_leaf(&stem, field), b"Zed".to_vec())
-                .expect("put");
+            txn.put(
+                &physical::stem_field_leaf(&stem, numbers.fields()[0]),
+                b"Zed".to_vec(),
+            )
+            .expect("put");
+            txn.put(
+                &physical::stem_field_leaf(&stem, numbers.fields()[1]),
+                b"2".to_vec(),
+            )
+            .expect("second own leaf");
+            let group = &numbers.groups()[0];
+            txn.put(
+                &physical::stem_field_leaf(
+                    &physical::group_stem(&stem, group.number()),
+                    group.fields()[0],
+                ),
+                b"3".to_vec(),
+            )
+            .expect("group leaf");
         });
         let (report, _) = audit(&store);
         assert_eq!(
@@ -1196,7 +1173,7 @@ mod tests {
         let numbers = numbers();
         let notes = &numbers.branches()[0];
         let store = tamper(populated(), |txn| {
-            let note = physical::branch_child_stem(&a_stem(), notes.number(), &[KeyScalar::Int(9)]);
+            let note = physical::marker_key(notes.number(), &[s("a"), KeyScalar::Int(9)]);
             txn.put(
                 &physical::stem_field_leaf(&note, notes.fields()[0]),
                 b"x".to_vec(),
@@ -1319,10 +1296,8 @@ mod tests {
             let projection = projection.finish().expect("projection");
             let numbers = number_store(&projection).remove(0);
             let root = numbers.root();
-            let stem = physical::marker_key(root, std::slice::from_ref(&valid));
             let branch = &numbers.branches()[0];
-            let child =
-                physical::branch_child_stem(&stem, branch.number(), std::slice::from_ref(&invalid));
+            let child = physical::marker_key(branch.number(), &[valid.clone(), invalid.clone()]);
             let cases = [
                 (
                     "branch",
@@ -1428,7 +1403,7 @@ mod tests {
         let store = tamper(populated(), |txn| {
             txn.remove(&physical::stem_field_leaf(&a_stem(), numbers.fields()[0]))
                 .expect("remove title");
-            let note = physical::branch_child_stem(&a_stem(), notes.number(), &[KeyScalar::Int(1)]);
+            let note = physical::marker_key(notes.number(), &[s("a"), KeyScalar::Int(1)]);
             txn.remove(&physical::stem_field_leaf(&note, notes.fields()[0]))
                 .expect("remove text");
         });
@@ -1440,8 +1415,8 @@ mod tests {
                     fault: AuditFault::RequiredMissing,
                     site: AuditSite::Field {
                         root: 0,
-                        branch: vec![0],
-                        keys: vec![s("a"), KeyScalar::Int(1)],
+                        branch: Vec::new(),
+                        keys: vec![s("a")],
                         group: None,
                         field: 0,
                     },
@@ -1450,8 +1425,8 @@ mod tests {
                     fault: AuditFault::RequiredMissing,
                     site: AuditSite::Field {
                         root: 0,
-                        branch: Vec::new(),
-                        keys: vec![s("a")],
+                        branch: vec![0],
+                        keys: vec![s("a"), KeyScalar::Int(1)],
                         group: None,
                         field: 0,
                     },
@@ -1518,14 +1493,23 @@ mod tests {
     fn cells_outside_the_schema_are_named_by_their_raw_key() {
         let numbers = numbers();
         let foreign_field = physical::stem_field_leaf(&a_stem(), 4000);
-        let foreign_branch = physical::branch_child_stem(&a_stem(), 4001, &[KeyScalar::Int(1)]);
+        let foreign_branch = physical::marker_key(4001, &[s("a"), KeyScalar::Int(1)]);
         let foreign_root = physical::marker_key(4002, &[s("q")]);
+        let foreign_group = physical::stem_field_leaf(&physical::group_stem(&a_stem(), 4003), 4004);
+        let field_as_family = physical::marker_key(numbers.fields()[0], &[s("a")]);
+        let group_as_family = physical::marker_key(numbers.groups()[0].number(), &[s("a")]);
+        let branch_as_index_root =
+            physical::index_cell_key(numbers.branches()[0].number(), &BY_ISBN, &[s("x")]);
         let foreign_index = physical::index_cell_key(numbers.root(), &[0xEE; 16], &[s("x")]);
         let foreign_meta = physical::meta_key("profile");
         let cells = [
             foreign_field.clone(),
             foreign_branch.clone(),
             foreign_root.clone(),
+            foreign_group.clone(),
+            field_as_family,
+            group_as_family,
+            branch_as_index_root,
             foreign_index.clone(),
             foreign_meta.clone(),
         ];
@@ -1534,7 +1518,7 @@ mod tests {
                 txn.put(cell, vec![0x01]).expect("put");
             }
         });
-        let (report, _) = audit(&store);
+        let (report, digest) = audit(&store);
         assert!(
             faults(&report)
                 .iter()
@@ -1560,7 +1544,15 @@ mod tests {
         expected.sort();
         assert_eq!(named, expected);
         // The commit witness is a declared meta cell and never a finding.
-        assert_eq!(report.summary.findings, 5);
+        assert_eq!(report.summary.findings, 9);
+        let mut expected_digest = audit(&populated()).1.cells;
+        expected_digest.push((foreign_field, vec![0x01]));
+        expected_digest.push((foreign_group, vec![0x01]));
+        expected_digest.sort();
+        assert_eq!(
+            digest.cells, expected_digest,
+            "unknown families, indexes and metadata are excluded"
+        );
     }
 
     /// The commit witness is the one meta cell the walk admits, and only in a shape the
@@ -1598,17 +1590,14 @@ mod tests {
         );
     }
 
-    /// A branch child under an absent root, and a tag under an absent note, are legitimate
-    /// descendant-only nodes: counted, walked, and never a finding.
+    /// Only concrete entry markers count; absent ancestors neither add entries nor findings.
     #[test]
-    fn descendant_only_nodes_are_counted_and_their_subtrees_walked() {
+    fn a_child_with_two_absent_ancestors_is_audited_in_its_own_family() {
         let numbers = numbers();
         let notes = &numbers.branches()[0];
         let tags = &notes.branches()[0];
         let store = tamper(populated(), |txn| {
-            let root_z = physical::marker_key(numbers.root(), &[s("z")]);
-            let note = physical::branch_child_stem(&root_z, notes.number(), &[KeyScalar::Int(1)]);
-            let tag = physical::branch_child_stem(&note, tags.number(), &[s("blue")]);
+            let tag = physical::marker_key(tags.number(), &[s("z"), KeyScalar::Int(1), s("blue")]);
             txn.put(&tag, physical::MARKER_VALUE.to_vec())
                 .expect("put tag");
             txn.put(
@@ -1617,28 +1606,91 @@ mod tests {
             )
             .expect("put weight");
         });
-        let (report, _) = audit(&store);
+        let (report, digest) = audit(&store);
         assert!(report.is_clean(), "{:?}", report.findings);
-        assert_eq!(
-            report.summary.descendant_only, 2,
-            "the root z and its note 1"
-        );
         assert_eq!(report.summary.entries, 5, "the tag is a present entry");
+        let tag = physical::marker_key(tags.number(), &[s("z"), KeyScalar::Int(1), s("blue")]);
+        let child_cells: Vec<_> = digest
+            .cells
+            .iter()
+            .filter(|(key, _)| key.starts_with(&tag))
+            .cloned()
+            .collect();
+        assert_eq!(
+            child_cells,
+            vec![
+                (tag.clone(), physical::MARKER_VALUE.to_vec()),
+                (
+                    physical::stem_field_leaf(&tag, tags.fields()[0]),
+                    b"5".to_vec()
+                ),
+            ]
+        );
+        assert_eq!(digest.cells.len(), 13);
     }
 
     #[test]
     fn findings_past_the_cap_are_counted_but_not_retained() {
-        let field = numbers().fields()[0];
+        let numbers = numbers();
+        let branch = &numbers.branches()[0];
+        let per_family = (MAX_REPORTED_FINDINGS + 40) / 2;
         let store = tamper(populated(), |txn| {
-            for i in 0..(MAX_REPORTED_FINDINGS + 40) {
+            for i in 0..per_family {
                 let stem = physical::marker_key(0, &[s(&format!("orphan-{i:04}"))]);
-                txn.put(&physical::stem_field_leaf(&stem, field), b"x".to_vec())
-                    .expect("put");
+                txn.put(
+                    &physical::stem_field_leaf(&stem, numbers.fields()[0]),
+                    b"x".to_vec(),
+                )
+                .expect("put");
+                let child =
+                    physical::marker_key(branch.number(), &[s("absent"), KeyScalar::Int(i as i64)]);
+                txn.put(
+                    &physical::stem_field_leaf(&child, branch.fields()[0]),
+                    b"x".to_vec(),
+                )
+                .expect("child leaf");
             }
         });
-        let (report, _) = audit(&store);
+        let (report, digest) = audit(&store);
         assert_eq!(report.summary.findings, (MAX_REPORTED_FINDINGS + 40) as u64);
         assert_eq!(report.findings.len(), MAX_REPORTED_FINDINGS);
+        assert!(
+            faults(&report)
+                .iter()
+                .all(|fault| *fault == AuditFault::OrphanLeaf)
+        );
+        assert_eq!(
+            report.findings[per_family - 1].site,
+            AuditSite::Node {
+                root: 0,
+                branch: Vec::new(),
+                keys: vec![s(&format!("orphan-{:04}", per_family - 1))],
+            }
+        );
+        assert_eq!(
+            report.findings[per_family].site,
+            AuditSite::Node {
+                root: 0,
+                branch: vec![0],
+                keys: vec![s("absent"), KeyScalar::Int(0)],
+            }
+        );
+        assert_eq!(
+            report.findings.last().expect("capped report").site,
+            AuditSite::Node {
+                root: 0,
+                branch: vec![0],
+                keys: vec![
+                    s("absent"),
+                    KeyScalar::Int((MAX_REPORTED_FINDINGS - per_family - 1) as i64)
+                ],
+            }
+        );
+        assert_eq!(
+            digest.cells.len(),
+            11 + MAX_REPORTED_FINDINGS + 40,
+            "the finding cap does not cap the content stream"
+        );
     }
 
     /// An index cell whose value is not a whole source key tuple is undecodable, not stale.
@@ -1664,5 +1716,384 @@ mod tests {
                 values: vec![s("333")],
             }
         );
+    }
+
+    #[test]
+    fn family_key_segments_borrow_the_projection_through_the_admitted_depth() {
+        let mut schema = StoreSchemaBuilder::root("root", vec![ScalarKind::Str, ScalarKind::Int]);
+        for depth in 0..16 {
+            schema.open_branch(
+                format!("child{depth}"),
+                vec![ScalarKind::Int, ScalarKind::Str],
+            );
+        }
+        for _ in 0..16 {
+            schema.close_branch();
+        }
+        let mut projection = StoreProjection::builder();
+        projection.root(schema.finish().expect("sixteen branch hops"));
+        let projection = projection.finish().expect("projection");
+        let numbering = number_store(&projection);
+        let tables = Tables::new(&projection, &numbering);
+        assert_eq!(tables.families.len(), 17);
+        assert_eq!(tables.roots[0].family, 0);
+        assert!(
+            tables
+                .families
+                .windows(2)
+                .all(|pair| pair[0].prefix < pair[1].prefix)
+        );
+        let root = &projection.roots()[0];
+        let mut expected = vec![root.key()];
+        let mut branches = root.branches();
+        for (depth, family) in tables.families.iter().enumerate() {
+            assert_eq!(family.root, 0);
+            assert_eq!(family.branch_path, vec![0; depth]);
+            assert_eq!(family.key_segments.len(), depth + 1);
+            for (borrowed, original) in family.key_segments.iter().zip(&expected) {
+                assert!(
+                    std::ptr::eq(*borrowed, *original),
+                    "kind slices retain projection identity"
+                );
+            }
+            if let Some(branch) = branches.first() {
+                expected.push(branch.key());
+                branches = branch.branches();
+            }
+        }
+    }
+
+    fn composite_child() -> (StoreProjection, Vec<KeyScalar>) {
+        let mut schema = StoreSchemaBuilder::root("root", vec![ScalarKind::Str, ScalarKind::Int]);
+        schema.open_branch("parent", vec![ScalarKind::Str, ScalarKind::Date]);
+        schema.open_branch("child", vec![ScalarKind::Int, ScalarKind::Str]);
+        schema.scalar_field("title", ScalarKind::Str, true);
+        schema.scalar_field("count", ScalarKind::Int, false);
+        schema.close_branch().close_branch();
+        let mut projection = StoreProjection::builder();
+        projection.root(schema.finish().expect("composite schema"));
+        (
+            projection.finish().expect("projection"),
+            vec![
+                s("root\0key"),
+                KeyScalar::Int(11),
+                s("ancestor\0key"),
+                KeyScalar::Date(3),
+                KeyScalar::Int(22),
+                s("own\0key"),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_open_entry_keeps_its_complete_decoded_tuple_across_own_leaves() {
+        let (projection, keys) = composite_child();
+        let numbering = number_store(&projection);
+        let child = &numbering[0].branches()[0].branches()[0];
+        let stem = physical::marker_key(child.number(), &keys);
+        let cells = vec![
+            (stem.clone(), physical::MARKER_VALUE.to_vec()),
+            (
+                physical::stem_field_leaf(&stem, child.fields()[0]),
+                b"valid".to_vec(),
+            ),
+            (
+                physical::stem_field_leaf(&stem, child.fields()[1]),
+                b"7".to_vec(),
+            ),
+        ];
+        let store = raw_store(projection.clone(), cells.clone());
+        let (report, digest) = audit(&store);
+        assert!(report.is_clean(), "{:?}", report.findings);
+        assert_eq!(report.summary.entries, 1, "neither ancestor needs a marker");
+        assert_eq!(digest.cells, cells);
+
+        let tables = Tables::new(&projection, &numbering);
+        let engine = MemoryEngine::new();
+        let view = engine.read_view().expect("view");
+        let mut digest = Recording::default();
+        let mut walker = Walker {
+            view: &view,
+            tables: &tables,
+            digest: &mut digest,
+            frame: None,
+            family_cursor: 0,
+            index_cursor: 0,
+            index_family_cursor: 0,
+            summary: AuditSummary::default(),
+            findings: Vec::new(),
+        };
+        walker.cell(&cells[0].0, &cells[0].1).expect("marker");
+        let frame = walker.frame.as_ref().expect("one open entry");
+        assert_eq!(frame.family, 2);
+        assert_eq!(frame.keys, keys);
+        let decoded = frame.keys.as_ptr();
+        for (key, value) in &cells[1..] {
+            walker.cell(key, value).expect("own leaf");
+            assert_eq!(
+                walker.frame.as_ref().expect("same entry").keys.as_ptr(),
+                decoded
+            );
+        }
+        walker.close_entry().expect("close");
+        assert!(walker.frame.is_none());
+        assert!(walker.findings.is_empty());
+
+        let orphan = raw_store(projection, cells[1..].to_vec());
+        let (report, _) = audit(&orphan);
+        assert_eq!(
+            report.findings,
+            vec![AuditFinding {
+                fault: AuditFault::OrphanLeaf,
+                site: AuditSite::Node {
+                    root: 0,
+                    branch: vec![0, 0],
+                    keys
+                },
+            }]
+        );
+        assert_eq!(report.summary.entries, 0);
+    }
+
+    #[test]
+    fn malformed_full_key_paths_are_reported_and_digested_in_the_child_family() {
+        let (projection, keys) = composite_child();
+        let numbering = number_store(&projection);
+        let child = &numbering[0].branches()[0].branches()[0];
+        let marker = physical::marker_key(child.number(), &keys);
+        let mut wrong_root = keys.clone();
+        wrong_root[1] = s("wrong root kind");
+        let mut wrong_ancestor = keys.clone();
+        wrong_ancestor[3] = s("wrong later ancestor kind");
+        let mut invalid_ancestor = keys.clone();
+        invalid_ancestor[3] = KeyScalar::Date(i32::MAX);
+        let mut wrong_own = keys.clone();
+        wrong_own[4] = s("wrong own kind");
+        let mut extra = keys.clone();
+        extra.push(KeyScalar::Int(99));
+        let mut missing_terminator = marker.clone();
+        missing_terminator.pop();
+        let mut wrong_terminator = marker;
+        *wrong_terminator.last_mut().expect("marker terminator") = 0x7F;
+        let mut invalid_utf8 = physical::entry_family_prefix(child.number());
+        invalid_utf8.extend(encode_key_tuple(&keys[..2]));
+        invalid_utf8.extend([crate::codec::key::KEY_STR, 0xFE, 0, 0]);
+        invalid_utf8.extend(encode_key_tuple(&keys[3..]));
+        invalid_utf8.push(0);
+        let cases = [
+            (
+                "root kind",
+                physical::marker_key(child.number(), &wrong_root),
+            ),
+            (
+                "later ancestor kind",
+                physical::marker_key(child.number(), &wrong_ancestor),
+            ),
+            (
+                "later ancestor domain",
+                physical::marker_key(child.number(), &invalid_ancestor),
+            ),
+            ("own kind", physical::marker_key(child.number(), &wrong_own)),
+            (
+                "short tuple",
+                physical::marker_key(child.number(), &keys[..5]),
+            ),
+            ("extra column", physical::marker_key(child.number(), &extra)),
+            ("missing terminator", missing_terminator),
+            ("wrong terminator", wrong_terminator),
+            ("ancestor UTF-8", invalid_utf8),
+        ];
+        for (name, stem) in cases {
+            let cells = vec![
+                (stem.clone(), physical::MARKER_VALUE.to_vec()),
+                (
+                    physical::stem_field_leaf(&stem, child.fields()[0]),
+                    b"valid".to_vec(),
+                ),
+            ];
+            let store = raw_store(projection.clone(), cells.clone());
+            let (report, digest) = audit(&store);
+            let expected: Vec<_> = cells
+                .iter()
+                .map(|(key, _)| AuditFinding {
+                    fault: AuditFault::Undecodable,
+                    site: AuditSite::Cell { key: key.clone() },
+                })
+                .collect();
+            assert_eq!(report.findings, expected, "{name}");
+            assert_eq!(report.summary.entries, 0, "{name}");
+            assert_eq!(report.summary.cells, 2, "{name}");
+            assert_eq!(
+                digest.cells, cells,
+                "{name}: declared-family corruption remains in the digest"
+            );
+        }
+    }
+
+    #[test]
+    fn required_fields_close_in_entry_family_and_eof_order() {
+        let mut schema = StoreSchemaBuilder::root("root", vec![ScalarKind::Str]);
+        schema.scalar_field("title", ScalarKind::Str, true);
+        schema.open_group("group");
+        schema.scalar_field("code", ScalarKind::Int, true);
+        schema.close_group();
+        schema.open_branch("child", vec![ScalarKind::Int]);
+        schema.scalar_field("title", ScalarKind::Str, true);
+        schema.close_branch();
+        let mut projection = StoreProjection::builder();
+        projection.root(schema.finish().expect("schema"));
+        let projection = projection.finish().expect("projection");
+        let numbering = number_store(&projection);
+        let root = &numbering[0];
+        let child = &root.branches()[0];
+        let cells = vec![
+            (
+                physical::marker_key(root.root(), &[s("a")]),
+                physical::MARKER_VALUE.to_vec(),
+            ),
+            (
+                physical::marker_key(root.root(), &[s("b")]),
+                physical::MARKER_VALUE.to_vec(),
+            ),
+            (
+                physical::marker_key(child.number(), &[s("absent"), KeyScalar::Int(7)]),
+                physical::MARKER_VALUE.to_vec(),
+            ),
+        ];
+        let store = raw_store(projection, cells.clone());
+        let (report, digest) = audit(&store);
+        let mut expected = Vec::new();
+        for key in [s("a"), s("b")] {
+            for group in [None, Some(0)] {
+                expected.push(AuditFinding {
+                    fault: AuditFault::RequiredMissing,
+                    site: AuditSite::Field {
+                        root: 0,
+                        branch: Vec::new(),
+                        keys: vec![key.clone()],
+                        group,
+                        field: 0,
+                    },
+                });
+            }
+        }
+        expected.push(AuditFinding {
+            fault: AuditFault::RequiredMissing,
+            site: AuditSite::Field {
+                root: 0,
+                branch: vec![0],
+                keys: vec![s("absent"), KeyScalar::Int(7)],
+                group: None,
+                field: 0,
+            },
+        });
+        assert_eq!(report.findings, expected);
+        assert_eq!(report.summary.entries, 3);
+        assert_eq!(digest.cells, cells);
+    }
+
+    #[test]
+    fn index_sorting_preserves_multiple_root_ownership_and_declaration_positions() {
+        let mut projection = StoreProjection::builder();
+        for name in ["first", "second"] {
+            let mut schema = StoreSchemaBuilder::root(name, vec![ScalarKind::Str]);
+            schema.scalar_field("title", ScalarKind::Str, true);
+            schema.open_branch("child", vec![ScalarKind::Int]);
+            schema.close_branch();
+            schema.index(BY_TITLE, true, vec![IndexComponent::field(0)]);
+            schema.index(
+                BY_ISBN,
+                true,
+                vec![IndexComponent::field(0), IndexComponent::key(0)],
+            );
+            projection.root(schema.finish().expect("schema"));
+        }
+        projection.site(0, SiteTarget::whole_payload());
+        projection.site(1, SiteTarget::whole_payload());
+        let projection = projection.finish().expect("projection");
+        let numbering = number_store(&projection);
+        let tables = Tables::new(&projection, &numbering);
+        assert_eq!(
+            tables
+                .roots
+                .iter()
+                .map(|root| root.family)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_eq!(
+            tables
+                .indexes
+                .iter()
+                .map(|index| (index.root, index.position))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (0, 0), (1, 1), (1, 0)]
+        );
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), projection.clone());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("txn");
+            for position in 0..2 {
+                let site = txn.site(position);
+                assert_eq!(
+                    txn.create_entry(
+                        &site,
+                        &[s("id")],
+                        EntryValue {
+                            fields: vec![vs("title")],
+                            groups: Vec::new(),
+                        }
+                    )
+                    .expect("create"),
+                    CreateOutcome::Created
+                );
+            }
+            assert!(matches!(txn.commit(), CommitResult::Committed));
+        }
+        let (report, _) = audit(&store);
+        assert!(report.is_clean(), "{:?}", report.findings);
+        assert_eq!(report.summary.index_cells, 4);
+        let mut engine = store.into_engine();
+        {
+            let mut txn = engine.begin().expect("begin");
+            txn.remove(&physical::index_cell_key(
+                numbering[0].root(),
+                &BY_TITLE,
+                &[s("title")],
+            ))
+            .expect("first root's declared index zero");
+            txn.remove(&physical::index_cell_key(
+                numbering[1].root(),
+                &BY_ISBN,
+                &[s("title"), s("id")],
+            ))
+            .expect("second root's declared index one");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        let store = DurableStore::from_engine(engine, projection);
+        let (report, _) = audit(&store);
+        assert_eq!(
+            report.findings,
+            vec![
+                AuditFinding {
+                    fault: AuditFault::IndexMissing,
+                    site: AuditSite::IndexCell {
+                        root: 0,
+                        index: 0,
+                        values: vec![s("title")]
+                    }
+                },
+                AuditFinding {
+                    fault: AuditFault::IndexMissing,
+                    site: AuditSite::IndexCell {
+                        root: 1,
+                        index: 1,
+                        values: vec![s("title"), s("id")]
+                    }
+                },
+            ]
+        );
+        assert_eq!(report.summary.index_cells, 2);
     }
 }

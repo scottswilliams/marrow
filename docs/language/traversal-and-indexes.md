@@ -185,15 +185,25 @@ Writes in the body do not change the frozen set. An entry created in the body
 is not visited. An entry erased by an earlier iteration keeps its frozen key,
 and a read through that key finds nothing, as the second test above shows.
 
-`N` bounds the frozen keys and body executions, not the total navigation work.
-An address that holds only branch descendants and no entry payload is not
-visited. Navigation skips each such address with one seek past its descendants,
-but may skip any number of them before finding a present entry or the end.
-The current engine-call count is proportional to `N + 1 + d`, where `d` is the
-number of descendant-only entries skipped. A family presence test,
-`exists(^books)` or `exists(^books[id].notes)`, has the same limitation. This
-navigation work is not bounded by the invocation's instruction budget
-([status](../status.md#bounds-and-platform)).
+`N` bounds the frozen keys and body executions. Acquiring those keys and the
+`more` result uses at most `N + 1` bounded scans in the addressed entry family.
+A family presence test, `exists(^books)` or `exists(^books[id].notes)`, uses
+one scan. Child families lie outside that range, so their populations add no
+navigation steps. Absent ancestors are not visited; a branch beneath one is
+still traversable when the program supplies its ancestor keys.
+
+Own payload encountered without its entry marker raises `run.corruption`,
+including during the extra step that decides `on more`. Once that step finds
+a valid marker key, it records `more` and inspects no later entry. Navigation
+checks marker-key structure and domain; marker values and complete payloads
+are checked by [logical inspection](../operations/README.md#auditing-a-store).
+
+The bound counts scan calls, not copied cells, backend time, or total memory.
+Each call can return a page containing own payload and later entries even
+though the step classifies only its first cell. Pages contain at most 64 cells
+with a soft 1 MiB key/value byte target; an oversized first cell is returned
+to make progress. Session setup, loop-body operations and commit work are
+separate ([storage implementation](../implementation/storage.md#navigating-entries)).
 
 The frozen keys are held as one list and count against the collection limit,
 so a walk over wide keys can reach `run.collection_limit` before `N` keys.

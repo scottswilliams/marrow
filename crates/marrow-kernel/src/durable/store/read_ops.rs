@@ -1,4 +1,4 @@
-//! Stateless read operations over a `ReadView`: whole-entry slot classification and the
+//! Stateless read operations over a `ReadView`: whole-entry presence and the
 //! presence, field, entry, and group reads both sessions delegate to.
 
 use std::collections::HashMap;
@@ -12,48 +12,19 @@ use crate::codec::key::KeyScalar;
 use crate::codec::value::decode_domain;
 use crate::equality::ValueDomain;
 
-/// The four-state classification of a whole-entry slot the bounded prefix probe
-/// yields.
-pub(super) enum SlotClass {
-    /// The payload marker is present: the entry has a payload.
-    Present,
-    /// No marker, but a branch descendant exists — a descendant-only node (children,
-    /// no payload). It reads as payload-absent; a create gives it a payload without
-    /// disturbing the descendants.
-    DescendantOnly,
-    /// No marker, but an own field or group leaf exists — a marker/payload mismatch,
-    /// corruption in every session: no write path stages a leaf without its marker.
-    Orphan,
-    /// No marker and nothing beneath: the slot is absent.
-    Absent,
-}
-
-/// One bounded prefix probe over an entry's marker `stem`: a point read of the
-/// marker plus, when the marker is absent, one bounded scan for the first cell
-/// beneath it. This is the single owner of whole-entry slot classification —
-/// separating an absent slot from a descendant-only node and from a marker/field
-/// mismatch — so create/read/replace/erase share one marker-first precedence rather
-/// than each re-deriving presence. The scan reads the node's own cells in key order,
-/// and own field leaves sort ahead of branch descendants, so the first cell decides
-/// (an orphan own-leaf takes precedence over a descendant, surfacing corruption).
-pub(super) fn probe_slot<V: ReadView>(cells: &V, stem: &[u8]) -> Result<SlotClass, KernelFault> {
+/// A marker get followed, only when absent, by one bounded own-payload scan.
+/// No other family shares the stem, so any cell returned without its marker is
+/// corruption. Create and whole reads share this check; child presence is independent.
+pub(super) fn probe_slot<V: ReadView>(cells: &V, stem: &[u8]) -> Result<Presence, KernelFault> {
     if read_raw(cells, stem)?.is_some() {
-        return Ok(SlotClass::Present);
+        return Ok(Presence::Present);
     }
     let page = cells.scan_after(stem, stem).map_err(KernelFault::Engine)?;
-    Ok(match page.first() {
-        None => SlotClass::Absent,
-        Some((cell_key, _)) => match physical::below_marker(stem, cell_key) {
-            // An own field leaf or a group leaf (both the node's own payload) below a
-            // markerless stem is a marker/payload mismatch — the orphan case.
-            physical::BelowMarker::OwnField | physical::BelowMarker::OwnGroup => SlotClass::Orphan,
-            physical::BelowMarker::BranchDescendant => SlotClass::DescendantOnly,
-            // An unrecognized structural tag is a shape the layout never writes: fail
-            // closed with corruption in every session, never tolerated as staging.
-            physical::BelowMarker::Corrupt => return Err(KernelFault::Corruption),
-            physical::BelowMarker::Foreign => SlotClass::Absent,
-        },
-    })
+    if page.is_empty() {
+        Ok(Presence::Absent)
+    } else {
+        Err(KernelFault::Corruption)
+    }
 }
 
 pub(super) fn op_presence<V: ReadView>(
@@ -99,14 +70,8 @@ pub(super) fn op_read_entry<V: ReadView>(
 ) -> Result<Option<EntryValue>, KernelFault> {
     let stem = node_stem(site, keys)?;
     let (fields, groups) = node_shape(site);
-    // Marker-first precedence through the one bounded prefix probe. A node with no
-    // payload marker reads as payload-absent whether it is empty or a descendant-only
-    // node (branch children, no payload). A markerless slot carrying an own leaf is a
-    // marker/payload mismatch.
-    match probe_slot(cells, &stem)? {
-        SlotClass::DescendantOnly | SlotClass::Absent => return Ok(None),
-        SlotClass::Orphan => return Err(KernelFault::Corruption),
-        SlotClass::Present => {}
+    if probe_slot(cells, &stem)? == Presence::Absent {
+        return Ok(None);
     }
     let values = read_record_leaves(cells, &stem, fields)?;
     // A present entry materializes each of its groups (its own payload) under the group
@@ -199,10 +164,8 @@ pub(super) fn op_read_group<V: ReadView>(
 ) -> Result<Option<EntryValue>, KernelFault> {
     let stem = node_stem(site, keys)?;
     let (number, fields) = group_target(site);
-    match probe_slot(cells, &stem)? {
-        SlotClass::DescendantOnly | SlotClass::Absent => return Ok(None),
-        SlotClass::Orphan => return Err(KernelFault::Corruption),
-        SlotClass::Present => {}
+    if probe_slot(cells, &stem)? == Presence::Absent {
+        return Ok(None);
     }
     let group_stem = physical::group_stem(&stem, number);
     Ok(Some(EntryValue {

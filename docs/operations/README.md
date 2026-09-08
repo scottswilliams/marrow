@@ -19,6 +19,10 @@ bounded batches, so a corpus larger than memory imports the same way.
 ledger `.marrow/ids` comes from one storeless `marrow run` before the import
 ([identity ledger](../tools/projects.md#identity-ledger)).
 
+Current tools provision stores with logical-head generation 2. The entry layout
+requires fresh provisioning; there is no automatic conversion of older stores
+([compatibility](../compatibility.md#versioning)).
+
 Both `import` and `run --store` run the program in a separate runner process,
 `marrow-runner`, installed beside `marrow` together with the `marrow-companions`
 manifest. The `marrow` process itself opens no store. A missing or altered
@@ -58,7 +62,8 @@ writes `.marrow/ids` before reporting this. `marrow run --store` never mints.
 ## Changing the program
 
 A store is bound to the program that provisioned it. Every `run --store`
-compiles the project and compares the result with that binding:
+compiles the project and, once the store's format is admitted, compares the
+result with that binding:
 
 - An identical program opens the store with no write.
 - A program whose code changed, and whose resources, store roots, indexes, and
@@ -81,6 +86,13 @@ when the compiled program is exactly the active binding; a code-only change is
 `store.image_not_active` until a `run --store` rebinds the store, and the
 other refusals above apply unchanged. Every refusal is decided before the
 store's engine opens, so a refused import writes nothing.
+
+A generation-1 store requires its matching older toolchain. Current tools
+refuse it with `store.format_version` before engine open, including for
+code-only rebind, audit, and import. Generation-1 tools likewise refuse
+generation-2 stores. These refusals preserve the engine file, head, and envelope; lock and
+owner-marker bookkeeping may still occur. Using the matching toolchain leaves
+the store usable. Rebind and import never migrate its layout.
 
 ## Interrupted commits
 
@@ -124,10 +136,11 @@ beneath absent parents is inspected too. An entry with only sparse fields may
 have no populated fields. All findings are counted; at most 256 are listed in
 deterministic scan and node-closure order.
 
-The digest is computed from entry-family keys and values, including data under
-absent parents. Index and metadata cells are excluded. Runs over unchanged
-entry content produce the same digest, and a same-value commit need not change
-it. The digest is reported, not stored; a recorded digest can be compared with
+The digest is computed from declared entry-family keys and values, including
+malformed cells in those families and data under absent parents. Index,
+metadata, and undeclared-family cells are excluded; undeclared cells are still
+findings. Runs over unchanged entry content produce the same digest, and a
+same-value commit need not change it. The digest is reported, not stored; a recorded digest can be compared with
 a later inspection under the same program. It does not authenticate the engine
 file or establish its origin. Substitution and rollback remain unqualified;
 an index under an identity absent from the active program is a logical finding,

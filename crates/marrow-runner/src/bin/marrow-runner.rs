@@ -649,8 +649,8 @@ fn render_audit(audit: &marrow_lifecycle::StoreAudit, store: &Path) -> String {
     } = audit;
     let _ = writeln!(
         out,
-        "entries {}, descendant-only {}, index cells {}, cells {}",
-        summary.entries, summary.descendant_only, summary.index_cells, summary.cells,
+        "entries {}, index cells {}, cells {}",
+        summary.entries, summary.index_cells, summary.cells,
     );
     let _ = writeln!(out, "digest {}", digest.to_hex());
     if summary.findings == 0 {
@@ -699,10 +699,6 @@ fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Jso
     ));
     head.push(("digest".to_string(), Json::Str(digest.to_hex())));
     head.push(("entries".to_string(), count(summary.entries)));
-    head.push((
-        "descendant_only".to_string(),
-        count(summary.descendant_only),
-    ));
     head.push(("index_cells".to_string(), count(summary.index_cells)));
     head.push(("cells".to_string(), count(summary.cells)));
     head.push(("findings".to_string(), count(summary.findings)));

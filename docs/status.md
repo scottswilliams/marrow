@@ -13,7 +13,7 @@ each behavior.
 | Resources | Required and sparse fields, groups, keyed branches nested to 16 levels, and local resource values. | [Resources](language/resources.md) |
 | Durable places | Keyed store roots with one or several key components, and several roots per project. Whole-entry creation and replacement, so a present entry is complete; field and group writes through a `place` or pin that a presence proof covers (`check.requires_presence` otherwise), with proofs ended by an erase of the family or a call that erases it; required field and group-leaf reads through a proved place have their declared types; sparse and untested reads are optional; `delete` as the one clearing form; `exists`; entry identity `Id(^root)`; and each export's access demand from `marrow check`. | [Durable places](language/durable-places.md) |
 | Transactions | One `transaction` block per mutating export. Every `return` inside it commits; a fault rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
-| Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
+| Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; root and branch key acquisition uses at most `N + 1` bounded scans, independent of child populations; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs every `test` block; a durable test runs against a fresh in-memory store. | [Tests](language/tests.md) |
 | CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. | [Language server](tools/lsp.md) |
@@ -32,6 +32,12 @@ expectations, and the journeys that run them against a built toolchain through
 the public commands. This repository keeps short reference examples,
 conformance fixtures, and compiler-local regressions.
 
+An index that projects only entry keys has an unresolved maintenance defect:
+entry creation does not populate it, and unique key-subset collisions are not
+enforced. The same maintenance path omits index removal on entry erasure.
+Logical inspection reports missing or orphaned index cells; it does not repair
+them ([indexes](language/traversal-and-indexes.md#index-declarations)).
+
 ## Not yet available
 
 - Third-party packages ([packages](future/packages.md)).
@@ -49,13 +55,14 @@ conformance fixtures, and compiler-local regressions.
   `store.contract_changed` refusal and the prior program stays usable
   ([admission and activation](future/admission-and-activation.md)).
 - Backup and restore ([local applications](future/local-applications.md)).
+- Complete subtree enumeration and removal when absent ancestors' keys are
+  unknown ([deleting](language/durable-places.md#deleting)).
 - Full read-only physical-checksum verification and complete image/schema/store
   validation followed by fresh admission before recovery resumes service. The
   logical audit does not establish these requirements
   ([auditing a store](operations/README.md#auditing-a-store)).
-- Bare whole-entry/group reads through a proved place, automatic traversal-pin
-  presence facts carried by region, and an ordered family presence namespace
-  for bounded navigation. Today required fields and group leaves read bare
+- Bare whole-entry/group reads through a proved place and automatic traversal-pin
+  presence facts carried by region. Today required fields and group leaves read bare
   through an explicit proof, and a pin is proved inside its own iteration
   ([durable programming](future/durable-programming.md)).
 - Local reader/writer overlap and served execution with several terminals and
@@ -71,13 +78,15 @@ Every limit is a fixed number: source nesting, declaration counts, key
 components, indexes per root, member and value depth, the instruction budget,
 and text and collection sizes ([Execution limits](language/execution-limits.md#limits)).
 
-One current limitation lies outside those bounds: durable traversal and family
-presence tests skip descendant-only entries one at a time. The number skipped
-is not bounded by `at most N` or by the invocation's instruction budget
-([traversal](language/traversal-and-indexes.md#bounded-durable-traversal)). Bounded
-family navigation is part of the selected
-[durable-language direction](future/durable-programming.md#evidence); it is not
-implemented yet.
+Root and branch traversal acquires its frozen keys and `more` result with at
+most `N + 1` bounded scans; a family presence test uses one. Child families lie
+outside that scan range, including children whose ancestors are absent.
+Encountered own payload without its entry marker faults
+([traversal](language/traversal-and-indexes.md#bounded-durable-traversal)). These
+are engine-call bounds, not latency or memory-residency guarantees. A scan page
+contains at most 64 cells with a soft 1 MiB key/value byte target; an oversized
+first cell is returned to make progress
+([storage](implementation/storage.md#navigating-entries)).
 
 The toolchain builds on Linux and macOS with Rust 1.89; opening a store on disk
 has its own platform and layout requirements

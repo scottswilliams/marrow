@@ -2,6 +2,7 @@
 
 use super::engine_call_support::{Counters, CountingEngine};
 use super::*;
+use crate::durable::{AuditFault, AuditSite, ContentDigest};
 use marrow_store::Cell;
 use marrow_temporal::{
     SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
@@ -51,16 +52,10 @@ fn idle_refusal<T: Debug>(
     }
 }
 
-fn native(temp: &TempDir) -> NativeEngineOwner {
-    NativeEngineOwner::provision(&temp.store()).expect("provision native key fixture");
-    NativeEngineOwner::acquire_existing(&temp.store())
-        .expect("hold native key fixture")
-        .bind_and_open_existing(
-            crate::durable::NativeOpenAccess::ReadWrite,
-            [0x4B; 16],
-            || Ok::<_, std::convert::Infallible>(()),
-        )
-        .expect("open native key fixture")
+struct Discard;
+
+impl ContentDigest for Discard {
+    fn absorb(&mut self, _key: &[u8], _value: &[u8]) {}
 }
 
 // Each fixture holds fewer than 64 cells. Reuse one engine per replay instead of
@@ -161,20 +156,26 @@ fn stem(schema: &StoreSchema, level: Level, parent: &KeyScalar, key: &KeyScalar)
     let root = root_numbering(schema)[0].root();
     match level {
         Level::Root => physical::marker_key(root, std::slice::from_ref(key)),
-        Level::Branch => physical::branch_child_stem(
-            &physical::marker_key(root, std::slice::from_ref(parent)),
-            branch_num(schema, &[0]),
-            std::slice::from_ref(key),
-        ),
+        Level::Branch => {
+            physical::marker_key(branch_num(schema, &[0]), &[parent.clone(), key.clone()])
+        }
     }
 }
 
-fn descendant(schema: &StoreSchema, level: Level, stem: &[u8], child: &KeyScalar) -> Vec<u8> {
+fn descendant(
+    schema: &StoreSchema,
+    level: Level,
+    parent: &KeyScalar,
+    key: &KeyScalar,
+    child: &KeyScalar,
+) -> Vec<u8> {
     let path: &[usize] = match level {
         Level::Root => &[0],
         Level::Branch => &[0, 0],
     };
-    physical::branch_child_stem(stem, branch_num(schema, path), std::slice::from_ref(child))
+    let mut keys = level.ancestors(parent);
+    keys.extend([key.clone(), child.clone()]);
+    physical::marker_key(branch_num(schema, path), &keys)
 }
 
 fn marker(key: Vec<u8>) -> Cell {
@@ -198,6 +199,20 @@ fn check_bad_layer(
 ) {
     let site = session.site(level.site());
     let ancestors = level.ancestors(parent);
+    if matches!(position, Position::Descendant) {
+        assert_eq!(
+            session.iterate_bounded(&site, &ancestors, None, bound(1)),
+            Ok(BoundedKeys {
+                keys: Vec::new(),
+                more: false
+            }),
+        );
+        assert_eq!(
+            session.family_populated(&site, &ancestors),
+            Ok(Presence::Absent)
+        );
+        return;
+    }
     rejected(
         session.iterate_bounded(&site, &ancestors, None, bound(1)),
         label,
@@ -223,11 +238,15 @@ fn bad_layers<E: ByteEngine>(mut engine: E, failures: &mut Vec<String>) {
                 let bad = stem(&schema, level, &valid, &invalid);
                 let cells = match position {
                     Position::First => vec![marker(bad)],
-                    Position::Descendant => vec![marker(descendant(&schema, level, &bad, &valid))],
+                    Position::Descendant => {
+                        vec![marker(descendant(&schema, level, &valid, &invalid, &valid))]
+                    }
                     Position::More => {
                         vec![marker(stem(&schema, level, &valid, &valid)), marker(bad)]
                     }
                 };
+                let malformed_ancestor =
+                    matches!(position, Position::Descendant).then(|| cells[0].0.clone());
                 let mut store = seeded(engine, layer_projection(&schema), cells);
                 let label = format!("{engine_type}/{kind:?}/{level:?}/{position:?}");
                 {
@@ -242,6 +261,14 @@ fn bad_layers<E: ByteEngine>(mut engine: E, failures: &mut Vec<String>) {
                         .expect("transaction");
                     check_bad_layer(&mut txn, level, &valid, position, &label, failures);
                 }
+                if let Some(key) = malformed_ancestor {
+                    let report = store
+                        .logical_audit(&mut Discard)
+                        .expect("audit stored ancestor");
+                    assert_eq!(report.findings.len(), 1, "{label}: {:?}", report.findings);
+                    assert_eq!(report.findings[0].fault, AuditFault::Undecodable);
+                    assert_eq!(report.findings[0].site, AuditSite::Cell { key });
+                }
                 engine = store.into_engine();
             }
         }
@@ -253,7 +280,7 @@ fn stored_layer_keys_refuse_wrong_kinds_and_domains_on_both_engines() {
     let mut failures = Vec::new();
     bad_layers(MemoryEngine::new(), &mut failures);
     let temp = TempDir::new("key-domains-layer");
-    bad_layers(native(&temp), &mut failures);
+    bad_layers(native_fixture(&temp), &mut failures);
     assert!(
         failures.is_empty(),
         "invalid stored layer keys: {failures:#?}"
@@ -327,12 +354,7 @@ fn good_layers<E: ByteEngine>(mut engine: E) {
     }
     let schema = layer_schema(ScalarKind::Int);
     for level in [Level::Root, Level::Branch] {
-        let skipped = descendant(
-            &schema,
-            level,
-            &stem(&schema, level, &ki(0), &ki(1)),
-            &ki(0),
-        );
+        let skipped = descendant(&schema, level, &ki(0), &ki(1), &ki(0));
         for present in [false, true] {
             let mut cells = vec![marker(skipped.clone())];
             if present {
@@ -373,7 +395,7 @@ fn good_layers<E: ByteEngine>(mut engine: E) {
 fn valid_layer_key_domains_keep_order_boundaries_and_descendant_independence() {
     good_layers(MemoryEngine::new());
     let temp = TempDir::new("key-domains-valid");
-    good_layers(native(&temp));
+    good_layers(native_fixture(&temp));
 }
 
 const SCAN: [u8; 16] = [0xA1; 16];
@@ -488,7 +510,7 @@ fn stored_index_components_and_composite_sources_refuse_invalid_domains() {
     let mut failures = Vec::new();
     bad_indexes(MemoryEngine::new(), &mut failures);
     let temp = TempDir::new("key-domains-index");
-    bad_indexes(native(&temp), &mut failures);
+    bad_indexes(native_fixture(&temp), &mut failures);
     assert!(
         failures.is_empty(),
         "invalid stored index keys: {failures:#?}"
@@ -559,7 +581,7 @@ fn good_indexes<E: ByteEngine>(mut engine: E) {
 fn valid_index_domains_keep_composite_identity_and_inclusive_exact_hits() {
     good_indexes(MemoryEngine::new());
     let temp = TempDir::new("key-domains-index-valid");
-    good_indexes(native(&temp));
+    good_indexes(native_fixture(&temp));
 }
 
 #[test]

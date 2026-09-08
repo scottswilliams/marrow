@@ -17,9 +17,7 @@ use super::address::{
 };
 use super::handle::WITNESS;
 use super::index_ops::{op_index_lookup, op_index_scan};
-use super::read_ops::{
-    SlotClass, op_presence, op_read_entry, op_read_field, op_read_group, probe_slot,
-};
+use super::read_ops::{op_presence, op_read_entry, op_read_field, op_read_group, probe_slot};
 use super::traverse::{op_family_populated, op_iterate_bounded};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{decode_domain, encode_domain};
@@ -337,16 +335,11 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         require_complete(fields, groups, &entry)?;
         let stem = node_stem(site, keys)?;
         let planner = Planner::new();
-        // Marker-first precedence through the one bounded prefix probe: a create over
-        // a present payload is a no-op, while a create over an absent or
-        // descendant-only slot writes the payload. `node_write` stages only the marker
-        // and the node's own present field leaves — never a branch tag — so a
-        // descendant-only node gains a payload without its branch descendants being
-        // touched. A markerless own leaf is a marker/payload mismatch in every session.
+        // The probe refuses orphan payload before staging. The planner touches only
+        // this entry's marker and own payload; other families remain independent.
         match probe_slot(self.txn(), &stem)? {
-            SlotClass::Present => Ok(CreateOutcome::AlreadyPresent),
-            SlotClass::Orphan => Err(KernelFault::Corruption),
-            SlotClass::DescendantOnly | SlotClass::Absent => {
+            Presence::Present => Ok(CreateOutcome::AlreadyPresent),
+            Presence::Absent => {
                 let maintains = self.maintains_root(site);
                 let old = if maintains {
                     self.read_projected(
@@ -445,10 +438,8 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         } else {
             Vec::new()
         };
-        // Whole-node removal through the node-parametric planner: marker, every own field
-        // leaf, and every group leaf, by exact key — a branch tag is never enumerated, so a
-        // node's keyed descendants survive an erase of its payload while its groups (its own
-        // payload) are swept.
+        // Remove the marker and every own field/group leaf by exact key. Child
+        // entries occupy separate families and survive erasure of this payload.
         let ops = planner.node_erase(&stem, fields, groups);
         self.apply(ops)?;
         if maintains {

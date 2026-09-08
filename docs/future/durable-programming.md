@@ -55,7 +55,10 @@ fixpoint.
 
 Unsupported images are rejected without changing stored data. Images using
 retired instructions require recompilation. General migration of stored data
-is future work. Ordinary exports should initialize and change application data;
+is future work; the current entry-family layout requires fresh provisioning,
+and older stores require matching tools
+([compatibility](../compatibility.md#versioning)). Ordinary exports should
+initialize and change application data;
 retirement of the current data-populating importer is future work. The EMR
 baseline data in the `marrow-acceptance` repository needs explicit application
 seed exports; replaying ordinary transitions changes its meaning. A source migration can
@@ -74,6 +77,11 @@ local increment; [served execution](served-execution.md) retains that same
 one-store model for several terminals. Parallel mutating bodies and compiled
 reservations are deferred until a measured application justifies them. Backup
 and restore are [local applications](local-applications.md).
+
+Branch navigation beneath an absent ancestor requires its keys. Walking
+present parents cannot discover children beneath unknown absent ancestors.
+Complete subtree enumeration and removal, including such data, remain future
+work; the current bounded traversals do not supply backup or restore.
 
 An index is built from one root's own keys and fields. A computed or aggregate
 index is not planned.
@@ -106,15 +114,12 @@ checked address reads. Measure allocations and work as declared field width,
 referenced sites and executed operations vary independently; include wide groups
 and indexed updates. Sparse metadata and group-projection optimization are
 separate work. Every kernel operation must have an engine-call bound from its
-declared shape or explicit traversal limit. Family navigation must visit present
-immediate entries without a population-dependent walk through descendant-only
-prefixes; the first increment relocates entry presence into an ordered family
-namespace rather than adding a second membership index. Preserve bounded orphan
-checks when separating presence from payload addresses. These structural bounds
-let the existing instruction budget bound invocation engine-call counts without
-a new per-operation counter. Count setup and commit work too, varying unrelated
-stored population independently. This is not a backend CPU, allocation or
-latency guarantee; measure setup and disposal separately.
+declared shape or explicit traversal limit. Preserve the current family
+navigation bound and encountered-orphan checks
+([storage implementation](../implementation/storage.md#navigating-entries)).
+Count setup and commit work too, varying unrelated stored population
+independently. Scan-call bounds do not establish backend CPU, allocation or
+latency guarantees; measure returned pages, setup and disposal separately.
 Record Marrow compile latency first, test wall time second, and Rust build time
 third. These are evidence requirements, not measured benefits.
 

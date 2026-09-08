@@ -1266,3 +1266,72 @@ fn a_key_tuple_arity_change_alone_is_a_durable_contract_refusal() {
         "the refusal rewrote the head it refused",
     );
 }
+
+/// Old layouts refuse before exact-active attachment or a body-only rebind can
+/// open the engine. A broken engine makes the ordering observable.
+#[test]
+fn generation_one_refuses_active_and_rebind_before_engine_open() {
+    let image = compile(BASE_SOURCE, BASE_IDS);
+    let edited = compile(&BASE_SOURCE.replace("?? 0", "?? 1"), BASE_IDS);
+    assert_ne!(image.image_id(), edited.image_id());
+    assert!(active_binding(&image).facts_equal(&active_binding(&edited)));
+    for presented in [&image, &edited] {
+        for broken_engine in [true, false] {
+            let scratch = Scratch::new("old-generation");
+            let dir = scratch.dir();
+            provision_from(dir, &image);
+            let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
+            let current_head = std::fs::read(&head_path).expect("current head");
+            let mut old_head = current_head.clone();
+            old_head[4] = 1;
+            let body_len = old_head.len() - 32;
+            let digest = marrow_image::StoreHeadDigest::compute(&old_head[..body_len]);
+            old_head[body_len..].copy_from_slice(digest.bytes());
+            std::fs::write(&head_path, old_head).expect("generation-one head");
+            if broken_engine {
+                std::fs::write(dir.join(marrow_lifecycle::ENGINE_FILE), b"not an engine")
+                    .expect("broken engine control");
+            }
+            let before: Vec<_> = [
+                marrow_lifecycle::ENGINE_FILE,
+                marrow_lifecycle::HEAD_FILE,
+                marrow_lifecycle::ENVELOPE_FILE,
+            ]
+            .into_iter()
+            .map(|name| (name, std::fs::read(dir.join(name)).expect("before refusal")))
+            .collect();
+            let outcome = attach(dir, prepare(presented.clone()));
+            let error = match outcome {
+                Err(error) => error,
+                Ok(_) => panic!("an older layout must not be attached or rebound"),
+            };
+            assert_eq!(error.code(), "store.format_version");
+            assert!(matches!(
+                error,
+                LifecycleError::Open(marrow_lifecycle::OpenError::Admission(
+                    marrow_lifecycle::AdmissionError {
+                        entry: marrow_lifecycle::StoreEntry::Head,
+                        fault: marrow_lifecycle::AdmissionFault::Format(
+                            marrow_lifecycle::FormatError::UnknownVersion { found: 1 }
+                        ),
+                    }
+                ))
+            ));
+            for (name, bytes) in before {
+                assert_eq!(
+                    std::fs::read(dir.join(name)).expect("after refusal"),
+                    bytes,
+                    "{name}"
+                );
+            }
+            if !broken_engine {
+                std::fs::write(head_path, current_head).expect("restore current head");
+                let outcome = attach(dir, prepare(presented.clone())).expect("lock released");
+                assert_eq!(
+                    matches!(outcome, AttachOutcome::Rebound { .. }),
+                    presented.image_id() != image.image_id()
+                );
+            }
+        }
+    }
+}

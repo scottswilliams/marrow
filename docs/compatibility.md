@@ -16,6 +16,13 @@ distribution. A build is identified by the source revision it was built from. A
 store records the format version it was provisioned with, and a build that does
 not support that version refuses to open it (`store.format_version`).
 
+The current logical-head generation is 2. Its entry-family layout requires
+fresh provisioning. Generation-1 stores remain usable with their matching
+older toolchain; current tools refuse them, and generation-1 tools refuse
+generation-2 stores. Neither a code-only rebind nor `import` converts a store.
+A version refusal preserves the engine file, head, and envelope and occurs before engine
+open ([changing the program](operations/README.md#changing-the-program)).
+
 ## Platforms
 
 The source builds on Linux and macOS with Rust 1.89. Opening a store on disk is
@@ -44,7 +51,7 @@ The Rust crates are internal. The public interface is the `marrow` command line,
 its exit codes, its JSONL records, and the dotted diagnostic codes. A program
 that links a crate directly has no compatibility promise.
 
-Raw store files are private implementation data with no documented format. A
+Raw store files are private implementation data with no public format contract. A
 store is bound to one program;
 [operations](operations/README.md#changing-the-program) states which program
 changes it accepts. Backup, restore, and schema evolution are future work

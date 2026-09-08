@@ -6,8 +6,7 @@
 //! binding facts a binding-only rebind compares for exact equality — the reserved
 //! `commit_position`, `data_digest`, and `data_digest_position` slots, and the
 //! [`HeadMap`]. Provision writes the reserved slots as zero and maintains no commit
-//! position: provision is not a population point (FR01 §2), so a later full-walk operation
-//! is what turns sequencing on and populates the data digest under a head-version bump.
+//! position. Logical inspection reports its digest separately without populating them.
 //!
 //! Decode is strict: magic, version, every fixed field, the embedded head map's bounds and
 //! bijection, the sealing digest, and no trailing bytes.
@@ -22,12 +21,12 @@ use crate::headmap::{HeadMap, MAX_HEAD_MAP_ENTRIES};
 /// The head magic: "MWSH" (Marrow Store Head).
 const MAGIC: &[u8; 4] = b"MWSH";
 
-/// The head container format version this build writes and reads. Version 1 records the
-/// store's accepted deployment ceiling — the separately owned maximum authority the
-/// atom-granular admission check enforces at attach (G03) — as a length-prefixed atom-set
-/// payload after the head map. A future decision to populate the reserved digest slots at
-/// provision, or to maintain the commit position from birth, bumps this version (FR01 §2).
-const HEAD_VERSION: u8 = 0x01;
+/// The head generation selects the physical entry layout before engine open.
+/// Generation 2 uses a static family per root/branch and the full ancestor-and-own
+/// key tuple. The head fields retain their encoding, including the accepted
+/// ceiling and reserved-zero digest/sequencing slots. Earlier layouts refuse;
+/// attachment, audit and import never reinterpret or rewrite their cells.
+const HEAD_VERSION: u8 = 0x02;
 
 /// A fixed upper bound on the accepted-ceiling payload the head carries, validated before
 /// allocation (campaign law 9). Comfortably above any real program's whole-demand atom-set
@@ -39,7 +38,7 @@ const MAX_ACCEPTED_CEILING_BYTES: u32 = 4 * 1024 * 1024;
 /// data-digest slots.
 const HEAD_FIXED_PREFIX_BYTES: u64 = 4 + 1 + 1 + 32 * 3 + 8 + 32 + 8;
 
-/// The exact ceiling a v1 head file may occupy, applied by an owner-held admission read
+/// The exact ceiling a current head file may occupy, applied by an owner-held admission read
 /// before it allocates for the body. It is the encoder's own maximum: the fixed prefix, an
 /// identity map at [`MAX_HEAD_MAP_ENTRIES`] entries behind its high-water and count, the
 /// length-prefixed accepted-ceiling payload at [`MAX_ACCEPTED_CEILING_BYTES`], and the
@@ -122,8 +121,8 @@ pub struct LogicalHead {
     /// The monotone confirmed-commit sequence position (FR01 §1 R1). Reserved: zero means
     /// unsequenced, and F02a maintains no position.
     pub commit_position: u64,
-    /// The logical data-root digest (FR01 §2). Reserved: all zero until a later full-walk
-    /// operation populates it under a head-version bump.
+    /// The logical data-root digest slot. Reserved: all zero. Logical inspection
+    /// reports a digest without persisting it here.
     pub data_digest: [u8; 32],
     /// The commit position the data digest was computed at (FR01 §2). Reserved: zero.
     pub data_digest_position: u64,
@@ -207,10 +206,8 @@ impl LogicalHead {
         let commit_position = reader.u64()?;
         let data_digest = reader.array::<32>()?;
         let data_digest_position = reader.u64()?;
-        // A v1 head carries no claim in the reserved slots: sequencing and the data digest are
-        // turned on only under a later head-version bump (FR01 §2, coherence finding F-4).
-        // Enforcing zero on read — not only on write — makes the incoherent "stale digest reads
-        // current" state unrepresentable even for a validly-resealed forged head.
+        // Reserved slots carry no sequencing or content claim. Enforce zero even
+        // for a validly resealed head so stale metadata cannot read as current.
         if commit_position != 0 || data_digest != [0u8; 32] || data_digest_position != 0 {
             return Err(FormatError::Malformed {
                 reason: "the reserved sequencing and data-digest slots must be zero",
@@ -283,19 +280,30 @@ mod tests {
         assert_eq!(decoded.accepted_ceiling, ceiling_payload());
     }
 
-    /// The head container version is 1: a head byte stream tagged v0 (the pre-G03 layout,
-    /// which had no accepted-ceiling section) is refused, never best-effort decoded.
+    /// Prefix admission and full decoding accept exactly the written generation.
     #[test]
-    fn decode_rejects_a_v0_head() {
-        let mut bytes = head().encode();
-        bytes[4] = 0x00; // the version byte, right after the 4-byte magic
-        let body_len = bytes.len() - 32;
-        let resealed = StoreHeadDigest::compute(&bytes[..body_len]);
-        bytes[body_len..].copy_from_slice(resealed.bytes());
+    fn decode_and_prefix_admission_refuse_other_generations() {
+        let current = head().encode();
+        assert_eq!(current[4], 2);
         assert_eq!(
-            LogicalHead::decode(&bytes),
-            Err(FormatError::UnknownVersion { found: 0 }),
+            file_ceiling(current[..5].try_into().expect("prefix")),
+            Ok(MAX_HEAD_FILE_BYTES)
         );
+        for version in [0, 1, 3] {
+            let mut bytes = current.clone();
+            bytes[4] = version;
+            let body_len = bytes.len() - 32;
+            let resealed = StoreHeadDigest::compute(&bytes[..body_len]);
+            bytes[body_len..].copy_from_slice(resealed.bytes());
+            assert_eq!(
+                LogicalHead::decode(&bytes),
+                Err(FormatError::UnknownVersion { found: version })
+            );
+            assert_eq!(
+                file_ceiling(bytes[..5].try_into().expect("prefix")),
+                Err(FormatError::UnknownVersion { found: version })
+            );
+        }
     }
 
     /// A tampered accepted-ceiling byte breaks the sealing digest: the head is digest-sealed
@@ -363,7 +371,7 @@ mod tests {
         );
     }
 
-    /// A v0 head whose reserved slots are forged nonzero — and validly resealed so the digest
+    /// A head whose reserved slots are forged nonzero — and validly resealed so the digest
     /// passes — is rejected on decode (FR01 §2, coherence finding F-4): zero-ness is enforced
     /// on read, not only on write, so the incoherent "stale digest reads current" state is
     /// unrepresentable.

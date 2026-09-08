@@ -114,11 +114,10 @@ The first is a storeless command-line program, the second a local application
 with its own store, and the third a small served system for a few terminals
 sharing one store. Each stage adds deployment semantics and rewrites nothing in
 the program to express concurrency. Pre-release language changes can still
-require source and stored-format migration; the selected next durable-language
-increment is [checked places and complete entries](future/durable-programming.md).
-It improves serial programs before adding worker infrastructure. Today, a
-storeless program runs from a source install, and a
-store on disk runs with the
+require source changes and fresh stores when stored formats change. Today,
+serial durable programs use [complete entries and checked places](language/durable-places.md)
+with [bounded traversal](language/traversal-and-indexes.md). A storeless program
+runs from a source install, and a store on disk runs with the
 [companion layout](install.md#running-against-a-store); a distributable
 [local application](future/local-applications.md) and a
 [served system](future/served-execution.md) are future work ([status](status.md)).

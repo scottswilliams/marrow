@@ -165,10 +165,7 @@ fn a_clean_store_audits_with_a_stable_digest_and_exit_zero(toolchain: &Path) {
         out.contains("Physical integrity was not checked.\n"),
         "{out}"
     );
-    assert!(
-        out.contains("entries 2, descendant-only 0, index cells 0, cells 6\n"),
-        "{out}"
-    );
+    assert!(out.contains("entries 2, index cells 0, cells 6\n"), "{out}");
     assert!(out.contains("\nno findings\n"), "{out}");
     let digest = out
         .lines()
@@ -186,10 +183,7 @@ fn a_clean_store_audits_with_a_stable_digest_and_exit_zero(toolchain: &Path) {
     let out = text(&second.stdout);
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 1, "{out}");
-    assert!(
-        lines[0].starts_with("{\"cells\":6,\"descendant_only\":0,\"digest\":\""),
-        "{out}"
-    );
+    assert!(lines[0].starts_with("{\"cells\":6,\"digest\":\""), "{out}");
     assert!(
         lines[0].contains(&format!("\"digest\":\"{digest}\"")),
         "{out}"

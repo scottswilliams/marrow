@@ -97,10 +97,9 @@ impl Planner {
 
     /// The writes that establish the node with marker `stem` from `entry` over `fields`
     /// and `groups`: its marker, then one leaf per present top-level field, then each
-    /// group's present leaves, in order. Descendant-only by construction — it writes the
-    /// marker and the node's own leaves (its top-level fields and its groups) and nothing
-    /// beneath a branch tag, so giving a descendant-only node a payload never touches its
-    /// keyed descendants. `entry.groups` aligns to `groups`. A value outside its codec
+    /// group's present leaves, in order. It writes the marker and own field/group
+    /// leaves; child entries occupy separate families. `entry.groups` aligns to
+    /// `groups`. A value outside its codec
     /// range is a [`KernelFault::ValueRange`] and no partial plan is returned.
     pub(super) fn node_write(
         &self,
@@ -132,7 +131,7 @@ impl Planner {
 
     /// The removals that erase the payload of the node with marker `stem` over `fields`
     /// and `groups`: its marker, every own field-leaf cell, and every group-leaf cell. It
-    /// enumerates only the node's own cells — never a branch tag — so a payload erase
+    /// enumerates only the node's own cells, so a payload erase
     /// preserves the node's keyed descendants (the descendant-preserving erase law) while
     /// dropping its groups' leaves (its own payload, per the exact-replacement law).
     pub(super) fn node_erase(
@@ -549,10 +548,10 @@ mod tests {
 
         // Sibling cells the entry owns, none of which a group op may name.
         let siblings = vec![
-            stem.clone(),                                                  // the entry marker
-            planner.node_field_leaf(&stem, fields[0].number),              // a top-level field leaf
+            stem.clone(),                                                      // the entry marker
+            planner.node_field_leaf(&stem, fields[0].number), // a top-level field leaf
             planner.node_field_leaf(&physical::group_stem(&stem, 40), 31), // sibling group leaf
-            physical::branch_child_stem(&stem, 50, &[KeyScalar::Int(7)]),  // a branch cell
+            physical::marker_key(50, &[KeyScalar::Int(1), KeyScalar::Int(7)]), // a branch cell
         ];
         for sibling in &siblings {
             assert!(

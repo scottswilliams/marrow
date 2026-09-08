@@ -117,8 +117,11 @@ field. `exists` answers presence with a `bool`. An explicit guard over a named
 place establishes a presence proof; a guard over an inline path does not change
 the types of later reads.
 
-`exists(^books)` is true when some entry of `^books` has fields of its own, and
-`exists(^books[id].notes)` asks the same of a branch.
+`exists(^books)` is true when `^books` has a present immediate entry, including
+an entry whose fields are all sparse and unset. `exists(^books[id].notes)` asks
+the same of that branch, whether or not the book entry is present. Each family
+test uses one bounded scan and faults on encountered own payload without its
+entry marker ([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
 The test writes `^books[1]` with a bare statement. A test body owns no
 transaction: it touches durable data directly, or it drives exports that do,
@@ -437,9 +440,10 @@ fields and further branches, nested at most 16 levels. Every operation on an
 entry applies to a branch entry at its own address.
 
 The test writes a tag under a note and a book that do not exist. The write is
-admitted. Each ancestor is then descendant-only: it has keyed descendants and no
-fields of its own, so `exists` is false for it. Giving the note its own fields
-later leaves the tag in place.
+admitted: each branch entry has its own presence, independent of its ancestors.
+`exists` remains false for the note and book. Creating the note later leaves
+the tag in place. A program can address or traverse a branch beneath an absent
+ancestor when it supplies that ancestor's keys.
 
 ## Deleting
 
@@ -447,7 +451,7 @@ later leaves the tag in place.
 proof. `delete ^books[id].subtitle` clears a sparse field, `delete
 ^books[id].details.language` a sparse group leaf, `delete ^books[id].details`
 a group whose leaves are all sparse, and `delete ^books[id]` the entry's own
-fields, after which `exists(^books[id])` is false. Each form is also written
+payload, after which `exists(^books[id])` is false. Each form is also written
 through a place, `delete book.subtitle`. Clearing a field that is already
 absent does nothing. A note under the entry stays, because a branch entry is
 its own node.
@@ -520,15 +524,15 @@ test "a descendant-only note is not visited" {
 ```
 
 The outer loop visits note `1`, whose inner loop deletes its tag, then deletes
-the note. Note `2` has no fields of its own, so the outer loop skips it and its
-tag survives. The last statement deletes the book's own fields. `hasNotes`
+the note. Note `2` is absent, so the outer loop does not visit it and its tag
+survives. The last statement deletes the book's own payload. `hasNotes`
 then returns false even though the tag under note `2` remains.
 
 The empty `on more` blocks also leave entries beyond either limit untouched;
 this function does not report completion. A removal workflow must account for
-those limits and for descendants whose ancestors have no payload. The current
-language has no whole-subtree delete or traversal that enumerates such
-descendant-only ancestors
+those limits and for descendants whose ancestors are absent. Walking present
+parents cannot discover those children's ancestor keys. The current language
+has no whole-subtree delete or traversal that enumerates absent ancestors
 ([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
 ## Access demand

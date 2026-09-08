@@ -1,27 +1,14 @@
-//! Absence gate: `durable/physical.rs` is the single owner of the durable cell
-//! layout — the structural tags that discriminate roots, fields, branches, and
-//! cursors, and the raw key construction that spells a cell key from a name and a
-//! key value.
-//!
-//! Two invariants ride this gate. First, the durable modules widened the one
-//! consequence planner and its node-parametric primitives to serve branch entries one
-//! level down without introducing a second marker/leaf topology: no durable module
-//! other than `physical.rs` may call the escaped-name key encoder that builds a cell
-//! key. Second, a structural-tag byte literal (`0x20` root, `0x28` group, `0x30` branch,
-//! `0xFF` cursor) must not leak beyond the layout owner into any module that consumes the
-//! store — not the other durable modules, and not the VM or compiler, which name typed
-//! effects and sites rather than physical cell tags. A second owner — a hand-rolled
-//! branch key, a duplicate tag constant in any of those trees — would trip this gate.
-//! Consuming `physical.rs`'s own published `MARKER_VALUE` constant by name is not a
-//! second owner and is allowed.
+//! The physical module exclusively owns durable cell tags and key construction.
+//! Roots and branches share its static-family entry grammar; obsolete nested
+//! branch constructors and descendant-skipping state must not return.
 
 use std::path::{Path, PathBuf};
 
 /// The one durable-module file allowed to spell the cell layout.
 const LAYOUT_OWNER: &str = "physical.rs";
 
-/// The structural-tag byte literals only the layout owner may spell: the root, group,
-/// branch, and cursor discriminators. (`0x10` field and `0x00` marker terminator are
+/// Structural-tag literals belong to the layout owner. The retired branch tag
+/// remains guarded against reintroduction. (`0x10` field and `0x00` marker terminator are
 /// omitted: those byte values are too common in unrelated code to scan for without noise;
 /// the root, group, branch, and cursor tags are distinctive enough to make a second owner
 /// conspicuous.)
@@ -130,5 +117,23 @@ fn raw_cell_key_construction_lives_only_in_the_layout_owner() {
             "{label} calls `{RAW_KEY_ENCODER}` to build a cell key; only \
              durable/{LAYOUT_OWNER} constructs durable cell keys"
         );
+    }
+}
+
+#[test]
+fn obsolete_nested_branch_navigation_is_absent() {
+    let retired = [
+        "branch_child_stem",
+        "branch_family_prefix",
+        "enum SlotClass",
+        "enum StemTag",
+        "CellKind::Descendant",
+        "pub descendant_only:",
+        "any_descendant",
+    ];
+    for (label, source) in rust_sources_under(&durable_dir(), None) {
+        for name in retired {
+            assert!(!source.contains(name), "{label} retains {name}");
+        }
     }
 }

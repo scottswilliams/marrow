@@ -1,7 +1,6 @@
 //! Shared physical addressing and record-shape glue over resolved sites: marker-stem
 //! derivation, column consumption, and the numbered record/group projections the sessions
-//! and read ops build on. Every stem derives from cell-key numbers (FR01 §3), never source
-//! spelling.
+//! and read ops build on. Every stem derives from cell-key numbers, never source spelling.
 
 use marrow_store::ReadView;
 
@@ -10,27 +9,23 @@ use super::super::{AuthTarget, AuthorizedSite, KernelFault, ResolvedField, Resol
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{ScalarKind, scalar_key_matches_type};
 
-/// The physical marker stem of the node `site` addresses at key-path `keys`: the root
-/// marker followed by one branch-child stem per branch hop. The single owner of
-/// key-path-to-node-stem resolution, so a root and a branch node derive their stem the
-/// same way from their cell-key numbers. The verifier proves the key-path arity and each
-/// element's scalar kind against the site's declared root and hop kinds, but this is the
-/// trust boundary the independently verified image crosses into the kernel, so a mismatch
-/// faults [`KernelFault::Corruption`] in release rather than dropping a hop and
-/// mis-addressing the write to a shallower node.
+/// Resolve an addressed entry's static family and validate its full key path before
+/// encoding it once. Root and branch entries use the same marker constructor. Exact
+/// column exhaustion and declared scalar domains defend the independently verified
+/// image boundary before any operation accesses the engine.
 pub(super) fn node_stem(site: &AuthorizedSite, keys: &[KeyScalar]) -> Result<Vec<u8>, KernelFault> {
     let mut cols = keys;
-    let root_cols = take_columns(&mut cols, &site.key)?;
-    let mut stem = physical::marker_key(site.root_number, root_cols);
+    take_columns(&mut cols, &site.key)?;
+    let mut family = site.root_number;
     for hop in &site.branch {
-        let hop_cols = take_columns(&mut cols, &hop.key)?;
-        stem = physical::branch_child_stem(&stem, hop.number, hop_cols);
+        take_columns(&mut cols, &hop.key)?;
+        family = hop.number;
     }
     // Every operand column must be consumed by a node in the branch path; a leftover
     // column is a key-path/schema arity disagreement (a forged image), faulted rather
     // than silently ignored.
     if cols.is_empty() {
-        Ok(stem)
+        Ok(physical::marker_key(family, keys))
     } else {
         Err(KernelFault::Corruption)
     }
@@ -41,10 +36,10 @@ pub(super) fn node_stem(site: &AuthorizedSite, keys: &[KeyScalar]) -> Result<Vec
 /// key-path or a per-column mismatch faults [`KernelFault::Corruption`] — the trust
 /// boundary the verifier's arity/kind proof stands on, defended in depth here so a forged
 /// image can never mis-split a composite key-path across nodes.
-pub(super) fn take_columns<'a>(
-    cols: &mut &'a [KeyScalar],
+pub(super) fn take_columns(
+    cols: &mut &[KeyScalar],
     kinds: &[ScalarKind],
-) -> Result<&'a [KeyScalar], KernelFault> {
+) -> Result<(), KernelFault> {
     if cols.len() < kinds.len() {
         return Err(KernelFault::Corruption);
     }
@@ -55,7 +50,7 @@ pub(super) fn take_columns<'a>(
         }
     }
     *cols = tail;
-    Ok(head)
+    Ok(())
 }
 
 /// The numbered record whose fields a site addresses: the entry's own record for a

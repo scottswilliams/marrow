@@ -951,3 +951,76 @@ fn production_deps(manifest: &str) -> String {
     }
     out
 }
+
+/// Import cannot populate an older layout. Its head generation refuses before
+/// even a broken engine is opened, and before any batch can commit.
+#[test]
+fn generation_one_refuses_import_before_engine_open() {
+    let image = compile(SOURCE, IDS);
+    for broken_engine in [true, false] {
+        let scratch = Scratch::new("old-generation");
+        let dir = scratch.dir();
+        provision_from(dir, &image);
+        let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
+        let current_head = std::fs::read(&head_path).expect("current head");
+        let mut old_head = current_head.clone();
+        old_head[4] = 1;
+        let body_len = old_head.len() - 32;
+        let digest = marrow_image::StoreHeadDigest::compute(&old_head[..body_len]);
+        old_head[body_len..].copy_from_slice(digest.bytes());
+        std::fs::write(&head_path, old_head).expect("generation-one head");
+        if broken_engine {
+            std::fs::write(dir.join(marrow_lifecycle::ENGINE_FILE), b"not an engine")
+                .expect("broken engine control");
+        }
+        let before: Vec<_> = [
+            marrow_lifecycle::ENGINE_FILE,
+            marrow_lifecycle::HEAD_FILE,
+            marrow_lifecycle::ENVELOPE_FILE,
+        ]
+        .into_iter()
+        .map(|name| (name, std::fs::read(dir.join(name)).expect("before refusal")))
+        .collect();
+        let outcome = import_jsonl(
+            dir,
+            prepare(image.clone()),
+            counter_target(),
+            Cursor::new(b"{\"id\":1,\"value\":10}\n".to_vec()),
+            InvocationGrant::full_store(),
+            ImportLimits::DEFAULT,
+        );
+        let error = outcome.expect_err("an older layout must not be opened");
+        assert_eq!(error.code(), "store.format_version");
+        assert!(matches!(
+            error,
+            ImportError::Open(marrow_lifecycle::OpenError::Admission(
+                marrow_lifecycle::AdmissionError {
+                    entry: marrow_lifecycle::StoreEntry::Head,
+                    fault: marrow_lifecycle::AdmissionFault::Format(
+                        marrow_lifecycle::FormatError::UnknownVersion { found: 1 }
+                    ),
+                }
+            ))
+        ));
+        for (name, bytes) in before {
+            assert_eq!(
+                std::fs::read(dir.join(name)).expect("after refusal"),
+                bytes,
+                "{name}"
+            );
+        }
+        if !broken_engine {
+            std::fs::write(head_path, current_head).expect("restore current head");
+            let report = import_jsonl(
+                dir,
+                prepare(image.clone()),
+                counter_target(),
+                Cursor::new(b"{\"id\":1,\"value\":10}\n".to_vec()),
+                InvocationGrant::full_store(),
+                ImportLimits::DEFAULT,
+            )
+            .expect("lock released");
+            assert_eq!(report.rows_imported, 1);
+        }
+    }
+}

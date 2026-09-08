@@ -17,6 +17,19 @@ use crate::equality::ValueDomain;
 mod engine_call_support;
 
 mod key_domains;
+mod navigation_work;
+
+fn native_fixture(temp: &TempDir) -> NativeEngineOwner {
+    NativeEngineOwner::provision(&temp.store()).expect("provision native fixture");
+    NativeEngineOwner::acquire_existing(&temp.store())
+        .expect("hold native fixture")
+        .bind_and_open_existing(
+            crate::durable::NativeOpenAccess::ReadWrite,
+            [0x4B; 16],
+            || Ok::<_, std::convert::Infallible>(()),
+        )
+        .expect("open native fixture")
+}
 
 mod field_token_work {
     use super::super::super::{AuthTarget, AuthorizedSite, ResolvedField};
@@ -746,12 +759,7 @@ fn injected_branch_store(cells: &[(Vec<u8>, Vec<u8>)]) -> DurableStore<MemoryEng
 /// ops-built descendant-only case.
 #[test]
 fn an_injected_descendant_only_node_reads_payload_absent_not_corruption() {
-    let stem = book_stem("a");
-    let branch_stem = physical::branch_child_stem(
-        &stem,
-        branch_num(&branch_schema().0, &[0]),
-        &[KeyScalar::Int(7)],
-    );
+    let branch_stem = physical::marker_key(branch_num(&branch_schema().0, &[0]), &[ks("a"), ki(7)]);
     let mut store = injected_branch_store(&[
         (branch_stem.clone(), physical::MARKER_VALUE.to_vec()),
         (
@@ -784,19 +792,13 @@ fn an_injected_descendant_only_node_reads_payload_absent_not_corruption() {
     );
 }
 
-/// CORRUPT (own-leaf precedence over a descendant): a root that has one of its own
-/// field leaves (`title`) but no marker is corrupt even when a legitimate branch
-/// descendant also exists below it. The bounded prefix probe meets the orphan own
-/// leaf (`0x10`) before the branch descendant (`0x30`), so it surfaces corruption
-/// rather than reading the node as a valid descendant-only slot.
+/// A root's own field without its marker is corrupt even when a child exists.
+/// The bounded own-prefix probe encounters that orphan; the child occupies a
+/// separate family and cannot make the root payload valid.
 #[test]
 fn an_injected_root_own_leaf_without_a_marker_is_corruption_even_with_a_descendant() {
     let stem = book_stem("a");
-    let branch_stem = physical::branch_child_stem(
-        &stem,
-        branch_num(&branch_schema().0, &[0]),
-        &[KeyScalar::Int(7)],
-    );
+    let branch_stem = physical::marker_key(branch_num(&branch_schema().0, &[0]), &[ks("a"), ki(7)]);
     let mut store = injected_branch_store(&[
         // The root's own `title` leaf, with no root marker: an orphan.
         (
@@ -828,11 +830,7 @@ fn an_injected_root_own_leaf_without_a_marker_is_corruption_even_with_a_descenda
 #[test]
 fn an_injected_branch_own_leaf_without_a_branch_marker_is_corruption() {
     let stem = book_stem("a");
-    let branch_stem = physical::branch_child_stem(
-        &stem,
-        branch_num(&branch_schema().0, &[0]),
-        &[KeyScalar::Int(7)],
-    );
+    let branch_stem = physical::marker_key(branch_num(&branch_schema().0, &[0]), &[ks("a"), ki(7)]);
     let mut store = injected_branch_store(&[
         // The root has a real payload, so the root itself is well-formed.
         (stem.clone(), physical::MARKER_VALUE.to_vec()),
@@ -881,10 +879,9 @@ fn a_bounded_acquisition_skips_a_run_of_descendant_only_entries_between_siblings
     // Descendant-only entries: a branch child (marker plus `text` leaf) with no
     // root marker, so the root has children but no visitable payload.
     for descendant_only in ["k2", "k3"] {
-        let branch_stem = physical::branch_child_stem(
-            &book_stem(descendant_only),
+        let branch_stem = physical::marker_key(
             branch_num(&branch_schema().0, &[0]),
-            &[KeyScalar::Int(7)],
+            &[ks(descendant_only), ki(7)],
         );
         cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
         cells.push((
@@ -1216,10 +1213,9 @@ fn bounded_acquisition_skips_descendant_only_entries() {
         ));
     }
     for descendant_only in ["k2", "k3"] {
-        let branch_stem = physical::branch_child_stem(
-            &book_stem(descendant_only),
+        let branch_stem = physical::marker_key(
             branch_num(&branch_schema().0, &[0]),
-            &[KeyScalar::Int(7)],
+            &[ks(descendant_only), ki(7)],
         );
         cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
         cells.push((
@@ -1474,11 +1470,8 @@ fn family_populated_answers_whether_a_branch_family_has_a_child() {
     );
 }
 
-/// A family whose only children are descendant-only (markerless — children below them
-/// but no payload of their own) reads `Absent`: the probe skips each descendant-only
-/// child by one seek exactly as the bounded traversal does, so a family with no
-/// payload-bearing child is not populated. An empty root family likewise reads
-/// `Absent`.
+/// Entries in a different family do not populate an absent ancestor's family.
+/// Both that family and an entirely empty root family read `Absent`.
 #[test]
 fn family_populated_skips_descendant_only_children_and_empty_families() {
     let (schema, sites) = branch_schema();
@@ -1628,18 +1621,13 @@ fn nested_book_stem(book: &str) -> Vec<u8> {
 }
 /// The physical marker stem of note `note` under `book` (level 1).
 fn nested_note_stem(book: &str, note: i64) -> Vec<u8> {
-    physical::branch_child_stem(
-        &nested_book_stem(book),
-        branch_num(&nested_schema().0, &[0]),
-        &[ki(note)],
-    )
+    physical::marker_key(branch_num(&nested_schema().0, &[0]), &[ks(book), ki(note)])
 }
 /// The physical marker stem of tag `tag` under `book`/`note` (level 2).
 fn nested_tag_stem(book: &str, note: i64, tag: &str) -> Vec<u8> {
-    physical::branch_child_stem(
-        &nested_note_stem(book, note),
+    physical::marker_key(
         branch_num(&nested_schema().0, &[0, 0]),
-        &[ks(tag)],
+        &[ks(book), ki(note), ks(tag)],
     )
 }
 
@@ -2000,11 +1988,9 @@ fn a_root_erase_preserves_the_whole_nested_branch_subtree() {
     );
 }
 
-/// Bounded traversal over an inner (level-2 tags) layer: `layer_of` resolves the layer
-/// from a two-element ancestor key-path `[book, note]`, and the freeze / `more` /
-/// descendant-skip / inclusive-`from` laws hold one more level down. A descendant-only
-/// tag (a level-3 links child, no tags marker) is skipped, and the layer is scoped to
-/// the fixed note — a sibling note's tags are not visited.
+/// The freeze, `more`, and inclusive-`from` laws hold under the two-component
+/// ancestor path `[book, note]`. A link under an absent tag occupies a separate
+/// family. Tags under a sibling note lie outside the selected ancestor prefix.
 #[test]
 fn bounded_acquisition_traverses_a_level_two_layer_and_skips_a_descendant_only_tag() {
     let mut store = nested_store();
@@ -3413,8 +3399,7 @@ fn a_whole_entry_erase_sweeps_group_leaves_and_preserves_branches() {
     }
 
     let entry = physical::marker_key(0, &[ks("a")]);
-    let note_stem =
-        physical::branch_child_stem(&entry, branch_num(&group_schema().0, &[0]), &[ki(1)]);
+    let note_stem = physical::marker_key(branch_num(&group_schema().0, &[0]), &[ks("a"), ki(1)]);
     let cells = all_cells(&store);
     assert!(
         cells.keys().all(|k| !k.starts_with(&details_prefix("a"))),

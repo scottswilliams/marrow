@@ -218,7 +218,9 @@ provisioned a fresh store at ./store
 ```
 
 The file is read and committed in bounded batches. `import` writes no
-identity: a missing one is `check.durable_identity`.
+identity: a missing one is `check.durable_identity`. An existing store with an
+unsupported format generation is `store.format_version`; import does not
+convert it ([changing the program](../operations/README.md#changing-the-program)).
 
 ## marrow doctor
 
@@ -228,6 +230,8 @@ A code-only edit the store has not been rebound to is `store.image_not_active`;
 a changed durable contract is `store.contract_changed`. The companion runner
 holds the owner lock through admission and inspection, then releases it before
 printing. The engine file, head, and envelope are unchanged.
+An unsupported store format is `store.format_version`, refused before engine
+open ([compatibility](../compatibility.md#versioning)).
 
 The audit covers every cell, including an empty physical key and data beneath
 absent parents. It checks keys and values against their declared types, entry
@@ -242,12 +246,13 @@ and node-closure order: missing required fields are reported when their node
 closes. An index is named by its identity from `.marrow/ids`, because the
 compiled program carries no index name.
 
-`entries` counts present entries at every level; `descendant-only` counts nodes
-with descendants but no payload of their own; `index cells` counts managed-index
-cells; and `cells` counts stored cells once each. The digest covers entry-family
-keys and values in key order, including descendant-only data, and excludes
-index and metadata cells. It is reported, not persisted. An unchanged content
-stream has the same digest; a same-value commit need not change it.
+`entries` counts concrete entry markers at every level; absent ancestors add
+no entries. `index cells` counts managed-index cells, and `cells` counts stored
+cells once each. The digest covers declared entry-family keys and values in
+key order, including malformed cells in those families and children beneath
+absent parents. Index, metadata, and undeclared-family cells are excluded;
+undeclared cells still produce findings. It is reported, not persisted. An
+unchanged content stream has the same digest; a same-value commit need not change it.
 
 Physical integrity is not checked. A changed scalar that still has a valid
 value can pass this audit even when its physical checksum is wrong. Inspection
