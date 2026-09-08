@@ -228,8 +228,7 @@ pub enum Expression {
     },
     Binary {
         op: BinaryOp,
-        left: Box<Expression>,
-        right: Box<Expression>,
+        operands: Box<BinaryOperands>,
         span: SourceSpan,
     },
     Range {
@@ -277,6 +276,13 @@ pub enum Expression {
         span: SourceSpan,
         recovery: Option<Recovery>,
     },
+}
+
+/// A binary expression's ordered children, held together in one allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryOperands {
+    pub left: Expression,
+    pub right: Expression,
 }
 
 /// The well-formed left context a recovery node preserves for the incomplete
@@ -336,12 +342,11 @@ pub fn range_expr(expr: &Expression) -> Option<RangeExpr<'_>> {
     match expr {
         Expression::Binary {
             op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
-            left,
-            right,
+            operands,
             span,
         } => Some(RangeExpr {
-            start: Some(left),
-            end: Some(right),
+            start: Some(&operands.left),
+            end: Some(&operands.right),
             inclusive_end: matches!(
                 expr,
                 Expression::Binary {

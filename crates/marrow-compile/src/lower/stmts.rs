@@ -2663,10 +2663,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     | BinaryOp::Multiply
                     | BinaryOp::Divide
                     | BinaryOp::Remainder),
-                left,
-                right,
+                operands,
                 ..
-            } => Wrapped::Binary(*bop, left, right),
+            } => Wrapped::Binary(*bop, &operands.left, &operands.right),
             Expression::Unary {
                 op: UnaryOp::Neg,
                 operand,

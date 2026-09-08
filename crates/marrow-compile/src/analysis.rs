@@ -1846,7 +1846,7 @@ mod completion {
                 children
             }
             Expression::Unary { operand, .. } => vec![operand.as_ref()],
-            Expression::Binary { left, right, .. } => vec![left.as_ref(), right.as_ref()],
+            Expression::Binary { operands, .. } => vec![&operands.left, &operands.right],
             Expression::Membership { value, range, .. } => vec![value.as_ref(), range.as_ref()],
             Expression::Range {
                 start, end, step, ..
@@ -2546,9 +2546,9 @@ mod active_call {
                 collect_expression_calls(base, sink);
             }
             Expression::Unary { operand, .. } => collect_expression_calls(operand, sink),
-            Expression::Binary { left, right, .. } => {
-                collect_expression_calls(left, sink);
-                collect_expression_calls(right, sink);
+            Expression::Binary { operands, .. } => {
+                collect_expression_calls(&operands.left, sink);
+                collect_expression_calls(&operands.right, sink);
             }
             Expression::Membership { value, range, .. } => {
                 collect_expression_calls(value, sink);

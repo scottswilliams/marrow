@@ -2736,8 +2736,10 @@ mod generic_cache_boundary_tests {
         };
         let operation = Expression::Binary {
             op: BinaryOp::Add,
-            left: Box::new(integer("1")),
-            right: Box::new(integer("2")),
+            operands: Box::new(marrow_syntax::BinaryOperands {
+                left: integer("1"),
+                right: integer("2"),
+            }),
             span: span(),
         };
         let annotation = TypeExpr::Apply {

@@ -248,9 +248,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Err(LoweringFailure::Recoverable)
             }
             Expression::Unary { op, operand, span } => self.lower_unary(*op, operand, *span),
-            Expression::Binary {
-                op, left, right, ..
-            } => self.lower_binary(*op, left, right),
+            Expression::Binary { op, operands, .. } => {
+                self.lower_binary(*op, &operands.left, &operands.right)
+            }
             Expression::Membership {
                 value,
                 range,

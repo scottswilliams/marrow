@@ -145,7 +145,7 @@ another machine.
 | Clock | Figure | Revision | Method |
 |---|---|---|---|
 | Compile time of a `.mw` program | 12.5 ms median for `marrow check` over a 2,278-line, 2,000-field program; slowest of 31 runs 13.1 ms | `294a6290` (2026-08-31) | Release binary, one fresh process per run, warm filesystem, Apple M5 Pro. The program is `crates/marrow/tests/fixtures/v01/e07_m_corpus/clinical`; the timing harness is not in the repository. |
-| Editor completion | Under 1 ms for a 64 KiB file; 54 ms for a maximum admitted file in its densest shape | Not recorded | Worst of five after a warm request, three runs, optimized profile. The figures are recorded with the budgets in `crates/marrow-compile/tests/query_local_syntax.rs`; the release CI leg asserts the 10 ms and 150 ms budgets. |
+| Editor completion | 212 ms for the maximum name-chain fixture, exceeding the 150 ms budget | `29555429` (2026-09-08) | Ubuntu release CI, maximum of five after one warm request. The ordinary 10 ms selector did not run after this failure. `crates/marrow-compile/tests/query_local_syntax.rs` defines both budgets and the finite fixture corpus. |
 | Workspace test wall time | 96.6 s for the unit and integration battery; 12.3 s for a settled doctest battery | `294a6290` (2026-08-31) | `cargo test --workspace --locked`, unoptimized profile, Apple M5 Pro. Two whole-battery runs measured 490 s and 840 s with a stall entering doctests whose cause was not established. |
 | Clean Rust build | 7.4 s | `294a6290` (2026-08-31) | Workspace build into an empty target, unoptimized profile, Apple M5 Pro. |
 | Incremental Rust build | 0.26 s after touching `marrow`; 0.72 s after touching `marrow-compile` | `294a6290` (2026-08-31) | Median over warm mtime-only touches, unoptimized profile. |

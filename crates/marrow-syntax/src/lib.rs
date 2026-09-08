@@ -17,10 +17,10 @@ mod parse_expr;
 mod token;
 
 pub use ast::{
-    AliasDecl, Argument, ArmBinding, BinaryOp, Block, CheckedBind, Comment, CommentMarker,
-    CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember,
-    EnumPayloadField, Expression, FieldDecl, ForBinding, ForName, FunctionDecl, GroupDecl,
-    IdentityTypeExpr, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam,
+    AliasDecl, Argument, ArmBinding, BinaryOp, BinaryOperands, Block, CheckedBind, Comment,
+    CommentMarker, CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl,
+    EnumMember, EnumPayloadField, Expression, FieldDecl, ForBinding, ForName, FunctionDecl,
+    GroupDecl, IdentityTypeExpr, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam,
     LiteralKind, LoopOrder, MatchArm, ModuleDecl, NameSegment, NominalDecl, ParamDecl,
     ParsedSource, RangeExpr, Recovery, ResourceDecl, ResourceMember, SavedRoot, SourceFile,
     Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl, TraversalBound, TypeConstraint,
@@ -654,7 +654,11 @@ mod nesting_limit {
     fn parse_on_large_stack(source: String) -> ParsedSource {
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)
-            .spawn(move || parse_source(&source))
+            .spawn(move || {
+                let parsed = parse_source(&source);
+                assert_eq!(parsed.file.clone(), parsed.file);
+                parsed
+            })
             .expect("spawn parse worker")
             .join()
             .expect("parse worker did not panic")

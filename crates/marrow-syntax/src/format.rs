@@ -1106,19 +1106,16 @@ fn compound_assign_fold<'a>(
     value: &'a Expression,
 ) -> Option<(&'a str, CompoundAssignOp, &'a Expression)> {
     let name = plain_local_name(target)?;
-    let Expression::Binary {
-        op, left, right, ..
-    } = value
-    else {
+    let Expression::Binary { op, operands, .. } = value else {
         return None;
     };
     let compound = CompoundAssignOp::from_binary(*op)?;
-    let left_name = plain_local_name(left)?;
+    let left_name = plain_local_name(&operands.left)?;
     if left_name != name {
         return None;
     }
     // Borrow the name from `value` so the returned references share its lifetime.
-    Some((left_name, compound, right))
+    Some((left_name, compound, &operands.right))
 }
 
 fn format_statement_with_comments(
@@ -1827,9 +1824,9 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
                 UnaryOp::Not => format!("not {operand}"),
             }
         }
-        Expression::Binary {
-            op, left, right, ..
-        } => format_binary_at(*op, left, right, level, layout),
+        Expression::Binary { op, operands, .. } => {
+            format_binary_at(*op, &operands.left, &operands.right, level, layout)
+        }
         Expression::Range {
             start,
             end,

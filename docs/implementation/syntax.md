@@ -38,7 +38,9 @@ The AST keeps its allocations exactly sized. A block's statement list, a
 allocated once at a measured count. The pass that measures a count also decides
 the region's structure, so no second counter disagrees about what the tree
 holds. Every path is one `Box<[NameSegment]>` carrying spelling and span
-together.
+together. A binary expression holds its ordered left and right children in one
+`Box<BinaryOperands>`. Each child's expression slot remains part of the parse
+charge; sharing their allocation does not reduce the published heap term.
 
 ## Nesting depth
 

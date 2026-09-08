@@ -204,16 +204,14 @@ fn parses_const_operator_expressions_with_precedence() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let Some(Expression::Binary {
-        op, left, right, ..
-    }) = &decl.value
-    else {
+    let Some(Expression::Binary { op, operands, .. }) = &decl.value else {
         panic!("expected binary expression, got {:?}", decl.value);
     };
     assert_eq!(*op, BinaryOp::Add);
+    let marrow_syntax::BinaryOperands { left, right } = operands.as_ref();
     assert!(
         matches!(
-            left.as_ref(),
+            left,
             Expression::Binary {
                 op: BinaryOp::Multiply,
                 ..
@@ -222,7 +220,7 @@ fn parses_const_operator_expressions_with_precedence() {
         "left should be the multiply, got {left:?}"
     );
     assert!(
-        matches!(right.as_ref(), Expression::Literal { text, .. } if &**text == "1"),
+        matches!(right, Expression::Literal { text, .. } if &**text == "1"),
         "right should be literal 1, got {right:?}"
     );
 }
@@ -338,8 +336,15 @@ fn const_binary_expression_span_covers_whole_expression() {
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
-    let span = decl.value.as_ref().expect("value").span();
+    let Expression::Binary { operands, span, .. } = decl.value.as_ref().expect("value") else {
+        panic!("expected binary expression");
+    };
+    let marrow_syntax::BinaryOperands { left, right } = operands.as_ref();
     assert_eq!(&source[span.start_byte..span.end_byte], "60 * 60");
+    assert_eq!(left.span().start_byte, span.start_byte);
+    assert_eq!(left.span().end_byte, span.start_byte + 2);
+    assert_eq!(right.span().start_byte, span.end_byte - 2);
+    assert_eq!(right.span().end_byte, span.end_byte);
 }
 
 #[test]
@@ -412,14 +417,15 @@ fn absence_operators_parse_in_expression_position() {
     // operand of one `??`.
     let Expression::Binary {
         op: BinaryOp::Coalesce,
-        left,
+        operands,
         ..
     } = value
     else {
         panic!("expected `??` to parse as coalesce");
     };
+    let left = &operands.left;
     assert!(
-        matches!(left.as_ref(), Expression::OptionalField { name, .. } if &**name == "pages"),
+        matches!(left, Expression::OptionalField { name, .. } if &**name == "pages"),
         "expected `?.` to parse as an optional field read: {left:?}"
     );
 }
@@ -436,9 +442,9 @@ fn coalesce_binds_tighter_than_equality() {
             value,
             Expression::Binary {
                 op: BinaryOp::Equal,
-                ref left,
+                ref operands,
                 ..
-            } if matches!(left.as_ref(), Expression::Binary { op: BinaryOp::Coalesce, .. })
+            } if matches!(&operands.left, Expression::Binary { op: BinaryOp::Coalesce, .. })
         ),
         "expected `(.. ?? ..) == ..`: {value:?}"
     );
@@ -452,9 +458,9 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
             value,
             Expression::Binary {
                 op: BinaryOp::Less,
-                ref left,
+                ref operands,
                 ..
-            } if matches!(left.as_ref(), Expression::Binary { op: BinaryOp::Coalesce, .. })
+            } if matches!(&operands.left, Expression::Binary { op: BinaryOp::Coalesce, .. })
         ),
         "expected `(count ?? 0) < 5`: {value:?}"
     );
@@ -466,9 +472,9 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
             value,
             Expression::Binary {
                 op: BinaryOp::RangeExclusive,
-                ref left,
+                ref operands,
                 ..
-            } if matches!(left.as_ref(), Expression::Binary { op: BinaryOp::Coalesce, .. })
+            } if matches!(&operands.left, Expression::Binary { op: BinaryOp::Coalesce, .. })
         ),
         "expected `(start ?? 1)..n`: {value:?}"
     );
@@ -479,9 +485,9 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
             value,
             Expression::Binary {
                 op: BinaryOp::Coalesce,
-                ref right,
+                ref operands,
                 ..
-            } if matches!(right.as_ref(), Expression::Binary { op: BinaryOp::Add, .. })
+            } if matches!(&operands.right, Expression::Binary { op: BinaryOp::Add, .. })
         ),
         "expected `x ?? (y + 1)`: {value:?}"
     );
@@ -496,20 +502,20 @@ fn chained_coalesce_is_right_associative() {
         parsed_return_expr("fn f(a: int): int {\n    return ^books[a]?.pages ?? 0 ?? 1\n}\n");
     let Expression::Binary {
         op: BinaryOp::Coalesce,
-        left,
-        right,
+        operands,
         ..
     } = value
     else {
         panic!("expected `??` to parse as coalesce");
     };
+    let marrow_syntax::BinaryOperands { left, right } = operands.as_ref();
     assert!(
-        matches!(left.as_ref(), Expression::OptionalField { name, .. } if &**name == "pages"),
+        matches!(left, Expression::OptionalField { name, .. } if &**name == "pages"),
         "expected the left operand to be the `?.` read: {left:?}"
     );
     assert!(
         matches!(
-            right.as_ref(),
+            right,
             Expression::Binary {
                 op: BinaryOp::Coalesce,
                 ..
@@ -646,12 +652,13 @@ fn a_single_compound_assignment_still_parses_cleanly() {
 fn parses_the_is_operator() {
     let value =
         parsed_return_expr("module app\nfn f(pet: Cat): bool {\n    return pet is Cat::tiger\n}\n");
-    let Expression::Binary { op, right, .. } = value else {
+    let Expression::Binary { op, operands, .. } = value else {
         panic!("expected a binary return, got {value:?}");
     };
     assert_eq!(op, BinaryOp::Is);
     // The right operand is the member-path `Cat::tiger`.
-    let Expression::Name { segments, .. } = right.as_ref() else {
+    let right = &operands.right;
+    let Expression::Name { segments, .. } = right else {
         panic!("expected a name on the right, got {right:?}");
     };
     assert_eq!(crate::common::segment_texts(segments), ["Cat", "tiger"]);

@@ -11,8 +11,8 @@
 use crate::diagnostic::{SyntaxError, SyntaxErrorSink};
 use crate::token::{is_trivia, is_unfixed_duration_unit};
 use crate::{
-    Argument, BinaryOp, CompoundAssignOp, DiagnosticReason, ExpectedSyntax, Expression,
-    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NameSegment,
+    Argument, BinaryOp, BinaryOperands, CompoundAssignOp, DiagnosticReason, ExpectedSyntax,
+    Expression, InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NameSegment,
     ParseDiagnosticReason, Recovery, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
     duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
@@ -1427,8 +1427,7 @@ fn binary_expr(op: BinaryOp, left: Expression, right: Expression) -> Expression 
     let span = join_spans(left.span(), right.span());
     Expression::Binary {
         op,
-        left: Box::new(left),
-        right: Box::new(right),
+        operands: Box::new(BinaryOperands { left, right }),
         span,
     }
 }

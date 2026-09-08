@@ -104,7 +104,9 @@ fn expr_has_error(expr: &Expression) -> bool {
         }
         Expression::Unary { operand, .. } => expr_has_error(operand),
         Expression::Try { inner, .. } => expr_has_error(inner),
-        Expression::Binary { left, right, .. } => expr_has_error(left) || expr_has_error(right),
+        Expression::Binary { operands, .. } => {
+            expr_has_error(&operands.left) || expr_has_error(&operands.right)
+        }
         Expression::Range {
             start, end, step, ..
         } => [start, end, step]

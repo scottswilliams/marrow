@@ -27,13 +27,11 @@
 //! roughly twenty families, so shrinking the widest one promotes the next; a total would
 //! let a widened field hide behind whichever family happened not to be deciding it.
 //!
-//! **Latency is a separate requirement and this file does not establish it.** The budget
-//! below is a regression fence over the densest shape a query can be handed, asserted only
-//! in the optimized profile the server ships in; every profile records the measurement. A
-//! green capacity bound says the parse fits in the heap it is allowed, and says nothing
-//! about whether the answer arrives quickly enough to read as immediate. A maximum
-//! admitted file in its densest shape still does not, and closing that is owned elsewhere
-//! — see [`QUERY_BUDGET_MS`].
+//! **Latency is a separate requirement.** The budget below is a regression fence over
+//! a finite corpus of maximum admitted files, asserted only in the optimized profile
+//! the server ships in; every profile records the measurement. A
+//! green capacity bound says the parse fits in the heap it is allowed; latency is
+//! independently checked over a finite corpus by [`QUERY_BUDGET_MS`].
 //!
 //! Parseability itself is never inferred from a query-local parse: `broken_files` stays
 //! the snapshot's independent record, which is why a recovered-broken file still
@@ -53,13 +51,13 @@ use marrow_compile::{
 };
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 use marrow_syntax::{
-    AliasDecl, Argument, ArmBinding, BinaryOp, Block, Comment, ConstDecl, Declaration, ElseIf,
-    EnumDecl, EnumMember, EnumPayloadField, Expression, FieldDecl, ForName, FunctionDecl,
-    GroupDecl, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
-    MatchArm, ModuleDecl, NameSegment, NominalDecl, ParamDecl, ResourceDecl, ResourceMember,
-    SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SavedRoot, SourceSpan,
-    Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl, Token, TypeExpr, TypeParamDecl,
-    UnaryOp, UseDecl,
+    AliasDecl, Argument, ArmBinding, BinaryOp, BinaryOperands, Block, Comment, ConstDecl,
+    Declaration, ElseIf, EnumDecl, EnumMember, EnumPayloadField, Expression, FieldDecl, ForName,
+    FunctionDecl, GroupDecl, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam,
+    LiteralKind, MatchArm, ModuleDecl, NameSegment, NominalDecl, ParamDecl, ResourceDecl,
+    ResourceMember, SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SavedRoot,
+    SourceSpan, Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl, Token, TypeExpr,
+    TypeParamDecl, UnaryOp, UseDecl,
 };
 
 /// The largest file drive admission lets through — the worst case a query-local parse can
@@ -82,28 +80,11 @@ const H_OWNED_BYTES: usize = owned_heap::H_OWNED_BYTES as usize;
 /// lexes and parses the one file it names, then classifies the position over the result.
 /// The budget covers the whole query, not the parse alone.
 ///
-/// The number is set over the densest shape a query can be handed, which is the same shape
-/// the parse-transient term is derived over: single-byte statement lines in a file whose
-/// module does not parse. On the recorded host that shape measures 54 ms worst of five
-/// after a warm query, over three runs, and the budget sits well above it, leaving room
-/// for a machine roughly half as fast and for ordinary run-to-run variation.
-///
-/// **It is a regression fence, not an immediacy claim, and nothing here made it one.** The
-/// same measurement was 112 ms before the parsed representation was shrunk and 70 ms at
-/// the wider admission ceiling that preceded the corrected accounting, so a smaller tree
-/// and a shorter file are each cheaper to parse — but a maximum admitted file in its
-/// densest shape still does not answer inside the ~100 ms at which a response reads as
-/// immediate on a machine half this one's speed, which is what the budget leaves room for.
-/// A green capacity bound is not evidence about latency; do not read one for the other.
-/// Immediacy is carried today by [`ORDINARY_QUERY_BUDGET_MS`], which is what an editor
-/// session spends nearly all of its queries against.
-///
-/// Closing the worst-shape case needs a different change, not a smaller node: parsing only
-/// the declaration whose body contains the cursor, with every declaration header built and
-/// no other body parsed. That is a separate lane and is not attempted here.
-///
-/// A parse cache is not the remedy either: that would be a second retention owner and
-/// would reopen the bound this policy closes.
+/// The release gate checks every shape in [`maximum_admitted_shapes`] after one warm
+/// query, taking the maximum of five samples. This finite corpus is a regression fence;
+/// it does not establish latency for every admitted program or machine. The ordinary
+/// file control has its own [`ORDINARY_QUERY_BUDGET_MS`] fence. Heap admission and
+/// query latency are independent obligations.
 const QUERY_BUDGET_MS: u128 = 150;
 
 /// The same budget for a file of ordinary size, which is what an editor session actually
@@ -239,10 +220,12 @@ fn expression_own_bytes(expression: &Expression) -> usize {
         } => 0,
         Expression::Binary {
             op: _,
-            left: _,
-            right: _,
+            operands,
             span: _,
-        } => 0,
+        } => {
+            let BinaryOperands { left: _, right: _ } = operands.as_ref();
+            0
+        }
         Expression::Range {
             start: _,
             end: _,
@@ -323,8 +306,10 @@ fn expression_variants() -> Vec<Expression> {
         },
         Expression::Binary {
             op: BinaryOp::Add,
-            left: leaf(),
-            right: leaf(),
+            operands: Box::new(BinaryOperands {
+                left: Expression::Absent { span },
+                right: Expression::Absent { span },
+            }),
             span,
         },
         Expression::Range {
@@ -1058,10 +1043,9 @@ fn fill_to_ceiling(mut head: String, tail: String) -> Vec<u8> {
     head.into_bytes()
 }
 
-/// A clean maximum admitted file of one long operator chain per body over an undeclared
-/// name, the shape an independent review used to beat the previously exported term. Kept
-/// as a corroborating sample: every name is a diagnostic rather than a hover fact, so the
-/// file charges no fact ceiling, and the module still parses.
+/// A maximum admitted file of long operator chains over an undeclared name, followed
+/// by a malformed declaration. Syntax recovery retains the bodies while semantic
+/// analysis refuses the broken module, so the names do not consume the fact ceiling.
 fn name_chain_file() -> Vec<u8> {
     let mut source = String::from("module chain\n\n");
     let mut index = 0usize;
@@ -1255,12 +1239,8 @@ fn nested_statements(statement: &Statement) -> usize {
 
 /// How many timed queries the worst case is taken over.
 ///
-/// Repeats buy one thing: they keep a single scheduler hiccup from deciding a fence. Only
-/// the optimized profile asserts the budget, so only there is there a fence to protect;
-/// the unoptimized profile prints the number and returns before comparing it. It takes
-/// one sample, which still exercises the query over every shape and still records a
-/// measurement — the whole of what an unoptimized run establishes here — without paying
-/// five times over for a figure no assertion reads.
+/// The optimized gate uses the maximum of five samples: one slow sample fails the
+/// fence. The unoptimized profile records one sample without asserting a latency budget.
 const BUDGET_SAMPLES: usize = if cfg!(debug_assertions) { 1 } else { 5 };
 
 /// The worst wall time of [`BUDGET_SAMPLES`] completion queries over `path`, after one
@@ -1269,12 +1249,16 @@ fn worst_query_ms(snapshot: &AnalysisSnapshot, path: &str) -> u128 {
     let file = identity(path);
     let _ = snapshot.completions(&file, 64);
     let mut worst = 0u128;
-    for _ in 0..BUDGET_SAMPLES {
+    let mut samples_ns = [0u128; BUDGET_SAMPLES];
+    for sample in &mut samples_ns {
         let started = Instant::now();
         let outcome = snapshot.completions(&file, 64);
-        worst = worst.max(started.elapsed().as_millis());
+        let elapsed = started.elapsed();
+        *sample = elapsed.as_nanos();
+        worst = worst.max(elapsed.as_millis());
         assert!(outcome.is_ok(), "the query resolves");
     }
+    eprintln!("completion samples in nanoseconds: {samples_ns:?}");
     worst
 }
 
@@ -1479,6 +1463,7 @@ fn assert_minimum_capacity_is_accounted<T>(label: &str) {
 /// headroom over it rather than equalling it.
 #[test]
 fn the_query_parse_transient_closes_under_the_exported_term() {
+    assert_eq!(size_of::<BinaryOperands>(), 2 * size_of::<Expression>());
     eprintln!(
         "Statement {}, Expression {}, TypeExpr {}, Declaration {}, Token {}",
         size_of::<Statement>(),
