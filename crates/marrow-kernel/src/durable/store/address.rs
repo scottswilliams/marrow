@@ -8,7 +8,7 @@ use marrow_store::ReadView;
 use super::super::physical;
 use super::super::{AuthTarget, AuthorizedSite, KernelFault, ResolvedField, ResolvedGroup};
 use crate::codec::key::KeyScalar;
-use crate::codec::value::ScalarKind;
+use crate::codec::value::{ScalarKind, scalar_key_matches_type};
 
 /// The physical marker stem of the node `site` addresses at key-path `keys`: the root
 /// marker followed by one branch-child stem per branch hop. The single owner of
@@ -37,8 +37,8 @@ pub(super) fn node_stem(site: &AuthorizedSite, keys: &[KeyScalar]) -> Result<Vec
 }
 
 /// Take the next `kinds.len()` columns off the front of `cols`, checking each column's
-/// scalar kind matches the expected column kind, and advance `cols` past them. A short
-/// key-path or a per-column kind mismatch faults [`KernelFault::Corruption`] — the trust
+/// scalar kind and supported domain, and advance `cols` past them. A short
+/// key-path or a per-column mismatch faults [`KernelFault::Corruption`] — the trust
 /// boundary the verifier's arity/kind proof stands on, defended in depth here so a forged
 /// image can never mis-split a composite key-path across nodes.
 pub(super) fn take_columns<'a>(
@@ -50,7 +50,7 @@ pub(super) fn take_columns<'a>(
     }
     let (head, tail) = cols.split_at(kinds.len());
     for (column, kind) in head.iter().zip(kinds) {
-        if column.scalar_kind() != *kind {
+        if !scalar_key_matches_type(column, *kind) {
             return Err(KernelFault::Corruption);
         }
     }

@@ -19,6 +19,15 @@ back to a value (`codec/`) and hands it to the VM. Writes follow the same path
 in reverse, staged inside one engine transaction that commits with the
 `transaction` block.
 
+`codec::value::scalar_key_matches_type` owns scalar key kind and domain checks.
+The address helper applies it to each supplied root and branch key column in its
+existing column walk. Traversal carries the resolved immediate key kind beside
+its physical layer and validates decoded keys before returning or skipping
+them. Index operations validate supplied and decoded components; unique lookup
+also checks every decoded source column against the root's key schema. These
+checks allocate no collection and add no engine access. Invalid supplied keys
+refuse before operation reads or writes, after the session's separate setup.
+
 ## Layers
 
 | Layer | Owner |

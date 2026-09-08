@@ -2,8 +2,8 @@
 //! required leaf faults at that instruction, and its earlier staged write aborts.
 
 use super::{
-    APPLICATION_ID, ROOT_KEY_ID, ROOT_PLACEMENT_ID, ROOT_PRODUCT_ID, VALUE_FIELD_ID, admitted_plan,
-    required_int_record, vm_spans,
+    APPLICATION_ID, BorrowedEngine, ROOT_KEY_ID, ROOT_PLACEMENT_ID, ROOT_PRODUCT_ID,
+    VALUE_FIELD_ID, admitted_plan, required_int_record, vm_spans,
 };
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, ExportId, FunctionDef, ImageDraft, ImageType,
@@ -18,8 +18,7 @@ use marrow_kernel::durable::{
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{PreparedImage, prepare};
 use marrow_store::{
-    ByteEngine, Cell, CommitOutcome, MemoryEngine, NativeEngineOwner, ReadView, StoreError,
-    WriteTxn,
+    ByteEngine, Cell, CommitOutcome, MemoryEngine, NativeEngineOwner, ReadView, WriteTxn,
 };
 use marrow_verify::{SealedInstr, verify};
 
@@ -228,34 +227,6 @@ fn fixture(target: Target) -> Fixture {
         earlier_site,
         target_site,
         strict_pc: u32::try_from(strict_pcs[0]).expect("small sealed tape"),
-    }
-}
-
-// The real engine outlives each store borrow, allowing byte damage between valid
-// seeding and execution without exposing the kernel's physical-key constructors.
-struct BorrowedEngine<'a, E>(&'a mut E);
-
-impl<E: ByteEngine> ByteEngine for BorrowedEngine<'_, E> {
-    type View<'a>
-        = E::View<'a>
-    where
-        Self: 'a;
-    type Txn<'a>
-        = E::Txn<'a>
-    where
-        Self: 'a;
-
-    fn read_view(&self) -> Result<Self::View<'_>, StoreError> {
-        self.0.read_view()
-    }
-    fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError> {
-        self.0.begin()
-    }
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
-        self.0.require_write_access(op)
-    }
-    fn audit_integrity(&mut self) -> Result<(), StoreError> {
-        self.0.audit_integrity()
     }
 }
 

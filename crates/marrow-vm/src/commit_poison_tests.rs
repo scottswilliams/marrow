@@ -5,6 +5,7 @@
 //! indeterminate result itself. Private to the VM so the executor is driven against an
 //! injected engine without any public bare-host execution route.
 
+mod key_domains;
 mod required_reads;
 
 use marrow_image::{
@@ -15,6 +16,7 @@ use marrow_image::{
 use marrow_kernel::durable::{
     DemandCoverage, DurableCommitState, DurableStore, InvocationGrant, SessionError,
 };
+use marrow_store::{ByteEngine, StoreError};
 use marrow_verify::{VerifiedImage, verify};
 
 use crate::fault::{DurableExecutionFault, IncompleteDisposition};
@@ -32,6 +34,34 @@ const ROOT_PLACEMENT_ID: [u8; 16] = [0x92; 16];
 const ROOT_PRODUCT_ID: [u8; 16] = [0x93; 16];
 const ROOT_KEY_ID: [u8; 16] = [0x94; 16];
 const VALUE_FIELD_ID: [u8; 16] = [0x95; 16];
+
+// The real engine outlives each store borrow, allowing byte damage between valid
+// seeding and execution without exposing the kernel's physical-key constructors.
+struct BorrowedEngine<'a, E>(&'a mut E);
+
+impl<E: ByteEngine> ByteEngine for BorrowedEngine<'_, E> {
+    type View<'a>
+        = E::View<'a>
+    where
+        Self: 'a;
+    type Txn<'a>
+        = E::Txn<'a>
+    where
+        Self: 'a;
+
+    fn read_view(&self) -> Result<Self::View<'_>, StoreError> {
+        self.0.read_view()
+    }
+    fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError> {
+        self.0.begin()
+    }
+    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+        self.0.require_write_access(op)
+    }
+    fn audit_integrity(&mut self) -> Result<(), StoreError> {
+        self.0.audit_integrity()
+    }
+}
 
 fn vm_spans(code: &[Instr]) -> Vec<SpanEntry> {
     code.iter()

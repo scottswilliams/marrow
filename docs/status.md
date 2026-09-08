@@ -86,6 +86,10 @@ has its own platform and layout requirements
 ## Trust boundaries
 
 - Filesystem permissions and the host process protect local store files.
+- Kernel operations validate supplied keys and decoded traversal/index keys
+  against their declared scalar kinds and supported ranges. Mismatched stored
+  keys fault before entering typed VM values; these local checks complement
+  complete logical inspection by `marrow doctor`.
 - Commit recovery assumes that no structurally valid foreign store or prior
   snapshot is substituted while the owner lock is held. Substitution or
   rollback of a store file under the lock is not detected. `marrow doctor`

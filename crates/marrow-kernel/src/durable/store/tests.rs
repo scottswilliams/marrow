@@ -16,6 +16,8 @@ use crate::equality::ValueDomain;
 #[path = "../../../tests/common/mod.rs"]
 mod engine_call_support;
 
+mod key_domains;
+
 mod field_token_work {
     use super::super::super::{AuthTarget, AuthorizedSite, ResolvedField};
     use super::engine_call_support::{Counters, CountingEngine};

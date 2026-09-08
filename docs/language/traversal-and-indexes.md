@@ -117,6 +117,12 @@ once per frozen key. `on more` runs when an `(N + 1)`th key exists and every
 body ran to completion. A `break`, a `return`, or a fault leaves the loop
 without running it. `from f` starts the frozen set at `f`, inclusive.
 
+Decoded traversal and index keys must match their declared scalar types and
+supported value ranges. A mismatched stored key raises `run.corruption`,
+including a key inspected to decide `on more`. These operation checks cover
+the decoded key components; [logical inspection](../operations/README.md#auditing-a-store)
+checks the complete store.
+
 A pin `p` is a [place](durable-places.md#named-places) over the entry at the
 current key, scoped to the body. It reads nothing and proves nothing by
 itself. Untested and sparse reads through the pin are optional; required reads

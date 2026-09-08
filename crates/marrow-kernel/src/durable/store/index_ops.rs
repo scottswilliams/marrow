@@ -1,5 +1,5 @@
 //! Managed-index reads: the nonunique progressive-prefix scan and the unique complete-key
-//! lookup over a maintained index cell family, with the per-column kind checks the trust
+//! lookup over a maintained index cell family, with the per-column domain checks the trust
 //! boundary rests on.
 
 use marrow_store::ReadView;
@@ -7,7 +7,7 @@ use marrow_store::ReadView;
 use super::super::physical;
 use super::super::{AuthorizedSite, BoundedKeys, BoundedLimit, KernelFault};
 use crate::codec::key::KeyScalar;
-use crate::codec::value::ScalarKind;
+use crate::codec::value::{ScalarKind, scalar_key_matches_type};
 
 /// The resolved index-read target a site addresses: its cell-family identity, unique
 /// flag, and ordered projection component kinds. A non-index site reaching an index op
@@ -45,10 +45,10 @@ pub(super) fn op_index_scan<V: ReadView>(
     if held >= projection.len() {
         return Err(KernelFault::Corruption);
     }
-    check_kinds(prefix, &projection[..held])?;
+    check_keys(prefix, &projection[..held])?;
     let next_kind = projection[held];
     if let Some(from) = &from
-        && from.scalar_kind() != next_kind
+        && !scalar_key_matches_type(from, next_kind)
     {
         return Err(KernelFault::Corruption);
     }
@@ -79,9 +79,9 @@ pub(super) fn op_index_scan<V: ReadView>(
         let Some(component) = layer.next_component(&cell_key) else {
             return Err(KernelFault::Corruption);
         };
-        // The decoded component's kind must match the projection: an index cell whose
-        // next column decodes as a different scalar kind is a corrupt or forged cell.
-        if component.scalar_kind() != next_kind {
+        // A decoded component must match the projection's kind and supported domain
+        // before it can become a typed key or establish that another key exists.
+        if !scalar_key_matches_type(&component, next_kind) {
             return Err(KernelFault::Corruption);
         }
         if keys.len() == limit.get() {
@@ -97,7 +97,7 @@ pub(super) fn op_index_scan<V: ReadView>(
 /// Look up the single source key tuple a unique index maps the complete projection `key`
 /// to, or [`None`]. One exact probe of the index cell family; the stored value decodes as
 /// the root's key tuple (`site.key.len()` columns). An index cell whose value does not
-/// decode as exactly that many key columns is corruption.
+/// decode as exactly that many columns of the declared kinds and domains is corruption.
 pub(super) fn op_index_lookup<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
@@ -112,23 +112,25 @@ pub(super) fn op_index_lookup<V: ReadView>(
     if key.len() != projection.len() {
         return Err(KernelFault::Corruption);
     }
-    check_kinds(key, projection)?;
+    check_keys(key, projection)?;
     let cell_key = physical::index_cell_key(site.root_number, id, key);
     match cells.get(&cell_key).map_err(KernelFault::Engine)? {
         None => Ok(None),
         Some(bytes) => match physical::decode_index_source_key(&bytes, site.key.len()) {
-            Some(source) => Ok(Some(source)),
+            Some(source) => {
+                check_keys(&source, &site.key)?;
+                Ok(Some(source))
+            }
             None => Err(KernelFault::Corruption),
         },
     }
 }
 
-/// Check that each value's scalar kind matches the expected column kind. A per-column
-/// mismatch is the trust boundary the verifier's operand-kind proof stands on, defended
-/// in depth so a forged image can never read an index at the wrong component type.
-fn check_kinds(values: &[KeyScalar], kinds: &[ScalarKind]) -> Result<(), KernelFault> {
+/// Check each column's scalar kind and supported domain. Callers establish equal
+/// arity before pairing the decoded or supplied values with the resolved schema.
+fn check_keys(values: &[KeyScalar], kinds: &[ScalarKind]) -> Result<(), KernelFault> {
     for (value, kind) in values.iter().zip(kinds) {
-        if value.scalar_kind() != *kind {
+        if !scalar_key_matches_type(value, *kind) {
             return Err(KernelFault::Corruption);
         }
     }

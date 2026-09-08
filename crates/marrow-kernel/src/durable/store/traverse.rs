@@ -8,6 +8,7 @@ use super::super::physical::{self, CellKind};
 use super::super::{AuthorizedSite, BoundedKeys, BoundedLimit, KernelFault, NextKey, Presence};
 use super::address::take_columns;
 use crate::codec::key::KeyScalar;
+use crate::codec::value::{ScalarKind, scalar_key_matches_type};
 
 /// Where a forward layer walk begins.
 enum LayerSeek {
@@ -28,12 +29,18 @@ enum LayerSeek {
 fn layer_step<V: ReadView>(
     cells: &V,
     layer: &physical::Layer,
+    key_kind: ScalarKind,
     seek: LayerSeek,
 ) -> Result<NextKey, KernelFault> {
     let mut cursor = match seek {
         LayerSeek::Start => layer.prefix().to_vec(),
         LayerSeek::After(key) => layer.child_cursor(&key),
-        LayerSeek::From(from) => layer.seek_from(&from),
+        LayerSeek::From(from) => {
+            if !scalar_key_matches_type(&from, key_kind) {
+                return Err(KernelFault::Corruption);
+            }
+            layer.seek_from(&from)
+        }
     };
     loop {
         let page = cells
@@ -43,6 +50,11 @@ fn layer_step<V: ReadView>(
             return Ok(NextKey::End);
         };
         match layer.classify(&cell_key) {
+            CellKind::Marker(key) | CellKind::Descendant(key)
+                if !scalar_key_matches_type(&key, key_kind) =>
+            {
+                return Err(KernelFault::Corruption);
+            }
             CellKind::Marker(key) => return Ok(NextKey::Next(key)),
             CellKind::Descendant(key) => cursor = layer.child_cursor(&key),
             CellKind::Orphan => return Err(KernelFault::Corruption),
@@ -54,17 +66,17 @@ fn layer_step<V: ReadView>(
 /// The durable layer the whole-entry `site` traverses, resolving its parent entry from
 /// `ancestor_keys`: a root (`WholePayload`) site traverses the root's entry family with
 /// no ancestor key; a branch site traverses its branch family beneath the parent entry
-/// the ancestor key-path names, one ancestor key per parent hop above the traversed
-/// branch. The single owner of the site-to-traversed-layer mapping. The verifier proves
-/// the ancestor arity and each key's scalar kind against the site's declared root and hop
-/// kinds, but this is the trust boundary the independently verified image crosses into
+/// named by the concatenated declared key columns of the root and parent hops above
+/// the traversed branch. The single owner of the site-to-traversed-layer mapping.
+/// The verifier proves the ancestor arity and each key's scalar kind against the site's
+/// declared root and hop kinds, but this is the trust boundary the independently verified image crosses into
 /// the kernel, so a mismatch faults [`KernelFault::Corruption`] — matching [`node_stem`]'s
 /// hard backstop — rather than mis-layering the traversal to a shallower or wrong parent
 /// node.
 fn layer_of(
     site: &AuthorizedSite,
     ancestor_keys: &[KeyScalar],
-) -> Result<physical::Layer, KernelFault> {
+) -> Result<(physical::Layer, ScalarKind), KernelFault> {
     match site.branch.split_last() {
         None => {
             if !ancestor_keys.is_empty() {
@@ -76,7 +88,7 @@ fn layer_of(
             if site.key.len() != 1 {
                 return Err(KernelFault::Corruption);
             }
-            Ok(physical::Layer::root(site.root_number))
+            Ok((physical::Layer::root(site.root_number), site.key[0]))
         }
         Some((traversed, parent_hops)) => {
             // The traversed branch layer must be single-column (composite-keyed layers are
@@ -95,7 +107,10 @@ fn layer_of(
             if !cols.is_empty() {
                 return Err(KernelFault::Corruption);
             }
-            Ok(physical::Layer::branch(&stem, traversed.number))
+            Ok((
+                physical::Layer::branch(&stem, traversed.number),
+                traversed.key[0],
+            ))
         }
     }
 }
@@ -114,7 +129,7 @@ pub(super) fn op_iterate_bounded<V: ReadView>(
     from: Option<KeyScalar>,
     limit: BoundedLimit,
 ) -> Result<BoundedKeys, KernelFault> {
-    let layer = layer_of(site, ancestor_keys)?;
+    let (layer, key_kind) = layer_of(site, ancestor_keys)?;
     // Reserve a bounded spine rather than the full `limit`: a sparse layer freezes far
     // fewer keys than a large `at most N` permits, so the eager reservation is capped
     // and the Vec grows on demand within `limit`. Peak freeze memory is the frozen key
@@ -129,7 +144,7 @@ pub(super) fn op_iterate_bounded<V: ReadView>(
         None => LayerSeek::Start,
     };
     loop {
-        match layer_step(cells, &layer, seek)? {
+        match layer_step(cells, &layer, key_kind, seek)? {
             NextKey::End => return Ok(BoundedKeys { keys, more: false }),
             NextKey::Next(key) => {
                 if keys.len() == limit.get() {
@@ -154,9 +169,11 @@ pub(super) fn op_family_populated<V: ReadView>(
     site: &AuthorizedSite,
     ancestor_keys: &[KeyScalar],
 ) -> Result<Presence, KernelFault> {
-    let layer = layer_of(site, ancestor_keys)?;
-    Ok(match layer_step(cells, &layer, LayerSeek::Start)? {
-        NextKey::Next(_) => Presence::Present,
-        NextKey::End => Presence::Absent,
-    })
+    let (layer, key_kind) = layer_of(site, ancestor_keys)?;
+    Ok(
+        match layer_step(cells, &layer, key_kind, LayerSeek::Start)? {
+            NextKey::Next(_) => Presence::Present,
+            NextKey::End => Presence::Absent,
+        },
+    )
 }
