@@ -389,7 +389,13 @@ fn run_with_mode(bytes: Vec<u8>, mode: CommitMode) -> Result<Option<Value>, Dura
         inner: session,
         mode,
     };
-    run_durable(image, export.function(), Vec::new(), &mut session)
+    run_durable(
+        image
+            .function(export.function())
+            .expect("verified function"),
+        Vec::new(),
+        &mut session,
+    )
 }
 
 #[test]

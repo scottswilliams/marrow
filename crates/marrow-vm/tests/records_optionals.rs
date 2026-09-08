@@ -75,7 +75,11 @@ fn build_and_run(
         .export_by_id(ExportId::of_local("", "f"))
         .expect("export present")
         .function();
-    run(&image, index, Vec::new()).map_err(|fault| fault.code().to_string())
+    run(
+        image.function(index).expect("verified function"),
+        Vec::new(),
+    )
+    .map_err(|fault| fault.code().to_string())
 }
 
 #[test]

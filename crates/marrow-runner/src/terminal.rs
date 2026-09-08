@@ -360,7 +360,11 @@ fn decode_reply(
     let export = image
         .export_by_id(marrow_image::ExportId::from_bytes(export_id))
         .ok_or(ClientError::Handshake)?;
-    let ret = image.function(export.function()).ret();
+    let ret = image
+        .function(export.function())
+        .expect("verified export function")
+        .body()
+        .ret();
     match ret_to_image(ret) {
         marrow_image::ImageType::Unit => match data {
             Json::Null => Ok(CallOutcome::Value(None)),

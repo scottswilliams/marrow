@@ -68,7 +68,14 @@ fn export_named<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
     image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .find(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+                .body()
+                .name()
+                == name
+        })
         .expect("export present")
 }
 
@@ -134,6 +141,14 @@ fn each_export_demand_is_reconstructed_from_its_closure() {
     // equals the other's export id.
     assert_ne!(read.demand_id(), bump.demand_id());
     assert_ne!(read.id(), bump.id());
+
+    let read_function = image.function(read.function()).expect("verified function");
+    let bump_function = image.function(bump.function()).expect("verified function");
+    assert_eq!(read_function.demand().atoms(), read.demand().atoms());
+    assert_eq!(bump_function.demand().atoms(), bump.demand().atoms());
+    assert!(!read_function.demand().is_empty());
+    assert!(!read_function.demand().writes());
+    assert!(bump_function.demand().writes());
 }
 
 #[test]

@@ -51,7 +51,10 @@ pub(crate) fn decode_request(
     let Some(export) = image.export_by_id(export_id) else {
         return Err(reject(Code::RunnerUnknownExport));
     };
-    let function = image.function(export.function());
+    let function = image
+        .function(export.function())
+        .expect("verified export function")
+        .body();
     if function.params().len() != args.len() {
         return Err(reject(Code::RunnerArgMismatch));
     }
@@ -86,7 +89,10 @@ pub(crate) fn run_storeless(
     let Some(export) = image.export_by_id(export) else {
         return reject(Code::RunnerUnknownExport);
     };
-    match marrow_vm::run(image, export.function(), values) {
+    let function = image
+        .function(export.function())
+        .expect("verified export function");
+    match marrow_vm::run(function, values) {
         Ok(value) => value_message(image, value.as_ref()),
         Err(fault) => fault_message(&fault),
     }

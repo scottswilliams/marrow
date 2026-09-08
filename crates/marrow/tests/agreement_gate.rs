@@ -836,7 +836,14 @@ fn export_by_name<'a>(image: &'a VerifiedImage, name: &str) -> &'a marrow_verify
     image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .find(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+                .body()
+                .name()
+                == name
+        })
         .unwrap_or_else(|| panic!("export `{name}` is present"))
 }
 

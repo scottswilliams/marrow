@@ -29,7 +29,7 @@
 
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, SessionHost};
 use marrow_lifecycle::{Attachment, FreshTest, TestHost};
-use marrow_verify::{ExportDemand, ExportId, FunctionIndex, TestKind, VerifiedImage};
+use marrow_verify::{ExportDemand, ExportId, TestKind, VerifiedFunction};
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
 use crate::run::{DriverDispatch, run, run_driver, run_durable, run_in_session};
@@ -62,13 +62,10 @@ pub fn run_export<H: SessionHost>(
 ) -> Option<DurableRun> {
     let (image, host) = attachment.bridge();
     let export = image.export_by_id(export)?;
-    Some(run_on_host(
-        image,
-        export.function(),
-        export.demand(),
-        args,
-        host,
-    ))
+    let function = image
+        .function(export.function())
+        .expect("verified export function");
+    Some(run_on_host(function, export.demand(), args, host))
 }
 
 /// Run one fresh source test: a storeless entry with no session, a direct-durable entry
@@ -79,11 +76,12 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
     let execution = test.execution();
     let image = execution.image;
     let entry = execution.entry;
+    let function = image
+        .function(entry.func())
+        .expect("verified test function");
     let host = match execution.host {
         TestHost::Storeless => {
-            return DurableRun::Ran(
-                run(image, entry.func(), Vec::new()).map_err(DurableExecutionFault::from),
-            );
+            return DurableRun::Ran(run(function, Vec::new()).map_err(DurableExecutionFault::from));
         }
         TestHost::Ready(host) => host,
         TestHost::Parked => return DurableRun::Parked,
@@ -91,15 +89,13 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
     };
     match entry.kind() {
         // A storeless entry is never minted a store; the arm is total over the kind.
-        TestKind::Storeless => DurableRun::Ran(
-            run(image, entry.func(), Vec::new()).map_err(DurableExecutionFault::from),
-        ),
-        TestKind::DirectDurable => {
-            run_on_host(image, entry.func(), entry.demand(), Vec::new(), host)
+        TestKind::Storeless => {
+            DurableRun::Ran(run(function, Vec::new()).map_err(DurableExecutionFault::from))
         }
+        TestKind::DirectDurable => run_on_host(function, entry.demand(), Vec::new(), host),
         TestKind::Driver => {
-            let mut driver = TestDriver { image, host };
-            DurableRun::Ran(run_driver(image, entry.func(), Vec::new(), &mut driver))
+            let mut driver = TestDriver { host };
+            DurableRun::Ran(run_driver(function, Vec::new(), &mut driver))
         }
     }
 }
@@ -109,27 +105,26 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
 /// session, so a read-only invocation never opens a writer; an empty demand needs no
 /// session.
 fn run_on_host<H: SessionHost + ?Sized>(
-    image: &VerifiedImage,
-    func: FunctionIndex,
+    func: VerifiedFunction<'_>,
     demand: &ExportDemand,
     args: Vec<Value>,
     host: &mut H,
 ) -> DurableRun {
     if demand.is_empty() {
-        return DurableRun::Ran(run(image, func, args).map_err(DurableExecutionFault::from));
+        return DurableRun::Ran(run(func, args).map_err(DurableExecutionFault::from));
     }
     let grant = InvocationGrant::full_store();
     let coverage = coverage(demand);
     let result = if coverage.write {
         match host.txn_session(grant, coverage) {
-            Ok(mut session) => run_durable(image, func, args, &mut session),
+            Ok(mut session) => run_durable(func, args, &mut session),
             Err(_) => {
                 return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
             }
         }
     } else {
         match host.read_session(grant, coverage) {
-            Ok(mut session) => run_durable(image, func, args, &mut session),
+            Ok(mut session) => run_durable(func, args, &mut session),
             Err(_) => {
                 return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
             }
@@ -148,22 +143,21 @@ fn coverage(demand: &ExportDemand) -> DemandCoverage {
 /// The invocation dispatcher for a driver test body: it owns the test's one store and turns
 /// each call the driver frame makes into its own session.
 struct TestDriver<'a, H: SessionHost + ?Sized> {
-    image: &'a VerifiedImage,
     host: &'a mut H,
 }
 
 impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
     fn invoke(
         &mut self,
-        func: FunctionIndex,
+        func: VerifiedFunction<'_>,
         args: Vec<Value>,
         depth: u32,
         budget: &mut u64,
     ) -> Result<Option<Value>, DurableExecutionFault> {
-        let demand = self.image.function_demand(func);
+        let demand = func.demand();
         // A storeless callee needs no session.
         if demand.is_empty() {
-            return run_in_session(self.image, func, args, depth, budget, None);
+            return run_in_session(func, args, depth, budget, None);
         }
         let grant = InvocationGrant::full_store();
         let cover = coverage(demand);
@@ -174,17 +168,13 @@ impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
         // rolls back — before the next call opens its own.
         if cover.write {
             match self.host.txn_session(grant, cover) {
-                Ok(mut session) => {
-                    run_in_session(self.image, func, args, depth, budget, Some(&mut session))
-                }
-                Err(_) => Err(session_open_fault(self.image, func)),
+                Ok(mut session) => run_in_session(func, args, depth, budget, Some(&mut session)),
+                Err(_) => Err(session_open_fault(func)),
             }
         } else {
             match self.host.read_session(grant, cover) {
-                Ok(mut session) => {
-                    run_in_session(self.image, func, args, depth, budget, Some(&mut session))
-                }
-                Err(_) => Err(session_open_fault(self.image, func)),
+                Ok(mut session) => run_in_session(func, args, depth, budget, Some(&mut session)),
+                Err(_) => Err(session_open_fault(func)),
             }
         }
     }
@@ -195,7 +185,7 @@ impl<H: SessionHost + ?Sized> DriverDispatch for TestDriver<'_, H> {
 /// subset of the test-image union the ceiling is minted from, so a well-formed image
 /// never reaches this; it is mapped to a source-positioned `run.authority` fault rather
 /// than a panic.
-fn session_open_fault(image: &VerifiedImage, func: FunctionIndex) -> DurableExecutionFault {
-    let (line, column) = image.function(func).span_at(0).unwrap_or((1, 1));
+fn session_open_fault(func: VerifiedFunction<'_>) -> DurableExecutionFault {
+    let (line, column) = func.body().span_at(0).unwrap_or((1, 1));
     RuntimeFault::new(marrow_codes::Code::RunAuthority.as_str(), line, column).into()
 }

@@ -95,6 +95,11 @@ has its own platform and layout requirements
 
 ## Trust boundaries
 
+- The Rust VM entry accepts a checked function selection carrying its verified
+  image. Relative function ordinals outside that image are refused at selection.
+  Raw Rust arguments still require caller validation against that image's types;
+  the storeless entry also requires an empty durable demand
+  ([execution pipeline](implementation/README.md#pipeline)).
 - Filesystem permissions and the host process protect local store files.
 - Kernel operations validate supplied keys and decoded traversal/index keys
   against their declared scalar kinds and supported ranges. Mismatched stored

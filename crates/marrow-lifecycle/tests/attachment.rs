@@ -160,7 +160,14 @@ fn export(image: &VerifiedImage, name: &str) -> ExportId {
     image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .find(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+                .body()
+                .name()
+                == name
+        })
         .unwrap_or_else(|| panic!("export {name}"))
         .id()
 }
@@ -326,7 +333,13 @@ fn a_storeless_image_keeps_its_identity_and_mints_no_store() {
         .export_by_id(export(&image, "two"))
         .expect("two");
     assert_eq!(
-        marrow_vm::run(outcome.image(), two.function(), Vec::new()),
+        marrow_vm::run(
+            outcome
+                .image()
+                .function(two.function())
+                .expect("verified function"),
+            Vec::new()
+        ),
         Ok(Some(Value::Int(2)))
     );
 

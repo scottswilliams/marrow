@@ -160,7 +160,12 @@ fn exports_by_atom(image: &VerifiedImage) -> HashMap<(SemanticPath, OperationCla
 /// own exports).
 fn export_name(image: &VerifiedImage, id: ExportId) -> String {
     match image.export_by_id(id) {
-        Some(export) => image.function(export.function()).name().to_string(),
+        Some(export) => image
+            .function(export.function())
+            .expect("verified export function")
+            .body()
+            .name()
+            .to_string(),
         None => "an export".to_string(),
     }
 }

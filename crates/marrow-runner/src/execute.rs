@@ -58,7 +58,10 @@ impl Service {
             return reject(Code::RunnerDurableUnsupported);
         }
         let image = self.image.image();
-        let function = image.function(served.func());
+        let selected = image
+            .function(served.func())
+            .expect("served function belongs to this image");
+        let function = selected.body();
         if function.params().len() != args.len() {
             return reject(Code::RunnerArgMismatch);
         }
@@ -69,7 +72,7 @@ impl Service {
                 None => return reject(Code::RunnerArgMismatch),
             }
         }
-        match marrow_vm::run(image, served.func(), values) {
+        match marrow_vm::run(selected, values) {
             Ok(None) => ServerMessage::Value { data: Json::Null },
             Ok(Some(value)) => match transfer::encode_value(image, &value) {
                 Some(data) => ServerMessage::Value { data },

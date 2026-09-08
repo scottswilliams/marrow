@@ -71,7 +71,10 @@ pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> 
         .exports()
         .iter()
         .map(|export| {
-            let function = image.function(export.function());
+            let function = image
+                .function(export.function())
+                .expect("verified export function")
+                .body();
             ExportSignature {
                 id: export.id(),
                 params: function.params().to_vec(),

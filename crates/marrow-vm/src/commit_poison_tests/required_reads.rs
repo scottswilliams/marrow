@@ -199,7 +199,11 @@ fn fixture(target: Target) -> Fixture {
     let export = image
         .export_by_id(ExportId::of_local("", "read"))
         .expect("export");
-    let tape = image.function(export.function()).instrs();
+    let tape = image
+        .function(export.function())
+        .expect("verified function")
+        .body()
+        .instrs();
     let earlier_site = tape
         .iter()
         .find_map(|instr| match instr {
@@ -313,7 +317,13 @@ fn check_case(engine: &mut impl ByteEngine, target: Target, damage: Damage) {
             let mut session = store
                 .txn_session(InvocationGrant::full_store(), demand)
                 .expect("VM session");
-            let result = run_durable(image, export.function(), Vec::new(), &mut session);
+            let result = run_durable(
+                image
+                    .function(export.function())
+                    .expect("verified function"),
+                Vec::new(),
+                &mut session,
+            );
             match damage {
                 Damage::Healthy => assert_eq!(
                     result.expect("healthy strict read"),

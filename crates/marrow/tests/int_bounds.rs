@@ -46,12 +46,17 @@ fn compile_verify() -> VerifiedImage {
 }
 
 fn run_named(image: &VerifiedImage, name: &str) -> Result<Option<Value>, String> {
-    let export = image
+    let function = image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .map(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+        })
+        .find(|function| function.body().name() == name)
         .unwrap_or_else(|| panic!("export `{name}` present"));
-    run(image, export.function(), Vec::new()).map_err(|fault| fault.code().to_string())
+    run(function, Vec::new()).map_err(|fault| fault.code().to_string())
 }
 
 #[test]

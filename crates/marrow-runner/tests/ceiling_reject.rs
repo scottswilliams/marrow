@@ -79,7 +79,14 @@ fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
     *image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .find(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+                .body()
+                .name()
+                == name
+        })
         .unwrap_or_else(|| panic!("export `{name}` present"))
         .id()
         .bytes()

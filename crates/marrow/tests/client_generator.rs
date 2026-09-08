@@ -303,7 +303,10 @@ fn reconstruct_interface_id() -> String {
         .exports()
         .iter()
         .map(|export| {
-            let function = image.function(export.function());
+            let function = image
+                .function(export.function())
+                .expect("verified function")
+                .body();
             ExportSignature {
                 id: export.id(),
                 params: function.params().to_vec(),

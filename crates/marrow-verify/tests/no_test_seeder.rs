@@ -2,13 +2,11 @@
 //! exactly one constructor, the phased verifier, and no test-only or fixture-seeder
 //! bypass may be added.
 //!
-//! `VerifiedImage`'s fields are `pub(crate)`, so a struct literal can only appear
-//! inside `marrow-verify`; this gate proves it appears only where the verifier seals
-//! it, and that no function anywhere in the workspace returns a `VerifiedImage`
-//! except the verifier's own `verify`. A raw fixture seeder that mints a trusted
-//! image without verification would trip this test, keeping the
-//! `bytes → verify → VerifiedImage` trust path the sole way to obtain a runnable
-//! image — for test images (the TEST-ENTRY table) exactly as for run images.
+//! `VerifiedImage`'s fields are `pub(crate)`, restricting struct literals to
+//! `marrow-verify`. These lexical checks flag direct construction and owned-return
+//! spellings outside the sealing/verifier files, including test-only source modules.
+//! Borrowed image accessors do not construct an image. This recurrence guard is
+//! not a Rust parser; field visibility and verifier review carry the trust boundary.
 
 use std::path::{Path, PathBuf};
 
@@ -67,7 +65,7 @@ fn read_dir_sorted(dir: &Path) -> Vec<PathBuf> {
 
 /// A `VerifiedImage { ... }` struct literal appears only in the sealing file, so no
 /// other module — production or `#[cfg(test)]` — constructs a trusted image directly.
-/// The `struct VerifiedImage { ... }` definition itself is not a construction.
+/// Definitions, impls and borrowed return signatures are not constructions.
 #[test]
 fn verified_image_is_constructed_only_by_the_verifier() {
     let root = workspace_root();
@@ -78,7 +76,8 @@ fn verified_image_is_constructed_only_by_the_verifier() {
         for line in text.lines() {
             let constructs = line.contains("VerifiedImage {")
                 && !line.contains("struct VerifiedImage")
-                && !line.contains("impl VerifiedImage");
+                && !line.contains("impl VerifiedImage")
+                && !line.contains("-> &");
             assert!(
                 !constructs,
                 "{path} constructs a VerifiedImage directly; only {SEALING_FILE} may seal one \

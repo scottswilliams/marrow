@@ -23,7 +23,7 @@ use marrow_compile::{CompileFailure, ExportEntry, ExportId, SourceDiagnostic, co
 use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
 use marrow_project_fs::IdsPublication;
 use marrow_verify::{
-    FunctionIndex, ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedImage,
+    ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedFunction, VerifiedImage,
 };
 use marrow_vm::Value;
 
@@ -225,7 +225,9 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         eprintln!("internal error: export directory and image disagree");
         return ExitCode::FAILURE;
     };
-    let func_index = export.function();
+    let function = image
+        .function(export.function())
+        .expect("verified export function");
     let demand = export.demand();
 
     // Persistent path: `marrow run … --store <dir>` runs the export against a provisioned
@@ -233,14 +235,13 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     // release manifest and spawns it as an attached session (durable or storeless), submits
     // one call, and renders the result. The spawn is invisible in ordinary output.
     if let Some(store_dir) = &args.store {
-        let function = image.function(func_index);
         return run_persistent(
             args.format,
             &image,
             &compiled.image.bytes,
             *export_id.bytes(),
             store_dir,
-            function.params(),
+            function.body().params(),
             &args.call_args,
         );
     }
@@ -262,14 +263,13 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     }
 
     // Positional call arguments are decoded against the verified export signature.
-    let function = image.function(func_index);
-    let call_args = match decode_args(function.params(), &args.call_args) {
+    let call_args = match decode_args(function.body().params(), &args.call_args) {
         Ok(values) => values,
         Err(message) => return usage(&message),
     };
 
     // Family 3: source-mapped runtime fault, or the value.
-    let record = run_storeless(&image, func_index, call_args);
+    let record = run_storeless(function, call_args);
 
     let exit = match &record {
         Record::Value(_) => ExitCode::SUCCESS,
@@ -494,12 +494,8 @@ fn resolve_export(directory: &[ExportEntry], query: &str) -> Result<ExportId, St
 }
 
 /// Run a storeless export.
-fn run_storeless(
-    image: &VerifiedImage,
-    func_index: FunctionIndex,
-    call_args: Vec<Value>,
-) -> Record {
-    match marrow_vm::run(image, func_index, call_args) {
+fn run_storeless(function: VerifiedFunction<'_>, call_args: Vec<Value>) -> Record {
+    match marrow_vm::run(function, call_args) {
         Ok(value) => Record::Value(value),
         Err(fault) => Record::Fault {
             code: fault.code(),

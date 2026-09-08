@@ -135,7 +135,14 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
     image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .find(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+                .body()
+                .name()
+                == name
+        })
         .expect("export present")
 }
 
@@ -205,6 +212,8 @@ pub fn describe(id: int): string {
     let image = compile_verify(&source);
     let code = image
         .function(export(&image, "describe").function())
+        .expect("verified function")
+        .body()
         .instrs();
     assert_eq!(
         code.iter()

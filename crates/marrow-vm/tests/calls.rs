@@ -1,8 +1,7 @@
-//! Slice K.4 evidence: direct calls, the acyclic-call-graph rejection, and the
-//! dynamic call-depth guard.
+//! Checked function selection, direct calls, cycle rejection and call depth.
 
 use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
-use marrow_verify::{FunctionIndex, verify};
+use marrow_verify::{FunctionIndex, VerifiedImage, verify};
 use marrow_vm::{Value, run};
 
 #[path = "common/admitted.rs"]
@@ -19,37 +18,35 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
         .collect()
 }
 
-#[test]
-fn a_direct_call_runs() {
-    // double(n) = n + n ; caller() = double(21) == 42
+fn direct_call_image(argument: i64, operation: Instr) -> VerifiedImage {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
-    let double_name = draft.intern_string("double").expect("a within-domain mint");
-    let double_code = vec![
+    let helper_name = draft.intern_string("helper").expect("a within-domain mint");
+    let helper_code = vec![
         Instr::LocalGet(0),
         Instr::LocalGet(0),
-        Instr::IntAdd,
+        operation,
         Instr::Return,
     ];
-    let double = draft
+    let helper = draft
         .add_function(FunctionDef {
-            name: double_name,
+            name: helper_name,
             source: src,
             params: vec![ImageType::scalar(Scalar::Int)],
             ret: ImageType::scalar(Scalar::Int),
             local_count: 1,
-            spans: spans(&double_code),
-            code: double_code,
+            spans: spans(&helper_code),
+            code: helper_code,
         })
         .expect("every site operand is live");
     let caller_name = draft.intern_string("caller").expect("a within-domain mint");
-    let arg = draft.intern_int(21).expect("a within-domain mint");
+    let arg = draft.intern_int(argument).expect("a within-domain mint");
     let caller_code = vec![
         Instr::ConstLoad(arg),
-        Instr::Call(double.index()),
+        Instr::Call(helper.index()),
         Instr::Return,
     ];
     let caller = draft
@@ -65,22 +62,22 @@ fn a_direct_call_runs() {
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "caller"), caller);
     let bytes = draft.encode().expect("encode").bytes;
-    let image = verify(&bytes).expect("verifies");
+    verify(&bytes).expect("verifies")
+}
+
+#[test]
+fn a_direct_call_runs() {
+    let image = direct_call_image(21, Instr::IntAdd);
     let index = image
         .export_by_id(ExportId::of_local("", "caller"))
         .expect("export")
         .function();
-    assert_eq!(run(&image, index, Vec::new()), Ok(Some(Value::Int(42))));
+    let function = image.function(index).expect("verified export function");
+    assert_eq!(run(function, Vec::new()), Ok(Some(Value::Int(42))));
 }
 
-/// The VM's run entry addresses a function by a typed [`FunctionIndex`], not a bare
-/// `u16`: the only image-blessed source is [`marrow_verify::SealedExport::function`],
-/// and the newtype round-trips through `get`/`new` while staying distinct from the
-/// many other `u16` handles a sealed image carries. A raw integer (a local slot, a
-/// const index) cannot be presented to `run` in its place — that is a compile error,
-/// which is the boundary this test documents.
 #[test]
-fn the_vm_run_entry_takes_a_typed_function_index() {
+fn absent_function_ordinals_are_refused_without_panicking() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let src = draft
@@ -109,15 +106,55 @@ fn the_vm_run_entry_takes_a_typed_function_index() {
         .expect("export")
         .function();
 
-    // The typed index addresses the right function.
-    assert_eq!(image.function(index).name(), "answer");
+    let selected = image.function(index).expect("verified export function");
+    assert_eq!(selected.body().name(), "answer");
+    assert_eq!(run(selected, Vec::new()), Ok(Some(Value::Int(42))));
 
-    // The newtype round-trips, and a value reconstructed through `new` addresses the
-    // same function the export named — the only sanctioned way to build one by hand.
-    let rebuilt = FunctionIndex::new(index.get());
-    assert_eq!(rebuilt, index);
-    assert_eq!(rebuilt.index(), index.get() as usize);
-    assert_eq!(run(&image, rebuilt, Vec::new()), Ok(Some(Value::Int(42))));
+    let foreign_image = direct_call_image(7, Instr::IntMul);
+    let higher = foreign_image
+        .export_by_id(ExportId::of_local("", "caller"))
+        .expect("export")
+        .function();
+    assert_eq!(higher.index(), image.functions().len());
+    for absent in [FunctionIndex::new(u16::MAX), higher] {
+        assert!(image.function(absent).is_none(), "ordinal {}", absent.get());
+    }
+}
+
+#[test]
+fn selections_keep_their_image_through_constants_and_helper_calls() {
+    let first = direct_call_image(21, Instr::IntAdd);
+    let second = direct_call_image(7, Instr::IntMul);
+    let ordinal = first
+        .export_by_id(ExportId::of_local("", "caller"))
+        .expect("first export")
+        .function();
+    assert_eq!(
+        ordinal,
+        second
+            .export_by_id(ExportId::of_local("", "caller"))
+            .expect("second export")
+            .function()
+    );
+
+    // The same relative ordinal validly selects a different owner in each image.
+    let first_function = first.function(ordinal).expect("first function");
+    let second_function = second.function(ordinal).expect("second function");
+    assert!(std::ptr::eq(first_function.image(), &first));
+    assert!(std::ptr::eq(second_function.image(), &second));
+    assert!(std::ptr::eq(
+        first_function.body(),
+        &first.functions()[ordinal.index()]
+    ));
+    assert!(std::ptr::eq(
+        second_function.body(),
+        &second.functions()[ordinal.index()]
+    ));
+    assert!(first_function.demand().is_empty());
+    assert!(second_function.demand().is_empty());
+    assert_eq!(run(second_function, Vec::new()), Ok(Some(Value::Int(49))));
+    assert_eq!(run(first_function, Vec::new()), Ok(Some(Value::Int(42))));
+    assert_eq!(run(second_function, Vec::new()), Ok(Some(Value::Int(49))));
 }
 
 #[test]
@@ -202,9 +239,12 @@ fn an_acyclic_call_chain_past_the_dynamic_depth_bound_refuses() {
     // The image admits up to 4,096 functions, so an acyclic chain can cross the VM's
     // 64-call dynamic bound even though the verifier rejects recursive cycles.
     assert_eq!(
-        run(&image, index, Vec::new())
-            .err()
-            .map(|fault| fault.code().to_string()),
+        run(
+            image.function(index).expect("verified export function"),
+            Vec::new()
+        )
+        .err()
+        .map(|fault| fault.code().to_string()),
         Some("run.call_depth".to_string()),
     );
 }

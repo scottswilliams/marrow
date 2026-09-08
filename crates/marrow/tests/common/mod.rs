@@ -344,14 +344,20 @@ impl Session {
     /// source-mapped runtime fault (by stable code), a parked durable shape, or an
     /// operational failure (by stable code).
     pub fn try_call(&mut self, export: &str, args: Vec<Value>) -> CallOutcome {
-        let sealed = self
+        let (sealed, function) = self
             .image
             .exports()
             .iter()
-            .find(|candidate| self.image.function(candidate.function()).name() == export)
+            .find_map(|candidate| {
+                let function = self
+                    .image
+                    .function(candidate.function())
+                    .expect("verified function");
+                (function.body().name() == export).then_some((candidate, function))
+            })
             .unwrap_or_else(|| panic!("no export named `{export}`"));
         if sealed.demand().is_empty() {
-            return match marrow_vm::run(&self.image, sealed.function(), args) {
+            return match marrow_vm::run(function, args) {
                 Ok(value) => CallOutcome::Value(value),
                 Err(fault) => CallOutcome::Fault(fault.code().to_string()),
             };

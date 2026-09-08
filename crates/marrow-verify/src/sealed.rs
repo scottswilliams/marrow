@@ -13,20 +13,16 @@ use marrow_image::{
     ImageType, LedgerIdBytes, OperationClass, Scalar, SemanticNode, SemanticPath, SemanticTarget,
 };
 
-/// A function's position in a [`VerifiedImage`]'s function table. A typed handle so a
-/// function index cannot be confused with the many other `u16` indices a sealed image
-/// carries (local slots, const indices, field/site/root/group handles): the VM's run
-/// entry points and the image's function accessors take a `FunctionIndex`, and the
-/// only ways to obtain one are [`SealedExport::function`], [`SealedTestEntry::func`],
-/// or an explicit [`FunctionIndex::new`] over a value the caller vouches is a function
-/// index. It is meaningful only within its own image's [`ImageId`].
+/// A relative position in a [`VerifiedImage`]'s function table, distinct from local,
+/// constant and shape indices. This ordinal carries no image ownership or bounds
+/// proof. [`VerifiedImage::function`] checks it against the receiving image and
+/// returns an image-owned selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FunctionIndex(u16);
 
 impl FunctionIndex {
-    /// Wrap a raw function-table position. The caller asserts `raw` indexes the
-    /// image's function table; the accessors that return a `FunctionIndex` are the
-    /// safe sources.
+    /// Wrap a relative function-table position without selecting an image or
+    /// checking its bounds.
     pub fn new(raw: u16) -> Self {
         FunctionIndex(raw)
     }
@@ -947,15 +943,10 @@ impl VerifiedImage {
         &self.consts
     }
 
-    pub fn function(&self, index: FunctionIndex) -> &SealedFunction {
-        &self.functions[index.index()]
-    }
-
-    /// The reconstructed durable demand of the function at `index` over its whole
-    /// call closure. A test-body driver consults this to open the read or write
-    /// session one export call requires; empty demand needs no session.
-    pub fn function_demand(&self, index: FunctionIndex) -> &ExportDemand {
-        &self.function_demands[index.index()]
+    /// Select the function at this image-relative position, or return `None` when
+    /// it is outside this image's function table.
+    pub fn function(&self, index: FunctionIndex) -> Option<VerifiedFunction<'_>> {
+        (index.index() < self.functions.len()).then_some(VerifiedFunction { image: self, index })
     }
 
     pub fn functions(&self) -> &[SealedFunction] {
@@ -1036,6 +1027,33 @@ pub struct NodeIncidence {
 pub struct AtomIncidence {
     pub export: ExportId,
     pub class: OperationClass,
+}
+
+/// A checked function selection that retains the image owning its body and demand.
+/// Constructed only by [`VerifiedImage::function`]. Sealing creates one demand per
+/// function, so the checked ordinal addresses both immutable tables.
+#[derive(Debug, Clone, Copy)]
+pub struct VerifiedFunction<'image> {
+    image: &'image VerifiedImage,
+    index: FunctionIndex,
+}
+
+impl<'image> VerifiedFunction<'image> {
+    /// The image that owns this function's constants, types and call targets.
+    pub fn image(self) -> &'image VerifiedImage {
+        self.image
+    }
+
+    /// The selected function's verified signature and instruction tape.
+    pub fn body(self) -> &'image SealedFunction {
+        &self.image.functions[self.index.index()]
+    }
+
+    /// The selected function's reconstructed durable demand over its call closure.
+    /// A test-body driver uses it to open the session required by one invocation.
+    pub fn demand(self) -> &'image ExportDemand {
+        &self.image.function_demands[self.index.index()]
+    }
 }
 
 /// One verified durable root occurrence: the row at a DURABLE-table index, paired with

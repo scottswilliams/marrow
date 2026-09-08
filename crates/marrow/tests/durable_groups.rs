@@ -177,7 +177,14 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a marrow_verify::Sealed
     image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .find(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+                .body()
+                .name()
+                == name
+        })
         .expect("export present")
 }
 
@@ -787,7 +794,11 @@ pub fn note(shelf: int, id: int): string {
     );
     let image = compile_verify(&source, IDS);
     for (name, keys) in [("put", 2), ("note", 3)] {
-        let code = image.function(export(&image, name).function()).instrs();
+        let code = image
+            .function(export(&image, name).function())
+            .expect("verified function")
+            .body()
+            .instrs();
         let slots: Vec<_> = code
             .iter()
             .filter_map(|op| match op {
@@ -800,7 +811,11 @@ pub fn note(shelf: int, id: int): string {
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].len(), keys);
     }
-    let code = image.function(export(&image, "pages").function()).instrs();
+    let code = image
+        .function(export(&image, "pages").function())
+        .expect("verified function")
+        .body()
+        .instrs();
     assert_eq!(
         code.iter()
             .filter(|op| matches!(op, marrow_verify::SealedInstr::DurReadGroupPresent { .. }))

@@ -51,7 +51,13 @@ fn verified_image_runs_on_the_vm() {
     let bytes = return_const_image(42);
     let image = verify(&bytes).expect("image verifies");
     let export = image.export_by_id(answer_id()).expect("export present");
-    let result = run(&image, export.function(), Vec::<Value>::new()).expect("run");
+    let result = run(
+        image
+            .function(export.function())
+            .expect("verified function"),
+        Vec::<Value>::new(),
+    )
+    .expect("run");
     assert_eq!(result, Some(Value::Int(42)));
 }
 
@@ -206,8 +212,13 @@ fn a_forged_out_of_range_positional_read_faults_run_corruption() {
     for bytes in images {
         let image = verify(&bytes).expect("a type-correct forged image verifies");
         let export = image.export_by_id(answer_id()).expect("export present");
-        let fault = run(&image, export.function(), Vec::<Value>::new())
-            .expect_err("an out-of-range positional read must fault, not panic");
+        let fault = run(
+            image
+                .function(export.function())
+                .expect("verified function"),
+            Vec::<Value>::new(),
+        )
+        .expect_err("an out-of-range positional read must fault, not panic");
         assert_eq!(fault.code(), "run.corruption");
     }
 }
@@ -338,7 +349,13 @@ fn forged_map_remove_non_map_image() -> Vec<u8> {
 fn map_remove_is_idempotent_and_type_checked() {
     let image = verify(&forged_map_remove_absent_image()).expect("an absent removal verifies");
     let export = image.export_by_id(answer_id()).expect("export present");
-    let result = run(&image, export.function(), Vec::<Value>::new()).expect("run");
+    let result = run(
+        image
+            .function(export.function())
+            .expect("verified function"),
+        Vec::<Value>::new(),
+    )
+    .expect("run");
     assert_eq!(result, Some(Value::Int(0)));
 
     for forged in [
@@ -358,13 +375,15 @@ fn a_range_guard_admits_the_interval_and_faults_outside_it() {
     let bytes = range_guard_image();
     let image = verify(&bytes).expect("image verifies");
     let export = image.export_by_id(answer_id()).expect("export present");
+    let function = image
+        .function(export.function())
+        .expect("verified function");
     for value in [0, 150, 42] {
-        let result = run(&image, export.function(), vec![Value::Int(value)]).expect("in range");
+        let result = run(function, vec![Value::Int(value)]).expect("in range");
         assert_eq!(result, Some(Value::Int(value)));
     }
     for value in [-1, 151, i64::MIN, i64::MAX] {
-        let fault = run(&image, export.function(), vec![Value::Int(value)])
-            .expect_err("out of range must fault");
+        let fault = run(function, vec![Value::Int(value)]).expect_err("out of range must fault");
         assert_eq!(fault.code(), "run.range");
         assert_eq!((fault.line(), fault.column()), (3, 5));
     }

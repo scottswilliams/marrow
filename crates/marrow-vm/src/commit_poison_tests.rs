@@ -189,7 +189,13 @@ fn run_vm_write(
     let mut session = store
         .txn_session(InvocationGrant::full_store(), demand)
         .expect("VM transaction session");
-    run_durable(image, export.function(), Vec::new(), &mut session)
+    run_durable(
+        image
+            .function(export.function())
+            .expect("verified function"),
+        Vec::new(),
+        &mut session,
+    )
 }
 
 #[test]
@@ -198,6 +204,9 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
     let export = image
         .export_by_id(ExportId::of_local("", "write"))
         .expect("write export");
+    let function = image
+        .function(export.function())
+        .expect("verified function");
     let demand = DemandCoverage {
         read: export.demand().reads(),
         write: export.demand().writes(),
@@ -208,12 +217,7 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
         .txn_session(InvocationGrant::full_store(), demand)
         .expect("confirmed transaction session");
     assert!(matches!(
-        run_durable(
-            &image,
-            export.function(),
-            Vec::new(),
-            &mut confirmed_session,
-        ),
+        run_durable(function, Vec::new(), &mut confirmed_session,),
         Ok(None)
     ));
     drop(confirmed_session);
@@ -225,7 +229,7 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
     let mut aborted_session = aborted
         .txn_session(InvocationGrant::full_store(), demand)
         .expect("aborted transaction session");
-    let aborted_fault = run_durable(&image, export.function(), Vec::new(), &mut aborted_session)
+    let aborted_fault = run_durable(function, Vec::new(), &mut aborted_session)
         .expect_err("an aborted commit cannot complete the invocation");
     drop(aborted_session);
     let DurableExecutionFault::Incomplete(aborted_incomplete) = aborted_fault else {
@@ -249,9 +253,8 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
         let mut pending_session = pending
             .txn_session(InvocationGrant::full_store(), demand)
             .expect("indeterminate transaction session");
-        let pending_fault =
-            run_durable(&image, export.function(), Vec::new(), &mut pending_session)
-                .expect_err("an indeterminate commit cannot complete the invocation");
+        let pending_fault = run_durable(function, Vec::new(), &mut pending_session)
+            .expect_err("an indeterminate commit cannot complete the invocation");
         drop(pending_session);
         let DurableExecutionFault::Incomplete(pending_incomplete) = pending_fault else {
             panic!("an indeterminate commit was flattened to an ordinary runtime fault");

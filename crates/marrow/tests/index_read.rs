@@ -149,7 +149,14 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
     image
         .exports()
         .iter()
-        .find(|export| image.function(export.function()).name() == name)
+        .find(|export| {
+            image
+                .function(export.function())
+                .expect("verified function")
+                .body()
+                .name()
+                == name
+        })
         .expect("export present")
 }
 
@@ -510,6 +517,8 @@ fn key_only_scan(source: &str, ids: &str) {
     let image = compile_verify(&format!("{source}{KEY_ONLY_SCAN}"), ids);
     let instrs = image
         .function(export(&image, "scanOrder").function())
+        .expect("verified function")
+        .body()
         .instrs();
     let mut scans = instrs.iter().filter_map(|instr| match instr {
         SealedInstr::DurIndexScan {

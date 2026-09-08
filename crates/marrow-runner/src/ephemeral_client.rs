@@ -206,7 +206,14 @@ mod tests {
         *image
             .exports()
             .iter()
-            .find(|export| image.function(export.function()).name() == "echo")
+            .find(|export| {
+                image
+                    .function(export.function())
+                    .expect("verified function")
+                    .body()
+                    .name()
+                    == "echo"
+            })
             .expect("echo export")
             .id()
             .bytes()

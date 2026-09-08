@@ -11,7 +11,13 @@ A program travels one way. `marrow-syntax` parses `.mw` source into an AST.
 `marrow-compile` checks the AST and lowers it to a program-image draft, which
 `marrow-image` encodes to canonical bytes. `marrow-verify` is the only decoder:
 it rebuilds every executable claim from the bytes and seals a `VerifiedImage`.
-`marrow-vm` runs a sealed image over its instruction tape. Durable reads and
+`VerifiedImage::function` checks an image-relative `FunctionIndex` and returns
+a borrowed `VerifiedFunction` carrying the owner of its body and durable demand.
+`marrow-vm::run` accepts that selection without a separate image. Internal calls
+select from the current frame's image; lifecycle attachments retain image/store
+pairing for durable execution. The raw storeless Rust entry requires correctly
+typed arguments from that image and an empty demand; it does not validate those
+preconditions. `marrow-vm` executes the selected instruction tape. Durable reads and
 writes leave the VM through `marrow-kernel`, which encodes keys and values and
 drives a transaction against an engine in `marrow-store`.
 

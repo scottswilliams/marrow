@@ -17,7 +17,7 @@ use marrow_kernel::durable::{
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
     FunctionIndex, SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget,
-    VerifiedImage,
+    VerifiedFunction, VerifiedImage,
 };
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
@@ -57,12 +57,15 @@ struct ExecutionState<'a> {
     commit_confirmed: bool,
 }
 
-/// Run a storeless function at `func_index` with `args`, returning its value (or
-/// `None` for a Unit return) or a source-mapped runtime fault. Rejected for a
-/// durable export (its demand is nonempty); use [`run_durable`].
+/// Run a selected storeless function with `args`, returning its value (or `None`
+/// for a Unit return) or a source-mapped runtime fault.
+///
+/// The caller must supply arguments matching the verified signature and types
+/// of the selection's image, and the function's demand must be empty. This raw
+/// entry does not validate those preconditions; violating them may panic. Durable
+/// execution uses the lifecycle-owned attachment through [`crate::run_export`].
 pub fn run(
-    image: &VerifiedImage,
-    func_index: FunctionIndex,
+    function: VerifiedFunction<'_>,
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
     let mut budget = INSTRUCTION_BUDGET;
@@ -70,7 +73,7 @@ pub fn run(
         budget: &mut budget,
         commit_confirmed: false,
     };
-    match execute(image, func_index, args, 0, &mut state, None, None) {
+    match execute(function, args, 0, &mut state, None, None) {
         Ok(value) => Ok(value),
         Err(DurableExecutionFault::Runtime(fault)) => Err(fault),
         Err(DurableExecutionFault::Incomplete(_)) => {
@@ -79,14 +82,13 @@ pub fn run(
     }
 }
 
-/// Run a durable function at `func_index`, driving `session` for every durable
+/// Run a selected durable function, driving `session` for every durable
 /// operation. The session is a read session for a read-only export and a
 /// transaction session for a mutating one. Crate-private: the public durable routes
 /// open the session on the attachment that pairs the image with the store it was
 /// admitted for, so no caller executes an image against a session from elsewhere.
 pub(crate) fn run_durable(
-    image: &VerifiedImage,
-    func_index: FunctionIndex,
+    function: VerifiedFunction<'_>,
     args: Vec<Value>,
     session: &mut dyn Durable,
 ) -> Result<Option<Value>, DurableExecutionFault> {
@@ -95,7 +97,7 @@ pub(crate) fn run_durable(
         budget: &mut budget,
         commit_confirmed: false,
     };
-    execute(image, func_index, args, 0, &mut state, Some(session), None)
+    execute(function, args, 0, &mut state, Some(session), None)
 }
 
 /// A test-body driver: it turns each durable-touching call the driver frame makes
@@ -107,18 +109,17 @@ pub(crate) fn run_durable(
 pub(crate) trait DriverDispatch {
     fn invoke(
         &mut self,
-        func: FunctionIndex,
+        function: VerifiedFunction<'_>,
         args: Vec<Value>,
         depth: u32,
         budget: &mut u64,
     ) -> Result<Option<Value>, DurableExecutionFault>;
 }
 
-/// Run `func_index` as a test-body driver frame: it holds no session of its own and
+/// Run `function` as a test-body driver frame: it holds no session of its own and
 /// dispatches each call through `driver`, which opens one session per invocation.
 pub(crate) fn run_driver(
-    image: &VerifiedImage,
-    func_index: FunctionIndex,
+    function: VerifiedFunction<'_>,
     args: Vec<Value>,
     driver: &mut dyn DriverDispatch,
 ) -> Result<Option<Value>, DurableExecutionFault> {
@@ -127,15 +128,14 @@ pub(crate) fn run_driver(
         budget: &mut budget,
         commit_confirmed: false,
     };
-    execute(image, func_index, args, 0, &mut state, None, Some(driver))
+    execute(function, args, 0, &mut state, None, Some(driver))
 }
 
-/// Run `func_index` at `depth` sharing `budget`, driving `session` for its durable
+/// Run `function` at `depth` sharing `budget`, driving `session` for its durable
 /// operations (or `None` for a storeless callee). The driver uses this to run one
 /// dispatched invocation inside the session it opened, without a nested driver.
 pub(crate) fn run_in_session(
-    image: &VerifiedImage,
-    func_index: FunctionIndex,
+    function: VerifiedFunction<'_>,
     args: Vec<Value>,
     depth: u32,
     budget: &mut u64,
@@ -145,7 +145,7 @@ pub(crate) fn run_in_session(
         budget,
         commit_confirmed: false,
     };
-    execute(image, func_index, args, depth, &mut state, session, None)
+    execute(function, args, depth, &mut state, session, None)
 }
 
 /// Execute one frame. `depth` is the current call depth and `state` is shared
@@ -153,15 +153,14 @@ pub(crate) fn run_in_session(
 /// operations; it is `None` for a storeless call tree. `driver` is present only for a
 /// test-body driver frame, where each call becomes its own session-scoped invocation.
 fn execute<'s>(
-    image: &VerifiedImage,
-    func_index: FunctionIndex,
+    function: VerifiedFunction<'_>,
     args: Vec<Value>,
     depth: u32,
     state: &mut ExecutionState<'_>,
     session: Option<&mut (dyn Durable + 's)>,
     driver: Option<&mut dyn DriverDispatch>,
 ) -> Result<Option<Value>, DurableExecutionFault> {
-    let result = execute_frame(image, func_index, args, depth, state, session, driver);
+    let result = execute_frame(function, args, depth, state, session, driver);
     match result {
         Err(DurableExecutionFault::Runtime(fault)) if state.commit_confirmed => Err(
             DurableExecutionFault::classified(fault, DurableCommitState::KnownNew),
@@ -174,15 +173,14 @@ fn execute<'s>(
 /// helper calls. The outer wrapper converts any later runtime fault into an
 /// incomplete invocation with known-new durable state.
 fn execute_frame<'s>(
-    image: &VerifiedImage,
-    func_index: FunctionIndex,
+    selected: VerifiedFunction<'_>,
     args: Vec<Value>,
     depth: u32,
     state: &mut ExecutionState<'_>,
     mut session: Option<&mut (dyn Durable + 's)>,
     mut driver: Option<&mut dyn DriverDispatch>,
 ) -> Result<Option<Value>, DurableExecutionFault> {
-    let function = image.function(func_index);
+    let function = selected.body();
     let mut locals: Vec<Option<Value>> = Vec::with_capacity(function.local_count() as usize);
     for arg in args {
         locals.push(Some(arg));
@@ -191,7 +189,7 @@ fn execute_frame<'s>(
 
     let instrs = function.instrs();
     let mut frame = Frame {
-        image,
+        image: selected.image(),
         function,
         locals,
         stack: Vec::with_capacity(function.max_stack()),
@@ -1052,9 +1050,11 @@ impl<'i> Frame<'i> {
         if depth + 1 > MAX_CALL_DEPTH {
             return Err(self.fault(Code::RunCallDepth.as_str()));
         }
-        let image = self.image;
-        let callee = FunctionIndex::new(target);
-        let arg_count = image.function(callee).params().len();
+        let callee = self
+            .image
+            .function(FunctionIndex::new(target))
+            .expect("verified call target belongs to this image");
+        let arg_count = callee.body().params().len();
         let start = self.stack.len() - arg_count;
         // a0 was pushed first, so the tail of the stack is a0..an-1 in order.
         let call_args = self.stack.split_off(start);
@@ -1065,7 +1065,6 @@ impl<'i> Frame<'i> {
         let returned = match driver.as_deref_mut() {
             Some(driver) => driver.invoke(callee, call_args, depth + 1, &mut *state.budget)?,
             None => execute(
-                image,
                 callee,
                 call_args,
                 depth + 1,

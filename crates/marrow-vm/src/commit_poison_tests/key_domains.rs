@@ -140,7 +140,10 @@ fn a_wrong_kind_stored_key_faults_at_the_verified_traversal() {
     let export = image
         .export_by_id(ExportId::of_local("", "keys"))
         .expect("export");
-    let tape = image.function(export.function()).instrs();
+    let function = image
+        .function(export.function())
+        .expect("verified function");
+    let tape = function.body().instrs();
     assert!(matches!(tape[0], SealedInstr::DurIterateBounded { .. }));
 
     for key in [KeyScalar::Int(7), KeyScalar::Str("wrong".into())] {
@@ -165,7 +168,7 @@ fn a_wrong_kind_stored_key_faults_at_the_verified_traversal() {
                     },
                 )
                 .expect("verified read session");
-            let result = run_durable(image, export.function(), Vec::new(), &mut session);
+            let result = run_durable(function, Vec::new(), &mut session);
             if valid {
                 let Some(Value::List(_, _, items)) = result.expect("valid key traversal") else {
                     panic!("the verified traversal returns a list");
