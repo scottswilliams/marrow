@@ -6,6 +6,7 @@
 //! verify -> attach -> VM — and compose with the entry-identity dereference: the bound
 //! identity reads its entry through `^root[id]`.
 
+use marrow_kernel::codec::key::KeyScalar;
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{
     DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
@@ -381,4 +382,203 @@ fn a_two_binding_index_scan_is_rejected() {
         "pub fn bad(shelf: string): int {\n    var n = 0\n    for x, p in ^books.byShelf[shelf] at most 10 {\n        n += 1\n    } on more {\n        n = -1\n    }\n    return n\n}\n",
     );
     assert!(has_type_error(&diagnostics));
+}
+
+const KEY_ONLY_SOURCE: &str = r#"resource Item {
+    note: string
+}
+
+store ^items[id: int]: Item {
+    index byId[id] unique
+    index all[id]
+}
+
+pub fn put(id: int) {
+    transaction {
+        ^items[id] = Item()
+    }
+}
+
+pub fn erase(id: int) {
+    transaction {
+        delete ^items[id]
+    }
+}
+
+pub fn present(id: int): bool {
+    return exists(^items[id])
+}
+
+pub fn find(id: int): Id(^items)? {
+    return ^items.byId[id]
+}
+
+pub fn indexed(id: int): bool {
+    return exists(^items.byId[id])
+}
+
+"#;
+
+const KEY_ONLY_IDS: &str = "marrow ids v0\n\
+machine-written by marrow; do not edit\n\
+id application . 01010101010101010101010101010101\n\
+id product Item 10101010101010101010101010101010\n\
+id field Item.note 11111111111111111111111111111111\n\
+id root items 20202020202020202020202020202020\n\
+id key items.id 21212121212121212121212121212121\n\
+id index items.byId 22222222222222222222222222222222\n\
+id index items.all 23232323232323232323232323232323\n\
+high-water 0\n\
+end\n";
+
+fn key_only_lifetime(source: &str, ids: &str) {
+    let image = compile_verify(source, ids);
+    let mut store = attach(&image);
+    let identity = Value::Optional(Some(Box::new(Value::Id(0, [KeyScalar::Int(7)].into()))));
+    let absent = (
+        Some(Value::Bool(false)),
+        Some(Value::Optional(None)),
+        Some(Value::Bool(false)),
+    );
+    let present = (
+        Some(Value::Bool(true)),
+        Some(identity),
+        Some(Value::Bool(true)),
+    );
+    let observe = |store: &mut MemoryAttachment| {
+        (
+            run(&image, store, "present", vec![Value::Int(7)]),
+            run(&image, store, "find", vec![Value::Int(7)]),
+            run(&image, store, "indexed", vec![Value::Int(7)]),
+        )
+    };
+    assert_eq!(observe(&mut store), absent);
+    run(&image, &mut store, "put", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut store), present);
+    run(&image, &mut store, "put", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut store), present);
+    run(&image, &mut store, "erase", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut store), absent);
+    run(&image, &mut store, "put", vec![Value::Int(7)]);
+    assert_eq!(observe(&mut store), present);
+}
+
+#[test]
+fn key_only_indexes_follow_all_sparse_entry_lifetime() {
+    key_only_lifetime(KEY_ONLY_SOURCE, KEY_ONLY_IDS);
+}
+
+#[test]
+fn key_only_indexes_follow_empty_entry_lifetime() {
+    let source = KEY_ONLY_SOURCE.replace("    note: string\n", "");
+    let ids = KEY_ONLY_IDS.replace("id field Item.note 11111111111111111111111111111111\n", "");
+    key_only_lifetime(&source, &ids);
+}
+
+const SUBSET_SOURCE: &str = r#"resource Item {
+    note: string
+}
+
+resource Slot {
+    note: string
+}
+
+store ^items[id: int]: Item {
+    index byId[id] unique
+}
+
+store ^slots[tenant: string, slot: int]: Slot {
+    index byTenant[tenant] unique
+}
+
+pub fn putItem(id: int) {
+    transaction {
+        ^items[id] = Item(note: "present")
+    }
+}
+
+pub fn findItem(id: int): Id(^items)? {
+    return ^items.byId[id]
+}
+
+pub fn itemPresent(id: int): bool {
+    return exists(^items[id])
+}
+
+pub fn collide(): int {
+    transaction {
+        ^items[99] = Item(note: "rollback witness")
+        ^slots["tenant", 1] = Slot()
+        ^slots["tenant", 2] = Slot()
+    }
+    return 1
+}
+
+pub fn slotPresent(slot: int): bool {
+    return exists(^slots["tenant", slot])
+}
+
+pub fn findTenant(): Id(^slots)? {
+    return ^slots.byTenant["tenant"]
+}
+"#;
+
+const SUBSET_IDS: &str = "marrow ids v0\n\
+machine-written by marrow; do not edit\n\
+id application . 01010101010101010101010101010101\n\
+id product Item 10101010101010101010101010101010\n\
+id field Item.note 11111111111111111111111111111111\n\
+id product Slot 12121212121212121212121212121212\n\
+id field Slot.note 13131313131313131313131313131313\n\
+id root items 20202020202020202020202020202020\n\
+id key items.id 21212121212121212121212121212121\n\
+id index items.byId 22222222222222222222222222222222\n\
+id root slots 30303030303030303030303030303030\n\
+id key slots.tenant 31313131313131313131313131313131\n\
+id key slots.slot 32323232323232323232323232323232\n\
+id index slots.byTenant 33333333333333333333333333333333\n\
+high-water 0\n\
+end\n";
+
+#[test]
+fn key_only_unique_subset_collision_rolls_back_the_complete_transaction() {
+    let image = compile_verify(SUBSET_SOURCE, SUBSET_IDS);
+    let mut store = attach(&image);
+    let result = run_export(&mut store, export(&image, "collide").id(), vec![]).expect("export");
+    match result {
+        DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Runtime(fault))) => {
+            assert_eq!(fault.code(), "run.unique_index");
+            assert_eq!((fault.line(), fault.column()), (35, 9));
+        }
+        other => panic!(
+            "unique collision must roll back ordinarily: {:?}",
+            DebugRun(&other)
+        ),
+    }
+    assert_eq!(
+        run(&image, &mut store, "itemPresent", vec![Value::Int(99)]),
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run(&image, &mut store, "findItem", vec![Value::Int(99)]),
+        Some(Value::Optional(None))
+    );
+    for slot in [1, 2] {
+        assert_eq!(
+            run(&image, &mut store, "slotPresent", vec![Value::Int(slot)]),
+            Some(Value::Bool(false))
+        );
+    }
+    assert_eq!(
+        run(&image, &mut store, "findTenant", vec![]),
+        Some(Value::Optional(None))
+    );
+    run(&image, &mut store, "putItem", vec![Value::Int(7)]);
+    assert_eq!(
+        run(&image, &mut store, "findItem", vec![Value::Int(7)]),
+        Some(Value::Optional(Some(Box::new(Value::Id(
+            0,
+            [KeyScalar::Int(7)].into()
+        )))))
+    );
 }

@@ -32,11 +32,12 @@ expectations, and the journeys that run them against a built toolchain through
 the public commands. This repository keeps short reference examples,
 conformance fixtures, and compiler-local regressions.
 
-An index that projects only entry keys has an unresolved maintenance defect:
-entry creation does not populate it, and unique key-subset collisions are not
-enforced. The same maintenance path omits index removal on entry erasure.
+Managed-index maintenance includes entry presence independently of sparse
+fields. Key-only indexes follow creation and erasure, including empty entries;
+unique key-subset collisions fault and roll back the transaction. Source
+traversal of a non-unique index with no field prefix is not yet implemented.
 Logical inspection reports missing or orphaned index cells; it does not repair
-them ([indexes](language/traversal-and-indexes.md#index-declarations)).
+pre-existing inconsistencies ([indexes](language/traversal-and-indexes.md#index-declarations)).
 
 ## Not yet available
 

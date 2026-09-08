@@ -1,5 +1,5 @@
 //! The consequence planner: the single owner of how a logical mutation over the
-//! durable graph decomposes into ordered physical cell operations (design §G).
+//! durable graph decomposes into ordered physical cell operations.
 //!
 //! Every whole-entry mutation the kernel performs — create, replace, erase — and
 //! every read or commit step that must enumerate an entry's footprint routes through
@@ -7,20 +7,13 @@
 //! pure: it maps an intent plus the store schema to an ordered [`CellWrite`] list or
 //! a cell-key enumeration, and the transaction session applies the writes, so every
 //! consequence of one mutation shares that session's transaction and rolls back with
-//! it. Sparse structural maintenance (E03) and bounded traversal (E04) widen this one
-//! owner rather than introducing a second planner.
+//! it.
 //!
-//! Two topology laws hold at the flat layer and are the shape the later lanes extend:
+//! Entry and group writes stay within their own payload footprints. Child entries
+//! occupy separate families and survive replacement or erasure of a parent payload.
+//! Managed-index maintenance also carries entry presence: a present empty or sparse
+//! entry can contribute a key-only projection, while an absent entry cannot.
 //!
-//! - **Descendant-only create/replace.** A whole-entry write touches only the
-//!   entry's own subtree — its marker and its field leaves — never a sibling or a
-//!   parent cell.
-//! - **Replace/erase confine to the entry's cells.** Removal enumerates exactly the
-//!   marker and one leaf per schema field. A flat entry has no keyed descendants
-//!   below it, so nothing beneath the key is disturbed; when a keyed descendant graph
-//!   exists (E03/E04) the same enumeration is the point that must preserve it and
-//!   perform finite-ancestor maintenance.
-
 use super::physical;
 use super::{
     EntryValue, IndexComponentRef, IndexSchema, KernelFault, ResolvedField, ResolvedGroup,
@@ -203,14 +196,13 @@ impl Planner {
     }
 
     /// The ordered index-cell operations a root entry write implies, given the entry's key
-    /// tuple and its projected field values before (`old`) and after (`new`) the write, for
-    /// the root's `indexes` in stable declaration order. A row exists exactly when every
-    /// projected component is present, so a field absent in a state contributes no row for
-    /// it; an unchanged row emits nothing, and a changed row emits a remove of the old key
-    /// then a put of the new. A unique index's put is a [`IndexOp::UniquePut`] the session
-    /// enforces. This is the single owner of the source-write-to-index-cell decomposition —
-    /// the pure widening of the consequence planner
-    /// rather than a second maintenance path. A non-scalar or non-key-eligible projected
+    /// tuple and entry states before (`old`) and after (`new`) the write, for the root's
+    /// `indexes` in declaration order. `None` means an absent entry; `Some(fields)` means
+    /// a present entry, including empty or all-absent fields. A projection exists exactly
+    /// when the entry and all projected components are present. An unchanged projection
+    /// emits nothing; a changed projection removes the old cell before putting the new.
+    /// A unique put is an [`IndexOp::UniquePut`] the session enforces.
+    /// A non-scalar or non-key-eligible projected
     /// value is [`KernelFault::Corruption`] (the verifier's eligibility rule already
     /// excludes it).
     pub(super) fn index_writes(
@@ -218,8 +210,8 @@ impl Planner {
         root: physical::NodeNumber,
         indexes: &[IndexSchema],
         keys: &[KeyScalar],
-        old: &[Option<ValueDomain>],
-        new: &[Option<ValueDomain>],
+        old: Option<&[Option<ValueDomain>]>,
+        new: Option<&[Option<ValueDomain>]>,
     ) -> Result<Vec<IndexOp>, KernelFault> {
         let mut ops = Vec::new();
         for index in indexes {
@@ -250,14 +242,17 @@ impl Planner {
 }
 
 /// One index's projected row for an entry: the ordered projected component values — a key
-/// column from `keys`, a top-level field from `fields`. `Ok(None)` when a projected field
-/// is absent, so the entry contributes no row to this index; a non-scalar or
+/// column from `keys`, a top-level field from the present entry's `fields`.
+/// `Ok(None)` when the entry or a projected field is absent; a non-scalar or
 /// non-key-eligible projected value is [`KernelFault::Corruption`].
 fn project_row(
     index: &IndexSchema,
     keys: &[KeyScalar],
-    fields: &[Option<ValueDomain>],
+    fields: Option<&[Option<ValueDomain>]>,
 ) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
+    let Some(fields) = fields else {
+        return Ok(None);
+    };
     let mut row = Vec::with_capacity(index.projection().len());
     for component in index.projection() {
         let key = match component.view() {
@@ -590,7 +585,13 @@ mod tests {
         let keys = [KeyScalar::Int(7)];
         // Field 0 changes from 1 to 2: both indexes' rows move.
         let ops = planner
-            .index_writes(root, schema.indexes(), &keys, &[scalar(1)], &[scalar(2)])
+            .index_writes(
+                root,
+                schema.indexes(),
+                &keys,
+                Some(&[scalar(1)]),
+                Some(&[scalar(2)]),
+            )
             .expect("in range");
 
         let nonunique_old =
@@ -626,10 +627,54 @@ mod tests {
         let schema = builder.finish().expect("a bounded schema builds");
         let (root, _, _) = resolved(&schema);
         let keys = [KeyScalar::Int(7)];
-        // Create (old all-absent) with the projected field absent: no row.
+        // Creation with the projected field absent contributes no index cell.
         let ops = planner
-            .index_writes(root, schema.indexes(), &keys, &[None], &[None])
+            .index_writes(root, schema.indexes(), &keys, None, Some(&[None]))
             .expect("in range");
         assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn key_only_membership_tracks_entry_presence_independently_of_field_width() {
+        for width in [0, 2] {
+            let mut builder = StoreSchemaBuilder::root("items", vec![ScalarKind::Int]);
+            for position in 0..width {
+                builder.scalar_field(format!("f{position}"), ScalarKind::Int, false);
+            }
+            builder.index([0xA0; 16], false, vec![IndexComponent::key(0)]);
+            builder.index([0xB1; 16], true, vec![IndexComponent::key(0)]);
+            let schema = builder.finish().expect("key-only schema");
+            let (root, _, _) = resolved(&schema);
+            let keys = [KeyScalar::Int(7)];
+            let fields = vec![None; width];
+            let nonunique = physical::index_cell_key(root, &[0xA0; 16], &keys);
+            let unique = physical::index_cell_key(root, &[0xB1; 16], &keys);
+            let value = physical::index_cell_value(&keys);
+            let planner = Planner::new();
+
+            let created = planner
+                .index_writes(root, schema.indexes(), &keys, None, Some(&fields))
+                .expect("create");
+            assert_eq!(created.len(), 2);
+            assert!(matches!(&created[0], IndexOp::Put(k, v) if *k == nonunique && *v == value));
+            assert!(matches!(&created[1], IndexOp::UniquePut(k, v) if *k == unique && *v == value));
+            let erased = planner
+                .index_writes(root, schema.indexes(), &keys, Some(&fields), None)
+                .expect("erase");
+            assert_eq!(erased.len(), 2);
+            assert!(matches!(&erased[0], IndexOp::Remove(k) if *k == nonunique));
+            assert!(matches!(&erased[1], IndexOp::Remove(k) if *k == unique));
+            for (old, new) in [
+                (None, None),
+                (Some(fields.as_slice()), Some(fields.as_slice())),
+            ] {
+                assert!(
+                    planner
+                        .index_writes(root, schema.indexes(), &keys, old, new)
+                        .expect("unchanged membership")
+                        .is_empty()
+                );
+            }
+        }
     }
 }

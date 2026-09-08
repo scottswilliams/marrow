@@ -340,20 +340,10 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         match probe_slot(self.txn(), &stem)? {
             Presence::Present => Ok(CreateOutcome::AlreadyPresent),
             Presence::Absent => {
-                let maintains = self.maintains_root(site);
-                let old = if maintains {
-                    self.read_projected(
-                        &stem,
-                        fields,
-                        &Self::projected_positions_of(self.indexes_of(site)),
-                    )?
-                } else {
-                    Vec::new()
-                };
                 let ops = planner.node_write(&stem, fields, groups, &entry)?;
                 self.apply(ops)?;
-                if maintains {
-                    self.maintain_indexes(site, keys, &old, &entry.fields)?;
+                if self.maintains_root(site) {
+                    self.maintain_indexes(site, keys, None, Some(&entry.fields))?;
                 }
                 Ok(CreateOutcome::Created)
             }
@@ -392,7 +382,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         ops.extend(planner.node_write(&stem, fields, groups, &entry)?);
         self.apply(ops)?;
         if maintains {
-            self.maintain_indexes(site, keys, &old, &entry.fields)?;
+            self.maintain_indexes(site, keys, Some(&old), Some(&entry.fields))?;
         }
         Ok(())
     }
@@ -443,8 +433,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         let ops = planner.node_erase(&stem, fields, groups);
         self.apply(ops)?;
         if maintains {
-            let new = vec![None; fields.len()];
-            self.maintain_indexes(site, keys, &old, &new)?;
+            self.maintain_indexes(site, keys, existed.then_some(old.as_slice()), None)?;
         }
         Ok(if existed {
             EraseOutcome::Erased
@@ -597,19 +586,25 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         };
         let mut new = old.clone();
         new[position] = new_value;
-        let ops = Planner::new().index_writes(site.root_number, &indexes, keys, &old, &new)?;
+        let ops = Planner::new().index_writes(
+            site.root_number,
+            &indexes,
+            keys,
+            Some(&old),
+            Some(&new),
+        )?;
         self.apply_index_ops(ops)
     }
 
-    /// Maintain every managed index for a whole root entry write, given the entry's projected
-    /// field values before (`old`) and after (`new`). An index row exists exactly when every
-    /// projected component is present, so a field absent in a state contributes no row.
+    /// Maintain every managed index for a whole root entry write. Each state carries
+    /// entry presence separately from projected fields; an absent entry contributes
+    /// no index cell, even when every component comes from its key.
     fn maintain_indexes(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-        old: &[Option<ValueDomain>],
-        new: &[Option<ValueDomain>],
+        old: Option<&[Option<ValueDomain>]>,
+        new: Option<&[Option<ValueDomain>]>,
     ) -> Result<(), KernelFault> {
         let ops =
             Planner::new().index_writes(site.root_number, self.indexes_of(site), keys, old, new)?;

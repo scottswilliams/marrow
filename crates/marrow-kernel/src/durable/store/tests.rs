@@ -16,6 +16,7 @@ use crate::equality::ValueDomain;
 #[path = "../../../tests/common/mod.rs"]
 mod engine_call_support;
 
+mod index_lifetime;
 mod key_domains;
 mod navigation_work;
 

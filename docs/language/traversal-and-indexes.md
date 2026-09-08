@@ -248,10 +248,10 @@ takes no `at most`; its length is already known.
 ## Index declarations
 
 A keyed root declares an index inside its `store` block. An index is an
-ordered path to the root's entries by one or more of their fields; it holds no
-data of its own and has no write operation. A non-unique index ends with the
-root's key. A `unique` index leaves the key out and admits one entry per
-value:
+ordered path to the root's entries by one or more of their keys or top-level
+fields. A program cannot write an index directly. A non-unique index ends with
+the root's complete key; a `unique` index may project any permitted subset and
+admits one entry per projected value:
 
 ```mw
 module docs::traversal::indexes
@@ -265,6 +265,8 @@ resource Book {
 store ^books[id: int]: Book {
     index byShelf[shelf, id]
     index byIsbn[isbn] unique
+    index byId[id] unique
+    index all[id]
 }
 
 struct ShelfCount {
@@ -328,7 +330,7 @@ test "indexes" {
 
 `byShelf[shelf, id]` orders books by shelf, then by key, so two books on one
 shelf stay distinct. `byIsbn[isbn] unique` maps each ISBN to one book. `add`
-writes the entry once; both indexes follow. `moveByIsbn` binds a place over
+writes the entry once; its indexes follow. `moveByIsbn` binds a place over
 the found identity, proves it with `exists(m)`, and changes `shelf`; the last
 two assertions show `byShelf` moved with it.
 
@@ -336,24 +338,25 @@ Each component names one key of the root or one top-level field of the
 resource, and no component repeats. A root's key names are the store's own and
 a resource field may share one ([keys](durable-places.md#keys)); a component
 whose spelling names both is refused, because it resolves neither. A component
-is an `int`, `string`, `bool`, `bytes`, `date`, or `instant` field
+has type `int`, `string`, `bool`, `bytes`, `date`, or `instant`
 ([key types](types-and-values.md#key-types)). A field inside a group or a
 branch is not a component. A non-unique index ends with every key of the root
-in declaration order and puts no key first. A `unique` index may omit the
+in declaration order, with no key before that final suffix. A `unique` index may omit the
 keys. An index name is distinct from the root's key names and the resource's
 field names. A root declares at most 8 indexes. A singleton root declares no index. Each of
 these rules is a `check.type` error at the declaration.
 
-The compiler maintains every index. A field assignment, a field clear, a
-whole-entry replacement, and a `delete` each keep the affected indexes in step
-with the entry; no source operation writes an index. A commit that would put
-two entries under one `unique` value faults with `run.unique_index` and rolls
-the whole transaction back:
+The runtime maintains indexes through the path kernel in the entry's
+transaction. An entry contributes an index value exactly when the entry and
+all projected components are present. An empty entry or an entry with every
+sparse field absent still contributes to an index that projects only keys.
+Creation, field assignment or clearing, whole-entry replacement, and entry
+deletion keep this correspondence. An unchanged projection requires no index
+write. A mutation that would put two entries under one `unique` value faults
+with `run.unique_index` and rolls the whole transaction back.
 
-```text
-ERROR duplicate isbn (run.unique_index at 20:9)
-0 passed, 0 failed, 1 errored (1/1 selected)
-```
+This maintenance assumes the existing entries and indexes agree. Logical
+inspection reports missing or orphaned index cells; it does not repair them.
 
 Each index has its own line in the
 [identity ledger](../tools/projects.md#identity-ledger),
@@ -378,6 +381,11 @@ for bookId in ^books.byShelf[shelf] at most 100 {
     return ShelfCount(count: count, truncated: true)
 }
 ```
+
+A non-unique index that projects only keys, such as `all[id]` above, is
+maintained, but source traversal of its empty field prefix is not yet
+implemented. Empty brackets are rejected by the parser, and the bare index
+name is not recognized as an index traversal.
 
 `^books[bookId]` reads the entry the identity names. The walk freezes its
 identities and runs `on more` exactly as a root walk does. The root's key is

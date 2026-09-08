@@ -126,6 +126,26 @@ per-read name map that places each scanned leaf costs the same. A sparse sorted
 order, would make both `O(populated)`; the dense shape stays because the
 create, read, replace, and index-maintenance contract is written against it.
 
+## Maintaining indexes
+
+`durable/plan.rs` owns the projection from an entry mutation to ordered index
+cell operations. Its old and new states each distinguish an absent entry from
+a present entry's projected fields. Entry absence produces no projection;
+present empty or all-sparse payloads still produce key-only projections.
+An unchanged projection emits no operation. Changed projections remove the
+old cell before putting the new, in declaration order.
+
+The transaction session supplies presence already established by the entry
+operation. Creation needs no old projected-field reads; erasure retains its
+old projected reads, including refusal of malformed projected orphan leaves,
+and allocates no synthetic absent-field vector. Erasing an absent entry
+cleans up its decodable own payload without removing a sibling's unique cell.
+The session applies every source and index operation in the same transaction;
+a unique put checks existing ownership and faults on a different source
+identity. The VM rolls back that transaction through its ordinary runtime
+fault path. Maintenance preserves initially coherent indexes; it does not
+repair pre-existing inconsistencies.
+
 ## Navigating entries
 
 `durable/store/traverse.rs` resolves one static root or branch family and the

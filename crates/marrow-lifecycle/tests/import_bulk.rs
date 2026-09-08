@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
-use marrow_kernel::durable::{DemandCoverage, Durable, EntryValue, InvocationGrant, Presence};
+use marrow_kernel::durable::{
+    BoundedKeys, BoundedLimit, DemandCoverage, Durable, EntryValue, InvocationGrant, Presence,
+};
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
     ActiveBinding, AttachOutcome, ChangedFact, EngineKind, HeadMap, ImportError, ImportLimits,
@@ -144,6 +146,111 @@ const INDEXED_IDS: &str = "marrow ids v0\n\
      id index people.byEmail 29292929292929292929292929292929\n\
      high-water 0\n\
      end\n";
+
+#[test]
+fn import_creates_key_only_indexes_for_all_sparse_entries() {
+    let source = r#"resource Item {
+    note: string
+}
+store ^items[id: int]: Item {
+    index byId[id] unique
+    index all[id]
+}
+pub fn find(id: int): Id(^items)? {
+    return ^items.byId[id]
+}
+"#;
+    let ids = "marrow ids v0\n\
+machine-written by marrow; do not edit\n\
+id application . 01010101010101010101010101010101\n\
+id product Item 10101010101010101010101010101010\n\
+id field Item.note 11111111111111111111111111111111\n\
+id root items 20202020202020202020202020202020\n\
+id key items.id 21212121212121212121212121212121\n\
+id index items.byId 22222222222222222222222222222222\n\
+id index items.all 23232323232323232323232323232323\n\
+high-water 0\n\
+end\n";
+    let image = compile(source, ids);
+    let scratch = Scratch::new("key-only-indexes");
+    provision_from(scratch.dir(), &image);
+    let report = import_jsonl(
+        scratch.dir(),
+        prepare(image.clone()),
+        ImportTarget {
+            root: 0,
+            key_columns: vec!["id".to_string()],
+        },
+        Cursor::new(b"{\"id\":1}\n{\"id\":2,\"note\":null}\n".to_vec()),
+        InvocationGrant::full_store(),
+        ImportLimits::DEFAULT,
+    )
+    .expect("two sparse entries imported");
+    assert_eq!(report.rows_imported, 2);
+    assert_eq!(report.batches_committed, 1);
+    {
+        let mut attachment = attach_active(scratch.dir(), &image);
+        let (_, opened) = attachment.bridge();
+        let mut read = opened
+            .read_session(
+                InvocationGrant::full_store(),
+                DemandCoverage {
+                    read: true,
+                    write: false,
+                },
+            )
+            .expect("fresh native read session");
+        let lookup = image
+            .sites()
+            .iter()
+            .position(|site| {
+                matches!(
+                    site,
+                    SealedSite::Flat {
+                        root: 0,
+                        target: SealedSiteTarget::IndexLookup(_)
+                    }
+                )
+            })
+            .expect("source lookup site") as u16;
+        let scan = image
+            .sites()
+            .iter()
+            .position(|site| {
+                matches!(
+                    site,
+                    SealedSite::Flat {
+                        root: 0,
+                        target: SealedSiteTarget::IndexScan(_)
+                    }
+                )
+            })
+            .expect("source scan site") as u16;
+        for id in [1, 2] {
+            assert_eq!(
+                read.index_lookup(&read.site(lookup), &[KeyScalar::Int(id)]),
+                Ok(Some(vec![KeyScalar::Int(id)]))
+            );
+        }
+        assert_eq!(
+            read.index_scan(
+                &read.site(scan),
+                &[],
+                None,
+                BoundedLimit::new(2).expect("bound")
+            ),
+            Ok(BoundedKeys {
+                keys: vec![KeyScalar::Int(1), KeyScalar::Int(2)],
+                more: false
+            })
+        );
+    }
+    let audit =
+        marrow_lifecycle::audit(scratch.dir(), prepare(image)).expect("fresh logical audit");
+    assert!(audit.is_clean(), "{audit:?}");
+    assert_eq!(audit.summary.entries, 2);
+    assert_eq!(audit.summary.index_cells, 4);
+}
 
 fn compile(source: &str, ids: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
