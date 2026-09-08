@@ -1481,8 +1481,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             return self.lower_for_range(binding, range, step, body, span);
         }
-        // A `for` head over a managed index scans it. Only a nonunique index is scanned
-        // (progressive-prefix); a unique index is an exact lookup, not an iteration.
+        // A `for` head over a nonunique index holds its field components in brackets,
+        // or names it bare when there are none. A unique index is an exact lookup.
         let index_read = match self.resolve_index_read(iterable) {
             Ok(read) => read,
             Err(drift) => {

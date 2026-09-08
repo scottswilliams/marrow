@@ -34,8 +34,8 @@ conformance fixtures, and compiler-local regressions.
 
 Managed-index maintenance includes entry presence independently of sparse
 fields. Key-only indexes follow creation and erasure, including empty entries;
-unique key-subset collisions fault and roll back the transaction. Source
-traversal of a non-unique index with no field prefix is not yet implemented.
+unique key-subset collisions fault and roll back the transaction. Bounded
+source traversal accepts a bare non-unique index when it has no field prefix.
 Logical inspection reports missing or orphaned index cells; it does not repair
 pre-existing inconsistencies ([indexes](language/traversal-and-indexes.md#index-declarations)).
 

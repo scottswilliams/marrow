@@ -6,8 +6,12 @@
 //! verify -> attach -> VM — and compose with the entry-identity dereference: the bound
 //! identity reads its entry through `^root[id]`.
 
+use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
-use marrow_verify::{SealedExport, VerifiedImage};
+use marrow_syntax::SourceSpan;
+use marrow_verify::{
+    LedgerIdBytes, SealedExport, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
+};
 use marrow_vm::{
     DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
 };
@@ -107,6 +111,10 @@ fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
 
 fn compile_errors(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
     let source = format!("{SOURCE}\n{body}");
+    source_errors(&source, IDS)
+}
+
+fn source_errors(source: &str, ids: &str) -> Vec<marrow_compile::SourceDiagnostic> {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -115,7 +123,7 @@ fn compile_errors(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
     let project = marrow_project::capture(
         &manifest,
         files,
-        Some(IDS.as_bytes()),
+        Some(ids.as_bytes()),
         &marrow_project::CaptureLimits::DEFAULT,
     )
     .expect("capture");
@@ -473,6 +481,266 @@ fn key_only_indexes_follow_empty_entry_lifetime() {
     let source = KEY_ONLY_SOURCE.replace("    note: string\n", "");
     let ids = KEY_ONLY_IDS.replace("id field Item.note 11111111111111111111111111111111\n", "");
     key_only_lifetime(&source, &ids);
+}
+
+const KEY_ONLY_SCAN: &str = r#"pub fn scanOrder(): int {
+    var order = 0
+    for itemId in ^items.all at most 2 {
+        if const entry = ^items[itemId] {
+            if itemId == Id(^items, 1) {
+                order = order * 10 + 1
+            } else if itemId == Id(^items, 2) {
+                order = order * 10 + 2
+            } else if itemId == Id(^items, 3) {
+                order = order * 10 + 3
+            } else {
+                unreachable("unexpected identity")
+            }
+        } else {
+            unreachable("missing entry")
+        }
+    } on more {
+        order += 1000
+    }
+    return order
+}
+"#;
+
+fn key_only_scan(source: &str, ids: &str) {
+    let image = compile_verify(&format!("{source}{KEY_ONLY_SCAN}"), ids);
+    let instrs = image
+        .function(export(&image, "scanOrder").function())
+        .instrs();
+    let mut scans = instrs.iter().filter_map(|instr| match instr {
+        SealedInstr::DurIndexScan {
+            site, limit, from, ..
+        } => Some((*site, *limit, *from)),
+        _ => None,
+    });
+    let (site, limit, from) = scans.next().expect("scanOrder executes an index scan");
+    assert!(scans.next().is_none(), "one frozen scan in scanOrder");
+    assert_eq!((limit, from), (2, false));
+    assert!(
+        !instrs
+            .iter()
+            .any(|instr| matches!(instr, SealedInstr::DurIterateBounded { .. }))
+    );
+    let SealedSite::Flat {
+        root,
+        target: SealedSiteTarget::IndexScan(index),
+    } = &image.sites()[usize::from(site)]
+    else {
+        panic!("the executed scan must name an executable index site");
+    };
+    assert_eq!(*root, 0);
+    let index = &image.indexes()[usize::from(*index)];
+    assert_eq!(index.id(), LedgerIdBytes::from_bytes([0x23; 16]));
+    assert_eq!(index.root(), *root);
+    assert!(!index.unique());
+
+    let mut store = attach(&image);
+    assert_eq!(
+        run(&image, &mut store, "scanOrder", vec![]),
+        Some(Value::Int(0))
+    );
+    for id in [2, 1] {
+        run(&image, &mut store, "put", vec![Value::Int(id)]);
+    }
+    assert_eq!(
+        run(&image, &mut store, "scanOrder", vec![]),
+        Some(Value::Int(12))
+    );
+    run(&image, &mut store, "put", vec![Value::Int(3)]);
+    assert_eq!(
+        run(&image, &mut store, "scanOrder", vec![]),
+        Some(Value::Int(1012))
+    );
+    run(&image, &mut store, "erase", vec![Value::Int(1)]);
+    assert_eq!(
+        run(&image, &mut store, "scanOrder", vec![]),
+        Some(Value::Int(23))
+    );
+    for id in [2, 3] {
+        run(&image, &mut store, "erase", vec![Value::Int(id)]);
+    }
+    assert_eq!(
+        run(&image, &mut store, "scanOrder", vec![]),
+        Some(Value::Int(0))
+    );
+}
+
+#[test]
+fn bare_index_scan_orders_and_bounds_all_sparse_entries() {
+    key_only_scan(KEY_ONLY_SOURCE, KEY_ONLY_IDS);
+}
+
+#[test]
+fn bare_index_scan_orders_and_bounds_empty_entries() {
+    let source = KEY_ONLY_SOURCE.replace("    note: string\n", "");
+    let ids = KEY_ONLY_IDS.replace("id field Item.note 11111111111111111111111111111111\n", "");
+    key_only_scan(&source, &ids);
+}
+
+fn diagnostic_span(source: &str, body: &str, marked: &str, width: usize) -> SourceSpan {
+    let start = body
+        .find(marked)
+        .expect("the case marks its offending construct");
+    let before = format!("{source}\n{}", &body[..start]);
+    SourceSpan {
+        start_byte: before.len(),
+        end_byte: before.len() + width,
+        line: u32::try_from(before.bytes().filter(|byte| *byte == b'\n').count() + 1)
+            .expect("small source fixture"),
+        column: u32::try_from(before.rsplit('\n').next().expect("source line").len() + 1)
+            .expect("small source fixture"),
+    }
+}
+
+#[test]
+fn bare_index_read_diagnostics_preserve_each_consumer_boundary() {
+    let controls = format!(
+        r#"{SOURCE}
+pub fn ordinaryField(): string? {{
+    return ^books[1].title
+}}
+
+pub fn localField(): string {{
+    const book = Book(title: "local", shelf: "L", isbn: "local")
+    return book.title
+}}
+"#
+    );
+    let image = compile_verify(&controls, IDS);
+    let mut store = attach(&image);
+    assert_eq!(
+        run(&image, &mut store, "ordinaryField", vec![]),
+        Some(Value::Optional(None))
+    );
+    assert_eq!(
+        run(&image, &mut store, "localField", vec![]),
+        Some(s("local"))
+    );
+    seed(&image, &mut store);
+    assert_eq!(
+        run(&image, &mut store, "ordinaryField", vec![]),
+        Some(Value::Optional(Some(Box::new(s("dune")))))
+    );
+
+    let cases = [
+        (
+            "missing mixed prefix",
+            "pub fn bad() { for x in ^books.byShelf at most 2 {} on more {} }\n",
+            Code::CheckType,
+            "for x in ^books.byShelf at most 2 {} on more {}",
+            "for x in ^books.byShelf at most 2 {} on more {}".len(),
+        ),
+        (
+            "wrong mixed prefix scalar",
+            "pub fn bad() { for x in ^books.byShelf[1] at most 2 {} on more {} }\n",
+            Code::CheckType,
+            "1",
+            1,
+        ),
+        (
+            "bare unique value",
+            "pub fn bad(): Id(^books)? { return ^books.byIsbn }\n",
+            Code::CheckType,
+            "^books.byIsbn",
+            "^books.byIsbn".len(),
+        ),
+        (
+            "bare unique exists",
+            "pub fn bad(): bool { return exists(^books.byIsbn) }\n",
+            Code::CheckType,
+            "^books.byIsbn",
+            "^books.byIsbn".len(),
+        ),
+        (
+            "bare unique for",
+            "pub fn bad() { for x in ^books.byIsbn at most 2 {} on more {} }\n",
+            Code::CheckType,
+            "for x in ^books.byIsbn at most 2 {} on more {}",
+            "for x in ^books.byIsbn at most 2 {} on more {}".len(),
+        ),
+        (
+            "bare nonunique value",
+            "pub fn bad(): Id(^books)? { return ^books.byShelf }\n",
+            Code::CheckType,
+            "^books.byShelf",
+            "^books.byShelf".len(),
+        ),
+        (
+            "bare nonunique exists",
+            "pub fn bad(): bool { return exists(^books.byShelf) }\n",
+            Code::CheckType,
+            "^books.byShelf",
+            "^books.byShelf".len(),
+        ),
+        (
+            "unknown root member",
+            "pub fn bad() { for x in ^books.missing at most 2 {} on more {} }\n",
+            Code::CheckType,
+            "for x in ^books.missing at most 2 {} on more {}",
+            "for x in ^books.missing at most 2 {} on more {}".len(),
+        ),
+        (
+            "unkeyed field is not an index",
+            "pub fn bad() { for x in ^books.title at most 2 {} on more {} }\n",
+            Code::CheckType,
+            "for x in ^books.title at most 2 {} on more {}",
+            "for x in ^books.title at most 2 {} on more {}".len(),
+        ),
+    ];
+    let actual: Vec<_> = cases
+        .iter()
+        .map(|(name, body, ..)| {
+            let diagnostics = compile_errors(body)
+                .into_iter()
+                .map(|diagnostic| (diagnostic.code().to_string(), diagnostic.span()))
+                .collect::<Vec<_>>();
+            (*name, diagnostics)
+        })
+        .collect();
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|(name, body, code, marked, width)| {
+            (
+                *name,
+                vec![(
+                    code.as_str().to_string(),
+                    diagnostic_span(SOURCE, body, marked, *width),
+                )],
+            )
+        })
+        .collect();
+    assert_eq!(actual, expected);
+
+    let empty = "pub fn bad() { const x = ^books.byShelf[] }\n";
+    let mut insertion = diagnostic_span(SOURCE, empty, "]", 0);
+    // The parser reports the insertion byte at `]` and the opening bracket's column.
+    insertion.column -= 1;
+    let diagnostics = compile_errors(empty);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code(), Code::ParseSyntax.as_str());
+    assert_eq!(diagnostics[0].span(), insertion);
+
+    let source = SUBSET_SOURCE.replace(
+        "index byTenant[tenant] unique",
+        "index byTenant[tenant] unique\n    index all[tenant, slot]",
+    );
+    let ids = SUBSET_IDS.replace(
+        "high-water 0",
+        "id index slots.all 34343434343434343434343434343434\nhigh-water 0",
+    );
+    let scan = "for x in ^slots.all at most 2 {} on more {}";
+    let body = format!("pub fn bad() {{ {scan} }}\n");
+    let diagnostics = source_errors(&format!("{source}\n{body}"), &ids);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code(), Code::CheckUnsupported.as_str());
+    assert_eq!(
+        diagnostics[0].span(),
+        diagnostic_span(&source, &body, scan, scan.len())
+    );
 }
 
 const SUBSET_SOURCE: &str = r#"resource Item {

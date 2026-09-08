@@ -290,6 +290,16 @@ pub fn countOnShelf(shelf: string): ShelfCount {
     return ShelfCount(count: count, truncated: false)
 }
 
+pub fn countAll(): ShelfCount {
+    var count = 0
+    for bookId in ^books.all at most 100 {
+        count += 1
+    } on more {
+        return ShelfCount(count: count, truncated: true)
+    }
+    return ShelfCount(count: count, truncated: false)
+}
+
 pub fn titleByIsbn(isbn: string): string? {
     if const found = ^books.byIsbn[isbn] {
         return ^books[found].title
@@ -318,6 +328,8 @@ test "indexes" {
     add(1, "Small Gods", "top", "111")
     add(2, "Pyramids", "top", "222")
     add(3, "Mort", "low", "333")
+    assert countAll().count == 3
+    assert not countAll().truncated
     assert countOnShelf("top").count == 2
     assert titleByIsbn("333") ?? "" == "Mort"
     assert isbnTaken("222")
@@ -369,8 +381,8 @@ index's identity are future work ([status](../status.md)).
 A program reads an index through its root, `^books.byShelf`. The read shape
 follows the index kind.
 
-A non-unique index is walked with a bounded `for` head. The brackets hold
-every field component, and the loop variable binds the
+A non-unique index is walked with a bounded `for` head. When the index projects
+fields, the brackets hold every field component. The loop variable binds the
 [entry identity](types-and-values.md#entry-identity) `Id(^books)` of each
 entry, in ascending order of the index:
 
@@ -382,10 +394,9 @@ for bookId in ^books.byShelf[shelf] at most 100 {
 }
 ```
 
-A non-unique index that projects only keys, such as `all[id]` above, is
-maintained, but source traversal of its empty field prefix is not yet
-implemented. Empty brackets are rejected by the parser, and the bare index
-name is not recognized as an index traversal.
+A non-unique index that projects only keys, such as `all[id]` above, takes no
+brackets: `for bookId in ^books.all at most 100`. The complete `countAll` example
+uses this form. Empty brackets remain a `parse.syntax` error.
 
 `^books[bookId]` reads the entry the identity names. The walk freezes its
 identities and runs `on more` exactly as a root walk does. The root's key is

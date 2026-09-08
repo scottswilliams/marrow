@@ -553,26 +553,23 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         )
     }
 
-    /// The durable shape of a place expression, extending [`Self::durable_shape`]
-    /// with source-local `place` bindings: a bare place name is a whole-entry
-    /// address, and a field access on a place name is a field address.
-    /// Resolve a source managed-index read `^root.index[keys]` to its index and the
-    /// bracket key operands, or `None` when the expression is not an index read (a
-    /// `Keyed` whose base is a field of the store root naming a declared index). The
-    /// index reference lives as long as the durable registry, so it may be held across a
-    /// mutable lowering call.
+    /// Resolve `^root.index[keys]` or bare `^root.index` through the declared index
+    /// owner. A bare read borrows an empty operand slice; each consumer checks its
+    /// required arity and index kind. The index reference lives as long as the durable
+    /// registry, so it may be held across a mutable lowering call.
     pub(super) fn resolve_index_read<'e>(
         &self,
         expr: &'e Expression,
     ) -> Result<Option<IndexRead<'a, 'e>>, DeclarationIndexDrift> {
-        let Expression::Keyed { base, keys, .. } = expr else {
-            return Ok(None);
+        let (base, keys): (&Expression, &[Expression]) = match expr {
+            Expression::Keyed { base, keys, .. } => (base.as_ref(), keys.as_slice()),
+            _ => (expr, &[]),
         };
         let Expression::Field {
             base: field_base,
             name,
             ..
-        } = base.as_ref()
+        } = base
         else {
             return Ok(None);
         };
@@ -586,11 +583,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         Ok(durable
             .root_by_name(root_name)?
             .and_then(|root| root.index(name).map(|index| (root, index)))
-            .map(|(root, index)| IndexRead {
-                index,
-                root,
-                keys: keys.as_slice(),
-            }))
+            .map(|(root, index)| IndexRead { index, root, keys }))
     }
 
     /// Lower a unique index's exact lookup `^root.index[keys]`: check the operands against

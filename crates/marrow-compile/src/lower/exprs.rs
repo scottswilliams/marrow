@@ -69,7 +69,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// `no_expression_variant_carries_a_block` fails the moment one does, and the arms
     /// must then name their fields as the statement walker's do.
     pub(super) fn lower_expr(&mut self, expr: &Expression) -> ConstructResult<LTy> {
-        // A read through a managed index `^root.index[keys]`: a unique index is an exact
+        // A read through a declared managed index: a unique index is an exact
         // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read
         // by scanning it with a `for` head, so naming one in value position is rejected.
         let index_read = match self.resolve_index_read(expr) {

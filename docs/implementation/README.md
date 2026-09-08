@@ -46,6 +46,11 @@ The VM's strict field arm uses the existing kernel field read and faults
 `run.corruption` if the required value is missing. The read checks the selected
 value, not the integrity of the whole entry.
 
+`lower/durable.rs::resolve_index_read` resolves bracketed and bare index reads
+to one declared index and a borrowed operand slice. Value expressions in
+`lower/exprs.rs`, `exists` in `lower/durable.rs`, and `for` in `lower/stmts.rs`
+use that result through their existing lookup, presence and scan lowerers.
+
 `marrow-image/src/instr.rs` owns instruction tags and operand widths. Strict
 field set, strict group read and group replacement carry explicit key slots;
 replacement consumes only the group record from the operand stack. Retired
