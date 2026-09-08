@@ -566,3 +566,83 @@ fn guard_provenance_rejects_late_backward_entry_with_unchanged_frame() {
     );
     assert_eq!(code_of(&bytes), "image.flow");
 }
+
+#[test]
+fn an_exists_guard_intersects_adjacent_successor_facts() {
+    for (absent_target, expected) in [(4, "image.flow"), (6, "VERIFIED")] {
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let sites = durable_schema(&mut draft);
+        let text = ok(draft.intern_text("x"));
+        // Target 4 merges the absent and present edges before the strict use.
+        // Target 6 lets the absent edge commit and return without reaching it.
+        let bytes = finish_two_key(
+            draft,
+            vec![
+                Instr::TxnBegin,                   // 0
+                Instr::LocalGet(0),                // 1
+                Instr::DurExists(sites.entry),     // 2
+                Instr::JumpIfFalse(absent_target), // 3
+                Instr::ConstLoad(text),            // 4
+                Instr::DurSetField {
+                    site: sites.label,
+                    key_slots: vec![0],
+                }, // 5
+                Instr::TxnCommit,                  // 6
+                Instr::Return,                     // 7
+            ],
+        );
+        assert_eq!(code_of(&bytes), expected, "absent target {absent_target}");
+    }
+}
+
+#[test]
+fn a_late_backedge_rechecks_presence_at_an_already_visited_strict_use() {
+    #[derive(Debug)]
+    enum Backedge {
+        Erase,
+        Rebind,
+        Preserve,
+    }
+
+    for backedge in [Backedge::Erase, Backedge::Rebind, Backedge::Preserve] {
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let sites = durable_schema(&mut draft);
+        let flag = ok(draft.intern_bool(false));
+        let text = ok(draft.intern_text("x"));
+        let (step, expected) = match &backedge {
+            Backedge::Erase => (Instr::DurEraseEntry(sites.entry.clone()), "image.flow"),
+            Backedge::Rebind => (Instr::LocalSet(0), "image.flow"),
+            Backedge::Preserve => (Instr::Pop, "VERIFIED"),
+        };
+        // Successors are queued target-first and popped last-first: the strict
+        // use at 7 is checked before the late arm at 10. Edge 12 -> 4 has the
+        // same empty stack and initialized local types in all three cases;
+        // only presence loss requires another visit to the strict use.
+        let bytes = finish_two_key(
+            draft,
+            vec![
+                Instr::TxnBegin,               // 0
+                Instr::LocalGet(0),            // 1
+                Instr::DurExists(sites.entry), // 2
+                Instr::JumpIfFalse(13),        // 3
+                Instr::ConstLoad(flag),        // 4
+                Instr::JumpIfFalse(10),        // 5
+                Instr::ConstLoad(text),        // 6
+                Instr::DurSetField {
+                    site: sites.label,
+                    key_slots: vec![0],
+                }, // 7
+                Instr::TxnCommit,              // 8
+                Instr::Return,                 // 9
+                Instr::LocalGet(1),            // 10
+                step,                          // 11
+                Instr::Jump(4),                // 12
+                Instr::TxnCommit,              // 13
+                Instr::Return,                 // 14
+            ],
+        );
+        assert_eq!(code_of(&bytes), expected, "{backedge:?}");
+    }
+}

@@ -30,6 +30,17 @@ paths and branch coordinates, built once for the presence phase. Calls use
 binary search without reconstructing key columns; direct erases use the same
 entry-family classifier. This transient lookup is dropped before publication.
 
+Presence verification carries one owned working set across instructions with
+a single edge to the next instruction and no other predecessor. Fork successors
+and non-fallthrough destinations retain incoming sets for intersection and
+replay after a shrinking merge. Two conditional edges to the same destination
+still intersect before that destination executes. Functions without strict
+presence operations skip the pass. Otherwise it retains one optional state slot
+per instruction, but ordinary straight-line padding adds no retained
+fact sets or fact-payload clones. Branch-dense retention and repeated visits
+remain separate resource costs; this representation does not establish a total
+verifier memory or work budget.
+
 `marrow-compile/src/lower/presence.rs` owns scoped presence facts with stable
 identities and typed live or invalidated state. Invalidated identities remain
 until lexical exit so a checked required read cannot become optional after

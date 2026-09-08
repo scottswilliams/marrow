@@ -1,4 +1,4 @@
-use super::{EntryFamilies, entry_family};
+use super::{EntryFamilies, admitted_plan::admitted_plan, entry_family, site_seam::site};
 use crate::sealed::{SealedSite, SealedSiteTarget};
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef, FuncId,
@@ -7,13 +7,6 @@ use marrow_image::{
 };
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-
-#[path = "../../../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
-#[path = "../../../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
-use admitted_plan::admitted_plan;
-use site_seam::site;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Counts {

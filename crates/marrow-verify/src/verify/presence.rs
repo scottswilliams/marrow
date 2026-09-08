@@ -17,6 +17,16 @@ use std::collections::BTreeSet;
 #[path = "presence/family_lookup_tests.rs"]
 mod family_lookup_tests;
 
+#[cfg(test)]
+#[path = "../../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+#[cfg(test)]
+#[path = "presence/retention_tests.rs"]
+mod retention_tests;
+#[cfg(test)]
+#[path = "../../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+
 /// The validated entry sites indexed by canonical path for the presence phase.
 /// Rows borrow both paths and branch coordinates; no key-column reconstruction is
 /// needed to invalidate a family. The index is built once and is not published.
@@ -170,57 +180,73 @@ pub(super) fn check_presence_flow(
     let mut entry: Vec<Option<BTreeSet<PresenceFact>>> = vec![None; code.len()];
     entry[0] = Some(BTreeSet::new());
     let mut worklist = vec![0usize];
-    while let Some(index) = worklist.pop() {
-        let present = entry[index]
+    while let Some(mut index) = worklist.pop() {
+        let mut present = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        if let SealedInstr::DurSetField { site, key_slots }
-        | SealedInstr::DurReadFieldPresent { site, key_slots }
-        | SealedInstr::DurReadGroupPresent { site, key_slots }
-        | SealedInstr::DurReplaceGroup { site, key_slots } = &code[index]
-        {
-            // The present form is proven only if a dominating fact names the exact
-            // containing entry — its family and its whole key-path — not merely a
-            // matching slot tuple (sibling branches of equal arity share slot tuples).
-            let (root, branch) = payload_site_family(ctx, *site).ok_or(reject(
-                VerifyPhase::Flow,
-                "a present-entry operation does not resolve to a field or group site",
-            ))?;
-            if !present.contains(&(root, branch, key_slots.clone())) {
-                return Err(reject(
+        loop {
+            if let SealedInstr::DurSetField { site, key_slots }
+            | SealedInstr::DurReadFieldPresent { site, key_slots }
+            | SealedInstr::DurReadGroupPresent { site, key_slots }
+            | SealedInstr::DurReplaceGroup { site, key_slots } = &code[index]
+            {
+                // The present form is proven only if a dominating fact names the exact
+                // containing entry — its family and its whole key-path — not merely a
+                // matching slot tuple (sibling branches of equal arity share slot tuples).
+                let (root, branch) = payload_site_family(ctx, *site).ok_or(reject(
                     VerifyPhase::Flow,
-                    "a present-entry operation is not dominated by a presence fact on its containing entry",
-                ));
-            }
-        }
-        for (successor, set) in presence_edges(
-            code,
-            ctx,
-            non_fallthrough_entries,
-            effects,
-            entry_families,
-            index,
-            &present,
-        ) {
-            if successor >= code.len() {
-                return Err(reject(VerifyPhase::Flow, "presence edge out of range"));
-            }
-            match &mut entry[successor] {
-                None => {
-                    entry[successor] = Some(set);
-                    worklist.push(successor);
+                    "a present-entry operation does not resolve to a field or group site",
+                ))?;
+                if !present.contains(&(root, branch, key_slots.clone())) {
+                    return Err(reject(
+                        VerifyPhase::Flow,
+                        "a present-entry operation is not dominated by a presence fact on its containing entry",
+                    ));
                 }
-                Some(existing) => {
-                    let merged: BTreeSet<PresenceFact> =
-                        existing.intersection(&set).cloned().collect();
-                    if merged.len() != existing.len() {
-                        *existing = merged;
+            }
+            let mut edges = presence_edges(
+                code,
+                ctx,
+                non_fallthrough_entries,
+                effects,
+                entry_families,
+                index,
+                present,
+            );
+            // A single adjacent edge into an unmarked destination is its only
+            // incoming edge. Forks retain both edges even if their targets agree.
+            if let [(next, _)] = edges.as_slice()
+                && *next == index + 1
+                && *next < code.len()
+                && !non_fallthrough_entries[*next]
+            {
+                (index, present) = edges.pop().expect("one adjacent edge");
+                continue;
+            }
+            for (successor, set) in edges {
+                if successor >= code.len() {
+                    return Err(reject(VerifyPhase::Flow, "presence edge out of range"));
+                }
+                match &mut entry[successor] {
+                    None => {
+                        entry[successor] = Some(set);
                         worklist.push(successor);
+                    }
+                    Some(existing) => {
+                        let merged: BTreeSet<PresenceFact> =
+                            existing.intersection(&set).cloned().collect();
+                        if merged.len() != existing.len() {
+                            *existing = merged;
+                            worklist.push(successor);
+                        }
                     }
                 }
             }
+            break;
         }
     }
+    #[cfg(test)]
+    retention_tests::record_success(&entry, entry.capacity());
     Ok(())
 }
 
@@ -234,7 +260,7 @@ pub(super) fn check_presence_flow(
 /// ends proofs over.
 type PresenceFact = (u16, Vec<u16>, Vec<u16>);
 
-/// The presence-set carried on each successor edge of the instruction at `index`.
+/// Consume the working set into successor states, cloning only for a fork.
 /// Most instructions pass the set through unchanged; guards split the set (adding the
 /// proven entry only on the present edge); create adds; an erase, an entry-erasing
 /// call, and a slot rebind remove.
@@ -245,63 +271,46 @@ fn presence_edges(
     effects: &Effects,
     entry_families: &EntryFamilies<'_>,
     index: usize,
-    present: &BTreeSet<PresenceFact>,
+    mut present: BTreeSet<PresenceFact>,
 ) -> Vec<(usize, BTreeSet<PresenceFact>)> {
     match &code[index] {
         SealedInstr::JumpIfFalse(target) => {
-            match exists_guard_fact(code, ctx, non_fallthrough_entries, index) {
-                // The present (true) edge falls through into the guarded block; the false
-                // edge (target) is the absent branch.
-                Some(fact) => {
-                    let mut present_edge = present.clone();
-                    present_edge.insert(fact);
-                    vec![(*target, present.clone()), (index + 1, present_edge)]
-                }
-                None => flow_successors(code, index)
-                    .into_iter()
-                    .map(|s| (s, present.clone()))
-                    .collect(),
+            let mut present_edge = present.clone();
+            if let Some(fact) = exists_guard_fact(code, ctx, non_fallthrough_entries, index) {
+                present_edge.insert(fact);
             }
+            vec![(*target, present), (index + 1, present_edge)]
         }
         SealedInstr::BranchPresent(target) => {
-            match read_entry_guard_fact(code, ctx, non_fallthrough_entries, index) {
-                Some(fact) => {
-                    let mut present_edge = present.clone();
-                    present_edge.insert(fact);
-                    vec![(*target, present.clone()), (index + 1, present_edge)]
-                }
-                None => flow_successors(code, index)
-                    .into_iter()
-                    .map(|s| (s, present.clone()))
-                    .collect(),
+            let mut present_edge = present.clone();
+            if let Some(fact) = read_entry_guard_fact(code, ctx, non_fallthrough_entries, index) {
+                present_edge.insert(fact);
             }
+            vec![(*target, present), (index + 1, present_edge)]
         }
         SealedInstr::DurCreateEntry(site) => {
-            let mut next = present.clone();
             if let Some((root, branch, arity)) = entry_site(ctx, *site)
                 && let Some(keys) =
                     entry_write_key_slots(code, non_fallthrough_entries, index, arity)
             {
-                next.insert((root, branch, keys));
+                present.insert((root, branch, keys));
             }
-            vec![(index + 1, next)]
+            vec![(index + 1, present)]
         }
         SealedInstr::DurEraseEntry(site) => {
-            let mut next = present.clone();
             // An entry erase ends every fact of the erased family whatever key operand
             // it names — a slot, another slot, or a constant — because the lattice does
             // not reason about key equality. Facts of other families survive: an erase
             // touches only the entry's own payload, so a child family's entry outlives
             // its parent's erase.
             if let Some((root, branch)) = ctx.sites.get(*site as usize).and_then(entry_family) {
-                next.retain(|(fact_root, fact_branch, _)| {
+                present.retain(|(fact_root, fact_branch, _)| {
                     (*fact_root, fact_branch.as_slice()) != (root, branch)
                 });
             }
-            vec![(index + 1, next)]
+            vec![(index + 1, present)]
         }
         SealedInstr::Call(callee) => {
-            let mut next = present.clone();
             // Only entry erasure removes a presence fact. Complete replacement
             // and field/group updates preserve the entry marker.
             for atom in &effects.atoms_closure[*callee as usize] {
@@ -309,23 +318,28 @@ fn presence_edges(
                     continue;
                 }
                 if let Some((root, branch)) = entry_families.get(atom.path()) {
-                    next.retain(|(fact_root, fact_branch, _)| {
+                    present.retain(|(fact_root, fact_branch, _)| {
                         (*fact_root, fact_branch.as_slice()) != (root, branch)
                     });
                 }
             }
-            vec![(index + 1, next)]
+            vec![(index + 1, present)]
         }
         SealedInstr::LocalSet(slot) => {
-            let mut next = present.clone();
             // A rebind of any key-path slot invalidates every fact that reads it.
-            next.retain(|(_, _, keys)| !keys.contains(slot));
-            vec![(index + 1, next)]
+            present.retain(|(_, _, keys)| !keys.contains(slot));
+            vec![(index + 1, present)]
         }
-        _ => flow_successors(code, index)
-            .into_iter()
-            .map(|s| (s, present.clone()))
-            .collect(),
+        _ => {
+            let mut successors = flow_successors(code, index);
+            let Some(last) = successors.pop() else {
+                return Vec::new();
+            };
+            let mut edges = Vec::with_capacity(successors.len() + 1);
+            edges.extend(successors.into_iter().map(|next| (next, present.clone())));
+            edges.push((last, present));
+            edges
+        }
     }
 }
 
@@ -524,9 +538,7 @@ mod presence_root_discrimination {
     //! The presence lattice keys a proven-present entry on its root, not on its
     //! key slot alone. Two whole-entry creates that share a key slot but address
     //! different roots must establish two distinct facts, so a strict sparse set
-    //! over one root can never be proven by a create on another. This holds the
-    //! (root, slot) discrimination structurally at the helper level, where it is
-    //! observable even while the container bound admits a single root.
+    //! over one root can never be proven by a create on another.
     use std::collections::BTreeSet;
     use std::rc::Rc;
 
@@ -589,14 +601,14 @@ mod presence_root_discrimination {
             &effects,
             &families,
             2,
-            &BTreeSet::new(),
+            BTreeSet::new(),
         )
         .into_iter()
         .find(|(successor, _)| *successor == 3)
         .expect("a create falls through to the next instruction")
         .1;
         let after_second =
-            presence_edges(&code, &ctx, &entries, &effects, &families, 5, &after_first)
+            presence_edges(&code, &ctx, &entries, &effects, &families, 5, after_first)
                 .into_iter()
                 .find(|(successor, _)| *successor == 6)
                 .expect("a create falls through to the next instruction")
