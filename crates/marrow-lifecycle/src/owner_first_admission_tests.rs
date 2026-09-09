@@ -761,6 +761,7 @@ fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
         "the two forms must differ in length"
     );
     let path = head_path(&store);
+    std::fs::write(&path, &short).expect("seed a head accepted by the read oracle");
     let stop = std::sync::atomic::AtomicBool::new(false);
 
     std::thread::scope(|scope| {
@@ -779,25 +780,34 @@ fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
             }
         });
 
-        for _ in 0..50 {
-            match open(&store, projection()) {
-                Ok(opened) => {
-                    let admitted = opened.head.encode();
-                    assert!(
-                        admitted == short || admitted == long,
-                        "admission returned a head that was never wholly written",
-                    );
-                }
-                Err(error) => assert!(
-                    matches!(
-                        error.code(),
-                        "store.corruption" | "store.limit" | "store.format_version" | "store.io",
+        let reads = std::panic::catch_unwind(|| {
+            for _ in 0..50 {
+                match open(&store, projection()) {
+                    Ok(opened) => {
+                        let admitted = opened.head.encode();
+                        assert!(
+                            admitted == short || admitted == long,
+                            "admission returned a head that was never wholly written",
+                        );
+                    }
+                    Err(error) => assert!(
+                        matches!(
+                            error.code(),
+                            "store.corruption"
+                                | "store.limit"
+                                | "store.format_version"
+                                | "store.io",
+                        ),
+                        "a torn read must be a typed refusal, got {error}",
                     ),
-                    "a torn read must be a typed refusal, got {error}",
-                ),
+                }
             }
-        }
+        });
+        // A failed read assertion must stop the writer before the scope joins it.
         stop.store(true, Ordering::Relaxed);
+        if let Err(panic) = reads {
+            std::panic::resume_unwind(panic);
+        }
     });
 }
 
