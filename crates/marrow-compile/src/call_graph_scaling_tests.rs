@@ -49,7 +49,7 @@ fn chain_counts(depth: usize) -> crate::types::CallGraphCounts {
 #[test]
 fn c2_algorithmic_work_is_linear_and_output_identical() {
     let mut observed_work = Vec::new();
-    for (depth, expected_edge_work) in [(64usize, 256usize), (128, 512)] {
+    for (depth, expected_edge_work) in [(64usize, 320usize), (128, 640)] {
         let input = project(chain_source(depth));
         let ordinary = compile(&input).expect("the acyclic chain compiles");
         let (observed, counts) = capture_call_graph_counts(|| compile(&input));
@@ -63,8 +63,8 @@ fn c2_algorithmic_work_is_linear_and_output_identical() {
     }
     assert_eq!(
         observed_work,
-        vec![(64, 256, 256), (128, 512, 512)],
-        "four semantic relations examine every edge exactly once",
+        vec![(64, 320, 320), (128, 640, 640)],
+        "SCC, eligibility and three semantic relations examine each edge once",
     );
 }
 
@@ -100,6 +100,9 @@ fn presence_counts(counts: CallGraphCounts) -> CallGraphCounts {
     CallGraphCounts {
         graph_vertex_visits: 0,
         graph_edge_visits: 0,
+        closure_vertex_visits: 0,
+        closure_edge_visits: 0,
+        graph_scratch_bytes: 0,
         propagation_visits: 0,
         propagation_edge_visits: 0,
         ..counts
@@ -139,7 +142,7 @@ fn diagnostic_rows(
 }
 
 #[test]
-fn presence_queries_ignore_reserved_but_undrained_callees() {
+fn a_duplicate_test_hole_does_not_prevent_generic_presence_analysis() {
     let source = r#"module main
 resource R {
     required value: int
@@ -172,23 +175,23 @@ test "same" {}
     assert_eq!(diagnostic_rows(check(&input)), ordinary);
     compile(&input).expect("excluding the duplicate tests permits the generic drain");
 
-    // The two declared tests reserve the generic at 4, but only the first test
-    // mints a row after the two ordinary functions. Both presence lookups see
-    // the unavailable callee without enlarging the three-row domain.
+    // The duplicate test's slot stays vacant; the generic body still fills slot 4.
+    // Presence summaries retain all five IDs and visit the four available bodies.
+
     assert_eq!(
         (counts.graph_vertex_visits, counts.graph_edge_visits),
-        (3, 1)
+        (5, 1)
     );
     assert_eq!(
         presence_counts(counts),
         CallGraphCounts {
             presence_stripes: 1,
-            presence_row_visits: 3,
+            presence_row_visits: 4,
             presence_edge_visits: 1,
             presence_query_positions: 1,
             presence_summary_lookups: 1,
             presence_queries_queued: 1,
-            presence_summary_words: 3,
+            presence_summary_words: 5,
             presence_query_rows: 1,
             presence_erase_rows: 1,
             presence_next_slots: 1,
@@ -310,10 +313,15 @@ fn presence_summaries_cover_functions_beyond_final_image_policy() {
     assert_eq!(limit.kind(), ResourceLimitKind::Functions);
     assert_eq!(limit.limit(), marrow_image::bounds::MAX_FUNCTIONS as u64);
     assert_eq!(
-        counts,
+        CallGraphCounts {
+            graph_scratch_bytes: 0,
+            ..counts
+        },
         CallGraphCounts {
             graph_vertex_visits: functions,
             graph_edge_visits: 1,
+            closure_vertex_visits: functions,
+            closure_edge_visits: 1,
             propagation_visits: 3 * functions,
             // The call is already inside a transaction, so ambient-transaction
             // propagation has no edge; mutation and durable closures each visit it.

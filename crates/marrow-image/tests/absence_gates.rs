@@ -1986,20 +1986,19 @@ fn the_carrier_producer_scanner_sees_a_planted_internal_constructor() {
     );
 }
 
-/// The measure core's affine carriers are closed: the coherence witness, the
-/// policy-clean witness, the measured-length witness, and the wire plan are
-/// nameable only inside the measure core, and the core's entry point is reachable
-/// only from the one encode driver — so no caller can mint a second constructor,
-/// pair a witness or plan with another draft, or supply its own draft at emission.
-/// (Within the core the borrow-bound affine types carry the same law at the type
-/// level; this scan pins that no second spelling grows outside it.)
+/// Pin the measure carriers' production access set. The encoder calls the core
+/// and implements two writers on the immutable coherence witness. Its private
+/// tuple field keeps construction inside the measure core; the lifetime binds
+/// every writer to that same draft. This census detects changes in the named
+/// access set; type privacy and the production checks enforce the construction law.
 #[test]
 fn the_measure_core_carriers_are_closed() {
     // (file suffix, symbol, expected production occurrence count)
-    const CARRIER_SET: [(&str, &str, usize); 9] = [
+    const CARRIER_SET: [(&str, &str, usize); 10] = [
         ("marrow-image/src/measure.rs", "LegacyV0MeasureCore", 2),
         ("marrow-image/src/encode.rs", "LegacyV0MeasureCore", 2),
-        ("marrow-image/src/measure.rs", "CoherentDraft", 4),
+        ("marrow-image/src/measure.rs", "CoherentDraft", 12),
+        ("marrow-image/src/encode.rs", "CoherentDraft", 2),
         ("marrow-image/src/measure.rs", "PolicyClean", 4),
         ("marrow-image/src/measure.rs", "MeasuredDurableLen", 4),
         ("marrow-image/src/measure.rs", "LegacyV0WirePlan", 4),

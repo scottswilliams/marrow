@@ -174,14 +174,14 @@ impl std::fmt::Display for EncodeDriftSection {
 /// The measure core: the namespace of the four-step journey's entry point.
 pub(crate) struct LegacyV0MeasureCore;
 
-/// A draft every invariant-classified decision has admitted. Affine and borrow-bound:
-/// it is minted only by [`LegacyV0MeasureCore::coherence`], consumed by the policy
-/// walk, and cannot outlive or outnumber the draft it certifies.
+/// A draft every invariant-classified decision has admitted. Minted only by
+/// [`LegacyV0MeasureCore::coherence`], consumed by the policy walk, and bound by
+/// the lifetime of the immutable draft it certifies.
 pub(crate) struct CoherentDraft<'d>(&'d ImageDraft);
 
 /// A coherent draft every resource-policy candidate has admitted. Affine: consumed by
 /// measurement.
-pub(crate) struct PolicyClean<'d>(&'d ImageDraft);
+pub(crate) struct PolicyClean<'d>(CoherentDraft<'d>);
 
 /// The DURABLE section length the counting run measured, contract identity included.
 ///
@@ -195,7 +195,7 @@ struct MeasuredDurableLen(u32);
 /// section — the digest input), and the whole-image total, all counted through the
 /// same codecs emission drives. No heap; affine — emission consumes it.
 pub(crate) struct LegacyV0WirePlan<'d> {
-    draft: &'d ImageDraft,
+    draft: CoherentDraft<'d>,
     bodies: [u32; 10],
     framed: [u32; 10],
     header: u32,
@@ -222,6 +222,15 @@ impl LegacyV0MeasureCore {
 }
 
 impl<'d> CoherentDraft<'d> {
+    /// Every function slot was checked by coherence. Borrow the definitions in
+    /// reservation order without compacting or copying the owner's table.
+    pub(crate) fn functions(&self) -> impl ExactSizeIterator<Item = &crate::FunctionDef> {
+        self.0.functions().iter().map(|slot| {
+            slot.as_ref()
+                .expect("coherence requires every function body")
+        })
+    }
+
     /// Step 3: the resource-policy walk, in the exact legacy candidate order — the
     /// eleven aggregate caps as `check_bounds` declared them, then per-function
     /// CodeBytes in function order. Nothing is measured, hashed, or allocated here.
@@ -234,14 +243,14 @@ impl<'d> CoherentDraft<'d> {
         if let Err(drift) = TablePolicyAudit::cross_validate(draft) {
             return Err(ImageBuildError::LedgerDrift(drift));
         }
-        let verdict = Self::legacy_walk(draft);
+        let verdict = Self::legacy_walk(&self);
         Self::shadow_compare(draft, &verdict)?;
         verdict?;
-        Ok(PolicyClean(draft))
+        Ok(PolicyClean(self))
     }
 
     /// The exact legacy candidate walk, unchanged in order and authority.
-    fn legacy_walk(draft: &ImageDraft) -> Result<(), ImageBuildError> {
+    fn legacy_walk(draft: &CoherentDraft<'_>) -> Result<(), ImageBuildError> {
         if draft.strings().len() > bounds::MAX_STRINGS {
             return Err(ImageBuildError::TooManyStrings);
         }
@@ -320,6 +329,14 @@ impl<'d> CoherentDraft<'d> {
     }
 }
 
+impl std::ops::Deref for CoherentDraft<'_> {
+    type Target = ImageDraft;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
 impl<'d> PolicyClean<'d> {
     /// Step 3: count the whole image through one checked sink, in exact assembly
     /// order — the envelope head (zero digest), the section-count prelude, then per
@@ -330,7 +347,7 @@ impl<'d> PolicyClean<'d> {
     /// decisively at [`bounds::MAX_IMAGE_BYTES`]` + 1`, every row loop polls it, and
     /// the ceiling is decided here, before any section is assembled.
     pub(crate) fn measure(self) -> Result<LegacyV0WirePlan<'d>, ImageBuildError> {
-        let draft = self.0;
+        let draft = &self.0;
         let strings = StringRemap::counting();
         let mut counter = CappedImageCount::default();
         let mut bodies = [0u32; 10];
@@ -360,7 +377,7 @@ impl<'d> PolicyClean<'d> {
         }
         let durable = durable.expect("the DURABLE slot was just counted");
         let tail = (counter.total() - tail_start) as u32;
-        LegacyV0WirePlan::new(draft, bodies, framed, header, tail, durable)
+        LegacyV0WirePlan::new(self.0, bodies, framed, header, tail, durable)
     }
     // count-path audit sentinel: end of PolicyClean::measure
 }
@@ -372,7 +389,7 @@ impl<'d> PolicyClean<'d> {
 /// measurement allocates nothing; the counted==emitted KATs pin the arithmetic
 /// against the writers per section.
 fn count_section_body(
-    draft: &ImageDraft,
+    draft: &CoherentDraft<'_>,
     slot: usize,
     strings: &StringRemap<'_>,
     sink: &mut CappedImageCount,
@@ -418,7 +435,7 @@ fn count_section_body(
 /// local count, the code-length prefix — plus [`laid_out_code_len`], the one
 /// per-instruction width owner the emission layout accumulates into offsets. Jump
 /// operands are fixed-width, so no offset value affects a length.
-pub(crate) fn count_functions(draft: &ImageDraft, sink: &mut CappedImageCount) {
+pub(crate) fn count_functions(draft: &CoherentDraft<'_>, sink: &mut CappedImageCount) {
     sink.pad(2);
     for function in draft.functions() {
         if sink.is_full() {
@@ -441,7 +458,7 @@ pub(crate) fn count_functions(draft: &ImageDraft, sink: &mut CappedImageCount) {
 
 /// The SPANS section body, counted without offsets: per function its `u16` count
 /// prefix plus [`SPAN_ROW_BYTES`] per row — the widths `encode_spans` spells.
-pub(crate) fn count_spans(draft: &ImageDraft, sink: &mut CappedImageCount) {
+pub(crate) fn count_spans(draft: &CoherentDraft<'_>, sink: &mut CappedImageCount) {
     for function in draft.functions() {
         if sink.is_full() {
             return;
@@ -468,7 +485,7 @@ impl SiteWireProjection<'_> {
 impl<'d> LegacyV0WirePlan<'d> {
     /// The plan-bound site projection over this plan's own draft.
     pub(crate) fn site_projection(&self) -> SiteWireProjection<'d> {
-        SiteWireProjection(self.draft)
+        SiteWireProjection(self.draft.0)
     }
 
     /// Complete the plan. Every span was counted through the one saturating sink, so
@@ -476,7 +493,7 @@ impl<'d> LegacyV0WirePlan<'d> {
     /// witness is what makes a plan unforgeable — only the counting run over the
     /// installed DURABLE writer can mint one.
     fn new(
-        draft: &'d ImageDraft,
+        draft: CoherentDraft<'d>,
         mut bodies: [u32; 10],
         framed: [u32; 10],
         header: u32,
@@ -742,6 +759,9 @@ fn invariant_bounds(draft: &ImageDraft) -> Result<(), ImageBuildError> {
         }
     }
     for function in draft.functions() {
+        let function = function
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         if function.params.len() > bounds::MAX_PARAMS {
             return Err(ImageBuildError::TooManyParams);
         }
@@ -855,6 +875,9 @@ fn anchor_and_sites(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     // recheck, never a numeric projection: an over-policy ref is live provenance the
     // Sites policy candidate reports.
     for function in draft.functions() {
+        let function = function
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         for instr in &function.code {
             if let Some(site) = instr.site_operand()
                 && !draft.site_ref_is_live(site)
@@ -939,6 +962,9 @@ fn image_type_ref(draft: &ImageDraft, ty: ImageType) -> Result<(), ImageBuildErr
 /// order, then the return), then the tape's operands exactly as the tape visits them.
 fn function_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for function in draft.functions() {
+        let function = function
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         string_ref(draft, function.name, "function name")?;
         string_ref(draft, function.source, "function source")?;
         for param in &function.params {
@@ -1132,6 +1158,9 @@ fn exports_relations(draft: &ImageDraft) -> Result<FunctionRelations, ImageBuild
 /// function.
 fn span_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     for function in draft.functions() {
+        let function = function
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         for span in &function.spans {
             if (span.instr_index as usize) >= function.code.len() {
                 return Err(ImageBuildError::InvalidReference("span instruction"));
@@ -1198,6 +1227,9 @@ fn test_entry_relations(
             .is_some_and(|flags| *flags & TEST_ENTRY_FUNCTION != 0)
     };
     for (index, function) in draft.functions().iter().enumerate() {
+        let function = function
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         let has_assert = function
             .code
             .iter()
@@ -1207,7 +1239,9 @@ fn test_entry_relations(
         }
     }
     for entry in entries {
-        let function = &draft.functions()[entry.func() as usize];
+        let function = draft.functions()[entry.func() as usize]
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         #[cfg(test)]
         crate::encode::bump_image_algorithm_counts(|counts| counts.export_membership_probes += 1);
         if function_relations.flags[entry.func() as usize] & EXPORTED_FUNCTION != 0 {
@@ -1221,6 +1255,9 @@ fn test_entry_relations(
         }
     }
     for function in draft.functions() {
+        let function = function
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         for instr in &function.code {
             if let Instr::Call(target) = instr
                 && is_test_entry(*target)
@@ -1230,7 +1267,9 @@ fn test_entry_relations(
         }
     }
     for entry in entries {
-        let function = &draft.functions()[entry.func() as usize];
+        let function = draft.functions()[entry.func() as usize]
+            .as_ref()
+            .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
         let has_direct_durable = function
             .code
             .iter()
@@ -1238,14 +1277,19 @@ fn test_entry_relations(
         if !has_direct_durable {
             continue;
         }
-        let drives_owner = function.code.iter().any(|instr| {
-            matches!(instr, Instr::Call(target) if draft.functions()[*target as usize]
-                .code
-                .iter()
-                .any(|callee_instr| matches!(callee_instr, Instr::TxnBegin)))
-        });
-        if drives_owner {
-            return Err(ImageBuildError::InvalidReference("test table"));
+        for instr in &function.code {
+            if let Instr::Call(target) = instr {
+                let callee = draft.functions()[*target as usize]
+                    .as_ref()
+                    .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
+                if callee
+                    .code
+                    .iter()
+                    .any(|instr| matches!(instr, Instr::TxnBegin))
+                {
+                    return Err(ImageBuildError::InvalidReference("test table"));
+                }
+            }
         }
     }
     Ok(())
@@ -1328,7 +1372,10 @@ mod decisive_saturation {
             })
             .expect("no site operand needs validating");
         assert_eq!(
-            saturated(|counter| count_spans(&draft, counter)),
+            saturated(|counter| count_spans(
+                &LegacyV0MeasureCore::coherence(&draft).expect("a coherent fixture"),
+                counter
+            )),
             DECISIVE_TOTAL,
         );
     }
@@ -1356,7 +1403,10 @@ mod decisive_saturation {
                 .expect("no site operand needs validating");
         }
         assert_eq!(
-            saturated(|counter| count_functions(&draft, counter)),
+            saturated(|counter| count_functions(
+                &LegacyV0MeasureCore::coherence(&draft).expect("a coherent fixture"),
+                counter
+            )),
             DECISIVE_TOTAL,
         );
     }

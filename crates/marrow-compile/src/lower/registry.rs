@@ -8,10 +8,7 @@ use crate::decl::{
     DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName,
     refuse_covered, refuse_first,
 };
-use crate::types::{
-    BuildError, NominalBoundaryKind, NominalBoundaryRoot, NominalBoundaryValue,
-    narrow_function_index,
-};
+use crate::types::{BuildError, NominalBoundaryKind, NominalBoundaryRoot, NominalBoundaryValue};
 
 /// One declared function paired with where it was declared: the file identity its
 /// diagnostics point into, the snapshot coordinate its editor facts are retained
@@ -60,7 +57,7 @@ pub(crate) struct FunctionRegistry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignatureOutcome {
     /// Every annotation resolved; the body lowers against the signature.
-    Resolved,
+    Resolved(FuncId),
     /// A parameter or return type was refused and reported at this declaration.
     /// The body is refused with it: there is no parameter list to bind, and
     /// resolving the same annotation again would report the cause a second time.
@@ -142,14 +139,8 @@ impl FunctionRegistry {
     /// declaration inherits an index that was never minted. The declaration keeps
     /// its name, so a call to it reuses that cause rather than reading as unknown.
     ///
-    /// **Slot order.** `index` is an image coordinate: the i-th accepted signature
-    /// must be the function the draft's i-th monomorphic slot holds. The counter
-    /// below advances once per accepted occurrence, in the source order
-    /// [`DeclarationLedger::accepted_occurrences`] walks, and `lower_declared_functions`
-    /// visits the same declarations in the same order and refuses exactly the ones
-    /// refused here — a body whose parameter or return annotation does not resolve
-    /// refuses before it takes a slot. So the ledger's accepted occurrences and the
-    /// image's monomorphic slots are the same sequence.
+    /// Each accepted occurrence reserves its image slot here. Body lowering fills
+    /// that exact slot; a refused body leaves it vacant without changing later IDs.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build<'source>(
         records: &mut TypeRegistry,
@@ -168,11 +159,6 @@ impl FunctionRegistry {
         // table; a generic function is a template with no single image entry (its
         // per-application instances are minted lazily), so it is skipped here and
         // resolved through the separate [`GenericRegistry`].
-        // The slot ordinal accumulates in a carrier wider than the image's function
-        // index and is narrowed exactly where a signature takes its slot, so a
-        // project declaring more monomorphic functions than the image can address
-        // refuses at the invariant boundary instead of wrapping onto slot zero.
-        let mut index: u32 = 0;
         for declared in functions {
             let (file, module, function) = (&declared.file, &declared.module, declared.decl);
             if !function.type_params.is_empty() {
@@ -263,21 +249,21 @@ impl FunctionRegistry {
                     DeclarationOccurrence::Refused(refusal)
                 }
                 None => {
+                    let func = draft.reserve_function()?;
                     let signature = FnSignature {
                         module: module.clone(),
                         at: declared.at,
-                        index: narrow_function_index(u64::from(index))?,
+                        func,
                         params,
                         ret,
                         public: function.public,
                         name_span: function.name_span,
                         decl_range: decl_range(function),
                     };
-                    index += 1;
                     declarations.push(DeclaredSignature {
                         at: declared.at,
                         name_span: function.name_span,
-                        outcome: SignatureOutcome::Resolved,
+                        outcome: SignatureOutcome::Resolved(func),
                     });
                     DeclarationOccurrence::Accepted(signature)
                 }
@@ -296,18 +282,6 @@ impl FunctionRegistry {
     /// read from the ledger rather than from a flag the build loop maintained.
     pub(crate) fn every_signature_accepted(&self) -> bool {
         self.sigs.refused().next().is_none()
-    }
-
-    /// The number of monomorphic functions, which is the number of image FUNCTIONS
-    /// entries lowered before tests and generic instantiations. One per accepted
-    /// occurrence, not per accepted name: a repeated function name is reported by
-    /// its own duplicate check and both declarations still lower a body.
-    ///
-    /// The count is the counting carrier's own width, not the image's function
-    /// index: it is summed with the test-body count and narrowed once, where the
-    /// generic base consumes it.
-    pub(crate) fn concrete_count(&self) -> usize {
-        self.sigs.accepted_occurrences().count()
     }
 
     /// The names of every function declared in `module`, accepted or refused, so an

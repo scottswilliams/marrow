@@ -156,12 +156,17 @@ fn pending_links_are_reusable_for_a_different_family_and_shorter_group() {
     );
 }
 
-fn functions() -> Vec<LoweredFn> {
+fn functions() -> Vec<Option<LoweredFn>> {
+    named_functions(&["first", "second"])
+}
+
+fn named_functions(names: &[&str]) -> Vec<Option<LoweredFn>> {
     let mut owner = ImageDraft::new();
     let mut draft = crate::compile::admitted(&mut owner);
     let source = draft.intern_string("src/main.mw").expect("source name");
-    ["first", "second"]
-        .into_iter()
+    names
+        .iter()
+        .copied()
         .map(|name| {
             let function_name = draft.intern_string(name).expect("function name");
             let func = draft
@@ -175,7 +180,7 @@ fn functions() -> Vec<LoweredFn> {
                     spans: Vec::new(),
                 })
                 .expect("a body without sites");
-            LoweredFn {
+            Some(LoweredFn {
                 func,
                 file: crate::test_main_file_identity().clone(),
                 name: name.to_string(),
@@ -190,7 +195,7 @@ fn functions() -> Vec<LoweredFn> {
                 has_direct_durable_op: false,
                 owns_transaction: false,
                 code_spans: Vec::new(),
-            }
+            })
         })
         .collect()
 }
@@ -236,5 +241,74 @@ fn reporting_coalesces_only_the_exact_use_and_selects_its_earliest_call() {
     assert_eq!(
         rows.iter().map(|row| row.span()).collect::<Vec<_>>(),
         [span, span, obligations[4].span, span]
+    );
+}
+
+#[test]
+fn sparse_presence_reports_only_callee_closed_available_functions() {
+    let mut functions = named_functions(&["missing", "eraser", "eligible", "excluded", "leaf"]);
+    functions[0] = None;
+    for function in functions.iter_mut().flatten() {
+        function.callees.clear();
+    }
+    let family = family();
+    functions[1]
+        .as_mut()
+        .expect("valid fixture construction")
+        .erased_families
+        .push(family.clone());
+    let use_span = SourceSpan {
+        start_byte: 20,
+        end_byte: 21,
+        line: 3,
+        column: 4,
+    };
+    for (index, callees) in [(2, vec![1]), (3, vec![0, 1])] {
+        let function = functions[index]
+            .as_mut()
+            .expect("the fixture populated this slot");
+        function.presence_obligations.push(PresenceObligation {
+            family: family.clone(),
+            span: SourceSpan {
+                start_byte: use_span.start_byte + index - 2,
+                ..use_span
+            },
+            calls: 0..callees.len(),
+        });
+        function.callees = callees;
+    }
+    let lowered = LoweredFunctionSet(functions);
+    let mut diagnostics = DiagnosticCollector::new();
+    let acyclic = crate::compile::reject_recursion(&lowered, &mut diagnostics);
+    assert_eq!(
+        (0..5)
+            .map(|id| acyclic.order().contains(id))
+            .collect::<Vec<_>>(),
+        vec![false, true, true, false, true]
+    );
+    let erased = HashSet::from([&family]);
+    let (_, queries) = collect_queries(lowered.functions(), &acyclic, &erased);
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].function, 2);
+    assert_eq!(
+        lowered.functions()[queries[0].function]
+            .as_ref()
+            .expect("valid fixture construction")
+            .callees,
+        vec![1]
+    );
+    reject_unproven_uses(&lowered, &acyclic, &mut diagnostics);
+    let rows = diagnostics.finish().expect_complete();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the caller of the missing body must not be reported"
+    );
+    assert_eq!(rows[0].code(), "check.requires_presence");
+    assert_eq!(rows[0].file(), crate::test_main_file_identity());
+    assert_eq!(rows[0].span(), use_span);
+    assert!(
+        rows[0].message().contains("`eraser`"),
+        "the witness names the actual sparse callee"
     );
 }

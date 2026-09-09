@@ -6,12 +6,16 @@
 //! still available runs and reports. No image entry, index, export, test slot, or
 //! dependent fact is fabricated from a missing prerequisite.
 
+use std::sync::Arc;
+
 use marrow_compile::{
-    CompileFailure, ResourceLimitKind, SourceDiagnostic, compile, compile_with_tests,
+    CompileFailure, InputRevision, ResourceLimitKind, SourceDiagnostic, analyze, check, compile,
+    compile_with_tests,
 };
+use marrow_syntax::SourceSpan;
 #[path = "common/project.rs"]
 mod common_project;
-use common_project::project;
+use common_project::{project, project_with_ids};
 
 /// The diagnostics `compile_with_tests` reports over a single module.
 fn diagnostics(source: &str) -> Vec<SourceDiagnostic> {
@@ -19,7 +23,11 @@ fn diagnostics(source: &str) -> Vec<SourceDiagnostic> {
 }
 
 fn diagnostics_over(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
-    match compile_with_tests(&project(files)) {
+    reported(compile_with_tests(&project(files)))
+}
+
+fn reported(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<SourceDiagnostic> {
+    match result {
         Ok(_) => Vec::new(),
         Err(CompileFailure::Diagnostics(rows)) => rows.as_slice().to_vec(),
         Err(CompileFailure::ResourceLimit(limit)) => {
@@ -33,6 +41,67 @@ fn diagnostics_over(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
 
 fn codes(rows: &[SourceDiagnostic]) -> Vec<&str> {
     rows.iter().map(SourceDiagnostic::code).collect()
+}
+
+/// Each projection sees the same source, and every expected diagnostic names its
+/// entire source construct. Run all three before comparing their results.
+fn assert_diagnostic_sites(
+    files: &[(&str, &str)],
+    ids: Option<&[u8]>,
+    expected: &[(&str, &str, &str)],
+) {
+    let input = Arc::new(project_with_ids(files, ids));
+    let compiled = reported(compile_with_tests(&input));
+    let checked = reported(check(&input));
+    let snapshot = analyze(input, InputRevision::new(7))
+        .unwrap_or_else(|_| panic!("fixture must produce a diagnostic snapshot"));
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|&(code, path, construct)| {
+            let source = files
+                .iter()
+                .find(|(file, _)| *file == path)
+                .expect("diagnostic source exists")
+                .1;
+            assert_eq!(source.matches(construct).count(), 1, "unique construct");
+            let start = source.find(construct).expect("diagnostic construct exists");
+            let line_start = source[..start].rfind('\n').map_or(0, |at| at + 1);
+            (
+                code,
+                path,
+                SourceSpan {
+                    start_byte: start,
+                    end_byte: start + construct.len(),
+                    line: source[..start]
+                        .bytes()
+                        .filter(|&byte| byte == b'\n')
+                        .count() as u32
+                        + 1,
+                    column: (start - line_start + 1) as u32,
+                },
+            )
+        })
+        .collect();
+    let projections = [
+        ("compile_with_tests", compiled),
+        ("check", checked),
+        ("analyze", snapshot.diagnostics().to_vec()),
+    ];
+    let actual: Vec<_> = projections
+        .iter()
+        .map(|(projection, rows)| {
+            let sites: Vec<_> = rows
+                .iter()
+                .map(|row| (row.code(), row.file().as_str(), row.span()))
+                .collect();
+            (*projection, sites)
+        })
+        .collect();
+    let expected: Vec<_> = projections
+        .iter()
+        .map(|(projection, _)| (*projection, expected.clone()))
+        .collect();
+    assert_eq!(actual, expected);
 }
 
 /// Red 7. A refused function signature refuses that declaration alone.
@@ -208,8 +277,8 @@ fn outcome_of(result: Result<impl std::fmt::Debug, CompileFailure>) -> Outcome {
     }
 }
 
-/// A refused body that already queued a generic instance. The call is emitted before the
-/// refusal, so an instance index is reserved that the drain will never mint.
+/// A body queues a generic instance before its later unresolved call refuses the body.
+/// Draining completes the instance while the caller's reserved slot remains vacant.
 const REFUSED_BODY_WITH_QUEUED_INSTANCE: &str = r#"module main
 
 pub fn caller(): int {
@@ -222,11 +291,9 @@ fn identity<T>(x: T): T {
 }
 "#;
 
-/// Red 9. A refused body withholds `CompleteDeclaredFunctionBodies`, which gates the
-/// instance drain off, so the queued instance keeps a reserved index no body ever minted.
-/// That is an ordinary diagnostic outcome from both production entries — never a built
-/// image, never an invariant, and never a panic. The gate is carried by the artifacts, so
-/// the result does not depend on the build profile.
+/// A refused body withholds `CompleteDeclaredFunctionBodies` even when its queued
+/// instance completes. Both production entries report the body diagnostic without
+/// building an image or reaching an invariant.
 #[test]
 fn a_refused_body_with_a_queued_instance_reports_diagnostics() {
     assert_eq!(
@@ -252,10 +319,9 @@ fn a_refused_body_with_a_queued_instance_reports_diagnostics() {
     );
 }
 
-/// Red 10. Duplicate test titles skip a body whose reserved index stays unminted, which
-/// withholds `CompleteDeclaredTestBodies` and gates the drain off while a generic
-/// instance is queued. The outcome is the title conflict alone: no image, no invariant,
-/// and no fabricated instance ordinal.
+/// Duplicate test titles leave one reserved test slot vacant and withhold
+/// `CompleteDeclaredTestBodies`. The queued instance still drains; the outcome remains
+/// the title conflict alone, with no image or invariant.
 #[test]
 fn duplicate_test_titles_with_a_queued_instance_report_the_conflict_alone() {
     let source = r#"module main
@@ -330,12 +396,10 @@ pub fn driver(): int {
     );
 }
 
-/// Red 12. A call site that named a reserved-but-never-lowered instance index cannot
-/// reach `encode`: the artifacts are incomplete, so the projection returns diagnostics.
-/// The proof is the fixture's outcome, not the image owner's cross-reference validation —
-/// which is defense in depth and must never be what stops this program.
+/// Completing a queued instance does not make the refused caller available. The
+/// semantic fence returns its diagnostics before image policy or encoding.
 #[test]
-fn a_reserved_but_unlowered_instance_never_reaches_the_encoder() {
+fn a_refused_declared_body_with_a_completed_instance_cannot_build_an_image() {
     let outcome = outcome_of(compile(&project(&[(
         "src/main.mw",
         REFUSED_BODY_WITH_QUEUED_INSTANCE,
@@ -439,13 +503,8 @@ fn no_continuation_fixture_reaches_an_invariant() {
     }
 }
 
-/// A generic instance whose body is refused stops the drain mid-queue, so the reserved
-/// indices behind it are never minted and `CompleteLoweredFunctionSet` is withheld. The
-/// independent recursion cycle in the same program is therefore NOT reported: the call
-/// graph is a dependent fact of the lowered set, and a dependent fact is never produced
-/// from a missing prerequisite. This is the drain conjunct of the lowered-set gate —
-/// reds 9 and 10 exercise the declared-body conjuncts, and nothing else reaches a
-/// refusal inside `lower_instance`.
+/// The refused generic instance and the mutual cycle belong to independent call
+/// components. The missing body cannot suppress either cycle member.
 const DRAIN_REFUSED_MID_QUEUE: &str = r#"module main
 
 pub fn driver(): int {
@@ -466,14 +525,16 @@ fn pong(): int {
 "#;
 
 #[test]
-fn a_refused_instance_body_withholds_the_lowered_set() {
-    let rows = diagnostics(DRAIN_REFUSED_MID_QUEUE);
-    let found = codes(&rows);
-    assert_eq!(
-        found,
-        vec!["check.type", "check.type"],
-        "the template proof and the refused instance each report the unresolved call, \
-         and the withheld lowered set produces no call-graph fact: {rows:#?}",
+fn a_refused_instance_body_preserves_an_independent_cycle() {
+    assert_diagnostic_sites(
+        &[("src/main.mw", DRAIN_REFUSED_MID_QUEUE)],
+        None,
+        &[
+            ("check.type", "src/main.mw", "missing()"),
+            ("check.type", "src/main.mw", "missing()"),
+            ("check.recursion", "src/main.mw", "fn ping(): int {"),
+            ("check.recursion", "src/main.mw", "fn pong(): int {"),
+        ],
     );
     for outcome in [
         outcome_of(compile(&project(&[(
@@ -493,16 +554,8 @@ fn a_refused_instance_body_withholds_the_lowered_set() {
     }
 }
 
-/// A refused declared function body withholds `CompleteDeclaredFunctionBodies` while no
-/// generic instance is ever queued, so the drain runs over an empty queue and its own
-/// conjunct still holds. The declared-body conjunct is then the only thing standing
-/// between the refusal and a call-graph fact, and the independent recursion cycle in the
-/// second module is not reported.
-///
-/// Dropping that conjunct does not merely add a row. The refused declaration's reserved
-/// index is never minted, so the adjacency the call graph is built over is short by one
-/// and the cycle it walks is partial: it names `cycB` alone, a fabricated fact about a
-/// program the compiler never finished lowering.
+/// A refused declaration before another module's cycle leaves a hole in the
+/// function domain. Both cycle members must retain their actual identities.
 const REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE: &[(&str, &str)] = &[
     (
         "src/main.mw",
@@ -529,13 +582,15 @@ fn cycB(): int {
 ];
 
 #[test]
-fn a_refused_declared_body_withholds_the_lowered_set() {
-    let rows = diagnostics_over(REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE);
-    assert_eq!(
-        codes(&rows),
-        vec!["check.type"],
-        "the refused body reports its own unresolved call, and the withheld lowered set \
-         produces no call-graph fact over the independent module: {rows:#?}",
+fn a_refused_declared_body_preserves_an_independent_cycle() {
+    assert_diagnostic_sites(
+        REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE,
+        None,
+        &[
+            ("check.type", "src/main.mw", "missingCall()"),
+            ("check.recursion", "src/other.mw", "fn cycA(): int {"),
+            ("check.recursion", "src/other.mw", "fn cycB(): int {"),
+        ],
     );
     for outcome in [
         outcome_of(compile(&project(REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE))),
@@ -549,4 +604,204 @@ fn a_refused_declared_body_withholds_the_lowered_set() {
             "a reserved-but-unminted declaration index never reaches the encoder",
         );
     }
+}
+
+const GENERIC_CYCLE: &str = "module main\n\nfn spin<T>(x: T): T { return spin(x) }\npub fn driver(): int { return spin(1) }\n";
+const REFUSED_BODY: &str = "\nfn broken(): int { return true }\n";
+const EMPTY_TRANSACTION: &str = "\npub fn independent() { transaction {} }\n";
+
+#[test]
+fn a_complete_generic_cycle_reports_its_source() {
+    assert_diagnostic_sites(
+        &[("src/main.mw", GENERIC_CYCLE)],
+        None,
+        &[(
+            "check.recursion",
+            "src/main.mw",
+            "fn spin<T>(x: T): T { return spin(x) }",
+        )],
+    );
+}
+
+#[test]
+fn generic_recursion_survives_an_unrelated_body_refusal() {
+    let source = format!("{GENERIC_CYCLE}{REFUSED_BODY}");
+    assert_diagnostic_sites(
+        &[("src/main.mw", &source)],
+        None,
+        &[
+            ("check.type", "src/main.mw", "true"),
+            (
+                "check.recursion",
+                "src/main.mw",
+                "fn spin<T>(x: T): T { return spin(x) }",
+            ),
+        ],
+    );
+}
+
+/// The first instance discovers another instance before its ordinary refusal.
+/// Both the already-pending instance and the newly discovered one must be drained.
+#[test]
+fn a_refused_generic_instance_does_not_discard_pending_work() {
+    let source = r#"module main
+
+pub fn driver(): int {
+    const first = bad(1)
+    return spin(1)
+}
+
+fn bad<T>(x: T): int {
+    const queued = after(x)
+    return missing()
+}
+
+fn after<T>(x: T): T { return after(x) }
+fn spin<T>(x: T): T { return spin(x) }
+"#;
+    assert_diagnostic_sites(
+        &[("src/main.mw", source)],
+        None,
+        &[
+            ("check.type", "src/main.mw", "missing()"),
+            ("check.type", "src/main.mw", "missing()"),
+            (
+                "check.recursion",
+                "src/main.mw",
+                "fn spin<T>(x: T): T { return spin(x) }",
+            ),
+            (
+                "check.recursion",
+                "src/main.mw",
+                "fn after<T>(x: T): T { return after(x) }",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn an_empty_transaction_reports_its_block() {
+    assert_diagnostic_sites(
+        &[("src/main.mw", EMPTY_TRANSACTION)],
+        None,
+        &[("check.transaction_empty", "src/main.mw", "{}")],
+    );
+}
+
+#[test]
+fn a_refused_body_does_not_suppress_an_independent_empty_transaction() {
+    let source = format!("{REFUSED_BODY}{EMPTY_TRANSACTION}");
+    assert_diagnostic_sites(
+        &[("src/main.mw", &source)],
+        None,
+        &[
+            ("check.type", "src/main.mw", "true"),
+            ("check.transaction_empty", "src/main.mw", "{}"),
+        ],
+    );
+}
+
+const COUNTER_IDS: &[u8] = b"marrow ids v0\n\
+    machine-written by marrow; do not edit\n\
+    id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+    id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+    id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+    id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+    id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+    id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+    high-water 0\n\
+    end\n";
+
+const UNAVAILABLE_DURABLE_CALLEE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+fn readBroken(): int? {
+    const value = ^counters[1].value
+    return missing()
+}
+
+pub fn dependent(): int? {
+    transaction { return readBroken() }
+}
+"#;
+
+#[test]
+fn a_complete_durable_callee_keeps_its_transaction_nonempty() {
+    let source = UNAVAILABLE_DURABLE_CALLEE.replace("return missing()", "return value");
+    assert_diagnostic_sites(&[("src/main.mw", &source)], Some(COUNTER_IDS), &[]);
+}
+
+#[test]
+fn an_unavailable_durable_callee_does_not_prove_an_empty_transaction() {
+    assert_diagnostic_sites(
+        &[("src/main.mw", UNAVAILABLE_DURABLE_CALLEE)],
+        Some(COUNTER_IDS),
+        &[("check.type", "src/main.mw", "missing()")],
+    );
+}
+
+/// The unavailable callee cannot justify an empty-transaction diagnostic at its
+/// caller. The independent empty block still has a complete effect closure.
+#[test]
+fn an_unavailable_durable_callee_preserves_an_independent_empty_transaction() {
+    let source = format!("{UNAVAILABLE_DURABLE_CALLEE}{EMPTY_TRANSACTION}");
+    assert_diagnostic_sites(
+        &[("src/main.mw", &source)],
+        Some(COUNTER_IDS),
+        &[
+            ("check.type", "src/main.mw", "missing()"),
+            ("check.transaction_empty", "src/main.mw", "{}"),
+        ],
+    );
+}
+
+const CYCLIC_CALLEE: &str = "fn ping(): int { return pong() }\nfn pong(): int { return ping() }\npub fn dependent() { transaction { ping() } }\n";
+
+#[test]
+fn a_cycle_does_not_suppress_an_independent_empty_transaction() {
+    let source = format!("{CYCLIC_CALLEE}{EMPTY_TRANSACTION}");
+    assert_diagnostic_sites(
+        &[("src/main.mw", &source)],
+        None,
+        &[
+            (
+                "check.recursion",
+                "src/main.mw",
+                "fn ping(): int { return pong() }",
+            ),
+            (
+                "check.recursion",
+                "src/main.mw",
+                "fn pong(): int { return ping() }",
+            ),
+            ("check.transaction_empty", "src/main.mw", "{}"),
+        ],
+    );
+}
+
+#[test]
+fn a_cycle_and_refused_body_preserve_an_independent_empty_transaction() {
+    let source = format!("{REFUSED_BODY}{CYCLIC_CALLEE}{EMPTY_TRANSACTION}");
+    assert_diagnostic_sites(
+        &[("src/main.mw", &source)],
+        None,
+        &[
+            ("check.type", "src/main.mw", "true"),
+            (
+                "check.recursion",
+                "src/main.mw",
+                "fn ping(): int { return pong() }",
+            ),
+            (
+                "check.recursion",
+                "src/main.mw",
+                "fn pong(): int { return ping() }",
+            ),
+            ("check.transaction_empty", "src/main.mw", "{}"),
+        ],
+    );
 }

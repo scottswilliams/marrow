@@ -168,6 +168,12 @@ pub(crate) struct CallGraphCounts {
     pub(crate) graph_vertex_visits: usize,
     /// Direct-call edges examined by the cycle analysis.
     pub(crate) graph_edge_visits: usize,
+    /// Reserved vertices considered by the callee-closure sweep.
+    pub(crate) closure_vertex_visits: usize,
+    /// Call edges checked before a closure is decided.
+    pub(crate) closure_edge_visits: usize,
+    /// Peak simultaneous capacity of the SCC/order/eligibility vectors, in bytes.
+    pub(crate) graph_scratch_bytes: usize,
     /// Function rows classified by the three propagated semantic relations.
     pub(crate) propagation_visits: usize,
     /// Direct-call edges examined by the three propagated semantic relations.
@@ -206,7 +212,7 @@ pub(crate) struct CallGraphCounts {
 
 impl CallGraphCounts {
     pub(crate) fn total_edge_work(self) -> usize {
-        self.graph_edge_visits + self.propagation_edge_visits
+        self.graph_edge_visits + self.closure_edge_visits + self.propagation_edge_visits
     }
 }
 

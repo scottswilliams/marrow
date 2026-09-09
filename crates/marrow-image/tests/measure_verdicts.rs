@@ -1620,6 +1620,67 @@ fn an_out_of_range_span_with_a_body_past_the_ceiling_draws_the_span_reference() 
     );
 }
 
+#[test]
+fn vacant_functions_refuse_and_fill_order_does_not_change_image_order() {
+    fn definitions(txn: &mut DraftTxn<'_>) -> Vec<FunctionDef> {
+        let source = txn
+            .intern_string("src/main.mw")
+            .expect("valid fixture construction");
+        ["first", "middle", "last"]
+            .into_iter()
+            .map(|name| FunctionDef {
+                name: txn.intern_string(name).expect("valid fixture construction"),
+                source,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                code: vec![Instr::Return],
+                spans: Vec::new(),
+            })
+            .collect()
+    }
+    let mut control = ImageDraft::new();
+    let mut txn = admitted(&mut control);
+    for def in definitions(&mut txn) {
+        txn.add_function(def).expect("valid fixture construction");
+    }
+    txn.commit();
+    let expected = control
+        .encode()
+        .expect("the completed fixture encodes")
+        .bytes;
+    for missing in 0..3 {
+        let mut owner = ImageDraft::new();
+        let mut txn = admitted(&mut owner);
+        let defs = definitions(&mut txn);
+        let ids: Vec<_> = (0..3)
+            .map(|_| {
+                txn.reserve_function()
+                    .expect("a within-carrier reservation")
+            })
+            .collect();
+        for index in (0..3).rev().filter(|&index| index != missing) {
+            txn.fill_function(ids[index], defs[index].clone())
+                .expect("valid fixture construction");
+        }
+        txn.commit();
+        assert_eq!(owner.function_count(), 3);
+        assert!(owner.function_code(ids[missing]).is_none());
+        assert_eq!(
+            owner.encode().map(|_| ()),
+            Err(ImageBuildError::InvalidReference("vacant function"))
+        );
+        let mut txn = admitted(&mut owner);
+        txn.fill_function(ids[missing], defs[missing].clone())
+            .expect("valid fixture construction");
+        txn.commit();
+        assert_eq!(
+            owner.encode().expect("the completed fixture encodes").bytes,
+            expected
+        );
+    }
+}
+
 /// Flipped under the sanctioned panic-to-typed conversion, citing the
 /// pre-restructure panic pin this test carried: the raw offset lookup is now the
 /// SPANS coherence item's `InvalidReference("span instruction")` range check.

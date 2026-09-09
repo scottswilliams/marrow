@@ -97,11 +97,25 @@ dependent fills. Type consumers resolve written parameters before aliases and
 carry existing declaration refusals through scalar and value-type checks;
 they do not allocate expanded alias trees.
 
-Each completed function moves its instruction allocation into the image draft.
-The compiler retains the append-returned function identity and full source
-coordinates. After body settlement, transaction validation borrows the draft's
-instructions and checks that the coordinates cover exactly that sequence.
-Template proofs use the same append path and erase their additions on completion.
+The image draft reserves each function identity once. Accepted ordinary signatures,
+included test declarations and generic instances retain their actual `FuncId`;
+lowering moves each completed instruction allocation into that reserved slot.
+Failed bodies leave explicit vacancies. Template proofs use the same reserve/fill
+operations and restore their slots and fills on exit. The draft's existing coherence
+check refuses any vacancy before measurement or encoding. This does not change the
+image format or successful function order.
+
+The compiler retains full source coordinates and optional body facts at those same
+indices. After settlement, transaction validation borrows the draft's instructions
+and checks that the coordinates cover exactly that sequence. Iterative SCC analysis
+reports cycles over available bodies. One further callee-first sweep excludes missing
+or cyclic bodies and every transitive caller. Transaction and presence summaries and
+reports use that shared membership while retaining the full reserved index domain.
+Independent complete components remain diagnosable after an unrelated body refusal;
+that restricted order does not establish whole-program readiness. Ordinary generic
+body refusals leave queued work intact; resource and invariant failures still stop it.
+An ambient-transaction diagnostic still suppresses subsequent transaction-ownership
+checks for that drive to avoid cascading reports.
 
 The draft keeps a saturating charge of the bytes its retained bodies alone commit
 the image to (one byte per instruction plus one span row per span), snapshotted and
@@ -219,12 +233,11 @@ consume typed projections rather than recover meaning from source spellings,
 diagnostic prose, raw paths, or serialized messages. Add a missing fact to its
 upstream owner and publish it through the appropriate interface.
 
-Current code does not fully satisfy that rule. The compiler's
-[`FunctionRegistry`](../../crates/marrow-compile/src/lower/registry.rs) predicts
-image function indices, while the
-[`ImageDraft`](../../crates/marrow-image/src/draft.rs) assigns them as functions
-are added; the two depend on coordinated ordering. These overlapping decisions
-remain a simplification target.
+[`ImageDraft`](../../crates/marrow-image/src/draft.rs) owns function identity
+allocation. The compiler's
+[`FunctionRegistry`](../../crates/marrow-compile/src/lower/registry.rs) retains
+the reserved identities; lowering fills their slots, and semantic analyses use
+those same indices.
 
 Independent verification is a separate trust boundary: the verifier reconstructs
 types and demand from image bytes without consulting compiler state. Diagnostic

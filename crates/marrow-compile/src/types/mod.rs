@@ -49,7 +49,6 @@ pub(crate) use aliases::{AliasPresence, GlobalAliasTarget};
 mod build;
 mod decl_coords;
 mod function_index;
-pub(crate) use function_index::narrow_function_index;
 mod metadata;
 mod owner_txn;
 mod render;
@@ -598,8 +597,6 @@ pub(crate) enum GenericInvariant {
     /// and must agree about it; a wrong summary would steer a reader to a cause that
     /// is not the one their code hit.
     DeclarationIndexDrift,
-    /// A computed image function index does not fit the carrier the image spells.
-    FunctionIndexDomain,
 }
 
 impl From<DeclarationIndexDrift> for GenericInvariant {
@@ -972,7 +969,7 @@ enum TypeInstState {
 struct FnInst {
     template: usize,
     args: Vec<GArg>,
-    func: u16,
+    func: marrow_image::FuncId,
 }
 
 /// The source location a type instantiation is minted from, threaded through
@@ -1055,7 +1052,6 @@ struct Monomorph {
     /// does not carry the looked-up key is index/authority drift, reported as the
     /// typed coherence failure `MintIndexDrift` rather than silently trusted.
     type_index: HashMap<(usize, Vec<GArg>), usize>,
-    fn_base: u16,
     fn_insts: Vec<FnInst>,
     /// Lookup-only secondary index `(template, args) -> row in fn_insts`, with the
     /// same authority discipline and drift detection as `type_index`. `fn_insts`
@@ -1093,7 +1089,6 @@ impl Default for Monomorph {
         Self {
             type_insts: Vec::new(),
             type_index: HashMap::new(),
-            fn_base: 0,
             fn_insts: Vec::new(),
             fn_index: HashMap::new(),
             fn_queue: VecDeque::new(),
@@ -3655,7 +3650,6 @@ impl TypeRegistry {
             collections,
             fn_insts: generics.fn_insts.len(),
             fn_queue: generics.fn_queue.len(),
-            fn_base: generics.fn_base,
             build_invariant: generics.build_invariant,
             prior_argument_domain: generics.argument_domain,
             entry_records,
@@ -3719,7 +3713,6 @@ impl TypeRegistry {
         let Monomorph {
             type_insts,
             type_index: _,
-            fn_base,
             fn_insts,
             fn_index: _,
             fn_queue,
@@ -3737,7 +3730,6 @@ impl TypeRegistry {
             collections,
             fn_insts: fn_insts.len(),
             fn_queue: fn_queue.len(),
-            fn_base: *fn_base,
             build_invariant: *build_invariant,
             prior_argument_domain: *argument_domain,
             entry_records,
@@ -3760,7 +3752,6 @@ impl TypeRegistry {
             collections,
             fn_insts,
             fn_queue,
-            fn_base,
             build_invariant,
             prior_argument_domain,
             entry_records,
@@ -3781,7 +3772,6 @@ impl TypeRegistry {
                 }
             }
             generics.fn_queue.truncate(fn_queue);
-            generics.fn_base = fn_base;
             generics.fill_batch_start = None;
             generics.fill_rows.clear();
             generics.fill_stack.clear();

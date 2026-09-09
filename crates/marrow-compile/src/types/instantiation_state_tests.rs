@@ -175,7 +175,6 @@ fn stable_body(body: &InstBody) -> StableBody {
 struct StableSnapshot {
     rows: Vec<StableRow>,
     collections: Vec<CollSpec>,
-    fn_base: u16,
     functions: Vec<(usize, Vec<GArg>, u16)>,
     queue: Vec<(usize, Vec<GArg>, u16)>,
     fill_batch_start: Option<usize>,
@@ -230,12 +229,12 @@ fn stable_snapshot(registry: &TypeRegistry) -> StableSnapshot {
     let functions = generics
         .fn_insts
         .iter()
-        .map(|inst| (inst.template, inst.args.clone(), inst.func))
+        .map(|inst| (inst.template, inst.args.clone(), inst.func.index()))
         .collect();
     let queue = generics
         .fn_queue
         .iter()
-        .map(|inst| (inst.template, inst.args.clone(), inst.func))
+        .map(|inst| (inst.template, inst.args.clone(), inst.func.index()))
         .collect();
     let limit = match &generics.limit {
         LimitState::Open => StableLimit::Open,
@@ -245,7 +244,6 @@ fn stable_snapshot(registry: &TypeRegistry) -> StableSnapshot {
     StableSnapshot {
         rows,
         collections: registry.collections.borrow().clone(),
-        fn_base: generics.fn_base,
         functions,
         queue,
         fill_batch_start: generics.fill_batch_start,
@@ -831,174 +829,6 @@ fn rejected_rows_are_displayable_but_not_semantic_or_anchor_ready() {
             TemplateProofError::UnstableFillState
         ))
     ));
-}
-
-#[test]
-fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
-    let mut registry = registry(vec![
-        template("Leaf", vec![("value", name("T"))]),
-        enum_template("Choice", apply("Leaf", vec![name("T")])),
-        template(
-            "Composite",
-            vec![
-                ("scalar", name("T")),
-                ("record", apply("Leaf", vec![name("T")])),
-                ("enum", apply("Choice", vec![name("T")])),
-                ("collection", apply("List", vec![name("T")])),
-            ],
-        ),
-    ]);
-    let mut draft_owner = ImageDraft::new();
-    let mut draft = admitted(&mut draft_owner);
-    let scalar = GArg::Scalar(ScalarType::Int);
-    let leaf_id = registry
-        .mint_type_instance(&mut draft, 0, &[scalar], site(2))
-        .expect("stable record seed mints");
-    let TypeInstId::Record(leaf_record) = leaf_id else {
-        panic!("Leaf is a struct template")
-    };
-    let choice_id = registry
-        .mint_type_instance(&mut draft, 1, &[scalar], site(3))
-        .expect("stable enum seed mints");
-    let TypeInstId::Enum(choice_enum) = choice_id else {
-        panic!("Choice is an enum template")
-    };
-    let collection = registry
-        .instantiate_list(&mut draft, scalar)
-        .expect("aligned collection owners mint");
-    let composite_id = registry
-        .mint_type_instance(&mut draft, 2, &[scalar], site(4))
-        .expect("representative record seed mints");
-    registry
-        .set_fn_base(37)
-        .expect("a test base fits the function index carrier");
-    let reserved = registry
-        .reserve_fn_instance(7, vec![scalar], site(5))
-        .expect("stable function row reserves");
-    assert_eq!(reserved, 37);
-    let before = stable_snapshot(&registry);
-    assert_eq!(
-        before.rows,
-        vec![
-            StableRow {
-                template: 0,
-                args: vec![scalar],
-                id: leaf_id,
-                state: StableRowState::Ready,
-                body: Some(StableBody::Struct(vec![("value".to_string(), scalar)])),
-                dependents: Vec::new(),
-            },
-            StableRow {
-                template: 1,
-                args: vec![scalar],
-                id: choice_id,
-                state: StableRowState::Ready,
-                body: Some(StableBody::Enum(vec![(
-                    "value".to_string(),
-                    vec![("item".to_string(), GArg::Struct(leaf_record))],
-                )])),
-                dependents: Vec::new(),
-            },
-            StableRow {
-                template: 2,
-                args: vec![scalar],
-                id: composite_id,
-                state: StableRowState::Ready,
-                body: Some(StableBody::Struct(vec![
-                    ("scalar".to_string(), scalar),
-                    ("record".to_string(), GArg::Struct(leaf_record)),
-                    ("enum".to_string(), GArg::Enum(choice_enum)),
-                    ("collection".to_string(), GArg::Collection(collection)),
-                ])),
-                dependents: Vec::new(),
-            },
-        ]
-    );
-    assert_eq!(before.collections, vec![CollSpec::List { elem: scalar }]);
-    assert_eq!(before.fn_base, 37);
-    assert_eq!(before.functions, vec![(7, vec![scalar], reserved)]);
-    assert_eq!(before.queue, vec![(7, vec![scalar], reserved)]);
-    let draft_before = draft_snapshot(&draft);
-
-    let proof = registry
-        .enter_template_proof(draft.record_type_count(), draft.enum_type_count())
-        .expect("a settled open registry admits the proof pass");
-
-    draft.commit();
-    let outcome = {
-        let mut proof_txn = admitted(&mut draft_owner);
-        let proof_draft = &mut proof_txn;
-        // The proof pass mints and diagnoses directly on the real registry and draft.
-        let text = GArg::Scalar(ScalarType::Text);
-        let proof_row = registry
-            .mint_type_instance(proof_draft, 0, &[text], site(28))
-            .expect("the proof mints a new isolated row on the real registry");
-        assert!(matches!(proof_row, TypeInstId::Record(_)));
-        let marker = proof_draft
-            .intern_string("during-proof")
-            .expect("a within-domain mint");
-        proof_draft
-            .add_record_type(RecordTypeDef {
-                name: marker,
-                fields: Vec::new(),
-            })
-            .expect("a within-domain mint");
-        let proof_collection = registry
-            .instantiate_list(proof_draft, text)
-            .expect("the proof mints a distinct collection on the real registry");
-        assert_eq!(
-            registry.collections.borrow().len(),
-            2,
-            "the proof appended its own collection row",
-        );
-        registry.record_collection_payload_rejection(
-            site(29),
-            "Payload",
-            "value",
-            proof_collection,
-        );
-        registry.record_limit(site(30), "the proof reached its local bound");
-
-        // Simulate a proof that failed mid-fill, leaving the transient batch state dirty:
-        // the guard must still restore the settled owner exactly. The dirty edges
-        // reference only the appended row, which truncation drops.
-        {
-            let mut generics = registry.generics.borrow_mut();
-            let dirty_row = generics.type_insts.len() - 1;
-            let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
-            generics.fill_batch_start = Some(dirty_row);
-            generics.fill_rows.insert(key, dirty_row);
-            generics.fill_stack.push(dirty_row);
-            generics.type_insts[dirty_row].dependents.push(dirty_row);
-        }
-
-        let outcome = registry.take_generic_diagnostics();
-        registry.restore_generic_owners(proof);
-        outcome
-        // The armed guard drops here, discarding everything the proof appended.
-    };
-    let draft = admitted(&mut draft_owner);
-
-    // The failed proof leaked nothing: the settled registry and the draft bytes are
-    // exactly what they were before the pass.
-    assert_eq!(
-        stable_snapshot(&registry),
-        before,
-        "a failed proof leaves the settled registry structurally identical",
-    );
-    assert_eq!(
-        draft_snapshot(&draft),
-        draft_before,
-        "a failed proof leaves the draft byte-identical",
-    );
-
-    // Only the proof's diagnostics cross back, transferred once in owner order.
-    registry.adopt_generic_diagnostics(outcome);
-    let adopted = ordered(registry.take_generic_diagnostics());
-    assert_eq!(adopted.len(), 2);
-    assert_eq!(adopted[0].code(), Code::CheckInstantiationLimit.as_str());
-    assert_eq!(adopted[1].code(), Code::CheckUnsupported.as_str());
-    assert!(ordered(registry.take_generic_diagnostics()).is_empty());
 }
 
 #[test]

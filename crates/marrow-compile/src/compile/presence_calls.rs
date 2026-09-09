@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{AcyclicCallGraph, CompleteLoweredFunctionSet, DiagnosticCollector, LoweredFn};
+use super::{AcyclicCallGraph, DiagnosticCollector, LoweredFn, LoweredFunctionSet};
 use crate::durable::Family;
 use crate::lower::{PresenceObligation, requires_presence};
 #[cfg(test)]
@@ -51,12 +51,12 @@ struct Failure {
 /// Reject protected uses whose ordinary or crossed-loop interval contains an
 /// entry-erasing call. No function body or graph analysis is repeated here.
 pub(super) fn reject_unproven_uses(
-    lowered: &CompleteLoweredFunctionSet,
+    lowered: &LoweredFunctionSet,
     acyclic: &AcyclicCallGraph,
     diagnostics: &mut DiagnosticCollector,
 ) {
     let functions = lowered.functions();
-    if !functions.iter().any(|function| {
+    if !lowered.eligible(acyclic).any(|function| {
         function
             .presence_obligations
             .iter()
@@ -64,11 +64,11 @@ pub(super) fn reject_unproven_uses(
     }) {
         return;
     }
-    let erased: HashSet<&Family> = functions
-        .iter()
+    let erased: HashSet<&Family> = lowered
+        .eligible(acyclic)
         .flat_map(|function| &function.erased_families)
         .collect();
-    let (families, queries) = collect_queries(functions, &erased);
+    let (families, queries) = collect_queries(functions, acyclic, &erased);
     #[cfg(test)]
     bump_call_graph(|counts| {
         counts.presence_erased_families = counts.presence_erased_families.max(erased.len());
@@ -77,7 +77,7 @@ pub(super) fn reject_unproven_uses(
     if queries.is_empty() {
         return;
     }
-    let erases = collect_erases(functions, &families);
+    let erases = collect_erases(functions, acyclic, &families);
     let mut summary = vec![0u64; functions.len()];
     #[cfg(test)]
     bump_call_graph(|counts| {
@@ -110,8 +110,16 @@ pub(super) fn reject_unproven_uses(
                 + queries[query_cursor..].partition_point(|query| {
                     query.stripe() == stripe && query.function == function
                 });
+            #[expect(
+                clippy::expect_used,
+                reason = "collect_queries retains only bodies in the closed eligible component"
+            )]
+            let calls = &functions[function]
+                .as_ref()
+                .expect("queries retain eligible functions")
+                .callees;
             settle(
-                &functions[function].callees,
+                calls,
                 &summary,
                 &queries[query_cursor..end],
                 query_cursor,
@@ -125,12 +133,19 @@ pub(super) fn reject_unproven_uses(
 }
 
 fn collect_queries<'a>(
-    functions: &'a [LoweredFn],
+    functions: &'a [Option<LoweredFn>],
+    acyclic: &AcyclicCallGraph,
     erased: &HashSet<&Family>,
 ) -> (HashMap<&'a Family, usize>, Vec<Query<'a>>) {
     let mut families = HashMap::new();
     let mut queries = Vec::new();
     for (function, lowered) in functions.iter().enumerate() {
+        let Some(lowered) = lowered
+            .as_ref()
+            .filter(|_| acyclic.order().contains(function))
+        else {
+            continue;
+        };
         for (original, obligation) in lowered.presence_obligations.iter().enumerate() {
             if obligation.calls.is_empty() {
                 continue;
@@ -162,9 +177,19 @@ fn collect_queries<'a>(
     (families, queries)
 }
 
-fn collect_erases(functions: &[LoweredFn], families: &HashMap<&Family, usize>) -> Vec<Erase> {
+fn collect_erases(
+    functions: &[Option<LoweredFn>],
+    acyclic: &AcyclicCallGraph,
+    families: &HashMap<&Family, usize>,
+) -> Vec<Erase> {
     let mut erases = Vec::new();
     for (function, lowered) in functions.iter().enumerate() {
+        let Some(lowered) = lowered
+            .as_ref()
+            .filter(|_| acyclic.order().contains(function))
+        else {
+            continue;
+        };
         for family in &lowered.erased_families {
             if let Some(&ordinal) = families.get(family) {
                 erases.push(Erase {
@@ -179,16 +204,24 @@ fn collect_erases(functions: &[LoweredFn], families: &HashMap<&Family, usize>) -
     erases
 }
 
-fn propagate(functions: &[LoweredFn], acyclic: &AcyclicCallGraph, summary: &mut [u64]) {
+fn propagate(functions: &[Option<LoweredFn>], acyclic: &AcyclicCallGraph, summary: &mut [u64]) {
     for &function in acyclic.order().callee_before_caller() {
         #[cfg(test)]
         bump_call_graph(|counts| counts.presence_row_visits += 1);
         let mut word = summary[function];
-        for &callee in &functions[function].callees {
+        #[expect(
+            clippy::expect_used,
+            reason = "the graph order contains only present bodies with eligible callees"
+        )]
+        let calls = &functions[function]
+            .as_ref()
+            .expect("eligible functions have bodies")
+            .callees;
+        for &callee in calls {
             #[cfg(test)]
             bump_call_graph(|counts| counts.presence_edge_visits += 1);
-            // Diagnostic-only lowering may retain a reserved, undrained callee.
-            word |= summary.get(usize::from(callee)).copied().unwrap_or(0);
+            // Eligibility is closed over every direct callee.
+            word |= summary[usize::from(callee)];
         }
         summary[function] = word;
     }
@@ -263,7 +296,7 @@ fn settle(
 }
 
 fn report(
-    functions: &[LoweredFn],
+    functions: &[Option<LoweredFn>],
     queries: &[Query<'_>],
     mut failures: Vec<Failure>,
     diagnostics: &mut DiagnosticCollector,
@@ -277,9 +310,23 @@ fn report(
             continue;
         }
         previous = Some(key);
-        let function = &functions[query.function];
+        #[expect(
+            clippy::expect_used,
+            reason = "collect_queries retains only bodies in the closed eligible component"
+        )]
+        let function = functions[query.function]
+            .as_ref()
+            .expect("queries retain eligible functions");
         let callee = function.callees[failure.call];
-        let name = functions[usize::from(callee)].name.as_str();
+        #[expect(
+            clippy::expect_used,
+            reason = "eligibility is closed over every direct callee of the query function"
+        )]
+        let name = functions[usize::from(callee)]
+            .as_ref()
+            .expect("eligible functions have bodies")
+            .name
+            .as_str();
         diagnostics.push(requires_presence(
             &function.file,
             query.obligation.span,

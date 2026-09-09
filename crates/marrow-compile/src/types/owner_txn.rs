@@ -20,9 +20,6 @@ pub(super) struct RegistryInverse {
     pub(super) collections: usize,
     pub(super) fn_insts: usize,
     pub(super) fn_queue: usize,
-    /// The reserved image function base. It is ordinary registry state rather than
-    /// diagnostic custody, so a batch that moves it restores it.
-    pub(super) fn_base: u16,
     pub(super) build_invariant: Option<GenericInvariant>,
     pub(super) prior_argument_domain: ArgumentDomain,
     pub(super) entry_records: usize,

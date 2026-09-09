@@ -1,12 +1,6 @@
-//! The image function index: the one carrier every function ordinal narrows onto,
-//! and the generic-instance reservations that consume it.
-//!
-//! Five operations compute a function index — the declared signature's slot ordinal,
-//! the monomorphic slot count, the test-body count, the generic base those two sum
-//! to, and the base plus an instance row. Each accumulates in a carrier wider than
-//! the `u16` the image spells and narrows through [`narrow_function_index`] exactly
-//! where its value is consumed, so no producer ever holds a value it cannot
-//! represent and the whole family has one refusal.
+//! Generic function instances retain the identity reserved by the image draft.
+
+use marrow_image::{DraftTxn, FuncId};
 
 use super::{
     FnInst, GArg, GenericCacheInvariant, GenericInvariant, MAX_INSTANTIATIONS, MintSite,
@@ -16,36 +10,17 @@ use super::{
 #[cfg(test)]
 use super::bump_scaling;
 
-/// Narrow a computed function ordinal onto the carrier the image spells.
-///
-/// A value the carrier cannot hold is a fact about the compiler's own counting
-/// rather than about any one construct the source wrote, so it aborts at the
-/// invariant boundary with no span. This replaces the debug overflow and the release
-/// wrap the unwidened arithmetic reached at the first unrepresentable value; it adds
-/// no source diagnostic, moves no bound, and changes no function order, slot,
-/// signature, export, or lookup projection.
-pub(crate) fn narrow_function_index(wide: u64) -> Result<u16, GenericInvariant> {
-    u16::try_from(wide).map_err(|_| GenericInvariant::FunctionIndexDomain)
-}
-
 impl TypeRegistry {
-    /// Set the base image function index for generic function instantiations, once
-    /// every monomorphic function and test has consumed its index. The caller sums
-    /// the two counts wide; this is the boundary that narrows the sum.
-    pub(crate) fn set_fn_base(&mut self, base: u64) -> Result<(), GenericInvariant> {
-        self.generics.get_mut().fn_base = narrow_function_index(base)?;
-        Ok(())
-    }
-
     /// Reserve the image function index for `(fn template, args)`, minting and
     /// enqueuing a fresh instance on first request and reusing it thereafter. A shared
     /// bound refusal records the first coherent mint site and returns `Err(Limit)`.
     pub(crate) fn reserve_fn_instance(
         &mut self,
+        draft: &mut DraftTxn<'_>,
         template: usize,
         args: Vec<GArg>,
         site: MintSite<'_>,
-    ) -> Result<u16, ResolveError> {
+    ) -> Result<FuncId, ResolveError> {
         self.validate_type_arguments(&args)?;
         let mut generics = self.generics.borrow_mut();
         // Reservation-dedup reuse probe: a keyed lookup into the append-only secondary
@@ -74,8 +49,7 @@ impl TypeRegistry {
             return Err(ResolveRefusal::Limit.into());
         }
         let row = generics.fn_insts.len();
-        // Summed wide and narrowed here, where the instance takes it.
-        let func = narrow_function_index(u64::from(generics.fn_base) + row as u64)?;
+        let func = draft.reserve_function()?;
         let inst = FnInst {
             template,
             args,
@@ -109,7 +83,7 @@ impl TypeRegistry {
     /// inverse that captures a length can undo the batch's appends, but it cannot put
     /// back a front entry the driver removed before the batch was even admitted, and
     /// reinstating one would mean an allocating call on the restore path.
-    pub(crate) fn peek_fn_pending(&self) -> Option<(usize, Vec<GArg>, u16)> {
+    pub(crate) fn peek_fn_pending(&self) -> Option<(usize, Vec<GArg>, FuncId)> {
         self.generics
             .borrow()
             .fn_queue
@@ -123,27 +97,5 @@ impl TypeRegistry {
     /// still the one that was lowered.
     pub(crate) fn consume_fn_pending(&mut self) {
         self.generics.get_mut().fn_queue.pop_front();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The generic base is the last index a declared body took plus one; a project
-    /// whose monomorphic functions and tests together fill the carrier leaves no
-    /// index for an instance, and the narrowing says so instead of wrapping.
-    #[test]
-    fn the_generic_base_admits_the_last_representable_index_and_refuses_one_past_it() {
-        assert_eq!(narrow_function_index(u64::from(u16::MAX)), Ok(u16::MAX));
-        assert_eq!(
-            narrow_function_index(u64::from(u16::MAX) + 1),
-            Err(GenericInvariant::FunctionIndexDomain)
-        );
-        assert_eq!(
-            narrow_function_index(u64::from(u16::MAX) + 2),
-            Err(GenericInvariant::FunctionIndexDomain),
-            "the refusal does not alias slot one"
-        );
     }
 }

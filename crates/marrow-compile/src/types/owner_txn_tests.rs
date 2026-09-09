@@ -111,18 +111,8 @@ fn an_unwind_through_an_armed_generic_batch_restores_both_owners() {
     batch.commit();
 }
 
-/// The three-arm template-proof preservation law over nonempty legacy function owners.
-///
-/// A proof runs directly on the live registry and draft, and until `IMGFUNC01` takes
-/// authority the composite guard also carries preservation-only coverage of the legacy
-/// `fn_insts`, `fn_index`, and `fn_queue` owners, the recorded build fault, and the
-/// throwaway image bytes the proof emits. All three ways out of a proof — the ordinary
-/// scope exit, an early return carrying a lowering error, and an unwind — restore every
-/// one of those owners to exactly the state the proof was admitted over.
-///
-/// Prepopulating the function owners is the point: an inverse that restored only the
-/// type and collection owners would pass an empty-`fn_*` fixture and lose a reserved
-/// image function index here.
+/// A template proof restores the preexisting reservations, cache, queue and image
+/// on ordinary return, error and unwind, including both prefix and suffix fills.
 #[test]
 fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unwind() {
     /// How the proof body leaves its scope.
@@ -150,17 +140,15 @@ fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unw
                 .expect("the settled seed collection mints");
             seed.commit();
         }
-        // The legacy function owners the proof must not disturb: a reservation that
-        // occupies a real image function index, its lockstep key, and its queue entry.
-        records
-            .set_fn_base(37)
-            .expect("a test base fits the function index carrier");
-        assert_eq!(
-            records
-                .reserve_fn_instance(7, vec![scalar], site(5))
-                .expect("the stable function row reserves"),
-            37,
-        );
+        {
+            let mut seed = admitted(&mut owner);
+            seed_function_prefix(&mut seed, 37);
+            let func = records
+                .reserve_fn_instance(&mut seed, 7, vec![scalar], site(5))
+                .expect("stable reservation");
+            assert_eq!(func.index(), 37);
+            seed.commit();
+        }
         let before = stable_snapshot(&records);
         assert_eq!(
             before.functions.len(),
@@ -169,7 +157,7 @@ fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unw
         );
         assert_eq!(before.queue.len(), 1, "the fixture seeded a queue entry");
         assert!(!before.fn_index.is_empty(), "the fixture seeded its key");
-        let draft_before = draft_snapshot(&owner);
+        let draft_before = pending_function_snapshot(&mut owner, &records);
 
         /// Everything a proof pass appends: isolated instantiations against the
         /// abstract domain plus a throwaway image function.
@@ -182,9 +170,16 @@ fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unw
             registry
                 .instantiate_list(txn, text)
                 .expect("the proof mints its own isolated collection");
-            registry
-                .reserve_fn_instance(9, vec![scalar], site(29))
+            let prefix = registry.generics.borrow().fn_insts[0].func;
+            let prefix_def = test_function_definition(txn, "proof-prefix");
+            txn.fill_function(prefix, prefix_def)
+                .expect("the proof fills the reserved prefix");
+            let func = registry
+                .reserve_fn_instance(txn, 9, vec![scalar], site(29))
                 .expect("the proof reserves its own throwaway function row");
+            let def = test_function_definition(txn, "throwaway");
+            txn.fill_function(func, def)
+                .expect("the proof fills its own function slot");
             let name = txn
                 .intern_string("throwaway")
                 .expect("a within-domain mint");
@@ -237,7 +232,7 @@ fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unw
             "{exit:?}: the proof left every registry owner exactly as it found it",
         );
         assert_eq!(
-            draft_snapshot(&owner),
+            pending_function_snapshot(&mut owner, &records),
             draft_before,
             "{exit:?}: the throwaway image bytes were restored exactly",
         );
@@ -283,9 +278,9 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
         Failure {
             owner: "function rows, function index, and reservation queue",
             touch: |batch| {
-                let (registry, _) = batch.parts();
+                let (registry, draft) = batch.parts();
                 registry
-                    .reserve_fn_instance(9, vec![GArg::Scalar(ScalarType::Text)], site(12))
+                    .reserve_fn_instance(draft, 9, vec![GArg::Scalar(ScalarType::Text)], site(12))
                     .expect("the batch reserves a fresh function row");
             },
         },
@@ -339,14 +334,16 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
                 .expect("the settled seed collection mints");
             seed.commit();
         }
-        records
-            .set_fn_base(37)
-            .expect("a test base fits the function index carrier");
-        records
-            .reserve_fn_instance(7, vec![scalar], site(5))
-            .expect("the settled seed function row reserves");
+        {
+            let mut seed = admitted(&mut owner);
+            seed_function_prefix(&mut seed, 37);
+            records
+                .reserve_fn_instance(&mut seed, 7, vec![scalar], site(5))
+                .expect("stable reservation");
+            seed.commit();
+        }
         let before = stable_snapshot(&records);
-        let draft_before = draft_snapshot(&owner);
+        let draft_before = pending_function_snapshot(&mut owner, &records);
 
         {
             let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
@@ -368,7 +365,7 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
             failure.owner,
         );
         assert_eq!(
-            draft_snapshot(&owner),
+            pending_function_snapshot(&mut owner, &records),
             draft_before,
             "{}: the draft returned to its admitted bytes",
             failure.owner,
@@ -376,40 +373,11 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
     }
 }
 
-/// The three registry owners an abandoned batch previously kept: the reserved image
-/// function base, the lazily built metadata row directory, and the reservation queue's
-/// front entry.
-///
-/// Each is asserted as an artifact — the exact base, the directory's presence, the exact
-/// queue contents — and each case first shows the owner changing inside the batch, so no
-/// arm can pass by never reaching its owner.
+/// Abandoning a batch restores a newly built metadata directory and retains the
+/// pending queue front while removing the batch's appended reservations.
 #[test]
-fn an_abandoned_batch_restores_the_function_base_the_metadata_cache_and_the_queue_front() {
+fn an_abandoned_batch_restores_the_metadata_cache_and_the_queue_front() {
     let scalar = GArg::Scalar(ScalarType::Int);
-
-    // The reserved function base is ordinary registry state, so a batch that moves it and
-    // is abandoned leaves the base admission captured.
-    {
-        let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
-        let mut owner = ImageDraft::new();
-        records
-            .set_fn_base(37)
-            .expect("a test base fits the function index carrier");
-        {
-            let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
-                .expect("a settled registry admits an ordinary batch");
-            let (registry, _) = batch.parts();
-            registry
-                .set_fn_base(99)
-                .expect("a test base fits the function index carrier");
-            assert_eq!(
-                registry.generics.borrow().fn_base,
-                99,
-                "the case reached the function base before the abort",
-            );
-        }
-        assert_eq!(records.generics.borrow().fn_base, 37);
-    }
 
     // The metadata row directory is a cache the registry may not hold at all. Rewinding
     // an extant directory is not the inverse of building the first one, so a batch that
@@ -445,11 +413,18 @@ fn an_abandoned_batch_restores_the_function_base_the_metadata_cache_and_the_queu
     {
         let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
         let mut owner = ImageDraft::new();
-        records
-            .reserve_fn_instance(7, vec![scalar], site(5))
-            .expect("the settled seed function row reserves");
+        {
+            let mut seed = admitted(&mut owner);
+            records
+                .reserve_fn_instance(&mut seed, 7, vec![scalar], site(5))
+                .expect("the seed reservation");
+            seed.commit();
+        }
         let front = records.peek_fn_pending().expect("the seed entry is queued");
-        assert_eq!(front, (7, vec![scalar], 0));
+        assert_eq!(
+            (front.0, front.1.clone(), front.2.index()),
+            (7, vec![scalar], 0)
+        );
         let queued_before: Vec<_> = records
             .generics
             .borrow()
@@ -461,9 +436,9 @@ fn an_abandoned_batch_restores_the_function_base_the_metadata_cache_and_the_queu
         {
             let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
                 .expect("a settled registry admits an ordinary batch");
-            let (registry, _) = batch.parts();
+            let (registry, draft) = batch.parts();
             registry
-                .reserve_fn_instance(9, vec![GArg::Scalar(ScalarType::Text)], site(12))
+                .reserve_fn_instance(draft, 9, vec![GArg::Scalar(ScalarType::Text)], site(12))
                 .expect("the batch reserves a further instance");
             assert_eq!(
                 registry.generics.borrow().fn_queue.len(),
@@ -519,4 +494,215 @@ fn an_abandoned_batch_leaves_the_diagnostic_owners_to_their_own_custody() {
         matches!(records.generics.borrow().limit, LimitState::Pending(_)),
         "the recorded limit stays with the diagnostic substrate across an abandoned batch",
     );
+}
+
+/// Use real filled slots when a test needs a nonzero function coordinate.
+fn seed_function_prefix(draft: &mut DraftTxn<'_>, count: usize) {
+    for _ in 0..count {
+        let def = test_function_definition(draft, "prefix");
+        draft.add_function(def).expect("a complete prefix slot");
+    }
+}
+
+fn test_function_definition(draft: &mut DraftTxn<'_>, name: &str) -> marrow_image::FunctionDef {
+    marrow_image::FunctionDef {
+        name: draft.intern_string(name).expect("small function name"),
+        source: draft
+            .intern_string("src/main.mw")
+            .expect("small source name"),
+        params: Vec::new(),
+        ret: marrow_image::ImageType::Unit,
+        local_count: 0,
+        code: vec![marrow_image::Instr::Return],
+        spans: Vec::new(),
+    }
+}
+
+/// Observe the actual reserved domain and require each pending body to be vacant.
+/// Temporarily complete every known reservation to compare complete image bytes;
+/// an extra vacancy fails encoding, and an extra filled row changes those bytes.
+/// The armed transaction restores the original vacancies after the observation.
+fn pending_function_snapshot(
+    owner: &mut ImageDraft,
+    registry: &TypeRegistry,
+) -> (usize, (Vec<u8>, marrow_image::ImageId)) {
+    let count = owner.function_count();
+    let mut txn = admitted(owner);
+    for inst in &registry.generics.borrow().fn_insts {
+        assert!(
+            txn.function_code(inst.func).is_none(),
+            "the pending body must remain vacant"
+        );
+        let def = test_function_definition(&mut txn, "pending");
+        txn.fill_function(inst.func, def)
+            .expect("each retained reservation fills exactly once");
+    }
+    (count, draft_snapshot(&txn))
+}
+
+#[test]
+fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
+    let mut registry = registry(vec![
+        template("Leaf", vec![("value", name("T"))]),
+        enum_template("Choice", apply("Leaf", vec![name("T")])),
+        template(
+            "Composite",
+            vec![
+                ("scalar", name("T")),
+                ("record", apply("Leaf", vec![name("T")])),
+                ("enum", apply("Choice", vec![name("T")])),
+                ("collection", apply("List", vec![name("T")])),
+            ],
+        ),
+    ]);
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let scalar = GArg::Scalar(ScalarType::Int);
+    let leaf_id = registry
+        .mint_type_instance(&mut draft, 0, &[scalar], site(2))
+        .expect("stable record seed mints");
+    let TypeInstId::Record(leaf_record) = leaf_id else {
+        panic!("Leaf is a struct template")
+    };
+    let choice_id = registry
+        .mint_type_instance(&mut draft, 1, &[scalar], site(3))
+        .expect("stable enum seed mints");
+    let TypeInstId::Enum(choice_enum) = choice_id else {
+        panic!("Choice is an enum template")
+    };
+    let collection = registry
+        .instantiate_list(&mut draft, scalar)
+        .expect("aligned collection owners mint");
+    let composite_id = registry
+        .mint_type_instance(&mut draft, 2, &[scalar], site(4))
+        .expect("representative record seed mints");
+    seed_function_prefix(&mut draft, 37);
+    let reserved = registry
+        .reserve_fn_instance(&mut draft, 7, vec![scalar], site(5))
+        .expect("stable function row reserves");
+    assert_eq!(reserved.index(), 37);
+    let before = stable_snapshot(&registry);
+    assert_eq!(
+        before.rows,
+        vec![
+            StableRow {
+                template: 0,
+                args: vec![scalar],
+                id: leaf_id,
+                state: StableRowState::Ready,
+                body: Some(StableBody::Struct(vec![("value".to_string(), scalar)])),
+                dependents: Vec::new(),
+            },
+            StableRow {
+                template: 1,
+                args: vec![scalar],
+                id: choice_id,
+                state: StableRowState::Ready,
+                body: Some(StableBody::Enum(vec![(
+                    "value".to_string(),
+                    vec![("item".to_string(), GArg::Struct(leaf_record))],
+                )])),
+                dependents: Vec::new(),
+            },
+            StableRow {
+                template: 2,
+                args: vec![scalar],
+                id: composite_id,
+                state: StableRowState::Ready,
+                body: Some(StableBody::Struct(vec![
+                    ("scalar".to_string(), scalar),
+                    ("record".to_string(), GArg::Struct(leaf_record)),
+                    ("enum".to_string(), GArg::Enum(choice_enum)),
+                    ("collection".to_string(), GArg::Collection(collection)),
+                ])),
+                dependents: Vec::new(),
+            },
+        ]
+    );
+    assert_eq!(before.collections, vec![CollSpec::List { elem: scalar }]);
+    assert_eq!(before.functions, vec![(7, vec![scalar], reserved.index())]);
+    assert_eq!(before.queue, vec![(7, vec![scalar], reserved.index())]);
+    draft.commit();
+    let draft_before = pending_function_snapshot(&mut draft_owner, &registry);
+
+    let proof = registry
+        .enter_template_proof(
+            draft_owner.record_type_count(),
+            draft_owner.enum_type_count(),
+        )
+        .expect("a settled open registry admits the proof pass");
+
+    let outcome = {
+        let mut proof_txn = admitted(&mut draft_owner);
+        let proof_draft = &mut proof_txn;
+        // The proof pass mints and diagnoses directly on the real registry and draft.
+        let text = GArg::Scalar(ScalarType::Text);
+        let proof_row = registry
+            .mint_type_instance(proof_draft, 0, &[text], site(28))
+            .expect("the proof mints a new isolated row on the real registry");
+        assert!(matches!(proof_row, TypeInstId::Record(_)));
+        let marker = proof_draft
+            .intern_string("during-proof")
+            .expect("a within-domain mint");
+        proof_draft
+            .add_record_type(RecordTypeDef {
+                name: marker,
+                fields: Vec::new(),
+            })
+            .expect("a within-domain mint");
+        let proof_collection = registry
+            .instantiate_list(proof_draft, text)
+            .expect("the proof mints a distinct collection on the real registry");
+        assert_eq!(
+            registry.collections.borrow().len(),
+            2,
+            "the proof appended its own collection row",
+        );
+        registry.record_collection_payload_rejection(
+            site(29),
+            "Payload",
+            "value",
+            proof_collection,
+        );
+        registry.record_limit(site(30), "the proof reached its local bound");
+
+        // Simulate a proof that failed mid-fill, leaving the transient batch state dirty:
+        // the guard must still restore the settled owner exactly. The dirty edges
+        // reference only the appended row, which truncation drops.
+        {
+            let mut generics = registry.generics.borrow_mut();
+            let dirty_row = generics.type_insts.len() - 1;
+            let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
+            generics.fill_batch_start = Some(dirty_row);
+            generics.fill_rows.insert(key, dirty_row);
+            generics.fill_stack.push(dirty_row);
+            generics.type_insts[dirty_row].dependents.push(dirty_row);
+        }
+
+        let outcome = registry.take_generic_diagnostics();
+        registry.restore_generic_owners(proof);
+        outcome
+        // The armed guard drops here, discarding everything the proof appended.
+    };
+
+    // The failed proof leaked nothing: the settled registry and the draft bytes are
+    // exactly what they were before the pass.
+    assert_eq!(
+        stable_snapshot(&registry),
+        before,
+        "a failed proof leaves the settled registry structurally identical",
+    );
+    assert_eq!(
+        pending_function_snapshot(&mut draft_owner, &registry),
+        draft_before,
+        "a failed proof leaves the draft byte-identical",
+    );
+
+    // Only the proof's diagnostics cross back, transferred once in owner order.
+    registry.adopt_generic_diagnostics(outcome);
+    let adopted = ordered(registry.take_generic_diagnostics());
+    assert_eq!(adopted.len(), 2);
+    assert_eq!(adopted[0].code(), Code::CheckInstantiationLimit.as_str());
+    assert_eq!(adopted[1].code(), Code::CheckUnsupported.as_str());
+    assert!(ordered(registry.take_generic_diagnostics()).is_empty());
 }

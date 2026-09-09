@@ -43,6 +43,8 @@ fn expected_ints(values: &[i64]) -> (Vec<u8>, marrow_image::ImageId) {
     for value in values {
         draft.intern_int(*value).expect("a within-domain mint");
     }
+    let func = draft.reserve_function().expect("one control reservation");
+    fill_refusal_sentinel(&mut draft, func);
     draft_fingerprint(&draft)
 }
 
@@ -93,6 +95,9 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
+    let func = draft
+        .reserve_function()
+        .expect("the probe reserves its body slot");
     let mut lowerer = lowerer(
         &mut draft,
         &mut records,
@@ -107,7 +112,8 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let result = lowerer.lower_interpolation(parts, *span);
     let code = lowerer.code.clone();
     let local_count = lowerer.locals.len();
-    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish(func, "probe", Vec::new(), ImageType::Unit);
+    fill_refusal_sentinel(&mut draft, func);
 
     assert_eq!(result, Err(LoweringFailure::Recoverable));
     assert!(diagnostics.is_empty());
@@ -141,6 +147,9 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
+    let func = draft
+        .reserve_function()
+        .expect("the probe reserves its body slot");
     let mut lowerer = lowerer(
         &mut draft,
         &mut records,
@@ -156,7 +165,8 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let code = lowerer.code.clone();
     let local_count = lowerer.locals.len();
     let slot_count = lowerer.slot_count;
-    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish(func, "probe", Vec::new(), ImageType::Unit);
+    fill_refusal_sentinel(&mut draft, func);
 
     assert_eq!(flow, Ok(Flow::Rejected));
     assert!(diagnostics.is_empty());
@@ -199,6 +209,9 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
+    let func = draft
+        .reserve_function()
+        .expect("the probe reserves its body slot");
     let mut lowerer = lowerer(
         &mut draft,
         &mut records,
@@ -222,7 +235,8 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
 
     let flow = lowerer.lower_statement(statement);
     let code = lowerer.code.clone();
-    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish(func, "probe", Vec::new(), ImageType::Unit);
+    fill_refusal_sentinel(&mut draft, func);
 
     assert_eq!(flow, Err(LoweringFailure::Recoverable));
     assert!(diagnostics.is_empty());
@@ -268,6 +282,9 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
+    let func = draft
+        .reserve_function()
+        .expect("the probe reserves its body slot");
     let mut lowerer = lowerer(
         &mut draft,
         &mut records,
@@ -281,7 +298,8 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
 
     let flow = lowerer.lower_block(&function.body);
     let code = lowerer.code.clone();
-    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish(func, "probe", Vec::new(), ImageType::Unit);
+    fill_refusal_sentinel(&mut draft, func);
 
     assert_eq!(flow, Ok(Flow::Rejected));
     assert!(diagnostics.is_empty());
@@ -301,7 +319,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     assert_eq!(draft_fingerprint(&draft), expected_ints(&[1]));
 }
 
-fn built_registry_with_generic_struct() -> (TypeRegistry, DraftTxn<'static>, usize) {
+fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
     let parsed = parse_source("struct Box<T> {\n    value: T\n}\n");
     assert!(!parsed.has_errors());
     let declaration = parsed
@@ -318,7 +336,7 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, DraftTxn<'static>, usi
         crate::test_file_identity("src/main.mw"),
         declaration,
     )];
-    let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+    let mut draft_owner = ImageDraft::new();
     let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
         .begin_transaction(savepoint)
@@ -339,11 +357,12 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, DraftTxn<'static>, usi
     let template = registry
         .type_template_by_name("Box")
         .expect("Box template is registered");
-    (registry, draft, template)
+    draft.commit();
+    (registry, draft_owner, template)
 }
 
-fn built_reserved_registry() -> (TypeRegistry, DraftTxn<'static>) {
-    let draft_owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
+fn built_reserved_registry() -> (TypeRegistry, ImageDraft) {
+    let mut draft_owner = ImageDraft::new();
     let savepoint = draft_owner.savepoint();
     let mut draft = draft_owner
         .begin_transaction(savepoint)
@@ -361,21 +380,27 @@ fn built_reserved_registry() -> (TypeRegistry, DraftTxn<'static>) {
     )
     .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
-    (registry, draft)
+    draft.commit();
+    (registry, draft_owner)
 }
 
 #[test]
 fn generic_struct_constructor_transfers_the_registry_witness_error() {
-    let (mut records, mut draft) = built_reserved_registry();
+    let (mut records, mut draft_owner) = built_reserved_registry();
     let template = records
         .type_template_by_name("Option")
         .expect("reserved Option template exists");
-    let draft_before = draft_fingerprint(&draft);
+    let control = refusal_control(&mut draft_owner);
+    let draft_before = (control.bytes, control.image_id);
+    let mut draft = admitted(&mut draft_owner);
     let durable = DurableRegistry::empty(DeclarationBudget::default());
     let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
+    let func = draft
+        .reserve_function()
+        .expect("the probe reserves its body slot");
     let mut lowerer = lowerer(
         &mut draft,
         &mut records,
@@ -392,7 +417,8 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
             == Err(LoweringFailure::Recoverable)
     );
     let code = lowerer.code.clone();
-    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish(func, "probe", Vec::new(), ImageType::Unit);
+    fill_refusal_sentinel(&mut draft, func);
 
     assert!(matches!(
         outcome,
@@ -409,13 +435,18 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
 
 #[test]
 fn generic_enum_constructor_transfers_the_registry_witness_error() {
-    let (mut records, mut draft, template) = built_registry_with_generic_struct();
-    let draft_before = draft_fingerprint(&draft);
+    let (mut records, mut draft_owner, template) = built_registry_with_generic_struct();
+    let control = refusal_control(&mut draft_owner);
+    let draft_before = (control.bytes, control.image_id);
+    let mut draft = admitted(&mut draft_owner);
     let durable = DurableRegistry::empty(DeclarationBudget::default());
     let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
+    let func = draft
+        .reserve_function()
+        .expect("the probe reserves its body slot");
     let mut lowerer = lowerer(
         &mut draft,
         &mut records,
@@ -432,7 +463,8 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
             == Err(LoweringFailure::Recoverable)
     );
     let code = lowerer.code.clone();
-    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish(func, "probe", Vec::new(), ImageType::Unit);
+    fill_refusal_sentinel(&mut draft, func);
 
     assert!(matches!(
         outcome,

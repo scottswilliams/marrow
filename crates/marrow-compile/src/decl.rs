@@ -836,22 +836,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             })
     }
 
-    /// Every accepted occurrence in source order, including a repeat of a key an
-    /// earlier occurrence already answers.
-    ///
-    /// The function table is the one namespace that needs this: a repeated function
-    /// name is reported by its own duplicate check and still lowers a body, so the
-    /// image slot count follows the occurrences the source wrote rather than the
-    /// names that survived. Every other namespace reads [`Self::accepted`].
-    pub(crate) fn accepted_occurrences(&self) -> impl Iterator<Item = (&K, &T)> {
-        self.occurrences
-            .iter()
-            .filter_map(|(key, occurrence)| match occurrence {
-                DeclarationOccurrence::Accepted(value) => Some((key, value)),
-                DeclarationOccurrence::Refused(_) => None,
-            })
-    }
-
     /// The accepted declarations in source order, one per key, and only where the
     /// key's first occurrence is that acceptance: exactly the occurrences
     /// [`Self::lookup`] answers with, so what a namespace builds from this iterator
@@ -862,8 +846,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// the ledger, which is what keeps the ledger the single authority for which
     /// declarations survived.
     ///
-    /// A namespace whose *occurrences* take slots rather than its keys reads
-    /// [`Self::accepted_occurrences`] instead.
     pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
         self.occurrences
             .iter()

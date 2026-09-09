@@ -131,7 +131,6 @@ struct RowSnapshot {
 struct OwnerSnapshot {
     rows: Vec<RowSnapshot>,
     collections: Vec<CollSpec>,
-    fn_base: u16,
     functions: Vec<(usize, Vec<GArg>, u16)>,
     queue: Vec<(usize, Vec<GArg>, u16)>,
     batch_start: Option<usize>,
@@ -172,16 +171,15 @@ fn owner_snapshot(registry: &TypeRegistry) -> OwnerSnapshot {
             })
             .collect(),
         collections: registry.collections.borrow().clone(),
-        fn_base: generics.fn_base,
         functions: generics
             .fn_insts
             .iter()
-            .map(|inst| (inst.template, inst.args.clone(), inst.func))
+            .map(|inst| (inst.template, inst.args.clone(), inst.func.index()))
             .collect(),
         queue: generics
             .fn_queue
             .iter()
-            .map(|inst| (inst.template, inst.args.clone(), inst.func))
+            .map(|inst| (inst.template, inst.args.clone(), inst.func.index()))
             .collect(),
         batch_start: generics.fill_batch_start,
         fill_rows: generics
@@ -1664,7 +1662,6 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             23
         }
         GenericInvariant::DeclarationIndexDrift => 19,
-        GenericInvariant::FunctionIndexDomain => 21,
         GenericInvariant::DurableConstructionRefused => 20,
         GenericInvariant::ReadyBodyShapeMismatch(id) => {
             let _ = id;

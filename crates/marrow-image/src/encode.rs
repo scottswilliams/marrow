@@ -356,7 +356,9 @@ impl ImageDraft {
         push_u16(sink, wire_len(self.site_row_count()));
         self.write_site_rows(sink)
     }
+}
 
+impl crate::measure::CoherentDraft<'_> {
     pub(crate) fn encode_functions<S: ImageByteSink>(
         &self,
         sink: &mut SectionSink<'_, S>,
@@ -385,7 +387,9 @@ impl ImageDraft {
         }
         Ok(per_fn)
     }
+}
 
+impl ImageDraft {
     /// Encode the EXPORTS table: a count, then each `32-byte ExportId ‖ u16 func`
     /// entry, iterating the base rows in the order `order` states — strictly ascending
     /// id order under the canonical permutation. The id is the only export key carried;
@@ -427,7 +431,9 @@ impl ImageDraft {
             push_u16(sink, entry.func());
         }
     }
+}
 
+impl crate::measure::CoherentDraft<'_> {
     /// Encode the SPANS section: per function in table order, a `u16` span count then
     /// that many `u32(offset) ‖ u32(line) ‖ u32(column)` rows.
     ///
@@ -451,7 +457,7 @@ impl ImageDraft {
             "the image ceiling must refuse a span table before its count outgrows the u16 prefix",
         );
 
-        for (function, layout) in self.functions().iter().zip(per_fn) {
+        for (function, layout) in self.functions().zip(per_fn) {
             push_u16(sink, function.spans.len() as u16);
             for span in &function.spans {
                 let offset = layout.offsets[span.instr_index as usize];
@@ -1247,6 +1253,10 @@ mod counted_equals_emitted {
             .expect("the fixture fits")
     }
 
+    fn coherent(draft: &ImageDraft) -> crate::measure::CoherentDraft<'_> {
+        crate::measure::LegacyV0MeasureCore::coherence(draft).expect("the fixture is coherent")
+    }
+
     /// The canonical permutations and their inverse maps, exactly as `encode` builds
     /// them.
     fn canonical(draft: &ImageDraft) -> (Vec<usize>, Vec<u16>, Vec<usize>, Vec<u16>) {
@@ -1359,7 +1369,7 @@ mod counted_equals_emitted {
             let (_, str_map, _, const_map) = canonical(&draft);
             let plan = measured_plan(&draft);
             let mut emitted = Vec::new();
-            draft
+            coherent(&draft)
                 .encode_functions(
                     &mut SectionSink::over(&mut emitted),
                     &StringRemap::new(&str_map),
@@ -1368,7 +1378,7 @@ mod counted_equals_emitted {
                 )
                 .expect("the fixture's code encodes");
             let mut counted = crate::measure::CappedImageCount::default();
-            crate::measure::count_functions(&draft, &mut counted);
+            crate::measure::count_functions(&coherent(&draft), &mut counted);
             assert_eq!(counted.total(), emitted.len());
         }
     }
@@ -1396,7 +1406,7 @@ mod counted_equals_emitted {
         for draft in fixtures() {
             let (_, str_map, _, const_map) = canonical(&draft);
             let plan = measured_plan(&draft);
-            let per_fn: Vec<CodeLayout> = draft
+            let per_fn: Vec<CodeLayout> = coherent(&draft)
                 .encode_functions(
                     &mut SectionSink::over(&mut CountingSink::default()),
                     &StringRemap::new(&str_map),
@@ -1405,9 +1415,9 @@ mod counted_equals_emitted {
                 )
                 .expect("the fixture's code lays out");
             let mut emitted = Vec::new();
-            draft.encode_spans(&mut SectionSink::over(&mut emitted), &per_fn);
+            coherent(&draft).encode_spans(&mut SectionSink::over(&mut emitted), &per_fn);
             let mut counted = crate::measure::CappedImageCount::default();
-            crate::measure::count_spans(&draft, &mut counted);
+            crate::measure::count_spans(&coherent(&draft), &mut counted);
             assert_eq!(counted.total(), emitted.len());
         }
     }
@@ -1495,7 +1505,7 @@ mod counted_equals_emitted {
         let (_, str_map, _, const_map) = canonical(&draft);
         let plan = measured_plan(&draft);
         let mut counted = CountingSink::default();
-        let per_fn = draft
+        let per_fn = coherent(&draft)
             .encode_functions(
                 &mut SectionSink::over(&mut counted),
                 &StringRemap::new(&str_map),

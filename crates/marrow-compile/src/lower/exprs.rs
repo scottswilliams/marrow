@@ -1265,7 +1265,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         match same_module {
             Binding::Accepted(sig) => {
                 let (index, params, ret, target) = (
-                    sig.index,
+                    sig.func.index(),
                     sig.params.clone(),
                     sig.ret,
                     sig.definition_target(),
@@ -1353,7 +1353,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         match resolved {
             CallResolution::Found(sig) => {
                 let (index, params, ret, target) = (
-                    sig.index,
+                    sig.func.index(),
                     sig.params.clone(),
                     sig.ret,
                     sig.definition_target(),
@@ -1652,6 +1652,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             LowerMode::Concrete => {
                 let func = match self.records.reserve_fn_instance(
+                    self.draft,
                     template_index,
                     concrete,
                     MintSite {
@@ -1665,7 +1666,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         return Err(LoweringFailure::Recoverable);
                     }
                 };
-                self.push(Instr::Call(func), span)?;
+                self.push(Instr::Call(func.index()), span)?;
                 Ok(match ret {
                     RetType::Unit => CallResult::Unit,
                     RetType::Value(ty) => CallResult::Value(ty),

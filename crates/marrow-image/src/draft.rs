@@ -312,7 +312,10 @@ impl RootId {
     }
 }
 
-/// A function index (also the final container index; functions keep insertion order).
+/// A reserved function index (also the final container index).
+///
+/// Callers must retain IDs from this draft's current state. The index carries no
+/// provenance and does not distinguish another draft or a rolled-back reservation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FuncId(pub(crate) u16);
 
@@ -722,7 +725,7 @@ pub struct ImageDraft {
     /// The one owner of the operation-site table, its demand map, and its capacity
     /// policy. Every site an image carries is requested through it.
     sites: SiteDemandPlan,
-    functions: Vec<FunctionDef>,
+    functions: Vec<Option<FunctionDef>>,
     /// The bytes the retained function bodies alone commit the image to, saturated at
     /// one past [`bounds::MAX_IMAGE_BYTES`] (see [`Self::function_payload_exceeds_image_limit`]).
     function_payload_charge: usize,
@@ -944,12 +947,14 @@ impl std::fmt::Debug for DraftSavepoint {
     }
 }
 
-/// One journaled one-time fill of a pre-transaction row, holding the displaced
-/// definition so the armed inverse restores it by moving it back — no allocation on
-/// the `Drop` path. A fill of a row appended inside the transaction needs no entry:
-/// its row truncates with the suffix.
+/// One journaled fill of a pre-transaction row. Functions restore `None` by index;
+/// record and enum rows retain their displaced definition. A suffix fill needs no
+/// entry because its row truncates. No inverse allocates or clones a body.
 #[derive(Debug)]
 enum FillInverse {
+    Function {
+        row: usize,
+    },
     Record {
         row: usize,
         fields: Vec<FieldDef>,
@@ -1184,6 +1189,28 @@ impl<'d> DraftTxn<'d> {
         self.draft.add_function(def)
     }
 
+    /// Reserve the next function identity without a body. Empty slots cannot encode.
+    pub fn reserve_function(&mut self) -> Result<FuncId, DraftStateError> {
+        self.draft.allocate_function(None)
+    }
+
+    /// Fill this draft's reserved function exactly once. The caller must supply an
+    /// identity from this draft; `FuncId` carries no foreign/stale-draft provenance.
+    pub fn fill_function(&mut self, id: FuncId, def: FunctionDef) -> Result<(), DraftStateError> {
+        let row = usize::from(id.index());
+        if !matches!(self.draft.functions.get(row), Some(None)) {
+            return Err(DraftStateError::IncoherentToken);
+        }
+        self.draft.validate_function(&def)?;
+        if row < self.journal.at.functions {
+            self.journal.fills.reserve(1);
+            self.journal.fills.push(FillInverse::Function { row });
+        }
+        self.draft.charge_function(&def);
+        self.draft.functions[row] = Some(def);
+        Ok(())
+    }
+
     pub fn add_export(&mut self, id: ExportId, func: FuncId) {
         self.draft.add_export(id, func);
     }
@@ -1241,24 +1268,19 @@ impl<'d> DraftTxn<'d> {
     fn rollback_armed(&mut self) {
         let at = &self.journal.at;
         let draft = &mut *self.draft;
-        // 1. Dependent code suffixes first (preservation coverage until the
-        //    function-slot refounding).
+        // Dependent code is removed before the owner suffixes it references.
         draft.test_entries.truncate(at.test_entries);
         draft.exports.truncate(at.exports);
         draft.functions.truncate(at.functions);
         draft.function_payload_charge = at.function_payload_charge;
-        // 2. The site plan: suffix pop with retained-map key removal, receipt restore.
-        draft.sites.pop_suffix_to(at.sites, at.receipt);
-        // 3. The durable graph: occurrence/product/value-arena suffix restore plus the
-        //    application slot; the row-stamp counter is deliberately not restored.
-        draft.durable.rewind_total(&at.durable);
-        // 4. The sticky conflict latches: exact prior values.
-        draft.product_conflict = at.product_conflict;
-        draft.application_conflict = at.application_conflict;
-        // 5. One-time fills of pre-transaction rows revert to their displaced
-        //    definitions, moved back without allocating.
+        // Prefix fills revert before removing the owners their definitions reference.
         while let Some(fill) = self.journal.fills.pop() {
             match fill {
+                FillInverse::Function { row } => {
+                    if let Some(slot) = draft.functions.get_mut(row) {
+                        *slot = None;
+                    }
+                }
                 FillInverse::Record { row, fields } => {
                     if let Some(slot) = draft.types.get_mut(row) {
                         slot.fields = fields;
@@ -1277,8 +1299,12 @@ impl<'d> DraftTxn<'d> {
                 }
             }
         }
-        // 6/7. Table suffixes, with each interned owner's index key removed while the
-        //      popped row is still live.
+        draft.sites.pop_suffix_to(at.sites, at.receipt);
+        draft.durable.rewind_total(&at.durable);
+        draft.product_conflict = at.product_conflict;
+        draft.application_conflict = at.application_conflict;
+        // Table suffixes, with each interned owner's index key removed while the
+        // popped row is still live.
         draft.colls.truncate(at.colls);
         draft.enums.truncate(at.enums);
         draft.enums_fill.truncate(at.enums);
@@ -1296,7 +1322,7 @@ impl<'d> DraftTxn<'d> {
             }
             draft.strings.pop();
         }
-        // 8. The admission-time fixed ledger copy, byte for byte.
+        // The admission-time fixed ledger copy, byte for byte.
         draft.ledger = self.journal.ledger;
         // The consumed epoch is deliberately not restored: it is monotone
         // authentication state outside the logical inverse.
@@ -1834,19 +1860,35 @@ impl ImageDraft {
     /// — a function is still named by its [`FuncId`] — so the check widens neither
     /// function identity nor the site-binding state error's authority.
     pub(crate) fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, DraftStateError> {
+        self.validate_function(&def)?;
+        self.allocate_function(Some(def))
+    }
+
+    fn validate_function(&self, def: &FunctionDef) -> Result<(), DraftStateError> {
         for instr in &def.code {
             if let Some(site) = instr.site_operand() {
                 self.validate_site_ref(site)?;
             }
         }
+        Ok(())
+    }
+
+    /// The sole function ordinal mint. A defined row has already passed operand
+    /// validation, so a failed convenience append leaves no reservation behind.
+    fn allocate_function(&mut self, def: Option<FunctionDef>) -> Result<FuncId, DraftStateError> {
         let id = FuncId(function_ordinal(self.functions.len())?);
-        let floor = function_payload_floor(&def);
+        if let Some(def) = &def {
+            self.charge_function(def);
+        }
         self.functions.push(def);
+        Ok(id)
+    }
+
+    fn charge_function(&mut self, def: &FunctionDef) {
         self.function_payload_charge = self
             .function_payload_charge
-            .saturating_add(floor)
+            .saturating_add(function_payload_floor(def))
             .min(DECISIVE_FUNCTION_PAYLOAD);
-        Ok(id)
     }
 
     /// Whether the retained function bodies alone already exceed
@@ -2193,10 +2235,16 @@ impl ImageDraft {
     pub fn function_code(&self, function: FuncId) -> Option<&[Instr]> {
         self.functions
             .get(usize::from(function.index()))
+            .and_then(Option::as_ref)
             .map(|function| function.code.as_slice())
     }
 
-    pub(crate) fn functions(&self) -> &[FunctionDef] {
+    /// The reserved function domain, including slots whose bodies are unavailable.
+    pub fn function_count(&self) -> usize {
+        self.functions.len()
+    }
+
+    pub(crate) fn functions(&self) -> &[Option<FunctionDef>] {
         &self.functions
     }
 
@@ -2836,114 +2884,5 @@ mod row_access_tests {
 }
 
 #[cfg(test)]
-mod function_payload_charge_tests {
-    use super::{DECISIVE_FUNCTION_PAYLOAD, DraftStateError, FunctionDef, ImageDraft, SpanEntry};
-    use crate::bounds::MAX_IMAGE_BYTES;
-    use crate::encode::SPAN_ROW_BYTES;
-    use crate::instr::Instr;
-    use crate::ty::ImageType;
-
-    fn body(draft: &mut ImageDraft, instructions: usize, spans: usize) -> FunctionDef {
-        let name = draft.intern_string("body").expect("a within-domain mint");
-        let source = draft.intern_string("src").expect("a within-domain mint");
-        FunctionDef {
-            name,
-            source,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            code: vec![Instr::Return; instructions],
-            spans: (0..spans)
-                .map(|index| SpanEntry {
-                    instr_index: index as u32,
-                    line: 1,
-                    column: 1,
-                })
-                .collect(),
-        }
-    }
-
-    /// The charge is the instruction count plus one span row per span, and the
-    /// predicate flips exactly one byte past the image ceiling.
-    #[test]
-    fn a_successful_append_charges_its_instructions_and_span_rows() {
-        let mut draft = ImageDraft::new();
-        assert_eq!(draft.function_payload_charge, 0);
-        let def = body(&mut draft, 7, 3);
-        draft.add_function(def).expect("no site operand");
-        assert_eq!(draft.function_payload_charge, 7 + 3 * SPAN_ROW_BYTES);
-        assert!(!draft.function_payload_exceeds_image_limit());
-
-        let remaining = MAX_IMAGE_BYTES - (7 + 3 * SPAN_ROW_BYTES);
-        let def = body(&mut draft, remaining, 0);
-        draft.add_function(def).expect("no site operand");
-        assert_eq!(draft.function_payload_charge, MAX_IMAGE_BYTES);
-        assert!(!draft.function_payload_exceeds_image_limit());
-
-        let def = body(&mut draft, 1, 0);
-        draft.add_function(def).expect("no site operand");
-        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
-        assert!(draft.function_payload_exceeds_image_limit());
-    }
-
-    /// The charge saturates one past the ceiling and stays there, however much more is
-    /// appended.
-    #[test]
-    fn the_charge_saturates_at_the_decisive_total() {
-        let mut draft = ImageDraft::new();
-        let def = body(&mut draft, 1, MAX_IMAGE_BYTES);
-        draft.add_function(def).expect("no site operand");
-        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
-        let def = body(&mut draft, MAX_IMAGE_BYTES, MAX_IMAGE_BYTES);
-        draft.add_function(def).expect("no site operand");
-        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
-        assert!(draft.function_payload_exceeds_image_limit());
-    }
-
-    /// A refused append changes nothing: the function-slot carrier refusal leaves the
-    /// charge at the accepted total.
-    #[test]
-    fn a_refused_append_leaves_the_charge_unchanged() {
-        let mut draft = ImageDraft::new();
-        for _ in 0..=u16::MAX {
-            let def = body(&mut draft, 1, 0);
-            draft.add_function(def).expect("a within-carrier ordinal");
-        }
-        let accepted = draft.function_payload_charge;
-        assert_eq!(accepted, usize::from(u16::MAX) + 1);
-        let def = body(&mut draft, 1, 0);
-        assert!(matches!(
-            draft.add_function(def),
-            Err(DraftStateError::CarrierDomain)
-        ));
-        assert_eq!(draft.function_payload_charge, accepted);
-        assert!(!draft.function_payload_exceeds_image_limit());
-    }
-
-    /// A transaction that saturated the charge rolls back to the exact pre-admission
-    /// total; a committed one keeps it.
-    #[test]
-    fn rollback_restores_a_saturated_charge() {
-        let mut draft = ImageDraft::new();
-        let def = body(&mut draft, 5, 5);
-        draft.add_function(def).expect("no site operand");
-        let before = draft.function_payload_charge;
-        let def = body(&mut draft, 1, MAX_IMAGE_BYTES);
-
-        let savepoint = draft.savepoint();
-        let mut txn = draft.begin_transaction(savepoint).expect("fresh savepoint");
-        txn.add_function(def).expect("no site operand");
-        assert!(txn.function_payload_exceeds_image_limit());
-        txn.rollback();
-        assert_eq!(draft.function_payload_charge, before);
-        assert!(!draft.function_payload_exceeds_image_limit());
-
-        let def = body(&mut draft, 1, MAX_IMAGE_BYTES);
-        let savepoint = draft.savepoint();
-        let mut txn = draft.begin_transaction(savepoint).expect("fresh savepoint");
-        txn.add_function(def).expect("no site operand");
-        txn.commit();
-        assert_eq!(draft.function_payload_charge, DECISIVE_FUNCTION_PAYLOAD);
-        assert!(draft.function_payload_exceeds_image_limit());
-    }
-}
+#[path = "function_payload_charge_tests.rs"]
+mod function_payload_charge_tests;

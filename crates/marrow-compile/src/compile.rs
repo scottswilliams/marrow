@@ -14,7 +14,7 @@ use marrow_image::{DraftTxn, EncodedImage, ExportId, FuncId, ImageBuildError, Im
 use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{
     AliasDecl, ConstDecl, Declaration, EnumDecl, NominalDecl, ResourceDecl, ResourceMember,
-    SourceFile, SourceSpan, StoreDecl, StructDecl, parse_source,
+    SourceFile, SourceSpan, StoreDecl, StructDecl, TestDecl, parse_source,
 };
 
 use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FileRef, StagedBodyTxn};
@@ -170,7 +170,7 @@ impl CompileInvariant {
             InvariantCause::EmptyDiagnostics(stage) => {
                 let _ = stage;
             }
-            InvariantCause::UnavailableWithoutReport | InvariantCause::ReservedIndexMismatch => {}
+            InvariantCause::UnavailableWithoutReport => {}
             InvariantCause::MissingFunctionBody(function) => {
                 let _ = function;
             }
@@ -421,10 +421,6 @@ enum InvariantCause {
     /// report is a compiler-coherence failure — the generalization of
     /// [`InvariantCause::EmptyDiagnostics`] to the continued phase set.
     UnavailableWithoutReport,
-    /// A generic instance took an image index other than the one the registry
-    /// reserved for it, so a call site would name a different function than the one
-    /// the image carries.
-    ReservedIndexMismatch,
     /// A settled body names no function in the draft it was appended to.
     MissingFunctionBody(FuncId),
     /// The compiler coordinates no longer cover exactly the draft-owned code.
@@ -966,35 +962,48 @@ struct AcceptedQueuedTemplateProofs;
 /// Every declared non-generic function body lowered into the draft.
 struct CompleteDeclaredFunctionBodies;
 
-/// Every declared test body lowered into the draft, with no duplicate-title skip.
-/// A skip leaves a reserved index unminted — `base` counts declared tests including
-/// duplicates — so this artifact, not the diagnostic set, is what the instance drain
-/// requires. Vacuously available when tests are excluded.
+/// Every declared test body lowered without a duplicate-title skip. Vacuously
+/// available when tests are excluded.
 struct CompleteDeclaredTestBodies;
 
-/// Every body that entered lowering produced an image function, and the instance
-/// drain, if it ran, completed.
-///
-/// **The claim is over the MINTED lowered set.** Indices actually minted are dense, so
-/// a call graph keyed by index over this set is exact. Reserved-but-undrained instance
-/// indices are outside the claim: when the drain was gated off, a call into an
-/// unminted instance is simply absent from the graph. A traversal may therefore miss a
-/// cycle through such an index — it can never fabricate one — and an undrained drain
-/// already leaves an artifact unavailable, which fences the program off from `encode`.
-struct CompleteLoweredFunctionSet(Vec<LoweredFn>);
+/// Body facts at their reserved image indices. A missing body remains an explicit
+/// hole; no diagnostic consumer may infer a negative effect from that absence.
+struct LoweredFunctionSet(Vec<Option<LoweredFn>>);
 
-impl CompleteLoweredFunctionSet {
-    /// The functions that took an image index, in index order.
-    fn functions(&self) -> &[LoweredFn] {
+impl LoweredFunctionSet {
+    fn new(draft: &ImageDraft) -> Self {
+        Self((0..draft.function_count()).map(|_| None).collect())
+    }
+
+    fn retain(&mut self, draft: &ImageDraft, function: LoweredFn) {
+        self.0.resize_with(draft.function_count(), || None);
+        let slot = &mut self.0[usize::from(function.func.index())];
+        *slot = Some(function);
+    }
+
+    fn functions(&self) -> &[Option<LoweredFn>] {
         &self.0
+    }
+
+    fn is_complete(&self) -> bool {
+        self.0.iter().all(Option::is_some)
+    }
+
+    fn eligible<'a>(
+        &'a self,
+        acyclic: &'a AcyclicCallGraph,
+    ) -> impl Iterator<Item = &'a LoweredFn> {
+        self.0.iter().enumerate().filter_map(|(index, function)| {
+            acyclic
+                .order()
+                .contains(index)
+                .then_some(function.as_ref())
+                .flatten()
+        })
     }
 }
 
-/// No function in the minted lowered set reaches itself by direct calls.
-///
-/// **The claim is over the MINTED lowered set**, exactly as
-/// [`CompleteLoweredFunctionSet`] defines it: acyclicity is established for the
-/// functions that took an image index, not for reserved-but-undrained instances.
+/// Available functions whose entire callee closure is available and acyclic.
 struct AcyclicCallGraph {
     order: crate::call_graph::AcyclicCallOrder,
 }
@@ -1006,7 +1015,7 @@ impl AcyclicCallGraph {
 }
 
 /// Every export entry that mutates durable state owns its transaction region, so the
-/// requires-ambient-transaction fixpoint converged with nothing to report.
+/// requires-ambient-transaction propagation has nothing to report.
 struct AmbientTransactionClosure;
 
 /// The eight semantic artifacts of one pass, each present exactly when its phase ran
@@ -1017,7 +1026,7 @@ struct Artifacts {
     template_proofs: Option<AcceptedQueuedTemplateProofs>,
     function_bodies: Option<CompleteDeclaredFunctionBodies>,
     test_bodies: Option<CompleteDeclaredTestBodies>,
-    lowered: Option<CompleteLoweredFunctionSet>,
+    lowered: Option<LoweredFunctionSet>,
     call_graph: Option<AcyclicCallGraph>,
     transactions: Option<AmbientTransactionClosure>,
 }
@@ -1041,8 +1050,12 @@ impl Artifacts {
             && template_proofs.is_some()
             && function_bodies.is_some()
             && test_bodies.is_some()
-            && lowered.is_some()
-            && call_graph.is_some()
+            && lowered
+                .as_ref()
+                .is_some_and(LoweredFunctionSet::is_complete)
+            && call_graph
+                .as_ref()
+                .is_some_and(|graph| graph.order().is_complete())
             && transactions.is_some()
     }
 
@@ -1787,19 +1800,24 @@ fn run_semantic(
     // acyclic. Reported at check time so the source carries the diagnostic. The
     // verifier independently rejects any cycle that still reaches it (image.closure),
     // so this is a source-facing check, not the trust boundary. It runs over the
-    // available minted set; an undrained instance withholds the encode prerequisites.
+    // available bodies, retaining independent components beside missing or cyclic ones.
     let call_graph = lowered_set
         .as_ref()
-        .and_then(|set| reject_recursion(set, &mut diagnostics));
+        .map(|set| reject_recursion(set, &mut diagnostics));
 
     // All body transactions and generic draining have settled. Couple each actual
-    // appended function with its coordinates before any transaction validation.
+    // filled function with its coordinates before any transaction validation.
     let bodies = match lowered_set
         .as_ref()
         .map(|set| {
             set.functions()
                 .iter()
-                .map(|function| function.borrow_body(&draft))
+                .map(|function| {
+                    function
+                        .as_ref()
+                        .map(|function| function.borrow_body(&draft))
+                        .transpose()
+                })
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()
@@ -1813,7 +1831,7 @@ fn run_semantic(
     // another function carrying the effect. Reported at check time so the source, not
     // the image, carries the diagnostic; the verifier reconstructs the same closure and
     // rejects a tampered image (image.flow) as defense in depth. Run once the call
-    // graph is acyclic so the effect fixpoint terminates and indices are aligned.
+    // owner has selected complete acyclic call components.
     let transactions = lowered_set
         .as_ref()
         .zip(call_graph.as_ref())
@@ -1828,9 +1846,9 @@ fn run_semantic(
     // reconstructed from the lowered tape and reported at the offending source construct.
     // Reported at check time so the source, not the image, carries the diagnostic; the
     // verifier reconstructs the same lattice from the image alone and rejects a tampered
-    // image (image.flow) as defense in depth. Run once the call graph is acyclic and no
-    // requires-ambient-transaction report already stands, so the closures converge and a
-    // single mutation cannot cascade into an ownership report.
+    // image (image.flow) as defense in depth. Run over complete acyclic components when
+    // no requires-ambient-transaction report already stands, so a single mutation cannot
+    // cascade into an ownership report.
     if let (Some(bodies), Some(acyclic), Some(closure)) = (&bodies, &call_graph, &transactions) {
         reject_transaction_ownership(bodies, acyclic, closure, &mut diagnostics);
     }
@@ -1838,7 +1856,8 @@ fn run_semantic(
     // A test body reaches durable data in one of two disjoint ways — directly, or by
     // driving exports — and may not do both. Reported at check time so the source
     // carries the diagnostic; the verifier's test-entry phase rejects a mixed image
-    // (image.test_entry) as defense in depth. Run once the call graph is acyclic.
+    // (image.test_entry) as defense in depth. Restrict reports to complete acyclic
+    // components.
     if let (Some(set), Some(acyclic)) = (&lowered_set, &call_graph) {
         reject_mixed_test_bodies(set, acyclic, &mut diagnostics);
     }
@@ -1910,7 +1929,7 @@ struct RegistryPhases {
     template_proofs: Option<AcceptedQueuedTemplateProofs>,
     function_bodies: Option<CompleteDeclaredFunctionBodies>,
     test_bodies: Option<CompleteDeclaredTestBodies>,
-    lowered_set: Option<CompleteLoweredFunctionSet>,
+    lowered_set: Option<LoweredFunctionSet>,
     exports: Vec<ExportEntry>,
     tests: Vec<TestEntry>,
 }
@@ -1918,8 +1937,8 @@ struct RegistryPhases {
 /// How a declaration-lowering loop ended.
 ///
 /// Only [`DeclarationExit::Exhausted`] mints the set's completeness artifact. A refusal
-/// leaves the refused declaration's reserved index unminted; a stop on the shared
-/// instantiation limit leaves the whole unvisited suffix unminted, which is the same
+/// leaves the refused declaration's reserved slot vacant; a stop on the shared
+/// instantiation limit leaves the whole unvisited suffix vacant, which is the same
 /// hole once per declaration after the stop. The exit is named so neither can mint a
 /// completeness artifact over a truncated set: a flag cleared at the refusal site alone
 /// would leave the limit stop claiming a complete set.
@@ -1927,7 +1946,7 @@ struct RegistryPhases {
 enum DeclarationExit {
     /// Every declaration in the set took the index reserved for it.
     Exhausted,
-    /// A body was refused; its reserved index was never minted.
+    /// A body was refused; its reserved slot remains vacant.
     Refused,
     /// The shared instantiation limit stopped the loop, leaving its unvisited suffix
     /// unlowered.
@@ -1943,14 +1962,12 @@ impl DeclarationExit {
 
 /// The declared monomorphic function bodies, lowered into the draft.
 struct LoweredFunctions {
-    lowered: Vec<LoweredFn>,
     exports: Vec<ExportEntry>,
     exit: DeclarationExit,
 }
 
 /// The declared test bodies, lowered into the draft and bound into the test-entry table.
 struct LoweredTests {
-    lowered: Vec<LoweredFn>,
     entries: Vec<TestEntry>,
     exit: DeclarationExit,
 }
@@ -2009,94 +2026,95 @@ fn registry_phases(
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
 ) -> Result<RegistryPhases, PhaseStop> {
-    // Generic instances are image functions with no stable identity, indexed after every
-    // monomorphic function and test. `base` is that boundary; the shared `Monomorph`
-    // assigns each distinct instance the next index from `base` in discovery order, so
-    // draining its queue in order appends them to the image in index order.
-    //
-    // Both counts and their sum are computed in the counting carrier's own width and
-    // narrowed once, where the base is consumed: a project with more monomorphic
-    // functions and tests together than the image can address refuses at the
-    // invariant boundary rather than seating an instance on a wrapped slot.
-    let test_count: usize = if mode == TestMode::Include {
-        parsed
-            .iter()
-            .flat_map(|module| &module.ast.declarations)
-            .filter(|decl| matches!(decl, Declaration::Test(_)))
-            .count()
-    } else {
-        0
-    };
-    records
-        .set_fn_base(resolution.signatures.concrete_count() as u64 + test_count as u64)
-        .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+    // Tests retain their slots before ordinary bodies can discover generic instances.
+    // This preserves successful ordinary/test/instance order without predicting IDs.
+    let mut reserved_tests = Vec::new();
+    if mode == TestMode::Include {
+        let mut txn = admitted(draft);
+        for module in parsed {
+            for declaration in &module.ast.declarations {
+                if let Declaration::Test(test) = declaration {
+                    let func = txn.reserve_function().map_err(|error| {
+                        PhaseStop::Invariant(InvariantCause::Generic(error.into()))
+                    })?;
+                    reserved_tests.push((module, test, func));
+                }
+            }
+        }
+        txn.commit();
+    }
+    let mut lowered = LoweredFunctionSet::new(draft);
 
-    let functions =
-        lower_declared_functions(parsed, records, resolution, draft, diagnostics, facts)?;
+    let functions = lower_declared_functions(
+        parsed,
+        records,
+        resolution,
+        draft,
+        diagnostics,
+        facts,
+        &mut lowered,
+    )?;
     let function_bodies = functions
         .exit
         .complete()
         .then_some(CompleteDeclaredFunctionBodies);
 
-    let tests = lower_declared_tests(parsed, mode, records, resolution, draft, diagnostics, facts)?;
+    let tests = lower_declared_tests(
+        &reserved_tests,
+        records,
+        resolution,
+        draft,
+        diagnostics,
+        facts,
+        &mut lowered,
+    )?;
     let test_bodies = tests.exit.complete().then_some(CompleteDeclaredTestBodies);
 
-    let mut lowered = functions.lowered;
-    lowered.extend(tests.lowered);
-
-    // Drain the generic instantiation worklist: lower each monomorphized instance's body
-    // into the image, in the order the instances were minted (so each instance's image
-    // index equals the one the registry reserved). Lowering an instance body may mint
-    // further instances, which the loop continues to drain. Its precondition is that
-    // every declared body took the index reserved for it, so instances append after
-    // them — carried by the three artifacts above, not by an empty diagnostic set.
-    let mut drain_lowered_every_instance = true;
-    if function_bodies.is_some() && test_bodies.is_some() {
-        // The entry is read, not removed: it leaves the queue only after the batch that
-        // lowers it has settled, so an abandoned batch restores a queue that still holds
-        // the work it did not do.
-        while let Some((template_index, args, reserved)) = records.peek_fn_pending() {
-            let template = &resolution.generics.templates()[template_index];
-            // One admitted generic-owner batch per drained instance body.
-            let batch = StagedBodyTxn::begin(records, draft)
-                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-            // This instance's refusal rows are staged outside the caller's collector while
-            // the batch is armed, exactly as a declared body's are: an invariant leaves
-            // through `?` below while the producer-owning aggregate drops both owners.
-            // The instance's editor facts were collected once at its template's proof, so
-            // its staged fact payload stays empty.
-            let (released, outcome) = batch
-                .lower_instance(
-                    resolution.durable,
-                    resolution.signatures,
-                    resolution.generics,
-                    resolution.constants,
-                    template,
-                    &args,
-                )
-                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-            released.absorb(diagnostics, facts);
-            let lowered_body = match outcome {
-                BodyOutcome::Lowered(result) => Some(result),
-                // An ordinary refusal committed with the registry and draft aligned.
-                BodyOutcome::Refused => None,
-            };
-            records.consume_fn_pending();
-            let Some(result) = lowered_body else {
-                drain_lowered_every_instance = false;
-                break;
-            };
-            // The registry reserved this index before the body was lowered; the draft
-            // assigned the one the body actually took. A divergence means the image would
-            // carry an instance under an index some call site does not name, so it is a
-            // typed invariant in release exactly as in debug.
-            if result.func.index() != reserved {
-                return Err(PhaseStop::Invariant(InvariantCause::ReservedIndexMismatch));
-            }
-            if !records.has_instantiation_limit() {
-                settle_image_capacity(draft, result.func)?;
-            }
-            lowered.push(LoweredFn {
+    // A refused instance leaves its reserved slot vacant, but does not discard work
+    // already queued by other bodies or discovered before the refusal.
+    // The entry is read, not removed: it leaves the queue only after the batch that
+    // lowers it has settled, so an abandoned batch restores a queue that still holds
+    // the work it did not do.
+    while !records.has_instantiation_limit() {
+        let Some((template_index, args, reserved)) = records.peek_fn_pending() else {
+            break;
+        };
+        let template = &resolution.generics.templates()[template_index];
+        // One admitted generic-owner batch per drained instance body.
+        let batch = StagedBodyTxn::begin(records, draft)
+            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        // This instance's refusal rows are staged outside the caller's collector while
+        // the batch is armed, exactly as a declared body's are: an invariant leaves
+        // through `?` below while the producer-owning aggregate drops both owners.
+        // The instance's editor facts were collected once at its template's proof, so
+        // its staged fact payload stays empty.
+        let (released, outcome) = batch
+            .lower_instance(
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                template,
+                &args,
+                reserved,
+            )
+            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        released.absorb(diagnostics, facts);
+        let lowered_body = match outcome {
+            BodyOutcome::Lowered(result) => Some(result),
+            // An ordinary refusal committed with the registry and draft aligned.
+            BodyOutcome::Refused => None,
+        };
+        records.consume_fn_pending();
+        let Some(result) = lowered_body else {
+            continue;
+        };
+        if !records.has_instantiation_limit() {
+            settle_image_capacity(draft, result.func)?;
+        }
+        lowered.retain(
+            draft,
+            LoweredFn {
                 func: result.func,
                 file: template.source_file().clone(),
                 name: template.name().to_string(),
@@ -2111,23 +2129,17 @@ fn registry_phases(
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
-            });
-        }
+            },
+        );
     }
 
-    // The lowered set is complete when every declared function body lowered and the
-    // drain — if it ran — lowered every instance it was offered, under the accepted
-    // template proofs the whole region runs beneath. A duplicate test title is a
-    // declaration refusal, not a lowering refusal: the minted indices stay dense, so it
-    // withholds only the drain.
-    let lowered_set = (function_bodies.is_some() && drain_lowered_every_instance)
-        .then_some(CompleteLoweredFunctionSet(lowered));
+    lowered.0.resize_with(draft.function_count(), || None);
 
     Ok(RegistryPhases {
         template_proofs: Some(template_proofs),
         function_bodies,
         test_bodies,
-        lowered_set,
+        lowered_set: Some(lowered),
         exports: functions.exports,
         tests: tests.entries,
     })
@@ -2161,8 +2173,8 @@ fn lower_declared_functions(
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
+    lowered: &mut LoweredFunctionSet,
 ) -> Result<LoweredFunctions, PhaseStop> {
-    let mut lowered: Vec<LoweredFn> = Vec::new();
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut exit = DeclarationExit::Exhausted;
     // The signature build walked these same declarations in this same order, so the
@@ -2183,23 +2195,23 @@ fn lower_declared_functions(
                 // A generic template is not lowered in place.
                 continue;
             }
-            match signatures.next_at(module.at, function.name_span) {
+            let func = match signatures.next_at(module.at, function.name_span) {
                 // The signature was refused and reported at the annotation it could
                 // not resolve. Lowering the body would resolve the same annotation
                 // again and report it a second time, and there is no parameter list
                 // to bind, so the declaration is refused whole: it takes no image
-                // index, exactly as a body refused for its own error does.
+                // index. A body refusal instead leaves its existing slot vacant.
                 Ok(SignatureOutcome::Refused) => {
                     exit = DeclarationExit::Refused;
                     continue;
                 }
-                Ok(SignatureOutcome::Resolved) => {}
+                Ok(SignatureOutcome::Resolved(func)) => func,
                 Err(drift) => {
                     return Err(PhaseStop::Invariant(InvariantCause::Generic(drift.into())));
                 }
-            }
+            };
             // One admitted generic-owner batch per lowered body: the body's interns,
-            // site requests, function append, export row, and every registry row its
+            // site requests, function fill, export row, and every registry row its
             // mints appended land as one unit; the guard mutates immediately and in
             // place, so mint order is call order.
             let batch = StagedBodyTxn::begin(records, draft)
@@ -2218,6 +2230,7 @@ fn lower_declared_functions(
                     &module.file,
                     &module.name,
                     function,
+                    func,
                 )
                 .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
             released.absorb(diagnostics, facts);
@@ -2230,7 +2243,6 @@ fn lower_declared_functions(
             let Some(result) = lowered_body else {
                 if records.has_instantiation_limit() {
                     return Ok(LoweredFunctions {
-                        lowered,
                         exports,
                         exit: DeclarationExit::StoppedOnInstantiationLimit,
                     });
@@ -2238,27 +2250,29 @@ fn lower_declared_functions(
                 exit = DeclarationExit::Refused;
                 continue;
             };
-            lowered.push(LoweredFn {
-                func: result.func,
-                file: module.file.clone(),
-                name: function.name.clone(),
-                span: function.span,
-                callees: result.callees,
-                is_export: function.public,
-                is_test: false,
-                unwrapped_mutations: result.unwrapped_mutations,
-                unwrapped_calls: result.unwrapped_calls,
-                erased_families: result.erased_families,
-                presence_obligations: result.presence_obligations,
-                has_direct_durable_op: result.has_direct_durable_op,
-                owns_transaction: result.owns_transaction,
-                code_spans: result.code_spans,
-            });
+            lowered.retain(
+                draft,
+                LoweredFn {
+                    func: result.func,
+                    file: module.file.clone(),
+                    name: function.name.clone(),
+                    span: function.span,
+                    callees: result.callees,
+                    is_export: function.public,
+                    is_test: false,
+                    unwrapped_mutations: result.unwrapped_mutations,
+                    unwrapped_calls: result.unwrapped_calls,
+                    erased_families: result.erased_families,
+                    presence_obligations: result.presence_obligations,
+                    has_direct_durable_op: result.has_direct_durable_op,
+                    owns_transaction: result.owns_transaction,
+                    code_spans: result.code_spans,
+                },
+            );
             // Every appended body is polled exactly once, before the export bookkeeping
             // that may skip the rest of this iteration.
             if records.has_instantiation_limit() {
                 return Ok(LoweredFunctions {
-                    lowered,
                     exports,
                     exit: DeclarationExit::StoppedOnInstantiationLimit,
                 });
@@ -2281,97 +2295,82 @@ fn lower_declared_functions(
             exports.extend(export);
         }
     }
-    Ok(LoweredFunctions {
-        lowered,
-        exports,
-        exit,
-    })
+    Ok(LoweredFunctions { exports, exit })
 }
 
 /// Lower each `test "name"` body into a storeless, zero-argument function and bind its
 /// title into the TEST-ENTRY table. Tests are lowered after every function so their
 /// bodies' calls resolve and their own indices follow the functions'. Titles are unique
 /// across the project; a duplicate title skips its body, which leaves the index reserved
-/// for it unminted. With tests excluded no test is declared to lower, so the set is
+/// for it vacant. With tests excluded no test is declared to lower, so the set is
 /// vacuously exhausted.
 fn lower_declared_tests(
-    parsed: &[Module],
-    mode: TestMode,
+    tests: &[(&Module, &TestDecl, FuncId)],
     records: &mut TypeRegistry,
     resolution: Resolution<'_, '_>,
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
+    lowered: &mut LoweredFunctionSet,
 ) -> Result<LoweredTests, PhaseStop> {
-    let mut lowered: Vec<LoweredFn> = Vec::new();
     let mut entries: Vec<TestEntry> = Vec::new();
-    if mode != TestMode::Include {
-        return Ok(LoweredTests {
-            lowered,
-            entries,
-            exit: DeclarationExit::Exhausted,
-        });
-    }
     if records.has_instantiation_limit() {
         return Ok(LoweredTests {
-            lowered,
             entries,
             exit: DeclarationExit::StoppedOnInstantiationLimit,
         });
     }
     let mut exit = DeclarationExit::Exhausted;
-    for module in parsed {
-        for declaration in &module.ast.declarations {
-            let Declaration::Test(test) = declaration else {
-                continue;
-            };
-            if entries.iter().any(|existing| existing.name == test.name) {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckNameConflict.as_str(),
-                    &module.file,
-                    test.name_span,
-                    format!("a test named `{}` is already declared", test.name),
-                ));
-                exit = DeclarationExit::Refused;
-                continue;
+    for &(module, test, func) in tests {
+        if entries.iter().any(|existing| existing.name == test.name) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                &module.file,
+                test.name_span,
+                format!("a test named `{}` is already declared", test.name),
+            ));
+            exit = DeclarationExit::Refused;
+            continue;
+        }
+        // One admitted generic-owner batch per lowered test body, its test-entry
+        // append included.
+        let batch = StagedBodyTxn::begin(records, draft)
+            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        // Staged inside the producer-owning guard exactly as a declared body's rows are.
+        let (released, outcome) = batch
+            .lower_test(
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                facts,
+                module.at,
+                &module.file,
+                &module.name,
+                &test.name,
+                &test.body,
+                func,
+            )
+            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        released.absorb(diagnostics, facts);
+        let lowered_body = match outcome {
+            BodyOutcome::Lowered(result) => Some(result),
+            // An ordinary refusal committed with the registry and draft aligned.
+            BodyOutcome::Refused => None,
+        };
+        let Some(result) = lowered_body else {
+            if records.has_instantiation_limit() {
+                return Ok(LoweredTests {
+                    entries,
+                    exit: DeclarationExit::StoppedOnInstantiationLimit,
+                });
             }
-            // One admitted generic-owner batch per lowered test body, its test-entry
-            // append included.
-            let batch = StagedBodyTxn::begin(records, draft)
-                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-            // Staged inside the producer-owning guard exactly as a declared body's rows are.
-            let (released, outcome) = batch
-                .lower_test(
-                    resolution.durable,
-                    resolution.signatures,
-                    resolution.generics,
-                    resolution.constants,
-                    facts,
-                    module.at,
-                    &module.file,
-                    &module.name,
-                    &test.name,
-                    &test.body,
-                )
-                .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
-            released.absorb(diagnostics, facts);
-            let lowered_body = match outcome {
-                BodyOutcome::Lowered(result) => Some(result),
-                // An ordinary refusal committed with the registry and draft aligned.
-                BodyOutcome::Refused => None,
-            };
-            let Some(result) = lowered_body else {
-                if records.has_instantiation_limit() {
-                    return Ok(LoweredTests {
-                        lowered,
-                        entries,
-                        exit: DeclarationExit::StoppedOnInstantiationLimit,
-                    });
-                }
-                exit = DeclarationExit::Refused;
-                continue;
-            };
-            lowered.push(LoweredFn {
+            exit = DeclarationExit::Refused;
+            continue;
+        };
+        lowered.retain(
+            draft,
+            LoweredFn {
                 func: result.func,
                 file: module.file.clone(),
                 name: test.name.clone(),
@@ -2386,29 +2385,24 @@ fn lower_declared_tests(
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
+            },
+        );
+        entries.push(TestEntry {
+            name: test.name.clone(),
+            module: module.name.clone(),
+            file: module.file.as_str().to_string(),
+            line: test.name_span.line,
+            column: test.name_span.column,
+        });
+        if records.has_instantiation_limit() {
+            return Ok(LoweredTests {
+                entries,
+                exit: DeclarationExit::StoppedOnInstantiationLimit,
             });
-            entries.push(TestEntry {
-                name: test.name.clone(),
-                module: module.name.clone(),
-                file: module.file.as_str().to_string(),
-                line: test.name_span.line,
-                column: test.name_span.column,
-            });
-            if records.has_instantiation_limit() {
-                return Ok(LoweredTests {
-                    lowered,
-                    entries,
-                    exit: DeclarationExit::StoppedOnInstantiationLimit,
-                });
-            }
-            settle_image_capacity(draft, result.func)?;
         }
+        settle_image_capacity(draft, result.func)?;
     }
-    Ok(LoweredTests {
-        lowered,
-        entries,
-        exit,
-    })
+    Ok(LoweredTests { entries, exit })
 }
 
 /// The complete diagnostic picture of one drive: every stage's diagnostics over every
@@ -2577,21 +2571,20 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
 /// diagnostics still walk functions in image-index order, so traversal order cannot
 /// move the byte-stable artifact.
 fn reject_recursion(
-    lowered: &CompleteLoweredFunctionSet,
+    lowered: &LoweredFunctionSet,
     diagnostics: &mut DiagnosticCollector,
-) -> Option<AcyclicCallGraph> {
-    let lowered = lowered.functions();
-    // Adjacency by image index. Indices are dense (0..lowered.len()) and each
-    // function appears once, so a plain vec keyed by index is exact.
-    let mut callees: Vec<&[u16]> = vec![&[]; lowered.len()];
-    for function in lowered {
-        if usize::from(function.func.index()) < callees.len() {
-            callees[usize::from(function.func.index())] = &function.callees;
-        }
-    }
+) -> AcyclicCallGraph {
+    let callees: Vec<Option<&[u16]>> = lowered
+        .functions()
+        .iter()
+        .map(|function| {
+            function
+                .as_ref()
+                .map(|function| function.callees.as_slice())
+        })
+        .collect();
     let analysis = crate::call_graph::analyze(&callees);
-    let mut reported = false;
-    for function in lowered {
+    for function in lowered.functions().iter().flatten() {
         if analysis.on_cycle(function.func.index()) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckRecursion.as_str(),
@@ -2599,15 +2592,10 @@ fn reject_recursion(
                 function.span,
                 format!("`{}` is part of a recursive call cycle", function.name),
             ));
-            reported = true;
         }
     }
-    if reported {
-        None
-    } else {
-        analysis
-            .into_acyclic_order()
-            .map(|order| AcyclicCallGraph { order })
+    AcyclicCallGraph {
+        order: analysis.into_acyclic_order(),
     }
 }
 
@@ -2616,37 +2604,31 @@ fn reject_recursion(
 ///
 /// A function *requires an ambient transaction* when it performs a durable mutation
 /// not enclosed in its own `transaction` block — directly, or by calling a function
-/// that itself requires one at a site the block does not cover. That property is a
-/// monotone fixpoint over the acyclic call graph. A non-export helper that requires a
-/// transaction is legal: it runs inside its caller's region. The requirement is
+/// that itself requires one at a site the block does not cover. The callee-first
+/// order carries that property to each caller. A non-export helper that requires
+/// a transaction is legal: it runs inside its caller's region. The requirement is
 /// therefore reported only where a caller cannot satisfy it — at an export entry, at
 /// the specific unwrapped mutation or call-site span. A test entry receives its
 /// ambient transaction from the test harness and is likewise exempt.
 /// `acyclic` owns the callee-before-caller order: every function and relevant edge is
 /// examined once, with no convergence sweep.
 fn reject_missing_transaction(
-    lowered: &CompleteLoweredFunctionSet,
+    lowered: &LoweredFunctionSet,
     acyclic: &AcyclicCallGraph,
     diagnostics: &mut DiagnosticCollector,
 ) -> Option<AmbientTransactionClosure> {
-    let lowered = lowered.functions();
-    let count = lowered.len();
-    let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
-    for function in lowered {
-        if usize::from(function.func.index()) < count {
-            by_index[usize::from(function.func.index())] = Some(function);
-        }
-    }
+    let by_index = lowered.functions();
+    let count = by_index.len();
 
     // `requires[i]`: function `i` mutates outside its own transaction block. The base
     // case is a direct unwrapped mutation; the inductive case is an unwrapped call to a
-    // function that itself requires one. Recursion is already rejected, so the boolean
-    // fixpoint over the acyclic graph converges.
+    // function that itself requires one. The graph owner supplies complete acyclic
+    // components and their callee-first order.
     let requires = acyclic.order().propagate(
         |index| {
             by_index
                 .get(index)
-                .and_then(|entry| *entry)
+                .and_then(Option::as_ref)
                 .is_some_and(|function| !function.unwrapped_mutations.is_empty())
         },
         |index, visit| {
@@ -2662,7 +2644,7 @@ fn reject_missing_transaction(
     // that lowers to several instructions (an upsert's replace and create arms share
     // one span) yields one diagnostic.
     let mut reported = false;
-    for function in lowered {
+    for function in lowered.eligible(acyclic) {
         if !function.is_export {
             continue;
         }
@@ -2687,6 +2669,7 @@ fn reject_missing_transaction(
             }
             if seen.insert((span.line, span.column)) {
                 let name = by_index[*callee as usize]
+                    .as_ref()
                     .map(|f| f.name.as_str())
                     .unwrap_or("a mutating function");
                 diagnostics.push(SourceDiagnostic::at(
@@ -2756,34 +2739,36 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 /// unwrapped mutation would cascade into a second ownership report. `acyclic`
 /// carries the shared callee-before-caller order for the two ownership relations.
 fn reject_transaction_ownership(
-    lowered: &[LoweredBody<'_>],
+    lowered: &[Option<LoweredBody<'_>>],
     acyclic: &AcyclicCallGraph,
     _closure: &AmbientTransactionClosure,
     diagnostics: &mut DiagnosticCollector,
 ) {
     let count = lowered.len();
-    let mut by_index: Vec<Option<&LoweredBody<'_>>> = vec![None; count];
-    for body in lowered {
-        let function = body.function;
-        if usize::from(function.func.index()) < count {
-            by_index[usize::from(function.func.index())] = Some(body);
-        }
-    }
+    let by_index = lowered;
 
     let has_begin: Vec<bool> = by_index
         .iter()
-        .map(|entry| entry.is_some_and(|f| f.code.iter().any(|i| matches!(i, Instr::TxnBegin))))
+        .map(|entry| {
+            entry
+                .as_ref()
+                .is_some_and(|f| f.code.iter().any(|i| matches!(i, Instr::TxnBegin)))
+        })
         .collect();
     let has_commit: Vec<bool> = by_index
         .iter()
-        .map(|entry| entry.is_some_and(|f| f.code.iter().any(|i| matches!(i, Instr::TxnCommit))))
+        .map(|entry| {
+            entry
+                .as_ref()
+                .is_some_and(|f| f.code.iter().any(|i| matches!(i, Instr::TxnCommit)))
+        })
         .collect();
 
     // `mutates[f]` / `durable[f]`: `f` or a transitive callee stages a mutation / performs
     // any durable operation. The base case is a direct opcode; the inductive case unions
-    // each callee's closure. Recursion is already rejected, so the monotone boolean
-    // closures settle in one callee-before-caller pass over the acyclic graph. These
-    // mirror the verifier's mutate and non-empty-atom closures the lattice consumes.
+    // each callee's closure. The complete acyclic components settle in one
+    // callee-before-caller pass. These mirror the verifier's mutate and non-empty-atom
+    // closures the lattice consumes.
     let visit_callees = |index: usize, visit: &mut dyn FnMut(usize)| {
         if let Some(Some(body)) = by_index.get(index) {
             for &callee in &body.function.callees {
@@ -2795,7 +2780,7 @@ fn reject_transaction_ownership(
         |index| {
             by_index
                 .get(index)
-                .and_then(|entry| *entry)
+                .and_then(Option::as_ref)
                 .is_some_and(|function| function.code.iter().any(is_mutation_instr))
         },
         visit_callees,
@@ -2804,16 +2789,16 @@ fn reject_transaction_ownership(
         |index| {
             by_index
                 .get(index)
-                .and_then(|entry| *entry)
+                .and_then(Option::as_ref)
                 .is_some_and(|function| function.code.iter().any(is_durable_place_op))
         },
         visit_callees,
     );
 
-    for body in lowered {
+    for body in lowered.iter().flatten() {
         let function = body.function;
         let i = usize::from(function.func.index());
-        if i >= count {
+        if !acyclic.order().contains(i) {
             continue;
         }
 
@@ -2830,6 +2815,7 @@ fn reject_transaction_ownership(
                     continue;
                 }
                 let name = by_index[t]
+                    .as_ref()
                     .map(|f| f.function.name.as_str())
                     .unwrap_or("an export");
                 diagnostics.push(SourceDiagnostic::at(
@@ -2996,29 +2982,25 @@ fn owner_lattice_violation(
 /// session the direct operation needs. Only a directly-owned transaction counts as a
 /// driven owner; because a transaction owner is never reached through a helper, the
 /// test body's direct call edges carry the whole relation.
-/// `_acyclic` is the prerequisite, not an unused argument: the reachability walk
-/// below terminates only over an acyclic call graph.
+/// The graph owner restricts reporting to complete acyclic call components.
 fn reject_mixed_test_bodies(
-    lowered: &CompleteLoweredFunctionSet,
-    _acyclic: &AcyclicCallGraph,
+    lowered: &LoweredFunctionSet,
+    acyclic: &AcyclicCallGraph,
     diagnostics: &mut DiagnosticCollector,
 ) {
-    let lowered = lowered.functions();
-    let count = lowered.len();
-    let mut owns_transaction = vec![false; count];
-    for function in lowered {
-        if usize::from(function.func.index()) < count {
-            owns_transaction[usize::from(function.func.index())] = function.owns_transaction;
-        }
-    }
-    for test in lowered.iter().filter(|f| f.is_test) {
+    let functions = lowered.functions();
+    for test in lowered
+        .eligible(acyclic)
+        .filter(|function| function.is_test)
+    {
         if !test.has_direct_durable_op {
             continue;
         }
-        let drives_owner = test
-            .callees
-            .iter()
-            .any(|callee| (*callee as usize) < count && owns_transaction[*callee as usize]);
+        let drives_owner = test.callees.iter().any(|callee| {
+            functions[usize::from(*callee)]
+                .as_ref()
+                .is_some_and(|function| function.owns_transaction)
+        });
         if drives_owner {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckTestDriverMix.as_str(),

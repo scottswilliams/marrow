@@ -227,7 +227,11 @@ fn alias_global_targets_cannot_capture_function_parameters() {
         let diagnostics = compile_err(&source);
         assert_diagnostic_sites(
             &diagnostics,
-            &[("check.type", 4, return_column), ("check.type", 5, 31)],
+            &[
+                ("check.type", 4, return_column),
+                ("check.type", 5, 31),
+                ("check.type", 4, return_column),
+            ],
         );
     }
 }

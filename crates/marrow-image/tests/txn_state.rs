@@ -213,6 +213,126 @@ fn a_rolled_back_fill_of_a_pre_transaction_row_is_reverted() {
 
 // ---- Per-kind nonblocking N+1 ledger deltas, observed through the public fence.
 
+#[test]
+fn function_prefix_fills_restore_on_return_error_and_unwind() {
+    fn seed() -> (ImageDraft, marrow_image::FuncId, marrow_image::FuncId) {
+        let mut owner = ImageDraft::new();
+        let mut txn = admitted(&mut owner);
+        let name = txn
+            .intern_string("sentinel")
+            .expect("valid fixture construction");
+        let source = txn
+            .intern_string("src/main.mw")
+            .expect("valid fixture construction");
+        let sentinel = txn
+            .add_function(FunctionDef {
+                name,
+                source,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                code: vec![Instr::Return],
+                spans: Vec::new(),
+            })
+            .expect("valid fixture construction");
+        let vacant = txn
+            .reserve_function()
+            .expect("a within-carrier reservation");
+        txn.commit();
+        (owner, sentinel, vacant)
+    }
+    fn fill(txn: &mut DraftTxn<'_>, func: marrow_image::FuncId) {
+        let name = txn
+            .intern_string("filled")
+            .expect("valid fixture construction");
+        let source = txn
+            .intern_string("src/main.mw")
+            .expect("valid fixture construction");
+        let constant = txn.intern_int(13).expect("valid fixture construction");
+        txn.fill_function(
+            func,
+            FunctionDef {
+                name,
+                source,
+                params: Vec::new(),
+                ret: ImageType::scalar(Scalar::Int),
+                local_count: 0,
+                code: vec![Instr::ConstLoad(constant), Instr::Return],
+                spans: Vec::new(),
+            },
+        )
+        .expect("valid fixture construction");
+    }
+    for exit in 0..3 {
+        let (mut owner, sentinel, vacant) = seed();
+        let mut suffix = None;
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), ()> {
+                let mut txn = admitted(&mut owner);
+                fill(&mut txn, vacant);
+                let name = txn
+                    .intern_string("suffix")
+                    .expect("valid fixture construction");
+                let source = txn
+                    .intern_string("src/main.mw")
+                    .expect("valid fixture construction");
+                suffix = Some(
+                    txn.add_function(FunctionDef {
+                        name,
+                        source,
+                        params: Vec::new(),
+                        ret: ImageType::Unit,
+                        local_count: 0,
+                        code: vec![Instr::Return],
+                        spans: Vec::new(),
+                    })
+                    .expect("valid fixture construction"),
+                );
+                assert_eq!(txn.function_count(), 3);
+                assert!(txn.encode().is_ok());
+                match exit {
+                    0 => Ok(()),
+                    1 => Err(()),
+                    _ => panic!("exercise the armed fill inverse"),
+                }
+            }));
+        assert_eq!(result.is_err(), exit == 2);
+        if let Ok(result) = result {
+            assert_eq!(result.is_err(), exit == 1);
+        }
+        assert_eq!(owner.function_count(), 2);
+        assert_eq!(
+            owner.function_code(sentinel),
+            Some([Instr::Return].as_slice())
+        );
+        assert!(owner.function_code(vacant).is_none());
+        assert!(
+            owner
+                .function_code(suffix.expect("every exit follows the suffix append"))
+                .is_none()
+        );
+        assert_eq!(
+            owner.encode().map(|_| ()),
+            Err(ImageBuildError::InvalidReference("vacant function"))
+        );
+        let mut txn = admitted(&mut owner);
+        fill(&mut txn, vacant);
+        txn.commit();
+
+        let (mut control, _, control_vacant) = seed();
+        let mut txn = admitted(&mut control);
+        fill(&mut txn, control_vacant);
+        txn.commit();
+        assert_eq!(
+            owner.encode().expect("the completed fixture encodes").bytes,
+            control
+                .encode()
+                .expect("the completed fixture encodes")
+                .bytes
+        );
+    }
+}
+
 /// Each active kind's N/N+1 law: the N+1 mutation is admitted (never refused at the
 /// surface), the fence refuses the provisional image with exactly that kind's
 /// verdict (the ledger's canonical minimum shadow-compared against the walk), commit

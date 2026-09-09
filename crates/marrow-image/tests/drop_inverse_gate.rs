@@ -692,6 +692,9 @@ const RESOLVED_CALL_PATHS: &[&str] = &[
     "self.inverse.take",
     "draft.enums.get_mut",
     "draft.enums_fill.get_mut",
+    // A checked function-slot lookup clears a prefix fill; an absent row is a
+    // no-op. Dropping its owned body releases storage without allocating.
+    "draft.functions.get_mut",
     "draft.types.get_mut",
     "draft.types_fill.get_mut",
     "self.collection_index.get_mut",

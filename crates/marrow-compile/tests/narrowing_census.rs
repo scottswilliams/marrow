@@ -30,9 +30,8 @@ use source_projection::{is_ident_byte, is_test_only_file, production_code};
 /// `u16::try_from`/`u32::try_from`/`try_into` forms that narrow the same carriers by
 /// another route, and **arithmetic over a narrow carrier** — a `+`, `-`, or `*` whose own
 /// expression names a `u16`/`u32` operand. Arithmetic is the spelling that has no
-/// conversion to find it by: `fn_base + row as u16` overflows the carrier without
-/// narrowing anything a cast scan can see, and it is a site of this census twice — once
-/// for the cast and once for the addition over it.
+/// conversion to find it by: `base + row as u16` can overflow a carrier without
+/// narrowing anything the cast scan sees. Both the cast and the addition are censused.
 ///
 /// The blind spot, stated: arithmetic between two values that are *inferred* `u16` without
 /// either being spelled at the operand is invisible to a lexical scan, which has no types.
@@ -40,10 +39,6 @@ use source_projection::{is_ident_byte, is_test_only_file, production_code};
 /// so the site is censused where it is spelled; a carrier that stopped being spelled
 /// anywhere would leave this census with nothing to key on, which is why the widened
 /// carriers are newtypes rather than bare integers.
-///
-/// Each surviving entry is either a function-family ordinal frozen for the function-slot
-/// refounding, a count bounded by its own construct's located diagnostic, or a checked
-/// conversion whose refusal is the closed builder-domain error.
 ///
 /// Sites are compared by multiplicity, not by membership. Several sites of one crate share
 /// one normalized line — six `Self(index as u32)` mints do — and a membership difference
@@ -470,10 +465,9 @@ fn sanctioned_narrowing_sites() -> Vec<NarrowingSite> {
 ///
 /// Entries are keyed by their exact source line, so a cast that changes construct — or a
 /// second cast added beside a sanctioned one — is a census change and has to be looked at
-/// again. The families present are: wire-ordinal projections behind the plan, the
-/// function-family ordinals frozen for the function-slot refounding, source offsets and
-/// counts bounded by their own construct's located diagnostic, and checked conversions
-/// whose refusal is the closed builder-domain error.
+/// again. The families present are: wire-ordinal projections behind the plan, source
+/// offsets and counts bounded by their own construct's located diagnostic, and checked
+/// conversions whose refusal is the closed builder-domain error.
 ///
 /// This list pins the exact current set; it is not itself a per-site proof. That is what
 /// makes it useful: a new site cannot arrive silently, and the adjudication happens where
@@ -661,15 +655,6 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "marrow-compile",
         "types/mod.rs",
         ".map(|index| (NominalId(index as u32), &self.nominals[index]))",
-    ),
-    // All five image-function-index producers accumulate wide and narrow only here.
-    // An out-of-domain value is bounded by the exact typed refusal
-    // `GenericInvariant::FunctionIndexDomain`; it is deliberately locationless because
-    // the aggregate function count has no single offending source span.
-    (
-        "marrow-compile",
-        "types/function_index.rs",
-        "u16::try_from(wide).map_err(|_| GenericInvariant::FunctionIndexDomain)",
     ),
     (
         "marrow-compile",
@@ -988,3 +973,34 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "let function_demands: Vec<ExportDemand> = (0..functions.len() as u16)",
     ),
 ];
+
+/// Guard retired spellings in their former owners. Typed image IDs and production
+/// behavior tests carry the allocation contract.
+#[test]
+fn retired_function_id_spellings_are_absent_from_their_former_owners() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for relative in [
+        "compile.rs",
+        "lower/mod.rs",
+        "lower/registry.rs",
+        "types/mod.rs",
+        "types/function_index.rs",
+        "types/owner_txn.rs",
+    ] {
+        let text = fs::read_to_string(source.join(relative)).expect("valid fixture construction");
+        let code = production_code(&text);
+        for retired in [
+            "fn_base",
+            "set_fn_base",
+            "concrete_count",
+            "narrow_function_index",
+            "FunctionIndexDomain",
+            "ReservedIndexMismatch",
+        ] {
+            assert!(!code.contains(retired), "{relative} restored {retired}");
+        }
+        if relative == "lower/mod.rs" {
+            assert!(!code.contains(".add_function("));
+        }
+    }
+}

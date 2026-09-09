@@ -65,6 +65,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         file: &'a FileIdentity,
         module: &'a str,
         function: &'a FunctionDecl,
+        func: marrow_image::FuncId,
     ) -> Result<(ReleasedBody, BodyOutcome, Option<ExportId>), GenericInvariant> {
         let Self {
             mut owner,
@@ -85,6 +86,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
                 file,
                 module,
                 function,
+                func,
             )?
         };
         let export = match &outcome {
@@ -126,6 +128,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         consts: &'a ConstRegistry,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
+        func: marrow_image::FuncId,
     ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
         let Self {
             mut owner,
@@ -145,6 +148,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
                 FactSink::discarding(),
                 template,
                 args,
+                func,
             )?
         };
         owner.commit();
@@ -164,6 +168,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         module: &'a str,
         name: &'a str,
         body: &'a Block,
+        func: marrow_image::FuncId,
     ) -> Result<(ReleasedBody, BodyOutcome), GenericInvariant> {
         let Self {
             mut owner,
@@ -185,6 +190,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
                 module,
                 name,
                 body,
+                func,
             )?
         };
         if let BodyOutcome::Lowered(lowered) = &outcome {

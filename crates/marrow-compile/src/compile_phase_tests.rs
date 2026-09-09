@@ -7,9 +7,9 @@ use super::valid_export_path;
 use super::{
     AcceptedQueuedTemplateProofs, AcyclicCallGraph, AmbientTransactionClosure, Analyzed, Artifacts,
     BoundedDiagnostics, Built, CompileFailure, CompileStage, CompleteDeclaredFunctionBodies,
-    CompleteDeclaredTestBodies, CompleteFunctionRegistry, CompleteLoweredFunctionSet,
-    CompleteTypeRegistry, DeclarationExit, Driven, InvariantCause, SemanticOutcome,
-    SignaturesComplete, analyze_outcome,
+    CompleteDeclaredTestBodies, CompleteFunctionRegistry, CompleteTypeRegistry, DeclarationExit,
+    Driven, InvariantCause, LoweredFunctionSet, SemanticOutcome, SignaturesComplete,
+    analyze_outcome,
 };
 use crate::compile::Declaration;
 use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
@@ -266,7 +266,6 @@ fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
             CollectionKind::Map => "Map owner mismatch",
         },
         GenericInvariant::DeclarationIndexDrift => "declaration index drift",
-        GenericInvariant::FunctionIndexDomain => "function index domain",
         GenericInvariant::DurableConstructionRefused => "durable construction refused",
         GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
         GenericInvariant::DurableBranchKeyUnresolved => "durable branch key unresolved",
@@ -554,11 +553,9 @@ fn an_empty_terminal_with_a_withheld_artifact_is_an_invariant() {
         template_proofs: Some(AcceptedQueuedTemplateProofs),
         function_bodies: Some(CompleteDeclaredFunctionBodies),
         test_bodies: Some(CompleteDeclaredTestBodies),
-        lowered: Some(CompleteLoweredFunctionSet(Vec::new())),
+        lowered: Some(LoweredFunctionSet(Vec::new())),
         call_graph: Some(AcyclicCallGraph {
-            order: crate::call_graph::analyze(&[])
-                .into_acyclic_order()
-                .expect("an empty graph is acyclic"),
+            order: crate::call_graph::analyze(&[]).into_acyclic_order(),
         }),
         transactions: Some(AmbientTransactionClosure),
     };
@@ -1513,4 +1510,51 @@ fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
         panic!("a precheck finding is reported over the stop")
     };
     assert_eq!(rows.as_slice(), &[row()]);
+}
+
+#[test]
+#[ignore = "storage/work measurement: run explicitly and record the capacities"]
+fn measure_reserved_function_domain_storage_and_graph_work() {
+    for count in [
+        marrow_image::bounds::MAX_FUNCTIONS,
+        usize::from(u16::MAX) + 1,
+    ] {
+        let calls: Vec<u16> = (1..count)
+            .map(|index| u16::try_from(index).expect("within the carrier"))
+            .collect();
+        let edges: Vec<Option<&[u16]>> = (0..count)
+            .map(|index| {
+                Some(if index + 1 == count {
+                    &[]
+                } else {
+                    std::slice::from_ref(&calls[index])
+                })
+            })
+            .collect();
+        let (order, counts) = crate::types::capture_call_graph_counts(|| {
+            crate::call_graph::analyze(&edges).into_acyclic_order()
+        });
+        assert!(order.is_complete());
+        assert_eq!(order.domain_len(), count);
+        assert_eq!(
+            (counts.graph_vertex_visits, counts.graph_edge_visits),
+            (count, count - 1)
+        );
+        assert_eq!(
+            (counts.closure_vertex_visits, counts.closure_edge_visits),
+            (count, count - 1)
+        );
+        println!(
+            "functions={count} body_facts_size={} facts_slot_size={} facts_slots_bytes={} optional_adjacency_size={} adjacency_capacity={} adjacency_bytes={} graph_scratch_bytes={} closure_vertices={} closure_edges={}",
+            size_of::<super::LoweredFn>(),
+            size_of::<Option<super::LoweredFn>>(),
+            count * size_of::<Option<super::LoweredFn>>(),
+            size_of::<Option<&[u16]>>(),
+            edges.capacity(),
+            edges.capacity() * size_of::<Option<&[u16]>>(),
+            counts.graph_scratch_bytes,
+            counts.closure_vertex_visits,
+            counts.closure_edge_visits
+        );
+    }
 }

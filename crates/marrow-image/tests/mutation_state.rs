@@ -695,7 +695,7 @@ fn a_failed_function_append_leaves_no_function_row() {
                 params: Vec::new(),
                 ret: ImageType::Unit,
                 local_count: 0,
-                code: vec![Instr::DurExists(foreign_site), Instr::Return],
+                code: vec![Instr::DurExists(foreign_site.clone()), Instr::Return],
                 spans: Vec::new(),
             })
             .is_err(),
@@ -706,6 +706,47 @@ fn a_failed_function_append_leaves_no_function_row() {
         admitted.index(),
         0,
         "the refused body appended no function row",
+    );
+
+    let reserved = draft.reserve_function().expect("a vacant slot");
+    assert_eq!(reserved.index(), 1);
+    assert!(draft.function_code(reserved).is_none());
+    let invalid = FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        code: vec![Instr::DurExists(foreign_site), Instr::Return],
+        spans: Vec::new(),
+    };
+    assert!(draft.fill_function(reserved, invalid).is_err());
+    assert!(draft.function_code(reserved).is_none());
+    assert_eq!(draft.function_count(), 2);
+    let valid = FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        code: vec![Instr::Return],
+        spans: Vec::new(),
+    };
+    draft
+        .fill_function(reserved, valid.clone())
+        .expect("the refused fill spent nothing");
+    let before = draft.encode().expect("both slots are filled").bytes;
+    assert_eq!(
+        draft.fill_function(reserved, valid),
+        Err(DraftStateError::IncoherentToken)
+    );
+    assert_eq!(
+        draft.function_code(reserved),
+        Some([Instr::Return].as_slice())
+    );
+    assert_eq!(
+        draft.encode().expect("double fill changed nothing").bytes,
+        before
     );
 }
 
