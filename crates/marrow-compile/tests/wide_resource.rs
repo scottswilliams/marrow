@@ -80,10 +80,7 @@ fn a_narrow_resource_compiles() {
 /// allocation guard, never a stored-format byte, so widening a bound must never change the
 /// encoded image of a program already within the old bounds. This pins, by content hash,
 /// the encoded bytes of a small durable resource; any future edit that serializes a bound
-/// constant, or otherwise perturbs an in-bounds program's bytes, turns this red. The hash
-/// was re-baselined once — deliberately, not by a bound widen — when field-leaf operation
-/// sites became lazy (BND02 C1): this resource's `noop` addresses no field, so its former
-/// per-field sites are gone and the image shrank. From this baseline the guard continues.
+/// constant, or otherwise perturbs an in-bounds program's bytes, turns this red.
 #[test]
 fn an_in_bounds_program_has_frozen_image_bytes() {
     let bytes = compile_ok(10).image.bytes;
@@ -94,7 +91,7 @@ fn an_in_bounds_program_has_frozen_image_bytes() {
         .collect();
     assert_eq!(
         hex,
-        "6f1ffb854fe70b94e0d85a6a5d9833203a3e58b1505c354ed8fa1b99ae6ead95",
+        "218fe46220c8e40adefce8a9c4e29196d7c37c39fa4d35e94788bcfb80eb25ed",
         "in-bounds image bytes changed; the monotone-widen law forbids this \
          (encoded {} bytes)",
         bytes.len(),

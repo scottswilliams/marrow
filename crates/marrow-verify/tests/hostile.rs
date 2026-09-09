@@ -49,6 +49,9 @@ mod complete_entries;
 mod guard_provenance;
 #[path = "hostile/required_reads.rs"]
 mod required_reads;
+
+#[path = "hostile/legacy_artifact.rs"]
+mod legacy_artifact;
 use admitted_helper::admitted;
 
 #[path = "common/tracer_schema.rs"]
@@ -201,7 +204,7 @@ fn stale_truncation() {
 #[test]
 fn rehashed_bad_version_rejects_at_envelope() {
     let mut bytes = good_image();
-    bytes[4] = 0x01;
+    bytes[4] = 0xff;
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.envelope");
 }

@@ -618,12 +618,9 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-/// The diamond's DURABLE section and whole-image identity are byte-exact against the
-/// values the encoder produced when a durable field's value was a recursively cloned
-/// occurrence tree. The section ends in the 32-byte
-/// durable-contract identity, so this pins the contract preimage too: the shared shape
-/// is spelled once per occurrence on the wire, as v0 has always spelled it, and only
-/// the retained representation changed.
+/// The diamond's DURABLE section and contract retain the occurrence-tree encoding.
+/// The shared shape is spelled once per occurrence on the wire. Separate image
+/// identities pin the current generation's header, digest slot and payload.
 #[test]
 fn a_fitting_diamond_keeps_its_exact_bytes_and_contract_identity() {
     let compiled = compile(&small_diamond()).expect("the small diamond fits every bound");
@@ -657,16 +654,15 @@ const DIAMOND_DURABLE_SECTION: &str = concat!(
 const DIAMOND_CONTRACT_ID: &str =
     "ffc27d314dbabc963ab14259d0a2da35e46c8e7537840a97a971cb2683a8094b";
 
-/// The exact whole-image identity of [`small_diamond`], as the occurrence-tree encoder
-/// produced it.
-const DIAMOND_IMAGE_ID: &str = "58eaf4f478da12063519113e058998453a1e5e414c2a2e48855826dd961b8b3d";
+/// The current-generation whole-image identity of [`small_diamond`].
+const DIAMOND_IMAGE_ID: &str = "151aea50ca5b088757436d4705353175560ebc64c67d3a2fcd102ecf8c1faa32";
 
 /// The full-image digest of [`small_diamond`]: marrow-image's domain-separated
 /// `image_id` construction applied to EVERY emitted byte — magic, version, the embedded
 /// `ImageId` slot, and all sections — so a header rewrite or digest-slot forgery of
 /// equal length cannot hide behind the section and embedded-id pins above.
 const DIAMOND_FULL_IMAGE_DIGEST: &str =
-    "1d0b2f0fba6d7a0d71081060856cb33f9a7e64311f8295aeffb18d808b6ada94";
+    "03396a4c9a3175bca34e8c2bf4d8b5c551e786b493e0876b0d871c4d5d093222";
 
 // ---- The refusal rows compose rather than replace one another.
 

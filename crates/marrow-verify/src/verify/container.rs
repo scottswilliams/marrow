@@ -10,11 +10,10 @@ use super::tables::{
 };
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
-use marrow_image::image_id;
+use marrow_image::{IMAGE_FORMAT_VERSION, image_id};
 
 /// The container framing constants.
 const MAGIC: &[u8; 4] = b"MWI\0";
-const VERSION: u8 = 0x00;
 const DIGEST_SLOT_END: usize = 37;
 
 pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
@@ -34,7 +33,7 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     let version = reader
         .u8()
         .ok_or(reject(VerifyPhase::Envelope, "short version"))?;
-    if version != VERSION {
+    if version != IMAGE_FORMAT_VERSION {
         return Err(reject(VerifyPhase::Envelope, "unsupported version"));
     }
     let stored_digest = reader

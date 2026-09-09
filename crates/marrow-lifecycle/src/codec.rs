@@ -20,6 +20,8 @@ pub enum FormatError {
     /// The artifact records a container version this build does not read. A future version
     /// is a typed refusal, never a best-effort decode (FR01 §6).
     UnknownVersion { found: u8 },
+    /// The active binding names an image generation this build does not admit.
+    UnsupportedImageVersion { found: u8 },
     /// The bytes end before a field the grammar requires — a truncated or torn artifact.
     Truncated,
     /// Bytes remain after the artifact's last field — a canonical artifact is consumed
@@ -44,7 +46,9 @@ impl FormatError {
     /// every other malformation is store corruption (the persisted bytes do not decode).
     pub fn code(&self) -> &'static str {
         match self {
-            FormatError::UnknownVersion { .. } => Code::StoreFormatVersion.as_str(),
+            FormatError::UnknownVersion { .. } | FormatError::UnsupportedImageVersion { .. } => {
+                Code::StoreFormatVersion.as_str()
+            }
             FormatError::LengthOverflow { .. } => Code::StoreLimit.as_str(),
             FormatError::BadMagic
             | FormatError::Truncated
@@ -68,6 +72,11 @@ impl std::fmt::Display for FormatError {
             FormatError::UnknownVersion { found } => {
                 write!(f, "records version {found}, which this build does not read")
             }
+            FormatError::UnsupportedImageVersion { found } => write!(
+                f,
+                "binds image generation {found}, which this build does not admit; \
+                 preserve the store and use its matching toolchain for data extraction"
+            ),
             FormatError::Truncated => write!(f, "is truncated"),
             FormatError::TrailingBytes => write!(f, "has trailing bytes after its last field"),
             FormatError::LengthOverflow { field } => {

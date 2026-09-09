@@ -1,6 +1,6 @@
 //! The Marrow program-image container.
 //!
-//! This crate owns the ProgramImage v0 contract (design §C/§D/§E): the frozen
+//! This crate owns the program-image contract: the
 //! sectioned, length-prefixed, big-endian container grammar; the opcode encoding;
 //! the representational bounds; the typed validating [`ImageDraft`] the compiler
 //! builds an image through; the canonical [`ImageDraft::encode`] encoder; and the
@@ -52,7 +52,7 @@ pub use durable_id::{
     DurableMemberViews, DurableProductIdentity, DurableRootView, DurableSumIdentity, LedgerIdBytes,
     ManagedIndexIdentity, RootPlacementIdentity,
 };
-pub use encode::EncodedImage;
+pub use encode::{EncodedImage, IMAGE_FORMAT_VERSION};
 pub use export_id::{EXPORT_ID_KIND, ExportId};
 pub use instr::{
     Instr, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE,

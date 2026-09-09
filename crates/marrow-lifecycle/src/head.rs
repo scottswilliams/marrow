@@ -69,8 +69,8 @@ pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, 
 /// edit; the binding facts (`durable_contract`, `interface`) are what must be exactly equal
 /// for a rebind to be legal — an equal-facts attach rebinds the active image with no user
 /// action, any delta is a typed lifecycle refusal (not corruption). The
-/// `image_format_version` rides here (FR01 §6), so a stale binding after a toolchain update
-/// is a typed regenerate-and-rebind refusal, never a decode error.
+/// `image_format_version` is checked during head decoding, so a store bound to an
+/// unsupported image generation cannot enter execution or a code-only rebind.
 ///
 /// Authority is *not* a binding fact here. The deployment ceiling is a separately owned
 /// standing maximum recorded once at provision ([`LogicalHead::accepted_ceiling`]) and
@@ -239,6 +239,11 @@ impl LogicalHead {
         if StoreHeadDigest::from_bytes(sealed) != StoreHeadDigest::compute(&head.body()) {
             return Err(FormatError::DigestMismatch);
         }
+        if head.binding.image_format_version != marrow_image::IMAGE_FORMAT_VERSION {
+            return Err(FormatError::UnsupportedImageVersion {
+                found: head.binding.image_format_version,
+            });
+        }
         Ok(head)
     }
 }
@@ -250,7 +255,7 @@ mod tests {
 
     fn binding() -> ActiveBinding {
         ActiveBinding {
-            image_format_version: 0,
+            image_format_version: marrow_image::IMAGE_FORMAT_VERSION,
             image_id: [0x11; 32],
             durable_contract: [0x22; 32],
             interface: [0x33; 32],

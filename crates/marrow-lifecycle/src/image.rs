@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use marrow_image::{LedgerIdBytes, interface_fingerprint};
+use marrow_image::{IMAGE_FORMAT_VERSION, LedgerIdBytes, interface_fingerprint};
 use marrow_kernel::codec::value::{ScalarKind, ValueShape, ValueShapeBuilder};
 use marrow_kernel::durable::{
     BranchNumbering, BranchSchema, FieldSchema, IndexComponent, SiteTarget, StoreProjection,
@@ -26,9 +26,6 @@ use marrow_verify::{
 use crate::codec::FormatError;
 use crate::head::ActiveBinding;
 use crate::headmap::HeadMap;
-
-/// The container format version of the images this build reads and writes.
-const IMAGE_FORMAT_VERSION: u8 = 0;
 
 /// Derive the active binding a store records for `image`: the active image's byte identity
 /// plus the binding facts a binding-only rebind compares (the durable contract and the

@@ -1261,8 +1261,8 @@ fn image_bytes_limit(result: Result<impl std::fmt::Debug, CompileFailure>) {
     }
 }
 
-/// The 16x512 shape fits: every body is retained and the image is the one the base
-/// produced.
+/// The 16x512 shape fits: every body is retained and the image matches its
+/// current-generation known answer.
 #[test]
 fn an_accepted_shape_retains_every_body_and_keeps_its_image_identity() {
     let input = capacity_project(&[("src/main.mw", wide_module(16, 512))]);
@@ -1272,7 +1272,7 @@ fn an_accepted_shape_retains_every_body_and_keeps_its_image_identity() {
     assert_eq!(compiled.image.bytes.len(), 477_073);
     assert_eq!(
         compiled.image.image_id.to_hex(),
-        "20102c203a94992c2adb1396e052df4d5ce179be65c2070bd6ff9fe74b942869",
+        "8f634b4a3bceaaf05a2cee46afb82d22218522eea53269c5eb1025496372bbde",
     );
 }
 
@@ -1401,7 +1401,7 @@ fn a_template_proof_is_erased_before_any_poll() {
     assert_eq!(population, 16 * wide_body_instructions(512));
     assert_eq!(
         compiled.image.image_id.to_hex(),
-        "20102c203a94992c2adb1396e052df4d5ce179be65c2070bd6ff9fe74b942869",
+        "8f634b4a3bceaaf05a2cee46afb82d22218522eea53269c5eb1025496372bbde",
     );
 }
 

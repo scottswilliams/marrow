@@ -106,6 +106,11 @@ has its own platform and layout requirements
 
 ## Trust boundaries
 
+- The verifier admits image generation 1. Current store attachment, import and
+  audit refuse an active binding to another image generation before engine open,
+  preserving data and binding metadata. Older artifacts and data require their
+  matching tools; there is no automatic conversion
+  ([compatibility](compatibility.md#versioning)).
 - The Rust VM entry accepts a checked function selection carrying its verified
   image. Relative function ordinals outside that image are refused at selection.
   Raw Rust arguments still require caller validation against that image's types;

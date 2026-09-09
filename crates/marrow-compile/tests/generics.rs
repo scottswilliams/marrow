@@ -2158,7 +2158,7 @@ pub fn driver(): int {
         .collect();
     assert_eq!(
         hex,
-        "f126a012d3538bb198a9b3ca6a7896ad8f3f2e1506cce501c3c9e320b5a33f54",
+        "1322c7c6621ced42ef4c88dd31c73e235a2f09597af3b6c2c6c0128bba9a9a5d",
         "generic-heavy image bytes changed; the template-proof savepoint must not perturb the \
          accepted image (encoded {} bytes)",
         bytes.len(),

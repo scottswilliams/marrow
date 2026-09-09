@@ -7,6 +7,14 @@ states where that meaning is computed.
 
 ## Pipeline
 
+`marrow-image::IMAGE_FORMAT_VERSION` names the admitted image generation; its
+digest domain separates payload identities between generations. The independent
+container verifier checks that generation before decoding sections.
+`marrow-lifecycle::LogicalHead::decode` checks the stored active binding against
+the same generation. The shared owner-held head reader supplies attachment,
+import and audit before engine open
+([compatibility](../compatibility.md#versioning)).
+
 A program travels one way. `marrow-syntax` parses `.mw` source into an AST.
 `marrow-compile` checks the AST and lowers it to a program-image draft, which
 `marrow-image` encodes to canonical bytes. `marrow-verify` is the only decoder:

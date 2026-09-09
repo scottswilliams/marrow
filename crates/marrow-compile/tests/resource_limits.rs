@@ -164,7 +164,7 @@ fn exactly_256_explicit_bindings_compile_with_stable_image_bytes() {
         .map(|byte| format!("{byte:02x}"))
         .collect();
     assert_eq!(
-        hex, "5237454e742ecf77261a087622408dfa22d48d30e6388319ed53324fea8022bf",
+        hex, "81a0b9e934565b0e0817aac1e21b2745c6c2727741551dfa00673a4b61f0d559",
         "the accepted 256-slot frame's encoded image changed"
     );
 }

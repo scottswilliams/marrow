@@ -1,7 +1,7 @@
 //! The `ImageId` integrity digest (design §C).
 //!
 //! `image_id = SHA-256( kind ‖ len ‖ payload )` with `kind` the 15 ASCII bytes
-//! `marrow.image.v0`, `len` the big-endian `u64` byte length of `payload`, and
+//! `marrow.image.v1`, `len` the big-endian `u64` byte length of `payload`, and
 //! `payload` every image byte after the digest slot. This is an integrity
 //! identity, not compiler authentication: anyone can mint a valid digest, so trust
 //! comes from verification, never from the hash.
@@ -16,7 +16,7 @@
 use sha2::{Digest, Sha256};
 
 /// The domain-separation tag for the image digest.
-pub const IMAGE_DIGEST_KIND: &[u8; 15] = b"marrow.image.v0";
+pub const IMAGE_DIGEST_KIND: &[u8; 15] = b"marrow.image.v1";
 
 /// A 32-byte program-image digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,15 +108,12 @@ mod tests {
         image_id,
     };
 
-    /// The frozen v0 image seam identity. The domain-separation kind is exactly
-    /// `marrow.image.v0`; the container version byte a future ring would bump is `0x00`
-    /// (see `docs/future/compiled-programs.md`, the u32-ring decision of record). A v1
-    /// mints a new kind `marrow.image.v1` selected by the version byte, so a v0 digest can
-    /// never validate v1 bytes. The version gate itself is exercised by
-    /// `marrow-verify`'s `rehashed_bad_version_rejects_at_envelope` hostile.
+    /// Generation changes also separate payload identities: changing only an
+    /// unsupported artifact's header cannot satisfy the current digest check.
     #[test]
-    fn image_seam_identity_is_frozen_v0() {
-        assert_eq!(IMAGE_DIGEST_KIND, b"marrow.image.v0");
+    fn image_digest_domain_matches_its_generation() {
+        assert_eq!(crate::IMAGE_FORMAT_VERSION, 1);
+        assert_eq!(IMAGE_DIGEST_KIND, b"marrow.image.v1");
         assert_eq!(IMAGE_DIGEST_KIND.len(), 15);
     }
 
@@ -154,7 +151,7 @@ mod tests {
         // SHA-256 of the 15 kind bytes followed by eight zero length bytes.
         assert_eq!(
             image_id(&[]).to_hex(),
-            "26c7fe78e40a5df727f096f8cd4a66860cb29b6b6f61bf45c9d34a8fca6efc51",
+            "f15aa66d1c2d73ad5f2fe7b233f1760fffc593f17b5ec8d7b99c70a5556e990d",
             "digest must be SHA-256(kind || len || payload)"
         );
     }

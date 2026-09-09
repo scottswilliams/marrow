@@ -11,7 +11,7 @@ import * as M from "./marrow-supervisor.mjs";
 export const INTERFACE_ID = "238f5b5937c25ff2baac7e7ac9df2f8fd86f6cc2e0af08ef8994b5f435fccdc1";
 
 /** The exact image identity a native attached-session launch proves back. */
-export const IMAGE_ID = "38ca39d737f4bb7e5a25c05a7c5f0a3433cca8eb2e439e9e637a3827551d7b48";
+export const IMAGE_ID = "8621cf11fd1c3c873123a5eec35533a44addc2e15d10f6beea39aa2e5d53cca5";
 
 export class Client {
   private readonly session: M.Session;

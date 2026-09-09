@@ -704,7 +704,7 @@ pub fn putX(id: int, t: string) {
     let image = verify(source, BYTE_ORDER_IDS);
     assert_eq!(
         image.image_id().to_hex(),
-        "47bebe6b396c22942384f188d543712e0bd1a77c546ff567f52ec2b944e0b905",
+        "75ebfcef56422bf6a3def1012712444bb84353ddde30eff161c02f7f646a5ea1",
         "the whole image, and so every table in it, is byte-exact"
     );
     // `^y` is the first store, so `Beta.marks` mints its entry record before
@@ -1266,7 +1266,7 @@ pub fn readA(id: int): int? {
     // field operand and strict field-write encoding along with the site numbering.
     assert_eq!(
         control.image_id().to_hex(),
-        "5425b40bfc1fc9601b8d3cbb3638b2132f919b9f662e4ac3da4fcab3174b1fe1",
+        "97d3be509a21df04b2bee178ad330564aa5df6edb873fb989d2fdcb19ed6b1c9",
         "the fitting single-root image is byte-exact outside the repeated-Product domain",
     );
 }

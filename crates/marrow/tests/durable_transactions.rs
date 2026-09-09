@@ -286,13 +286,13 @@ test "drive a transaction owner" {
         let image = marrow_verify::verify(&encoded.bytes).expect("independent verification");
         let (identity, bytes, instructions) = if include_tests {
             (
-                "4392aebfc08805d09a25da2f69ab970312bd8cc8b12a829dd3a62de507773dbc",
+                "d6d08a7e317ddb62b2c88000809f36bbb288e568f03c121bd0bac031cc005a0b",
                 1294,
                 44,
             )
         } else {
             (
-                "f7323ca882805a2d670f992fd77c6e393db3a7d35bb817c0a5d0e61025a2aaae",
+                "47127779f6e692487ed990d750addfca64e89aa8d6aba2589e10a48fbd86356d",
                 1044,
                 32,
             )

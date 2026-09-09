@@ -25,11 +25,22 @@ open ([changing the program](operations/README.md#changing-the-program)).
 
 The compiler refuses public aggregate inputs and bound durable values containing
 nominal integers because their transfer and stored shapes erase nominal
-intervals. This source restriction does not change image or store formats.
-Previously generated images are not retrospectively checked for those intervals
-by the verifier or runner, and existing stores are not validated or rewritten by
-the restriction. Recompiling such source reports `check.unsupported`
+intervals. Recompiling such source reports `check.unsupported`
 ([nominal ints](language/types-and-values.md#aliases-and-nominal-ints)).
+
+The current image generation is 1. The verifier and runner refuse generation-0
+images with `image.envelope`; their erased nominal constraints cannot be recovered
+from the artifact. Current tools also refuse stores whose active binding names
+any other image generation with `store.format_version`, before engine open.
+Recompilation and code-only rebind do not convert those stores. The refusal
+preserves the engine file, head and envelope; owner-marker bookkeeping may occur.
+
+Keep an older store with its source, identity ledger, image and matching tools
+for data extraction. No automatic conversion or complete backup/restore command
+is available. New-generation stores require fresh provisioning. Changing an
+image header or stored binding is not a conversion. The image digest domain
+separates generations but does not authenticate the compiler. Historical tools
+may ignore the stored image generation; use each store with its matching tools.
 
 ## Platforms
 

@@ -287,13 +287,14 @@ docs.cli.shelf.greet reads or writes no durable data
 docs.cli.shelf.lookup reads ^books.byIsbn and ^books.title
 docs.cli.shelf.put reads ^books; writes ^books
 $ marrow image --out img --accept-ceiling b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691
-image a2b66a14727361b285a0099c7f279fceb07f17a40f684d6e7708f31b13e611ef
+image <image-id>
 ceiling b618d4d44afcb0eb4045c437267eba85c8b41ffd946fd1dc1b67a62ee54ba691
 img/program.image
 ```
 
-The same source yields the same image and the same ids. `image` opens no store
-and writes no identity.
+`<image-id>` stands for the image's 64-digit hexadecimal id. The same source,
+identity ledger, and toolchain yield the same image and the same ids. `image`
+opens no store and writes no identity.
 
 ## marrow client typescript
 

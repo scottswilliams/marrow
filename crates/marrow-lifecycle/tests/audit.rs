@@ -419,60 +419,67 @@ fn a_held_store_and_an_absent_store_are_open_refusals() {
 /// Version refusal precedes engine open, and logical inspection cannot convert an
 /// older layout even when its active image is exact.
 #[test]
-fn generation_one_refuses_audit_before_engine_open() {
+fn unsupported_generations_refuses_audit_before_engine_open() {
     let image = compile(SOURCE, IDS);
-    for broken_engine in [true, false] {
-        let scratch = Scratch::new("old-generation");
-        let dir = scratch.store("store");
-        provision_from(&dir, &image);
-        let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
-        let current_head = std::fs::read(&head_path).expect("current head");
-        let mut old_head = current_head.clone();
-        old_head[4] = 1;
-        let body_len = old_head.len() - 32;
-        let digest = marrow_image::StoreHeadDigest::compute(&old_head[..body_len]);
-        old_head[body_len..].copy_from_slice(digest.bytes());
-        std::fs::write(&head_path, old_head).expect("generation-one head");
-        if broken_engine {
-            std::fs::write(dir.join(marrow_lifecycle::ENGINE_FILE), b"not an engine")
-                .expect("broken engine control");
-        }
-        let before: Vec<_> = [
-            marrow_lifecycle::ENGINE_FILE,
-            marrow_lifecycle::HEAD_FILE,
-            marrow_lifecycle::ENVELOPE_FILE,
-        ]
-        .into_iter()
-        .map(|name| (name, std::fs::read(dir.join(name)).expect("before refusal")))
-        .collect();
-        let outcome = audit(&dir, prepare(image.clone()));
-        let error = outcome.expect_err("an older layout must not be opened");
-        assert_eq!(error.code(), "store.format_version");
-        assert!(matches!(
-            error,
-            AuditError::Open(marrow_lifecycle::OpenError::Admission(
-                marrow_lifecycle::AdmissionError {
-                    entry: marrow_lifecycle::StoreEntry::Head,
-                    fault: marrow_lifecycle::AdmissionFault::Format(
-                        marrow_lifecycle::FormatError::UnknownVersion { found: 1 }
-                    ),
-                }
-            ))
-        ));
-        for (name, bytes) in before {
-            assert_eq!(
-                std::fs::read(dir.join(name)).expect("after refusal"),
-                bytes,
-                "{name}"
-            );
-        }
-        if !broken_engine {
-            std::fs::write(head_path, current_head).expect("restore current head");
-            assert!(
-                audit(&dir, prepare(image.clone()))
-                    .expect("lock released")
-                    .is_clean()
-            );
+    use marrow_lifecycle::FormatError;
+    for (offset, version, expected) in [
+        (4, 1, FormatError::UnknownVersion { found: 1 }),
+        (5, 0, FormatError::UnsupportedImageVersion { found: 0 }),
+        (5, 255, FormatError::UnsupportedImageVersion { found: 255 }),
+    ] {
+        for broken_engine in [true, false] {
+            let scratch = Scratch::new("old-generation");
+            let dir = scratch.store("store");
+            provision_from(&dir, &image);
+            let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
+            let current_head = std::fs::read(&head_path).expect("current head");
+            let mut old_head = current_head.clone();
+            old_head[offset] = version;
+            let body_len = old_head.len() - 32;
+            let digest = marrow_image::StoreHeadDigest::compute(&old_head[..body_len]);
+            old_head[body_len..].copy_from_slice(digest.bytes());
+            std::fs::write(&head_path, old_head).expect("generation-one head");
+            if broken_engine {
+                std::fs::write(dir.join(marrow_lifecycle::ENGINE_FILE), b"not an engine")
+                    .expect("broken engine control");
+            }
+            let before: Vec<_> = [
+                marrow_lifecycle::ENGINE_FILE,
+                marrow_lifecycle::HEAD_FILE,
+                marrow_lifecycle::ENVELOPE_FILE,
+            ]
+            .into_iter()
+            .map(|name| (name, std::fs::read(dir.join(name)).expect("before refusal")))
+            .collect();
+            let outcome = audit(&dir, prepare(image.clone()));
+            let error = outcome.expect_err("an older layout must not be opened");
+            assert_eq!(error.code(), "store.format_version");
+            assert!(matches!(
+                error,
+                AuditError::Open(marrow_lifecycle::OpenError::Admission(
+                    marrow_lifecycle::AdmissionError {
+                        entry: marrow_lifecycle::StoreEntry::Head,
+                        fault: marrow_lifecycle::AdmissionFault::Format(
+                            ref refusal
+                        ),
+                    }
+                )) if *refusal == expected
+            ));
+            for (name, bytes) in before {
+                assert_eq!(
+                    std::fs::read(dir.join(name)).expect("after refusal"),
+                    bytes,
+                    "{name}"
+                );
+            }
+            if !broken_engine {
+                std::fs::write(head_path, current_head).expect("restore current head");
+                assert!(
+                    audit(&dir, prepare(image.clone()))
+                        .expect("lock released")
+                        .is_clean()
+                );
+            }
         }
     }
 }

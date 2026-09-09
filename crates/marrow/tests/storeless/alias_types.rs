@@ -333,8 +333,8 @@ pub fn f(value: PlainAlias): PlainAlias {
     );
 }
 
-/// A small accepted alias chain freezes the pre-repair canonical image bytes by
-/// their domain-separated image identity and exact encoded length.
+/// A small accepted alias chain freezes its current-generation canonical image
+/// through its domain-separated identity and exact encoded length.
 #[test]
 fn accepted_alias_image_bytes_remain_frozen() {
     let compiled = compile(&captured_source(
@@ -352,7 +352,7 @@ pub fn identity(value: OtherCount): Count {
         (compiled.image.bytes.len(), compiled.image.image_id.to_hex()),
         (
             240,
-            "1eed2c79352f2e8cceb830c7115a248d63f3f93df2019a5d6a102ed50de92585".to_string(),
+            "b5f02b550278b3ab5f19eb9ca5d31351b8307445b3ae68a0ab78a1af5381583f".to_string(),
         ),
         "accepted alias fixture image identity changed"
     );

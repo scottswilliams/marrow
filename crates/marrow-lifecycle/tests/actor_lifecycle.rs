@@ -127,6 +127,54 @@ fn provision_from(dir: &Path, image: &VerifiedImage) -> StoreInstanceId {
 }
 
 #[test]
+fn old_image_binding_refuses_active_and_rebind_before_engine_open() {
+    let image = compile(BASE_SOURCE, BASE_IDS);
+    let edited = compile(&BASE_SOURCE.replace("?? 0", "?? 1"), BASE_IDS);
+    for presented in [&image, &edited] {
+        for broken_engine in [false, true] {
+            let scratch = Scratch::new("old-image-binding");
+            let dir = scratch.dir();
+            provision_from(dir, &image);
+            let head_path = dir.join(marrow_lifecycle::HEAD_FILE);
+            let mut head = LogicalHead::decode(&std::fs::read(&head_path).expect("head"))
+                .expect("current head");
+            head.binding.image_format_version = 0;
+            std::fs::write(&head_path, head.encode()).expect("old image binding");
+            if broken_engine {
+                std::fs::write(dir.join(marrow_lifecycle::ENGINE_FILE), b"not an engine")
+                    .expect("broken engine control");
+            }
+            let before: Vec<_> = [
+                marrow_lifecycle::ENGINE_FILE,
+                marrow_lifecycle::HEAD_FILE,
+                marrow_lifecycle::ENVELOPE_FILE,
+            ]
+            .into_iter()
+            .map(|name| (name, std::fs::read(dir.join(name)).expect("before refusal")))
+            .collect();
+            let error = attach(dir, prepare(presented.clone()))
+                .err()
+                .expect("an old image binding must not be attached or rebound");
+            assert_eq!(error.code(), "store.format_version");
+            assert!(matches!(
+                error,
+                LifecycleError::Open(marrow_lifecycle::OpenError::Admission(
+                    marrow_lifecycle::AdmissionError {
+                        entry: marrow_lifecycle::StoreEntry::Head,
+                        fault: marrow_lifecycle::AdmissionFault::Format(
+                            marrow_lifecycle::FormatError::UnsupportedImageVersion { found: 0 }
+                        ),
+                    }
+                ))
+            ));
+            for (name, bytes) in before {
+                assert_eq!(std::fs::read(dir.join(name)).expect("after refusal"), bytes);
+            }
+        }
+    }
+}
+
+#[test]
 fn active_binding_and_head_map_derive_from_the_image() {
     let image = compile(BASE_SOURCE, BASE_IDS);
     let binding = active_binding(&image);

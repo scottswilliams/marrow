@@ -94,6 +94,14 @@ generation-2 stores. These refusals preserve the engine file, head, and envelope
 owner-marker bookkeeping may still occur. Using the matching toolchain leaves
 the store usable. Rebind and import never migrate its layout.
 
+The active binding must also name image generation 1. Attach, import and audit
+refuse other image generations with `store.format_version` before engine open,
+even when a newly compiled program has the same durable contract. This refusal
+preserves the engine file, head and envelope; owner-marker bookkeeping may occur.
+Keep the old source, identity ledger, image and tools with the old store for data
+extraction. No command converts it in place
+([compatibility](../compatibility.md#versioning)).
+
 ## Interrupted commits
 
 Whether an invocation returned and whether its commit happened are two separate

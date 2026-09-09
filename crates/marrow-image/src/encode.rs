@@ -54,7 +54,8 @@ use crate::value_dag::{
 
 /// Container magic, version, and envelope widths, shared with the measure core.
 pub(crate) const MAGIC: &[u8; 4] = b"MWI\0";
-pub(crate) const VERSION: u8 = 0x00;
+/// The image generation this toolchain emits and admits.
+pub const IMAGE_FORMAT_VERSION: u8 = 0x01;
 pub(crate) const SECTION_COUNT: u8 = 10;
 /// One SPANS row: `u32(offset) ‖ u32(line) ‖ u32(column)` — the row width
 /// `encode_spans` spells in three `u32` pushes and the measure core's span counting
@@ -636,7 +637,7 @@ pub(crate) fn remap_of(permutation: &[usize]) -> Vec<u16> {
 /// fact a count consumes.
 pub(crate) fn write_image_header(sink: &mut impl ImageByteSink, digest: &[u8; 32]) {
     sink.extend_bytes(MAGIC);
-    sink.push(VERSION);
+    sink.push(IMAGE_FORMAT_VERSION);
     sink.extend_bytes(digest);
 }
 

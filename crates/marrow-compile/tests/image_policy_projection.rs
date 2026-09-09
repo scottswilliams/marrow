@@ -22,8 +22,8 @@
 //! read from the owner's source so a new variant cannot slip past the classification.
 //! And over a frozen corpus, the six things `compile` reports about an accepted or
 //! refused image — kind, accepted bytes, `ImageId`, exports, tests, and naming — are
-//! pinned byte-for-byte against the values the base produced, so deferring the encode
-//! past the semantic fence moved nothing a caller can observe.
+//! pinned against current-generation known answers, keeping the image projection
+//! and its semantic facts explicit.
 
 use std::sync::Arc;
 
@@ -694,14 +694,13 @@ const NOOP_ID: &str = "acc0e4892dc9149eef25a215d6fd6304ea6382d717452ed67a7662bb7
 /// to read, so the churn is the cheaper of the two.
 const NO_NAMING: &str = "DurableNaming { by_id: {} }";
 
-/// The digests the base produced, pinned. Regenerating them is not a repair: a change
-/// here is a change to what `compile` reports about an image, and it is a contract change
-/// reviewed as one.
+/// Current-generation image identities and semantic projections. A change to these
+/// known answers requires review of the encoded contract.
 const FROZEN_ACCEPTED: &[FrozenDigest] = &[
     FrozenDigest {
         name: "unit",
         bytes: 241,
-        image_id: "75054e7c9d536984fe524c510504a1f840234e369a5e4fb66745a70708b67a7d",
+        image_id: "035ae05076c999b24fe66b7f21bc75e135cccacded0df806eaeee79799f25341",
         exports: &[("main", "f", F_ID)],
         tests: &[],
         naming: NO_NAMING,
@@ -709,7 +708,7 @@ const FROZEN_ACCEPTED: &[FrozenDigest] = &[
     FrozenDigest {
         name: "multi-module",
         bytes: 397,
-        image_id: "9720941f296e9fa79d36ca8d8eb05049fd6d76e828ed2cff51f0fc4883a554bb",
+        image_id: "fc316c9668e2f230b17cb72c30866bf679db9cdad4a7028fa8309e32288bb653",
         exports: &[("main", "f", F_ID), ("other", "g", G_ID)],
         tests: &[],
         naming: NO_NAMING,
@@ -717,7 +716,7 @@ const FROZEN_ACCEPTED: &[FrozenDigest] = &[
     FrozenDigest {
         name: "tests",
         bytes: 462,
-        image_id: "c614971142d05f7e18acc3c3f32207a5575f5beda03eb47da4a77df9c040474b",
+        image_id: "15d42451a02b9e6b14c6c6c199f5578ad9254ffce25d97ffaab0b84e1a35954a",
         exports: &[("main", "f", F_ID)],
         tests: &[
             ("one", "main", "src/main.mw", 7, 6),
@@ -728,7 +727,7 @@ const FROZEN_ACCEPTED: &[FrozenDigest] = &[
     FrozenDigest {
         name: "durable",
         bytes: 430,
-        image_id: "ab026b325171aef8996b70df12d79574a09a6ae7e7ee9f3e6c9366503e6a428b",
+        image_id: "7e6bc4baabe8c7e505c71fa8fafbf7adf29eacac7a348e5a7852189d4fb8c6d3",
         exports: &[("main", "noop", NOOP_ID)],
         tests: &[],
         naming: "DurableNaming { by_id: {LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
@@ -739,7 +738,7 @@ const FROZEN_ACCEPTED: &[FrozenDigest] = &[
     FrozenDigest {
         name: "shared-generic",
         bytes: 436,
-        image_id: "c4d26d16c9074de78adf8cd677f31b41defcf95b83e9fe6754c8a9623695e6c5",
+        image_id: "cf1f1e5c00c14078bb4aa119dd2d0d60d205bf1ed9fb060b559b76ae5e008b77",
         exports: &[("main", "f", F_ID)],
         tests: &[("identity holds", "main", "src/main.mw", 11, 6)],
         naming: NO_NAMING,
@@ -762,42 +761,42 @@ const FROZEN_REFUSED: &[(&str, &str, u64)] = &[
 const FROZEN_FULL_IMAGE_DIGESTS: &[(&str, &str)] = &[
     (
         "unit",
-        "1d722ce25469d85c56178bed2844b5c2f5629773daa5f3da7506e6b953feae0d",
+        "a1f905cb2767236dd474ac17e98f44c06556dfce30883bacaf5f810b63e712ee",
     ),
     (
         "multi-module",
-        "c80bc283b4951c73ba9bccd9175f52a40f6bb3e8f68b96059bfaba321fbe2ebf",
+        "e78a012b1086a4d9a7719e894585d1b9f68888394c7d82ebc945c09c094891b3",
     ),
     (
         "tests",
-        "759470cd2ccffe440a0a3fd7b27ffa6658529f51832165d1f96c8be9a1773c63",
+        "b8ccafe87a71935017b7e2cac4b7996e5738dcb653f2f976f527613154780b21",
     ),
     (
         "durable",
-        "4e740593a18ce82a2418888c3c3aae6b83449dd30900de8dba03346b37800f2d",
+        "0de7cd133ad1daab9f56040bfb4621a680d77e1ab297567ed7d7294fb2a4f52f",
     ),
     (
         "shared-generic",
-        "4adc69e1bf93173f722cfe6d45a3bb996221ff34350cbf79c5004d35a0411276",
+        "8f766c9d84b534f52505a24db02afc6b6ba930c2b15b8d9251d43f6480722fbd",
     ),
 ];
 
 /// The production `compile` image of the two entries whose test-inclusive image
 /// diverges from it: the shared generic, whose instance index moves when a test slot is
 /// reserved ahead of it, and the over-test-entries project, which `compile` accepts
-/// while the test-inclusive projection refuses. Both are the bytes the base produced;
+/// while the test-inclusive projection refuses. Both pin current-generation bytes;
 /// `check` encoding the test-inclusive image moves neither.
 const FROZEN_PRODUCTION_IMAGE_DIGESTS: &[(&str, usize, &str)] = &[
     (
         "shared-generic",
         309,
-        "ae26b8fb4a5bbd002b3df25a45375a6a771262bb06262f31f65b9071d8e377de",
+        "5d25637556e852892757fdcaff297c40030dd4798407989203e00595ba3406bd",
     ),
     // Its 257 tests are excluded, so this is exactly the `unit` entry's image.
     (
         "over-test-entries",
         241,
-        "1d722ce25469d85c56178bed2844b5c2f5629773daa5f3da7506e6b953feae0d",
+        "a1f905cb2767236dd474ac17e98f44c06556dfce30883bacaf5f810b63e712ee",
     ),
 ];
 
@@ -805,7 +804,7 @@ const FROZEN_PRODUCTION_IMAGE_DIGESTS: &[(&str, usize, &str)] = &[
 /// hex-spelled: the one entry small enough to freeze byte-for-byte rather than only
 /// through a digest, so a digest-construction change cannot silently re-pin all four.
 const FROZEN_UNIT_IMAGE_BYTES: &str = concat!(
-    "4d5749000075054e7c9d536984fe524c510504a1f840234e369a5e4fb66745a70708b67a7d0a010000001200",
+    "4d57490001035ae05076c999b24fe66b7f21bc75e135cccacded0df806eaeee79799f253410a010000001200",
     "02000166000b7372632f6d61696e2e6d77020000000200000300000024000000002dfe38374fee7fb0f47165",
     "a51be68bd3ff0a3800d3c31622e369eaf8e8aa437e040000000b000101000000000000000105000000120001",
     "000000010001000000000004010000050600000024000113e67fafae418c8c50bbc520d97f63360a8ad63c1a",
@@ -855,10 +854,10 @@ fn the_full_image_bytes_are_frozen() {
     );
 }
 
-/// Red 4. Over the frozen corpus, the six things `compile` reports about an image are
-/// identical to the values the base produced, fact by fact.
+/// Over the frozen corpus, all six image projections match their current-generation
+/// known answers, fact by fact.
 #[test]
-fn the_image_projection_is_byte_identical_to_the_base() {
+fn the_image_projection_matches_current_generation_known_answers() {
     let expected: Vec<(String, ImageDigest)> = FROZEN_ACCEPTED
         .iter()
         .map(|frozen| (frozen.name.to_string(), frozen.expected()))

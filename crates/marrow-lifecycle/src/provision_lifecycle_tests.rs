@@ -70,7 +70,7 @@ fn request(instance: StoreInstanceId) -> ProvisionRequest {
     };
     let head_map = HeadMap::assign(&[LedgerIdBytes::from_bytes([1; 16])]).expect("head map");
     let binding = ActiveBinding {
-        image_format_version: 0,
+        image_format_version: marrow_image::IMAGE_FORMAT_VERSION,
         image_id: [0x11; 32],
         durable_contract: [0x22; 32],
         interface: [0x33; 32],
