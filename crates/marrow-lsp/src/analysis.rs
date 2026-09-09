@@ -12,7 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use marrow_compile::{AnalysisFailure, AnalysisSnapshot, InputRevision, analyze};
+use marrow_compile::{
+    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, InputRevision, analyze,
+};
 use marrow_project_fs::ProjectInput;
 use marrow_project_fs::{
     CaptureFailure, CapturePresentation, OverlayEntry, OverlaySnapshot, capture_project,
@@ -45,6 +47,8 @@ pub enum AnalysisOutcome {
     ResourceLimit {
         /// The revision the exhausted analysis belonged to.
         revision: InputRevision,
+        /// The compiler's canonical exhausted bound, without a source location.
+        limit: AnalysisResourceLimit,
     },
     /// The compiler was internally incoherent. Fail-stop class.
     Invariant,
@@ -103,8 +107,8 @@ pub fn run_analysis(
 fn run_analyze(input: ProjectInput, revision: InputRevision) -> AnalysisOutcome {
     match analyze(Arc::new(input), revision) {
         Ok(snapshot) => AnalysisOutcome::Snapshot(snapshot),
-        Err(AnalysisFailure::ResourceLimit { revision, .. }) => {
-            AnalysisOutcome::ResourceLimit { revision }
+        Err(AnalysisFailure::ResourceLimit { revision, limit }) => {
+            AnalysisOutcome::ResourceLimit { revision, limit }
         }
         Err(AnalysisFailure::Invariant { .. }) => AnalysisOutcome::Invariant,
     }
@@ -287,6 +291,36 @@ mod tests {
             }
             other => panic!("expected snapshot, got {}", label(&other)),
         }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_whole_analysis_stop_retains_the_compilers_typed_bound() {
+        let dir = temp_dir("syntax-stop");
+        write_project(&dir, &[("src/main.mw", "module main\n")]);
+        let root = root_for(&dir);
+        let source = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
+        let revision = InputRevision::new(7);
+        let overlay = [OverlayInput {
+            key: "src/main.mw",
+            bytes: source.as_bytes(),
+        }];
+        let AnalysisOutcome::ResourceLimit {
+            revision: actual,
+            limit: AnalysisResourceLimit::Compile(limit),
+        } = run_analysis(&root, &overlay, revision)
+        else {
+            panic!("syntax diagnostic overflow is a typed whole-analysis stop");
+        };
+        assert_eq!(actual, revision);
+        assert_eq!(
+            limit.kind(),
+            marrow_compile::ResourceLimitKind::DiagnosticCount
+        );
+        assert_eq!(
+            limit.limit(),
+            marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT as u64
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

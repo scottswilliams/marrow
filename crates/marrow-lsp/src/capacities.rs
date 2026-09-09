@@ -71,14 +71,16 @@ pub const OUTBOUND_QUEUE_CAPACITY: usize = 8;
 /// to the coordinator.
 pub const RECEIPT_QUEUE_CAPACITY: usize = 8;
 
-/// The number of distinct revision-owned snapshot records the server retains at once,
-/// bounded by the coordinator's current-plus-pending snapshot `Option`s. Two lets a newer
-/// analysis land while an in-flight request still references the prior snapshot.
+/// The number of distinct revision-owned snapshot records retained at once: the
+/// coordinator's current ready result and the serialized worker's arriving result.
+/// Pending publication retains only a revision number, and held requests retain no
+/// snapshot. A stopped result retains one typed bound instead of a snapshot.
 pub const MAX_RETAINED_SNAPSHOTS: usize = 2;
 
 /// `W`: the number of non-`Clone` outbound credits. Equals outbound-queue capacity
-/// plus one active writer plus receipt-queue capacity. Every response, error, null-id
-/// protocol frame, and `showMessage` acquires one before construction.
+/// plus one active writer plus receipt-queue capacity. Every frame acquires one
+/// before handoff to the writer. Pre-encoded publication frames remain charged to
+/// their exclusive plan until handoff; unanswered semantic queries remain held.
 pub const OUTBOUND_CREDITS: usize = OUTBOUND_QUEUE_CAPACITY + 1 + RECEIPT_QUEUE_CAPACITY;
 
 /// The stack size for each spawned server thread. The analysis worker parses untrusted
@@ -123,9 +125,8 @@ pub const B_PROJECT_BYTES: u64 = 64 * 1024;
 pub const B_SNAPSHOT_BYTES: u64 = 12 * 1024 * 1024;
 
 /// The bytes reserved for coordinator transient state that is not otherwise itemized:
-/// the pending-edit slot, the active job, the worker result, the pending result, and
-/// the capture-transient evidence (`B_pending_edit + B_active_job + B_worker_result +
-/// B_pending_result + B_cap_transient`).
+/// the pending-edit slot, the active job, the worker result, the current typed stop,
+/// the pending-publication revision, and the capture-transient evidence.
 pub const B_COORDINATOR_TRANSIENT_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The persistent delivered-diagnostic ledger ceiling (`B_diag_ledger`): the retained
@@ -133,8 +134,8 @@ pub const B_COORDINATOR_TRANSIENT_BYTES: u64 = 4 * 1024 * 1024;
 pub const B_DIAG_LEDGER_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The publication-plan ceiling (`B_publication_plan`): every fully encoded diagnostic
-/// frame still owned by the in-flight plan, plus the retained old-ledger/new-snapshot
-/// union keys and owned receipt mutations (`B_diag_union`).
+/// or analysis-stop notice frame still owned by the in-flight plan, plus the retained
+/// old-ledger/new-snapshot union keys and owned receipt mutations (`B_diag_union`).
 pub const B_PUBLICATION_PLAN_BYTES: u64 = 24 * 1024 * 1024;
 
 /// The largest single outbound frame body the server constructs (`F_out`): a response,

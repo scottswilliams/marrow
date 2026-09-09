@@ -19,8 +19,8 @@ use serde::ser::{SerializeStruct, Serializer};
 use crate::capacities::MAX_OUTBOUND_FRAME_BYTES;
 use crate::protocol::RequestId;
 
-/// A window/showMessage severity. Only `ERROR` is used by H00a (a background capture
-/// failure); the type is closed to what the server sends.
+/// A window/showMessage severity. Background capture failures and whole-analysis
+/// stops use `ERROR`; the type is closed to what the server sends.
 #[derive(Clone, Copy)]
 pub enum MessageType {
     /// `MessageType.Error` (1).

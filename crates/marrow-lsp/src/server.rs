@@ -30,7 +30,7 @@ use lsp_types::{
     ServerCapabilities, ServerInfo, SignatureHelpOptions, SignatureHelpParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
-use marrow_compile::{AnalysisSnapshot, InputRevision};
+use marrow_compile::{AnalysisResourceLimit, AnalysisSnapshot, InputRevision};
 
 use crate::analysis::{
     AnalysisOutcome, CaptureRejection, OverlayInput, run_analysis, validate_overlay,
@@ -340,9 +340,9 @@ enum HeldKind {
     DocumentSymbol,
 }
 
-/// A semantic request held until the analysis snapshot for its revision is ready. It is
-/// bound to the admission-time revision and document version, and reauthorized before its
-/// success is encoded: a changed revision or document state replaces the success with
+/// A semantic request held until current analysis completes and outbound credit is
+/// available. It is bound to the admission-time revision and document version, and
+/// reauthorized before either a success or resource refusal: changed input produces
 /// `-32801 ContentModified`. Only fixed-size fields are retained — never the raw params —
 /// so the held set is bounded by the request-ledger capacity, not the inbound frame size.
 struct HeldQuery {
@@ -370,9 +370,9 @@ enum CaptureEpisode {
 
 // ---- publication ----
 
-/// The in-flight diagnostic publication set holding the exclusive plan credit until every
-/// frame delivers. Records the capture-episode latch it observed at commit, so only a set
-/// that observed the still-current latch resets it.
+/// The in-flight analysis publication set holding the exclusive plan credit until every
+/// frame delivers. Only a successful snapshot records the capture-episode latch it
+/// observed at commit; a resource-stop publication cannot reset that latch.
 struct PublicationState {
     credit: PublicationPlanCredit,
     /// Pre-encoded frames not yet handed off, charged against the publication-plan bound.
@@ -382,6 +382,14 @@ struct PublicationState {
     observed_episode: Option<u64>,
 }
 
+/// The result for `current_revision`. An admitted edit invalidates it before capture
+/// or analysis can run, so an older result can never answer a current request.
+enum CurrentAnalysis {
+    Pending,
+    Ready(Arc<AnalysisSnapshot>),
+    ResourceLimited(AnalysisResourceLimit),
+}
+
 /// The process-main coordinator.
 struct Coordinator {
     lifecycle: Lifecycle,
@@ -389,8 +397,7 @@ struct Coordinator {
     ledger: DocumentLedger,
     revisions: RevisionCounter,
     current_revision: InputRevision,
-    snapshot: Option<Arc<AnalysisSnapshot>>,
-    snapshot_revision: Option<InputRevision>,
+    analysis: CurrentAnalysis,
     published: Vec<DocumentKey>,
 
     requests: RequestLedger,
@@ -413,7 +420,7 @@ struct Coordinator {
 
     publication_credits: CreditPool<PublicationPlanCredit>,
     publication: Option<PublicationState>,
-    pending_publication: Option<Arc<AnalysisSnapshot>>,
+    pending_publication: Option<InputRevision>,
 
     /// Outbound frame bytes for the driver to write, in order.
     outbox: VecDeque<Vec<u8>>,
@@ -442,8 +449,7 @@ impl Coordinator {
             ledger: DocumentLedger::new(),
             revisions,
             current_revision,
-            snapshot: None,
-            snapshot_revision: None,
+            analysis: CurrentAnalysis::Pending,
             published: Vec::new(),
             requests: RequestLedger::new(request_capacity),
             anonymous_slots: 0,
@@ -631,8 +637,8 @@ impl Coordinator {
         };
         // Every semantic reply is deferred as a held query and served only against an
         // available outbound credit, so a burst of requests cannot materialize a burst of
-        // (possibly large) reply frames. When a snapshot is ready and a credit is free the
-        // query is answered synchronously here; otherwise it waits.
+        // (possibly large) reply frames. When current analysis has completed and a credit
+        // is free, the query is answered synchronously here; otherwise it waits.
         self.held_queries.push(held);
         self.serve_ready_queries();
     }
@@ -656,11 +662,17 @@ impl Coordinator {
             self.answer_error(&held.id, INTERNAL_ERROR, "internal error");
             return;
         };
-        let Some(snapshot) = self.snapshot.clone() else {
-            self.answer_error(&held.id, REQUEST_FAILED, "analysis not ready");
-            return;
+        let answer = match &self.analysis {
+            CurrentAnalysis::Ready(snapshot) => {
+                self.answer_kind(snapshot, &root, &held.kind, &held.key)
+            }
+            CurrentAnalysis::ResourceLimited(_) => SemanticAnswer::ResourceLimit,
+            CurrentAnalysis::Pending => {
+                self.answer_error(&held.id, REQUEST_FAILED, "analysis not ready");
+                return;
+            }
         };
-        match self.answer_kind(&snapshot, &root, &held.kind, &held.key) {
+        match answer {
             SemanticAnswer::Reply(body) => {
                 let outbound = body.into_outbound(held.id.clone());
                 self.respond(held.id, outbound);
@@ -794,6 +806,7 @@ impl Coordinator {
             return;
         };
         self.current_revision = revision;
+        self.analysis = CurrentAnalysis::Pending;
         self.admit_document(&root, key, document.version, document.text);
     }
 
@@ -828,6 +841,7 @@ impl Coordinator {
             return;
         };
         self.current_revision = revision;
+        self.analysis = CurrentAnalysis::Pending;
         self.admit_document(&root, key, version, change.text);
     }
 
@@ -855,6 +869,7 @@ impl Coordinator {
             return;
         };
         self.current_revision = revision;
+        self.analysis = CurrentAnalysis::Pending;
         self.ledger.remove(&key);
         // Closing commits the removal and revision, but disk recapture waits until every
         // remaining open entry is available (design: no recompute while an entry is
@@ -948,9 +963,8 @@ impl Coordinator {
         match outcome {
             AnalysisOutcome::Snapshot(snapshot) => {
                 if snapshot.revision() == self.current_revision {
-                    self.snapshot = Some(snapshot.clone());
-                    self.snapshot_revision = Some(snapshot.revision());
-                    self.begin_publication(snapshot);
+                    self.analysis = CurrentAnalysis::Ready(snapshot);
+                    self.begin_publication();
                     self.serve_ready_queries();
                 }
             }
@@ -959,12 +973,13 @@ impl Coordinator {
                     self.on_background_capture_failure(rejection);
                 }
             }
-            AnalysisOutcome::ResourceLimit { revision } => {
-                // Recoverable: publishes and clears nothing. A request whose bound analysis
-                // reached the resource limit gets a fixed `-32803`; the delivered
-                // diagnostic ledger is unchanged.
-                if revision == self.current_revision {
-                    self.fail_held_queries();
+            AnalysisOutcome::ResourceLimit { revision, limit } => {
+                if revision == self.current_revision
+                    && !matches!(self.analysis, CurrentAnalysis::ResourceLimited(_))
+                {
+                    self.analysis = CurrentAnalysis::ResourceLimited(limit);
+                    self.begin_publication();
+                    self.serve_ready_queries();
                 }
             }
             AnalysisOutcome::Invariant => {
@@ -979,28 +994,19 @@ impl Coordinator {
         }
     }
 
-    /// Answer held queries while a snapshot for the current revision is ready and an
+    /// Answer held queries while analysis for the current revision is complete and an
     /// outbound credit is available. A potentially large reply (a whole-document format) is
     /// thus only ever materialized against an available credit, so replies never enter the
     /// pending-frame queue; the unanswered remainder stays held — bounded by the request
     /// ledger, at fixed-size cost — and is served as credits free on later receipts.
     fn serve_ready_queries(&mut self) {
-        while self.snapshot_revision == Some(self.current_revision)
+        while !matches!(self.analysis, CurrentAnalysis::Pending)
             && self.outbound_credits.available() > 0
         {
             let Some(query) = self.held_queries.pop() else {
                 break;
             };
             self.answer_held(query);
-        }
-    }
-
-    /// Answer every held query with a fixed `-32803`: the analysis for their revision could
-    /// not produce a snapshot (a resource limit), so no success is possible.
-    fn fail_held_queries(&mut self) {
-        let held: Vec<HeldQuery> = std::mem::take(&mut self.held_queries);
-        for query in held {
-            self.answer_error(&query.id, REQUEST_FAILED, "analysis resource limit");
         }
     }
 
@@ -1028,23 +1034,35 @@ impl Coordinator {
 
     // ---- publication (exclusive) ----
 
-    fn begin_publication(&mut self, snapshot: Arc<AnalysisSnapshot>) {
+    fn begin_publication(&mut self) {
         // Publication exclusivity: only one plan builds/commits at a time. A newer result
         // while a plan is in flight waits (latest-wins) and derives its tombstones only
         // after the prior final receipt.
         if self.publication.is_some() {
-            self.pending_publication = Some(snapshot);
+            self.pending_publication = Some(self.current_revision);
             return;
         }
         let Some(credit) = self.publication_credits.acquire() else {
-            self.pending_publication = Some(snapshot);
+            self.pending_publication = Some(self.current_revision);
             return;
         };
-        let observed_episode = match self.episode {
-            CaptureEpisode::Latched { episode, .. } => Some(episode),
-            CaptureEpisode::Eligible => None,
+        let (frames, new_published, observed_episode) = match &self.analysis {
+            CurrentAnalysis::Ready(snapshot) => {
+                let (frames, published) = self.plan_publication(snapshot);
+                let observed = match self.episode {
+                    CaptureEpisode::Latched { episode, .. } => Some(episode),
+                    CaptureEpisode::Eligible => None,
+                };
+                (frames, published, observed)
+            }
+            CurrentAnalysis::ResourceLimited(limit) => {
+                (self.plan_resource_stop(limit), Vec::new(), None)
+            }
+            CurrentAnalysis::Pending => {
+                self.publication_credits.release(credit);
+                return;
+            }
         };
-        let (frames, new_published) = self.plan_publication(&snapshot);
         // Pre-encode the whole set fallibly before committing anything. A serialization
         // failure or a plan whose retained bytes exceed the publication-plan bound is a
         // fixed `PublicationPlanFailed`: the credit is released, the delivered ledger and
@@ -1074,7 +1092,8 @@ impl Coordinator {
             self.reset_episode_if_observed(observed_episode);
             return;
         }
-        // Commit: the delivered-ledger update happens only now, after every frame encoded.
+        // Commit the ledger only after every frame encodes. The exclusive credit keeps
+        // the next plan from reading it until this plan's final delivery receipt.
         self.published = new_published;
         self.publication = Some(PublicationState {
             credit,
@@ -1119,19 +1138,46 @@ impl Coordinator {
             .collect();
         for key in &self.published {
             if !snapshot_keys.contains(key)
-                && let Ok((identity, _)) = marrow_project_fs::FileIdentity::validate(key.relative())
-                && let Some(uri) = lsp_uri(&root, &identity)
+                && let Some(retraction) = Self::diagnostic_retraction(&root, key, None)
             {
-                frames.push(Outbound::PublishDiagnostics(Box::new(
-                    lsp_types::PublishDiagnosticsParams {
-                        uri,
-                        diagnostics: Vec::new(),
-                        version: None,
-                    },
-                )));
+                frames.push(retraction);
             }
         }
         (frames, new_published)
+    }
+
+    /// A stopped analysis has no source diagnostic set. Publish its canonical unlocated
+    /// explanation and retract only the files whose prior diagnostics were nonempty.
+    fn plan_resource_stop(&self, limit: &AnalysisResourceLimit) -> Vec<Outbound> {
+        let mut frames = vec![Outbound::ShowMessage {
+            typ: MessageType::Error,
+            message: format!("Analysis stopped: {}.", limit.description()),
+        }];
+        if let Some(root) = &self.root {
+            for key in &self.published {
+                let version = self.ledger.get(key).map(DocumentState::version);
+                if let Some(retraction) = Self::diagnostic_retraction(root, key, version) {
+                    frames.push(retraction);
+                }
+            }
+        }
+        frames
+    }
+
+    fn diagnostic_retraction(
+        root: &SelectedRoot,
+        key: &DocumentKey,
+        version: Option<i32>,
+    ) -> Option<Outbound> {
+        let (identity, _) = marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
+        let uri = lsp_uri(root, &identity)?;
+        Some(Outbound::PublishDiagnostics(Box::new(
+            lsp_types::PublishDiagnosticsParams {
+                uri,
+                diagnostics: Vec::new(),
+                version,
+            },
+        )))
     }
 
     /// Move pre-encoded publication frames into the outbound path one per available credit,
@@ -1175,12 +1221,12 @@ impl Coordinator {
             self.reset_episode_if_observed(state.observed_episode);
             // A newer result that waited may now build its plan and derive tombstones from
             // the final ledger.
-            if let Some(snapshot) = self
+            if self
                 .pending_publication
                 .take()
-                .filter(|snapshot| snapshot.revision() == self.current_revision)
+                .is_some_and(|revision| revision == self.current_revision)
             {
-                self.begin_publication(snapshot);
+                self.begin_publication();
             }
         }
     }
@@ -1396,8 +1442,8 @@ impl OutboundBody {
 enum SemanticAnswer {
     Reply(OutboundBody),
     ContentModified,
-    /// A query-local analysis resource refusal (an over-cap candidate set or rendered
-    /// display), mapped to the recoverable `-32803` law — never a truncated result.
+    /// A whole-analysis stop or a query-local resource refusal, mapped to the
+    /// recoverable `-32803` law — never a truncated result.
     ResourceLimit,
     Internal,
 }
@@ -2068,23 +2114,105 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ---- Law: a resource-limited analysis fails held queries with -32803 ----
+    // ---- Law: whole-analysis resource stops complete their exact revision ----
+
+    const TYPE_ERROR: &str = "module main\n\npub fn f(): int {\n    return true\n}\n";
+
+    fn run_next_job(coordinator: &mut Coordinator) -> AnalysisOutcome {
+        let job = coordinator.job_out.take().expect("analysis job dispatched");
+        let overlay: Vec<_> = job
+            .overlay
+            .iter()
+            .map(|(key, bytes)| OverlayInput { key, bytes })
+            .collect();
+        run_analysis(&job.root, &overlay, job.revision)
+    }
+
+    fn deliver_frames(coordinator: &mut Coordinator) -> Vec<String> {
+        let mut delivered = Vec::new();
+        while let Some(frame) = coordinator.outbox.pop_front() {
+            delivered.push(String::from_utf8(frame).expect("encoded UTF-8 frame"));
+            coordinator.on_receipt();
+        }
+        delivered
+    }
+
+    fn notifications(messages: &[String], expected: &str) -> Vec<Box<serde_json::value::RawValue>> {
+        messages
+            .iter()
+            .filter_map(|message| match decode(message.as_bytes()) {
+                Inbound::Notification { method, params } if method == expected => {
+                    Some(params.expect("notification parameters"))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn diagnostic_publications(messages: &[String]) -> Vec<lsp_types::PublishDiagnosticsParams> {
+        notifications(messages, "textDocument/publishDiagnostics")
+            .iter()
+            .map(|params| serde_json::from_str(params.get()).expect("diagnostic parameters"))
+            .collect()
+    }
+
+    fn diagnosed_coordinator(dir: &Path) -> Coordinator {
+        let mut coordinator = running(dir);
+        // `running` already delivered initialization; remove its retained test frame.
+        coordinator.outbox.clear();
+        let initial = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(initial);
+        deliver_frames(&mut coordinator);
+
+        coordinator.on_frame(open_body(dir, 1, TYPE_ERROR).as_bytes());
+        let outcome = run_next_job(&mut coordinator);
+        let AnalysisOutcome::Snapshot(snapshot) = &outcome else {
+            panic!("ordinary type error produces a complete snapshot");
+        };
+        assert!(
+            snapshot
+                .diagnostics()
+                .iter()
+                .any(|d| d.code() == "check.type")
+        );
+        coordinator.on_worker_result(outcome);
+        let delivered = deliver_frames(&mut coordinator);
+        let publications = diagnostic_publications(&delivered);
+        assert!(publications.iter().any(|params| {
+            params.uri.as_str() == format!("{}/src/main.mw", root_uri(dir))
+                && params.version == Some(1)
+                && !params.diagnostics.is_empty()
+        }));
+        assert!(!coordinator.published.is_empty());
+        assert!(
+            coordinator.publication.is_none(),
+            "prior diagnostics delivered"
+        );
+        coordinator
+    }
+
+    fn syntax_stop(coordinator: &mut Coordinator, dir: &Path, version: i64) -> AnalysisOutcome {
+        let source = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
+        coordinator.on_frame(change_body(dir, version, &source).as_bytes());
+        let outcome = run_next_job(coordinator);
+        assert!(matches!(
+            outcome,
+            AnalysisOutcome::ResourceLimit { revision, .. }
+                if revision == coordinator.current_revision
+        ));
+        outcome
+    }
 
     #[test]
     fn analysis_resource_limit_fails_held_queries() {
-        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
-        let dir = temp_project("reslimit", main);
-        let mut coordinator = running(&dir);
-        coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
-        coordinator.job_out = None;
+        let dir = temp_project("reslimit-held", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let outcome = syntax_stop(&mut coordinator, &dir, 2);
 
-        coordinator.on_frame(hover_body(&dir, 8, 3, 12).as_bytes());
+        coordinator.on_frame(hover_body(&dir, 8, 0, 0).as_bytes());
         assert_eq!(coordinator.held_queries.len(), 1);
 
-        coordinator.on_worker_result(AnalysisOutcome::ResourceLimit {
-            revision: coordinator.current_revision,
-        });
+        coordinator.on_worker_result(outcome);
         assert!(coordinator.held_queries.is_empty(), "held queries drain");
         assert!(
             frames(&coordinator)
@@ -2092,6 +2220,551 @@ mod tests {
                 .any(|f| f.contains(r#""id":8"#) && f.contains("-32803")),
             "a held query at a resource-limited revision is -32803"
         );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_completes_late_current_queries() {
+        let dir = temp_project("reslimit-late", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let outcome = syntax_stop(&mut coordinator, &dir, 2);
+        coordinator.on_worker_result(outcome);
+        deliver_frames(&mut coordinator);
+
+        coordinator.on_frame(hover_body(&dir, 9, 0, 0).as_bytes());
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|frame| frame.contains(r#""id":9,"#) && frame.contains(r#""code":-32803,"#)),
+            "a request admitted after the stop completes without another worker result"
+        );
+        assert!(coordinator.held_queries.is_empty());
+        assert!(coordinator.requests.is_live(&RequestId::Integer(9)));
+        deliver_frames(&mut coordinator);
+        assert!(!coordinator.requests.is_live(&RequestId::Integer(9)));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_reauthorizes_queries_held_across_an_edit() {
+        let dir = temp_project("reslimit-stale-query", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        coordinator.on_frame(change_body(&dir, 2, TYPE_ERROR).as_bytes());
+        let old_outcome = run_next_job(&mut coordinator);
+        coordinator.on_frame(hover_body(&dir, 10, 3, 12).as_bytes());
+        assert_eq!(coordinator.held_queries.len(), 1);
+
+        let source = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
+        coordinator.on_frame(change_body(&dir, 3, &source).as_bytes());
+        coordinator.on_worker_result(old_outcome);
+        let outcome = run_next_job(&mut coordinator);
+        assert!(matches!(outcome, AnalysisOutcome::ResourceLimit { .. }));
+        coordinator.on_worker_result(outcome);
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|frame| frame.contains(r#""id":10,"#) && frame.contains(r#""code":-32801,"#)),
+            "the older request is ContentModified, not a failure for the new revision"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_retracts_exactly_the_previously_published_files() {
+        let dir = temp_project("reslimit-retract", TYPE_ERROR);
+        fs::write(
+            dir.join("src/other.mw"),
+            "module other\npub fn g(): int { return false }\n",
+        )
+        .expect("second diagnostic file");
+        let mut coordinator = diagnosed_coordinator(&dir);
+        assert_eq!(coordinator.published.len(), 2);
+        let outcome = syntax_stop(&mut coordinator, &dir, 2);
+        coordinator.on_worker_result(outcome);
+        let delivered = deliver_frames(&mut coordinator);
+        let publications = diagnostic_publications(&delivered);
+        assert_eq!(
+            publications.len(),
+            2,
+            "every old diagnostic file is retracted"
+        );
+        assert!(
+            publications
+                .iter()
+                .all(|params| params.diagnostics.is_empty())
+        );
+        let mut identities: Vec<_> = publications
+            .iter()
+            .map(|params| (params.uri.as_str().to_owned(), params.version))
+            .collect();
+        identities.sort();
+        assert_eq!(
+            identities,
+            vec![
+                (format!("{}/src/main.mw", root_uri(&dir)), Some(2)),
+                (format!("{}/src/other.mw", root_uri(&dir)), None),
+            ]
+        );
+        assert!(coordinator.published.is_empty());
+        assert!(coordinator.publication.is_none());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_publishes_the_canonical_unlocated_explanation() {
+        let dir = temp_project("reslimit-notice", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let outcome = syntax_stop(&mut coordinator, &dir, 2);
+        coordinator.on_worker_result(outcome);
+        let delivered = deliver_frames(&mut coordinator);
+        let notices = notifications(&delivered, "window/showMessage");
+        assert_eq!(notices.len(), 1, "the stop has one unlocated explanation");
+        let params: lsp_types::ShowMessageParams =
+            serde_json::from_str(notices[0].get()).expect("showMessage parameters");
+        assert_eq!(params.typ, lsp_types::MessageType::ERROR);
+        assert!(
+            params
+                .message
+                .contains(marrow_compile::ResourceLimitKind::DiagnosticCount.description())
+        );
+        assert!(!notices[0].get().contains("\"uri\""));
+        assert!(!notices[0].get().contains("\"range\""));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_exact_count_and_later_recovery_remain_complete() {
+        let dir = temp_project("reslimit-boundary", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let exact = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT);
+        coordinator.on_frame(change_body(&dir, 2, &exact).as_bytes());
+        let outcome = run_next_job(&mut coordinator);
+        let AnalysisOutcome::Snapshot(snapshot) = &outcome else {
+            panic!("the exact syntax diagnostic count retains a complete snapshot");
+        };
+        assert_eq!(
+            snapshot.diagnostics().len(),
+            marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT
+        );
+        coordinator.on_worker_result(outcome);
+        let delivered = deliver_frames(&mut coordinator);
+        let publications = diagnostic_publications(&delivered);
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].version, Some(2));
+        assert_eq!(
+            publications[0].diagnostics.len(),
+            marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT
+        );
+        assert!(notifications(&delivered, "window/showMessage").is_empty());
+
+        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        coordinator.on_worker_result(stopped);
+        deliver_frames(&mut coordinator);
+        let recovered = "module main\n\npub fn f(): int {\n    const n = 1\n    return n\n}\n";
+        coordinator.on_frame(change_body(&dir, 4, recovered).as_bytes());
+        coordinator.on_frame(hover_body(&dir, 11, 4, 11).as_bytes());
+        assert_eq!(coordinator.held_queries.len(), 1);
+        let outcome = run_next_job(&mut coordinator);
+        let AnalysisOutcome::Snapshot(snapshot) = &outcome else {
+            panic!("a later small revision recovers");
+        };
+        assert!(snapshot.diagnostics().is_empty());
+        coordinator.on_worker_result(outcome);
+        let delivered = deliver_frames(&mut coordinator);
+        assert!(delivered.iter().any(|frame| {
+            frame.contains(r#""id":11,"#)
+                && frame.contains(r#""result":{"#)
+                && frame.contains("int")
+        }));
+        let publications = diagnostic_publications(&delivered);
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].version, Some(4));
+        assert!(publications[0].diagnostics.is_empty());
+        assert!(coordinator.held_queries.is_empty());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_from_an_older_job_cannot_replace_recovery() {
+        let dir = temp_project("reslimit-old-result", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        let recovered = "module main\npub fn f(): int { return 1 }\n";
+        coordinator.on_frame(change_body(&dir, 3, recovered).as_bytes());
+        coordinator.on_worker_result(stopped);
+        assert!(
+            frames(&coordinator).is_empty(),
+            "the older stop publishes nothing"
+        );
+        let outcome = run_next_job(&mut coordinator);
+        assert!(matches!(outcome, AnalysisOutcome::Snapshot(_)));
+        coordinator.on_worker_result(outcome);
+        let delivered = deliver_frames(&mut coordinator);
+        assert!(notifications(&delivered, "window/showMessage").is_empty());
+        let publications = diagnostic_publications(&delivered);
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].version, Some(3));
+        assert!(publications[0].diagnostics.is_empty());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_waits_for_the_prior_publication_receipt() {
+        let dir = temp_project("reslimit-pending", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let cleared = "module main\npub fn f(): int { return 1 }\n";
+        coordinator.on_frame(change_body(&dir, 2, cleared).as_bytes());
+        let outcome = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(outcome);
+        assert!(coordinator.publication.is_some());
+        let prior_frames = frames(&coordinator);
+
+        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        coordinator.on_worker_result(stopped);
+        assert!(
+            coordinator.pending_publication.is_some(),
+            "the stop waits for delivery"
+        );
+        assert_eq!(frames(&coordinator), prior_frames);
+        let delivered = deliver_frames(&mut coordinator);
+        let publications = diagnostic_publications(&delivered);
+        assert_eq!(
+            publications.len(),
+            1,
+            "the prior plan already cleared the ledger"
+        );
+        assert_eq!(publications[0].version, Some(2));
+        assert!(publications[0].diagnostics.is_empty());
+        assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
+        assert!(coordinator.publication.is_none());
+        assert!(coordinator.pending_publication.is_none());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_pending_publication_is_dropped_after_an_edit() {
+        let dir = temp_project("reslimit-pending-stale", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        coordinator.on_frame(change_body(&dir, 2, TYPE_ERROR).as_bytes());
+        let outcome = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(outcome);
+        assert!(coordinator.publication.is_some());
+        let prior_frames = frames(&coordinator);
+
+        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        coordinator.on_worker_result(stopped);
+        assert!(
+            coordinator.pending_publication.is_some(),
+            "the stop waits for delivery"
+        );
+        coordinator.on_frame(change_body(&dir, 4, TYPE_ERROR).as_bytes());
+        let delivered = deliver_frames(&mut coordinator);
+        assert_eq!(
+            delivered, prior_frames,
+            "the stale stop never builds a plan"
+        );
+        assert!(coordinator.pending_publication.is_none());
+        assert!(coordinator.publication.is_none());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_completes_all_six_semantic_request_kinds() {
+        let dir = temp_project("reslimit-methods", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let mut stopped = Some(syntax_stop(&mut coordinator, &dir, 2));
+        let position = r#", "position":{"line":0,"character":0}"#;
+        let methods = [
+            ("hover", position),
+            ("definition", position),
+            (
+                "formatting",
+                r#", "options":{"tabSize":4,"insertSpaces":true}"#,
+            ),
+            ("completion", position),
+            ("signatureHelp", position),
+            ("documentSymbol", ""),
+        ];
+        for batch in 0..2 {
+            for (index, (method, extra)) in methods.iter().enumerate() {
+                let id = 20 + batch * methods.len() + index;
+                coordinator.on_frame(format!(
+                    r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/{method}","params":{{"textDocument":{{"uri":"{}/src/main.mw"}}{extra}}}}}"#,
+                    root_uri(&dir)
+                ).as_bytes());
+            }
+            if let Some(outcome) = stopped.take() {
+                assert_eq!(coordinator.held_queries.len(), methods.len());
+                coordinator.on_worker_result(outcome);
+            }
+            let delivered = deliver_frames(&mut coordinator);
+            for index in 0..methods.len() {
+                let id = 20 + batch * methods.len() + index;
+                assert!(delivered.iter().any(|frame| {
+                    frame.contains(&format!("\"id\":{id},")) && frame.contains(r#""code":-32803,"#)
+                }));
+            }
+            assert!(coordinator.held_queries.is_empty());
+        }
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_holds_credit_starved_replies_until_receipts() {
+        let dir = temp_project("reslimit-credits", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        for id in 100..100 + crate::capacities::OUTBOUND_CREDITS {
+            coordinator.on_frame(
+                format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
+            );
+        }
+        assert_eq!(coordinator.outbound_credits.available(), 0);
+        coordinator.on_frame(hover_body(&dir, 20, 0, 0).as_bytes());
+        coordinator.on_worker_result(stopped);
+        coordinator.on_frame(hover_body(&dir, 21, 0, 0).as_bytes());
+        assert_eq!(coordinator.held_queries.len(), 2);
+        assert!(
+            coordinator.pending_frames.is_empty(),
+            "no eager error frames"
+        );
+        let plan = coordinator.publication.as_ref().expect("bounded stop plan");
+        assert_eq!(plan.in_flight_count, 0);
+        assert_eq!(plan.pending.len(), 2);
+        assert!(coordinator.requests.is_live(&RequestId::Integer(20)));
+        assert!(coordinator.requests.is_live(&RequestId::Integer(21)));
+
+        let delivered = deliver_frames(&mut coordinator);
+        for id in [20, 21] {
+            assert_eq!(
+                delivered
+                    .iter()
+                    .filter(|frame| {
+                        frame.contains(&format!("\"id\":{id},"))
+                            && frame.contains(r#""code":-32803,"#)
+                    })
+                    .count(),
+                1
+            );
+            assert!(!coordinator.requests.is_live(&RequestId::Integer(id)));
+        }
+        assert!(coordinator.held_queries.is_empty());
+        assert!(coordinator.pending_frames.is_empty());
+        assert!(coordinator.publication.is_none());
+        assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_coalesces_repeated_and_pending_stops() {
+        let dir = temp_project("reslimit-repeat", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        coordinator.on_worker_result(stopped);
+        let source = "@\n".repeat(marrow_syntax::SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
+        let root = selected_root(&dir);
+        let overlay = [OverlayInput {
+            key: "src/main.mw",
+            bytes: source.as_bytes(),
+        }];
+        let duplicate = run_analysis(&root, &overlay, coordinator.current_revision);
+        let first_frames = frames(&coordinator);
+        coordinator.on_worker_result(duplicate);
+        assert_eq!(frames(&coordinator), first_frames);
+        assert!(coordinator.pending_publication.is_none());
+
+        for version in [3, 4] {
+            let stopped = syntax_stop(&mut coordinator, &dir, version);
+            coordinator.on_worker_result(stopped);
+        }
+        assert_eq!(
+            coordinator.pending_publication,
+            Some(coordinator.current_revision)
+        );
+        let delivered = deliver_frames(&mut coordinator);
+        assert_eq!(notifications(&delivered, "window/showMessage").len(), 2);
+        let publications = diagnostic_publications(&delivered);
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].version, Some(2));
+        assert!(publications[0].diagnostics.is_empty());
+        let duplicate = run_analysis(&root, &overlay, coordinator.current_revision);
+        coordinator.on_worker_result(duplicate);
+        assert!(
+            frames(&coordinator).is_empty(),
+            "a delivered stop is not republished"
+        );
+        let CurrentAnalysis::ResourceLimited(AnalysisResourceLimit::Compile(limit)) =
+            &coordinator.analysis
+        else {
+            panic!("current typed stop retained")
+        };
+        assert_eq!(
+            limit.kind(),
+            marrow_compile::ResourceLimitKind::DiagnosticCount
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_preserves_the_capture_episode_until_success_delivers() {
+        let dir = temp_project("reslimit-capture-episode", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        fs::remove_file(dir.join("marrow.toml")).expect("remove disposable manifest");
+        coordinator.on_frame(change_body(&dir, 2, TYPE_ERROR).as_bytes());
+        let failure = run_next_job(&mut coordinator);
+        assert!(matches!(failure, AnalysisOutcome::Capture(_)));
+        coordinator.on_worker_result(failure);
+        let episode = coordinator.episode;
+        assert!(matches!(episode, CaptureEpisode::Latched { .. }));
+        deliver_frames(&mut coordinator);
+        fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n")
+            .expect("restore disposable manifest");
+
+        let stopped = syntax_stop(&mut coordinator, &dir, 3);
+        coordinator.on_worker_result(stopped);
+        assert_eq!(
+            coordinator
+                .publication
+                .as_ref()
+                .expect("stop plan")
+                .observed_episode,
+            None
+        );
+        deliver_frames(&mut coordinator);
+        assert_eq!(
+            coordinator.episode, episode,
+            "stop delivery does not reset capture"
+        );
+        coordinator.on_frame(change_body(&dir, 4, TYPE_ERROR).as_bytes());
+        let recovered = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(recovered);
+        assert_eq!(
+            coordinator.episode, episode,
+            "success still awaits delivery"
+        );
+        deliver_frames(&mut coordinator);
+        assert_eq!(coordinator.episode, CaptureEpisode::Eligible);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn analysis_resource_limit_active_plan_finishes_before_newer_success() {
+        let dir = temp_project("reslimit-active", TYPE_ERROR);
+        let mut coordinator = diagnosed_coordinator(&dir);
+        let stopped = syntax_stop(&mut coordinator, &dir, 2);
+        coordinator.on_worker_result(stopped);
+        let stop_frames = frames(&coordinator);
+        let recovered = "module main\npub fn f(): int { return 1 }\n";
+        coordinator.on_frame(change_body(&dir, 3, recovered).as_bytes());
+        let outcome = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(outcome);
+        assert_eq!(frames(&coordinator), stop_frames);
+        assert_eq!(
+            coordinator.pending_publication,
+            Some(coordinator.current_revision)
+        );
+        let delivered = deliver_frames(&mut coordinator);
+        let publications = diagnostic_publications(&delivered);
+        assert_eq!(
+            publications.iter().map(|p| p.version).collect::<Vec<_>>(),
+            vec![Some(2), Some(3)]
+        );
+        assert!(publications.iter().all(|p| p.diagnostics.is_empty()));
+        assert_eq!(notifications(&delivered, "window/showMessage").len(), 1);
+        assert!(coordinator.publication.is_none());
+        assert!(coordinator.pending_publication.is_none());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn query_local_completion_limit_preserves_ready_snapshot_and_diagnostics() {
+        let mut main = String::from("module main\n\nstruct Big {\n");
+        for index in 0..=marrow_compile::MAX_COMPLETION_CANDIDATES {
+            main.push_str(&format!("    f{index:03}: int\n"));
+        }
+        main.push_str("}\n\nfn f(p: Big): int {\n    return p.\n}\n");
+        let member_line = main
+            .lines()
+            .position(|line| line == "    return p.")
+            .expect("incomplete member expression") as u32;
+        let position = lsp_types::Position::new(member_line, "    return p.".len() as u32);
+        let other = "module other\n\npub fn g(value: int): int {\n    return value\n}\n";
+        let dir = temp_project("query-local-limit", &main);
+        fs::write(dir.join("src/other.mw"), other).expect("valid sibling module");
+        let mut coordinator = running(&dir);
+        coordinator.outbox.clear();
+        let initial = run_next_job(&mut coordinator);
+        coordinator.on_worker_result(initial);
+        deliver_frames(&mut coordinator);
+        for open in [
+            open_body(&dir, 1, &main),
+            open_body(&dir, 1, other).replace("/src/main.mw", "/src/other.mw"),
+        ] {
+            coordinator.on_frame(open.as_bytes());
+            let outcome = run_next_job(&mut coordinator);
+            assert!(matches!(outcome, AnalysisOutcome::Snapshot(_)));
+            coordinator.on_worker_result(outcome);
+            let delivered = deliver_frames(&mut coordinator);
+            assert!(
+                diagnostic_publications(&delivered)
+                    .iter()
+                    .any(|params| !params.diagnostics.is_empty())
+            );
+        }
+        let CurrentAnalysis::Ready(snapshot) = &coordinator.analysis else {
+            panic!("incomplete member source retains a complete analysis snapshot");
+        };
+        let snapshot = Arc::clone(snapshot);
+        let revision = coordinator.current_revision;
+        let published = coordinator.published.clone();
+        assert!(!published.is_empty());
+        assert!(coordinator.publication.is_none());
+        let (identity, _) = marrow_project_fs::FileIdentity::validate("src/main.mw")
+            .expect("fixture file identity");
+        assert!(matches!(
+            facts::completion(&snapshot, &identity, &main, position),
+            Err(facts::ResourceLimited)
+        ));
+
+        // The sibling hover runs without an edit or another analysis result after the
+        // real completion refusal. Neither query changes revision-wide publications.
+        for (request, id, result) in [
+            (
+                completion_body(&dir, 20, position.line, position.character),
+                20,
+                r#""code":-32803"#,
+            ),
+            (
+                hover_body(&dir, 21, 3, 11).replace("/src/main.mw", "/src/other.mw"),
+                21,
+                r#""value":"int""#,
+            ),
+        ] {
+            coordinator.on_frame(request.as_bytes());
+            let messages = frames(&coordinator);
+            assert_eq!(messages.len(), 1, "exactly one response, no notifications");
+            assert!(messages[0].contains(&format!(r#""id":{id}"#)));
+            assert!(
+                messages[0].contains(result),
+                "request {id}: {}",
+                messages[0]
+            );
+            assert!(matches!(
+                &coordinator.analysis,
+                CurrentAnalysis::Ready(current) if Arc::ptr_eq(current, &snapshot)
+            ));
+            assert_eq!(coordinator.current_revision, revision);
+            assert_eq!(coordinator.published, published);
+            assert!(coordinator.publication.is_none());
+            assert!(coordinator.pending_publication.is_none());
+            assert_eq!(
+                coordinator.requests.entries.get(&RequestId::Integer(id)),
+                Some(&ReqState::AwaitingDelivery)
+            );
+            assert_eq!(deliver_frames(&mut coordinator), messages);
+            assert!(coordinator.requests.entries.is_empty());
+            assert!(coordinator.job_out.is_none());
+        }
         cleanup(&dir);
     }
 

@@ -17,19 +17,19 @@
 //! Two other bounds the design frames as credits are enforced by simpler owned state and
 //! are not credit types here: single-analysis serialization is the coordinator's
 //! `worker_busy` flag over its cap-one work channel, and retained-snapshot count is the
-//! coordinator's current-plus-pending snapshot `Option`s (at most
-//! [`MAX_RETAINED_SNAPSHOTS`]).
+//! coordinator's current ready result plus the worker's arriving result (at most
+//! [`MAX_RETAINED_SNAPSHOTS`]). Pending publication holds only a revision number;
+//! a current analysis stop holds a typed bound instead of a snapshot.
 
 use crate::capacities::OUTBOUND_CREDITS;
 
-/// One outbound-frame credit. Non-`Clone`: acquired before a frame is constructed,
-/// counted, or encoded, and returned only when the writer's delivery receipt is
-/// consumed.
+/// One outbound-frame credit. Non-`Clone`: acquired before a frame is handed to the
+/// writer, and returned only when the writer's delivery receipt is consumed.
 #[must_use]
 pub struct OutboundCredit(());
 
 /// The single exclusive publication-plan credit. Non-`Clone`: held for the whole life
-/// of one diagnostic publication set.
+/// of one analysis publication set, including a resource-stop notice and retractions.
 #[must_use]
 pub struct PublicationPlanCredit(());
 

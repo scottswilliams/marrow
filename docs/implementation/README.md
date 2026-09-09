@@ -251,6 +251,12 @@ code spellings live in `marrow-codes`. The language server projects compiler
 snapshot facts and owns their protocol representation and document state; a
 missing semantic editor fact belongs in `marrow-compile`.
 
+The server's current analysis is pending, a ready snapshot, or a typed resource
+stop for the current input revision. Requests use the same reauthorization and
+outbound-credit path for both completed outcomes. The exclusive publication
+plan owns stop notices and diagnostic retractions; a pending publication retains
+only its revision and is discarded if that revision is no longer current.
+
 ## Artifact fence
 
 The [resource fill pass](../../crates/marrow-compile/src/types/build.rs) publishes

@@ -68,14 +68,30 @@ an error `window/showMessage`; no diagnostics are invented for it.
 A request answers `-32803` in two cases: the open buffer's last edit was refused
 by overlay admission, or an analysis limit was exhausted. A program whose function
 bodies alone exceed the program image limit yields no editor facts for that
-revision. A completion or
-signature-help request whose candidate set or rendered display exceeds its cap is
-refused whole; the server returns no truncated list.
+revision. A whole-analysis resource stop completes the affected revision:
+requests waiting for that result and later requests for it receive `-32803`.
+The server publishes an unlocated error `window/showMessage` with the compiler's
+explanation and clears previously published diagnostics with empty publications.
+Open files carry their current document versions; unopened files have no version.
+A later edit that permits project capture and analysis can recover normally.
+
+Before serving a held reply, the server reauthorizes its admitted revision and
+document version. A mismatch receives `-32801` (`ContentModified`), including
+when the current completed analysis is a resource stop. An admitted edit alone
+does not complete a held request before a current analysis result is available.
+Older worker results do not replace the current result. Publication plans finish
+in delivery order; a pending plan for an obsolete revision is discarded before
+construction. A plan already handed to the writer finishes before the next plan.
+An analysis-stop notice does not reset the separate background-capture episode.
+
+A completion or signature-help request whose candidate set or rendered display
+exceeds its cap is refused whole; the server returns no truncated list. These
+query-local refusals do not discard the snapshot or clear other diagnostics.
 
 A snapshot answers about the exact source it was computed from. Every fact and
 coordinate resolves against those bytes, and an offset outside them is a
-coordinate error. A stale snapshot therefore describes an older revision of the
-document; the editor's revision tracking reconciles the two. Completion and
+coordinate error. Semantic requests are answered only from the current revision;
+an admitted edit invalidates the prior result before recomputation. Completion and
 signature help re-parse the one file they name from the snapshot's retained bytes,
 which keeps a session's retained memory bounded by the snapshot alone.
 
