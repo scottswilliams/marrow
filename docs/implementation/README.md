@@ -90,6 +90,12 @@ in-memory store for a durable `test`, discarded when the test ends. The VM
 executes a durable export or test only through that pairing, so a store runs
 exactly the image the lifecycle admitted for it.
 
+The runner binary's shared `load_image` reads at most `MAX_IMAGE_BYTES + 1`
+bytes through `Read::take` before calling the verifier. Every runner command uses
+that loader. The verifier owns oversize and image-format refusal; open/read errors
+retain the `io.read` path. The read bound does not establish allocation capacity
+or a time bound for a stream that stops supplying bytes.
+
 The compiler retains parser syntax. Its private `types/aliases.rs` owner stores
 each supported alias as a shared global terminal name and optionality. It
 normalizes chains iteratively and refuses unsupported target shapes before

@@ -228,6 +228,159 @@ fn workshop_journey_over_the_companion_path() {
     let _ = std::fs::remove_dir_all(terminal.store.parent().expect("parent"));
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod image_input {
+    use super::{compile_verify, runner_exe, scratch};
+    use std::path::PathBuf;
+    use std::process::{Child, Command, Output, Stdio};
+    use std::time::{Duration, Instant};
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let store = scratch();
+            let directory = store.parent().expect("scratch parent").to_path_buf();
+            std::fs::create_dir_all(&directory).expect("create scratch directory");
+            Self(directory)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    struct ChildGuard(Option<Child>);
+
+    impl ChildGuard {
+        fn spawn(command: &mut Command) -> Self {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            Self(Some(command.spawn().expect("spawn guarded child")))
+        }
+
+        fn running(&mut self) -> bool {
+            self.0
+                .as_mut()
+                .expect("child remains owned")
+                .try_wait()
+                .expect("poll guarded child")
+                .is_none()
+        }
+
+        fn finish(mut self) -> Output {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.running() {
+                assert!(
+                    Instant::now() < deadline,
+                    "image reader did not exit before its deadline"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            self.0
+                .take()
+                .expect("child remains owned")
+                .wait_with_output()
+                .expect("collect guarded child")
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                if !matches!(child.try_wait(), Ok(Some(_))) {
+                    child.kill().ok();
+                }
+                child.wait().ok();
+            }
+        }
+    }
+
+    #[test]
+    fn image_ingress_refuses_a_bounded_stream_without_waiting_for_eof() {
+        // The directory outlives both guarded children, including panic cleanup.
+        let scratch = Scratch::new();
+        let fifo = scratch.0.join("image.fifo");
+        let made = Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .output()
+            .expect("create image FIFO");
+        assert!(made.status.success(), "mkfifo failed: {made:?}");
+
+        // Only this shell owns the FIFO writer. Even after an early refusal/EPIPE,
+        // it retains that descriptor while parent-owned stdin remains open.
+        let mut writer_command = Command::new("/bin/sh");
+        writer_command
+            .args([
+                "-c",
+                r#"trap '' PIPE
+exec 3>"$1" || exit 1
+chunk=0000000000000000
+for double in 1 2 3 4; do chunk=$chunk$chunk; done
+remaining=$2
+while [ "$remaining" -gt 0 ]; do
+    if [ "$remaining" -ge 256 ]; then
+        printf '%s' "$chunk" >&3 || break
+        remaining=$((remaining - 256))
+    else
+        printf '0' >&3 || break
+        remaining=$((remaining - 1))
+    fi
+done
+IFS= read -r hold
+"#,
+                "image-writer",
+            ])
+            .arg(&fifo)
+            .arg((marrow_image::bounds::MAX_IMAGE_BYTES + 1).to_string())
+            .stdin(Stdio::piped());
+        let mut writer = ChildGuard::spawn(&mut writer_command);
+        let mut reader_command = Command::new(runner_exe());
+        reader_command.arg("--image").arg(&fifo);
+        let output = ChildGuard::spawn(&mut reader_command).finish();
+        assert!(
+            writer.running(),
+            "the writer released EOF before the reader result"
+        );
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 runner diagnostic");
+        assert_eq!(stderr.trim(), marrow_codes::Code::ImageEnvelope.as_str());
+    }
+
+    #[test]
+    fn a_small_valid_image_loads_for_provision_preview() {
+        let scratch = Scratch::new();
+        let (image, bytes) = compile_verify();
+        assert!(bytes.len() < marrow_image::bounds::MAX_IMAGE_BYTES);
+        let path = scratch.0.join("image.mwi");
+        let store = scratch.0.join("store");
+        std::fs::write(&path, bytes).expect("write valid image");
+        let prepared = marrow_lifecycle::prepare(image);
+        let report = marrow_lifecycle::ProvisionReport::new(&store, &prepared)
+            .expect("valid provision report")
+            .render();
+        let mut command = Command::new(runner_exe());
+        command
+            .arg("provision")
+            .arg("--image")
+            .arg(&path)
+            .arg("--store")
+            .arg(&store);
+        let output = ChildGuard::spawn(&mut command).finish();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 provision report");
+        assert!(stderr.starts_with(&report), "{stderr}");
+        assert!(
+            stderr.ends_with("Re-run with --yes to accept this report and provision the store.\n"),
+            "{stderr}"
+        );
+        assert!(!store.exists());
+    }
+}
+
 /// The persistent edit-to-run loop over the companion path: a committed write under one
 /// image is read back after a body-only edit. The edited image (a fresh private helper — same
 /// durable contract, interface, and ceiling, different bytes) is picked up on the next run

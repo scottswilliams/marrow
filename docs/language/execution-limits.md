@@ -87,6 +87,12 @@ when the image is encoded. Once it is crossed, checking stops at that bound and
 reports `cli.compiler_resource_limit`; other diagnostics the program carries are
 not reported until it fits.
 
+The runner reads at most 524,289 image bytes before verification. An image larger
+than 512 KiB is refused with `image.envelope`; the extra byte distinguishes an
+oversized input from an image exactly at the limit. This bounds input bytes read,
+not allocation capacity or elapsed time. A stream that supplies neither EOF nor
+enough bytes to reach this read limit can still block.
+
 ## Collection limits
 
 A List has at most 65,536 elements and a Map at most 65,536 pairs. Each has at

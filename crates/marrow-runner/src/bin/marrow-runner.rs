@@ -1,6 +1,6 @@
 //! The stock Marrow runner binary.
 //!
-//! Two commands:
+//! Entry points include:
 //!
 //! - `marrow-runner --image <path>` reads a compiled program image, verifies it, binds a
 //!   private local channel, publishes one launch-descriptor line (interface identity, launch
@@ -23,6 +23,7 @@
 //! Teardown of the listener, socket, and temp dir is explicit and runs on every
 //! non-panic exit path.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -111,15 +112,18 @@ fn main() -> ExitCode {
 }
 
 /// Read and verify the program image at `path`, printing a typed diagnostic and returning the
-/// exit code on failure. Shared by both commands.
+/// exit code on failure. Every command loads its image through this owner.
 fn load_image(path: &Path) -> Result<marrow_verify::VerifiedImage, ExitCode> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
-            return Err(ExitCode::FAILURE);
-        }
-    };
+    let mut bytes = Vec::new();
+    // One excess byte lets verification refuse oversize without waiting for EOF.
+    let read = std::fs::File::open(path).and_then(|file| {
+        file.take((marrow_image::bounds::MAX_IMAGE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+    });
+    if let Err(err) = read {
+        eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
+        return Err(ExitCode::FAILURE);
+    }
     marrow_verify::verify(&bytes).map_err(|rejection| {
         eprintln!("{}", rejection.code());
         ExitCode::FAILURE

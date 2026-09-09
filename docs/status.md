@@ -112,6 +112,9 @@ has its own platform and layout requirements
 
 ## Trust boundaries
 
+- The runner bounds image input before verification to the 512 KiB image limit
+  plus one excess byte. Oversized images are refused with `image.envelope`
+  ([execution limits](language/execution-limits.md#limits)).
 - The verifier admits image generation 1. Current store attachment, import and
   audit refuse an active binding to another image generation before engine open,
   preserving data and binding metadata. Older artifacts and data require their
