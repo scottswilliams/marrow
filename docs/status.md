@@ -18,7 +18,7 @@ each behavior.
 | CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. | [Language server](tools/lsp.md) |
 | Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`; `marrow doctor --store` performs read-only logical inspection against the active program and reports an entry-content digest, without checking physical integrity. | [Operations](operations/README.md) |
-| TypeScript client | A generated strict client and a Node supervision module over a private local channel. | [TypeScript client](tools/typescript-client.md) |
+| TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner normalizes unique Map argument pairs to ascending typed key order. | [TypeScript client](tools/typescript-client.md) |
 
 The command names `data`, `evolve`, `serve`, `backup`, and `restore` are
 recognized; each reports `cli.command_unsupported`.

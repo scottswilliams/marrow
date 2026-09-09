@@ -80,10 +80,13 @@ The wire carries the closed transfer graph. Its TypeScript projection:
 | resource value | inline `{ field: T; sparse?: T }` | object; an absent sparse field is omitted |
 | `enum` (including `Option`/`Result`) | `{ member: "name"; payload: [..] }` union | tagged member and dense payload |
 | `List<T>` | `Array<T>` | JSON array of element values |
-| `Map<K, V>` | `Array<[K, V]>` | JSON array of ordered `[key, value]` pairs, so a non-string key and entry order survive |
+| `Map<K, V>` | `Array<[K, V]>` | JSON array of `[key, value]` pairs |
 | `Id(^root)` | `{ readonly root: "root"; readonly key: [..] }` | JSON array of the root's key scalars; a branded handle the client cannot confuse across roots |
 
-A returned `Map<K, V>` is an ordered `[key, value]` array; convert it with
+Map arguments may list unique pairs in any order. The runner sorts decoded keys
+into ascending [key order](../language/types-and-values.md#key-types) before
+execution and rejects duplicate keys with `runner.arg_mismatch`.
+A returned `Map<K, V>` uses that same ascending order; convert it with
 `new Map(result)` for any key type or `Object.fromEntries(result)` for string keys.
 
 The transfer graph is closed over every value type, so a verified signature

@@ -16,7 +16,6 @@ use marrow_image::{ImageType, Scalar};
 use marrow_local_wire::Json;
 use marrow_verify::{SealedCollectionType, VerifiedImage};
 use marrow_vm::{KeyScalar, Value};
-use std::collections::HashSet;
 use std::rc::Rc;
 
 /// Decode a JSON argument into a runtime value against `ty`, or `None` when the
@@ -144,9 +143,9 @@ fn decode_enum(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
 
 /// Decode a finite collection argument against the image's COLLTYPES entry: a
 /// `List<T>` from a JSON array of element values, or an ordered `Map<K, V>` from a
-/// JSON array of `[key, value]` pair-arrays. A map with a duplicate key, a
-/// mis-shaped pair, or a key/value that does not match the declared type is a
-/// mismatch.
+/// JSON array of `[key, value]` pair-arrays, normalized to ascending typed key
+/// order. Duplicate keys, mis-shaped pairs, or key/value type mismatches reject
+/// the argument.
 fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
     let Json::Array(items) = json else {
         return None;
@@ -162,7 +161,6 @@ fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Val
         SealedCollectionType::Map { key, value } => {
             let key_scalar = scalar_of(key)?;
             let mut entries = Vec::with_capacity(items.len());
-            let mut seen: HashSet<String> = HashSet::with_capacity(items.len());
             for item in items {
                 let Json::Array(pair) = item else {
                     return None;
@@ -171,12 +169,12 @@ fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Val
                     return None;
                 };
                 let key_value = decode_key(key_scalar, key_json)?;
-                // A map has unique keys; the canonical key spelling detects a
-                // duplicate in bounded work.
-                if !seen.insert(marrow_local_wire::encode(&encode_key(&key_value))) {
-                    return None;
-                }
                 entries.push((key_value, decode_arg(image, &value, value_json)?));
+            }
+            // VM lookup and mutation require unique entries in typed key order.
+            entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+            if entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return None;
             }
             Some(Value::map(idx, Rc::new(entries)))
         }

@@ -256,8 +256,8 @@ fn a_hostile_list_argument_is_rejected() {
 #[test]
 fn a_map_round_trips_through_the_codec() {
     let (service, ids) = build(COLLECTIONS, None);
-    // Return: an ordered map crosses as an array of [key, value] pairs, in insertion
-    // order, never a JS object.
+    // Return: an ordered map crosses as an array of [key, value] pairs in ascending
+    // key order, never a JS object.
     assert_eq!(
         call(&service, id_of(&ids, "tally"), vec![]),
         ServerMessage::Value {
@@ -281,6 +281,183 @@ fn a_map_round_trips_through_the_codec() {
         ServerMessage::Value {
             data: Json::Int(20)
         }
+    );
+}
+
+#[test]
+fn a_map_argument_accepts_unique_pairs_in_reverse_order() {
+    let (service, ids) = build(COLLECTIONS, None);
+    let map = array(vec![
+        array(vec![Json::Str("b".to_string()), Json::Int(20)]),
+        array(vec![Json::Str("a".to_string()), Json::Int(10)]),
+    ]);
+    assert_eq!(
+        call(
+            &service,
+            id_of(&ids, "lookup"),
+            vec![map, Json::Str("b".to_string())],
+        ),
+        ServerMessage::Value {
+            data: Json::Int(20)
+        }
+    );
+}
+
+#[test]
+fn map_arguments_preserve_canonical_order_and_lookup_for_every_key_type() {
+    let text = |value: &str| Json::Str(value.to_string());
+    let text_keys = |values: &[&str]| values.iter().map(|value| text(value)).collect::<Vec<_>>();
+    let families = [
+        ("bool", vec![Json::Bool(false), Json::Bool(true)]),
+        ("int", [-2, -1, 2, 10].into_iter().map(Json::Int).collect()),
+        ("string", text_keys(&["a", "aa", "b"])),
+        ("bytes", text_keys(&["0x", "0x00", "0x0000", "0x01"])),
+        (
+            "date",
+            text_keys(&["1969-12-31", "1970-01-01", "2000-02-29"]),
+        ),
+        (
+            "instant",
+            text_keys(&[
+                "1969-12-31T23:59:59.999999999Z",
+                "1970-01-01T00:00:00Z",
+                "1970-01-01T00:00:00.000000001Z",
+            ]),
+        ),
+        ("duration", text_keys(&["-PT2S", "-PT1S", "PT2S", "PT10S"])),
+    ];
+    let mut source = String::new();
+    for (kind, _) in &families {
+        source.push_str(&format!(
+            r#"struct Observed_{kind} {{
+    entries: Map<{kind}, int>
+    found: int
+}}
+
+pub fn observe_{kind}(m: Map<{kind}, int>, k: {kind}): Observed_{kind} {{
+    return Observed_{kind}(entries: m, found: m[k] ?? -1)
+}}
+
+"#,
+        ));
+    }
+    source.push_str(
+        r#"pub fn nested(m: Map<string, Map<int, int>>): Map<string, Map<int, int>> {
+    return m
+}
+"#,
+    );
+    let (service, ids) = build(&source, None);
+    let pair = |key, value| array(vec![key, value]);
+    for (kind, keys) in families {
+        let export = id_of(&ids, &format!("observe_{kind}"));
+        let entries = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                let value = i64::try_from(index + 1).expect("small key fixture") * 10;
+                pair(key.clone(), Json::Int(value))
+            })
+            .collect::<Vec<_>>();
+        let reversed = entries.iter().cloned().rev().collect::<Vec<_>>();
+        for (case, input, ordered) in [
+            ("empty", vec![], vec![]),
+            (
+                "singleton",
+                vec![entries[0].clone()],
+                vec![entries[0].clone()],
+            ),
+            ("sorted", entries.clone(), entries.clone()),
+            ("reversed", reversed, entries.clone()),
+        ] {
+            // Query every admitted key, including missing keys in the small controls.
+            for (index, key) in keys.iter().enumerate() {
+                let found = if index < ordered.len() {
+                    i64::try_from(index + 1).expect("small key fixture") * 10
+                } else {
+                    -1
+                };
+                assert_eq!(
+                    call(&service, export, vec![array(input.clone()), key.clone()]),
+                    ServerMessage::Value {
+                        data: Json::Object(vec![
+                            ("entries".to_string(), array(ordered.clone())),
+                            ("found".to_string(), Json::Int(found)),
+                        ])
+                    },
+                    "{kind}/{case}/lookup-{index}"
+                );
+            }
+        }
+        let wrong_key = if kind == "int" {
+            Json::Bool(false)
+        } else {
+            Json::Int(1)
+        };
+        for (case, input) in [
+            (
+                "nonadjacent-duplicate",
+                array(vec![
+                    entries[0].clone(),
+                    entries[1].clone(),
+                    pair(keys[0].clone(), Json::Int(999)),
+                ]),
+            ),
+            ("malformed-pair", array(vec![array(vec![keys[0].clone()])])),
+            ("non-pair", array(vec![Json::Null])),
+            (
+                "wrong-value",
+                array(vec![pair(keys[0].clone(), Json::Bool(false))]),
+            ),
+            ("wrong-key", array(vec![pair(wrong_key, Json::Int(1))])),
+        ] {
+            assert_eq!(
+                call(&service, export, vec![input, keys[0].clone()]),
+                ServerMessage::Reject {
+                    code: "runner.arg_mismatch".to_string()
+                },
+                "{kind}/{case}"
+            );
+        }
+    }
+    let nested_input = array(vec![
+        pair(
+            text("b"),
+            array(vec![
+                pair(Json::Int(2), Json::Int(20)),
+                pair(Json::Int(-10), Json::Int(10)),
+            ]),
+        ),
+        pair(
+            text("a"),
+            array(vec![
+                pair(Json::Int(10), Json::Int(40)),
+                pair(Json::Int(-2), Json::Int(30)),
+            ]),
+        ),
+    ]);
+    let nested_output = array(vec![
+        pair(
+            text("a"),
+            array(vec![
+                pair(Json::Int(-2), Json::Int(30)),
+                pair(Json::Int(10), Json::Int(40)),
+            ]),
+        ),
+        pair(
+            text("b"),
+            array(vec![
+                pair(Json::Int(-10), Json::Int(10)),
+                pair(Json::Int(2), Json::Int(20)),
+            ]),
+        ),
+    ]);
+    assert_eq!(
+        call(&service, id_of(&ids, "nested"), vec![nested_input]),
+        ServerMessage::Value {
+            data: nested_output
+        },
+        "nested/outer-and-inner-reversed"
     );
 }
 
