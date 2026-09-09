@@ -257,6 +257,12 @@ impl OwnerLock {
                 return Err(NativeLockError::Io(error));
             }
         }
+        // Every subsequent refusal releases the acquired directory lock through its owner.
+        let mut lock = OwnerLock {
+            directory_node: Some(directory_node),
+            file: None,
+            disposition: DropDisposition::PreserveUnclean,
+        };
 
         let mut file = open_marker(dir).map_err(NativeLockError::Io)?;
 
@@ -274,6 +280,7 @@ impl OwnerLock {
                 return Err(NativeLockError::Io(error));
             }
         }
+        let file = lock.file.insert(file);
 
         // Only now that exclusion is settled. A second link to the marker leaves the bytes
         // this acquisition is about to publish rewritable under a name the owner does not
@@ -285,7 +292,7 @@ impl OwnerLock {
         let prior_unclean = held.len() != 0;
         let acquired_unix_secs = now_unix_secs();
         write_owner(
-            &mut file,
+            file,
             NativeLockOwner {
                 pid: std::process::id(),
                 instance: None,
@@ -296,11 +303,7 @@ impl OwnerLock {
         sync_dir(dir).map_err(NativeLockError::Io)?;
 
         Ok(AcquiredLock {
-            lock: OwnerLock {
-                directory_node: Some(directory_node),
-                file: Some(file),
-                disposition: DropDisposition::PreserveUnclean,
-            },
+            lock,
             prior_unclean,
             acquired_unix_secs,
         })
@@ -359,7 +362,14 @@ impl Drop for OwnerLock {
                 {
                     std::mem::forget(handle);
                 }
+                return;
             }
+        }
+        // Closing this process's handles alone leaves locks alive in duplicates inherited
+        // by a concurrently spawned child. Engine drop and marker cleanup have finished;
+        // release the marker first and the authoritative directory lock last.
+        for handle in [&self.file, &self.directory_node].into_iter().flatten() {
+            let _ = handle.unlock();
         }
     }
 }
@@ -805,6 +815,96 @@ mod tests {
 
     fn marker_bytes(dir: &Path) -> Vec<u8> {
         std::fs::read(dir.join(NATIVE_LOCK_FILE)).expect("read the owner marker")
+    }
+
+    /// Duplicates retain the same lock descriptions as handles inherited across fork.
+    fn retain_lock_handles(lock: &OwnerLock) -> [File; 2] {
+        [
+            lock.directory_node
+                .as_ref()
+                .expect("held directory")
+                .try_clone()
+                .expect("duplicate directory handle"),
+            lock.file
+                .as_ref()
+                .expect("held marker")
+                .try_clone()
+                .expect("duplicate marker handle"),
+        ]
+    }
+
+    #[test]
+    fn releasing_an_owner_does_not_wait_for_duplicate_handles_to_close() {
+        #[derive(Clone, Copy, Debug)]
+        enum Release {
+            Pending,
+            Refused,
+            Clean,
+            ReadOnlyUnclean,
+        }
+
+        let mut failures = Vec::new();
+        for release in [
+            Release::Pending,
+            Release::Refused,
+            Release::Clean,
+            Release::ReadOnlyUnclean,
+        ] {
+            let scratch = Scratch::new("duplicate-release");
+            NativeEngineOwner::provision(&scratch.0).expect("provision");
+            std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean")
+                .expect("inherited audit obligation");
+            let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
+            let retained = retain_lock_handles(&pending.lock);
+            assert!(matches!(
+                contend(&scratch.0),
+                NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
+            ));
+            match release {
+                Release::Pending => drop(pending),
+                Release::Refused => assert!(matches!(
+                    pending.bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x51; 16], || {
+                        Err::<(), ()>(())
+                    }),
+                    Err(NativeOwnerOpenError::Refused(())),
+                )),
+                Release::Clean | Release::ReadOnlyUnclean => {
+                    let access = match release {
+                        Release::Clean => NativeOpenAccess::ReadWrite,
+                        _ => NativeOpenAccess::ReadOnly,
+                    };
+                    let owner = pending
+                        .bind_and_open_existing(access, [0x51; 16], || Ok::<(), ()>(()))
+                        .expect("open");
+                    drop(owner);
+                }
+            }
+            assert_eq!(
+                marker_bytes(&scratch.0).is_empty(),
+                matches!(release, Release::Clean),
+                "only a clean owner discharges the inherited obligation",
+            );
+            match NativeEngineOwner::acquire_existing(&scratch.0) {
+                Ok(successor) => {
+                    drop(retained);
+                    assert!(matches!(
+                        contend(&scratch.0),
+                        NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
+                    ));
+                    drop(successor);
+                }
+                Err(error) => {
+                    failures.push((release, error.code()));
+                    drop(retained);
+                }
+            }
+            NativeEngineOwner::acquire_existing(&scratch.0)
+                .expect("control: no owner or duplicate remains");
+        }
+        assert!(
+            failures.is_empty(),
+            "release still held by duplicates: {failures:?}"
+        );
     }
 
     #[test]
