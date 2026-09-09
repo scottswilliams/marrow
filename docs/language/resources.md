@@ -149,6 +149,11 @@ parameter is a bare value, so `book: Book?` reports `check.unsupported`, like
 any optional parameter. A resource is not accepted as a type argument today:
 `Option<Book>` and `List<Book>` report `check.unsupported`.
 
+A resource containing a nominal integer field, including a nested or sparse
+field, cannot be a public parameter or be bound to a store. Those boundaries
+report `check.unsupported`; local values and private parameters remain supported
+([nominal ints](types-and-values.md#aliases-and-nominal-ints)).
+
 A resource name is used bare from any module of the project and takes no
 `pub`. It shares one namespace with struct, enum, and built-in names
 (`check.name_conflict`).

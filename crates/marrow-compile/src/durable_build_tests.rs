@@ -743,6 +743,7 @@ mod post_staging_custody_tests {
             Some(&ledger),
             &mut diagnostics,
             DeclarationBudget::default(),
+            &mut Vec::new(),
         );
         Built {
             outcome: outcome.map(|_| ()),

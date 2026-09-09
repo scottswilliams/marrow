@@ -571,6 +571,9 @@ before it runs the program
 [changing the program](../operations/README.md#changing-the-program)).
 
 Today, keyed roots, their groups, and their branches read and write end to end.
-A singleton root such as `store ^settings: Settings`, a root whose resource holds
-a nominal field, and a group inside another group or a branch are future work
+A singleton root such as `store ^settings: Settings` and a group inside another
+group or a branch are future work
 ([status](../status.md#not-yet-available)).
+Binding a resource containing a nominal value to a store reports
+`check.unsupported`, including nested and sparse fields and unused bindings
+([nominal ints](types-and-values.md#aliases-and-nominal-ints)).

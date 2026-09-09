@@ -73,6 +73,30 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
         .expect("run marrow binary")
 }
 
+#[test]
+fn nominal_aggregate_inputs_publish_neither_client_nor_image() {
+    let temp = TempDir::new("nominal-input");
+    write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
+    write(
+        &temp.join("src/main.mw"),
+        "module main\ntype Age: int in 0..=150\nstruct Person { age: Age }\npub fn outside(p: Person): bool { return p.age > Age(150) }\n",
+    );
+    for args in [
+        vec!["client", "typescript", "--out", "gen"],
+        vec!["image", "--out", "program.image"],
+    ] {
+        let output = run_in(&temp, &args);
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 diagnostics");
+        assert!(
+            stderr.starts_with("src/main.mw:4:19: check.unsupported:"),
+            "{stderr}"
+        );
+        assert!(!temp.join("gen/client.mts").exists());
+        assert!(!temp.join("program.image").exists());
+    }
+}
+
 /// The stable fixture: scalars, a record, an enum, a grouped resource, and a
 /// unit return.
 const FIXTURE: &str = r#"struct Point {

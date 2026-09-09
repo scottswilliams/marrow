@@ -226,6 +226,15 @@ missing semantic editor fact belongs in `marrow-compile`.
 
 ## Artifact fence
 
+The compiler captures public aggregate parameter and bound durable value roots
+during signature and binding resolution. After signature construction commits,
+`TypeMetadataSession` walks their shared resolved value graph, preserving
+metadata invariant failures and reporting a source refusal for nominal-bearing
+boundaries. It follows actual fields, payloads and collection components;
+phantom generic arguments are validated as metadata but are not value edges.
+The language reference owns the supported
+[nominal boundaries](../language/types-and-values.md#aliases-and-nominal-ints).
+
 Compilation is a chain of phases, and each phase takes a typed proof of the
 phase before it. `SignaturesComplete` is the zero-size proof that every declared
 signature resolved; `encode` takes that proof, never the resolved registry, so an

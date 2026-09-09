@@ -107,6 +107,27 @@ pub(crate) enum GArg {
     Param(TypeParamIndex),
 }
 
+/// A boundary value keeps resource identity distinct from generic value arguments.
+#[derive(Clone, Copy)]
+pub(crate) enum NominalBoundaryValue {
+    Value(GArg),
+    Resource(TypeId),
+}
+
+pub(crate) enum NominalBoundaryKind {
+    Input,
+    Durable,
+}
+
+/// Resolved during binding/signature construction; retained only until the shared
+/// containment walk, without copying source identities or type bodies.
+pub(crate) struct NominalBoundaryRoot<'a> {
+    pub(crate) value: NominalBoundaryValue,
+    pub(crate) kind: NominalBoundaryKind,
+    pub(crate) file: &'a FileIdentity,
+    pub(crate) span: SourceSpan,
+}
+
 /// The declaration position of one generic type parameter: a wide checked ordinal
 /// over a private `u32`, never a wire value — a `Param` exists only during the
 /// once-checked template pass, and no monomorphized instantiation carries one.

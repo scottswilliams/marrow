@@ -1,29 +1,14 @@
-//! The durable graph registry (design §B/§C).
+//! Resolved durable bindings, ledger identities, member trees and operation sites.
 //!
-//! The durable graph admits one or more `store` roots, each over its own resource
-//! record and in declaration order (a root's DURABLE-table index is its RootId). A root
-//! is a *singleton* (`store ^root: Record`, no key) or a
-//! *keyed tuple* (`store ^root(k1: K1, k2: K2): Record`, one or more ordered
-//! orderable durable-key columns). A resource's durable shape is a **member tree**:
-//! its top-level stored fields, plus any static `group` field-path namespaces and
-//! keyed `branch` placements, each of which recursively holds its own members. A
-//! group is an unkeyed pathing construct (a `Group` ledger identity); a branch is a
-//! keyed subtree — a distinct graph node with its own placement id and key tuple,
-//! just like a root. Every admitted node has a complete ledger identity and a
-//! contribution to the durable-contract identity the verifier independently
-//! re-encodes.
+//! Each store binds a resource to a root with its own identity and key tuple.
+//! Stored fields, unkeyed groups and keyed branches contribute to the durable
+//! contract that the verifier independently reconstructs. The registry projects
+//! admitted bindings into the image draft and supplies resolved sites to lowering.
 //!
-//! The executable durable subset the single-root kernel can serve at this stage is a flat
-//! keyed root: one or more key columns, whose top-level fields are each a scalar or a
-//! widened value (`struct`/`enum`/`Option`, framed inline), whose root-level `group`
-//! members hold only such fields, and whose keyed `branch` placements are field-only
-//! (nested to any depth). A singleton (keyless) root, a root whose resource declares a
-//! nominal-typed field, a group nested in a branch or in another group, completes its
-//! identity and verifies but has no executable operation sites — an operation over one is a
-//! precise typed `check.unsupported` rejection at lowering ("not yet executable"). Those
-//! shapes run when their lanes land. This module validates the declaration, adds the root,
-//! its member tree, and — for the executable subset — its operation sites to the draft, and
-//! exposes the resolved sites the function lowerer emits against.
+//! Registry admission is an intermediate state. A parked binding retains its
+//! identity so operations can report a precise unsupported diagnostic. The
+//! compiler's nominal boundary check also refuses nominal-bearing bindings,
+//! including unused ones, before image publication.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -50,7 +35,8 @@ use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{
-    BuildError, GArg, GenericInvariant, ResolveError, TypeMetadataSession, TypeRegistry,
+    BuildError, GArg, GenericInvariant, NominalBoundaryKind, NominalBoundaryRoot,
+    NominalBoundaryValue, ResolveError, TypeMetadataSession, TypeRegistry,
 };
 
 mod rows;
@@ -243,7 +229,7 @@ impl DurableBranch {
 }
 
 /// One executable durable root, its operation sites, its executable root-level groups,
-/// and its executable branches. A keyed root (any key arity) whose top-level fields are
+/// and its executable branches. A keyed root within the key-column bound whose fields are
 /// scalars or widened values, whose root-level groups hold only such fields, and whose
 /// only nested placements are field-only keyed branches reaches this form; its key columns
 /// back the kernel-serviceable read/write path, each group is a value unit of the root
@@ -301,8 +287,8 @@ impl DurableRoot {
 
 /// One `store` declaration the registry admitted: the position of its executable
 /// descriptor when the kernel serves its shape, and nothing more when the root is
-/// parked (a singleton, a nominal-typed field, or a group nested in a branch or
-/// another group). A parked root carries a complete identity and a full site set, so
+/// parked (such as a singleton or a group nested in a branch). A parked root carries
+/// a complete identity and a full site set, so
 /// an operation over it is a precise "not yet executable" rejection rather than an
 /// unknown name.
 pub(crate) struct DeclaredRoot {
@@ -711,14 +697,16 @@ impl DurableRegistry {
     /// store's gap never erases the whole registry. The compiler only *reads* the ledger;
     /// minting lives in the `marrow run` convenience action (and in the accepted apply
     /// action when it lands).
-    pub(crate) fn build(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build<'source>(
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         resources: &[(FileRef, FileIdentity, &ResourceDecl)],
-        stores: &[(FileRef, FileIdentity, &StoreDecl)],
+        stores: &'source [(FileRef, FileIdentity, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
+        boundary_roots: &mut Vec<NominalBoundaryRoot<'source>>,
     ) -> Result<Self, BuildError> {
         if stores.is_empty() {
             return Ok(Self::empty(budget));
@@ -800,6 +788,16 @@ impl DurableRegistry {
                 )?;
                 let occurrence = match built {
                     StoreBuild::Admitted(built) => {
+                        if let StoreResourceBinding::Accepted(bound) = row.binding {
+                            boundary_roots.push(NominalBoundaryRoot {
+                                value: NominalBoundaryValue::Resource(
+                                    directory.row(bound).record.type_id,
+                                ),
+                                kind: NominalBoundaryKind::Durable,
+                                file,
+                                span: store.span,
+                            });
+                        }
                         let built = *built;
                         registry.naming.extend(built.naming);
                         let executable = built.executable.map(|root| {
@@ -1429,10 +1427,11 @@ fn build_one(
     // are each a scalar or a widened composite (a dense struct, or a closed
     // `enum`/`Option`/`Result` — framed inline in the field cell by the durable value
     // codec), together with its root-level groups of such fields and its field-only keyed
-    // branches nested to any depth — the shape the kernel serves. A singleton (keyless)
-    // root, a nominal field, or a group nested in a branch or another group parks
-    // (severed until its lane lands): it carries its identity and full site set, but the
-    // lowerer reports any operation over it as not yet executable. Composite root keys and
+    // branches — the shape the kernel serves. A singleton (keyless)
+    // root, a nominal field, or a group nested in a branch parks: it carries its
+    // identity and full site set, but lowering refuses operations. The compiler's
+    // nominal boundary check also refuses unused nominal-bearing bindings.
+    // Composite root keys and
     // keyed branches (including composite-keyed) are executable for whole/field sites; a
     // root-level group no longer parks, mirroring the verifier's independent
     // `member_flat_at_root`.
@@ -1443,7 +1442,7 @@ fn build_one(
         .iter()
         .all(|f| matches!(f.ty, GArg::Scalar(_) | GArg::Struct(_) | GArg::Enum(_)));
     // A keyed root of executable fields with root-level scalar/widened-field groups and
-    // only field-only branches is executable, at any key arity (one or more columns); a
+    // only field-only branches is executable within the key-column bound; a
     // singleton root (no key columns) parks. `member_flat_at_root` admits a root-level
     // group of storable-value fields while `member_keeps_root_flat` (the branch-member
     // predicate) keeps a group parked below the root, so a group in a branch or another

@@ -425,7 +425,7 @@ fn checked_on_a_non_nominal_is_rejected() {
     for (body, family) in [
         // `string` is a keyword, so a `.checked` on it never parses as a field.
         (
-            "pub fn f(): int\n\x20   return string.checked(1)\n",
+            "pub fn f(): int {\n    return string.checked(1)\n}\n",
             r#""code":"parse.syntax""#,
         ),
         (
@@ -510,9 +510,8 @@ pub fn value(a: Age): int {
 }
 
 /// Nominal types are not yet admitted as constant types or store key types: each
-/// position reports `check.unsupported`, as the reference documents, until its
-/// owning lane lands. (A nominal *resource field* is admitted — it erases to its
-/// base scalar in the durable value shape — so it is not tested here.)
+/// position reports `check.unsupported`. Local nominal resource fields are
+/// covered by the compiler's separate value and boundary tests.
 #[test]
 fn nominal_types_are_unsupported_in_const_and_key_positions() {
     for source in [

@@ -89,6 +89,11 @@ A returned `Map<K, V>` is an ordered `[key, value]` array; convert it with
 The transfer graph is closed over every value type, so a verified signature
 always projects. Arguments are validated against the export's verified signature
 in the client, as a `TypeError` before any byte is sent, and again by the runner.
+These checks validate transfer shapes. Bare nominal integer arguments use the
+compiled function's range guard and can fault `run.range`. The compiler refuses
+public aggregate inputs containing nominal leaves with `check.unsupported`,
+before client generation; transfer shapes do not retain nominal intervals
+([nominal ints](../language/types-and-values.md#aliases-and-nominal-ints)).
 An export signature too complex for the fixed interface budget is a
 `cli.interface_unbuildable` error at generation. A wire value nests at most 64
 levels, a string carries at most 64 KiB, and a frame is at most 1 MiB; the

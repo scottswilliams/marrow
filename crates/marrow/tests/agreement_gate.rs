@@ -98,10 +98,8 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// A declaration-only agreement sibling for the nominal-field managed-index
-/// boundary. It is intentionally separate from [`SCHEMA`] and [`IDS`]: nominal-root
-/// operations remain parked, while checker admission must still imply that the
-/// independent verifier accepts the declaration graph.
+/// A nominal-bearing indexed binding must fail before publishing an image,
+/// including when the program declares no durable operations.
 const NOMINAL_INDEX_SCHEMA: &str = r#"type Rank: int in 0..=100
 
 resource Book {
@@ -734,7 +732,7 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
 }
 
 #[test]
-fn nominal_field_index_admission_implies_independent_verification() {
+fn nominal_field_index_binding_is_refused_before_image_publication() {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let project = marrow_project::capture(
         &manifest,
@@ -746,11 +744,16 @@ fn nominal_field_index_admission_implies_independent_verification() {
         &marrow_project::CaptureLimits::DEFAULT,
     )
     .expect("capture");
-    let compiled = marrow_compile::compile(&project)
-        .expect("the checker admits the nominal-field index declaration");
-    let image = marrow_verify::verify(&compiled.image.bytes)
-        .expect("the independent verifier admits the checker-accepted declaration");
-    assert_eq!(image.indexes().len(), 1, "the declaration seals one index");
+    let Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) =
+        marrow_compile::compile(&project)
+    else {
+        panic!("a nominal-bearing indexed binding must report a source diagnostic");
+    };
+    assert_eq!(diagnostics.as_ref().len(), 1);
+    let diagnostic = &diagnostics.as_ref()[0];
+    assert_eq!(diagnostic.code(), "check.unsupported");
+    assert_eq!(diagnostic.file().as_str(), "src/main.mw");
+    assert_eq!((diagnostic.line(), diagnostic.column()), (8, 1));
 }
 
 /// The correct-rollback journey, locking the invocation-boundary isolation law: three

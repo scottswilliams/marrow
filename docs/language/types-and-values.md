@@ -554,9 +554,16 @@ The interval follows the range operators: `in 0..150` admits `0` through `149`,
 and `in 0..=150` admits `0` through `150`. Both bounds are `int` literals, and
 the interval admits at least one value. `Name(n)` constructs a value and faults
 `run.range` when `n` lies outside the interval. `Name.checked(n)` yields a
-`Name?` instead. A parameter of nominal type revalidates the interval on entry,
+`Name?` instead. A bare parameter of nominal type revalidates the interval on entry,
 so an export called from the terminal with an out-of-interval `int` faults
 `run.range`.
+
+A public aggregate parameter containing a nominal value reports
+`check.unsupported` at its type annotation. This includes nested struct and
+resource fields, enum payloads, list elements, and map keys or values. Private
+parameters, local composition and returned values remain supported. An unused
+generic type argument does not make a value contain that type. Optional
+parameters remain unsupported for every type.
 
 The `supports` clause admits operators over the type. Every operator that yields
 a `Name` revalidates the interval:
@@ -601,9 +608,9 @@ test "a nominal int keeps its interval" {
 
 Alias, nominal, struct, enum, and resource names share one project-wide
 namespace; a collision is a `check.name_conflict`. A nominal int type is
-admitted as a resource field and is stored as its base `int`. Operations over a
-root containing a nominal field remain unimplemented and report
-`check.unsupported`. Nominal types are not admitted as store-root keys, branch
+admitted as a local resource field. Binding a resource containing a nominal
+value to a store reports `check.unsupported`, including nested and sparse
+fields and bindings with no durable operations. Nominal types are not admitted as store-root keys, branch
 keys, or module-constant types; each position reports `check.unsupported`.
 
 ## Operators
@@ -712,8 +719,7 @@ take several key components, up to 8, and every component is one of those
 scalars, as described under [durable places](durable-places.md#keys).
 
 Managed-index key positions use `int`, `bool`, `string`, `bytes`, `date`, or
-`instant`, drawn from a root's identity keys or its top-level scalar fields. A
-nominal stored field projects through its base scalar. Index declarations are
+`instant`, drawn from a root's identity keys or its top-level scalar fields. Index declarations are
 described under [traversal and indexes](traversal-and-indexes.md#index-declarations).
 
 Key order is the same everywhere: numbers and temporal values ascend, `false`

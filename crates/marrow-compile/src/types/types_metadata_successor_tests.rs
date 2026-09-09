@@ -302,6 +302,61 @@ fn mint_ready(
 }
 
 #[test]
+fn nominal_boundary_witness_does_not_mask_a_later_malformed_ready_body() {
+    let mut registry = test_registry(vec![struct_template("Box", &["T"])]);
+    registry.nominals.push(NominalInfo {
+        name: "Age".to_string(),
+        lo: 0,
+        hi: 150,
+        supports: SupportSet::default(),
+    });
+    let mut draft_owner = ImageDraft::new();
+    let mut draft = admitted(&mut draft_owner);
+    let id = mint_ready(&mut registry, &mut draft, 0);
+    let TypeInstId::Record(record_id) = id else {
+        panic!("Box has a record identity");
+    };
+    let roots = [
+        NominalBoundaryRoot {
+            value: NominalBoundaryValue::Value(GArg::Nominal(NominalId(0))),
+            kind: NominalBoundaryKind::Durable,
+            file: site().file,
+            span: site().span,
+        },
+        NominalBoundaryRoot {
+            value: NominalBoundaryValue::Value(GArg::Struct(record_id)),
+            kind: NominalBoundaryKind::Input,
+            file: site().file,
+            span: site().span,
+        },
+    ];
+    assert!(matches!(
+        registry.with_metadata_session(|metadata| metadata.nominal_boundary(&roots)),
+        Ok(Some(0))
+    ));
+    {
+        let mut generics = registry.generics.borrow_mut();
+        let row = generics
+            .type_insts
+            .iter_mut()
+            .find(|row| row.id == id)
+            .expect("minted row exists");
+        let TypeInstState::Ready(InstBody::Struct(fields)) = &mut row.state else {
+            panic!("control body is Ready");
+        };
+        fields.clear();
+    }
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant = take_reader_invariant(
+        registry.with_metadata_session(|metadata| metadata.nominal_boundary(&roots)),
+    );
+    assert!(matches!(invariant, GenericInvariant::ReadyBodyShapeMismatch(found) if found == id));
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+}
+
+#[test]
 fn missing_template_index_is_rejected_before_minting_owner_state() {
     let mut registry = test_registry(Vec::new());
     let mut draft_owner = ImageDraft::new();
@@ -591,6 +646,7 @@ store ^second[id: int]: Second
             Some(&ledger),
             &mut diagnostics,
             DeclarationBudget::default(),
+            &mut Vec::new(),
         )
     });
 
@@ -702,6 +758,7 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         Some(&ledger),
         &mut diagnostics,
         DeclarationBudget::default(),
+        &mut Vec::new(),
     );
 
     assert!(matches!(

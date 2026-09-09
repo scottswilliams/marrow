@@ -328,7 +328,7 @@ pub fn value(): int {
         "{key_types}"
     );
     assert!(
-        key_types.contains("A nominal stored field projects through its base scalar."),
+        !key_types.contains("A nominal stored field projects through its base scalar."),
         "{key_types}"
     );
     let normalized_reference = reference.split_whitespace().collect::<Vec<_>>().join(" ");

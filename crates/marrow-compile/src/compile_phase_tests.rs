@@ -487,6 +487,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
         None,
         &mut diagnostics,
         budget.clone(),
+        &mut Vec::new(),
     )
     .expect("an empty project builds an empty durable registry");
     let mut draft = admitted(&mut draft_owner);
@@ -499,6 +500,7 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
         BTreeMap::new(),
         &mut diagnostics,
         budget,
+        &mut Vec::new(),
     )
     .expect("the signature ledger stays within its budget")
 }
@@ -920,6 +922,7 @@ fn a_store_refused_after_real_staging_rolls_back_to_the_unstaged_image() {
             Some(&ledger),
             &mut diagnostics,
             budget,
+            &mut Vec::new(),
         )
         .expect("the durable build settles refusals as diagnostics, not errors");
         let rows: Vec<String> = diagnostics
@@ -1007,6 +1010,7 @@ fn a_registry_slice_drift_is_a_typed_invariant_not_a_user_error() {
         None,
         &mut diagnostics,
         budget,
+        &mut Vec::new(),
     );
     assert!(
         matches!(

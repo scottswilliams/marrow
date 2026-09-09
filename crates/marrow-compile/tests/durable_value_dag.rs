@@ -56,6 +56,64 @@ fn store_ledger(extra: &[&str]) -> Vec<u8> {
     ledger(&anchors)
 }
 
+#[test]
+fn nominal_boundaries_reject_a_bound_durable_record() {
+    let source = "module main\ntype Age: int in 0..=150\nstruct Person { age: Age }\nresource R { required f: Person }\nstore ^a[id: int]: R\npub fn plain(): int { return 0 }\n";
+    let diagnostics = diagnostics(compile(&project(source, Some(&store_ledger(&[])))));
+    let sites: Vec<_> = diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
+        .collect();
+    assert_eq!(sites, [("check.unsupported", 5, 1)], "{diagnostics:#?}");
+}
+
+#[test]
+fn nominal_boundaries_include_sparse_and_parked_durable_bindings() {
+    for field in [
+        "f: Person",
+        "required f: Age",
+        "f: Age",
+        "required f: Option<Age>",
+    ] {
+        let source = format!(
+            "module main\ntype Age: int in 0..=150\nstruct Person {{ age: Age }}\nresource R {{ {field} }}\nstore ^a[id: int]: R\npub fn plain(): int {{ return 0 }}\n"
+        );
+        let ledger = store_ledger(&[
+            "sum Option[Age]",
+            "member Option[Age].none",
+            "member Option[Age].some",
+        ]);
+        let diagnostics = diagnostics(compile(&project(&source, Some(&ledger))));
+        let sites: Vec<_> = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
+            .collect();
+        assert_eq!(
+            sites,
+            [("check.unsupported", 5, 1)],
+            "{field}: {diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
+fn nominal_boundaries_preserve_the_existing_generic_struct_durable_refusal() {
+    let source = "module main\ntype Age: int in 0..=150\nstruct Phantom<T> { value: int }\nresource R { required f: Phantom<Age> }\nstore ^a[id: int]: R\npub fn plain(): int { return 0 }\n";
+    // Generic struct fields already have a separate durable eligibility refusal;
+    // this boundary check does not widen that existing subset.
+    let diagnostics = diagnostics(compile(&project(source, Some(&store_ledger(&[])))));
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code(), "check.unsupported");
+    assert_eq!((diagnostics[0].line(), diagnostics[0].column()), (5, 1));
+}
+
+#[test]
+fn nominal_boundaries_preserve_a_nominal_free_bound_resource_with_generic_fields_and_groups() {
+    let source = "module main\nresource R {\n    f: Option<int>\n    details { count: int }\n}\nstore ^a[id: int]: R\npub fn plain(): int { return 0 }\n";
+    let input = ids::minted(|ledger| project(source, ledger));
+    compile(&input).expect("generic fields and owned groups remain supported together");
+}
+
 /// The source diagnostics of a failed compile, or a panic naming the arm reached
 /// instead.
 fn diagnostics(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<SourceDiagnostic> {

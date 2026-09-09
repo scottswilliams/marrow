@@ -1,7 +1,7 @@
-//! D00 slice 3c: durable-field value widening + enum member identity.
+//! Durable-field value widening and enum member identity.
 //!
 //! A durable field's stored value is drawn from the closed acyclic durable value
-//! set: a nominal scalar (erased to its base scalar), a dense `struct` (its leaves
+//! set: a scalar, a dense `struct` (its leaves
 //! recorded positionally as shape bytes, minting no per-leaf id), a closed `enum`
 //! (`Option`/`Result`/a user `enum`), or an `Option` of one. The field anchors the
 //! ledger id; a durable-reachable enum additionally carries a sum identity (kind 5)
@@ -9,9 +9,8 @@
 //! stable per-member codes. A resource with a widened (struct/enum/`Option`) field
 //! completes its identity, verifies, and is executable — the durable value codec frames
 //! the composite inline in the one field-leaf cell (end-to-end store/read coverage lives
-//! in `durable_widened_values.rs`). A nominal field is admitted and uses its base `int`
-//! shape while operations over its root remain parked; a collection field is a precise
-//! `check.unsupported`.
+//! in `durable_widened_values.rs`). Nominal-bearing store bindings and collection
+//! fields report `check.unsupported`.
 
 use marrow_compile::{Compiled, SourceDiagnostic};
 use marrow_image::{ImageType, Scalar};
@@ -54,13 +53,13 @@ fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
     diagnostics.iter().map(|d| d.code()).collect()
 }
 
-// A resource storing every widened value kind: a plain scalar (`id`), a user enum
-// (`kind`), a nominal scalar (`balance`), a dense struct (`owner`), and an
+// A resource storing supported widened values: plain scalars (`id`/`balance`), a
+// user enum (`kind`), a dense struct (`owner`), and an
 // `Option` (`note`).
 const ACCOUNT_SOURCE: &str = r#"resource Account {
     required id: int
     required kind: Access
-    balance: Money
+    balance: int
     owner: Name
     note: Option<string>
 }
@@ -75,8 +74,6 @@ enum Access {
     writer
     admin
 }
-
-type Money: int in 0..=1000000
 
 store ^accounts[id: int]: Account
 
@@ -140,13 +137,7 @@ const NOMINAL_BRANCH_IDS: &str = "marrow ids v0\n\
 
 #[test]
 fn a_widened_field_resource_completes_its_identity_and_verifies() {
-    let id = contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS);
-    assert_eq!(id, contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS), "stable");
-}
-
-#[test]
-fn nominal_durable_positions_and_reference_agree() {
-    let compiled = compile(ACCOUNT_SOURCE, ACCOUNT_IDS).expect("nominal field admission");
+    let compiled = compile(ACCOUNT_SOURCE, ACCOUNT_IDS).expect("supported widened fields");
     let image = marrow_verify::verify(&compiled.image.bytes).expect("independent verification");
     let root = image
         .roots()
@@ -161,8 +152,36 @@ fn nominal_durable_positions_and_reference_agree() {
         .expect("balance field");
     assert_eq!(balance.ty, ImageType::scalar(Scalar::Int));
     assert!(!balance.required, "balance remains sparse");
+    assert_eq!(
+        image.durable_contract(),
+        contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS),
+        "stable"
+    );
+}
 
-    let nominal_root_key = ACCOUNT_SOURCE.replace(
+#[test]
+fn a_nominal_field_binding_is_refused_without_a_durable_operation() {
+    let source = format!(
+        "type Money: int in 0..=1000000\n\n{}",
+        ACCOUNT_SOURCE.replace("balance: int", "balance: Money")
+    );
+    let diagnostics = compile(&source, ACCOUNT_IDS).expect_err("nominal binding must fail");
+    let sites: Vec<_> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let span = diagnostic.span();
+            (diagnostic.code(), span.start_byte, span.end_byte)
+        })
+        .collect();
+    assert_eq!(sites, [("check.unsupported", 262, 295)], "{diagnostics:?}");
+    assert_eq!(&source[262..295], "store ^accounts[id: int]: Account");
+}
+
+#[test]
+fn nominal_durable_positions_and_reference_agree() {
+    let source = format!("type Money: int in 0..=1000000\n\n{ACCOUNT_SOURCE}");
+
+    let nominal_root_key = source.replace(
         "store ^accounts[id: int]: Account",
         "store ^accounts[id: Money]: Account",
     );
@@ -174,7 +193,7 @@ fn nominal_durable_positions_and_reference_agree() {
         .expect_err("nominal branch key must fail");
     assert_eq!(codes(&diagnostics), vec!["check.unsupported"]);
 
-    let nominal_constant = ACCOUNT_SOURCE.replace(
+    let nominal_constant = source.replace(
         "store ^accounts[id: int]: Account",
         "const LIMIT: Money = 1\n\nstore ^accounts[id: int]: Account",
     );
@@ -186,11 +205,9 @@ fn nominal_durable_positions_and_reference_agree() {
     let types = normalize(include_str!("../../../docs/language/types-and-values.md"));
     let durable = normalize(include_str!("../../../docs/language/durable-places.md"));
 
+    assert!(types.contains("A nominal int type is admitted as a local resource field."));
     assert!(types.contains(
-        "A nominal int type is admitted as a resource field and is stored as its base `int`."
-    ));
-    assert!(types.contains(
-        "Operations over a root containing a nominal field remain unimplemented and report `check.unsupported`."
+        "Binding a resource containing a nominal value to a store reports `check.unsupported`, including nested and sparse fields and bindings with no durable operations."
     ));
     assert!(types.contains(
         "Nominal types are not admitted as store-root keys, branch keys, or module-constant types; each position reports `check.unsupported`."
@@ -211,7 +228,7 @@ fn nominal_durable_positions_and_reference_agree() {
         "A nominal Map key retains its source type and uses its base scalar for representation and ordering."
     ));
     assert!(types.contains("`duration` and nominal source types are not durable keys."));
-    assert!(types.contains("A nominal stored field projects through its base scalar."));
+    assert!(!types.contains("A nominal stored field projects through its base scalar."));
 
     let test_source = include_str!("durable_field_widening.rs");
     let disallowed = [

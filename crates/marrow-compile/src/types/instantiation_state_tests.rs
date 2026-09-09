@@ -3494,7 +3494,7 @@ store ^holders[id: int]: Holder
                 &resources,
                 &stores,
                 None,
-                &mut diagnostics, DeclarationBudget::default()),
+                &mut diagnostics, DeclarationBudget::default(), &mut Vec::new()),
             Err(crate::types::BuildError::Invariant(found)) if found == expected
         ));
         assert!(diagnostics.is_empty());
@@ -3634,6 +3634,7 @@ store ^beta[id: int]: Beta
             None,
             &mut diagnostics,
             DeclarationBudget::default(),
+            &mut Vec::new(),
         );
         let outcome = match outcome {
             Ok(_) => Ok(()),

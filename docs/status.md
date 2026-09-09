@@ -43,8 +43,10 @@ pre-existing inconsistencies ([indexes](language/traversal-and-indexes.md#index-
 
 - Third-party packages ([packages](future/packages.md)).
 - Closures ([general-purpose language](future/general-purpose-language.md)).
-- Operations over a singleton root, over a root whose resource declares a
-  nominal field, and over a group inside a branch; each declares and checks
+- Public aggregate inputs and bound durable values containing nominal integers;
+  compilation reports `check.unsupported`. Guarded bare nominal inputs and local
+  composition remain supported ([nominal ints](language/types-and-values.md#aliases-and-nominal-ints)).
+- Operations over a singleton root and over a group inside a branch; each declares and checks
   today ([durable places](language/durable-places.md)). A group inside another
   group is `check.unsupported` at its declaration
   ([resources](language/resources.md)).

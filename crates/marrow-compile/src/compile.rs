@@ -35,7 +35,7 @@ use crate::lower::{
     is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::BuildError;
-use crate::types::{GenericInvariant, GenericOwnerTxn, TypeRegistry};
+use crate::types::{GenericInvariant, GenericOwnerTxn, NominalBoundaryKind, TypeRegistry};
 
 mod presence_calls;
 use presence_calls::reject_unproven_uses;
@@ -1598,6 +1598,7 @@ fn run_semantic(
             })
         })
         .collect();
+    let mut boundary_roots = Vec::new();
     let durable = match DurableRegistry::build(
         &mut draft,
         &records,
@@ -1606,6 +1607,7 @@ fn run_semantic(
         project.identity_ledger(),
         &mut diagnostics,
         budget.clone(),
+        &mut boundary_roots,
     ) {
         Ok(durable) => durable,
         Err(error) => return error.into(),
@@ -1636,6 +1638,7 @@ fn run_semantic(
                 imports,
                 &mut diagnostics,
                 budget.clone(),
+                &mut boundary_roots,
             ) {
                 Ok(signatures) => CompleteFunctionRegistry(signatures),
                 Err(error) => return error.into(),
@@ -1645,6 +1648,32 @@ fn run_semantic(
         signatures
     };
     let function_registry = signatures.complete();
+    if !boundary_roots.is_empty() {
+        match records.with_metadata_session(|metadata| metadata.nominal_boundary(&boundary_roots)) {
+            Ok(Some(index)) => {
+                let root = &boundary_roots[index];
+                let message = match root.kind {
+                    NominalBoundaryKind::Input => {
+                        "public aggregate parameters containing nominal values are not supported"
+                    }
+                    NominalBoundaryKind::Durable => {
+                        "bound durable values containing nominal values are not supported"
+                    }
+                };
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckUnsupported.as_str(),
+                    root.file,
+                    root.span,
+                    message.to_string(),
+                ));
+            }
+            Ok(None) => {}
+            Err(invariant) => {
+                return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
+            }
+        }
+    }
+    drop(boundary_roots);
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
     let generic_functions: Vec<DeclaredFn<'_>> = parsed

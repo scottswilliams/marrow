@@ -28,6 +28,116 @@ fn compile_ok(source: &str) -> Compiled {
     })
 }
 
+#[test]
+fn nominal_boundaries_reject_a_public_record_input() {
+    let source = "module main\ntype Age: int in 0..=150\nstruct Person { age: Age }\npub fn outside(p: Person): bool { return p.age > Age(150) }\n";
+    assert_diagnostic_sites(&compile_err(source), &[("check.unsupported", 4, 19)]);
+}
+
+#[test]
+fn nominal_boundaries_follow_actual_public_value_leaves() {
+    let cases = [
+        ("struct Box<T> { value: T }", "Box<Age>"),
+        ("enum Choice<T> { full(value: T) }", "Choice<Age>"),
+        ("", "Option<Age>"),
+        ("", "Result<Age, int>"),
+        ("", "Result<int, Age>"),
+        ("", "List<Age>"),
+        ("", "Map<Age, int>"),
+        ("", "Map<int, Age>"),
+        ("struct Batch { ages: List<Age> }", "Option<Batch>"),
+        ("resource R { required age: Age }", "R"),
+        ("resource R { age: Age }", "R"),
+        ("struct Person { age: Age }\nalias Saved = Person", "Saved"),
+    ];
+    for (declarations, parameter) in cases {
+        let prelude = format!("module main\ntype Age: int in 0..=150\n{declarations}\n");
+        let line = prelude.lines().count() as u32 + 1;
+        let source = format!("{prelude}pub fn take(p: {parameter}): int {{ return 0 }}\n");
+        assert_diagnostic_sites(&compile_err(&source), &[("check.unsupported", line, 16)]);
+    }
+}
+
+#[test]
+fn nominal_boundaries_keep_optional_parameters_refused() {
+    for parameter in ["Age?", "Person?", "Maybe"] {
+        let source = format!(
+            "module main\ntype Age: int in 0..=150\nstruct Person {{ age: Age }}\nalias Maybe = Age?\npub fn take(p: {parameter}): int {{ return 0 }}\n"
+        );
+        assert_diagnostic_sites(&compile_err(&source), &[("check.unsupported", 5, 16)]);
+    }
+}
+
+#[test]
+fn nominal_boundaries_preserve_private_values_outputs_and_phantom_arguments() {
+    compile_ok(
+        "module main\ntype Age: int in 0..=150\nstruct Person { age: Age }\nstruct Phantom<T> { value: int }\nenum Flag<T> { yes }\nresource Local { required age: Age }\nfn private(p: Person): Person { return p }\npub fn bare(age: Age): Age { return age }\npub fn phantom(p: Phantom<Age>, flag: Flag<Age>): int { return p.value }\npub fn make(): Person { return private(Person(age: Age(150))) }\n",
+    );
+}
+
+#[test]
+fn nominal_boundaries_preserve_a_nominal_free_resource_with_generic_fields_and_groups() {
+    compile_ok(
+        "module main\nresource R {\n    reading: Option<int>\n    details { count: int }\n}\npub fn take(p: R): int { return 0 }\n",
+    );
+}
+
+#[test]
+fn nominal_boundaries_reject_nominals_inside_owned_groups() {
+    let source = "module main\ntype Age: int in 0..=150\nresource R {\n    reading: Option<int>\n    details { age: Age }\n}\npub fn take(p: R): int { return 0 }\n";
+    assert_diagnostic_sites(&compile_err(source), &[("check.unsupported", 7, 16)]);
+}
+
+#[test]
+fn nominal_boundaries_follow_collection_cycles_past_a_shared_node() {
+    for (leaf, public) in [("age: Age", "A"), ("age: Age", "B"), ("age: int", "B")] {
+        let source = format!(
+            "module main\ntype Age: int in 0..=150\nstruct A {{\n    children: List<B>\n    {leaf}\n}}\nstruct B {{ parents: List<A> }}\npub fn take(p: {public}): int {{ return 0 }}\n"
+        );
+        if leaf == "age: int" {
+            compile_ok(&source);
+        } else {
+            assert_diagnostic_sites(&compile_err(&source), &[("check.unsupported", 8, 16)]);
+        }
+    }
+}
+
+#[test]
+fn nominal_boundaries_have_no_durable_depth_cutoff_or_per_export_expansion() {
+    let mut source =
+        String::from("module main\ntype Age: int in 0..=150\nstruct S0 { age: Age }\n");
+    for level in 1..=40 {
+        writeln!(
+            source,
+            "struct S{level} {{\n    left: S{}\n    right: S{}\n}}",
+            level - 1,
+            level - 1
+        )
+        .expect("write source");
+    }
+    let first_line = source.lines().count() as u32 + 1;
+    for export in 0..32 {
+        writeln!(source, "pub fn take{export}(p: S40): int {{ return 0 }}").expect("write source");
+    }
+    // A single referring boundary is enough to withhold the whole image. The
+    // shared graph has 41 identities but exponentially many occurrence paths.
+    assert_diagnostic_sites(
+        &compile_err(&source),
+        &[("check.unsupported", first_line, 17)],
+    );
+}
+
+#[test]
+fn nominal_boundaries_preserve_independent_body_diagnostics() {
+    let diagnostics = compile_err(
+        "module main\ntype Age: int in 0..=150\nstruct Person { age: Age }\npub fn take(p: Person): int { return 0 }\nfn bad(): int { return true }\n",
+    );
+    assert_diagnostic_sites(
+        &diagnostics,
+        &[("check.unsupported", 4, 16), ("check.type", 5, 24)],
+    );
+}
+
 fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the program compiled"),

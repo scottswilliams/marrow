@@ -848,7 +848,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 mutable: false,
                 slot,
             });
-            // A nominal parameter revalidates its interval on entry. In-language
+            // A bare nominal parameter revalidates its interval on entry. In-language
             // callers already passed the type, but the image records only the base
             // int, so a terminal or wire caller could otherwise inject an
             // out-of-interval value into the type.
@@ -896,10 +896,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         }
 
-        // A nominal param erases to its base int in the image; in-language callers
+        // A bare nominal param erases to its base int in the image; in-language callers
         // passed the type, and the entry guard emitted above revalidates the
-        // interval against out-of-language callers. A struct param carries its image
-        // record ref (`ImageType::Record`).
+        // interval against out-of-language callers. Aggregate parameters carry only
+        // their erased image types; public nominal-containing aggregates are refused
+        // when signatures settle.
         let Some(params) = declared_params
             .iter()
             .map(|ty| ty.as_ref().map(|ty| ty.image()))

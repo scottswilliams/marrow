@@ -191,13 +191,8 @@ pub(super) fn is_group_leaf_address(expr: &Expression) -> bool {
     matches!(expr, Expression::Field { base, .. } if is_field_address(base))
 }
 
-/// A durable operation over a declared-but-not-executable root (a singleton root, a root
-/// whose resource declares a nominal-typed field, or one whose only durable content is a
-/// group nested in a branch or another group): the shape's identity is complete and in the
-/// image, but the kernel does not yet serve it, so the operation is rejected precisely
-/// rather than silently dropped. Keyed roots — single-column or a composite tuple — whose
-/// top-level fields are scalars or widened values (`struct`/`enum`/`Option`), their
-/// root-level `group` members, and their `branch` placements, are executable.
+/// Reject an operation on a root whose declared shape is not executable.
+/// Binding diagnostics may independently refuse publication of the same root.
 pub(super) fn not_yet_executable(
     file: &FileIdentity,
     span: SourceSpan,
@@ -208,9 +203,8 @@ pub(super) fn not_yet_executable(
         file,
         span,
         format!(
-            "durable operations over `^{root}` are not yet executable: a singleton root, a root \
-             whose resource declares a nominal-typed field, or a group nested in a branch or \
-             another group, declares and verifies its identity but cannot yet be read or written"
+            "durable operations over `^{root}` are not yet executable for singleton roots, \
+             nominal-bearing resources, or groups nested in a branch or another group"
         ),
     )
 }

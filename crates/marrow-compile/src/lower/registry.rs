@@ -8,7 +8,10 @@ use crate::decl::{
     DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName,
     refuse_covered, refuse_first,
 };
-use crate::types::{BuildError, narrow_function_index};
+use crate::types::{
+    BuildError, NominalBoundaryKind, NominalBoundaryRoot, NominalBoundaryValue,
+    narrow_function_index,
+};
 
 /// One declared function paired with where it was declared: the file identity its
 /// diagnostics point into, the snapshot coordinate its editor facts are retained
@@ -148,15 +151,16 @@ impl FunctionRegistry {
     /// refuses before it takes a slot. So the ledger's accepted occurrences and the
     /// image's monomorphic slots are the same sequence.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn build(
+    pub(crate) fn build<'source>(
         records: &mut TypeRegistry,
         draft: &mut DraftTxn<'_>,
         durable: &DurableRegistry,
-        functions: &[DeclaredFn<'_>],
+        functions: &'source [DeclaredFn<'_>],
         modules: ModuleLedger,
         imports: BTreeMap<String, Vec<(String, String)>>,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
+        boundary_roots: &mut Vec<NominalBoundaryRoot<'source>>,
     ) -> Result<FunctionRegistry, BuildError> {
         let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function, budget);
         let mut declarations = Vec::new();
@@ -181,6 +185,7 @@ impl FunctionRegistry {
                 span: function.name_span,
             };
             let mut refusal: Option<DeclarationRefusalSummary> = None;
+            let boundary_start = boundary_roots.len();
             let mut params = Vec::with_capacity(function.params.len());
             for param in &function.params {
                 let site = MintSite {
@@ -188,7 +193,26 @@ impl FunctionRegistry {
                     span: param.ty.span(),
                 };
                 match param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY, site) {
-                    Ok(ty) => params.push(ty),
+                    Ok(ty) => {
+                        if function.public {
+                            let value = match ty {
+                                LTy::Record { ty, .. } => Some(NominalBoundaryValue::Resource(ty)),
+                                LTy::Struct { .. } | LTy::Enum { .. } | LTy::Collection { .. } => {
+                                    ty.as_garg().map(NominalBoundaryValue::Value)
+                                }
+                                _ => None,
+                            };
+                            if let Some(value) = value {
+                                boundary_roots.push(NominalBoundaryRoot {
+                                    value,
+                                    kind: NominalBoundaryKind::Input,
+                                    file,
+                                    span: param.ty.span(),
+                                });
+                            }
+                        }
+                        params.push(ty);
+                    }
                     Err(ResolveError::Refusal(refused)) => {
                         let refused = annotation_refusal_row(
                             records,
@@ -230,6 +254,7 @@ impl FunctionRegistry {
             };
             let occurrence = match refusal {
                 Some(refusal) => {
+                    boundary_roots.truncate(boundary_start);
                     declarations.push(DeclaredSignature {
                         at: declared.at,
                         name_span: function.name_span,

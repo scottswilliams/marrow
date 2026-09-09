@@ -4,6 +4,121 @@
 
 use super::*;
 
+enum NominalBoundaryNode {
+    Record(RecordMetadataOwner),
+    Enum(EnumMetadataOwner),
+    Collection(CollTypeId),
+}
+
+/// Containment marks are separate from readiness marks: a phantom argument must
+/// be validated without becoming an actual-value edge. Dense marks cost the full
+/// directory domain; only first-seen expandable values enter the queue.
+struct NominalBoundaryWalk {
+    pending: VecDeque<(NominalBoundaryNode, usize)>,
+    records: Vec<bool>,
+    enums: Vec<bool>,
+    collections: Vec<bool>,
+    first_nominal: Option<usize>,
+}
+
+impl NominalBoundaryWalk {
+    fn new(metadata: &MetadataScratch) -> Self {
+        Self {
+            pending: VecDeque::new(),
+            records: vec![false; metadata.records.len()],
+            enums: vec![false; metadata.enums.len()],
+            collections: vec![false; metadata.seen_collections.len()],
+            first_nominal: None,
+        }
+    }
+
+    fn push(
+        &mut self,
+        value: NominalBoundaryValue,
+        origin: usize,
+        session: &TypeMetadataSession<'_>,
+    ) -> Result<(), GenericInvariant> {
+        let metadata = &session.metadata;
+        let missing = match value {
+            NominalBoundaryValue::Resource(id) => {
+                GenericInvariant::ReadyBodyMissing(TypeInstId::Record(id))
+            }
+            NominalBoundaryValue::Value(arg) => GenericInvariant::TypeArgumentTargetMissing(arg),
+        };
+        let (node, mark) = match value {
+            NominalBoundaryValue::Resource(id)
+            | NominalBoundaryValue::Value(GArg::Struct(id) | GArg::Group(id)) => {
+                let owner = metadata
+                    .records
+                    .get(id.index() as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or(missing)?;
+                if !matches!(
+                    (value, owner),
+                    (
+                        NominalBoundaryValue::Resource(_),
+                        RecordMetadataOwner::ResourceRecord(_)
+                    ) | (
+                        NominalBoundaryValue::Value(GArg::Struct(_)),
+                        RecordMetadataOwner::DeclaredStruct(_) | RecordMetadataOwner::GenericRow(_)
+                    ) | (
+                        NominalBoundaryValue::Value(GArg::Group(_)),
+                        RecordMetadataOwner::Group(_, _)
+                    )
+                ) {
+                    return Err(missing);
+                }
+                (
+                    NominalBoundaryNode::Record(owner),
+                    &mut self.records[id.index() as usize],
+                )
+            }
+            NominalBoundaryValue::Value(GArg::Enum(id)) => {
+                let owner = metadata
+                    .enums
+                    .get(id.index() as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or(missing)?;
+                (
+                    NominalBoundaryNode::Enum(owner),
+                    &mut self.enums[id.index() as usize],
+                )
+            }
+            NominalBoundaryValue::Value(GArg::Collection(id)) => {
+                session
+                    .view
+                    .collections
+                    .get(id.index() as usize)
+                    .ok_or(missing)?;
+                (
+                    NominalBoundaryNode::Collection(id),
+                    &mut self.collections[id.index() as usize],
+                )
+            }
+            NominalBoundaryValue::Value(GArg::Nominal(id)) => {
+                session
+                    .view
+                    .registry
+                    .nominals
+                    .get(id.0 as usize)
+                    .ok_or(missing)?;
+                self.first_nominal.get_or_insert(origin);
+                return Ok(());
+            }
+            NominalBoundaryValue::Value(GArg::Scalar(_)) => return Ok(()),
+            NominalBoundaryValue::Value(GArg::Param(index)) => {
+                return Err(GenericInvariant::TypeArgumentParameter(index));
+            }
+        };
+        if !std::mem::replace(mark, true) {
+            self.pending.push_back((node, origin));
+        }
+        Ok(())
+    }
+}
+
 /// One durable-validation walk over all resource leaves. These marks are separate
 /// from metadata preflight: preflight may visit a generic argument or collection
 /// before the durable walk expands that value's body.
@@ -949,6 +1064,89 @@ impl TypeMetadataView<'_> {
 }
 
 impl TypeMetadataSession<'_> {
+    /// One union walk after signatures settle. Ready bodies cannot change during
+    /// later body instantiation. A nominal witness never suppresses metadata errors
+    /// in a sibling value; the whole queue settles before a refusal is returned.
+    pub(crate) fn nominal_boundary(
+        &mut self,
+        roots: &[NominalBoundaryRoot<'_>],
+    ) -> Result<Option<usize>, GenericInvariant> {
+        use NominalBoundaryValue::Value;
+
+        self.ensure_healthy()?;
+        let result = (|| {
+            let mut walk = NominalBoundaryWalk::new(&self.metadata);
+            for (origin, root) in roots.iter().enumerate() {
+                walk.push(root.value, origin, self)?;
+            }
+            while let Some((node, origin)) = walk.pending.pop_front() {
+                match node {
+                    NominalBoundaryNode::Record(RecordMetadataOwner::ResourceRecord(row)) => {
+                        let record = &self.view.registry.records[row];
+                        for arg in record
+                            .fields
+                            .iter()
+                            .chain(record.groups.iter().flat_map(|group| &group.fields))
+                            .map(|field| field.ty)
+                        {
+                            walk.push(Value(arg), origin, self)?;
+                        }
+                    }
+                    NominalBoundaryNode::Record(RecordMetadataOwner::DeclaredStruct(row)) => {
+                        for field in &self.view.registry.structs[row].fields {
+                            walk.push(Value(field.ty), origin, self)?;
+                        }
+                    }
+                    NominalBoundaryNode::Record(RecordMetadataOwner::Group(record, group)) => {
+                        for field in &self.view.registry.records[record].groups[group].fields {
+                            walk.push(Value(field.ty), origin, self)?;
+                        }
+                    }
+                    NominalBoundaryNode::Record(RecordMetadataOwner::GenericRow(row))
+                    | NominalBoundaryNode::Enum(EnumMetadataOwner::GenericRow(row)) => {
+                        let inst = &self.view.generics.type_insts[row];
+                        let body = self
+                            .view
+                            .ready_inst_body_with(inst, &mut self.metadata)?
+                            .ok_or(GenericInvariant::ReadyBodyMissing(inst.id))?;
+                        match body {
+                            InstBody::Struct(fields) => {
+                                for (_, arg) in fields {
+                                    walk.push(Value(*arg), origin, self)?;
+                                }
+                            }
+                            InstBody::Enum(variants) => {
+                                for (_, arg) in variants.iter().flat_map(|variant| &variant.payload)
+                                {
+                                    walk.push(Value(*arg), origin, self)?;
+                                }
+                            }
+                        }
+                    }
+                    NominalBoundaryNode::Enum(EnumMetadataOwner::DeclaredEnum(_)) => {
+                        // Declared enum payloads currently carry only ScalarType.
+                    }
+                    NominalBoundaryNode::Collection(id) => {
+                        self.view.validate_args_with(
+                            &[GArg::Collection(id)],
+                            None,
+                            &mut self.metadata,
+                        )?;
+                        match self.view.collections[id.index() as usize] {
+                            CollSpec::List { elem } => walk.push(Value(elem), origin, self)?,
+                            CollSpec::Map { key, value } => {
+                                walk.push(Value(key), origin, self)?;
+                                walk.push(Value(value), origin, self)?;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(walk.first_nominal)
+        })();
+        self.remember(result)
+    }
+
     fn ensure_healthy(&self) -> Result<(), GenericInvariant> {
         match self.failure {
             Some(invariant) => Err(invariant),

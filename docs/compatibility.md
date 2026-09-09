@@ -23,6 +23,14 @@ generation-2 stores. Neither a code-only rebind nor `import` converts a store.
 A version refusal preserves the engine file, head, and envelope and occurs before engine
 open ([changing the program](operations/README.md#changing-the-program)).
 
+The compiler refuses public aggregate inputs and bound durable values containing
+nominal integers because their transfer and stored shapes erase nominal
+intervals. This source restriction does not change image or store formats.
+Previously generated images are not retrospectively checked for those intervals
+by the verifier or runner, and existing stores are not validated or rewritten by
+the restriction. Recompiling such source reports `check.unsupported`
+([nominal ints](language/types-and-values.md#aliases-and-nominal-ints)).
+
 ## Platforms
 
 The source builds on Linux and macOS with Rust 1.89. Opening a store on disk is

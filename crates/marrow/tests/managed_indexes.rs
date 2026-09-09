@@ -53,9 +53,7 @@ const INDEXED_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// A nominal field remains a distinct source type but erases to `int` in the
-/// durable stored shape. The same erased scalar must therefore admit and type the
-/// managed-index projection without introducing nominal identity into the image.
+/// Index declarations do not permit binding nominal-bearing resources to a store.
 const NOMINAL_INDEX_SOURCE: &str = r#"type Rank: int in 0..=100
 
 resource Book {
@@ -119,8 +117,7 @@ fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage
     marrow_verify::verify(&compiled.image.bytes).map_err(|r| format!("verify: {r:?}"))
 }
 
-/// The `check.*` codes a compile reports, in order. Used for admission rejections.
-fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
+fn compile_diagnostics(source: &str, ids: &str) -> Vec<marrow_compile::SourceDiagnostic> {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -135,10 +132,7 @@ fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.code())
-            .collect(),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
         Err(
             marrow_compile::CompileFailure::Invariant(_)
             | marrow_compile::CompileFailure::ResourceLimit(_),
@@ -146,6 +140,14 @@ fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
     }
+}
+
+/// The `check.*` codes a compile reports, in order. Used for admission rejections.
+fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
+    compile_diagnostics(source, ids)
+        .iter()
+        .map(|diagnostic| diagnostic.code())
+        .collect()
 }
 
 #[test]
@@ -194,43 +196,37 @@ fn the_verifier_resolves_each_index_projection_to_record_and_key_positions() {
 }
 
 #[test]
-fn a_nominal_field_managed_index_projects_its_erased_integer_shape() {
-    let image = verify_source(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS)
-        .expect("a nominal-field managed index compiles and independently verifies");
-    let indexes = image.indexes();
-    assert_eq!(indexes.len(), 1, "the nominal index seals exactly once");
-    assert_eq!(indexes[0].id(), rep(0x70));
-    assert_eq!(
-        indexes[0].components(),
-        &[
-            DurableIndexComponent::Field(rep(0x10)),
-            DurableIndexComponent::Key(rep(0x0c)),
-        ],
-    );
-    assert_eq!(
-        indexes[0].projection(),
-        &[SealedIndexComponent::Field(1), SealedIndexComponent::Key(0)],
-    );
-
-    let contract = image.durable_contract();
-    let repeated = verify_source(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS)
-        .expect("the nominal index verifies repeatedly")
-        .durable_contract();
-    assert_eq!(contract, repeated, "the durable contract stays stable");
+fn a_nominal_field_managed_index_binding_is_refused() {
+    let diagnostics = compile_diagnostics(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code(), "check.unsupported");
+    assert_eq!(diagnostic.file().as_str(), "src/main.mw");
+    assert_eq!((diagnostic.line(), diagnostic.column()), (8, 1));
 }
 
 #[test]
-fn a_nominal_field_root_operation_remains_parked() {
+fn a_nominal_field_binding_refusal_preserves_the_root_operation_diagnostic() {
     let source = format!(
         "{NOMINAL_INDEX_SOURCE}\n\
          pub fn present(id: int): bool {{\n\
          \x20   return exists(^books[id])\n\
          }}\n"
     );
+    let diagnostics = compile_diagnostics(&source, NOMINAL_INDEX_IDS);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.file().as_str() == "src/main.mw")
+    );
+    let sites: Vec<_> = diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
+        .collect();
     assert_eq!(
-        compile_codes(&source, NOMINAL_INDEX_IDS),
-        vec!["check.unsupported"],
-        "admitting the nominal index declaration does not make its root executable",
+        sites,
+        [("check.unsupported", 8, 1), ("check.unsupported", 17, 19)],
+        "binding and operation refusals are both retained: {diagnostics:?}",
     );
 }
 
