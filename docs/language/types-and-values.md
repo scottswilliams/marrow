@@ -3,8 +3,10 @@
 Every Marrow value is copied when it is passed, returned, or assigned, and
 absence has one model, `T?`. A scalar,
 a struct, an enum, a list, a map, and a resource all copy on assignment, on a
-call, and on return. A sparse field, a bracket lookup, and a durable read all
-yield `T?`, and one set of forms consumes it.
+call, and on return. A sparse field, a bracket lookup, and an unproved durable
+read yield `T?`, and one set of forms consumes it. A required field read through
+a proved durable place has its declared type
+([named places](durable-places.md#named-places)).
 
 Two values and two absences:
 

@@ -1,84 +1,60 @@
 # Admission and activation
 
-A program image is produced without a store and then bound to one. Admission
-reads the store and decides whether the image may bind; activation makes the
-binding and any accepted data change in one commit.
+Admission decides whether a verified program may use a store. Activation makes
+an accepted program or data change atomic.
 
 ## Today
 
-`marrow run --store` compiles the project and compares the result with the
-store's binding. An identical program opens the store. A code-only change
-rebinds the store to the new code, and every stored value stays in place. A
-change to the durable contract or to the exported interface is
-`store.contract_changed`; the store is untouched and the prior program still
-runs ([changing the program](../operations/README.md#changing-the-program)).
-Accepting a changed contract, with stored data carried across, is future work
-([status](../status.md#not-yet-available)).
+An identical program opens its store. A code-only change rebinds it and leaves
+every value in place. A changed durable contract or exported interface is
+refused without mutation; the prior program remains usable
+([changing the program](../operations/README.md#changing-the-program)).
 
-## Phases
+## Beta direction
 
-Compilation produces a reproducible image without opening a store. It checks
-types and demand and verifies the image. It grants nothing.
+Keep compilation, admission and activation separate. Compilation produces an
+image without opening data. Read-only admission returns an already-active
+verdict, an exact image-and-store-state witness for a supported transition, or a
+rejection. It performs no mutation and grants no application authority.
 
-Admission compares one verified image with a read-only snapshot of one store
-and writes nothing. It reports one of three outcomes: the image is already
-active; a witness describes a supported transition to it; or the image is
-rejected. A report grants nothing.
+Activation consumes the witness, checks its exact state, and commits data,
+accepted schema state and the active-image binding together. A receipt follows
+commit. Stale, mismatched and reused witnesses cannot authorize a write.
+Body-only and binding-only changes follow the same ownership rule.
 
-Activation consumes one witness, confirms that the store head still matches the
-state the witness names, and commits the data change, the accepted schema
-state, and the store's active-image binding together. A receipt follows the
-commit. A stale head, a used witness, or a witness for another transition fails
-without writing.
+The minimum populated-store update adds a sparse field to an existing resource
+and changes ordinary export code or its interface to use that field. Existing
+values remain in place; the added field starts absent. Admission classifies the
+interface and demand change separately from data compatibility. Any required
+ceiling expansion needs explicit owner acceptance.
 
-A witness is used once, in the process that produced it. It is not copied,
-stored for later, or moved to another process. If a commit's outcome is
-unknown, the attempt ends; recovery reopens the store and finds either the
-complete old state or the complete new state
-([interrupted commits](../operations/README.md#interrupted-commits)). Rolling
-code back is another activation, to the earlier image.
+General graph evolution, required-field rewriting, enum changes, placement
+changes, renames and an index build over populated data are deferred. An index
+build enters beta scope only if the maintained update journey cannot avoid it;
+its input and stored work then need explicit bounds. Every unsupported change
+refuses without damaging the prior program or data.
 
-## Accepted transitions
+Ordinary attachment stays implicit. A supported contract change is an explicit
+review and activation in source vocabulary. Internal witness, identity and hash
+bookkeeping is carried by tools, with no hand-edited metadata or fabricated
+storeless invocation to prepare an update.
 
-Additive activation admits exactly four changes:
+## Recovery and restore
 
-- code and identity-spelling changes that preserve semantic identity and
-  representation;
-- fresh sparse fields or groups added to an existing entry shape;
-- enum members appended after every existing member, keeping each existing
-  member and its order;
-- fresh, never-reused root or branch placements carrying a wholly fresh finite
-  graph, including indexes over a fresh empty root.
+An uncertain outcome remains uncertain until authoritative evidence resolves it;
+reopening alone does not guarantee that it can be classified. No automatic
+mutation replay is permitted.
 
-These changes add metadata and rebind; no stored value is rewritten. One
-further bounded transition builds a single new index over a populated root; it
-reads that root once and states the bound on that read. Every other change is
-rejected without writing: an ambiguous identity, a change of representation or
-key order, a removal, a reordered or reused member, or a rebinding onto a
-populated path outside these rules. One classifier decides from the image and
-the snapshot.
-
-## Restore
-
-Restore creates a fresh store identity and a fresh admission and binding after
-full logical validation. It does not switch an existing store between two
-authoritative heads. Finalization requires every restored required root to be
-present and valid, binds the accepted head over that state, and neither
-evaluates initializers nor changes application values.
-
-## Developer view
-
-An attach whose contract and binding are unchanged rebinds and runs. Any other
-change is one explicit action that reviews, reports in source vocabulary
-(places, presence, demand, stored work), takes acceptance, and activates
-atomically. A metadata-only transition leaves every value in place; an index
-build names the root it reads and the bound on that read. A developer types one
-identifier by hand: the ceiling id that `marrow image` prints and asks the owner
-to accept ([`marrow image`](../tools/cli.md#marrow-image)). Witnesses and
-hashes never appear.
+Recovery must validate the image, schema and complete logical store, then obtain
+a fresh read-only already-active admission verdict before service resumes.
+Restore validates a complete logical backup into a fresh store identity and
+binding. Neither process evaluates application initializers or silently changes
+application values.
 
 ## Evidence
 
-Crash injection at every admission, activation commit, and receipt boundary
-leaves either the complete old state or the complete new state recoverable. A
-rejected change of any kind leaves the active store usable.
+A populated application keeps all old values across the selected additive
+update. Wrong identity, incompatible shape, insufficient authority and stale
+witnesses leave the old application usable. Fault injection at publication,
+activation, commit and receipt boundaries distinguishes complete old, complete
+new and unresolved outcomes on each supported native platform.

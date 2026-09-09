@@ -27,10 +27,11 @@ are the design:
   nothing.
 
 One concept has one owner. A classifier for paths, builtins, identity, stored
-values, diagnostics, or runtime behavior lives in one layer, and there is no
-`common`, `util`, `session`, or `model` module to collect strays. The parser
-owns syntax, the compiler owns semantics, the storage engine owns physical
-representation; `marrow-lsp` adds no language semantics of its own and asks the
+values, diagnostics, or runtime behavior lives in one layer. A shared helper
+needs a coherent responsibility and actual callers. The parser owns syntax,
+the compiler owns resolved semantics, the kernel owns Marrow's physical
+key/value encoding, and the engine owns ordered bytes, snapshots and atomic
+transactions. `marrow-lsp` adds no language semantics of its own and asks the
 compiler for a missing fact instead of reconstructing it.
 
 ## Documentation authority
@@ -66,12 +67,13 @@ CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo fmt --all -- --check
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Run focused suites first, then the broad ones. Documentation changes have two
-focused checks of their own: the diagnostic-registry drift test, and the fence
-test that compiles and verifies every complete `mw` example in the reference:
+Run focused suites first, then the broad ones. Documentation changes check
+inventory, links, anchors and terminology, generated diagnostic drift, and
+complete `mw` examples through the production compiler and test runner:
 
 ```sh
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow-codes --test error_codes_doc
+CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow-codes --test docs_gates
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow --test doc_fences
 ```
 
@@ -99,10 +101,9 @@ diff --check`.
 ## Review
 
 A change is merged after review by someone other than its author.
-Soundness-critical work (image, verifier, kernel, identity, or durable-format
-contracts) takes two reviews, one for soundness with probes and one for Rust
-idiom and simplicity, and soundness findings are fixed and re-reviewed clean.
-Other changes take at least one review plus the standing checks. Fix every
+Substantial work takes two independent reviews, one for soundness with probes
+and one for code shape and reference clarity. Soundness findings are fixed and
+re-reviewed clean. Small changes take at least one review plus the standing checks. Fix every
 in-scope finding, and sweep sibling APIs for the same defect family. A change
 that establishes an invariant carries an artifact that keeps it: a type
 boundary, a visibility restriction, an absence or tidy test, or a drift check,

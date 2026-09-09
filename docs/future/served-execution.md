@@ -1,83 +1,47 @@
 # Served execution
 
-A served runtime hosts the same image, durable declarations, and business
-functions as the local runtime, for several authenticated terminals at once.
+A served runtime would expose one program and store to authenticated terminals.
+It is deferred beyond the [local beta](../vision.md#beta-scope).
 
 ## Today
 
-Marrow has no served runtime. The only transport is the local supervised
-channel between one supervisor and one runner
-([TypeScript client](../tools/typescript-client.md)), and `marrow serve`
+Marrow has no served runtime. The existing transport is a supervised local
+channel ([TypeScript client](../tools/typescript-client.md)); `marrow serve`
 reports `cli.command_unsupported`. [Status](../status.md#trust-boundaries)
-lists the trust boundaries of that profile.
+records the local profile's trust assumptions.
 
 ## Direction
 
-A principal's attestation is separate from path authorization. Credentials are
-verified against a trust anchor kept outside application data. Rotation and
-revocation state is monotonic: an application write cannot reduce it, and
-restoring an old store cannot resurrect it. Revocation takes effect for
-in-flight invocations.
+Retain one store owner and serial mutating invocations, with ownership from
+before the first durable decision read through return. Lost replies never imply
+rollback or authorize automatic replay. Transport adapters consume typed
+exports and carry no language semantics or physical keys.
 
-One machine owns one store and one commit stream. Mutating invocations run one
-at a time, with admission before their first durable read and ownership through
-return. Reads before a transaction block belong to that same invocation.
-Helpers share its block; there is no read-to-write upgrade or nested writer.
-The runtime infers the invocation's mode from verified operations.
+Authentication and path authorization are separate. Application data cannot
+mint credentials or grants, and restoring old application data must not revive
+revoked authority. Public routes project from semantic facts: publication
+grants nothing, a private place is not automatically public, and physical keys
+never become public addresses.
 
-After the serial language increment, local read-only invocations can overlap a
-writer using one committed snapshot per invocation. Snapshot acquisition orders
-against the commit verdict; it may wait at admission, and the admitted reader
-then retains its view. Pinning an older view must apply backpressure before
-unbounded committed history accumulates. Commit uncertainty closes admission
-and retains store custody until every old view drains. The owned-view seam and
-its physical retention cost require a prototype before this overlap ships.
-
-Invocations run once. A lost reply does not imply rollback or authorize replay.
-Applications use ordinary durable progress when duplicate non-idempotent work
-must be recognized. Cancellation and disconnects cannot reverse committed work.
-Running invocations drain before a new image is activated. Transport capacity
-includes pending responses, so stalled output cannot create an unbounded queue.
-Failure, audit, readiness, and recovery are bounded.
-
-A transport adapter decodes values, invokes an export, and encodes the result.
-It owns no source semantics, physical key, or route-local authorization.
-
-## Public paths
-
-The compiler could project selected exports or addresses to stable typed URIs
-and check key parsing, route collisions, wire shapes, and whether an invocation
-grant is narrower than the export's demand. Publication stays distinct from
-storage and authority:
-
-- a private durable place is not automatically public;
-- a source rename does not silently change a public path;
-- exact read authority does not imply collection traversal;
-- publishing a route grants no permission; and
-- physical key bytes never become URLs.
-
-An HTTP or routing library consumes that metadata. Public transport, error
-confidentiality, timing, cache invalidation, and principal policy need their
-own threat and operational models.
+Reader overlap, cancellation, draining on activation and transport backpressure
+need bounded lifetime and failure models before implementation. No snapshot
+protocol, reservation scheduler or parallel runtime is selected in advance.
 
 ## Security obligations
 
-A multi-user pilot requires tamper evidence and an audit trail for durable
-data. A served deployment additionally requires encryption at rest and image
-authenticity. The local single-owner profile does not exercise these
-obligations: there is no second principal to attest to, no shared store to
-audit against, and no untrusted medium between compilation and execution. An
-obligation becomes current when code and tests enforce it and the reference
-describes it.
+Multi-user operation requires tamper evidence and an audit trail; serving also
+requires image authenticity and encryption at rest. Credentials, revocation,
+in-flight authority, error confidentiality and hostile-storage recovery need an
+explicit threat model and independent evidence. The local beta does not satisfy
+or cancel these obligations.
 
 ## Promotion test
 
-The same populated local acceptance application should be usable from two
-independently authenticated terminals without rewriting its durable declarations
-or ordinary business functions. If transport or concurrency requires such a
-rewrite, the local-to-served continuity hypothesis has failed.
+The same populated local application should work from two independently
+authenticated terminals without rewriting its durable declarations or business
+functions. That continuity is a hypothesis, not a compatibility promise.
 
-Several terminals address that same store owner. Parallel mutating bodies,
-reservations and automatic job execution are not prerequisites. Replication,
-consensus, several stores, failover, rolling mixed-version deployment, broad
-online evolution, and high availability are out of scope for this profile.
+Qualification must include denied access, stale/revoked authority, restore,
+lost replies and bounded resource behavior. Replication, multiple-store
+coordination, failover, mixed-version deployment and general online evolution
+remain separate future work.

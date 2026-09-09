@@ -1,34 +1,27 @@
 # Source standard library
 
-Portable library behavior is ordinary Marrow source, compiled and verified
-with the applications that use it.
+Portable library behavior belongs in ordinary Marrow source, compiled and
+verified with its caller.
 
 ## Today
 
-The current toolchain supplies no `std::` modules. A project-declared `std::`
-path follows ordinary project-module resolution and remains project code. The
-built-in functions are the whole ambient vocabulary
-([builtins](../language/builtins.md#no-standard-library)).
+The toolchain supplies no `std::` modules. A project-declared `std::` path is
+ordinary project code. [Builtins](../language/builtins.md#no-standard-library)
+define the current ambient vocabulary.
 
 ## Direction
 
-The first source-defined layer holds `Option` and `Result` helpers, generic
-collection combinators, bounded text utilities, comparison helpers, and other
-pure behavior that needs no privileged runtime state. It ships as a package
-whose lineage is toolchain-pinned, so source spelling cannot impersonate it
-([packages](packages.md)).
+Extract a helper when maintained programs share real behavior. Use the same
+generics, value types and runtime as application code. An intrinsic is justified
+only when source cannot express an operation portably or within measured bounds.
 
-Library code uses the same generics, image, verifier, and VM as application
-code, and only the implemented procedural floor; it needs no closures. A VM
-intrinsic owns only an operation that source cannot express portably or within
-its measured bounds. Library code cannot recompute what the compiler knows, and
-project code is not a compiler plugin.
-
-The compiler, verifier, VM, package acquirer, engine, and lifecycle stay in
-Rust. Applications and the library are Marrow.
+The beta needs [source reuse](packages.md), not a standard-library portfolio,
+toolchain-pinned package lineage, combinator framework or new privileged
+namespace. Broader library organization is deferred until actual callers show
+what it must contain.
 
 ## Evidence
 
-The library builds as an ordinary package, and Graph Report and the
-acceptance-suite applications (Club Locker and EMR) use it through the package
-system ([local applications](local-applications.md)).
+Two maintained callers reuse a source helper with fewer duplicated rules and
+unchanged behavior. The helper compiles and tests through ordinary tooling, with
+no privileged initialization or host authority.

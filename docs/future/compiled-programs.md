@@ -1,65 +1,53 @@
 # Compiled programs
 
-Marrow compiles a project to a program image, verifies the image, and runs it
-on a stack VM.
+Marrow compiles a project to an immutable program image, verifies it
+independently and runs it on a bytecode VM.
 
 ## Today
 
-Compilation turns one closed source graph into an immutable image without
-opening a store or the network. The image holds concrete executable facts:
-types, monomorphized functions, exports, source maps, and the durable contract
-the program uses. The same source and toolchain produce the same image and the
-same identity.
+Compilation opens no store or network. The image contains concrete types,
+functions, exports, source maps and a durable contract. The compiler emits
+bytes; only the verifier creates the verified artifact consumed by the VM.
+The [implementation map](../implementation/README.md) describes these owners,
+and [execution limits](../language/execution-limits.md) lists current ceilings.
 
-The compiler emits image bytes but does not mint a verified image. The verifier
-accepts an image before the VM runs it, and the VM runs only an accepted image,
-so a compiler defect cannot by itself admit an unchecked program. A malformed,
-noncanonical, or overlarge image fails before the VM starts, with an `image.*`
-code ([error codes](../error-codes.md)). Verification has explicit byte,
-list, and function bounds ([execution limits](../language/execution-limits.md)).
-An image is read only by the toolchain that produced it; there is no stable
-ABI. The VM is qualified on one target.
+These boundaries do not establish that every accepted image is correct.
+Adversarial verification and the resource cost of simultaneous compiler,
+verifier and runtime populations remain qualification obligations.
 
-## Direction
+## Beta direction
 
-A compact bytecode and a reference VM remain the design. Native code
-generation, a JIT, an optimizer, a stable binary package ABI, and compiler
-self-hosting are not planned.
+Keep the parser, storeless compiler, image owner, independent verifier, VM,
+typed path kernel and private engine boundaries. Remove duplicated allocation,
+classification and source analysis within those boundaries. Add an intermediate
+representation or analysis pass only for a current invariant that existing
+facts cannot express. Independent verification must reconstruct its facts from
+the image; it does not trust compiler state.
 
-A program's host effects precede its durable access. The host phase closes at
-the first durable operation and stays closed
-([path effects and authority](path-effects-and-authority.md)).
-
-The compiler keeps few representations: lossless syntax facts, one resolved
-source-near intermediate form, and the image draft. It adds a control-flow
-graph, an SSA form, or a pass framework only when an implemented feature makes
-source-near analysis insufficient.
-
-Closures and higher-order forms are outside the image model
-([general-purpose language](general-purpose-language.md)). No instruction
-encoding receives a compatibility promise before the acceptance programs run
-on it.
+Values crossing maintained invocation and storage boundaries must retain the
+constraints their declared types require. The beta keeps nominal-bearing
+aggregate input and durable-value refusal rather than broadening their ABI.
+A deliberate incompatible admission boundary must exclude older artifacts
+whose erased constraints cannot be recovered. Recompilation and explicit store
+format refusal are preferable to a decoder that guesses old meaning. Preserve
+old stores and matching tools until complete logical extraction is verified.
 
 ## Image encoding version
 
-Today's image is version 0. Each list in the image (types, functions, strings,
-and the rest) records its entry count, and the bytecode records each reference
-into a list, as a 16-bit integer, so one list holds at most 65,535 entries.
-The shipped bounds sit far below that; the widest is 8,192 entries
-([execution limits](../language/execution-limits.md)).
-Any bound can be raised toward 65,535 without a format change; an older
-toolchain rejects a larger image instead of misreading it.
+The current format and limits are implementation facts, not a stable ABI.
+Choose a new format only when a correctness boundary or a measured admitted
+program requires it. No counter width, digest replacement, encoding succession
+or wide-image project is prescribed in advance.
 
-One image in which one list exceeds 65,535 entries is the version-1 decision. It
-is deferred until a real program needs it. Version 1 bumps the container
-version byte, mints a new digest kind selected by that byte, and widens the
-counts and operands to 32 bits. A toolchain reads exactly its own image
-version, because an image is regenerated from source across a toolchain
-update. A version-1 digest validates no version-0 bytes, and the reverse.
+Native code generation, JIT compilation, compiler self-hosting and a stable
+binary package ABI are outside the beta. Raw Rust embedding APIs remain
+trusted-caller interfaces; a checked embedding API needs a real caller
+and construction-time proof, not a second recursive scan on every invocation.
 
 ## Evidence
 
-Storeless and durable acceptance programs run only after decode and
-verification. Mutation corpora, deep and wide compiler workloads, generic
-allocation measurements, and clean rebuilds are available before the format
-receives a compatibility promise.
+Pin valid and hostile source/image workloads, outputs, peak-resource bounds and
+all three clocks before implementation. Test wrong-image handles, old artifacts,
+malformed graphs, branch and loop amplification, and refused source with
+independent diagnostics. Unsupported input must fail within the declared
+envelope. A format change must refuse old material without mutating its store.

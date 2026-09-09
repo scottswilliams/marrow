@@ -6,20 +6,27 @@ not implemented and the evidence that would make it current. The
 [language reference](../language/README.md) defines current behavior, and
 [status](../status.md) separates current work from future work.
 
+[Beta scope](../vision.md#beta-scope) selects the immediate product boundary.
+Presence in this directory does not make a capability a beta prerequisite.
+Local source reuse, bounded terminal text I/O, ordinary enum composition, coherent tests,
+additive local updates and complete backup/restore belong to that boundary.
+Remote packages, a source-library portfolio, implicit presence proofs and served
+execution remain deferred.
+
 Language and packages:
 
 - [General-purpose language](general-purpose-language.md): what a storeless program still lacks.
-- [Packages](packages.md): exact path and Git dependency edges over an offline cache.
+- [Packages](packages.md): local source reuse and deferred remote acquisition.
 - [Source standard library](source-standard-library.md): library code written in Marrow.
 
 Compilation and admission:
 
-- [Compiled programs](compiled-programs.md): the image pipeline and its open format decision.
+- [Compiled programs](compiled-programs.md): bounded verified execution and format compatibility.
 - [Admission and activation](admission-and-activation.md): how a changed program meets an existing store.
 
 Durable model and paths:
 
-- [Durable programming](durable-programming.md): what the durable model still adds, and its open forks.
+- [Durable programming](durable-programming.md): selected composition, invocation and data-lifetime rules.
 - [Semantic paths](semantic-paths.md): the distinct identities a durable declaration has.
 - [Path effects and authority](path-effects-and-authority.md): authority attached to paths and effects.
 - [Data coexistence](data-coexistence.md): durable data beside external systems.

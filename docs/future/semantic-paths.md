@@ -13,10 +13,11 @@ the compiler keeps them apart even when they name the same logical location.
 | Durable representation | Concrete value/key shape and codec meaning | Current |
 | Semantic path | Stable durable declaration in the program contract | Current: the durable contract |
 | Concrete address | Semantic path instantiated with typed key values | Current: `^books[7]` |
-| Store identity | One actual durable module instance | Future |
-| Executable binding | Exact code, graph, effects, limits, and accepted authority for a store | Current; authority is future |
+| Store identity | One actual durable store instance | Current: store UID; hostile file substitution is not authenticated |
+| Executable binding | Exact code, graph, effects, limits, and accepted ceiling for a store | Current; fine-grained invocation authority is future |
+| Evolution relation | An accepted transition between durable graph versions | Future beyond current contract-preserving rebind |
 | Public path | Later external representation of selected behavior or addresses | Future |
-| Physical key | Private kernel/engine encoding | Current, private to the engine |
+| Physical key | Private kernel encoding consumed by the engine | Current |
 
 ## Today
 
@@ -37,8 +38,9 @@ physical key, and the engine interprets no Marrow source meaning.
 
 ## Direction
 
-The compiler owns one typed graph of durable declarations, and package
-lineage, store identity, and public paths join the identities above. Private
+The compiler owns one typed graph of durable declarations. Future package
+identity and public paths project from their own owners without replacing the
+existing project ledger or store UID. Private
 helpers keep image-local identity unless they cross a public, durable, wire, or
 accepted-authority boundary. Stable identity provenance is an explicit
 reproducible source input: the ledger records provenance and continuity, and
@@ -48,7 +50,8 @@ A checked rename preserves one identity and representation. Copy, split,
 merge, retype, retirement, and an ambiguous manual edit take a fresh identity,
 an explicitly supported transition, or a rejection
 ([admission and activation](admission-and-activation.md)). A stable identity
-says the bytes are the same; a change of meaning takes a new identity.
+records continuity of a declaration, not equality of source or stored bytes.
+Compatibility depends separately on its representation and accepted evolution.
 
 ## Evidence
 

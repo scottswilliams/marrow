@@ -1,53 +1,28 @@
 # Marrow contributor instructions
 
-Marrow is a general-purpose statically typed compiled language whose distinctive
-capability is direct interaction with durable hierarchical data. Pure programs
-need no store. Durable programs use typed language places rather than a query,
-ORM, repository, or raw key API.
+Marrow's purpose and product boundaries are defined in [Vision](docs/vision.md).
+Judge designs against a general-purpose language's long-lived, large deployments;
+do not build assumptions of small programs, data, teams, or deployment lifetime
+into the architecture. Current bounds require evidence before widening, and
+ambition does not establish maturity or readiness.
 
-Marrow is not an experimental or hobby language. It is designed to be built with
-production at scale in mind: judge architecture, representations, and semantics
-against what a widely used mainstream language and its largest deployments
-require, never against what a prototype or demo can get away with, and let no
-design assume smallness of programs, data, teams, or deployment lifetime. Current
-bounds and capability gaps are honest, evidence-widened waypoints, not the bar;
-the beta's personal-application release criterion is a milestone on this path,
-not the ambition. This raises the design bar without licensing maturity claims —
-the documentation standard's evidence rules still govern what may be called
-production-ready.
-
-The current production path runs source through the parser and the storeless
-checker/compiler to a reproducible immutable program image, an independent
-verifier that is the image's only decoder, a bytecode VM, and a typed path
-kernel over a private ordered-byte engine. These owners are present but early:
-durable identity, persistent store lifecycle, managed indexes, and a supervised
-local runner are implemented. Schema evolution, backup and restore, and
-fine-grained invocation authority remain future work. `docs/status.md` records
-the supported behavior and its limitations; do not turn the current topology
-into a compatibility requirement.
+[Status](docs/status.md) records implemented behavior and limitations; the
+[implementation map](docs/implementation/README.md) describes current owners.
+Do not turn a current topology or a future mechanism into a compatibility promise.
 
 ## Compilation and test speed
 
-Compilation and test execution speed is an architectural constraint on the
-design, not a maintenance chore and not a later optimization pass. It is settled
-when a representation, a crate boundary, or a test's evidence layer is chosen,
-and a design that is correct but slow is not finished. It never licenses an
-unsound shortcut, a skipped gate, or a weakened bound; when the two genuinely
-conflict, soundness wins and the cost is recorded as a finding.
+Compilation and test speed constrain representation, crate boundaries and test
+design. [Compilation and test speed](docs/implementation/speed.md) owns those
+rules. Soundness wins a conflict; never skip a gate or weaken a bound to improve
+a measurement.
 
-Three clocks are ranked by the impact of a regression: (1) Marrow compile time
-over `.mw` programs, which a Marrow program's author pays on every edit and
-which belongs to the product rather than the source tree; (2) workspace test
-wall time; (3) Rust clean and incremental build time. Every broad gate records
-all three. A change that materially increases one names the cause in its
-completion packet; an unexplained increase is a finding.
-
-`docs/implementation/speed.md` owns the design rules that follow —
-representation, one-pass analysis, crate seams, dependency weight, test layer,
-and the opt-in tier for a slow test — and `docs/status.md` records what each
-clock has and has not measured. Give every performance figure the revision,
-workload, and method it was measured with; the recorded measurements do not
-establish speed for other programs or machines.
+Every broad gate records three clocks in user-impact order: Marrow compilation
+over `.mw` programs, workspace test wall time, then Rust clean and incremental
+build time. A material regression names its cause; an unexplained regression
+remains a finding. Preserve baselines and raw evidence. Give each figure its
+revision, workload, platform and method; it establishes nothing about other
+programs or machines.
 
 ## Documentation authority
 
@@ -74,44 +49,10 @@ reference and remove or narrow the future statement. Delete obsolete syntax,
 commands, fixtures, diagnostics, dependencies, and prose in the same lane. Git
 history is the archive.
 
-## Product direction
-
-- The language must be useful for ordinary storeless programs. Algebraic data
-  types, real parametric functions and types, generic collections, modules,
-  packages, formatting, tests, and editor support are foundations; closures are
-  deferred until a maintained program is materially worse without them.
-- Future packages use Git/path locators, exact pinned edges (no lock
-  file), a separate stable-identity ledger, a verified offline cache, and no
-  dependency build scripts or ambient initialization.
-- Direct durable reads, writes, presence, explicit transactions, and bounded
-  ordered traversal are language operations. There is no user query planner,
-  `EXPLAIN`, ORM, generated CRUD family, or source-level cost model.
-- The compiler describes access demand; it never grants what it infers. Runtime
-  access must intersect verified demand, exact candidate acceptance, a separate
-  maximum ceiling, and invocation attenuation at one path kernel.
-- Source spelling, stable declaration identity, package lineage/snapshot,
-  concrete keyed address, store identity, public URI, authority region, and
-  physical key remain distinct typed concepts.
-- Storage engines are private transactional byte substrates. Marrow competes on
-  language/compiler integration, not engine choice or database benchmarks.
-- Backup and restore must round-trip a store's full contents using repository
-  tooling alone. Format and representation decisions must support that future
-  operation.
-- MUMPS is product evidence and inspiration, not a syntax, compatibility, or
-  implementation constitution.
-- Local terminal and desktop applications come before served execution. Public
-  HTTP, principals/policy, replication, broad online evolution, and
-  institutional readiness remain future until separately evidenced.
-
-Complete entries are current: an entry is written whole, a field or group write
-updates an entry the compiler has proved present through a `place`, and `delete`
-is the one clearing form (`docs/language/durable-places.md`). Required fields and
-required group leaves read through a proved place have their declared types;
-sparse and untested reads remain optional. Whole-value read ergonomics
-and automatic traversal facts remain selected direction in
-`docs/future/durable-programming.md`. Entry-family navigation uses one bounded
-scan per step, independent of child populations; encountering own payload
-without an entry marker faults.
+The [durable reference](docs/language/durable-places.md) owns current place,
+presence and clearing rules. [Future direction](docs/future/README.md) owns
+unimplemented goals and deferrals. Contributor instructions do not create a
+second feature plan or prescribe package, image, authority or deployment formats.
 
 ## Working rules
 
@@ -145,8 +86,13 @@ builtins, values, key eligibility/order, saved paths, effects, evolution
 verdicts, diagnostics, or runtime facts across compiler, VM, kernel, tools, and
 tests.
 
+**Distinct identities.** Source spelling, stable declaration identity, package
+lineage and snapshot, concrete keyed address, store identity, public URI,
+authority region, and physical key are separate concepts. Do not recover one
+from another's rendered spelling.
+
 **Compiler facts.** `marrow-compile` owns source resolution, type/effect facts,
-the partial revisioned `AnalysisSnapshot`, and storeless image compilation. LSP
+the immutable, revisioned `AnalysisSnapshot`, and storeless image compilation. LSP
 and renderers consume those facts; they must not reconstruct them from source
 strings or diagnostic messages.
 
@@ -154,11 +100,16 @@ strings or diagnostic messages.
 the VM. Every durable instruction names a validated typed effect site;
 application code never receives a database connection, raw physical key, engine
 handle, ceiling owner, maintenance grant, or recovery handle.
+The compiler describes access demand and grants nothing. Durable access passes
+one path kernel under verified demand, exact candidate acceptance, a separate
+maximum ceiling and invocation attenuation.
 
 **Storage boundary.** A raw engine owns ordered bytes, snapshots, consuming
 transactions, sync, and native recovery. Language representation, typed paths,
 authority, lifecycle, logical integrity, and backup/restore belong above it.
 Engine-specific names and formats stay out of `.mw` source and public APIs.
+Representation changes must preserve a bounded path to full logical backup and
+fresh restore; this requirement does not claim those future tools exist.
 
 **Diagnostics.** A typed variant couples stable code, payload, locations, and
 severity. One renderer produces prose. Semantic tests assert the variant, code,
@@ -189,10 +140,8 @@ dependency cannot satisfy. Repository source remains Apache-2.0.
   settings, limits, raw evidence, and regression policy. Do not call a behavior
   proven, safe, scalable, portable, or institution-ready without the
   corresponding evidence.
-- `marrow check` reports diagnostics and each export's durable access demand;
-  it has no `--compiler-dev` audit mode. A well-formed construct outside the
-  admitted subset carries `check.unsupported` at its span. Semantic-tooling
-  changes use the production-path tests above.
+- Keep unsupported constructs and tool limitations explicit in typed diagnostics
+  and the current reference. Semantic-tooling changes use the production path.
 
 ## Development branch and release authority
 
@@ -205,16 +154,18 @@ unrelated user changes remain untouched until separately handled.
 Public `main` contains unreleased development source. A push to `main` is not a
 versioned release, compatibility or support promise, production-readiness claim,
 or safety-readiness claim. Tags, releases, release assets, public candidate
-references, support declarations, visibility changes, and default-branch
-configuration remain governed by the explicit release gate; ordinary lane
-authority grants none of them.
+references, support declarations and visibility changes require the explicit
+release gate; ordinary lane authority grants none of them. Default-branch
+changes are forbidden, including at that gate. The verdict remains
+**NOT READY FOR SAFETY-CRITICAL USE**.
 
 ## Worktrees, builds, and integration
 
 Use an isolated worktree for substantial or multi-file changes. Follow the
-machine-level `AGENTS.md` for the mandatory external `CARGO_TARGET_DIR`; never
-create build output in this repository. Broad checks sharing one target run
-serially.
+machine-level `AGENTS.md` for the mandatory external `CARGO_TARGET_DIR`; spell it
+and an explicit `--manifest-path` in every Cargo invocation. Never create build
+output in this repository or share a compiling lane's target with another lane.
+Broad checks within a lane run serially.
 
 Documentation-only changes require fresh inventory, link, anchor, terminology,
 snippet, and generated-drift checks. Code integrations require focused tests,

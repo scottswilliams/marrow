@@ -1,7 +1,7 @@
 # Implementation Documentation Instructions
 
 This directory maps the actual Marrow code. It helps contributors and tools
-navigate the current syntax-to-schema-to-check-to-runtime-to-store topology;
+navigate the current source-to-image-to-runtime-to-store pipeline;
 that topology is descriptive, not permanent architecture.
 
 - Update a page in the same change that adds, removes, renames, or reshapes a
@@ -13,7 +13,6 @@ that topology is descriptive, not permanent architecture.
 - Keep pages as maps to files and symbols, without line numbers or copied
   semantics.
 - State counts once in the list that owns them.
-- `docs/language/` owns current language behavior, `docs/vision.md` direction,
-  `docs/future/` unimplemented direction, `docs/status.md` implementation
-  state, and `docs/implementation/storage.md` the current storage map.
+- Follow the [repository authority table](../../AGENTS.md#documentation-authority);
+  link to the current reference instead of copying its semantics here.
 - Plans, reports, and decision records have no normative authority here.

@@ -1,21 +1,9 @@
 # Crate Contributor Notes
 
-On the beta line this directory holds the retained core — the diagnostic-code
-registry (`marrow-codes`), the syntax owner (`marrow-syntax`), the ordered-byte
-storage engine (`marrow-store`), the pure project-input owner (`marrow-project`),
-and the bounded physical project-input adapter (`marrow-project-fs`) that admits a
-project through opened handles and feeds that pure owner — plus the crates
-refounded at T01: the storeless compiler
-(`marrow-compile`), the image container owner (`marrow-image`), the independent
-verifier (`marrow-verify`), the stack VM (`marrow-vm`), the path kernel
-(`marrow-kernel`), the language server (`marrow-lsp`), and the `marrow` CLI. The
-prototype's
-compiler, interpreter, catalog, and durable owners were deleted at B00 and are
-being refounded lane by lane; a feature is absent until its lane lands it. The
-nearest crate instructions apply in addition to the repository instructions.
+The [implementation map](../docs/implementation/README.md) owns the current
+crate inventory and execution pipeline. Keep semantic ownership and dependency
+direction explicit; a crate map is not a fixed architecture or future work list.
 
-Marrow is a general-purpose language designed to be built with production at
-scale in mind: build each crate against what a widely used mainstream language
-and its largest deployments require, never against what a prototype can get away
-with. Current bounds are honest waypoints, not the bar. See the repository
-`AGENTS.md` for the full statement.
+The nearest crate instructions add boundary-specific rules to the
+[repository instructions](../AGENTS.md). Do not repeat product direction or
+maintain a second implementation history here.

@@ -14,7 +14,7 @@ encoding.
 
 ## Grammar-extension checklist
 
-A later grammar feature lands as one vertical inside this crate. Each item below
+A grammar feature lands as one vertical inside this crate. Each item below
 moves together in the feature's lane; a feature is not done while any is missing:
 
 1. **Grammar spelling** is documented in `docs/language/` (the authority), not in a
@@ -30,9 +30,10 @@ moves together in the feature's lane; a feature is not done while any is missing
    header joins its body through `append_braced_body`; a mandatory block renders `{}`
    when empty (a `fn`, `test`, `resource`, `struct`, a group, and the compound
    statements), an optional body (a member-less `store`, an enum leaf/category)
-   leaves the header alone. A comment trailing a header is owned by
-   the block (the parser records it as the block's first own-line comment), not
-   cuddled after `{`. Own-line comments render at their block's canonical indent; a
+   leaves the header alone. The parser records a comment trailing a header as
+   the block's first own-line comment (or the first leading arm of a `match`),
+   never cuddled after `{`. Header spellings reach one tree and one formatting
+   fixed point. Own-line comments render at their block's canonical indent; a
    statement's span covers only its own content, never a following sibling.
 5. **Examples/tests**: add source-driven cases; documented `docs/language/` module
    blocks must parse, reconstruct, and format cleanly (the shared corpus tests).
@@ -45,12 +46,5 @@ moves together in the feature's lane; a feature is not done while any is missing
    (comment- and structure-preserving formatting) runs over the curated valid
    corpus. Keep both bounded: a fixed deterministic corpus plus a seeded,
    fixed-iteration random pass, no external fuzz dependency.
-
-**Comment ownership.** A comment trailing a body-bearing header attaches to one
-deterministic owner — the block — so the `{`-cuddled, next-line-`{`, and own-line
-spellings all parse to one tree and format to one fixed point. The parser routes such
-a comment into the block (compound statements and declarations) or the first leading
-arm (`match`); own-line body comments render at the block's canonical indent. The
-formatter oracle asserts idempotence unconditionally over comments as a result.
 
 Map: [docs/implementation/syntax.md](../../docs/implementation/syntax.md).

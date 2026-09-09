@@ -1,63 +1,44 @@
 # Path effects and authority
 
-An export's authority over durable data is the intersection of what its code
-demands, what its store accepted, and what the invocation is granted. Demand
-describes need and grants nothing.
+Demand describes which durable operations an export may perform. It grants
+nothing.
 
 ## Today
 
-Every export has a demand: the durable places it reads and writes, through
-every function it calls ([access demand](../language/durable-places.md#access-demand)).
-Demand is the union along the call graph, which has no cycles. Index
-maintenance is part of a write's demand
-([traversal and indexes](../language/traversal-and-indexes.md)).
-
-A program image carries its demand as its deployment ceiling, and `marrow
-image` writes the image once that ceiling's id is accepted
-([`marrow image`](../tools/cli.md#marrow-image)). A store keeps the ceiling it
-was provisioned with. An export that demands a place outside that ceiling is
-`store.demand_exceeds_ceiling` before any durable work begins
-([changing the program](../operations/README.md#changing-the-program)). This is
-the whole of authority today: one local owner, one store, and read and write as
-the two kinds of access. Grants finer than read and write are future work
-([status](../status.md#not-yet-available)).
+Each export's demand includes durable operations through its acyclic call graph,
+including managed-index maintenance
+([access demand](../language/durable-places.md#access-demand)).
+The image carries a deployment ceiling accepted by the owner, and the store
+retains that ceiling. An invocation demanding more is refused before durable
+work ([changing the program](../operations/README.md#changing-the-program)).
+The current profile has one local owner; fine-grained principals and grants
+are future work.
 
 ## Direction
 
-A grant names one image, one export, and one store together. It holds the
-places the export demands, intersected with the store's ceiling, and nothing
-more. A later authenticated principal can only further intersect an address or
-a context predicate. It can narrow an already-granted reach; it can never add a
-place the grant did not carry.
+Effective authority must intersect verified program demand, exact accepted
+image, the store's separately accepted maximum ceiling and invocation
+attenuation. An authenticated principal may narrow that intersection, never
+expand it. Exact entry access does not imply permission to traverse its family.
 
-Demand describes operations a program may execute over semantic paths. The
-compiler and verifier compose it once from resolved operations and callee
-summaries. Presence checking and writer classification consume those facts;
-they do not introduce another source declaration, authority grant or scheduling
-envelope. A grant covers only its permitted operations and region, so reading
-one entry does not authorize walking its root.
+The compiler owns resolved source effects. The independent verifier
+reconstructs them from image bytes. Presence checking, writer classification,
+tools and runtime consume their owners' typed facts rather than inventing
+another effect declaration or path classifier. A presence proof or address
+alias grants no access.
 
-An address alias neither grants authority nor reserves its target. A presence
-proof establishes a condition about an entry in the invocation's view, not
-permission to access it. Refactoring to a checked address or whole-entry
-assignment can change demand and must still pass ordinary store admission.
+Maintenance, activation, backup, restore and physical recovery have distinct
+trusted authority unavailable to application code. Stored users or credentials
+are data, not an authentication trust anchor.
 
-Stored users, credentials, and rotation records are inert data. They cannot be
-decoded into an authenticated context or a grant; the trust anchor for
-authentication stays outside application durable state. Maintenance,
-activation, backup, restore, and physical recovery use authority that
-application code cannot hold.
-
-Three things are deferred. Closures and recursion would require a separate
-decision about indirect-call demand. Key provenance is not needed for serial
-writer admission or conservative entry-family invalidation. Principals, roles,
-and served enforcement belong to
-[served execution](served-execution.md).
+The beta preserves the current single-owner ceiling boundary. Principal policy,
+route publication, indirect-call demand and key-provenance analysis are
+deferred with [served execution](served-execution.md). No policy language or
+authorization framework is a beta prerequisite.
 
 ## Evidence
 
-Hover and the change review show, for each export, the operation and place it
-demands, the traversal bound, and the call that carries the demand. A refactor
-that changes no demand changes no authority. An edit that widens demand runs
-only after the store's ceiling and the invocation's grant cover it. A forged
-image, path, or grant reaches zero engine calls.
+A changed program that widens demand needs explicit ceiling acceptance.
+Wrong images, paths and grants refuse before application engine access. Later
+principal enforcement must demonstrate narrowing, revocation and traversal
+distinctions using the same semantic path owner, with no downstream re-parsing.

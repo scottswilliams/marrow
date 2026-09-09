@@ -39,8 +39,8 @@ test "a durable write outlives the call" {
 ```
 
 `task.done = done` changes a local value. `^tasks[id] = task` copies it to a
-durable place, and the copy is still there after `record` returns. The `^` is the
-whole difference; the type checker resolves `done` the same way on both lines.
+durable place, and the copy is still there after `record` returns. Both use the
+declared resource type; the durable write also requires a transaction.
 `isDone` reads the field as `bool?` and supplies a default, because the entry may
 be absent. The test runs against a fresh in-memory store.
 
@@ -74,7 +74,7 @@ each export reads and writes. That demand describes; it grants nothing. Attachin
 deployment authority to the same paths is described under
 [path effects and authority](future/path-effects-and-authority.md).
 
-## One language, no layers
+## Design constraints
 
 Data is navigated, not queried. A program reads or changes one durable element by
 its path and walks a subtree with an ordinary loop, the same way it works with
@@ -82,12 +82,6 @@ local state. The `resource` declaration is the only description of the data. The
 compiler knows the program's types, durable places, and effects, and it reports
 them; no schema file, serializer, or access layer repeats them. Compiling opens
 no store; attaching a compiled program to a store is a separate step.
-
-Object databases made persistence transparent and hid the commit, the disk walk,
-and the data format. Marrow spells out all three: `transaction` marks the commit,
-a bounded `for` marks the traversal, and data moves in its declared shape. A
-durable program reads like a local one, and each extra word marks a real
-difference: presence, atomicity, bounded work, failure, or authority.
 
 A storage engine supplies ordered bytes, snapshots, atomic commits, and recovery
 behind a private boundary. It defines none of the language's types, paths, or
@@ -97,30 +91,40 @@ Compile and test time is a design constraint of the language.
 [Compilation and test speed](implementation/speed.md) states the rules that
 follow from it.
 
-## What Marrow is not
+The compiler owns resolved types, paths and effects. The runtime consumes a
+verified image; editor tools and clients consume published facts. A feature
+must have a maintained caller or establish a necessary correctness or resource
+bound. It must not add a second semantic model, repeated source analysis or an
+application mapping layer. Existing abstractions are subject to the same test.
 
-Marrow is not a query language: a program reaches an entry by its path and walks
-a subtree with a bounded loop. It is not an ORM: no mapping layer stands between
-a value and the place it lives. It is not a relational or document system in
-disguise: durable data is a hierarchy of places, and an index is a second path to
-the same entries. It is not a UI or service framework: HTTP, TLS, identity
-providers, and UI toolkits integrate through host boundaries when a program needs
-them.
+## Beta scope
 
-## Stages
+The beta target is a useful storeless program and a recoverable local
+application on one machine. This is a scope decision, not a readiness claim;
+[status](status.md) records the substantial work still missing.
 
-Marrow is built in three stages that share one language and one durable model.
-The first is a storeless command-line program, the second a local application
-with its own store, and the third a small served system for a few terminals
-sharing one store. Each stage adds deployment semantics and rewrites nothing in
-the program to express concurrency. Pre-release language changes can still
-require source changes and fresh stores when stored formats change. Today,
-serial durable programs use [complete entries and checked places](language/durable-places.md)
-with [bounded traversal](language/traversal-and-indexes.md). A storeless program
-runs from a source install, and a store on disk runs with the
-[companion layout](install.md#running-against-a-store); a distributable
-[local application](future/local-applications.md) and a
-[served system](future/served-execution.md) are future work ([status](status.md)).
+| Experience | Required outcome |
+|---|---|
+| Ordinary programming | Values, functions, generics and collections compose consistently; source reuse, bounded text I/O, tests and an accurate editor support a useful storeless program. |
+| Direct durable programming | Complete entries, explicit presence proofs, typed identities, managed indexes, bounded traversal and one serial transaction owner remain ordinary language operations. |
+| Local application lifetime | The same exports serve a terminal and desktop client; tools provision, update code and add a sparse field on populated data, audit, back up, restore and handle interrupted outcomes without automatic replay. |
+
+Graph Report supplies the small storeless example. The external
+`marrow-acceptance` suite maintains Club Locker and EMR with real clients,
+source tests and data journeys. A beta needs qualified installed artifacts and
+sustained maintained use in addition to passing compiler tests.
+
+Exact local-path source reuse comes before remote acquisition. Closures,
+decimal, enum grouping, a standard-library portfolio, automatic presence
+inference, general migrations and a second storage engine are deferred. So are
+reader overlap, parallel mutation, jobs, public serving and principal policy.
+They are not prerequisites hidden in a future page.
+
+The longer-term aim is to retain the same language and durable model in a
+[served system](future/served-execution.md). That continuity needs evidence;
+pre-release source and stored formats may change. UI, network and identity
+services integrate through host boundaries rather than becoming a Marrow
+application framework.
 
 ## Lineage
 

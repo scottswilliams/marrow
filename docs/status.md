@@ -4,6 +4,12 @@ Marrow is unreleased. The tables below say what the toolchain does at this
 revision and what is future work; the [language reference](language/README.md) defines
 each behavior.
 
+[Beta scope](vision.md#beta-scope) selects useful storeless programs and a
+recoverable local application. It is a target, not the state of this revision.
+Ordinary enum composition, coherent transaction exits and tests, local source
+reuse, bounded terminal I/O, additive updates and complete recovery/backup/restore
+still require work. Broader future features are not prerequisites.
+
 ## What works
 
 | Area | Today | Page |
