@@ -21,7 +21,7 @@ use marrow_verify::{
 };
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
-use crate::value::{Value, key_bytes, list_bytes};
+use crate::value::{Value, collection_within_limits, key_bytes};
 
 // The VM is the sole owner of one invocation's dynamic limits. They are private
 // constants: `run`/`run_durable` take no budget or limit parameter, so no runner,
@@ -40,14 +40,6 @@ const MAX_CALL_DEPTH: u32 = 64;
 /// Text-concatenation result ceiling (design §D). A private VM runtime bound: the
 /// VM has no edge to the image crate, so it owns this limit itself.
 const MAX_TEXT_BYTES: usize = 64 * 1024;
-
-/// Law-9 collection bounds (design §D collections). A `List`/`Map` may hold at most
-/// `MAX_COLLECTION_LEN` elements and measure at most `MAX_AGGREGATE_BYTES` in total
-/// value size; an append or insert that would exceed either faults
-/// `run.collection_limit` rather than allocating unboundedly. Private VM constants:
-/// no runner, CLI, or caller can raise them.
-const MAX_COLLECTION_LEN: usize = 65_536;
-const MAX_AGGREGATE_BYTES: usize = 1 << 20;
 
 /// Mutable facts shared by every helper frame in one invocation. Grouping the
 /// instruction budget and confirmed-commit latch keeps frame dispatch small while
@@ -816,9 +808,9 @@ impl<'i> Frame<'i> {
                 .map(|piece| Value::Text(Rc::from(piece)))
                 .collect()
         };
-        let items =
-            bounded_list(pieces).ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
-        self.stack.push(Value::list(idx, Rc::new(items)));
+        let list = bounded_list(idx, pieces)
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        self.stack.push(list);
         self.pc += 1;
         Ok(())
     }
@@ -832,9 +824,9 @@ impl<'i> Frame<'i> {
             .lines()
             .map(|line| Value::Text(Rc::from(line)))
             .collect();
-        let items =
-            bounded_list(pieces).ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
-        self.stack.push(Value::list(idx, Rc::new(items)));
+        let list = bounded_list(idx, pieces)
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        self.stack.push(list);
         self.pc += 1;
         Ok(())
     }
@@ -1377,11 +1369,17 @@ impl<'i> Frame<'i> {
         // Delta against the cached aggregate: the pre-append list already satisfied both
         // bounds, so one element grows the size by exactly its own structural bytes.
         // Both faults match the whole-list re-measure.
-        if items.len() + 1 > MAX_COLLECTION_LEN {
+        let new_len = items
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        if !collection_within_limits(new_len, 0) {
             return Err(self.fault(Code::RunCollectionLimit.as_str()));
         }
-        let new_bytes = old_bytes + value.structural_bytes();
-        if new_bytes > MAX_AGGREGATE_BYTES {
+        let new_bytes = old_bytes
+            .checked_add(value.structural_bytes())
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        if !collection_within_limits(new_len, new_bytes) {
             return Err(self.fault(Code::RunCollectionLimit.as_str()));
         }
         Rc::make_mut(&mut items).push(value);
@@ -1443,19 +1441,29 @@ impl<'i> Frame<'i> {
         // the same boundary.
         match entries.binary_search_by(|(k, _)| k.cmp(&key)) {
             Ok(position) => {
-                let new_bytes = old_bytes - entries[position].1.structural_bytes() + value_bytes;
-                if new_bytes > MAX_AGGREGATE_BYTES {
+                let new_bytes = old_bytes
+                    .checked_sub(entries[position].1.structural_bytes())
+                    .and_then(|bytes| bytes.checked_add(value_bytes))
+                    .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+                if !collection_within_limits(entries.len(), new_bytes) {
                     return Err(self.fault(Code::RunCollectionLimit.as_str()));
                 }
                 Rc::make_mut(&mut entries)[position].1 = value;
                 self.stack.push(Value::Map(idx, new_bytes, entries));
             }
             Err(position) => {
-                if entries.len() + 1 > MAX_COLLECTION_LEN {
+                let new_len = entries
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+                if !collection_within_limits(new_len, 0) {
                     return Err(self.fault(Code::RunCollectionLimit.as_str()));
                 }
-                let new_bytes = old_bytes + key_bytes(&key) + value_bytes;
-                if new_bytes > MAX_AGGREGATE_BYTES {
+                let new_bytes = old_bytes
+                    .checked_add(key_bytes(&key))
+                    .and_then(|bytes| bytes.checked_add(value_bytes))
+                    .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+                if !collection_within_limits(new_len, new_bytes) {
                     return Err(self.fault(Code::RunCollectionLimit.as_str()));
                 }
                 Rc::make_mut(&mut entries).insert(position, (key, value));
@@ -1554,9 +1562,9 @@ impl<'i> Frame<'i> {
         // single collection aggregate ceiling (a wide-key traversal faults
         // `run.collection_limit` here, not through a second bound).
         let items: Vec<Value> = bounded.keys.into_iter().map(key_to_value).collect();
-        let items =
-            bounded_list(items).ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
-        self.stack.push(Value::list(list_ty, Rc::new(items)));
+        let list = bounded_list(list_ty, items)
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        self.stack.push(list);
         self.stack.push(Value::Bool(bounded.more));
         self.pc += 1;
         Ok(())
@@ -1589,9 +1597,9 @@ impl<'i> Frame<'i> {
         // one bounded `List[K]` (the compiler wraps each into `Id(^root)` at the loop
         // binding), obeying the single collection aggregate ceiling.
         let items: Vec<Value> = bounded.keys.into_iter().map(key_to_value).collect();
-        let items =
-            bounded_list(items).ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
-        self.stack.push(Value::list(list_ty, Rc::new(items)));
+        let list = bounded_list(list_ty, items)
+            .ok_or_else(|| self.fault(Code::RunCollectionLimit.as_str()))?;
+        self.stack.push(list);
         self.stack.push(Value::Bool(bounded.more));
         self.pc += 1;
         Ok(())
@@ -1770,18 +1778,17 @@ fn as_map(value: Value) -> (u16, Rc<Vec<(KeyScalar, Value)>>) {
     }
 }
 
-/// Admit a batch-built list value only within the same law-9 collection bounds
-/// `append` enforces incrementally: at most `MAX_COLLECTION_LEN` elements and
-/// `MAX_AGGREGATE_BYTES` of aggregate value size. The one aggregate-bound owner for a
-/// list materialized all at once — the text-floor `split`/`lines` results and the
-/// frozen `List[K]` of a bounded durable traversal alike — so no list value bypasses
-/// the single collection ceiling. Returns `None` on a bound excess so the caller
-/// faults `run.collection_limit` rather than materializing an unbounded list.
-fn bounded_list(items: Vec<Value>) -> Option<Vec<Value>> {
-    if items.len() > MAX_COLLECTION_LEN || list_bytes(&items) > MAX_AGGREGATE_BYTES {
+/// Measure a materialized batch once and cache that size in the admitted list.
+/// Text split/lines and frozen durable traversal keys use the same fixed limits
+/// as incremental append. The caller maps an excess to `run.collection_limit`.
+fn bounded_list(idx: u16, items: Vec<Value>) -> Option<Value> {
+    if !collection_within_limits(items.len(), 0) {
         return None;
     }
-    Some(items)
+    let bytes = items.iter().try_fold(0usize, |bytes, item| {
+        bytes.checked_add(item.structural_bytes())
+    })?;
+    collection_within_limits(items.len(), bytes).then(|| Value::List(idx, bytes, Rc::new(items)))
 }
 
 fn const_value(value: &SealedConst) -> Value {
@@ -2079,7 +2086,7 @@ fn pop_key_path(stack: &mut Vec<Value>, arity: usize) -> Vec<KeyScalar> {
 
 #[cfg(test)]
 mod bound_ties {
-    use super::MAX_COLLECTION_LEN;
+    use crate::value::MAX_COLLECTION_LEN;
 
     /// The traversal ceiling and the collection ceiling are one bound: a bounded
     /// traversal freezes at most `at most N` keys into a single `List[K]`, and the

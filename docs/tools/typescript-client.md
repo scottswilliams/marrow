@@ -99,8 +99,15 @@ before client generation; transfer shapes do not retain nominal intervals
 ([nominal ints](../language/types-and-values.md#aliases-and-nominal-ints)).
 An export signature too complex for the fixed interface budget is a
 `cli.interface_unbuildable` error at generation. A wire value nests at most 64
-levels, a string carries at most 64 KiB, and a frame is at most 1 MiB; the
-supervision module exports these as `MAX_DEPTH`, `MAX_STRING_BYTES`, and `MAX_FRAME`.
+levels, a string carries at most 64 KiB, and a frame body, including its protocol
+version byte, is at most 1 MiB. The supervision module exports these as
+`MAX_DEPTH`, `MAX_STRING_BYTES`, and `MAX_FRAME`.
+
+The runner also checks [collection limits](../language/execution-limits.md#collection-limits)
+on List and Map arguments, including nested collections. An excess produces
+`MarrowReject` with `runner.arg_mismatch` before the export runs. Generated
+argument validation checks transfer shapes; collection admission occurs in the
+runner.
 
 ## Call outcomes
 

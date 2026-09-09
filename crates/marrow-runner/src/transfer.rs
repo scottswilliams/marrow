@@ -15,7 +15,7 @@
 use marrow_image::{ImageType, Scalar};
 use marrow_local_wire::Json;
 use marrow_verify::{SealedCollectionType, VerifiedImage};
-use marrow_vm::{KeyScalar, Value};
+use marrow_vm::{KeyScalar, Value, collection_within_limits, key_bytes};
 use std::rc::Rc;
 
 /// Decode a JSON argument into a runtime value against `ty`, or `None` when the
@@ -145,18 +145,28 @@ fn decode_enum(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
 /// `List<T>` from a JSON array of element values, or an ordered `Map<K, V>` from a
 /// JSON array of `[key, value]` pair-arrays, normalized to ascending typed key
 /// order. Duplicate keys, mis-shaped pairs, or key/value type mismatches reject
-/// the argument.
+/// the argument. Each collection must fit the VM value owner's fixed count and
+/// aggregate structural-byte limits before it can enter execution.
 fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
     let Json::Array(items) = json else {
         return None;
     };
+    if !collection_within_limits(items.len(), 0) {
+        return None;
+    }
+    let mut bytes = 0usize;
     match image.collection_type(idx) {
         SealedCollectionType::List { elem } => {
             let mut values = Vec::with_capacity(items.len());
             for item in items {
-                values.push(decode_arg(image, &elem, item)?);
+                let value = decode_arg(image, &elem, item)?;
+                bytes = bytes.checked_add(value.structural_bytes())?;
+                if !collection_within_limits(items.len(), bytes) {
+                    return None;
+                }
+                values.push(value);
             }
-            Some(Value::list(idx, Rc::new(values)))
+            Some(Value::List(idx, bytes, Rc::new(values)))
         }
         SealedCollectionType::Map { key, value } => {
             let key_scalar = scalar_of(key)?;
@@ -169,14 +179,21 @@ fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Val
                     return None;
                 };
                 let key_value = decode_key(key_scalar, key_json)?;
-                entries.push((key_value, decode_arg(image, &value, value_json)?));
+                let entry_value = decode_arg(image, &value, value_json)?;
+                bytes = bytes
+                    .checked_add(key_bytes(&key_value))?
+                    .checked_add(entry_value.structural_bytes())?;
+                if !collection_within_limits(items.len(), bytes) {
+                    return None;
+                }
+                entries.push((key_value, entry_value));
             }
             // VM lookup and mutation require unique entries in typed key order.
             entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
             if entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
                 return None;
             }
-            Some(Value::map(idx, Rc::new(entries)))
+            Some(Value::Map(idx, bytes, Rc::new(entries)))
         }
     }
 }

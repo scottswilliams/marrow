@@ -32,7 +32,7 @@ pub use marrow_lifecycle::{
     prepare,
 };
 pub use run::run;
-pub use value::Value;
+pub use value::{Value, collection_within_limits, key_bytes};
 // The key-scalar type a `Value::Map` entry and a `Value::Id` key tuple carry. It
 // belongs to the kernel codec owner; the value model surfaces it because its public
 // `Value` API (constructors and variants) already exposes it.

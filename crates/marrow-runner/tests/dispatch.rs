@@ -2,7 +2,7 @@
 //! compiled through the production pipeline. No socket is bound here, so these run
 //! under the ordinary sandbox; the channel discipline is covered by `channel.rs`.
 
-use marrow_local_wire::{ClientMessage, Json, ServerMessage};
+use marrow_local_wire::{ClientMessage, Json, MAX_FRAME, ServerMessage, frame_body_len};
 use marrow_runner::{Id32, Service};
 
 /// The durable identity ledger used by the durable fixture below.
@@ -53,6 +53,24 @@ fn id_of(idmap: &[(String, Id32)], name: &str) -> Id32 {
 
 fn call(service: &Service, export: Id32, args: Vec<Json>) -> ServerMessage {
     service.handle(ClientMessage::Request { export, args })
+}
+
+fn framed_call(
+    service: &Service,
+    export: Id32,
+    args: Vec<Json>,
+    expected_frame_bytes: usize,
+) -> ServerMessage {
+    let frame = ClientMessage::Request { export, args }
+        .encode()
+        .expect("request fits a complete frame");
+    assert_eq!(frame.len(), expected_frame_bytes);
+    let header = frame[..4].try_into().expect("four-byte frame header");
+    let body_len = frame_body_len(header).expect("frame body is admitted");
+    assert_eq!(body_len, frame.len() - 4);
+    assert!(body_len <= MAX_FRAME);
+    let request = ClientMessage::decode(&frame[4..]).expect("framed request decodes");
+    service.handle(request)
 }
 
 const ADD: &str = r#"pub fn add(a: int, b: int): int {
@@ -106,6 +124,182 @@ fn an_argument_count_mismatch_is_rejected() {
         ServerMessage::Reject {
             code: "runner.arg_mismatch".to_string()
         }
+    );
+}
+
+#[test]
+fn framed_maps_enforce_count_bytes_and_exact_cap_replacement() {
+    let source = r#"pub fn mapCount(m: Map<int, bool>): int {
+    return length(m)
+}
+pub fn mapBytes(m: Map<string, List<int>>): int {
+    return length(m)
+}
+pub fn replaceAtCap(m: Map<int, int>): int {
+    var changed = m
+    changed[0] = 9
+    return changed[0] ?? -1
+}
+pub fn growAtCap(m: Map<int, int>): int {
+    var changed = m
+    changed[0] = 9
+    changed[65536] = 10
+    return length(changed)
+}
+"#;
+    let (service, ids) = build(source, None);
+    let reject = ServerMessage::Reject {
+        code: "runner.arg_mismatch".to_string(),
+    };
+    // Nine structural bytes per pair isolate cardinality from the byte limit.
+    for (count, frame_bytes, expected) in [
+        (
+            65_536,
+            906_513,
+            ServerMessage::Value {
+                data: Json::Int(65_536),
+            },
+        ),
+        (65_537, 906_527, reject.clone()),
+    ] {
+        let entries = (0..count)
+            .map(|key| array(vec![Json::Int(key), Json::Bool(false)]))
+            .collect();
+        assert_eq!(
+            framed_call(
+                &service,
+                id_of(&ids, "mapCount"),
+                vec![array(entries)],
+                frame_bytes
+            ),
+            expected,
+            "Map count {count}"
+        );
+    }
+    // Each key and child-list header costs one byte; all children are valid.
+    for (case, first_key, second_len, frame_bytes, expected) in [
+        (
+            "exact",
+            "a",
+            65_534,
+            262_329,
+            ServerMessage::Value { data: Json::Int(8) },
+        ),
+        ("key-excess", "aa", 65_534, 262_330, reject.clone()),
+        ("value-excess", "a", 65_535, 262_331, reject),
+    ] {
+        let entries = [
+            (first_key, 65_536),
+            ("b", second_len),
+            ("c", 0),
+            ("d", 0),
+            ("e", 0),
+            ("f", 0),
+            ("g", 0),
+            ("h", 0),
+        ]
+        .into_iter()
+        .map(|(key, len)| {
+            array(vec![
+                Json::Str(key.to_string()),
+                array(vec![Json::Int(0); len]),
+            ])
+        })
+        .collect();
+        assert_eq!(
+            framed_call(
+                &service,
+                id_of(&ids, "mapBytes"),
+                vec![array(entries)],
+                frame_bytes
+            ),
+            expected,
+            "Map aggregate {case}"
+        );
+    }
+    // Both limits are exact: replacement keeps the existing key charge and count.
+    for name in ["replaceAtCap", "growAtCap"] {
+        let entries = (0..65_536)
+            .map(|key| array(vec![Json::Int(key), Json::Int(0)]))
+            .collect();
+        let reply = framed_call(&service, id_of(&ids, name), vec![array(entries)], 644_369);
+        match (name, reply) {
+            ("replaceAtCap", ServerMessage::Value { data: Json::Int(9) }) => {}
+            ("growAtCap", ServerMessage::Fault { code, .. }) => {
+                assert_eq!(code, "run.collection_limit");
+            }
+            _ => panic!("unexpected exact-cap Map {name} outcome"),
+        }
+    }
+}
+
+#[test]
+fn collection_limits_reach_nested_record_and_enum_arguments() {
+    let source = r#"struct Items {
+    xs: List<int>
+}
+pub fn nestedCount(xs: List<List<int>>): int {
+    return length(xs)
+}
+pub fn recordCount(value: Items): int {
+    return length(value.xs)
+}
+pub fn choiceCount(value: Option<Items>): int {
+    match value {
+        none => return 0
+        some(items) => return length(items.xs)
+    }
+}
+"#;
+    let (service, ids) = build(source, None);
+    for count in [1, 65_537] {
+        for name in ["nestedCount", "recordCount", "choiceCount"] {
+            let list = array(vec![Json::Int(0); count]);
+            let (input, wrapper_bytes) = match name {
+                "nestedCount" => (array(vec![list]), 2),
+                "recordCount" => (Json::Object(vec![("xs".to_string(), list)]), 7),
+                "choiceCount" => (
+                    Json::Object(vec![
+                        ("member".to_string(), Json::Str("some".to_string())),
+                        (
+                            "payload".to_string(),
+                            array(vec![Json::Object(vec![("xs".to_string(), list)])]),
+                        ),
+                    ]),
+                    37,
+                ),
+                _ => unreachable!("fixed recursion cases"),
+            };
+            let expected = if count == 1 {
+                ServerMessage::Value { data: Json::Int(1) }
+            } else {
+                ServerMessage::Reject {
+                    code: "runner.arg_mismatch".to_string(),
+                }
+            };
+            assert_eq!(
+                framed_call(
+                    &service,
+                    id_of(&ids, name),
+                    vec![input],
+                    118 + 2 * count + 1 + wrapper_bytes,
+                ),
+                expected,
+                "{name}/child-count-{count}"
+            );
+        }
+    }
+    assert_eq!(
+        framed_call(
+            &service,
+            id_of(&ids, "choiceCount"),
+            vec![Json::Object(vec![
+                ("member".to_string(), Json::Str("none".to_string())),
+                ("payload".to_string(), array(vec![])),
+            ])],
+            148,
+        ),
+        ServerMessage::Value { data: Json::Int(0) }
     );
 }
 
@@ -227,6 +421,65 @@ fn a_list_round_trips_through_the_codec() {
             vec![array(vec![Json::Int(2), Json::Int(3), Json::Int(4)])],
         ),
         ServerMessage::Value { data: Json::Int(9) }
+    );
+}
+
+#[test]
+fn framed_list_arguments_enforce_the_element_limit() {
+    let source = r#"pub fn count(xs: List<int>): int {
+    return length(xs)
+}
+"#;
+    let (service, ids) = build(source, None);
+    let export = id_of(&ids, "count");
+    assert_eq!(
+        framed_call(
+            &service,
+            export,
+            vec![array(vec![Json::Int(0); 65_536])],
+            131_191,
+        ),
+        ServerMessage::Value {
+            data: Json::Int(65_536)
+        }
+    );
+    assert_eq!(
+        framed_call(
+            &service,
+            export,
+            vec![array(vec![Json::Int(0); 65_537])],
+            131_193,
+        ),
+        ServerMessage::Reject {
+            code: "runner.arg_mismatch".to_string()
+        }
+    );
+}
+
+#[test]
+fn framed_nested_lists_enforce_the_parent_byte_limit() {
+    let source = r#"pub fn count(xs: List<List<int>>): int {
+    return length(xs)
+}
+"#;
+    let (service, ids) = build(source, None);
+    let export = id_of(&ids, "count");
+    // Eight child headers plus 131,071 eight-byte ints exactly fill the parent.
+    let exact = [65_536, 65_535, 0, 0, 0, 0, 0, 0]
+        .into_iter()
+        .map(|len| array(vec![Json::Int(0); len]))
+        .collect();
+    assert_eq!(
+        framed_call(&service, export, vec![array(exact)], 262_283),
+        ServerMessage::Value { data: Json::Int(8) }
+    );
+    // Each child is valid; their parent needs 2 * (1 + 524,288) bytes.
+    let excess = (0..2).map(|_| array(vec![Json::Int(0); 65_536])).collect();
+    assert_eq!(
+        framed_call(&service, export, vec![array(excess)], 262_267),
+        ServerMessage::Reject {
+            code: "runner.arg_mismatch".to_string()
+        }
     );
 }
 

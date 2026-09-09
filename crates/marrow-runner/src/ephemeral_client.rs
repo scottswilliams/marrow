@@ -184,10 +184,14 @@ mod tests {
     /// sanctioned `bytes → verify` path, spelled inline at each call site (no alternate factory
     /// that returns a `VerifiedImage`).
     fn echo_bytes() -> Vec<u8> {
+        compiled_bytes("pub fn echo(): int {\n    return 7\n}\n")
+    }
+
+    fn compiled_bytes(source: &str) -> Vec<u8> {
         let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
         let files = vec![marrow_project::CapturedFile::new(
             "src/main.mw".to_string(),
-            b"pub fn echo(): int {\n    return 7\n}\n".to_vec(),
+            source.as_bytes().to_vec(),
         )];
         let project = marrow_project::capture(
             &manifest,
@@ -249,6 +253,52 @@ mod tests {
             _ => panic!("expected a replied int value"),
         }
         responder.join().expect("responder");
+    }
+
+    #[test]
+    fn optional_collection_replies_use_the_shared_admission_limits() {
+        use marrow_vm::Value;
+
+        let bytes = compiled_bytes(
+            r#"pub fn echo(): List<int>? {
+    var lists: List<List<int>> = List()
+    return lists[1]
+}
+"#,
+        );
+        let image = marrow_verify::verify(&bytes).expect("verify optional collection return");
+        let export = echo_export(&image);
+        let decode = |data| {
+            let frame = ServerMessage::Value { data }
+                .encode()
+                .expect("reply fits frame");
+            let header = frame[..4].try_into().expect("four-byte reply header");
+            let body_len = frame_body_len(header).expect("reply frame admitted");
+            assert_eq!(body_len, frame.len() - 4);
+            let message = ServerMessage::decode(&frame[4..]).expect("reply decodes");
+            reply_to_outcome(&image, export, message)
+        };
+        assert!(matches!(
+            decode(Json::Null),
+            Ok(CallOutcome::Value(Some(Value::Optional(None))))
+        ));
+        for count in [0, 1, 65_536] {
+            let Ok(CallOutcome::Value(Some(Value::Optional(Some(inner))))) =
+                decode(Json::Array(vec![Json::Int(0); count]))
+            else {
+                panic!("expected an admitted optional list of length {count}");
+            };
+            let Value::List(_, cached, values) = *inner else {
+                panic!("expected the declared list return type");
+            };
+            assert_eq!(values.len(), count);
+            assert_eq!(cached, 8 * count);
+            assert!(values.iter().all(|value| matches!(value, Value::Int(0))));
+        }
+        assert!(matches!(
+            decode(Json::Array(vec![Json::Int(0); 65_537])),
+            Err(ClientError::ReplyDecode)
+        ));
     }
 
     #[test]

@@ -8,6 +8,15 @@ use std::rc::Rc;
 
 use marrow_kernel::codec::key::KeyScalar;
 
+pub(crate) const MAX_COLLECTION_LEN: usize = 65_536;
+const MAX_AGGREGATE_BYTES: usize = 1 << 20;
+
+/// Whether a collection's element/pair count and aggregate structural byte size
+/// fit the fixed limits shared by typed admission and VM construction.
+pub fn collection_within_limits(len: usize, aggregate_bytes: usize) -> bool {
+    len <= MAX_COLLECTION_LEN && aggregate_bytes <= MAX_AGGREGATE_BYTES
+}
+
 /// A runtime value.
 ///
 /// A record carries its type index and one slot per field in declared order; a
@@ -29,9 +38,10 @@ use marrow_kernel::codec::key::KeyScalar;
 ///
 /// The cached size is the aggregate structural byte size of the elements (a `List`) or
 /// the key/value pairs (a `Map`), the quantity the collection-limit law bounds. It is
-/// a deterministic function of the contents, maintained by the [`Value::list`] and
-/// [`Value::map`] constructors and by incremental `append`/`insert` updates, so
-/// growing a collection is amortized `O(1)` rather than an `O(n)` re-measure per step.
+/// a deterministic function of the contents. Constructors, typed transfer decoding
+/// and batch-list construction measure it once; incremental `append`/`insert`
+/// updates account for the changed contents without remeasuring the existing
+/// population. This does not remove sorted Map insertion or copy-on-write costs.
 /// Equality ignores it (see the manual [`PartialEq`]); it is a memoized measurement,
 /// not part of a value's identity.
 #[derive(Debug, Clone, Eq)]
@@ -96,10 +106,10 @@ impl Value {
         Value::Map(idx, bytes, entries)
     }
 
-    /// The structural byte size of this value: a cheap measured size (scalar payload
-    /// bytes plus one byte of framing per node) that bounds runtime memory without
-    /// depending on any wire codec. A collection reads its cached aggregate, so the
-    /// measure is `O(1)` in a collection's element count.
+    /// The structural byte size of this value, independent of any wire codec or
+    /// heap allocation layout. A collection reads its cached aggregate, so the
+    /// measure is `O(1)` in that collection's element count. Records, enums and
+    /// optionals measure their contents recursively.
     pub fn structural_bytes(&self) -> usize {
         match self {
             Value::Int(_) => 8,
