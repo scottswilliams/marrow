@@ -1,4 +1,4 @@
-//! The project named-type registry: transparent aliases and the record type.
+//! The project named-type registry: transparent aliases and record types.
 //!
 //! This is the single owner of what a source type name denotes. A transparent
 //! `alias Name = Type` shares one globally bound terminal and optionality; it
@@ -7,9 +7,9 @@
 //! `supports` capability set — while the image records only its base scalar, so
 //! the interval is carried by the guard instructions the compiler emits, not by
 //! an image type table. Two product kinds lower into image [`RecordTypeDef`]s,
-//! the single canonical product-leaf order owner: the optional `resource` (a record
+//! the single canonical product-leaf order owner: `resource` types (records
 //! with required and sparse scalar, nominal, dense-struct, or closed-enum fields plus
-//! materialized unkeyed groups) and any number of dense `struct` value types (every
+//! materialized unkeyed groups) and dense `struct` value types (every
 //! field required, non-durable, constructible and read by value). Keyed resource
 //! children belong to the durable graph rather than this record. Value types are built
 //! declare-then-fill so a field may name any other value type regardless of order; the
@@ -1159,7 +1159,7 @@ impl GroupInfo {
     }
 }
 
-/// The project's single record type. `type_id` is the group-inclusive materialized
+/// One resource's record type. `type_id` is the group-inclusive materialized
 /// record: its top-level scalar/enum field slots followed by one slot per unkeyed group
 /// (a nested group sub-record). The verifier ties the field slots to the durable member
 /// tree's fields and each trailing group slot to a `Group` member, so one record type
@@ -1682,13 +1682,11 @@ impl TypeRegistry {
         Ok(RowDirectoryGuard::seat(self, directory))
     }
 
-    /// Discard the reused row directory so the next probe rebuilds and re-classifies
-    /// identity from the owners. The production append path keeps the directory current
-    /// without this; only a test that mutates an already-classified row out of the append
-    /// order needs to reclassify, so this affordance is test-only.
-    #[cfg(test)]
-    fn invalidate_row_directory(&self) {
-        *self.row_directory.borrow_mut() = None;
+    /// Reclassify owned identities on the next metadata query. Resource filling
+    /// publishes groups after generic field types may have warmed the directory;
+    /// generic rows and collections normally extend it through their append owners.
+    fn invalidate_row_directory(&mut self) {
+        *self.row_directory.get_mut() = None;
     }
 
     /// Select one template only after proving the cache key has exactly the

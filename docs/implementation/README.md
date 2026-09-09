@@ -226,6 +226,13 @@ missing semantic editor fact belongs in `marrow-compile`.
 
 ## Artifact fence
 
+The [resource fill pass](../../crates/marrow-compile/src/types/build.rs) publishes
+group identities after resolving field types. Generic fields may have already
+built the metadata directory, so a successful fill phase invalidates that cache
+once if it published groups. The next metadata query rebuilds from the completed
+owners; later queries reuse the directory. A phase without groups retains the
+existing classification.
+
 The compiler captures public aggregate parameter and bound durable value roots
 during signature and binding resolution. After signature construction commits,
 `TypeMetadataSession` walks their shared resolved value graph, preserving

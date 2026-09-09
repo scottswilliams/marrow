@@ -76,7 +76,10 @@ entries beneath each `Book`, addressed one entry at a time as
 
 A required field inside a group is a required field of the resource, so a
 constructor that omits `details` when it holds a required leaf is a `check.type`
-error. A required field inside a branch applies to each entry of the branch, and
+error. A resource can combine an `Option<T>` field with group leaves; either
+member may precede the other in the declaration.
+
+A required field inside a branch applies to each entry of the branch, and
 declaring the branch creates no entry. A branch may take several key
 components, `loans[borrower: string, day: date]`, and is then addressed by the
 whole tuple in order. A key is an `int`, `string`, `bool`, `bytes`, `date`, or

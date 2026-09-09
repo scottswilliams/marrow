@@ -1415,8 +1415,7 @@ fn enum_payload(
 /// name, returning the surviving resource declarations for pass two in the same
 /// order as [`TypeRegistry::records`]. A reserved resource name, or a name a prior
 /// resource already declared, drops that resource with a precise diagnostic; the
-/// first declaration of a name stands. The durable graph still admits one store
-/// this line, so a second resource is a value record type, never a second root.
+/// first declaration of a name stands.
 pub(super) fn declare_records<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
@@ -1493,6 +1492,7 @@ pub(super) fn fill_records(
 ) -> Result<(), BuildError> {
     // The survivors are in the same order as the reserved records, so record `index`
     // is the one this declaration reserved.
+    let mut published_groups = false;
     for (index, (at, file, resource)) in record_decls.iter().enumerate() {
         let declared = DeclarationSite {
             name: &resource.name,
@@ -1501,6 +1501,10 @@ pub(super) fn fill_records(
             span: resource.name_span,
         };
         fill_record(draft, registry, index, declared, resource, diagnostics)?;
+        published_groups |= !registry.records[index].groups.is_empty();
+    }
+    if published_groups {
+        registry.invalidate_row_directory();
     }
     Ok(())
 }

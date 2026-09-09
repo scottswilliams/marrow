@@ -39,6 +39,9 @@ source traversal accepts a bare non-unique index when it has no field prefix.
 Logical inspection reports missing or orphaned index cells; it does not repair
 pre-existing inconsistencies ([indexes](language/traversal-and-indexes.md#index-declarations)).
 
+Resource values with generic fields support group-leaf access in either
+declaration order ([resources](language/resources.md#members)).
+
 ## Not yet available
 
 - Third-party packages ([packages](future/packages.md)).

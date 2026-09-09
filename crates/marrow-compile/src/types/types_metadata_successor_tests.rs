@@ -671,6 +671,125 @@ store ^second[id: int]: Second
 }
 
 #[test]
+fn parsed_resource_groups_publish_once_and_reuse_typed_projections() {
+    for with_groups in [false, true] {
+        for resource_count in [1, 8] {
+            let names: Vec<_> = (0..resource_count).map(|i| format!("R{i}")).collect();
+            let mut source = String::from("module main\n");
+            for name in &names {
+                source.push_str(&format!(
+                    "resource {name} {{\n    required reading: Option<int>\n"
+                ));
+                if with_groups {
+                    source.push_str("    details { required count: int }\n");
+                }
+                source.push_str("}\n");
+            }
+            let parsed = marrow_syntax::parse_source(&source);
+            assert!(!parsed.has_errors());
+            let resources: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    (
+                        crate::analysis::FileRef::admitted(0),
+                        crate::test_file_identity("src/main.mw"),
+                        parsed.file.resource(name).expect("parsed resource exists"),
+                    )
+                })
+                .collect();
+            let mut draft_owner = ImageDraft::new();
+            let mut draft = admitted(&mut draft_owner);
+            let mut diagnostics = DiagnosticCollector::new();
+            let (registry, builds) = count_metadata_directory_builds(|| {
+                TypeRegistry::build(
+                    &mut draft,
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    &resources,
+                    &mut diagnostics,
+                    DeclarationBudget::default(),
+                )
+                .expect("parsed resource registry builds")
+            });
+            assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+            assert_eq!(registry.build_invariant(), None);
+            assert_eq!(registry.records.len(), resource_count);
+            assert_eq!(
+                builds, 1,
+                "resources={resource_count}, groups={with_groups}"
+            );
+
+            let project = || {
+                registry
+                    .records
+                    .iter()
+                    .map(|record| {
+                        let field = registry
+                            .product_field_projection(record.type_id, "reading")
+                            .expect("generic field metadata is coherent");
+                        let group = registry
+                            .product_field_projection(record.type_id, "details")
+                            .expect("group metadata is coherent");
+                        let leaf = match group {
+                            ProductFieldProjection::Group { ty, .. } => Some(
+                                registry
+                                    .product_field_projection(ty, "count")
+                                    .expect("group leaf metadata is coherent"),
+                            ),
+                            _ => None,
+                        };
+                        let GArg::Enum(option) = record.fields[0].ty else {
+                            panic!("reading retains its Option enum identity");
+                        };
+                        let inner = registry.as_option(option).expect("Option is Ready");
+                        (field, group, leaf, inner)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (first, first_builds) = count_metadata_directory_builds(project);
+            let (repeated, repeated_builds) = count_metadata_directory_builds(project);
+            assert_eq!(first_builds, usize::from(with_groups));
+            assert_eq!(repeated_builds, 0);
+            assert_eq!(repeated, first);
+            for (record, (field, group, leaf, inner)) in registry.records.iter().zip(first) {
+                assert_eq!(
+                    field,
+                    ProductFieldProjection::Field {
+                        index: 0,
+                        ty: record.fields[0].ty,
+                        required: true,
+                    }
+                );
+                assert_eq!(inner, Some(GArg::Scalar(ScalarType::Int)));
+                assert_eq!(record.groups.len(), usize::from(with_groups));
+                if with_groups {
+                    assert_eq!(
+                        group,
+                        ProductFieldProjection::Group {
+                            index: 1,
+                            ty: record.groups[0].type_id,
+                        }
+                    );
+                    assert_eq!(
+                        leaf,
+                        Some(ProductFieldProjection::Field {
+                            index: 0,
+                            ty: GArg::Scalar(ScalarType::Int),
+                            required: true,
+                        })
+                    );
+                } else {
+                    assert_eq!(group, ProductFieldProjection::MissingRecordField);
+                    assert_eq!(leaf, None);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
     const IDS: &str = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\

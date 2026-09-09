@@ -1699,15 +1699,11 @@ pub(super) struct RowDirectory {
     pub(super) built_collections: usize,
 }
 
-/// The declared-type population a directory classified. DeclarationSite records (with their
-/// groups), structs, and enums, and the groups of each record, are all fixed once
-/// monomorphization begins — the declare phase completes before the first mint — so in
-/// the production pipeline incremental extension only appends generic rows and
-/// collections, and this length triple is a complete change-detector: a differing count
-/// forces a rebuild. It is kept O(1) rather than summing group counts per probe so the
-/// reuse check adds no per-mint factor in the declared-type count. A test that mutates a
-/// committed declared type out of that append order reclassifies via
-/// `invalidate_row_directory`.
+/// The declared populations a directory classified. These counts detect new records,
+/// structs and enums in O(1). Resource filling also publishes group identities without
+/// changing the record count, so that phase invalidates the directory once if it
+/// publishes any groups. After filling, generic rows and collections extend the
+/// directory incrementally. Reuse never scans every resource's groups per probe.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct DeclaredCounts {
     records: usize,

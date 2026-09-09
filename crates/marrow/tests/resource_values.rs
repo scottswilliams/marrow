@@ -5,7 +5,7 @@
 //! never reaches the caller. A resource carrying a `group` crosses whole. The
 //! `resource_values` conformance fixture travels the production path (capture ->
 //! compile -> encode -> verify -> VM) through the built binary; inline projects pin
-//! the boundary of the admitted subset (an optional resource stays refused).
+//! the boundary of the admitted subset (an optional resource parameter stays refused).
 
 use std::fs;
 use std::ops::Deref;
@@ -13,6 +13,40 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+
+fn verify_resource_group_read(members: &str) {
+    let source = format!(
+        "module main\nresource R {{\n{members}\n}}\npub fn take(p: R): int {{ return p.details.count }}\n"
+    );
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let project = marrow_project::capture(
+        &manifest,
+        vec![marrow_project::CapturedFile::new(
+            "src/main.mw".to_string(),
+            source.into_bytes(),
+        )],
+        None,
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&project).expect("a required group read compiles");
+    marrow_verify::verify(&compiled.image.bytes).expect("a required group read verifies");
+}
+
+#[test]
+fn resource_group_read_with_a_generic_field_before_the_group() {
+    verify_resource_group_read("    reading: Option<int>\n    details { required count: int }");
+}
+
+#[test]
+fn resource_group_read_with_a_generic_field_after_the_group() {
+    verify_resource_group_read("    details { required count: int }\n    reading: Option<int>");
+}
+
+#[test]
+fn resource_group_read_without_a_generic_field() {
+    verify_resource_group_read("    details { required count: int }");
+}
 
 struct TempDir {
     root: PathBuf,
