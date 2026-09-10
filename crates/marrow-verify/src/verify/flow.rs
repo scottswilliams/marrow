@@ -98,8 +98,11 @@ pub(super) fn check_flow(
                 Control::Jump(target) => target,
                 Control::Branch(target) => {
                     propagate(&mut entry, &mut worklist, target, frame.clone())?;
-                    propagate(&mut entry, &mut worklist, index + 1, frame)?;
-                    break;
+                    if target == index + 1 {
+                        propagate(&mut entry, &mut worklist, index + 1, frame)?;
+                        break;
+                    }
+                    index + 1
                 }
                 Control::BranchPresent {
                     target,
@@ -114,8 +117,12 @@ pub(super) fn check_flow(
                     // Refuse an over-depth success edge before propagating either edge.
                     check_stack_depth(&fallthrough, &mut max_stack)?;
                     propagate(&mut entry, &mut worklist, target, frame)?;
-                    propagate(&mut entry, &mut worklist, index + 1, fallthrough)?;
-                    break;
+                    if target == index + 1 {
+                        propagate(&mut entry, &mut worklist, index + 1, fallthrough)?;
+                        break;
+                    }
+                    frame = fallthrough;
+                    index + 1
                 }
             };
             if successor == index + 1

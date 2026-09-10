@@ -149,6 +149,40 @@ fn unit_image(local_count: u16, code: impl FnOnce(ConstId, ConstId) -> Vec<Instr
     draft.encode().expect("unit image").bytes
 }
 
+#[test]
+fn distinct_forks_retain_only_the_initial_frame_and_real_joins() {
+    // Complete both tapes' semantic checks before asserting retained ownership.
+    let observations = [(8u16, 1usize, 20), (32, 4, 77)].map(|(width, forks, instructions)| {
+        let bytes = unit_image(width, |_, boolean| {
+            let mut code = vec![Instr::ConstLoad(boolean); usize::from(width)];
+            for _ in 0..forks {
+                let target = u32::try_from(code.len() + 3).expect("small fork tape");
+                code.extend([
+                    Instr::ConstLoad(boolean),
+                    Instr::JumpIfFalse(target),
+                    Instr::BoolNot,
+                ]);
+            }
+            code.extend(std::iter::repeat_n(Instr::Pop, usize::from(width)));
+            code.push(Instr::Return);
+            code
+        });
+        let (verified, counts) = observe(&bytes);
+        assert_eq!(verified.functions().len(), 1);
+        let function = &verified.functions()[0];
+        assert_eq!(function.local_count(), width);
+        assert_eq!(function.max_stack(), usize::from(width) + 1);
+        assert_eq!(function.instrs().len(), instructions);
+        assert_eq!(function.span_at(0), Some((1, 1)));
+        assert_eq!(function.span_at(instructions - 1), Some((1, 1)));
+        assert_eq!(counts.completed, 1);
+        assert_eq!(counts.slots, instructions);
+        eprintln!("type retention width={width} forks={forks}: {counts:?}");
+        counts
+    });
+    assert_eq!(observations.map(|counts| counts.retained_frames), [2, 5]);
+}
+
 fn function_refusal(bytes: &[u8], detail: &'static str) {
     let refusal = crate::verify(bytes).expect_err("invalid flow");
     assert_eq!(refusal.phase(), VerifyPhase::Function);

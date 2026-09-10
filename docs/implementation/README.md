@@ -31,13 +31,15 @@ drives a transaction against an engine in `marrow-store`.
 
 Verifier jump resolution records destinations with a predecessor other than the
 immediately preceding instruction. Type flow carries one working frame through
-single adjacent edges whose destinations have no other predecessor. Entry zero,
-fork successors and non-fallthrough destinations retain frames for exact stack
-comparison and in-place definite-initialization meets. Linear interiors retain
-only reachability and execute again when an upstream meet weakens local facts.
-Ordinary straight-line padding adds no retained local or stack payload; the
-instruction slots still scale with code length. Branch-heavy retained frames
-and repeated visits remain separate costs, without a total memory or work budget.
+adjacent destinations without another predecessor. A fork propagates its target
+first, then reuses the working frame for a distinct eligible fallthrough.
+Coincident edges still both propagate and meet. Entry zero and queued boundaries
+retain frames for exact stack comparison and in-place definite-initialization
+meets. Carried interiors retain only reachability and execute again when an
+upstream meet weakens local facts. Straight-line padding and eligible fork
+fallthroughs add no retained local or stack payload; instruction slots still
+scale with code length. True joins and repeated visits remain separate costs,
+without a total memory or work budget.
 The presence pass uses the same transient destination flags to require an uninterrupted
 key-load, producer and consumer sequence before establishing a guard fact.
 The flags are discarded before the verified image is returned; they add no

@@ -115,7 +115,8 @@ has its own platform and layout requirements
 - The runner bounds image input before verification to the 512 KiB image limit
   plus one excess byte. Oversized images are refused with `image.envelope`
   ([execution limits](language/execution-limits.md#limits)).
-- Verifier type flow carries a single frame through linear instruction segments.
+- Verifier type flow carries a single frame through linear instruction segments
+  and unshared branch fallthroughs.
   Retained local and stack payload scales with queued boundaries rather than
   ordinary straight-line padding. Branch-heavy retention and repeated analysis
   visits are not covered by a total verifier memory or work budget
