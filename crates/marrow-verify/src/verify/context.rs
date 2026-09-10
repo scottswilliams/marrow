@@ -6,12 +6,13 @@ use super::flow::is_mutation;
 use super::presence::flow_successors;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
+use crate::sealed::FunctionDemands;
 use crate::sealed::{
     RetShape, SealedCollectionType, SealedEnumType, SealedFunction, SealedIndex, SealedInstr,
     SealedRecordType, SealedRoot, SealedSite,
 };
 use marrow_image::{DemandAtom, ExportDemand, ImageType, SemanticPath};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
 #[path = "call_graph_tests.rs"]
@@ -121,7 +122,7 @@ impl CallGraph {
 /// model.
 pub(super) struct Effects {
     /// Per function: the durable-access atoms it or a transitive callee performs.
-    pub(super) atoms_closure: Vec<BTreeSet<DemandAtom>>,
+    pub(super) demands: FunctionDemands,
     /// Per function: the image-local site indices it or a transitive callee reaches.
     pub(super) sites_closure: Vec<BTreeSet<u16>>,
     /// Per function: whether its atom closure mutates (write/erase). Projected from
@@ -145,12 +146,12 @@ impl Effects {
     ) -> Self {
         let count = functions.len();
         // Each function's own atoms and reached sites, before closure.
-        let mut atoms_closure = Vec::with_capacity(count);
+        let mut lookup = BTreeMap::new();
+        let mut direct = Vec::new();
         let mut sites_closure = Vec::with_capacity(count);
         let mut has_begin = Vec::with_capacity(count);
         let mut has_commit = Vec::with_capacity(count);
-        for function in functions {
-            let mut atoms = BTreeSet::new();
+        for (function_index, function) in functions.iter().enumerate() {
             let mut sites = BTreeSet::new();
             let mut begins = false;
             let mut commits = false;
@@ -158,7 +159,14 @@ impl Effects {
                 if let Some(site) = durable_site(instr) {
                     sites.insert(site);
                     if let Some(class) = durable_op_class(instr) {
-                        atoms.insert(DemandAtom::new(site_paths[site as usize].clone(), class));
+                        let next = lookup.len();
+                        let ordinal = *lookup
+                            .entry(DemandAtom::new(
+                                site_paths[usize::from(site)].clone(),
+                                class,
+                            ))
+                            .or_insert(next);
+                        direct.push((function_index, ordinal));
                     }
                 }
                 match instr {
@@ -167,47 +175,56 @@ impl Effects {
                     _ => {}
                 }
             }
-            atoms_closure.push(atoms);
             sites_closure.push(sites);
             has_begin.push(begins);
             has_commit.push(commits);
         }
 
+        // Consume discovery ownership through the one canonical atom sort before
+        // allocating closure rows. Only numeric ordinals remain in the remap.
+        let mut remap = vec![0; lookup.len()];
+        let universe = ExportDemand::from_tagged_atoms(
+            lookup.into_iter().map(|(atom, ordinal)| (ordinal, atom)),
+            |discovered, canonical| {
+                // At most five atom classes per verified site, bounded by MAX_SITES.
+                let ordinal = u32::try_from(canonical).expect("atom ordinal fits u32");
+                remap[discovered] = ordinal;
+            },
+        );
+        let mut rows = vec![Vec::new(); count];
+        for (function, discovered) in direct {
+            rows[function].push(remap[discovered]);
+        }
+        drop(remap);
+        let mut demands = FunctionDemands::new(universe, rows);
+
         // Every callee closure is complete before its caller's unions. Duplicate
         // call occurrences remain separate edges; set union is idempotent.
+        let mut scratch = Vec::new();
         for &caller in &calls.callee_first {
             for &callee in calls.callees(caller) {
                 #[cfg(test)]
                 call_graph_tests::record_closure_edge();
                 let callee = usize::from(callee);
-                let (dst, src) = borrow_two(&mut atoms_closure, caller, callee);
-                dst.extend(src.iter().cloned());
+                let (dst, src) = borrow_two(&mut demands.rows, caller, callee);
+                dst.union_with(src, &mut scratch);
                 let (dst_sites, src_sites) = borrow_two(&mut sites_closure, caller, callee);
                 dst_sites.extend(src_sites.iter().copied());
             }
         }
+        drop(scratch);
 
-        let mutates_closure: Vec<bool> = atoms_closure
-            .iter()
-            .map(|atoms| atoms.iter().any(|atom| atom.class().mutates()))
+        let mutates_closure: Vec<bool> = (0..count)
+            .map(|function| demands.get(function).writes())
             .collect();
 
         Self {
-            atoms_closure,
+            demands,
             sites_closure,
             mutates_closure,
             has_begin,
             has_commit,
         }
-    }
-
-    /// The verifier-reconstructed durable demand of the entry at `func`: its stable
-    /// atom set over its whole call closure.
-    pub(super) fn demand(&self, func: u16) -> ExportDemand {
-        let atoms = self.atoms_closure[func as usize].iter();
-        #[cfg(test)]
-        let atoms = atoms.inspect(|_| call_graph_tests::record_materialization_clone());
-        ExportDemand::from_atoms(atoms.cloned())
     }
 
     /// The image-local operation sites the entry at `func` can reach, ascending.
@@ -247,7 +264,7 @@ impl Effects {
         // opens no session for it (its demand is empty) and its `TxnCommit` would have
         // no session to consume. Refuse it here rather than admit a region that cannot
         // run. A region that reads carries read demand and is admitted below.
-        if is_export_entry && self.has_begin[index] && self.atoms_closure[index].is_empty() {
+        if is_export_entry && self.has_begin[index] && self.demands.get(index).is_empty() {
             return Err(reject(
                 VerifyPhase::Flow,
                 "a transaction performs no durable operation",
@@ -333,7 +350,7 @@ impl Effects {
                     // after commit is refused here so the runtime never reaches a
                     // consumed transaction.
                     let durable_here = durable_op_class(instr).is_some()
-                        || matches!(instr, SealedInstr::Call(target) if !self.atoms_closure[*target as usize].is_empty());
+                        || matches!(instr, SealedInstr::Call(target) if !self.demands.get(usize::from(*target)).is_empty());
                     if durable_here && state == State::AfterCommit {
                         return Err(reject(
                             VerifyPhase::Flow,

@@ -536,15 +536,35 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
 
     let value_export = &value_image.exports()[0];
     let label_export = &label_image.exports()[0];
+    let value_demand = value_image
+        .function(value_export.function())
+        .expect("verified function")
+        .demand();
+    let label_demand = label_image
+        .function(label_export.function())
+        .expect("verified function")
+        .demand();
 
     // Each demands a single read atom on its own field node.
-    assert_eq!(value_export.demand().atoms().len(), 1);
+    assert_eq!(value_demand.atoms().len(), 1);
     assert_eq!(
-        *value_export.demand().atoms()[0].path().node_id().bytes(),
+        *value_demand
+            .atoms()
+            .next()
+            .expect("single demand atom")
+            .path()
+            .node_id()
+            .bytes(),
         VALUE_FIELD_ID
     );
     assert_eq!(
-        *label_export.demand().atoms()[0].path().node_id().bytes(),
+        *label_demand
+            .atoms()
+            .next()
+            .expect("single demand atom")
+            .path()
+            .node_id()
+            .bytes(),
         LABEL_FIELD_ID
     );
     // Different sites read, so the demand identities differ.

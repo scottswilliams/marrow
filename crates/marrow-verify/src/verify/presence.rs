@@ -255,7 +255,7 @@ fn presence_edges(
         SealedInstr::Call(callee) => {
             // Only entry erasure removes a presence fact. Complete replacement
             // and field/group updates preserve the entry marker.
-            for atom in &effects.atoms_closure[*callee as usize] {
+            for atom in effects.demands.get(usize::from(*callee)).atoms() {
                 if atom.class() != OperationClass::Erase {
                     continue;
                 }

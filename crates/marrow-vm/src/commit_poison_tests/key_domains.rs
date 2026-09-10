@@ -143,6 +143,7 @@ fn a_wrong_kind_stored_key_faults_at_the_verified_traversal() {
     let function = image
         .function(export.function())
         .expect("verified function");
+    let demand = function.demand();
     let tape = function.body().instrs();
     assert!(matches!(tape[0], SealedInstr::DurIterateBounded { .. }));
 
@@ -163,8 +164,8 @@ fn a_wrong_kind_stored_key_faults_at_the_verified_traversal() {
                 .read_session(
                     InvocationGrant::full_store(),
                     DemandCoverage {
-                        read: export.demand().reads(),
-                        write: export.demand().writes(),
+                        read: demand.reads(),
+                        write: demand.writes(),
                     },
                 )
                 .expect("verified read session");

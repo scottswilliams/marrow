@@ -14,7 +14,6 @@ use crate::verify::{admitted_plan, image_forgery, site_seam};
 struct Counts {
     projection_instructions: usize,
     closure_edges: usize,
-    materialization_clones: usize,
 }
 
 thread_local! {
@@ -39,15 +38,6 @@ pub(in crate::verify) fn record_closure_edge() {
     });
 }
 
-pub(super) fn record_materialization_clone() {
-    COUNTS.with(|cell| {
-        if let Some(mut counts) = cell.get() {
-            counts.materialization_clones += 1;
-            cell.set(Some(counts));
-        }
-    });
-}
-
 fn observe(bytes: &[u8]) -> (VerifiedImage, Counts) {
     COUNTS.with(|cell| {
         assert!(cell.get().is_none(), "observations do not nest");
@@ -63,6 +53,20 @@ fn observe(bytes: &[u8]) -> (VerifiedImage, Counts) {
 
 fn image(
     bodies: impl FnOnce(ConstId, &PlannedSiteRef) -> Vec<Vec<Instr>>,
+    export: Option<usize>,
+    test: Option<usize>,
+) -> Vec<u8> {
+    image_with_roots(
+        &[("counters", 4, 5)],
+        |key, entries| bodies(key, &entries[0]),
+        export,
+        test,
+    )
+}
+
+fn image_with_roots(
+    roots: &[(&str, u8, u8)],
+    bodies: impl FnOnce(ConstId, &[PlannedSiteRef]) -> Vec<Vec<Instr>>,
     export: Option<usize>,
     test: Option<usize>,
 ) -> Vec<u8> {
@@ -99,30 +103,34 @@ fn image(
             }],
         )
         .expect("one-field product");
-    let name = draft.intern_string("counters").expect("root name");
-    let root = draft
-        .add_root_occurrence(
-            &admitted_plan::admitted_plan(),
-            product,
-            RootOccurrenceDef {
-                name,
-                keys: vec![KeyColumn {
-                    scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes([5; 16]),
-                }],
-                placement: LedgerIdBytes::from_bytes([4; 16]),
-                indexes: Vec::new().into(),
-            },
-        )
-        .expect("one integer-keyed root");
-    let entry = site_seam::site(
-        &mut draft,
-        root.occurrence(),
-        root.placement_path(),
-        SemanticTarget::WholePayload,
-    );
+    assert!(!roots.is_empty() && roots.len() <= 2);
+    let mut entries = Vec::new();
+    for &(name, placement, key_id) in roots {
+        let name = draft.intern_string(name).expect("root name");
+        let root = draft
+            .add_root_occurrence(
+                &admitted_plan::admitted_plan(),
+                product,
+                RootOccurrenceDef {
+                    name,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: LedgerIdBytes::from_bytes([key_id; 16]),
+                    }],
+                    placement: LedgerIdBytes::from_bytes([placement; 16]),
+                    indexes: Vec::new().into(),
+                },
+            )
+            .expect("integer-keyed root");
+        entries.push(site_seam::site(
+            &mut draft,
+            root.occurrence(),
+            root.placement_path(),
+            SemanticTarget::WholePayload,
+        ));
+    }
     let key = draft.intern_int(0).expect("zero key");
-    let bodies = bodies(key, &entry);
+    let bodies = bodies(key, &entries);
     assert!(!bodies.is_empty() && bodies.len() <= 5);
     assert!(bodies.iter().map(Vec::len).sum::<usize>() <= 32);
     let source = draft.intern_string("calls.mw").expect("source name");
@@ -216,7 +224,7 @@ fn call_projection_and_closure_visit_each_occurrence_once() {
             let function = verified
                 .function(FunctionIndex::new(index))
                 .expect("connected function exists");
-            assert_eq!(function.demand(), &expected);
+            assert_eq!(function.demand(), expected.as_view());
             assert!(!function.body().is_mutating());
             assert!(function.body().params().is_empty());
             assert_eq!(function.body().ret(), RetShape::Unit);
@@ -245,7 +253,13 @@ fn call_projection_and_closure_visit_each_occurrence_once() {
         let export = &verified.exports()[0];
         assert_eq!(export.function(), FunctionIndex::new(root));
         assert_eq!(export.id(), ExportId::of_local("", "entry"));
-        assert_eq!(export.demand(), &expected);
+        assert_eq!(
+            verified
+                .function(export.function())
+                .expect("verified export function")
+                .demand(),
+            expected.as_view()
+        );
         assert_eq!(export.demand_id(), expected.demand_set_id());
         assert_eq!(export.reachable_sites(), &[0]);
         assert!(!export.is_mutating());
@@ -272,7 +286,7 @@ fn call_projection_and_closure_visit_each_occurrence_once() {
 }
 
 #[test]
-fn function_demands_move_after_selected_demands_are_materialized() {
+fn function_and_selected_demands_preserve_driver_semantics() {
     let bytes = image(
         |key, entry| {
             vec![
@@ -291,7 +305,7 @@ fn function_demands_move_after_selected_demands_are_materialized() {
         Some(0),
         Some(4),
     );
-    let (verified, counts) = observe(&bytes);
+    let verified = crate::verify(&bytes).expect("driver demand verifies");
     assert_eq!(verified.functions().len(), 5);
     assert_eq!(verified.exports().len(), 1);
     assert_eq!(verified.test_entries().len(), 1);
@@ -309,7 +323,7 @@ fn function_demands_move_after_selected_demands_are_materialized() {
         let function = verified
             .function(FunctionIndex::new(index))
             .expect("every function ordinal remains materialized");
-        assert_eq!(function.demand(), &expected);
+        assert_eq!(function.demand(), expected.as_view());
         assert_eq!(function.demand().demand_set_id(), expected_id);
         assert!(function.body().params().is_empty());
         assert_eq!(function.body().ret(), RetShape::Unit);
@@ -318,7 +332,13 @@ fn function_demands_move_after_selected_demands_are_materialized() {
     let export = &verified.exports()[0];
     assert_eq!(export.function(), FunctionIndex::new(0));
     assert_eq!(export.id(), ExportId::of_local("", "entry"));
-    assert_eq!(export.demand(), &expected);
+    assert_eq!(
+        verified
+            .function(export.function())
+            .expect("verified export function")
+            .demand(),
+        expected.as_view()
+    );
     assert_eq!(export.demand_id(), expected_id);
     assert_eq!(export.reachable_sites(), &[0]);
     assert!(!export.is_mutating());
@@ -326,16 +346,177 @@ fn function_demands_move_after_selected_demands_are_materialized() {
     assert_eq!(test.func(), FunctionIndex::new(4));
     assert_eq!(test.name(), "f4");
     assert_eq!(test.kind(), TestKind::Driver);
-    assert_eq!(test.demand(), &expected);
-    assert_eq!(test.demand().demand_set_id(), expected_id);
+    assert_eq!(
+        verified
+            .function(test.func())
+            .expect("verified test function")
+            .demand(),
+        expected.as_view()
+    );
+    assert_eq!(
+        verified
+            .function(test.func())
+            .expect("verified test function")
+            .demand()
+            .demand_set_id(),
+        expected_id
+    );
     assert!(matches!(
         verified.functions()[4].instrs(),
         [SealedInstr::Call(0), SealedInstr::Return]
     ));
-    assert_eq!(
-        counts.materialization_clones, 2,
-        "only the selected export and test demands clone their atom",
+}
+
+#[test]
+fn unequal_function_demands_borrow_the_same_atoms() {
+    let bytes = image_with_roots(
+        &[("counters", 4, 5), ("others", 6, 7)],
+        |key, entries| {
+            vec![
+                vec![Instr::Call(1), Instr::Call(3), Instr::Return],
+                vec![Instr::Call(2), Instr::Return],
+                presence_read(key, &entries[0]),
+                presence_read(key, &entries[1]),
+                vec![Instr::Return],
+            ]
+        },
+        Some(1),
+        Some(0),
     );
+    let verified = crate::verify(&bytes).expect("overlapping presence demands verify");
+    assert_eq!(verified.functions().len(), 5);
+    assert_eq!(verified.exports().len(), 1);
+    assert_eq!(verified.test_entries().len(), 1);
+    assert_eq!(verified.sites().len(), 2);
+    assert_eq!(
+        verified
+            .functions()
+            .iter()
+            .map(|function| function.instrs().len())
+            .sum::<usize>(),
+        14,
+    );
+    let a = presence_demand();
+    let b = ExportDemand::from_atoms([DemandAtom::new(
+        SemanticPath::root(
+            LedgerIdBytes::from_bytes([1; 16]),
+            LedgerIdBytes::from_bytes([6; 16]),
+        ),
+        OperationClass::Presence,
+    )]);
+    let both = ExportDemand::union([&a, &b]);
+    let empty = ExportDemand::from_atoms([]);
+    for (index, expected) in [0u16, 1, 2, 3, 4]
+        .into_iter()
+        .zip([&both, &a, &a, &b, &empty])
+    {
+        let function = verified
+            .function(FunctionIndex::new(index))
+            .expect("every function ordinal remains available");
+        assert_eq!(function.demand(), expected.as_view());
+        assert_eq!(function.demand().demand_set_id(), expected.demand_set_id());
+        assert_eq!(
+            function.demand().atom_set_payload(),
+            expected.atom_set_payload()
+        );
+        assert_eq!(function.demand().reads(), !expected.is_empty());
+        assert!(!function.demand().writes());
+        assert!(function.body().params().is_empty());
+        assert_eq!(function.body().ret(), RetShape::Unit);
+        assert!(!function.body().is_mutating());
+    }
+    assert!(matches!(
+        verified.functions()[0].instrs(),
+        [
+            SealedInstr::Call(1),
+            SealedInstr::Call(3),
+            SealedInstr::Return
+        ]
+    ));
+    assert!(matches!(
+        verified.functions()[1].instrs(),
+        [SealedInstr::Call(2), SealedInstr::Return]
+    ));
+    for (function, site) in [(2, 0), (3, 1)] {
+        assert!(matches!(
+            verified.functions()[function].instrs(),
+            [
+                SealedInstr::ConstLoad(0),
+                SealedInstr::DurExists(actual),
+                SealedInstr::Pop,
+                SealedInstr::Return
+            ] if *actual == site
+        ));
+    }
+    assert!(matches!(
+        verified.functions()[4].instrs(),
+        [SealedInstr::Return]
+    ));
+    let export = &verified.exports()[0];
+    assert_eq!(export.function(), FunctionIndex::new(1));
+    assert_eq!(export.id(), ExportId::of_local("", "entry"));
+    assert_eq!(
+        verified
+            .function(export.function())
+            .expect("verified export function")
+            .demand(),
+        a.as_view()
+    );
+    assert_eq!(export.demand_id(), a.demand_set_id());
+    assert_eq!(export.reachable_sites(), &[0]);
+    assert!(!export.is_mutating());
+    let test = &verified.test_entries()[0];
+    assert_eq!(test.func(), FunctionIndex::new(0));
+    assert_eq!(test.name(), "f0");
+    assert_eq!(test.kind(), TestKind::Driver);
+    assert_eq!(
+        verified
+            .function(test.func())
+            .expect("verified test function")
+            .demand(),
+        both.as_view()
+    );
+    assert_eq!(
+        verified
+            .function(test.func())
+            .expect("verified test function")
+            .demand()
+            .demand_set_id(),
+        both.demand_set_id()
+    );
+    assert_eq!(verified.demand_union(), a);
+    assert_eq!(verified.test_demand_union(), both);
+    assert_eq!(
+        verified.demand_incidence(),
+        vec![crate::NodeIncidence {
+            path: a.atoms()[0].path().clone(),
+            touched_by: vec![crate::AtomIncidence {
+                export: export.id(),
+                class: OperationClass::Presence,
+            }],
+        }],
+    );
+
+    // These references come from the verified image, never the expected sets.
+    // Sharing complete equal sets is insufficient: `both` also contains atom b.
+    fn atom<'image>(
+        image: &'image VerifiedImage,
+        function: u16,
+        expected: &DemandAtom,
+    ) -> &'image DemandAtom {
+        image
+            .function(FunctionIndex::new(function))
+            .expect("verified function")
+            .demand()
+            .atoms()
+            .find(|atom| *atom == expected)
+            .expect("the semantic assertions established this atom")
+    }
+    let leaf_a = atom(&verified, 2, &a.atoms()[0]);
+    let leaf_b = atom(&verified, 3, &b.atoms()[0]);
+    assert!(std::ptr::eq(leaf_a, atom(&verified, 1, &a.atoms()[0])));
+    assert!(std::ptr::eq(leaf_a, atom(&verified, 0, &a.atoms()[0])));
+    assert!(std::ptr::eq(leaf_b, atom(&verified, 0, &b.atoms()[0])));
 }
 
 fn assert_refusal(bytes: &[u8], phase: VerifyPhase, detail: &str) {
@@ -449,7 +630,7 @@ fn a_transitive_presence_read_must_precede_commit() {
                 let function = verified
                     .function(FunctionIndex::new(index))
                     .expect("helper chain function");
-                assert_eq!(function.demand(), &presence_demand());
+                assert_eq!(function.demand(), presence_demand().as_view());
                 assert!(!function.body().is_mutating());
             }
             assert_eq!(verified.exports()[0].reachable_sites(), &[0]);
@@ -536,9 +717,21 @@ fn a_mixed_test_driver_is_rejected_by_the_verifier() {
             Some(2),
         );
         let verified = crate::verify(&bytes).expect("separate durable test and owner driver");
-        assert_eq!(verified.exports()[0].demand(), &presence_demand());
+        assert_eq!(
+            verified
+                .function(verified.exports()[0].function())
+                .expect("verified export function")
+                .demand(),
+            presence_demand().as_view()
+        );
         let test = &verified.test_entries()[0];
-        assert_eq!(test.demand(), &presence_demand());
+        assert_eq!(
+            verified
+                .function(test.func())
+                .expect("verified test function")
+                .demand(),
+            presence_demand().as_view()
+        );
         assert_eq!(
             test.kind(),
             if direct {

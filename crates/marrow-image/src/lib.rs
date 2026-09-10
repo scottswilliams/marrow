@@ -31,8 +31,8 @@ mod value_dag;
 
 pub use ceiling::{CEILING_KIND, CeilingDescriptor, CeilingId};
 pub use demand::{
-    CeilingDecodeError, DEMAND_SET_KIND, DemandAtom, DemandSetId, ExportDemand, MAX_CEILING_ATOMS,
-    OperationClass,
+    CeilingDecodeError, DEMAND_SET_KIND, DemandAtom, DemandSelection, DemandSetId, DemandView,
+    ExportDemand, MAX_CEILING_ATOMS, OperationClass,
 };
 pub use digest::{
     COMPANION_RELEASE_KIND, CompanionReleaseId, IMAGE_DIGEST_KIND, ImageId, companion_release_id,

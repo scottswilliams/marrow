@@ -229,18 +229,30 @@ fn verified_demand_distinguishes_readers_from_mutators() {
     let image = compile_verify();
 
     let add = export(&image, "add");
+    let add_demand = image
+        .function(add.function())
+        .expect("verified function")
+        .demand();
     assert!(add.is_mutating(), "add mutates durable state");
-    assert!(add.demand().writes(), "add demands writes");
+    assert!(add_demand.writes(), "add demands writes");
 
     let name = export(&image, "assetName");
+    let name_demand = image
+        .function(name.function())
+        .expect("verified function")
+        .demand();
     assert!(!name.is_mutating(), "assetName is read-only");
-    assert!(name.demand().reads(), "assetName demands a read");
-    assert!(!name.demand().writes(), "assetName demands no write");
+    assert!(name_demand.reads(), "assetName demands a read");
+    assert!(!name_demand.writes(), "assetName demands no write");
 
     let count = export(&image, "catalogued");
+    let count_demand = image
+        .function(count.function())
+        .expect("verified function")
+        .demand();
     assert!(!count.is_mutating(), "catalogued is read-only");
-    assert!(count.demand().reads(), "catalogued demands traversal reads");
-    assert!(!count.demand().writes(), "catalogued demands no write");
+    assert!(count_demand.reads(), "catalogued demands traversal reads");
+    assert!(!count_demand.writes(), "catalogued demands no write");
 
     let union = image.demand_union();
     assert!(

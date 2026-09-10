@@ -8,9 +8,13 @@
 
 use std::rc::Rc;
 
+mod demand;
+pub(crate) use demand::FunctionDemands;
+
 use marrow_image::{
-    DemandSetId, DurableContractId, DurableIndexComponent, ExportDemand, ExportId, ImageId,
-    ImageType, LedgerIdBytes, OperationClass, Scalar, SemanticNode, SemanticPath, SemanticTarget,
+    DemandSetId, DemandView, DurableContractId, DurableIndexComponent, ExportDemand, ExportId,
+    ImageId, ImageType, LedgerIdBytes, OperationClass, Scalar, SemanticNode, SemanticPath,
+    SemanticTarget,
 };
 
 /// A relative position in a [`VerifiedImage`]'s function table, distinct from local,
@@ -734,10 +738,7 @@ pub struct SealedExport {
     pub(crate) id: ExportId,
     pub(crate) func: u16,
     pub(crate) mutating: bool,
-    /// The stable atom set the verifier reconstructed from the sealed sites the
-    /// export's call closure references. The single owner of this export's demand.
-    pub(crate) demand: ExportDemand,
-    /// The export's [`DemandSetId`], cached from `demand`. Stable across a body edit
+    /// The export's [`DemandSetId`], cached from its function demand. Stable across a body edit
     /// that preserves the atom set; changes when the atom set changes.
     pub(crate) demand_id: DemandSetId,
     /// The image-local indices of the operation sites the export's call closure can
@@ -758,13 +759,6 @@ impl SealedExport {
         self.mutating
     }
 
-    /// The verifier-reconstructed durable demand of this export: its stable atom set
-    /// over semantic paths and operation classes. An input to the authority check,
-    /// never a grant.
-    pub fn demand(&self) -> &ExportDemand {
-        &self.demand
-    }
-
     /// The stable identity of this export's demand set. Separate from
     /// [`Self::id`] and the image id.
     pub fn demand_id(&self) -> DemandSetId {
@@ -779,13 +773,6 @@ impl SealedExport {
     }
 }
 
-/// A verified test entry: a report name bound to the zero-argument function
-/// `marrow test` runs, plus the demand the verifier reconstructed from its call
-/// closure. Unlike an export the name is a human report label, never an interface or
-/// durable identity, and a test entry is never dispatched as an export. Its demand
-/// is recorded in a table parallel to — and separate from — the export demand table
-/// so an E01 ephemeral test attachment can bound the test's authority by the
-/// test-image demand union.
 /// How a test body reaches durable data, deciding the runtime that drives it. The
 /// three kinds are disjoint: a body that performs a direct durable op and also
 /// drives a transaction owner is refused by the verifier before this classification.
@@ -801,11 +788,12 @@ pub enum TestKind {
     Driver,
 }
 
+/// A report name and execution kind bound to a verified zero-argument function.
+/// Its demand is borrowed from that function in the owning image.
 #[derive(Debug, Clone)]
 pub struct SealedTestEntry {
     pub(crate) name: Rc<str>,
     pub(crate) func: u16,
-    pub(crate) demand: ExportDemand,
     pub(crate) kind: TestKind,
 }
 
@@ -818,13 +806,6 @@ impl SealedTestEntry {
     /// The image function index this test runs.
     pub fn func(&self) -> FunctionIndex {
         FunctionIndex(self.func)
-    }
-
-    /// The verifier-reconstructed durable demand of this test entry's call closure.
-    /// Empty for a storeless test; nonempty for a durable test whose attachment E01
-    /// bounds by the test-image union.
-    pub fn demand(&self) -> &ExportDemand {
-        &self.demand
     }
 
     /// How this test reaches durable data, deciding which runtime drives it.
@@ -853,12 +834,9 @@ pub struct VerifiedImage {
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
     pub(crate) test_entries: Vec<SealedTestEntry>,
-    /// Per-function reconstructed durable demand over its whole call closure,
-    /// indexed by image function index. The same `Effects` owner that builds each
-    /// export's demand builds this, so a test-body driver can open the session one
-    /// export call requires without a second demand model. Derived, never
-    /// serialized in the image.
-    pub(crate) function_demands: Vec<ExportDemand>,
+    /// One canonical atom owner with sparse selections in function-table order.
+    /// Reconstructed independently from image instructions, never serialized.
+    pub(crate) function_demands: FunctionDemands,
 }
 
 impl VerifiedImage {
@@ -962,14 +940,19 @@ impl VerifiedImage {
     /// named demand; this union is the ceiling-admission side. Derived from the
     /// exports' reconstructed demands, never serialized in the image.
     pub fn demand_union(&self) -> ExportDemand {
-        ExportDemand::union(self.exports.iter().map(SealedExport::demand))
+        self.function_demands
+            .union(self.exports.iter().map(|entry| usize::from(entry.func)))
     }
 
     /// The durable demand union over every test entry: the ceiling an E01 ephemeral
     /// test attachment bounds a durable source test by. Empty unless the test-profile
     /// image carries a durable test. Derived, never serialized.
     pub fn test_demand_union(&self) -> ExportDemand {
-        ExportDemand::union(self.test_entries.iter().map(SealedTestEntry::demand))
+        self.function_demands.union(
+            self.test_entries
+                .iter()
+                .map(|entry| usize::from(entry.func)),
+        )
     }
 
     /// The reverse index of export demand: one row per durable graph node any export
@@ -982,7 +965,7 @@ impl VerifiedImage {
         use std::collections::BTreeMap;
         let mut by_path: BTreeMap<SemanticPath, Vec<AtomIncidence>> = BTreeMap::new();
         for export in &self.exports {
-            for atom in export.demand.atoms() {
+            for atom in self.function_demands.get(usize::from(export.func)).atoms() {
                 by_path
                     .entry(atom.path().clone())
                     .or_default()
@@ -998,8 +981,8 @@ impl VerifiedImage {
             .collect()
     }
 
-    /// The test entries, in ascending report-name order. `marrow test` runs each
-    /// storeless; a test entry is never dispatched as an export.
+    /// The test entries, in ascending report-name order. Execution follows each
+    /// entry's verified kind; a test entry is never dispatched as an export.
     pub fn test_entries(&self) -> &[SealedTestEntry] {
         &self.test_entries
     }
@@ -1030,8 +1013,8 @@ pub struct AtomIncidence {
 }
 
 /// A checked function selection that retains the image owning its body and demand.
-/// Constructed only by [`VerifiedImage::function`]. Sealing creates one demand per
-/// function, so the checked ordinal addresses both immutable tables.
+/// Constructed only by [`VerifiedImage::function`]. The checked ordinal addresses
+/// both its body and its selection in the image's canonical demand owner.
 #[derive(Debug, Clone, Copy)]
 pub struct VerifiedFunction<'image> {
     image: &'image VerifiedImage,
@@ -1051,8 +1034,8 @@ impl<'image> VerifiedFunction<'image> {
 
     /// The selected function's reconstructed durable demand over its call closure.
     /// A test-body driver uses it to open the session required by one invocation.
-    pub fn demand(self) -> &'image ExportDemand {
-        &self.image.function_demands[self.index.index()]
+    pub fn demand(self) -> DemandView<'image> {
+        self.image.function_demands.get(self.index.index())
     }
 }
 

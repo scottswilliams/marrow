@@ -14,7 +14,6 @@ use crate::sealed::{
     SealedRecordType, SealedRoot, SealedSite, SealedTestEntry, SealedVariant, TestKind,
     VerifiedImage,
 };
-use marrow_image::ExportDemand;
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     let types: Vec<SealedRecordType> = decoded
@@ -165,13 +164,12 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         .exports
         .iter()
         .map(|(id, func)| {
-            let demand = effects.demand(*func);
+            let demand = effects.demands.get(usize::from(*func));
             let demand_id = demand.demand_set_id();
             SealedExport {
                 id: *id,
                 func: *func,
                 mutating: effects.mutates_closure[*func as usize],
-                demand,
                 demand_id,
                 reachable_sites: effects.reachable_sites(*func),
             }
@@ -185,13 +183,16 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
 
     let test_entries = check_test_entries(&decoded, &functions, &export_entries, &effects, &calls)?;
 
-    // Per-function demand from the same effects owner, so a test-body driver can open
-    // the session one export call requires without a second demand model.
-    let function_demands: Vec<ExportDemand> = effects
-        .atoms_closure
-        .into_iter()
-        .map(ExportDemand::from_atoms)
-        .collect();
+    // Move the one atom owner only after every consumer has finished validating.
+    let Effects {
+        demands: function_demands,
+        sites_closure,
+        mutates_closure,
+        has_begin,
+        has_commit,
+    } = effects;
+    drop((sites_closure, mutates_closure, has_begin, has_commit));
+    drop(calls);
 
     Ok(VerifiedImage {
         image_id: decoded.image_id,
@@ -214,7 +215,7 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
 /// After transaction and presence checks, validate test-entry identity, signatures,
 /// assert placement and call boundaries. Entries may be storeless, perform direct
 /// durable work, or drive exports; direct work cannot also drive a transaction
-/// owner. Return their demands and kinds in the table's ascending-name order.
+/// owner. Return their function selections and kinds in ascending-name order.
 fn check_test_entries(
     decoded: &DecodedImage,
     functions: &[SealedFunction],
@@ -271,10 +272,8 @@ fn check_test_entries(
                 "a test entry must return unit",
             ));
         }
-        // A test entry may touch durable data: its demand is recorded in the parallel
-        // test-entry table below so an E01 ephemeral test attachment can bound its
-        // authority by the test-image union. It is still never an export and carries
-        // no wire identity.
+        // A test entry may touch durable data; its function demand contributes to
+        // the test-image union. It is never an export and carries no wire identity.
     }
 
     // A test entry is an entry point: no function may call one.
@@ -319,7 +318,7 @@ fn check_test_entries(
         .test_entries
         .iter()
         .map(|(name, func)| {
-            let demand = effects.demand(*func);
+            let demand = effects.demands.get(usize::from(*func));
             let kind = if demand.is_empty() {
                 TestKind::Storeless
             } else if functions[*func as usize]
@@ -334,7 +333,6 @@ fn check_test_entries(
             SealedTestEntry {
                 name: decoded.strings[*name as usize].clone(),
                 func: *func,
-                demand,
                 kind,
             }
         })

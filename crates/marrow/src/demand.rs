@@ -58,8 +58,12 @@ pub(crate) fn demand_lines(
         let export = image
             .export_by_id(entry.id)
             .ok_or(DemandNamingError::DirectoryImageDisagree)?;
+        let demand = image
+            .function(export.function())
+            .expect("verified export function")
+            .demand();
         let sentence = naming
-            .demand_sentence(export.demand())
+            .demand_sentence(demand)
             .ok_or(DemandNamingError::UnnameablePlace)?;
         lines.push(format!("{}.{} {sentence}", entry.module, entry.item));
     }
@@ -123,7 +127,10 @@ fn collect_records(
         let export = image
             .export_by_id(entry.id)
             .ok_or(DemandNamingError::DirectoryImageDisagree)?;
-        let demand = export.demand();
+        let demand = image
+            .function(export.function())
+            .expect("verified export function")
+            .demand();
         let sentence = naming
             .demand_sentence(demand)
             .ok_or(DemandNamingError::UnnameablePlace)?;

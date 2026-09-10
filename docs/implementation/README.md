@@ -57,17 +57,29 @@ After every function passes type flow, `verify/context.rs` extracts direct-call
 occurrences into one flat target vector with per-function offsets. The iterative
 cycle check covers every function and records callee-first completion order.
 Effects collect direct atoms, sites and transaction markers in one instruction
-pass, then expand each recorded call occurrence once in that order. Transaction
-and test-entry checks reuse the graph. Duplicate calls retain their tape order.
-Closure unions still visit and copy callee set contents; the graph remains live
-through presence and test-entry checks. These passes have no total memory bound.
+pass. A global atom lookup is consumed through the image demand canonicalizer;
+its discovery remap builds sparse u32 selections in function order. The selection
+owner normalizes direct ordinals once. Each recorded call then unions its
+callee's completed selection into its caller with reusable merge scratch.
+Transaction and test-entry checks reuse the graph, and duplicate calls retain
+their tape order. Site closures remain separate sets. The graph stays live
+through presence and test-entry checks; these passes have no total memory bound.
 
-After all checks and export/test-entry demand construction, `verify/seal.rs`
-moves the completed atom sets into the function-demand table in function order.
-The existing canonicalizer consumes those atoms without a final per-function
-deep copy. Selected export/test demands retain their copies; canonical sort
-keys and scratch remain separate costs. The VM's test driver uses each called
-function's complete demand to select its invocation session.
+After validation, `verify/seal.rs` moves the canonical pool and selections into
+the verified image. `sealed/demand.rs` owns their association with functions;
+exports/tests retain function ordinals rather than owned demand copies.
+`marrow-image`'s `demand/selection.rs` owns normalized selections and borrowed
+views over its canonical atom owner. Views check the largest ordinal in constant
+time and iterate only selected atoms; count and emptiness are constant-time.
+Canonical payloads and identities share the existing encoder. The VM derives
+session coverage from the invoked verified function's view. Owned ceiling and
+union outputs remain independent values.
+
+Sparse row length payload is four bytes per transitive membership, plus row
+metadata and capacity. A merge retains its destination alongside replacement
+scratch; repeated prefix work, site replication, lookup/remap/direct records,
+canonical keys and sort scratch remain costs. Pooling removes deep atom copies
+across overlapping demands, not total verifier residency or work limits.
 
 The presence pass uses the same transient destination flags to require an uninterrupted
 key-load, producer and consumer sequence before establishing a guard fact.

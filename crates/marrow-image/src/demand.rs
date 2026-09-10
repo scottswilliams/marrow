@@ -49,6 +49,9 @@ use sha2::{Digest, Sha256};
 use crate::bounds;
 use crate::semantic::{SemanticPath, SemanticPathRefusal, SemanticStepKind};
 
+mod selection;
+pub use selection::{DemandSelection, DemandView};
+
 /// The domain-separation tag for the demand-set identity. Distinct from every other
 /// Marrow identity's `kind`, so a `DemandSetId` can never collide with an `ImageId`,
 /// `ExportId`, or `DurableContractId` computed over the same bytes.
@@ -176,9 +179,8 @@ impl DemandAtom {
 
 /// The verifier-reconstructed durable demand of one export (or the program-wide
 /// union): its canonical set of [`DemandAtom`]s, sorted ascending by atom bytes and
-/// deduplicated. Built only by [`Self::from_atoms`], so the canonical order and
-/// deduplication are established once. An input to the authority check, never a
-/// grant.
+/// deduplicated by its constructors. Borrowed selections preserve that canonical
+/// order without copying atoms. An input to the authority check, never a grant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportDemand {
     /// Canonical: ascending by `encode_body`, deduplicated.
@@ -191,15 +193,31 @@ impl ExportDemand {
     /// atom set always yields the same canonical demand and the same
     /// [`DemandSetId`].
     pub fn from_atoms(atoms: impl IntoIterator<Item = DemandAtom>) -> Self {
-        let mut keyed: Vec<(Vec<u8>, DemandAtom)> = atoms
+        Self::from_tagged_atoms(atoms.into_iter().map(|atom| (0, atom)), |_, _| {})
+    }
+
+    /// Canonicalize atoms and report each input's canonical ordinal. Tags are opaque
+    /// caller metadata; duplicate atoms report the same ordinal. This lets a caller
+    /// remap selections while moving atom ownership through the sole canonicalizer.
+    pub fn from_tagged_atoms(
+        atoms: impl IntoIterator<Item = (usize, DemandAtom)>,
+        mut mapped: impl FnMut(usize, usize),
+    ) -> Self {
+        let mut keyed: Vec<(Vec<u8>, usize, DemandAtom)> = atoms
             .into_iter()
-            .map(|atom| (atom.encode_body(), atom))
+            .map(|(tag, atom)| (atom.encode_body(), tag, atom))
             .collect();
         keyed.sort_by(|a, b| a.0.cmp(&b.0));
-        keyed.dedup_by(|a, b| a.0 == b.0);
-        Self {
-            atoms: keyed.into_iter().map(|(_, atom)| atom).collect(),
+        let mut atoms = Vec::with_capacity(keyed.len());
+        let mut previous = None;
+        for (key, tag, atom) in keyed {
+            if previous.as_ref() != Some(&key) {
+                previous = Some(key);
+                atoms.push(atom);
+            }
+            mapped(tag, atoms.len() - 1);
         }
+        Self { atoms }
     }
 
     /// The canonical, sorted, deduplicated atoms.
@@ -215,13 +233,13 @@ impl ExportDemand {
     /// Whether any atom observes durable state without mutating it (read, presence,
     /// or traversal) — the `read` term of the store ceiling's read/write coverage.
     pub fn reads(&self) -> bool {
-        self.atoms.iter().any(|atom| !atom.class.mutates())
+        self.as_view().reads()
     }
 
     /// Whether any atom mutates durable state (write or erase) — the `write` term of
     /// the store ceiling's read/write coverage.
     pub fn writes(&self) -> bool {
-        self.atoms.iter().any(|atom| atom.class.mutates())
+        self.as_view().writes()
     }
 
     /// The program-wide union of several demands: the canonical demand over every
@@ -243,23 +261,16 @@ impl ExportDemand {
     /// also the persisted form of a store's accepted deployment ceiling (the
     /// "separately owned maximum ceiling"), decoded back by [`Self::decode_atom_set`].
     ///
-    /// The atom count fits its `u32`: an atom is a deduplicated (path, class) pair, and
-    /// every production atom names a node of the program's verified site table, so the
-    /// set is bounded by `MAX_SITES` times the closed [`OperationClass`] set — five
-    /// figures against ten.
+    /// Verified production demands have at most five classes per bounded site.
+    /// Arbitrary callers of `from_atoms` are not subject to that constructor bound;
+    /// payload encoding checks that the count fits u32 and panics if it does not.
     pub fn atom_set_payload(&self) -> Vec<u8> {
-        let mut payload: Vec<u8> = Vec::new();
-        push_lp(&mut payload, LOCAL_ROOT_LINEAGE);
-        payload.extend_from_slice(&(self.atoms.len() as u32).to_be_bytes());
-        for atom in &self.atoms {
-            push_lp(&mut payload, &atom.encode_body());
-        }
-        payload
+        self.as_view().atom_set_payload()
     }
 
     /// The stable 32-byte identity of this demand set.
     pub fn demand_set_id(&self) -> DemandSetId {
-        DemandSetId(frame_id(DEMAND_SET_KIND, &self.atom_set_payload()))
+        self.as_view().demand_set_id()
     }
 
     /// Whether this demand contains `atom` — an exact match on the atom's canonical
@@ -315,6 +326,21 @@ impl ExportDemand {
         }
         Ok(ExportDemand::from_atoms(atoms))
     }
+}
+
+/// Shared spelling for an already canonical atom traversal. Production demands
+/// contain at most five classes per verified site; decoded ceilings are bounded
+/// separately by MAX_CEILING_ATOMS. Arbitrary public from_atoms inputs can exceed
+/// these production bounds; the payload conversion remains checked.
+fn atom_set_payload<'a>(atoms: impl ExactSizeIterator<Item = &'a DemandAtom>) -> Vec<u8> {
+    let count = u32::try_from(atoms.len()).expect("demand count fits u32");
+    let mut payload = Vec::new();
+    push_lp(&mut payload, LOCAL_ROOT_LINEAGE);
+    payload.extend_from_slice(&count.to_be_bytes());
+    for atom in atoms {
+        push_lp(&mut payload, &atom.encode_body());
+    }
+    payload
 }
 
 /// A fixed upper bound on the number of atoms a decoded ceiling payload may carry,

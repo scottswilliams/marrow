@@ -15,7 +15,7 @@ mod verify;
 mod vtype;
 
 pub use marrow_image::{
-    CeilingDescriptor, CeilingId, DemandAtom, DemandSetId, DurableContractId,
+    CeilingDescriptor, CeilingId, DemandAtom, DemandSetId, DemandView, DurableContractId,
     DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes,
     OperationClass, Scalar, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
     SemanticStepKind, SemanticTarget,

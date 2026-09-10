@@ -356,7 +356,7 @@ impl Session {
                 (function.body().name() == export).then_some((candidate, function))
             })
             .unwrap_or_else(|| panic!("no export named `{export}`"));
-        if sealed.demand().is_empty() {
+        if function.demand().is_empty() {
             return match marrow_vm::run(function, args) {
                 Ok(value) => CallOutcome::Value(value),
                 Err(fault) => CallOutcome::Fault(fault.code().to_string()),

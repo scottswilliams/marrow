@@ -141,7 +141,11 @@ impl Service {
             .map(|export| ServedExport {
                 id: *export.id().bytes(),
                 func: export.function(),
-                durable: !export.demand().is_empty(),
+                durable: !image
+                    .function(export.function())
+                    .expect("verified export function")
+                    .demand()
+                    .is_empty(),
             })
             .collect();
         Ok(Service {

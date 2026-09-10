@@ -10,7 +10,7 @@
 
 use marrow_kernel::durable::DemandCoverage;
 use marrow_verify::{
-    DemandSetId, ExportDemand, ImageId, OperationClass, SealedExport, VerifiedImage,
+    DemandSetId, DemandView, ImageId, OperationClass, SealedExport, VerifiedImage,
 };
 
 const IDS: &str = "marrow ids v0\n\
@@ -79,12 +79,17 @@ fn export_named<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .expect("export present")
 }
 
-/// The `(node ledger id, class)` fingerprint of an export's demand atoms.
-fn atom_shape(export: &SealedExport) -> Vec<([u8; 16], OperationClass)> {
-    export
+fn demand_of<'a>(image: &'a VerifiedImage, export: &SealedExport) -> DemandView<'a> {
+    image
+        .function(export.function())
+        .expect("verified function")
         .demand()
+}
+
+/// The `(node ledger id, class)` fingerprint of an export's demand atoms.
+fn atom_shape(image: &VerifiedImage, export: &SealedExport) -> Vec<([u8; 16], OperationClass)> {
+    demand_of(image, export)
         .atoms()
-        .iter()
         .map(|atom| (*atom.path().node_id().bytes(), atom.class()))
         .collect()
 }
@@ -116,14 +121,17 @@ fn each_export_demand_is_reconstructed_from_its_closure() {
 
     // `readValue` reads the `value` field and nothing else.
     let read = export_named(&image, "readValue");
-    assert_eq!(atom_shape(read), vec![(VALUE_FIELD, OperationClass::Read)]);
-    assert!(read.demand().reads());
-    assert!(!read.demand().writes());
+    assert_eq!(
+        atom_shape(&image, read),
+        vec![(VALUE_FIELD, OperationClass::Read)]
+    );
+    assert!(demand_of(&image, read).reads());
+    assert!(!demand_of(&image, read).writes());
     assert!(!read.is_mutating());
 
     // `bump` proves the entry present, then reads and writes the `value` field.
     let bump = export_named(&image, "bump");
-    let mut shape = atom_shape(bump);
+    let mut shape = atom_shape(&image, bump);
     shape.sort();
     assert_eq!(
         shape,
@@ -133,8 +141,8 @@ fn each_export_demand_is_reconstructed_from_its_closure() {
             (VALUE_FIELD, OperationClass::Write),
         ]
     );
-    assert!(bump.demand().reads());
-    assert!(bump.demand().writes());
+    assert!(demand_of(&image, bump).reads());
+    assert!(demand_of(&image, bump).writes());
     assert!(bump.is_mutating());
 
     // The two exports demand differently, so their demand ids differ, and neither
@@ -144,8 +152,8 @@ fn each_export_demand_is_reconstructed_from_its_closure() {
 
     let read_function = image.function(read.function()).expect("verified function");
     let bump_function = image.function(bump.function()).expect("verified function");
-    assert_eq!(read_function.demand().atoms(), read.demand().atoms());
-    assert_eq!(bump_function.demand().atoms(), bump.demand().atoms());
+    assert_eq!(read_function.demand(), demand_of(&image, read));
+    assert_eq!(bump_function.demand(), demand_of(&image, bump));
     assert!(!read_function.demand().is_empty());
     assert!(!read_function.demand().writes());
     assert!(bump_function.demand().writes());
@@ -185,9 +193,12 @@ fn a_family_populated_probe_demands_presence_on_the_family_node() {
         "{HEADER}pub fn any(): bool {{\n    return exists(^counters)\n}}\n"
     ));
     let any = export_named(&image, "any");
-    assert_eq!(atom_shape(any), vec![(ROOT_NODE, OperationClass::Presence)]);
-    assert!(any.demand().reads());
-    assert!(!any.demand().writes());
+    assert_eq!(
+        atom_shape(&image, any),
+        vec![(ROOT_NODE, OperationClass::Presence)]
+    );
+    assert!(demand_of(&image, any).reads());
+    assert!(!demand_of(&image, any).writes());
     assert!(!any.is_mutating());
 }
 
@@ -205,10 +216,8 @@ fn adding_a_durable_read_changes_the_demand_id() {
     let widened_bump = export_named(&widened, "bump");
     assert_ne!(base_bump.demand_id(), widened_bump.demand_id());
     assert!(
-        widened_bump
-            .demand()
+        demand_of(&widened, widened_bump)
             .atoms()
-            .iter()
             .any(|atom| *atom.path().node_id().bytes() == LABEL_FIELD
                 && atom.class() == OperationClass::Read)
     );
@@ -348,7 +357,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// engine) through its read/write coverage. The intersection with a ceiling and a
 /// grant is the kernel's; here the projection and the union-vs-named distinction
 /// the triple consumes are asserted at the compiler surface.
-fn coverage(demand: &ExportDemand) -> DemandCoverage {
+fn coverage(demand: DemandView<'_>) -> DemandCoverage {
     DemandCoverage {
         read: demand.reads(),
         write: demand.writes(),
@@ -361,7 +370,7 @@ fn admission_coverage_is_the_union_while_invocation_coverage_is_the_named_record
 
     // Ceiling admission projects the whole-program union. The program both reads and
     // writes, so admission must be granted read and write.
-    let union = coverage(&image.demand_union());
+    let union = coverage(image.demand_union().as_view());
     assert_eq!(
         union,
         DemandCoverage {
@@ -373,7 +382,7 @@ fn admission_coverage_is_the_union_while_invocation_coverage_is_the_named_record
     // Invocation projects the *named* export. The read-only export needs only read,
     // even though the program union also writes — invocation uses the record, not the
     // union.
-    let read_export = coverage(export_named(&image, "readValue").demand());
+    let read_export = coverage(demand_of(&image, export_named(&image, "readValue")));
     assert_eq!(
         read_export,
         DemandCoverage {
@@ -383,7 +392,7 @@ fn admission_coverage_is_the_union_while_invocation_coverage_is_the_named_record
     );
 
     // The mutating export needs both.
-    let bump_export = coverage(export_named(&image, "bump").demand());
+    let bump_export = coverage(demand_of(&image, export_named(&image, "bump")));
     assert_eq!(
         bump_export,
         DemandCoverage {
@@ -395,7 +404,7 @@ fn admission_coverage_is_the_union_while_invocation_coverage_is_the_named_record
     // The union coverage dominates every export's coverage: whatever an invocation
     // demands, admission of the union already covers.
     for export in image.exports() {
-        let c = coverage(export.demand());
+        let c = coverage(demand_of(&image, export));
         assert!(union.read || !c.read);
         assert!(union.write || !c.write);
     }

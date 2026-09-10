@@ -182,20 +182,18 @@ fn run_vm_write(
     let export = image
         .export_by_id(ExportId::of_local("", "write"))
         .expect("write export");
+    let function = image
+        .function(export.function())
+        .expect("verified function");
+    let function_demand = function.demand();
     let demand = DemandCoverage {
-        read: export.demand().reads(),
-        write: export.demand().writes(),
+        read: function_demand.reads(),
+        write: function_demand.writes(),
     };
     let mut session = store
         .txn_session(InvocationGrant::full_store(), demand)
         .expect("VM transaction session");
-    run_durable(
-        image
-            .function(export.function())
-            .expect("verified function"),
-        Vec::new(),
-        &mut session,
-    )
+    run_durable(function, Vec::new(), &mut session)
 }
 
 #[test]
@@ -207,9 +205,10 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
     let function = image
         .function(export.function())
         .expect("verified function");
+    let function_demand = function.demand();
     let demand = DemandCoverage {
-        read: export.demand().reads(),
-        write: export.demand().writes(),
+        read: function_demand.reads(),
+        write: function_demand.writes(),
     };
 
     let mut confirmed = unscoped_store(FaultEngine::new(ModeHandle::new(Mode::Confirm)));

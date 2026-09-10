@@ -53,19 +53,18 @@ pub(crate) fn decode_request(
     };
     let function = image
         .function(export.function())
-        .expect("verified export function")
-        .body();
-    if function.params().len() != args.len() {
+        .expect("verified export function");
+    if function.body().params().len() != args.len() {
         return Err(reject(Code::RunnerArgMismatch));
     }
     let mut values = Vec::with_capacity(args.len());
-    for (ty, json) in function.params().iter().zip(args) {
+    for (ty, json) in function.body().params().iter().zip(args) {
         match transfer::decode_arg(image, ty, json) {
             Some(value) => values.push(value),
             None => return Err(reject(Code::RunnerArgMismatch)),
         }
     }
-    let route = if export.demand().is_empty() {
+    let route = if function.demand().is_empty() {
         Route::Storeless
     } else {
         Route::Durable

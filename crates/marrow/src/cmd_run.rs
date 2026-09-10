@@ -241,7 +241,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     let function = image
         .function(export.function())
         .expect("verified export function");
-    let demand = export.demand();
+    let demand = function.demand();
 
     // Persistent path: `marrow run … --store <dir>` runs the export against a provisioned
     // store. The CLI never opens the store — it verifies the companion runner against the

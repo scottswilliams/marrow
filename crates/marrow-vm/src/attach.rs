@@ -29,7 +29,7 @@
 
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, SessionHost};
 use marrow_lifecycle::{Attachment, FreshTest, TestHost};
-use marrow_verify::{ExportDemand, ExportId, TestKind, VerifiedFunction};
+use marrow_verify::{DemandView, ExportId, TestKind, VerifiedFunction};
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
 use crate::run::{DriverDispatch, run, run_driver, run_durable, run_in_session};
@@ -65,7 +65,7 @@ pub fn run_export<H: SessionHost>(
     let function = image
         .function(export.function())
         .expect("verified export function");
-    Some(run_on_host(function, export.demand(), args, host))
+    Some(run_on_host(function, args, host))
 }
 
 /// Run one fresh source test: a storeless entry with no session, a direct-durable entry
@@ -92,7 +92,7 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
         TestKind::Storeless => {
             DurableRun::Ran(run(function, Vec::new()).map_err(DurableExecutionFault::from))
         }
-        TestKind::DirectDurable => run_on_host(function, entry.demand(), Vec::new(), host),
+        TestKind::DirectDurable => run_on_host(function, Vec::new(), host),
         TestKind::Driver => {
             let mut driver = TestDriver { host };
             DurableRun::Ran(run_driver(function, Vec::new(), &mut driver))
@@ -100,16 +100,16 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
     }
 }
 
-/// Open the session `demand` requires on `host` and run `func` in it. A mutating demand
+/// Open the session `func` requires on `host` and run it. A mutating demand
 /// drives a transaction session (which also reads); a read-only demand drives a read
 /// session, so a read-only invocation never opens a writer; an empty demand needs no
 /// session.
 fn run_on_host<H: SessionHost + ?Sized>(
     func: VerifiedFunction<'_>,
-    demand: &ExportDemand,
     args: Vec<Value>,
     host: &mut H,
 ) -> DurableRun {
+    let demand = func.demand();
     if demand.is_empty() {
         return DurableRun::Ran(run(func, args).map_err(DurableExecutionFault::from));
     }
@@ -133,7 +133,7 @@ fn run_on_host<H: SessionHost + ?Sized>(
     DurableRun::Ran(result)
 }
 
-fn coverage(demand: &ExportDemand) -> DemandCoverage {
+fn coverage(demand: DemandView<'_>) -> DemandCoverage {
     DemandCoverage {
         read: demand.reads(),
         write: demand.writes(),

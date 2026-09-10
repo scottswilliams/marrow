@@ -674,7 +674,7 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
     (
         "marrow-image",
         "demand.rs",
-        "payload.extend_from_slice(&(self.atoms.len() as u32).to_be_bytes());",
+        "let count = u32::try_from(atoms.len()).expect( );",
     ),
     (
         "marrow-image",
@@ -921,6 +921,11 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "marrow-image",
         "value_dag.rs",
         "ordinal: u32::try_from(self.store.len()).map_err(|_| DraftStateError::CarrierDomain)?,",
+    ),
+    (
+        "marrow-verify",
+        "verify/context.rs",
+        "let ordinal = u32::try_from(canonical).expect( );",
     ),
     (
         "marrow-verify",

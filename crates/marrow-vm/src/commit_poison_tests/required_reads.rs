@@ -263,9 +263,13 @@ fn check_case(engine: &mut impl ByteEngine, target: Target, damage: Damage) {
     let export = image
         .export_by_id(ExportId::of_local("", "read"))
         .expect("export");
+    let function = image
+        .function(export.function())
+        .expect("verified function");
+    let function_demand = function.demand();
     let demand = DemandCoverage {
-        read: export.demand().reads(),
-        write: export.demand().writes(),
+        read: function_demand.reads(),
+        write: function_demand.writes(),
     };
     let earlier_keys = [KeyScalar::Str("earlier".into())];
     let target_keys = target.keys();
@@ -317,13 +321,7 @@ fn check_case(engine: &mut impl ByteEngine, target: Target, damage: Damage) {
             let mut session = store
                 .txn_session(InvocationGrant::full_store(), demand)
                 .expect("VM session");
-            let result = run_durable(
-                image
-                    .function(export.function())
-                    .expect("verified function"),
-                Vec::new(),
-                &mut session,
-            );
+            let result = run_durable(function, Vec::new(), &mut session);
             match damage {
                 Damage::Healthy => assert_eq!(
                     result.expect("healthy strict read"),

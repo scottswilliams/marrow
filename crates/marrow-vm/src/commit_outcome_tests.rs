@@ -376,12 +376,16 @@ fn run_with_mode(bytes: Vec<u8>, mode: CommitMode) -> Result<Option<Value>, Dura
     let export = image
         .export_by_id(ExportId::of_local("", "write"))
         .expect("export");
+    let function = image
+        .function(export.function())
+        .expect("verified function");
+    let demand = function.demand();
     let session = host
         .txn_session(
             InvocationGrant::full_store(),
             DemandCoverage {
-                read: export.demand().reads(),
-                write: export.demand().writes(),
+                read: demand.reads(),
+                write: demand.writes(),
             },
         )
         .expect("transaction session");
@@ -389,13 +393,7 @@ fn run_with_mode(bytes: Vec<u8>, mode: CommitMode) -> Result<Option<Value>, Dura
         inner: session,
         mode,
     };
-    run_durable(
-        image
-            .function(export.function())
-            .expect("verified function"),
-        Vec::new(),
-        &mut session,
-    )
+    run_durable(function, Vec::new(), &mut session)
 }
 
 #[test]

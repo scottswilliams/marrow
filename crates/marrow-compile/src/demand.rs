@@ -1,6 +1,6 @@
 //! The compiler-owned durable-path naming join and the per-export demand sentence.
 //!
-//! A verifier-reconstructed [`ExportDemand`] names each durable node it touches by a
+//! A verifier-reconstructed [`DemandView`] names each durable node it touches by a
 //! [`SemanticPath`] — the stable chain of kind-tagged ledger ids from the application
 //! down — and never by a source name (the image carries no demand and the verifier
 //! learns no spelling). [`DurableNaming`] is the compiler's join from those ledger ids
@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use marrow_image::{ExportDemand, LedgerIdBytes, SemanticPath, SemanticStepKind};
+use marrow_image::{DemandView, LedgerIdBytes, SemanticPath, SemanticStepKind};
 
 /// Whether a named durable node opens a durable path (a store root, spelled `^name`) or
 /// extends one (a field, index, group, or keyed branch, spelled `.name`). A typed state
@@ -87,7 +87,7 @@ impl DurableNaming {
     /// their spelling and de-duplicated, so the sentence is a stable function of the
     /// demand set. Returns `None` only if a demanded node is unspellable, which cannot
     /// happen for a demand reconstructed from an admitted graph.
-    pub fn demand_sentence(&self, demand: &ExportDemand) -> Option<String> {
+    pub fn demand_sentence(&self, demand: DemandView<'_>) -> Option<String> {
         if demand.is_empty() {
             return Some("reads or writes no durable data".to_string());
         }
@@ -118,7 +118,7 @@ impl DurableNaming {
     /// same coverage classification as the sentence, so the two never disagree. Returns
     /// `None` only if a demanded node is unspellable, which cannot happen for a demand
     /// reconstructed from an admitted graph.
-    pub fn demand_summary(&self, demand: &ExportDemand) -> Option<DemandSummary> {
+    pub fn demand_summary(&self, demand: DemandView<'_>) -> Option<DemandSummary> {
         Some(DemandSummary {
             reads: self.roll_up(demand, false)?,
             writes: self.roll_up(demand, true)?,
@@ -129,7 +129,7 @@ impl DurableNaming {
     /// reads (or writes) in spelling order, each carrying the count of distinct child
     /// places it touches under that root with that coverage. A root touched only as a
     /// whole entry carries a zero child count.
-    fn roll_up(&self, demand: &ExportDemand, mutating: bool) -> Option<Vec<RootDemand>> {
+    fn roll_up(&self, demand: DemandView<'_>, mutating: bool) -> Option<Vec<RootDemand>> {
         // Root spelling -> the distinct child extensions touched under it. The child key
         // is the atom's spelled remainder below the root (e.g. `.revision`), so two atoms
         // of the same field under different operation classes count once, matching the
@@ -268,7 +268,7 @@ mod tests {
 
     fn sentence(atoms: Vec<DemandAtom>) -> String {
         naming()
-            .demand_sentence(&ExportDemand::from_atoms(atoms))
+            .demand_sentence(ExportDemand::from_atoms(atoms).as_view())
             .expect("every demanded node is nameable")
     }
 
@@ -335,7 +335,7 @@ mod tests {
     fn an_empty_demand_reads_or_writes_no_durable_data() {
         assert_eq!(
             naming()
-                .demand_sentence(&ExportDemand::from_atoms([]))
+                .demand_sentence(ExportDemand::from_atoms([]).as_view())
                 .expect("the empty demand is nameable"),
             "reads or writes no durable data",
         );
@@ -347,12 +347,15 @@ mod tests {
         // read root; the index read under `books` also counts as a child place, so the
         // child count is three. The projection uses the same coverage split as the sentence.
         let summary = naming()
-            .demand_summary(&ExportDemand::from_atoms(vec![
-                DemandAtom::new(root_path(), OperationClass::Read),
-                DemandAtom::new(field_path(TITLE), OperationClass::Read),
-                DemandAtom::new(field_path(SHELF), OperationClass::Read),
-                DemandAtom::new(index_path(), OperationClass::IndexRead),
-            ]))
+            .demand_summary(
+                ExportDemand::from_atoms(vec![
+                    DemandAtom::new(root_path(), OperationClass::Read),
+                    DemandAtom::new(field_path(TITLE), OperationClass::Read),
+                    DemandAtom::new(field_path(SHELF), OperationClass::Read),
+                    DemandAtom::new(index_path(), OperationClass::IndexRead),
+                ])
+                .as_view(),
+            )
             .expect("every demanded node is nameable");
         assert_eq!(
             summary.reads,
@@ -369,10 +372,13 @@ mod tests {
         // A read of one field and a write of another under the same root produce one read
         // root and one write root, each counting only its own coverage's children.
         let summary = naming()
-            .demand_summary(&ExportDemand::from_atoms(vec![
-                DemandAtom::new(field_path(TITLE), OperationClass::Read),
-                DemandAtom::new(field_path(SHELF), OperationClass::Write),
-            ]))
+            .demand_summary(
+                ExportDemand::from_atoms(vec![
+                    DemandAtom::new(field_path(TITLE), OperationClass::Read),
+                    DemandAtom::new(field_path(SHELF), OperationClass::Write),
+                ])
+                .as_view(),
+            )
             .expect("every demanded node is nameable");
         assert_eq!(
             summary.reads,
@@ -393,10 +399,10 @@ mod tests {
     #[test]
     fn demand_summary_counts_a_whole_entry_root_with_no_fields_as_zero() {
         let summary = naming()
-            .demand_summary(&ExportDemand::from_atoms(vec![DemandAtom::new(
-                root_path(),
-                OperationClass::Write,
-            )]))
+            .demand_summary(
+                ExportDemand::from_atoms(vec![DemandAtom::new(root_path(), OperationClass::Write)])
+                    .as_view(),
+            )
             .expect("every demanded node is nameable");
         assert_eq!(
             summary.writes,
@@ -412,10 +418,13 @@ mod tests {
         // A presence probe and a read of the same field are both non-mutating reads of
         // one child; the field counts once, matching the sentence's de-duplication.
         let summary = naming()
-            .demand_summary(&ExportDemand::from_atoms(vec![
-                DemandAtom::new(field_path(TITLE), OperationClass::Presence),
-                DemandAtom::new(field_path(TITLE), OperationClass::Read),
-            ]))
+            .demand_summary(
+                ExportDemand::from_atoms(vec![
+                    DemandAtom::new(field_path(TITLE), OperationClass::Presence),
+                    DemandAtom::new(field_path(TITLE), OperationClass::Read),
+                ])
+                .as_view(),
+            )
             .expect("every demanded node is nameable");
         assert_eq!(
             summary.reads,
@@ -429,7 +438,7 @@ mod tests {
     #[test]
     fn an_empty_demand_summarizes_to_no_roots() {
         let summary = naming()
-            .demand_summary(&ExportDemand::from_atoms([]))
+            .demand_summary(ExportDemand::from_atoms([]).as_view())
             .expect("the empty demand is nameable");
         assert!(summary.reads.is_empty());
         assert!(summary.writes.is_empty());
@@ -439,7 +448,7 @@ mod tests {
     fn a_demand_summary_over_an_unknown_node_is_unnameable() {
         let unknown = SemanticPath::root(id(APP), id(0x77));
         let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
-        assert!(naming().demand_summary(&demand).is_none());
+        assert!(naming().demand_summary(demand.as_view()).is_none());
     }
 
     #[test]
@@ -449,6 +458,30 @@ mod tests {
         // demand reconstructed from an admitted graph.
         let unknown = SemanticPath::root(id(APP), id(0x77));
         let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
-        assert!(naming().demand_sentence(&demand).is_none());
+        assert!(naming().demand_sentence(demand.as_view()).is_none());
+    }
+
+    #[test]
+    fn naming_visits_only_selected_atoms() {
+        let known = DemandAtom::new(root_path(), OperationClass::Read);
+        let unknown = DemandAtom::new(SemanticPath::root(id(APP), id(0x77)), OperationClass::Read);
+        let owner = ExportDemand::from_atoms([unknown, known.clone()]);
+        let known_row = marrow_image::DemandSelection::from_ordinals(vec![0]);
+        let unknown_row = marrow_image::DemandSelection::from_ordinals(vec![1]);
+        let selected = owner.selected(&known_row).expect("known selection");
+        let expected = ExportDemand::from_atoms([known]);
+        assert_eq!(
+            naming().demand_sentence(selected),
+            naming().demand_sentence(expected.as_view())
+        );
+        assert_eq!(
+            naming().demand_summary(selected),
+            naming().demand_summary(expected.as_view())
+        );
+        let selected = owner
+            .selected(&unknown_row)
+            .expect("unknown selection is canonical");
+        assert!(naming().demand_sentence(selected).is_none());
+        assert!(naming().demand_summary(selected).is_none());
     }
 }
