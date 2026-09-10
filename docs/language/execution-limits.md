@@ -62,7 +62,7 @@ a source position.
 | Declarations | Compiled program size | 512 KiB | `cli.compiler_resource_limit` |
 | Runtime | Instruction budget per invocation | 2^26 | `run.budget` |
 | Runtime | Call depth | 64 | `run.call_depth` |
-| Runtime | Text value | 64 KiB | `run.text_limit` |
+| Runtime | Constructed text | 64 KiB | `run.text_limit` |
 | Collections | List elements or Map pairs | 65,536 | [Collection limits](#collection-limits) |
 | Collections | Aggregate structural size | 1 MiB | [Collection limits](#collection-limits) |
 
@@ -80,7 +80,12 @@ above 65,536 is reported at the number in the `for` head.
 
 Call depth counts active calls in one invocation. Recursion is a compile
 error, so the depth limit is reached only by a very deep chain of distinct
-calls. The text limit applies to a text built by concatenation or `join`.
+calls. The text limit applies to text built by concatenation, `join`, or
+`string(...)`, including conversion of interpolation holes. It counts UTF-8
+bytes of the complete canonical text, including punctuation and hex expansion.
+A conversion that would exceed the limit faults with `run.text_limit` at its
+source expression before appending excess text. This is a result-length limit,
+not a bound on total invocation memory or on aggregate CLI output.
 
 The compiled program size is checked as function bodies are compiled and again
 when the image is encoded. Once it is crossed, checking stops at that bound and

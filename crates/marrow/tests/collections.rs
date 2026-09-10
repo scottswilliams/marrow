@@ -3,6 +3,10 @@
 //! binary, via the `collections` conformance fixture and inline invalid-source
 //! projects asserting typed diagnostics.
 
+mod common;
+
+use common::Project;
+use marrow_vm::{Value, run};
 use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -370,6 +374,72 @@ fn exceeding_the_join_text_ceiling_faults() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"run.text_limit""#), "{stdout}");
+}
+
+#[test]
+fn conversion_respects_the_text_result_boundary() {
+    let source = r#"pub fn convert(extra: string): string {
+    var s: string = ""
+    var doublings: int = 0
+    while doublings < 15 {
+        s = s + s + "x"
+        doublings += 1
+    }
+    s += extra
+    return string(bytes(s))
+}
+"#;
+    let image = Project::single(source).image();
+    let [export] = image.exports() else {
+        panic!("the conversion fixture has one export");
+    };
+    let function = image
+        .function(export.function())
+        .expect("verified export function");
+    assert_eq!(function.body().name(), "convert");
+    assert!(function.demand().is_empty());
+
+    // All source concatenations fit: 32,767 ASCII bytes become exactly 65,536
+    // bytes of canonical hex. Check the entire control before the excess case.
+    let Some(Value::Text(text)) =
+        run(function, vec![Value::Text("".into())]).expect("the exact-limit conversion runs")
+    else {
+        panic!("the conversion must return text");
+    };
+    assert_eq!(text.len(), 65_536);
+    assert_eq!(&text[..2], "0x");
+    assert!(
+        text.as_bytes()[2..]
+            .chunks_exact(2)
+            .all(|pair| pair == b"78"),
+        "each ASCII x must render as 78"
+    );
+
+    // One more input byte still fits every concatenation but would produce
+    // 65,538 hex bytes. Refusal belongs to the conversion, before CLI output.
+    let fault = match run(function, vec![Value::Text("x".into())]) {
+        Err(fault) => fault,
+        Ok(_) => panic!("the over-limit conversion must fault before returning text"),
+    };
+    assert_eq!(fault.code(), "run.text_limit");
+    assert_eq!((fault.line(), fault.column()), (9, 12));
+}
+
+#[test]
+fn conversion_and_interpolation_share_canonical_enum_payloads() {
+    let source = r#"enum E {
+    x(s: string)
+}
+
+pub fn show(): string {
+    const value = E::x(s: "é")
+    return string(value) + "/" + $"{value}"
+}
+"#;
+    assert_eq!(
+        Project::single(source).session().call("show", vec![]),
+        Some(Value::Text("E::x(é)/E::x(é)".into()))
+    );
 }
 
 /// A bare `List()`/`Map()` with no expected type cannot infer its instantiation and

@@ -164,7 +164,7 @@ codes! {
     ImageTestEntry => r#"image.test_entry"#, Image, Active, r#"A program image failed test-entry verification: the test-entry table is malformed, an `assert` sits in a function that is not a test, a test entry is an export, takes parameters, returns a value, or is called by another function, or a test body both touches durable data directly and drives a transaction-owning export."#;
     RunOverflow => r#"run.overflow"#, Run, Active, r#"A checked integer operation overflowed 64 bits: an add, subtract, multiply, or negate, or the `i64::MIN / -1` division and `i64::MIN % -1` remainder."#;
     RunDivideByZero => r#"run.divide_by_zero"#, Run, Active, r#"A division or remainder had a zero divisor."#;
-    RunTextLimit => r#"run.text_limit"#, Run, Active, r#"A text concatenation would exceed the 64 KiB result bound."#;
+    RunTextLimit => r#"run.text_limit"#, Run, Active, r#"A text concatenation, join, or conversion would exceed the 64 KiB result bound."#;
     RunUnreachable => r#"run.unreachable"#, Run, Active, r#"The program reached an `unreachable("...")` statement. The text records the invariant the author believed held."#;
     RunTodo => r#"run.todo"#, Run, Active, r#"The program reached a `todo("...")` statement. The text names the deferred work."#;
     RunAssert => r#"run.assert"#, Run, Active, r#"A `test`'s `assert` condition was false, so the test fails. Only a test body produces this fault."#;

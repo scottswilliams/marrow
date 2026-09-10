@@ -131,6 +131,11 @@ has its own platform and layout requirements
   Raw Rust arguments still require caller validation against that image's types;
   the storeless entry also requires an empty durable demand
   ([execution pipeline](implementation/README.md#pipeline)).
+- VM string conversion checks each contribution before appending it to a single
+  destination. Canonical text exceeding 65,536 UTF-8 bytes faults with
+  `run.text_limit` at the conversion expression. This bounds the constructed
+  text's length, not allocator capacity or total VM memory
+  ([execution limits](language/execution-limits.md#limits)).
 - Filesystem permissions and the host process protect local store files.
 - Kernel operations validate supplied keys and decoded traversal/index keys
   against their declared scalar kinds and supported ranges. Mismatched stored

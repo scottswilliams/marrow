@@ -224,25 +224,19 @@ fn report_accepts_a_multiline_string_from_stdin() {
 
 const TEXT_BYTES_LIMIT: usize = 65_536;
 
-// Conversion adds the six bytes of `E::x(` and `)` through the ordinary renderer,
-// independently of the VM's concatenation/join limit.
-const WRAPPED_STRING_SOURCE: &str = r#"enum E {
-    x(s: string)
-}
-
-pub fn wrap(s: string): string {
-    return string(E::x(s: s))
+const STRING_IDENTITY_SOURCE: &str = r#"pub fn echo(s: string): string {
+    return s
 }
 "#;
 
 #[test]
 fn a_string_at_the_raw_output_limit_survives_json_escaping() {
-    let workspace = Project::single(WRAPPED_STRING_SOURCE).materialize("text-output-exact");
-    let input = "\u{01}".repeat(TEXT_BYTES_LIMIT - 6);
-    let output = workspace.marrow(&["run", "wrap", "--format", "jsonl", "--", &input]);
+    let workspace = Project::single(STRING_IDENTITY_SOURCE).materialize("text-output-exact");
+    let input = "\u{01}".repeat(TEXT_BYTES_LIMIT);
+    let output = workspace.marrow(&["run", "echo", "--format", "jsonl", "--", &input]);
     let expected = format!(
-        "{{\"data\":\"E::x({})\",\"kind\":\"run\",\"outcome\":\"value\"}}\n",
-        "\\u0001".repeat(TEXT_BYTES_LIMIT - 6),
+        "{{\"data\":\"{}\",\"kind\":\"run\",\"outcome\":\"value\"}}\n",
+        "\\u0001".repeat(TEXT_BYTES_LIMIT),
     );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout.as_slice(), expected.as_bytes());
@@ -251,9 +245,9 @@ fn a_string_at_the_raw_output_limit_survives_json_escaping() {
 
 #[test]
 fn an_oversized_string_json_error_has_a_failed_process_status() {
-    let workspace = Project::single(WRAPPED_STRING_SOURCE).materialize("text-output-excess");
-    let input = "a".repeat(TEXT_BYTES_LIMIT - 5);
-    let output = workspace.marrow(&["run", "wrap", "--format", "jsonl", "--", &input]);
+    let workspace = Project::single(STRING_IDENTITY_SOURCE).materialize("text-output-excess");
+    let input = "a".repeat(TEXT_BYTES_LIMIT + 1);
+    let output = workspace.marrow(&["run", "echo", "--format", "jsonl", "--", &input]);
     assert_eq!(
         output.stdout.as_slice(),
         b"{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n",
@@ -264,6 +258,35 @@ fn an_oversized_string_json_error_has_a_failed_process_status() {
         "an output error must not keep the invocation's success status: {:?}",
         output.status,
     );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
+fn aggregate_text_keeps_its_separate_output_policy() {
+    let source = r#"enum E {
+    x(s: string)
+}
+
+pub fn wrap(s: string): E {
+    return E::x(s: s)
+}
+"#;
+    let workspace = Project::single(source).materialize("aggregate-text-output");
+    let input = "a".repeat(TEXT_BYTES_LIMIT - 5);
+    let output = workspace.marrow(&["run", "wrap", "--", &input]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout.as_slice(),
+        format!("E::x({input})\n").as_bytes()
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let output = workspace.marrow(&["run", "wrap", "--format", "jsonl", "--", &input]);
+    assert_eq!(
+        output.stdout.as_slice(),
+        b"{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n",
+    );
+    assert!(!output.status.success());
     assert!(output.stderr.is_empty(), "{output:?}");
 }
 

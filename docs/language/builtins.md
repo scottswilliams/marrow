@@ -202,9 +202,14 @@ prefix, a temporal value as its canonical text, and an identity as `Id(7)`,
 without its root. `string(bytes("hi"))` is `"0x6869"`. `marrow run` prints an
 export's result in this same canonical text. `string(...)` and interpolation
 use the same scalar, enum, and identity renderings but reject bare aggregates
-and presence optionals. Rendering a list, map, struct, or optional is not
-available today ([conversion](types-and-values.md#conversion)). Three exports
-returning a `Shelf` enum value, an `Id(^books)`, and a `date` print:
+and presence optionals. Enum
+payloads and returned values can contain aggregates; their canonical text uses
+declaration order for struct fields, insertion order for lists, and ascending
+key order for maps. A conversion's complete text is limited to 64 KiB, including
+payloads, punctuation and hex expansion. Exceeding it faults with `run.text_limit`
+at the conversion expression ([execution limits](execution-limits.md#limits)).
+CLI output has its own [output limits](../tools/cli.md).
+Three exports returning a `Shelf` enum value, an `Id(^books)`, and a `date` print:
 
 ```text
 $ marrow run shelf

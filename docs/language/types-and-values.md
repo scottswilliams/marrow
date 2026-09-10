@@ -699,7 +699,10 @@ test "string renders a value" {
 
 The canonical rendering of each value, and the values `string` refuses, are
 listed under [built-ins](builtins.md#conversion-and-output). Text interpolation
-`$"…{value}…"` uses the same renderings.
+`$"…{value}…"` uses the same renderings. Conversion results share the 64-KiB
+UTF-8 text limit with concatenation and `join`; a result that would exceed it
+faults with `run.text_limit` at the conversion expression
+([execution limits](execution-limits.md#limits)).
 
 A call pairing two current scalar names is a `check.unsupported`.
 `int("1")` and `bool(1)` are examples.

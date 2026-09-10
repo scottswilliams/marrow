@@ -29,6 +29,18 @@ preconditions. `marrow-vm` executes the selected instruction tape. Durable reads
 writes leave the VM through `marrow-kernel`, which encodes keys and values and
 drives a transaction against an engine in `marrow-store`.
 
+`marrow-vm::render` owns canonical value text for VM string conversion and CLI
+output. One recursive append traversal shares a private destination with an
+explicit caller byte limit. Nested aggregate values append into that destination;
+temporal scalar formatting retains bounded scratch text.
+Each variable-size contribution is checked before append, including the complete
+hex expansion before its digit loop. VM conversion passes 65,536 bytes and maps
+the typed refusal to `run.text_limit` at the current instruction. The CLI retains
+its bare-string limit and has no aggregate-text byte ceiling. Its JSON hex, key
+and identity contributions pass the existing data limit; JSON's separate encoding
+and final admission checks remain in `outcome`. These checks bound constructed
+text length, not allocator capacity, recursion or total runtime memory.
+
 Verifier jump resolution records destinations with a predecessor other than the
 immediately preceding instruction. Type flow carries one working frame through
 adjacent destinations without another predecessor. A fork propagates its target

@@ -37,7 +37,7 @@ const INSTRUCTION_BUDGET: u64 = 1 << 26;
 /// verify, so this guards a pathologically deep non-recursive chain.
 const MAX_CALL_DEPTH: u32 = 64;
 
-/// Text-concatenation result ceiling (design §D). A private VM runtime bound: the
+/// Text construction ceiling for concatenation, join and conversion. The
 /// VM has no edge to the image crate, so it owns this limit itself.
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 
@@ -248,7 +248,7 @@ fn execute_frame<'s>(
             SealedInstr::DurationSub => frame.duration_sub()?,
             SealedInstr::InstantAddDuration => frame.instant_add_duration()?,
             SealedInstr::InstantSubDuration => frame.instant_sub_duration()?,
-            SealedInstr::ConvString => frame.conv_string(),
+            SealedInstr::ConvString => frame.conv_string()?,
             SealedInstr::ConvBytesText => frame.conv_bytes_text(),
             SealedInstr::IntAddChecked(target) => frame.int_add_checked(*target),
             SealedInstr::IntSubChecked(target) => frame.int_sub_checked(*target),
@@ -707,12 +707,15 @@ impl<'i> Frame<'i> {
         Ok(())
     }
 
-    fn conv_string(&mut self) {
+    fn conv_string(&mut self) -> Result<(), DurableExecutionFault> {
         let image = self.image;
         let value = pop(&mut self.stack);
-        let text = crate::render::value_text(&value, image.record_types(), image.enums());
+        let text =
+            crate::render::value_text(&value, image.record_types(), image.enums(), MAX_TEXT_BYTES)
+                .map_err(|_| self.fault(Code::RunTextLimit.as_str()))?;
         self.stack.push(Value::Text(text.into()));
         self.pc += 1;
+        Ok(())
     }
 
     fn conv_bytes_text(&mut self) {

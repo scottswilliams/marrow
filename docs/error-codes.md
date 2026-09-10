@@ -102,7 +102,7 @@ Runtime faults raised while running a verified program.
 |---|---|
 | `run.overflow` | A checked integer operation overflowed 64 bits: an add, subtract, multiply, or negate, or the `i64::MIN / -1` division and `i64::MIN % -1` remainder. |
 | `run.divide_by_zero` | A division or remainder had a zero divisor. |
-| `run.text_limit` | A text concatenation would exceed the 64 KiB result bound. |
+| `run.text_limit` | A text concatenation, join, or conversion would exceed the 64 KiB result bound. |
 | `run.unreachable` | The program reached an `unreachable("...")` statement. The text records the invariant the author believed held. |
 | `run.todo` | The program reached a `todo("...")` statement. The text names the deferred work. |
 | `run.assert` | A `test`'s `assert` condition was false, so the test fails. Only a test body produces this fault. |

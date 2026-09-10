@@ -85,7 +85,10 @@ impl Record {
     ) -> Result<String, ()> {
         Ok(match self {
             Record::Value(Some(Value::Text(text))) if text.len() > MAX_TEXT_BYTES => return Err(()),
-            Record::Value(Some(value)) => render_value_text(value, types, enums),
+            // Aggregate text has no byte ceiling; the bare-string limit is checked above.
+            Record::Value(Some(value)) => {
+                marrow_vm::render::value_text(value, types, enums, usize::MAX).map_err(|_| ())?
+            }
             Record::Value(None) => String::new(),
             Record::Diagnostic { code, line, column } => format!("{code} at {line}:{column}"),
             Record::Fault {
@@ -340,17 +343,6 @@ fn durable_state_name(state: marrow_vm::DurableCommitState) -> &'static str {
     }
 }
 
-/// The canonical text of a returned value. `run` delegates to
-/// [`marrow_vm::render::value_text`], which renders every value shape (scalars, enums,
-/// identities, records, lists, maps, optionals).
-fn render_value_text(
-    value: &Value,
-    types: &[SealedRecordType],
-    enums: &[SealedEnumType],
-) -> String {
-    marrow_vm::render::value_text(value, types, enums)
-}
-
 /// Render a value as the JSONL `data` field, or `Err` when it exceeds the data
 /// bound (the caller turns that into an operational error, never a truncation). A
 /// record renders as a JSON object with field names, keys in ascending byte order.
@@ -370,10 +362,8 @@ fn render_data(
             json_string(v)
         }
         Some(Value::Bytes(v)) => {
-            if v.len() * 2 + 2 > MAX_DATA_BYTES {
-                return Err(());
-            }
-            json_string(&marrow_vm::render::hex_bytes(v))
+            let hex = marrow_vm::render::hex_bytes(v, MAX_DATA_BYTES).map_err(|_| ())?;
+            json_string(&hex)
         }
         // Temporal values render as their canonical text in a JSON string, like bytes.
         Some(Value::Date(v)) => json_string(&marrow_vm::render::date_text(*v)),
@@ -448,7 +438,8 @@ fn render_data(
                 if position > 0 {
                     out.push(',');
                 }
-                out.push_str(&json_string(&marrow_vm::render::key_text(key)));
+                let key = marrow_vm::render::key_text(key, MAX_DATA_BYTES).map_err(|_| ())?;
+                out.push_str(&json_string(&key));
                 out.push(':');
                 out.push_str(&render_data(Some(value), types, enums)?);
             }
@@ -460,7 +451,8 @@ fn render_data(
         }
         // An entry identity renders as its `Id(k0, k1)` text in a JSON string.
         Some(Value::Id(_, keys)) => {
-            let out = json_string(&marrow_vm::render::id_text(keys));
+            let text = marrow_vm::render::id_text(keys, MAX_DATA_BYTES).map_err(|_| ())?;
+            let out = json_string(&text);
             if out.len() > MAX_DATA_BYTES {
                 return Err(());
             }
@@ -494,7 +486,7 @@ fn json_string(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Record, json_string};
+    use super::{MAX_DATA_BYTES, Record, json_string, render_data};
     use marrow_vm::Value;
 
     #[test]
@@ -697,5 +689,22 @@ mod tests {
         let record = Record::Value(Some(Value::Text("a".repeat(65_537).into())));
         assert_eq!(record.to_text(&[], &[]), Err(()));
         assert_eq!(record.to_jsonl(&[], &[]), Err(()));
+    }
+
+    #[test]
+    fn json_bytes_limit_counts_unquoted_hex() {
+        let value = Value::Bytes(vec![0; (MAX_DATA_BYTES - 2) / 2].into());
+        let data = render_data(Some(&value), &[], &[]).expect("exact unquoted hex limit");
+        assert_eq!(data.len(), MAX_DATA_BYTES + 2);
+        assert!(data.starts_with("\"0x"));
+        assert!(data.ends_with('"'));
+        assert!(
+            data.as_bytes()[3..data.len() - 1]
+                .iter()
+                .all(|byte| *byte == b'0')
+        );
+
+        let excess = Value::Bytes(vec![0; MAX_DATA_BYTES / 2].into());
+        assert_eq!(render_data(Some(&excess), &[], &[]), Err(()));
     }
 }
