@@ -183,7 +183,7 @@ pub(super) fn check_presence_flow(
         let mut present = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        loop {
+        'linear: loop {
             if let SealedInstr::DurSetField { site, key_slots }
             | SealedInstr::DurReadFieldPresent { site, key_slots }
             | SealedInstr::DurReadGroupPresent { site, key_slots }
@@ -203,7 +203,7 @@ pub(super) fn check_presence_flow(
                     ));
                 }
             }
-            let mut edges = presence_edges(
+            let edges = presence_edges(
                 code,
                 ctx,
                 non_fallthrough_entries,
@@ -212,17 +212,21 @@ pub(super) fn check_presence_flow(
                 index,
                 present,
             );
-            // A single adjacent edge into an unmarked destination is its only
-            // incoming edge. Forks retain both edges even if their targets agree.
-            if let [(next, _)] = edges.as_slice()
-                && *next == index + 1
-                && *next < code.len()
-                && !non_fallthrough_entries[*next]
-            {
-                (index, present) = edges.pop().expect("one adjacent edge");
-                continue;
-            }
+            // An adjacent explicit target is unmarked, but coincident fork
+            // edges must still meet both sets.
+            let coincident = matches!(
+                edges.as_slice(),
+                [(left, _), (right, _)] if left == right
+            );
             for (successor, set) in edges {
+                if !coincident
+                    && successor == index + 1
+                    && successor < code.len()
+                    && !non_fallthrough_entries[successor]
+                {
+                    (index, present) = (successor, set);
+                    continue 'linear;
+                }
                 if successor >= code.len() {
                     return Err(reject(VerifyPhase::Flow, "presence edge out of range"));
                 }

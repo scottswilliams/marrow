@@ -115,11 +115,11 @@ has its own platform and layout requirements
 - The runner bounds image input before verification to the 512 KiB image limit
   plus one excess byte. Oversized images are refused with `image.envelope`
   ([execution limits](language/execution-limits.md#limits)).
-- Verifier type flow carries a single frame through linear instruction segments
-  and unshared branch fallthroughs.
-  Retained local and stack payload scales with queued boundaries rather than
-  ordinary straight-line padding. Branch-heavy retention and repeated analysis
-  visits are not covered by a total verifier memory or work budget
+- Verifier type flow carries one working frame, and presence flow one working
+  set, through linear instruction segments and distinct unshared branch
+  fallthroughs. Carried instructions do not retain incoming local, stack or
+  presence-fact payload. True joins, branch-target copies and repeated visits
+  remain separate costs; there is no total verifier memory or work budget
   ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier admits image generation 1. Current store attachment, import and
   audit refuse an active binding to another image generation before engine open,

@@ -204,7 +204,6 @@ fn ordinary_padding_does_not_retain_more_presence_sets_or_facts() {
             assert_eq!(counts.completed, 1);
             assert_eq!(counts.slots, code.len());
             assert!(counts.capacity >= counts.slots);
-            assert!(counts.retained_facts >= usize::from(keys));
             eprintln!("presence retention keys={keys} padding={padding}: {counts:?}");
             counts
         })
@@ -217,5 +216,12 @@ fn ordinary_padding_does_not_retain_more_presence_sets_or_facts() {
                 "ordinary padding retains additional presence state with {keys} keys",
             );
         }
+    }
+    for counts in observations.into_iter().flatten() {
+        assert_eq!(
+            (counts.retained_sets, counts.retained_facts),
+            (2, 0),
+            "only the empty initial entry and shared absent destination retain presence sets",
+        );
     }
 }

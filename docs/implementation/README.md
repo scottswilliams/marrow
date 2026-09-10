@@ -65,16 +65,19 @@ paths and branch coordinates, built once for the presence phase. Calls use
 binary search without reconstructing key columns; direct erases use the same
 entry-family classifier. This transient lookup is dropped before publication.
 
-Presence verification carries one owned working set across instructions with
-a single edge to the next instruction and no other predecessor. Fork successors
-and non-fallthrough destinations retain incoming sets for intersection and
-replay after a shrinking merge. Two conditional edges to the same destination
-still intersect before that destination executes. Functions without strict
-presence operations skip the pass. Otherwise it retains one optional state slot
-per instruction, but ordinary straight-line padding adds no retained
-fact sets or fact-payload clones. Branch-dense retention and repeated visits
-remain separate resource costs; this representation does not establish a total
-verifier memory or work budget.
+Presence verification carries one owned working set through linear segments.
+A fork propagates its target first, then carries its distinct fallthrough when
+that destination has no other predecessor. Coincident edges both intersect
+before their destination executes. Shared and non-fallthrough destinations
+retain incoming sets for intersection; a shrinking merge requeues the boundary
+and re-executes its carried interior. Functions without strict presence
+operations skip the pass. Otherwise it retains one optional state slot per
+instruction. Carried instructions add no retained incoming fact sets; working
+sets and branch-target copies remain. The guarded-read retention test checks
+two retained sets and zero retained facts across six key-count/padding cases;
+both retained sets are empty. This fixture-specific result does not bound
+transient allocation, true-join retention, repeated visits or total verifier
+memory and work.
 
 `marrow-compile/src/lower/presence.rs` owns scoped presence facts with stable
 identities and typed live or invalidated state. Invalidated identities remain
