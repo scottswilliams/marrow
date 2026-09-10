@@ -1,9 +1,7 @@
 //! The language scalar vocabulary.
 //!
-//! This is the compiler's owner of the scalar *language* classification, refounded
-//! here out of the storage engine (design §F). It is distinct from the kernel's
-//! runtime representation (`RuntimeScalar`/`KeyScalar`); the image type tags are
-//! the frozen bridge between them.
+//! This is the compiler's owner of the scalar language classification. Image type
+//! tags connect it to the kernel's distinct runtime representation.
 
 use marrow_image::Scalar;
 
@@ -69,6 +67,19 @@ impl ScalarType {
             ScalarType::Date => Scalar::Date,
             ScalarType::Instant => Scalar::Instant,
             ScalarType::Duration => Scalar::Duration,
+        }
+    }
+
+    /// The language scalar represented by an admitted image type tag.
+    pub(crate) fn from_image(scalar: Scalar) -> Self {
+        match scalar {
+            Scalar::Int => Self::Int,
+            Scalar::Bool => Self::Bool,
+            Scalar::Text => Self::Text,
+            Scalar::Bytes => Self::Bytes,
+            Scalar::Date => Self::Date,
+            Scalar::Instant => Self::Instant,
+            Scalar::Duration => Self::Duration,
         }
     }
 }

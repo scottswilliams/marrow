@@ -112,15 +112,10 @@ fn orderable_key_scalar(
     value: ValueShapeNodeId,
 ) -> Option<ScalarType> {
     match values.view(value)? {
-        ValueShapeView::Scalar(Scalar::Int) => Some(ScalarType::Int),
-        ValueShapeView::Scalar(Scalar::Text) => Some(ScalarType::Text),
-        ValueShapeView::Scalar(Scalar::Bool) => Some(ScalarType::Bool),
-        ValueShapeView::Scalar(Scalar::Bytes) => Some(ScalarType::Bytes),
-        ValueShapeView::Scalar(Scalar::Date) => Some(ScalarType::Date),
-        ValueShapeView::Scalar(Scalar::Instant) => Some(ScalarType::Instant),
         ValueShapeView::Scalar(Scalar::Duration)
         | ValueShapeView::Struct(_)
         | ValueShapeView::Enum { .. } => None,
+        ValueShapeView::Scalar(scalar) => Some(ScalarType::from_image(scalar)),
     }
 }
 
@@ -1455,7 +1450,7 @@ fn build_one(
     let executable = keyed && all_fields_executable && members_flat;
     let (branches, groups) = if executable {
         (
-            build_executable_branches(records, group_rows, &captured.branches, root_id)?,
+            build_executable_branches(group_rows, &captured.branches, root_id)?,
             build_executable_groups(&record.groups, &captured.groups),
         )
     } else {
@@ -2502,14 +2497,14 @@ fn emit_declaration_commands(
 }
 
 /// The canonical declaration paths and materialized record of one keyed branch: the
-/// branch's own path, its direct fields' paths in declaration order, its entry record
-/// type, and the same for each of its nested branches. For an executable branch these back
-/// the branch's whole-entry operations and its field-exact
+/// branch's own path, its direct fields' paths and admitted scalars in declaration order,
+/// its entry record type, and the same for each of its nested branches. For an executable
+/// branch these back the branch's whole-entry operations and its field-exact
 /// `^root(k).branch(bk).field` operations respectively; a non-flat root parks them and
 /// consumes neither.
 struct BranchSites {
     path: CanonicalDeclarationPathSelector,
-    fields: Vec<CanonicalDeclarationPathSelector>,
+    fields: Vec<(CanonicalDeclarationPathSelector, Scalar)>,
     record: marrow_image::TypeId,
     /// This branch's own nested branches, in declaration order, so a nested-branch lowerer
     /// resolves a deeper `^root(k).b(bk).s(sk)` path level by level.
@@ -2597,12 +2592,13 @@ fn emit_root_member_sites(
 }
 
 /// Emit one keyed branch's eager whole-payload entry site and capture it recursively with
-/// its direct fields' canonical paths (leaf sites allocated lazily on reference) and each
-/// nested branch's capture. A static `group` inside a branch parks the whole root
-/// (`member_keeps_root_flat` refuses it), so on the executable path only fields and nested
-/// branches occur. The direct field order is the branch's materialized-record order — the
-/// leaf the verifier seals as `BranchField(field)` — and the nested-branch order indexes
-/// the sealed branch tree, so the compiler's and verifier's independent resolutions agree.
+/// its direct fields' canonical paths and admitted scalars (leaf sites allocated lazily
+/// on reference) and each nested branch's capture. A static `group` inside a branch parks
+/// the whole root (`member_keeps_root_flat` refuses it), so on the executable path only
+/// fields and nested branches occur. The direct field order is the branch's materialized
+/// record order — the leaf the verifier seals as `BranchField(field)` — and the nested
+/// branch order indexes the sealed branch tree, so the compiler's and verifier's
+/// independent resolutions agree.
 fn emit_branch_sites(
     draft: &mut DraftTxn<'_>,
     occurrence: &RootOccurrenceSelector,
@@ -2618,7 +2614,12 @@ fn emit_branch_sites(
     let mut branches = Vec::new();
     for inner in &members {
         match inner.shape() {
-            DeclarationMemberShape::Field { .. } => fields.push(inner.path().clone()),
+            DeclarationMemberShape::Field { value, .. } => {
+                let Some(ValueShapeView::Scalar(scalar)) = draft.value_shapes().view(*value) else {
+                    return Err(GenericInvariant::DurableBranchFieldUnresolved);
+                };
+                fields.push((inner.path().clone(), scalar));
+            }
             DeclarationMemberShape::Group { .. } => {}
             DeclarationMemberShape::Branch { record, .. } => {
                 let record = *record;
@@ -2721,20 +2722,20 @@ fn build_executable_groups(
 }
 
 /// The executable branch descriptors of a flat-executable root, in declaration order,
-/// recursively. Each branch's materialized record type and its whole-payload, per-field,
-/// and nested-branch sites come from `top_branches`, and its simple name, key, field plan,
-/// and nested branches from the resource's group rows — all in the same declaration
-/// order, so a branch path indexes both the sealed branch tree and this one identically.
+/// recursively. Each branch's materialized record type, admitted field scalars and
+/// whole-payload, per-field and nested-branch sites come from `top_branches`. Its simple
+/// name, key, field plan and nested branches come from the resource's group rows — all
+/// in the same declaration order, so a branch path indexes both the sealed branch tree
+/// and this one identically.
 /// Called only when the caller has proven the root flat-executable, so every branch is a
 /// scalar-field keyed branch (its nested members are scalar fields and simple
 /// branches).
 fn build_executable_branches(
-    records: &TypeRegistry,
     groups: &[GroupRow<'_>],
     top_branches: &[BranchSites],
     root_id: marrow_image::RootId,
 ) -> Result<Vec<DurableBranch>, GenericInvariant> {
-    build_branches(records, groups, top_branches, root_id, &[])
+    build_branches(groups, top_branches, root_id, &[])
 }
 
 /// Build the [`DurableBranch`] descriptors for the keyed branches among `members`, zipped
@@ -2742,7 +2743,6 @@ fn build_executable_branches(
 /// and captured nested-branch sites. The source keyed groups and the captured `BranchSites`
 /// are both in declaration order, so the zip pairs each branch with its own sites.
 fn build_branches(
-    records: &TypeRegistry,
     groups: &[GroupRow<'_>],
     sites: &[BranchSites],
     root_id: marrow_image::RootId,
@@ -2764,24 +2764,14 @@ fn build_branches(
                 .fields
                 .iter()
                 .zip(&sites.fields)
-                .map(|(field, path)| {
-                    let scalar = match records.scalar_annotation(&field.ty) {
-                        Ok(scalar) => scalar,
-                        Err(ResolveError::Invariant(invariant)) => return Err(invariant),
-                        Err(ResolveError::Refusal(_)) => {
-                            return Err(GenericInvariant::DurableBranchFieldUnresolved);
-                        }
-                    };
-                    Ok(DurableBranchField {
-                        name: field.name.clone(),
-                        scalar,
-                        required: field.required,
-                        path: path.clone(),
-                    })
+                .map(|(field, (path, scalar))| DurableBranchField {
+                    name: field.name.clone(),
+                    scalar: ScalarType::from_image(*scalar),
+                    required: field.required,
+                    path: path.clone(),
                 })
-                .collect::<Result<_, GenericInvariant>>()?;
-            let branches =
-                build_branches(records, &row.groups, &sites.branches, root_id, &branch_path)?;
+                .collect();
+            let branches = build_branches(&row.groups, &sites.branches, root_id, &branch_path)?;
             Ok(DurableBranch {
                 name: row.name.to_string(),
                 family: Family {

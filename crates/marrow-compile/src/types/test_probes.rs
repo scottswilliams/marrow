@@ -5,6 +5,41 @@
 use super::*;
 
 thread_local! {
+    static SCALAR_ANNOTATION: Cell<Option<(SourceSpan, usize)>> = const { Cell::new(None) };
+}
+
+struct ScalarAnnotationWindow(Option<(SourceSpan, usize)>);
+
+impl Drop for ScalarAnnotationWindow {
+    fn drop(&mut self) {
+        SCALAR_ANNOTATION.with(|cell| cell.set(self.0));
+    }
+}
+
+pub(super) fn observe_scalar_annotation(span: SourceSpan) {
+    SCALAR_ANNOTATION.with(|cell| {
+        if let Some((selected, count)) = cell.get()
+            && selected == span
+        {
+            cell.set(Some((selected, count + 1)));
+        }
+    });
+}
+
+/// Count actual annotation resolutions at one span in a single-file compile.
+/// The guard restores any outer observation even when the compile unwinds.
+pub(crate) fn count_scalar_annotation<T>(span: SourceSpan, run: impl FnOnce() -> T) -> (T, usize) {
+    let previous = SCALAR_ANNOTATION.with(|cell| cell.replace(Some((span, 0))));
+    let guard = ScalarAnnotationWindow(previous);
+    let result = run();
+    let (_, count) = SCALAR_ANNOTATION
+        .with(Cell::get)
+        .expect("the scalar annotation observation is armed");
+    drop(guard);
+    (result, count)
+}
+
+thread_local! {
     pub(crate) static METADATA_DIRECTORY_BUILDS: Cell<usize> = const { Cell::new(0) };
     pub(crate) static READY_BODY_MATCH_VISITS: Cell<usize> = const { Cell::new(0) };
 }

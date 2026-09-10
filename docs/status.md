@@ -48,6 +48,10 @@ pre-existing inconsistencies ([indexes](language/traversal-and-indexes.md#index-
 Resource values with generic fields support group-leaf access in either
 declaration order ([resources](language/resources.md#members)).
 
+Branch-field annotations are resolved once per admitted resource Product. Roots
+sharing that Product reuse its canonical field scalars when building executable
+branch descriptors ([compiler pipeline](implementation/README.md#pipeline)).
+
 A refused function body does not suppress recursion or transaction diagnostics
 in an independent complete call component. Generic bodies continue draining after
 an ordinary body refusal. Effects that require a complete call chain exclude

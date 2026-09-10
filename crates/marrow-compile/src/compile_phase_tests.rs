@@ -1064,6 +1064,259 @@ fn a_key_table_is_constructed_once_per_declared_tuple() {
     );
 }
 
+const BRANCH_FIELD_IDS: &str = "marrow ids v0\n\
+    machine-written by marrow; do not edit\n\
+    id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+    id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+    id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+    id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+    id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+    id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+    id field Book.notes.elapsed 2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d\n\
+    id field Book.notes.pinned 2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e\n\
+    id root Book.notes.tags 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a\n\
+    id key Book.notes.tags.tagId 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+    id field Book.notes.tags.weight 3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\n\
+    id root a 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+    id key a.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+    id root b 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+    id key b.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+    high-water 0\nend\n";
+
+fn branch_field_project(source: &str) -> marrow_project::ProjectInput {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    marrow_project::capture(
+        &manifest,
+        vec![marrow_project::CapturedFile::new(
+            "src/main.mw".to_string(),
+            source.as_bytes().to_vec(),
+        )],
+        Some(BRANCH_FIELD_IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture the branch-field fixture")
+}
+
+/// Source classification belongs to the Product, even when several roots use its
+/// branch entry. Both complete compiler journeys establish their shared
+/// declaration and encoded image before the actual resolver count is asserted.
+#[test]
+fn branch_field_annotation_is_resolved_once_per_product() {
+    use marrow_image::{DurableMemberViewKind, LedgerIdBytes, Scalar, ValueShapeView};
+
+    const PRODUCT: &str = r#"resource Book {
+    required title: string
+    notes[noteId: int] {
+        required text: string
+    }
+}
+"#;
+    const ADD_A: &str = r#"
+pub fn addA(id: int, t: string) {
+    transaction {
+        ^a[id].notes[1] = Book.notes(text: t)
+    }
+}
+"#;
+    const ADD_B: &str = r#"
+pub fn addB(id: int, t: string) {
+    transaction {
+        ^b[id].notes[1] = Book.notes(text: t)
+    }
+}
+"#;
+    let one_root = format!("{PRODUCT}\nstore ^a[id: int]: Book\n{ADD_A}");
+    let two_roots =
+        format!("{PRODUCT}\nstore ^a[id: int]: Book\nstore ^b[id: int]: Book\n{ADD_A}{ADD_B}");
+    let start_byte = PRODUCT.find("text: string").expect("the selected field") + "text: ".len();
+    let span = SourceSpan {
+        start_byte,
+        end_byte: start_byte + "string".len(),
+        line: 4,
+        column: 24,
+    };
+    let mut counts = [0; 2];
+    let mut record_counts = [0; 2];
+    for (index, source) in [one_root, two_roots].iter().enumerate() {
+        let project = branch_field_project(source);
+        let (driven, count) = crate::types::count_scalar_annotation(span, || {
+            super::drive(&project, super::TestMode::Exclude)
+        });
+        let checked = driven
+            .expect("the fixture fits the drive envelope")
+            .production()
+            .expect("the whole-entry exports compile");
+        assert_eq!(
+            checked
+                .exports
+                .iter()
+                .map(|entry| entry.item.as_str())
+                .collect::<Vec<_>>(),
+            ["addA", "addB"][..index + 1],
+        );
+        let contract = checked.draft.contract_view();
+        let roots = contract.roots().collect::<Vec<_>>();
+        assert_eq!(roots.len(), index + 1);
+        let mut branch_records = Vec::new();
+        for (root_index, root) in roots.iter().enumerate() {
+            assert_eq!(
+                root.product().ledger_id(),
+                LedgerIdBytes::from_bytes([13; 16])
+            );
+            assert_eq!(root.entry_record(), roots[0].entry_record());
+            assert_eq!(
+                root.placement().ledger_id(),
+                LedgerIdBytes::from_bytes([[11, 27][root_index]; 16]),
+            );
+            let members = root.members().collect::<Vec<_>>();
+            assert_eq!(members.len(), 2);
+            let DurableMemberViewKind::Field(title) = members[0].kind() else {
+                panic!("the first member is the root field");
+            };
+            assert_eq!(title.id(), LedgerIdBytes::from_bytes([14; 16]));
+            let DurableMemberViewKind::Branch(branch) = members[1].kind() else {
+                panic!("the second member is the notes branch");
+            };
+            assert_eq!(branch.placement(), LedgerIdBytes::from_bytes([42; 16]));
+            assert_eq!(branch.keys().len(), 1);
+            assert_eq!(branch.keys()[0].id, LedgerIdBytes::from_bytes([43; 16]));
+            assert_eq!(branch.keys()[0].scalar, Scalar::Int);
+            branch_records.push(branch.record());
+            let fields = members[1].members().collect::<Vec<_>>();
+            assert_eq!(fields.len(), 1);
+            let DurableMemberViewKind::Field(text) = fields[0].kind() else {
+                panic!("the branch member is the text field");
+            };
+            assert_eq!(text.id(), LedgerIdBytes::from_bytes([44; 16]));
+            assert!(text.required());
+            assert_eq!(
+                contract.value_shapes().view(text.value()),
+                Some(ValueShapeView::Scalar(Scalar::Text)),
+            );
+        }
+        assert!(
+            branch_records
+                .iter()
+                .all(|record| *record == branch_records[0])
+        );
+        record_counts[index] = checked.draft.record_type_count();
+        let built = super::encode(checked).expect("the checked draft encodes");
+        assert!(!built.image.bytes.is_empty());
+        counts[index] = count;
+    }
+    assert_eq!(record_counts[0], record_counts[1]);
+    assert_eq!(
+        counts,
+        [1, 1],
+        "one classification per declared branch field"
+    );
+}
+
+/// Typed field reads exercise the executable descriptors as well as the admitted
+/// graph. An alias keeps Duration distinct from the narrower durable-key set.
+#[test]
+fn branch_field_capture_preserves_typed_nested_and_sparse_reads() {
+    use marrow_image::{DurableMemberViewKind, LedgerIdBytes, Scalar, ValueShapeView};
+
+    let project = branch_field_project(
+        r#"alias Elapsed = duration
+
+resource Book {
+    required title: string
+    notes[noteId: int] {
+        required text: string
+        elapsed: Elapsed
+        required pinned: bool
+        tags[tagId: int] {
+            required weight: int
+        }
+    }
+}
+
+store ^a[id: int]: Book
+
+pub fn readText(id: int, noteId: int): string {
+    place note = ^a[id].notes[noteId]
+    if exists(note) {
+        return note.text
+    }
+    return ""
+}
+
+pub fn readElapsed(id: int, noteId: int): duration? {
+    place note = ^a[id].notes[noteId]
+    if exists(note) {
+        return note.elapsed
+    }
+    return absent
+}
+
+pub fn readPinned(id: int, noteId: int): bool? {
+    return ^a[id].notes[noteId].pinned
+}
+
+pub fn readWeight(id: int, noteId: int, tagId: int): int? {
+    return ^a[id].notes[noteId].tags[tagId].weight
+}
+"#,
+    );
+    let checked = super::drive(&project, super::TestMode::Exclude)
+        .expect("the typed-read fixture fits the envelope")
+        .production()
+        .expect("each branch field read has its declared type");
+    assert_eq!(
+        checked
+            .exports
+            .iter()
+            .map(|entry| entry.item.as_str())
+            .collect::<Vec<_>>(),
+        ["readText", "readElapsed", "readPinned", "readWeight"],
+    );
+    let contract = checked.draft.contract_view();
+    let roots = contract.roots().collect::<Vec<_>>();
+    assert_eq!(roots.len(), 1);
+    let members = roots[0].members().collect::<Vec<_>>();
+    assert_eq!(members.len(), 2);
+    assert!(matches!(
+        members[1].kind(),
+        DurableMemberViewKind::Branch(_)
+    ));
+    let fields = members[1].members().collect::<Vec<_>>();
+    assert_eq!(fields.len(), 4);
+    for (member, (id, scalar, required)) in fields.iter().zip([
+        (44, Scalar::Text, true),
+        (45, Scalar::Duration, false),
+        (46, Scalar::Bool, true),
+    ]) {
+        let DurableMemberViewKind::Field(field) = member.kind() else {
+            panic!("direct scalar fields precede nested branches");
+        };
+        assert_eq!(field.id(), LedgerIdBytes::from_bytes([id; 16]));
+        assert_eq!(field.required(), required);
+        assert_eq!(
+            contract.value_shapes().view(field.value()),
+            Some(ValueShapeView::Scalar(scalar))
+        );
+    }
+    let DurableMemberViewKind::Branch(tags) = fields[3].kind() else {
+        panic!("the final member is the nested tags branch");
+    };
+    assert_eq!(tags.placement(), LedgerIdBytes::from_bytes([58; 16]));
+    let nested = fields[3].members().collect::<Vec<_>>();
+    assert_eq!(nested.len(), 1);
+    let DurableMemberViewKind::Field(weight) = nested[0].kind() else {
+        panic!("the nested member is the weight field");
+    };
+    assert_eq!(weight.id(), LedgerIdBytes::from_bytes([60; 16]));
+    assert!(weight.required());
+    assert_eq!(
+        contract.value_shapes().view(weight.value()),
+        Some(ValueShapeView::Scalar(Scalar::Int))
+    );
+    let built = super::encode(checked).expect("typed branch reads encode");
+    assert!(!built.image.bytes.is_empty());
+}
+
 // ---- Image capacity: the semantic drive stops once retained bodies cannot fit.
 
 /// The work one compiler entry performs, when a test is observing: the driver visits

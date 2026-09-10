@@ -156,6 +156,13 @@ dependent fills. Type consumers resolve written parameters before aliases and
 carry existing declaration refusals through scalar and value-type checks;
 they do not allocate expanded alias trees.
 
+Resource construction resolves each branch-field annotation once per admitted
+Product. The canonical member graph retains the scalar value shape. Root
+occurrence capture carries that scalar with the existing field path, and
+executable branch descriptors consume it without resolving the source annotation
+again. Scalar conversion preserves all seven language scalars; durable-key
+eligibility separately excludes `duration`.
+
 The image draft reserves each function identity once. Accepted ordinary signatures,
 included test declarations and generic instances retain their actual `FuncId`;
 lowering moves each completed instruction allocation into that reserved slot.

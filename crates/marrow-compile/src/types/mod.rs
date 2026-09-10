@@ -543,7 +543,8 @@ pub(crate) enum GenericInvariant {
     /// that reaches the executable derivation proved every branch admitted — this arm
     /// is the compiler disagreeing with its own admission ordering, not the source.
     DurableBranchKeyUnresolved,
-    /// An executable branch field no longer has the scalar admitted by its builder.
+    /// A branch field no longer has the scalar recorded by its builder. Capture reads
+    /// it before deciding whether the containing root is executable or parked.
     DurableBranchFieldUnresolved,
     /// Scalar annotation lookup cannot spend a generic instantiation budget.
     ScalarResolutionLimit,
@@ -3448,6 +3449,8 @@ impl TypeRegistry {
     }
 
     pub(crate) fn scalar_annotation(&self, ty: &TypeExpr) -> Result<ScalarType, ResolveError> {
+        #[cfg(test)]
+        test_probes::observe_scalar_annotation(ty.span());
         let TypeExpr::Name { text, .. } = ty else {
             return Err(ResolveRefusal::Unsupported.into());
         };
