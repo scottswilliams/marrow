@@ -410,7 +410,9 @@ fn conversion_respects_the_text_result_boundary() {
     assert_eq!(&text[..2], "0x");
     assert!(
         text.as_bytes()[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .all(|pair| pair == b"78"),
         "each ASCII x must render as 78"
     );
