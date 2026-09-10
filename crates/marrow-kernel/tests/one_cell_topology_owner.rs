@@ -2,6 +2,9 @@
 //! Roots and branches share its static-family entry grammar; obsolete nested
 //! branch constructors and descendant-skipping state must not return.
 
+#[path = "../../marrow-compile/tests/common/source_projection.rs"]
+mod source_projection;
+
 use std::path::{Path, PathBuf};
 
 /// The one durable-module file allowed to spell the cell layout.
@@ -91,20 +94,65 @@ fn structural_tag_literals_live_only_in_the_layout_owner() {
         None,
     ));
     for (label, text) in files {
-        for line in text.lines() {
-            // A comment may legitimately mention a tag value (the layout is documented
-            // across the module); only code is a second owner.
-            let code = line.split("//").next().unwrap_or("");
-            for tag in STRUCTURAL_TAG_LITERALS {
-                assert!(
-                    !code.contains(tag),
-                    "{label} spells the structural-tag literal `{tag}`; only \
-                     durable/{LAYOUT_OWNER} owns the cell layout: `{}`",
-                    line.trim()
-                );
+        if let Some((tag, line)) = first_structural_tag_literal(&text) {
+            panic!(
+                "{label} spells the structural-tag literal `{tag}`; only \
+                 durable/{LAYOUT_OWNER} owns the cell layout: `{}`",
+                line.trim()
+            );
+        }
+    }
+}
+
+fn first_structural_tag_literal(source: &str) -> Option<(&'static str, &str)> {
+    let code = source_projection::without_literals(source);
+    for (line, code) in source.lines().zip(code.lines()) {
+        for tag in STRUCTURAL_TAG_LITERALS {
+            if code.contains(tag) {
+                return Some((*tag, line));
             }
         }
     }
+    None
+}
+
+#[test]
+fn structural_tag_census_distinguishes_code_from_quoted_rendering() {
+    for (source, tag) in [
+        ("const ENTRY_TAG: u8 = 0x20;", "0x20"),
+        ("out.push(0x28);", "0x28"),
+        ("out.push(0x30);", "0x30"),
+        ("out.push(0xFF);", "0xFF"),
+        ("out.push(0xff);", "0xff"),
+    ] {
+        assert_eq!(
+            first_structural_tag_literal(source),
+            Some((tag, source)),
+            "missed code literal: {source}",
+        );
+    }
+    for source in [
+        r#"let expected = "Id(é, -1, 0xff)";"#,
+        r##"let expected = r#"Id(é, -1, 0xff)"#;"##,
+        "// Id(é, -1, 0xff)",
+        "/* Id(é, -1, 0xff) */",
+    ] {
+        assert_eq!(
+            first_structural_tag_literal(source),
+            None,
+            "inert text: {source}",
+        );
+    }
+}
+
+#[test]
+fn structural_tag_census_keeps_code_after_a_quoted_url() {
+    let source = r#"let url = "https://example.test"; out.push(0x28);"#;
+    assert_eq!(
+        first_structural_tag_literal(source),
+        Some(("0x28", source)),
+        "a quoted URL must not hide the following code literal",
+    );
 }
 
 /// No durable module other than `physical.rs` calls the escaped-name key encoder, so

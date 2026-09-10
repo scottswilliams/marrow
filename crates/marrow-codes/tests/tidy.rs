@@ -77,24 +77,71 @@ const FORBIDDEN_FAMILIES: &[&str] = &[
 /// only as a whole crate reference, never as a prefix of a longer name — so the
 /// deleted interpreter crate `marrow-run`/`marrow_run` does not false-match the
 /// retained `marrow-runner`/`marrow_runner`. The non-crate identifiers (`Surface`,
-/// `Interpreter`, …) keep matching as prefixes, which is intended.
+/// `Interpreter`, …) keep matching as prefixes, which is intended. A `.md#`
+/// fragment ending in `)` is treated as a document-link destination.
 fn names_forbidden_family(contents: &str, family: &str) -> bool {
     if !family.starts_with("marrow") {
         return contents.contains(family);
     }
     let mut from = 0;
     while let Some(offset) = contents[from..].find(family) {
-        let end = from + offset + family.len();
+        let start = from + offset;
+        let end = start + family.len();
         let extends = contents[end..]
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-        if !extends {
+        let document_fragment =
+            contents[..start].ends_with(".md#") && contents[end..].starts_with(')');
+        if !extends && !document_fragment {
             return true;
         }
         from = end;
     }
     false
+}
+
+#[test]
+fn crate_reference_census_distinguishes_document_fragments() {
+    for (source, family) in [
+        ("use marrow_run::Run;", "marrow_run"),
+        (r#"marrow-run = { path = "../marrow-run" }"#, "marrow-run"),
+        ("use r#marrow_run::Run;", "marrow_run"),
+        ("path+file:///old#marrow-run@0.1.0", "marrow-run"),
+        ("path+file:///old.md#marrow-run@0.1.0", "marrow-run"),
+        (
+            "[old owner](../crates/marrow-run/src/lib.rs#entry)",
+            "marrow-run",
+        ),
+        ("[marrow-run](../tools/cli.md#marrow-run)", "marrow-run"),
+        (
+            "[limits](../tools/cli.md#marrow-run); marrow-run",
+            "marrow-run",
+        ),
+        (
+            "marrow-run; [limits](../tools/cli.md#marrow-run)",
+            "marrow-run",
+        ),
+        ("SurfaceAst", "Surface"),
+    ] {
+        assert!(
+            names_forbidden_family(source, family),
+            "missed {family}: {source}",
+        );
+    }
+    for (source, family) in [
+        ("marrow-runner", "marrow-run"),
+        ("marrow_runner::Run", "marrow_run"),
+    ] {
+        assert!(
+            !names_forbidden_family(source, family),
+            "false hit: {source}",
+        );
+    }
+    assert!(
+        !names_forbidden_family("[output limits](../tools/cli.md#marrow-run)", "marrow-run"),
+        "a command heading fragment is not a retired crate reference",
+    );
 }
 
 fn workspace_root() -> PathBuf {
