@@ -221,6 +221,17 @@ admits the prepared image against the store's active binding, `marrow-store`
 takes the engine lock, and `marrow-runner` dispatches the export through the
 returned attachment over the persistent redb engine.
 
+The CLI's `cmd_run` materializes positional or stdin arguments against the
+verified export signature at the storeless and persistent call boundaries.
+Stdin supplies exactly one bare string parameter; the argument reader materializes
+at most 65,537 input bytes and admits at most 65,536 UTF-8 bytes. Standard input
+buffering may read ahead. The persistent path discovers the companion before
+consuming input. `outcome` checks returned bare-string size before rendering and
+returns rendering refusals to `cmd_run`, whose emitter writes and flushes records
+and fails on rendering or sink errors. Delivery failure can follow a completed
+invocation; it does not undo or retry it. Aggregate text materialization remains
+outside this string boundary ([CLI](../tools/cli.md)).
+
 `marrow doctor --store <dir>` stops before any export runs. The CLI compiles
 and hands the image to `marrow-runner audit`; `marrow-lifecycle` admits it as
 the store's exact active binding under the lock and opens the native engine

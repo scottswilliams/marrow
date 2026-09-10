@@ -1,10 +1,10 @@
-//! `marrow run <export> [--format jsonl] [-- <args>...]`.
+//! `marrow run <export> [--stdin] [--format jsonl] [-- <args>...]`.
 //!
 //! The production run path: capture the project at the working directory, compile
 //! it to canonical image bytes, verify them into a sealed image, resolve the named
-//! export, and run a storeless export on the VM. Each of the four failure families
-//! surfaces as its own typed [`Record`]; the value or the first failure sets the
-//! exit code.
+//! export, and run a storeless export on the VM. Invocation outcomes retain their
+//! typed [`Record`]. Input refusal precedes invocation; rendering or delivery
+//! failure makes the command fail even if the invocation has completed.
 //!
 //! A durable export runs against a provisioned store with `marrow run … --store
 //! <dir>`: the terminal never opens the store — it verifies the companion runner
@@ -15,6 +15,7 @@
 //! storeless path — the run-mint window is closed for a persistent store; see
 //! [`mint_missing_identities`].
 
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -27,7 +28,7 @@ use marrow_verify::{
 };
 use marrow_vm::Value;
 
-use crate::outcome::Record;
+use crate::outcome::{MAX_TEXT_BYTES, Record};
 use crate::project::capture_project;
 
 /// The output format for `marrow run`.
@@ -40,11 +41,23 @@ enum Format {
 struct RunArgs {
     export: String,
     format: Format,
-    call_args: Vec<String>,
+    call_args: CallArgs,
     /// The persistent store to run against (`--store <dir>`). When present, the run is
     /// served by a companion attached to the store and no identity is auto-minted; when
     /// absent, the run is storeless and a missing durable identity is minted.
     store: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+enum CallArgs {
+    Positional(Vec<String>),
+    Stdin,
+}
+
+#[derive(Debug)]
+enum ArgumentError {
+    Usage(String),
+    Input(io::Error),
 }
 
 pub(crate) fn run(rest: &[String]) -> ExitCode {
@@ -92,8 +105,8 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     // as-is. The run-mint window is closed for a persistent store (`--store`): once a store
     // is bindable, a fresh anchor is a precise `check.durable_identity` failure the developer
     // resolves deliberately, never an additive auto-mint that could readopt an orphaned id or
-    // diverge from the store's committed ledger. Tombstone-aware minting is the accepted
-    // apply action's job (F03), not pulled forward here.
+    // diverge from the store's committed ledger. Storeless minting publishes through
+    // the project adapter, then recaptures the project with its committed identities.
     let compiled = match compile(&project) {
         Ok(compiled) => compiled,
         Err(CompileFailure::Diagnostics(diagnostics)) if args.store.is_some() => {
@@ -262,10 +275,9 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         );
     }
 
-    // Positional call arguments are decoded against the verified export signature.
-    let call_args = match decode_args(function.body().params(), &args.call_args) {
+    let call_args = match decode_call_args(function.body().params(), &args.call_args, args.format) {
         Ok(values) => values,
-        Err(message) => return usage(&message),
+        Err(exit) => return exit,
     };
 
     // Family 3: source-mapped runtime fault, or the value.
@@ -517,7 +529,7 @@ fn run_persistent(
     export_id: [u8; 32],
     store: &Path,
     params: &[ImageType],
-    call_args: &[String],
+    call_args: &CallArgs,
 ) -> ExitCode {
     let runner = match crate::companion::discover_companion() {
         Ok(runner) => runner,
@@ -531,11 +543,10 @@ fn run_persistent(
         }
     };
 
-    // Validate the command-line arguments once, exactly as a storeless run does (text →
-    // `Value`), then project each onto its wire JSON. The terminal never passes a struct.
-    let values = match decode_args(params, call_args) {
+    // Installation discovery precedes argument consumption on the persistent path.
+    let values = match decode_call_args(params, call_args, format) {
         Ok(values) => values,
-        Err(message) => return usage(&message),
+        Err(exit) => return exit,
     };
     let Some(args) = values.iter().map(value_to_wire).collect::<Option<Vec<_>>>() else {
         return usage("this export cannot be called from the terminal");
@@ -639,6 +650,67 @@ fn render_hex_bytes(bytes: &[u8]) -> String {
     out
 }
 
+fn decode_call_args(
+    params: &[ImageType],
+    args: &CallArgs,
+    format: Format,
+) -> Result<Vec<Value>, ExitCode> {
+    materialize_args(params, args, &mut io::stdin().lock()).map_err(|error| match error {
+        ArgumentError::Usage(message) => usage(&message),
+        ArgumentError::Input(error) => emit(
+            format,
+            &[Record::OperationalError {
+                code: marrow_codes::Code::IoRead.as_str(),
+                detail: Some(error.to_string()),
+            }],
+            &[],
+            &[],
+            ExitCode::FAILURE,
+        ),
+    })
+}
+
+fn materialize_args(
+    params: &[ImageType],
+    args: &CallArgs,
+    reader: &mut impl Read,
+) -> Result<Vec<Value>, ArgumentError> {
+    match args {
+        CallArgs::Positional(args) => decode_args(params, args).map_err(ArgumentError::Usage),
+        CallArgs::Stdin => {
+            if !matches!(
+                params,
+                [ImageType::Scalar {
+                    scalar: Scalar::Text,
+                    optional: false
+                }]
+            ) {
+                return Err(ArgumentError::Usage(
+                    "`--stdin` requires an export with exactly one nonoptional string parameter"
+                        .into(),
+                ));
+            }
+            let text = read_stdin(reader).map_err(ArgumentError::Input)?;
+            decode_args(params, &[text]).map_err(ArgumentError::Usage)
+        }
+    }
+}
+
+fn read_stdin(reader: &mut impl Read) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_TEXT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_TEXT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stdin exceeds 65536 UTF-8 bytes",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "stdin is not valid UTF-8"))
+}
+
 /// Decode positional CLI arguments against the export's parameter types. A scalar
 /// parameter decodes from its text; a record (`struct`) parameter has no
 /// command-line spelling, so an export taking one cannot be run from the terminal.
@@ -712,15 +784,24 @@ fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
 fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
     let mut export: Option<String> = None;
     let mut format = Format::Text;
-    let mut call_args: Vec<String> = Vec::new();
+    let mut call_args = CallArgs::Positional(Vec::new());
     let mut store: Option<PathBuf> = None;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--" => {
-                call_args.extend(iter.by_ref().cloned());
+                match &mut call_args {
+                    CallArgs::Positional(args) => args.extend(iter.by_ref().cloned()),
+                    CallArgs::Stdin if iter.next().is_some() => {
+                        return Err(usage(
+                            "`--stdin` cannot be combined with positional arguments",
+                        ));
+                    }
+                    CallArgs::Stdin => {}
+                }
                 break;
             }
+            "--stdin" => call_args = CallArgs::Stdin,
             "--store" => match iter.next() {
                 Some(dir) => store = Some(PathBuf::from(dir)),
                 None => return Err(usage("`--store` needs a store directory")),
@@ -756,8 +837,8 @@ fn usage(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Emit records in the selected format and return `exit`. JSONL is one canonical
-/// object per line (LF-terminated); text prints each record's rendering.
+/// Report a sink failure on stderr if that channel remains writable. The call
+/// may already have completed; output failure never dispatches it again.
 fn emit(
     format: Format,
     records: &[Record],
@@ -765,18 +846,58 @@ fn emit(
     enums: &[SealedEnumType],
     exit: ExitCode,
 ) -> ExitCode {
-    for record in records {
-        match format {
-            Format::Jsonl => println!("{}", record.to_jsonl(types, enums)),
-            Format::Text => {
-                let text = record.to_text(types, enums);
-                if !text.is_empty() {
-                    println!("{text}");
-                }
-            }
+    match emit_to(
+        &mut io::stdout().lock(),
+        format,
+        records,
+        types,
+        enums,
+        exit,
+    ) {
+        Ok(exit) => exit,
+        Err(error) => {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "{}: {error}",
+                marrow_codes::Code::IoWrite.as_str()
+            );
+            ExitCode::FAILURE
         }
     }
-    exit
+}
+
+fn emit_to(
+    writer: &mut impl Write,
+    format: Format,
+    records: &[Record],
+    types: &[SealedRecordType],
+    enums: &[SealedEnumType],
+    mut exit: ExitCode,
+) -> io::Result<ExitCode> {
+    for record in records {
+        let rendered = match format {
+            Format::Jsonl => record.to_jsonl(types, enums),
+            Format::Text => record.to_text(types, enums),
+        };
+        let text = rendered.unwrap_or_else(|()| {
+            exit = ExitCode::FAILURE;
+            let failure = Record::OperationalError {
+                code: marrow_codes::Code::IoWrite.as_str(),
+                detail: None,
+            };
+            match format {
+                Format::Jsonl => failure.to_jsonl(types, enums),
+                Format::Text => failure.to_text(types, enums),
+            }
+            .expect("a payload-free operational error always renders")
+        });
+        if format == Format::Jsonl || !text.is_empty() {
+            writer.write_all(text.as_bytes())?;
+            writer.write_all(b"\n")?;
+        }
+    }
+    writer.flush()?;
+    Ok(exit)
 }
 
 #[cfg(test)]
@@ -790,5 +911,231 @@ mod compiler_invariant_tests {
                 detail: None,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    const TEXT_LIMIT: usize = 65_536;
+
+    fn text(value: &str) -> Record {
+        Record::Value(Some(Value::Text(Rc::from(value))))
+    }
+
+    #[test]
+    fn stdin_preserves_empty_control_and_exact_limit_utf8_bytes() {
+        let params = [ImageType::scalar(Scalar::Text)];
+        for input in [
+            String::new(),
+            "\0\r\ncafé\n".into(),
+            "é".repeat(TEXT_LIMIT / 2),
+        ] {
+            let mut reader = input.as_bytes();
+            let values = materialize_args(&params, &CallArgs::Stdin, &mut reader)
+                .expect("bounded UTF-8 input");
+            assert_eq!(values, vec![Value::Text(Rc::from(input.as_str()))]);
+            assert!(reader.is_empty());
+        }
+    }
+
+    struct RefusingReader {
+        reads: usize,
+    }
+
+    impl Read for RefusingReader {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            Err(io::ErrorKind::PermissionDenied.into())
+        }
+    }
+
+    #[test]
+    fn signature_and_positional_decoding_do_not_read_stdin() {
+        let mut reader = RefusingReader { reads: 0 };
+        for params in [
+            vec![],
+            vec![ImageType::scalar(Scalar::Int)],
+            vec![ImageType::Scalar {
+                scalar: Scalar::Text,
+                optional: true,
+            }],
+            vec![ImageType::scalar(Scalar::Text); 2],
+        ] {
+            assert!(matches!(
+                materialize_args(&params, &CallArgs::Stdin, &mut reader),
+                Err(ArgumentError::Usage(_))
+            ));
+        }
+        let values = materialize_args(
+            &[ImageType::scalar(Scalar::Int)],
+            &CallArgs::Positional(vec!["37".into()]),
+            &mut reader,
+        )
+        .expect("ordinary scalar decoder");
+        assert_eq!(values, vec![Value::Int(37)]);
+        assert_eq!(reader.reads, 0);
+    }
+
+    #[test]
+    fn invalid_utf8_and_reader_failure_remain_input_errors() {
+        let params = [ImageType::scalar(Scalar::Text)];
+        let mut invalid = b"valid prefix\xff".as_slice();
+        let error =
+            materialize_args(&params, &CallArgs::Stdin, &mut invalid).expect_err("invalid UTF-8");
+        assert!(
+            matches!(error, ArgumentError::Input(error) if error.kind() == io::ErrorKind::InvalidData)
+        );
+        let mut reader = RefusingReader { reads: 0 };
+        let error =
+            materialize_args(&params, &CallArgs::Stdin, &mut reader).expect_err("reader failure");
+        assert!(
+            matches!(error, ArgumentError::Input(error) if error.kind() == io::ErrorKind::PermissionDenied)
+        );
+        assert_eq!(reader.reads, 1);
+    }
+
+    #[test]
+    fn excess_input_is_refused_without_reading_to_eof() {
+        struct OpenInput(usize);
+        impl Read for OpenInput {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if buffer.is_empty() {
+                    return Ok(0);
+                }
+                assert!(
+                    self.0 < TEXT_LIMIT + 1,
+                    "must not wait for the next input byte"
+                );
+                let count = buffer.len().min(TEXT_LIMIT + 1 - self.0);
+                buffer[..count].fill(b'a');
+                self.0 += count;
+                Ok(count)
+            }
+        }
+        let mut reader = OpenInput(0);
+        let error = read_stdin(&mut reader).expect_err("one excess byte");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(reader.0, TEXT_LIMIT + 1);
+    }
+
+    #[test]
+    fn stdin_accepts_an_empty_tail_and_a_persistent_destination() {
+        let args = ["report", "--stdin", "--store", "store", "--"].map(String::from);
+        let parsed = parse_args(&args).expect("stdin and store flags");
+        assert!(matches!(parsed.call_args, CallArgs::Stdin));
+        assert_eq!(parsed.store, Some(PathBuf::from("store")));
+        let conflict = ["report", "--stdin", "--", "argument"].map(String::from);
+        assert!(matches!(parse_args(&conflict), Err(exit) if exit == ExitCode::from(2)));
+    }
+
+    #[test]
+    fn render_refusal_sets_failed_status_before_any_value_bytes() {
+        for (format, expected) in [
+            (Format::Text, "io.write\n"),
+            (
+                Format::Jsonl,
+                "{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n",
+            ),
+        ] {
+            let mut output = Vec::new();
+            let exit = emit_to(
+                &mut output,
+                format,
+                &[text(&"a".repeat(TEXT_LIMIT + 1))],
+                &[],
+                &[],
+                ExitCode::SUCCESS,
+            )
+            .expect("error record writes");
+            assert_eq!(exit, ExitCode::FAILURE);
+            assert_eq!(output, expected.as_bytes());
+        }
+        let mut output = Vec::new();
+        let bytes = Record::Value(Some(Value::Bytes(vec![0; TEXT_LIMIT / 2].into())));
+        let exit = emit_to(
+            &mut output,
+            Format::Jsonl,
+            &[bytes],
+            &[],
+            &[],
+            ExitCode::SUCCESS,
+        )
+        .expect("non-text data refusal writes");
+        assert_eq!(exit, ExitCode::FAILURE);
+        assert_eq!(
+            output,
+            b"{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n"
+        );
+    }
+
+    #[test]
+    fn output_keeps_existing_empty_and_newline_framing() {
+        for (value, expected) in [("", ""), ("a", "a\n"), ("a\n", "a\n\n")] {
+            let mut output = Vec::new();
+            let exit = emit_to(
+                &mut output,
+                Format::Text,
+                &[text(value)],
+                &[],
+                &[],
+                ExitCode::SUCCESS,
+            )
+            .expect("text writes");
+            assert_eq!(exit, ExitCode::SUCCESS);
+            assert_eq!(output, expected.as_bytes());
+        }
+        let mut output = Vec::new();
+        emit_to(
+            &mut output,
+            Format::Jsonl,
+            &[text(&"\0".repeat(TEXT_LIMIT))],
+            &[],
+            &[],
+            ExitCode::SUCCESS,
+        )
+        .expect("maximally escaped string writes");
+        assert_eq!(output.len(), 393_259);
+        assert!(output.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn write_and_flush_errors_preserve_only_the_delivered_prefix() {
+        struct FailingWriter {
+            remaining: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for FailingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                let count = self.remaining.min(bytes.len());
+                self.bytes.extend_from_slice(&bytes[..count]);
+                self.remaining -= count;
+                Ok(count)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        for accepted in [0, 3, usize::MAX] {
+            let mut writer = FailingWriter {
+                remaining: accepted,
+                bytes: Vec::new(),
+            };
+            let error = emit_to(
+                &mut writer,
+                Format::Text,
+                &[text("report")],
+                &[],
+                &[],
+                ExitCode::SUCCESS,
+            )
+            .expect_err("sink refuses a write or its final flush");
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+            assert_eq!(writer.bytes, b"report\n"[..accepted.min(7)]);
+        }
     }
 }

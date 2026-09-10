@@ -9,8 +9,11 @@
 use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
 
-/// The maximum rendered `data` size before an overflow becomes an operational
-/// error rather than a truncated record (design §H).
+/// Raw UTF-8 bytes admitted for stdin and a returned bare string. JSON escaping
+/// can expand each byte sixfold; this is not an encoded-record bound.
+pub(crate) const MAX_TEXT_BYTES: usize = 64 * 1024;
+
+/// The existing JSON admission bound for bytes and aggregate `data` values.
 const MAX_DATA_BYTES: usize = 64 * 1024;
 
 /// A single run outcome record.
@@ -75,8 +78,13 @@ impl Record {
     /// The plain-text rendering for the default (non-JSONL) format. `types` supplies
     /// the field names of a returned record value; it is empty for the non-value
     /// families, which never render a record.
-    pub(crate) fn to_text(&self, types: &[SealedRecordType], enums: &[SealedEnumType]) -> String {
-        match self {
+    pub(crate) fn to_text(
+        &self,
+        types: &[SealedRecordType],
+        enums: &[SealedEnumType],
+    ) -> Result<String, ()> {
+        Ok(match self {
+            Record::Value(Some(Value::Text(text))) if text.len() > MAX_TEXT_BYTES => return Err(()),
             Record::Value(Some(value)) => render_value_text(value, types, enums),
             Record::Value(None) => String::new(),
             Record::Diagnostic { code, line, column } => format!("{code} at {line}:{column}"),
@@ -114,21 +122,22 @@ impl Record {
                 marrow_codes::Code::CliCompilerResourceLimit.as_str(),
                 kind.description()
             ),
-        }
+        })
     }
 
     /// The canonical single-line JSONL projection: one object, keys in ascending
-    /// byte order, LF added by the caller.
-    pub(crate) fn to_jsonl(&self, types: &[SealedRecordType], enums: &[SealedEnumType]) -> String {
-        match self {
-            Record::Value(value) => match render_data(value.as_ref(), types, enums) {
-                Ok(data) => format!(r#"{{"data":{data},"kind":"run","outcome":"value"}}"#),
-                Err(()) => Record::OperationalError {
-                    code: marrow_codes::Code::IoWrite.as_str(),
-                    detail: None,
-                }
-                .to_jsonl(types, enums),
-            },
+    /// byte order, LF added by the caller. A data refusal remains an error so the
+    /// emitter cannot mistake a failed rendering for a successful invocation.
+    pub(crate) fn to_jsonl(
+        &self,
+        types: &[SealedRecordType],
+        enums: &[SealedEnumType],
+    ) -> Result<String, ()> {
+        Ok(match self {
+            Record::Value(value) => {
+                let data = render_data(value.as_ref(), types, enums)?;
+                format!(r#"{{"data":{data},"kind":"run","outcome":"value"}}"#)
+            }
             Record::Diagnostic { code, line, column } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"diagnostic","span":{}}}"#,
                 json_string(code),
@@ -171,7 +180,7 @@ impl Record {
                 json_string(marrow_codes::Code::CliCompilerResourceLimit.as_str()),
                 json_string(kind.detail()),
             ),
-        }
+        })
     }
 }
 
@@ -355,7 +364,7 @@ fn render_data(
         Some(Value::Int(v)) => v.to_string(),
         Some(Value::Bool(v)) => v.to_string(),
         Some(Value::Text(v)) => {
-            if v.len() > MAX_DATA_BYTES {
+            if v.len() > MAX_TEXT_BYTES {
                 return Err(());
             }
             json_string(v)
@@ -491,15 +500,21 @@ mod tests {
     #[test]
     fn value_record_is_canonical_jsonl() {
         assert_eq!(
-            Record::Value(Some(Value::Int(42))).to_jsonl(&[], &[]),
+            Record::Value(Some(Value::Int(42)))
+                .to_jsonl(&[], &[])
+                .expect("record renders"),
             r#"{"data":42,"kind":"run","outcome":"value"}"#
         );
         assert_eq!(
-            Record::Value(Some(Value::Bool(true))).to_jsonl(&[], &[]),
+            Record::Value(Some(Value::Bool(true)))
+                .to_jsonl(&[], &[])
+                .expect("record renders"),
             r#"{"data":true,"kind":"run","outcome":"value"}"#
         );
         assert_eq!(
-            Record::Value(None).to_jsonl(&[], &[]),
+            Record::Value(None)
+                .to_jsonl(&[], &[])
+                .expect("record renders"),
             r#"{"data":null,"kind":"run","outcome":"value"}"#
         );
     }
@@ -515,14 +530,16 @@ mod tests {
                 cause: "wire",
                 cause_code: "wire.malformed",
             }
-            .to_jsonl(&[], &[]),
+            .to_jsonl(&[], &[])
+            .expect("record renders"),
             r#"{"cause":"wire","cause_code":"wire.malformed","code":"run.outcome_unknown","kind":"run","outcome":"outcome_unknown"}"#,
         );
         let text = Record::OutcomeUnknown {
             cause: "wire",
             cause_code: "wire.malformed",
         }
-        .to_text(&[], &[]);
+        .to_text(&[], &[])
+        .expect("record renders");
         assert!(
             text.contains("run.outcome_unknown"),
             "carries the code: {text}"
@@ -555,6 +572,7 @@ mod tests {
                 column: 5
             }
             .to_jsonl(&[], &[])
+            .expect("record renders")
             .contains(r#""outcome":"diagnostic""#)
         );
         assert!(
@@ -562,6 +580,7 @@ mod tests {
                 code: "image.function"
             }
             .to_jsonl(&[], &[])
+            .expect("record renders")
             .contains(r#""outcome":"artifact_rejected""#)
         );
         assert!(
@@ -572,6 +591,7 @@ mod tests {
                 detail: None,
             }
             .to_jsonl(&[], &[])
+            .expect("record renders")
             .contains(r#""outcome":"fault""#)
         );
         assert_eq!(
@@ -581,7 +601,8 @@ mod tests {
                 line: 7,
                 column: 9,
             }
-            .to_jsonl(&[], &[]),
+            .to_jsonl(&[], &[])
+            .expect("record renders"),
             r#"{"code":"run.commit","durable":"known_old","kind":"run","outcome":"incomplete","span":{"column":9,"line":7}}"#,
         );
         assert!(
@@ -590,6 +611,7 @@ mod tests {
                 detail: None,
             }
             .to_jsonl(&[], &[])
+            .expect("record renders")
             .contains(r#""outcome":"error""#)
         );
     }
@@ -603,11 +625,11 @@ mod tests {
             detail: Some(".marrow/ids: unresolved Git conflict markers".to_string()),
         };
         assert_eq!(
-            record.to_text(&[], &[]),
+            record.to_text(&[], &[]).expect("record renders"),
             "project.ids_corrupt: .marrow/ids: unresolved Git conflict markers"
         );
         assert_eq!(
-            record.to_jsonl(&[], &[]),
+            record.to_jsonl(&[], &[]).expect("record renders"),
             r#"{"code":"project.ids_corrupt","kind":"run","outcome":"error"}"#
         );
     }
@@ -623,11 +645,11 @@ mod tests {
             kind: marrow_compile::ResourceLimitKind::Exports,
         };
         assert_eq!(
-            record.to_jsonl(&[], &[]),
+            record.to_jsonl(&[], &[]).expect("record renders"),
             r#"{"code":"cli.compiler_resource_limit","kind":"run","kind_detail":"Exports","outcome":"error"}"#
         );
         assert_eq!(
-            record.to_text(&[], &[]),
+            record.to_text(&[], &[]).expect("record renders"),
             "cli.compiler_resource_limit: the export table is full"
         );
     }
@@ -642,7 +664,8 @@ mod tests {
             column: 2,
             detail: None,
         }
-        .to_jsonl(&[], &[]);
+        .to_jsonl(&[], &[])
+        .expect("record renders");
         assert_eq!(
             line,
             r#"{"code":"run.overflow","kind":"run","outcome":"fault","span":{"column":2,"line":7}}"#
@@ -658,5 +681,21 @@ mod tests {
         assert_eq!(json_string("\u{01}"), r#""\u0001""#);
         assert_eq!(json_string("a/b"), r#""a/b""#);
         assert_eq!(json_string("café ☕"), "\"café ☕\"");
+    }
+
+    #[test]
+    fn bare_string_bounds_precede_text_and_json_rendering() {
+        for input in ["é".repeat(32_768), "\0".repeat(65_536)] {
+            let record = Record::Value(Some(Value::Text(input.as_str().into())));
+            assert_eq!(record.to_text(&[], &[]).expect("exact raw limit"), input);
+            let json = record
+                .to_jsonl(&[], &[])
+                .expect("escaping remains admitted");
+            let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+            assert_eq!(parsed["data"], input);
+        }
+        let record = Record::Value(Some(Value::Text("a".repeat(65_537).into())));
+        assert_eq!(record.to_text(&[], &[]), Err(()));
+        assert_eq!(record.to_jsonl(&[], &[]), Err(()));
     }
 }

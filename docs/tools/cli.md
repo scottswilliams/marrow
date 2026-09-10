@@ -7,7 +7,7 @@ audits a store bound to it, and writes the artifacts a deployment ships.
 marrow init <projectdir>
 marrow fmt [--check | --write] <file.mw | projectdir>
 marrow check [--demand] [projectdir]
-marrow run <export> [--store <dir>] [--format text | jsonl] [-- <args>...]
+marrow run <export> [--stdin] [--store <dir>] [--format text | jsonl] [-- <args>...]
 marrow test [--format text | jsonl] [--filter <substring>]
 marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
 marrow doctor --store <dir> [--format text | jsonl]
@@ -153,6 +153,21 @@ and `duration` in canonical text. A struct parameter has no command-line
 spelling. A wrong count, a value that does not decode, or an unknown export is a
 usage error.
 
+`--stdin` supplies one string from standard input instead of positional
+arguments. The verified export must take exactly one nonoptional `string`
+parameter; its return type is unrestricted. An empty `--` tail is allowed,
+but actual positional arguments conflict with `--stdin`. The signature is
+checked before input is read.
+
+Input is UTF-8, limited to 65,536 bytes. Empty input, NUL, carriage returns and
+trailing newlines are preserved. The argument reader materializes at most
+65,537 bytes and refuses excess input without waiting for EOF. Standard input
+buffering may read ahead beyond those bytes. Invalid UTF-8, excess input and
+read failures report `io.read` and exit `1` before invocation. Within the limit,
+the command waits for EOF; it imposes no input timeout. For example, from the
+Graph Report project, `marrow run graph_report.report --stdin < graph.txt`
+passes the file's contents to the ordinary report export.
+
 ```text
 $ marrow run greet -- Ann
 Hello, Ann!
@@ -160,11 +175,21 @@ $ marrow run greet --format jsonl -- Ann
 {"data":"Hello, Ann!","kind":"run","outcome":"value"}
 ```
 
-Text output is the returned value, or `absent` for an absent optional. JSONL
+Text output is the returned value, or `absent` for an absent optional. A
+nonempty rendering gains one LF; an empty string or unit emits no text. JSONL
 output is one object whose `outcome` is `value`, `diagnostic`,
 `artifact_rejected`, `fault`, `incomplete`, `outcome_unknown`, or `error`; a
 diagnostic or fault carries its code and span
 ([error codes](../error-codes.md)).
+
+A returned bare string is limited to 65,536 raw UTF-8 bytes in either format.
+JSON escaping can expand each byte sixfold: the complete string value record
+is at most 393,259 bytes including its terminating LF. This is not a bound on
+arbitrary aggregate text rendering or on total diagnostic output. A rendering
+refusal reports `io.write` and exits `1`. Write or flush failure also exits `1`,
+with an `io.write` message on standard error if that channel remains writable.
+Output may be partial. The invocation may already have completed; delivery
+failure does not undo it or retry it.
 
 A durable export runs against a store on disk named with `--store <dir>`. The
 store is opened by the companion runner installed beside `marrow`; without that
@@ -181,6 +206,11 @@ imported note
 $ marrow run add --store ./store -- 3 "added via run"
 true
 ```
+
+`--stdin` also works with `--store`. Companion discovery retains precedence
+over argument decoding and stdin consumption. Compilation and existing ledger
+publication can occur before input is read; input refusal is not a guarantee
+that project metadata was untouched.
 
 The first storeless `marrow run` of a project with durable declarations also
 writes `.marrow/ids`; commit that file. `marrow run --store` leaves it as it is.

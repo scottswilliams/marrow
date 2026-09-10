@@ -269,9 +269,12 @@ fn emit_records(format: Format, records: &[Record], exit: ExitCode) -> ExitCode 
     // record types to render.
     for record in records {
         match format {
-            Format::Jsonl => println!("{}", record.to_jsonl(&[], &[])),
+            Format::Jsonl => println!(
+                "{}",
+                record.to_jsonl(&[], &[]).expect("non-value failure record")
+            ),
             Format::Text => {
-                let text = record.to_text(&[], &[]);
+                let text = record.to_text(&[], &[]).expect("non-value failure record");
                 if !text.is_empty() {
                     println!("{text}");
                 }

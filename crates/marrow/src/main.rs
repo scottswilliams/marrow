@@ -27,7 +27,7 @@ Usage:
   marrow init <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow check [--demand] [projectdir]
-  marrow run <export> [--format jsonl] [-- <args>...]
+  marrow run <export> [--stdin] [--store <dir>] [--format text|jsonl] [-- <args>...]
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow doctor --store <dir> [--format text|jsonl]
   marrow test [--format text|jsonl] [--filter <substring>]
@@ -42,7 +42,9 @@ directory, or one Marrow source file, through the retained formatter. `check`
 captures and checks a project, reporting each diagnostic with its span and, when
 clean, each exported function's durable access demand in source spelling. `run`
 compiles the project at the working directory, verifies the program image, and
-runs an exported function. `test` discovers `test \"name\"` declarations, runs
+runs an exported function. `run --stdin` accepts one UTF-8 string of at most
+65536 bytes for an export taking exactly one string parameter. `test` discovers
+`test \"name\"` declarations, runs
 each storeless through the verified image, and reports pass/fail/error. `import`
 compiles and verifies the project, then populates a native store from a
 flat-scalar JSONL corpus through the release-verified companion runner's trusted

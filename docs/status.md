@@ -7,7 +7,7 @@ each behavior.
 [Beta scope](vision.md#beta-scope) selects useful storeless programs and a
 recoverable local application. It is a target, not the state of this revision.
 Ordinary enum composition, coherent transaction exits and tests, local source
-reuse, bounded terminal I/O, additive updates and complete recovery/backup/restore
+reuse, additive updates and complete recovery/backup/restore
 still require work. Broader future features are not prerequisites.
 
 ## What works
@@ -21,7 +21,7 @@ still require work. Broader future features are not prerequisites.
 | Transactions | One `transaction` block per mutating export. Every `return` inside it commits; a fault rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; root and branch key acquisition uses at most `N + 1` bounded scans, independent of child populations; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs every `test` block; a durable test runs against a fresh in-memory store. | [Tests](language/tests.md) |
-| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript`. | [CLI](tools/cli.md) |
+| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript`. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. Whole-analysis resource stops complete the affected revision with request refusals, an unlocated explanation, and retractions of prior diagnostics. A later edit that permits project capture and analysis can recover. | [Language server](tools/lsp.md) |
 | Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`; `marrow doctor --store` performs read-only logical inspection against the active program and reports an entry-content digest, without checking physical integrity. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner checks List/Map length and aggregate structural size before execution and normalizes unique Map argument pairs to ascending typed key order. | [TypeScript client](tools/typescript-client.md) |
