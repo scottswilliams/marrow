@@ -122,8 +122,11 @@ has its own platform and layout requirements
 - Verifier type flow carries one working frame, and presence flow one working
   set, through linear instruction segments and distinct unshared branch
   fallthroughs. Carried instructions do not retain incoming local, stack or
-  presence-fact payload. True joins, branch-target copies and repeated visits
-  remain separate costs; there is no total verifier memory or work budget
+  presence membership payload. Presence identities have one per-function tuple
+  owner; producers, strict uses and retained states refer to it by compact IDs.
+  Temporary identity collection/sorting, membership copies at true joins and
+  branch targets, and repeated visits remain separate costs; there is no total
+  verifier memory or work budget
   ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier extracts direct calls once, rejects cycles across all functions
   and expands effect closures in callee-first order. Transaction and test-entry

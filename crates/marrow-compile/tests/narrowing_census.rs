@@ -927,6 +927,13 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "verify/context.rs",
         "let ordinal = u32::try_from(canonical).expect( );",
     ),
+    // Presence collection records at most one identity per instruction; decoded
+    // instruction count is bounded by the already admitted function code bytes.
+    (
+        "marrow-verify",
+        "verify/presence.rs",
+        "let ordinal = u32::try_from(tuples.len() - 1).expect( );",
+    ),
     (
         "marrow-verify",
         "verify/decode_code.rs",

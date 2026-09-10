@@ -115,7 +115,8 @@ pub(super) fn check_presence_flow(
     }) {
         return Ok(());
     }
-    let mut entry: Vec<Option<BTreeSet<PresenceFact>>> = vec![None; code.len()];
+    let facts = PresenceFacts::new(code, ctx, non_fallthrough_entries);
+    let mut entry: Vec<Option<BTreeSet<FactId>>> = vec![None; code.len()];
     entry[0] = Some(BTreeSet::new());
     let mut worklist = vec![0usize];
     while let Some(mut index) = worklist.pop() {
@@ -123,34 +124,28 @@ pub(super) fn check_presence_flow(
             .clone()
             .expect("worklist only enqueues reached instructions");
         'linear: loop {
-            if let SealedInstr::DurSetField { site, key_slots }
-            | SealedInstr::DurReadFieldPresent { site, key_slots }
-            | SealedInstr::DurReadGroupPresent { site, key_slots }
-            | SealedInstr::DurReplaceGroup { site, key_slots } = &code[index]
-            {
+            if matches!(
+                &code[index],
+                SealedInstr::DurSetField { .. }
+                    | SealedInstr::DurReadFieldPresent { .. }
+                    | SealedInstr::DurReadGroupPresent { .. }
+                    | SealedInstr::DurReplaceGroup { .. }
+            ) {
                 // The present form is proven only if a dominating fact names the exact
                 // containing entry — its family and its whole key-path — not merely a
                 // matching slot tuple (sibling branches of equal arity share slot tuples).
-                let (root, branch) = payload_site_family(ctx, *site).ok_or(reject(
+                let fact = facts.at[index].ok_or(reject(
                     VerifyPhase::Flow,
                     "a present-entry operation does not resolve to a field or group site",
                 ))?;
-                if !present.contains(&(root, branch, key_slots.clone())) {
+                if !present.contains(&fact) {
                     return Err(reject(
                         VerifyPhase::Flow,
                         "a present-entry operation is not dominated by a presence fact on its containing entry",
                     ));
                 }
             }
-            let edges = presence_edges(
-                code,
-                ctx,
-                non_fallthrough_entries,
-                effects,
-                entry_families,
-                index,
-                present,
-            );
+            let edges = presence_edges(code, ctx, &facts, effects, entry_families, index, present);
             // An adjacent explicit target is unmarked, but coincident fork
             // edges must still meet both sets.
             let coincident = matches!(
@@ -175,8 +170,8 @@ pub(super) fn check_presence_flow(
                         worklist.push(successor);
                     }
                     Some(existing) => {
-                        let merged: BTreeSet<PresenceFact> =
-                            existing.intersection(&set).cloned().collect();
+                        let merged: BTreeSet<FactId> =
+                            existing.intersection(&set).copied().collect();
                         if merged.len() != existing.len() {
                             *existing = merged;
                             worklist.push(successor);
@@ -188,7 +183,7 @@ pub(super) fn check_presence_flow(
         }
     }
     #[cfg(test)]
-    retention_tests::record_success(&entry, entry.capacity());
+    retention_tests::record_success(&entry, entry.capacity(), &facts);
     Ok(())
 }
 
@@ -202,6 +197,66 @@ pub(super) fn check_presence_flow(
 /// ends proofs over.
 type PresenceFact = (u16, Vec<u16>, Vec<u16>);
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct FactId(u32);
+
+/// One immutable tuple per static identity, shared by producers, strict uses and
+/// retained membership sets. Preparing an identity does not establish its presence.
+struct PresenceFacts {
+    tuples: Vec<PresenceFact>,
+    at: Vec<Option<FactId>>,
+}
+
+impl PresenceFacts {
+    fn new(code: &[SealedInstr], ctx: &Ctx, non_fallthrough_entries: &[bool]) -> Self {
+        let mut occurrences = Vec::new();
+        for (index, instruction) in code.iter().enumerate() {
+            let fact = match instruction {
+                SealedInstr::JumpIfFalse(_) => {
+                    exists_guard_fact(code, ctx, non_fallthrough_entries, index)
+                }
+                SealedInstr::BranchPresent(_) => {
+                    read_entry_guard_fact(code, ctx, non_fallthrough_entries, index)
+                }
+                SealedInstr::DurCreateEntry(site) => {
+                    entry_site(ctx, *site).and_then(|(root, branch, arity)| {
+                        entry_write_key_slots(code, non_fallthrough_entries, index, arity)
+                            .map(|keys| (root, branch, keys))
+                    })
+                }
+                SealedInstr::DurSetField { site, key_slots }
+                | SealedInstr::DurReadFieldPresent { site, key_slots }
+                | SealedInstr::DurReadGroupPresent { site, key_slots }
+                | SealedInstr::DurReplaceGroup { site, key_slots } => {
+                    payload_site_family(ctx, *site)
+                        .map(|(root, branch)| (root, branch, key_slots.clone()))
+                }
+                _ => None,
+            };
+            if let Some(fact) = fact {
+                occurrences.push((fact, index));
+            }
+        }
+        occurrences.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        let mut tuples = Vec::new();
+        let mut at = vec![None; code.len()];
+        for (fact, index) in occurrences {
+            if tuples.last() != Some(&fact) {
+                tuples.push(fact);
+            }
+            // There is at most one occurrence per instruction, and each instruction
+            // consumes a byte within the already checked MAX_CODE_BYTES bound.
+            let ordinal = u32::try_from(tuples.len() - 1).expect("bounded presence fact ordinal");
+            at[index] = Some(FactId(ordinal));
+        }
+        Self { tuples, at }
+    }
+
+    fn get(&self, fact: FactId) -> &PresenceFact {
+        &self.tuples[fact.0 as usize]
+    }
+}
+
 /// Consume the working set into successor states, cloning only for a fork.
 /// Most instructions pass the set through unchanged; guards split the set (adding the
 /// proven entry only on the present edge); create adds; an erase, an entry-erasing
@@ -209,33 +264,23 @@ type PresenceFact = (u16, Vec<u16>, Vec<u16>);
 fn presence_edges(
     code: &[SealedInstr],
     ctx: &Ctx,
-    non_fallthrough_entries: &[bool],
+    facts: &PresenceFacts,
     effects: &Effects,
     entry_families: &EntryFamilies<'_>,
     index: usize,
-    mut present: BTreeSet<PresenceFact>,
-) -> Vec<(usize, BTreeSet<PresenceFact>)> {
+    mut present: BTreeSet<FactId>,
+) -> Vec<(usize, BTreeSet<FactId>)> {
     match &code[index] {
-        SealedInstr::JumpIfFalse(target) => {
+        SealedInstr::JumpIfFalse(target) | SealedInstr::BranchPresent(target) => {
             let mut present_edge = present.clone();
-            if let Some(fact) = exists_guard_fact(code, ctx, non_fallthrough_entries, index) {
+            if let Some(fact) = facts.at[index] {
                 present_edge.insert(fact);
             }
             vec![(*target, present), (index + 1, present_edge)]
         }
-        SealedInstr::BranchPresent(target) => {
-            let mut present_edge = present.clone();
-            if let Some(fact) = read_entry_guard_fact(code, ctx, non_fallthrough_entries, index) {
-                present_edge.insert(fact);
-            }
-            vec![(*target, present), (index + 1, present_edge)]
-        }
-        SealedInstr::DurCreateEntry(site) => {
-            if let Some((root, branch, arity)) = entry_site(ctx, *site)
-                && let Some(keys) =
-                    entry_write_key_slots(code, non_fallthrough_entries, index, arity)
-            {
-                present.insert((root, branch, keys));
+        SealedInstr::DurCreateEntry(_) => {
+            if let Some(fact) = facts.at[index] {
+                present.insert(fact);
             }
             vec![(index + 1, present)]
         }
@@ -246,7 +291,8 @@ fn presence_edges(
             // touches only the entry's own payload, so a child family's entry outlives
             // its parent's erase.
             if let Some((root, branch)) = ctx.sites.get(*site as usize).and_then(entry_family) {
-                present.retain(|(fact_root, fact_branch, _)| {
+                present.retain(|fact| {
+                    let (fact_root, fact_branch, _) = facts.get(*fact);
                     (*fact_root, fact_branch.as_slice()) != (root, branch)
                 });
             }
@@ -260,7 +306,8 @@ fn presence_edges(
                     continue;
                 }
                 if let Some((root, branch)) = entry_families.get(atom.path()) {
-                    present.retain(|(fact_root, fact_branch, _)| {
+                    present.retain(|fact| {
+                        let (fact_root, fact_branch, _) = facts.get(*fact);
                         (*fact_root, fact_branch.as_slice()) != (root, branch)
                     });
                 }
@@ -269,7 +316,7 @@ fn presence_edges(
         }
         SealedInstr::LocalSet(slot) => {
             // A rebind of any key-path slot invalidates every fact that reads it.
-            present.retain(|(_, _, keys)| !keys.contains(slot));
+            present.retain(|fact| !facts.get(*fact).2.contains(slot));
             vec![(index + 1, present)]
         }
         _ => {
@@ -470,7 +517,7 @@ mod presence_root_discrimination {
     use marrow_image::Scalar;
 
     use super::super::context::{CallGraph, Ctx, Effects};
-    use super::{EntryFamilies, presence_edges};
+    use super::{EntryFamilies, PresenceFacts, presence_edges};
     use crate::sealed::{SealedInstr, SealedRoot, SealedSite, SealedSiteTarget};
 
     fn keyed_root(name: &str) -> SealedRoot {
@@ -517,28 +564,21 @@ mod presence_root_discrimination {
             SealedInstr::DurCreateEntry(1),
         ];
         let entries = [false; 6];
+        let facts = PresenceFacts::new(&code, &ctx, &entries);
         let calls = CallGraph::new(&[]).expect("the empty graph is acyclic");
         let effects = Effects::compute(&[], &[], &calls);
         let families = EntryFamilies::new(&[], &[]);
-        let after_first = presence_edges(
-            &code,
-            &ctx,
-            &entries,
-            &effects,
-            &families,
-            2,
-            BTreeSet::new(),
-        )
-        .into_iter()
-        .find(|(successor, _)| *successor == 3)
-        .expect("a create falls through to the next instruction")
-        .1;
-        let after_second =
-            presence_edges(&code, &ctx, &entries, &effects, &families, 5, after_first)
+        let after_first =
+            presence_edges(&code, &ctx, &facts, &effects, &families, 2, BTreeSet::new())
                 .into_iter()
-                .find(|(successor, _)| *successor == 6)
+                .find(|(successor, _)| *successor == 3)
                 .expect("a create falls through to the next instruction")
                 .1;
+        let after_second = presence_edges(&code, &ctx, &facts, &effects, &families, 5, after_first)
+            .into_iter()
+            .find(|(successor, _)| *successor == 6)
+            .expect("a create falls through to the next instruction")
+            .1;
         assert_eq!(
             after_second.len(),
             2,
