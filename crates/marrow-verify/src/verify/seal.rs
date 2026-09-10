@@ -187,8 +187,10 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
 
     // Per-function demand from the same effects owner, so a test-body driver can open
     // the session one export call requires without a second demand model.
-    let function_demands: Vec<ExportDemand> = (0..functions.len() as u16)
-        .map(|f| effects.demand(f))
+    let function_demands: Vec<ExportDemand> = effects
+        .atoms_closure
+        .into_iter()
+        .map(ExportDemand::from_atoms)
         .collect();
 
     Ok(VerifiedImage {

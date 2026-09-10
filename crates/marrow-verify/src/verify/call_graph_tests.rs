@@ -14,6 +14,7 @@ use crate::verify::{admitted_plan, image_forgery, site_seam};
 struct Counts {
     projection_instructions: usize,
     closure_edges: usize,
+    materialization_clones: usize,
 }
 
 thread_local! {
@@ -33,6 +34,15 @@ pub(in crate::verify) fn record_closure_edge() {
     COUNTS.with(|cell| {
         if let Some(mut counts) = cell.get() {
             counts.closure_edges += 1;
+            cell.set(Some(counts));
+        }
+    });
+}
+
+pub(super) fn record_materialization_clone() {
+    COUNTS.with(|cell| {
+        if let Some(mut counts) = cell.get() {
+            counts.materialization_clones += 1;
             cell.set(Some(counts));
         }
     });
@@ -258,6 +268,73 @@ fn call_projection_and_closure_visit_each_occurrence_once() {
         actual,
         (26, 10),
         "each sealed instruction is projected once and each call occurrence expands once",
+    );
+}
+
+#[test]
+fn function_demands_move_after_selected_demands_are_materialized() {
+    let bytes = image(
+        |key, entry| {
+            vec![
+                vec![
+                    Instr::Call(1),
+                    Instr::Call(1),
+                    Instr::Call(2),
+                    Instr::Return,
+                ],
+                vec![Instr::Call(3), Instr::Return],
+                vec![Instr::Call(3), Instr::Return],
+                presence_read(key, entry),
+                vec![Instr::Call(0), Instr::Return],
+            ]
+        },
+        Some(0),
+        Some(4),
+    );
+    let (verified, counts) = observe(&bytes);
+    assert_eq!(verified.functions().len(), 5);
+    assert_eq!(verified.exports().len(), 1);
+    assert_eq!(verified.test_entries().len(), 1);
+    assert_eq!(
+        verified
+            .functions()
+            .iter()
+            .map(|function| function.instrs().len())
+            .sum::<usize>(),
+        14,
+    );
+    let expected = presence_demand();
+    let expected_id = expected.demand_set_id();
+    for index in 0..5 {
+        let function = verified
+            .function(FunctionIndex::new(index))
+            .expect("every function ordinal remains materialized");
+        assert_eq!(function.demand(), &expected);
+        assert_eq!(function.demand().demand_set_id(), expected_id);
+        assert!(function.body().params().is_empty());
+        assert_eq!(function.body().ret(), RetShape::Unit);
+        assert!(!function.body().is_mutating());
+    }
+    let export = &verified.exports()[0];
+    assert_eq!(export.function(), FunctionIndex::new(0));
+    assert_eq!(export.id(), ExportId::of_local("", "entry"));
+    assert_eq!(export.demand(), &expected);
+    assert_eq!(export.demand_id(), expected_id);
+    assert_eq!(export.reachable_sites(), &[0]);
+    assert!(!export.is_mutating());
+    let test = &verified.test_entries()[0];
+    assert_eq!(test.func(), FunctionIndex::new(4));
+    assert_eq!(test.name(), "f4");
+    assert_eq!(test.kind(), TestKind::Driver);
+    assert_eq!(test.demand(), &expected);
+    assert_eq!(test.demand().demand_set_id(), expected_id);
+    assert!(matches!(
+        verified.functions()[4].instrs(),
+        [SealedInstr::Call(0), SealedInstr::Return]
+    ));
+    assert_eq!(
+        counts.materialization_clones, 2,
+        "only the selected export and test demands clone their atom",
     );
 }
 

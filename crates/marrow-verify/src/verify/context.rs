@@ -204,7 +204,10 @@ impl Effects {
     /// The verifier-reconstructed durable demand of the entry at `func`: its stable
     /// atom set over its whole call closure.
     pub(super) fn demand(&self, func: u16) -> ExportDemand {
-        ExportDemand::from_atoms(self.atoms_closure[func as usize].iter().cloned())
+        let atoms = self.atoms_closure[func as usize].iter();
+        #[cfg(test)]
+        let atoms = atoms.inspect(|_| call_graph_tests::record_materialization_clone());
+        ExportDemand::from_atoms(atoms.cloned())
     }
 
     /// The image-local operation sites the entry at `func` can reach, ascending.

@@ -123,8 +123,10 @@ has its own platform and layout requirements
   ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier extracts direct calls once, rejects cycles across all functions
   and expands effect closures in callee-first order. Transaction and test-entry
-  checks reuse those calls. Transitive set replication and canonical demand
-  construction remain additional memory and work costs
+  checks reuse those calls. After validation, canonical function demands consume
+  the completed atom sets; selected export/test demands retain their copies.
+  Transitive set replication and canonicalization remain additional memory and
+  work costs
   ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier admits image generation 1. Current store attachment, import and
   audit refuse an active binding to another image generation before engine open,

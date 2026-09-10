@@ -62,6 +62,13 @@ and test-entry checks reuse the graph. Duplicate calls retain their tape order.
 Closure unions still visit and copy callee set contents; the graph remains live
 through presence and test-entry checks. These passes have no total memory bound.
 
+After all checks and export/test-entry demand construction, `verify/seal.rs`
+moves the completed atom sets into the function-demand table in function order.
+The existing canonicalizer consumes those atoms without a final per-function
+deep copy. Selected export/test demands retain their copies; canonical sort
+keys and scratch remain separate costs. The VM's test driver uses each called
+function's complete demand to select its invocation session.
+
 The presence pass uses the same transient destination flags to require an uninterrupted
 key-load, producer and consumer sequence before establishing a guard fact.
 The flags are discarded before the verified image is returned; they add no

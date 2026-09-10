@@ -967,11 +967,6 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "verify/seal.rs",
         "indexes.extend(seal_root_indexes(root_index as u16, root)?);",
     ),
-    (
-        "marrow-verify",
-        "verify/seal.rs",
-        "let function_demands: Vec<ExportDemand> = (0..functions.len() as u16)",
-    ),
 ];
 
 /// Guard retired spellings in their former owners. Typed image IDs and production
