@@ -3,7 +3,6 @@
 use super::context::Ctx;
 use super::decode_code::Decoded;
 use super::model::DecodedFunction;
-use super::presence::push_on_fallthrough;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
@@ -12,6 +11,10 @@ use crate::sealed::{
 };
 use crate::vtype::VType;
 use marrow_image::{CollTypeId, EnumId, ImageType, OperationClass, RootId, Scalar, TypeId};
+
+#[cfg(test)]
+#[path = "flow/flow_tests.rs"]
+mod tests;
 
 /// The control transfer an instruction performs, in tape indices. Successor
 /// indices are derived from this by `check_flow`.
@@ -36,24 +39,32 @@ enum Control {
 
 /// The abstract machine state at a program point: the typed operand stack and the
 /// definite-init/type state of each local slot.
-#[derive(Clone, PartialEq, Eq)]
-pub(super) struct Frame {
-    pub(super) stack: Vec<VType>,
+#[derive(Clone)]
+struct Frame {
+    stack: Vec<VType>,
     /// Per-slot type when definitely initialized on every path reaching this point,
     /// else `None`. Reading an uninitialized slot rejects.
-    pub(super) locals: Vec<Option<VType>>,
+    locals: Vec<Option<VType>>,
 }
 
-/// Phase-3 structural, type, and local-init checks via a CFG worklist over the
-/// typed operand stack and locals. Returns the sealed instruction tape and the true
-/// max stack depth (computed here, never read from the image), and destinations
-/// reached from a predecessor other than their immediately prior instruction.
+enum Entry {
+    Unreached,
+    /// A linear interior: reachability survives without an incoming frame copy.
+    Reached,
+    /// Entry zero or a queued boundary; future predecessors meet this state.
+    Retained(Frame),
+}
+
+/// Phase-3 structural, type, and local-init checks. Linear interiors share one
+/// working frame; queued boundaries retain their incoming state for later meets.
+/// Returns the sealed tape and computed maximum operand-stack depth.
 pub(super) fn check_flow(
     function: &DecodedFunction,
     ctx: &Ctx,
     code: &[Decoded],
     consts: &[SealedConst],
-) -> Result<(Vec<SealedInstr>, usize, Vec<bool>), VerifyRejection> {
+    non_fallthrough_entries: &[bool],
+) -> Result<(Vec<SealedInstr>, usize), VerifyRejection> {
     if code.is_empty() {
         return Err(reject(VerifyPhase::Function, "function has no code"));
     }
@@ -65,101 +76,122 @@ pub(super) fn check_flow(
         initial_locals[slot] =
             Some(VType::from_image(*param).expect("a parameter type is never unit"));
     }
-    let mut entry: Vec<Option<Frame>> = vec![None; code.len()];
-    entry[0] = Some(Frame {
+    let mut entry: Vec<Entry> = (0..code.len()).map(|_| Entry::Unreached).collect();
+    entry[0] = Entry::Retained(Frame {
         stack: Vec::new(),
         locals: initial_locals,
     });
-    let mut non_fallthrough_entries = vec![false; code.len()];
     let mut max_stack = 0usize;
     let mut worklist = vec![0usize];
 
-    while let Some(index) = worklist.pop() {
-        let mut frame = entry[index]
-            .clone()
-            .expect("worklist only enqueues reached instructions");
-        let control = apply(function, ctx, &code[index].instr, consts, &mut frame)?;
-        if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
-            return Err(reject(
-                VerifyPhase::Function,
-                "operand stack exceeds depth bound",
-            ));
-        }
-        max_stack = max_stack.max(frame.stack.len());
-        // Each successor edge carries a frame; `BranchPresent` differs between edges.
-        let edges: Vec<(usize, Frame)> = match control {
-            Control::Return => Vec::new(),
-            Control::Fallthrough => vec![(index + 1, frame.clone())],
-            Control::Jump(target) => vec![(target, frame.clone())],
-            Control::Branch(target) => vec![(target, frame.clone()), (index + 1, frame.clone())],
-            // Both carry the current stack on the `target` edge and push one value on
-            // the fallthrough edge; only which edge is the "taken" one differs in
-            // meaning (present vs fault), not in the CFG edge shapes.
-            Control::BranchPresent { target, present } => {
-                push_on_fallthrough(&frame, target, index, present, &mut max_stack)?
-            }
-            Control::CheckedResult { target, result } => {
-                push_on_fallthrough(&frame, target, index, result, &mut max_stack)?
-            }
+    while let Some(mut index) = worklist.pop() {
+        let Entry::Retained(incoming) = &entry[index] else {
+            unreachable!("worklist only enqueues retained boundaries");
         };
-        for (successor, edge_frame) in edges {
-            if successor >= code.len() {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "execution falls off the end without returning",
-                ));
+        let mut frame = incoming.clone();
+        loop {
+            let control = apply(function, ctx, &code[index].instr, consts, &mut frame)?;
+            check_stack_depth(&frame, &mut max_stack)?;
+            let successor = match control {
+                Control::Return => break,
+                Control::Fallthrough => index + 1,
+                Control::Jump(target) => target,
+                Control::Branch(target) => {
+                    propagate(&mut entry, &mut worklist, target, frame.clone())?;
+                    propagate(&mut entry, &mut worklist, index + 1, frame)?;
+                    break;
+                }
+                Control::BranchPresent {
+                    target,
+                    present: pushed,
+                }
+                | Control::CheckedResult {
+                    target,
+                    result: pushed,
+                } => {
+                    let mut fallthrough = frame.clone();
+                    fallthrough.stack.push(pushed);
+                    // Refuse an over-depth success edge before propagating either edge.
+                    check_stack_depth(&fallthrough, &mut max_stack)?;
+                    propagate(&mut entry, &mut worklist, target, frame)?;
+                    propagate(&mut entry, &mut worklist, index + 1, fallthrough)?;
+                    break;
+                }
+            };
+            if successor == index + 1
+                && successor < code.len()
+                && !non_fallthrough_entries[successor]
+            {
+                // Re-execute interiors when a retained upstream entry weakens.
+                assert!(!matches!(entry[successor], Entry::Retained(_)));
+                entry[successor] = Entry::Reached;
+                index = successor;
+            } else {
+                propagate(&mut entry, &mut worklist, successor, frame)?;
+                break;
             }
-            // Record every edge even when its type frame causes no worklist change.
-            if successor != index + 1 {
-                non_fallthrough_entries[successor] = true;
-            }
-            propagate(&mut entry, &mut worklist, successor, &edge_frame)?;
         }
     }
 
-    if entry.iter().any(Option::is_none) {
+    if entry.iter().any(|state| matches!(state, Entry::Unreached)) {
         return Err(reject(VerifyPhase::Function, "unreachable instruction"));
     }
 
+    #[cfg(test)]
+    tests::record_success(&entry);
+
     let instrs = code.iter().map(|decoded| decoded.instr.clone()).collect();
-    Ok((instrs, max_stack, non_fallthrough_entries))
+    Ok((instrs, max_stack))
+}
+
+fn check_stack_depth(frame: &Frame, max_stack: &mut usize) -> Result<(), VerifyRejection> {
+    if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
+        return Err(reject(
+            VerifyPhase::Function,
+            "operand stack exceeds depth bound",
+        ));
+    }
+    *max_stack = (*max_stack).max(frame.stack.len());
+    Ok(())
 }
 
 /// Merge `frame` into the entry state of `successor`, enqueueing it when its state
 /// changes. Stacks must agree exactly; locals meet per slot (init on both paths
 /// with the same type stays init, otherwise the slot becomes uninit).
 fn propagate(
-    entry: &mut [Option<Frame>],
+    entry: &mut [Entry],
     worklist: &mut Vec<usize>,
     successor: usize,
-    frame: &Frame,
+    frame: Frame,
 ) -> Result<(), VerifyRejection> {
-    match &entry[successor] {
-        None => {
-            entry[successor] = Some(frame.clone());
+    let Some(state) = entry.get_mut(successor) else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "execution falls off the end without returning",
+        ));
+    };
+    match state {
+        Entry::Unreached => {
+            *state = Entry::Retained(frame);
             worklist.push(successor);
             Ok(())
         }
-        Some(existing) => {
+        Entry::Reached => unreachable!("linear interiors cannot receive a merge edge"),
+        Entry::Retained(existing) => {
             if existing.stack != frame.stack {
                 return Err(reject(
                     VerifyPhase::Function,
                     "operand stack shapes disagree at a merge",
                 ));
             }
-            let mut merged = existing.locals.clone();
-            for (slot, cell) in merged.iter_mut().enumerate() {
-                let incoming = frame.locals[slot];
-                *cell = match (*cell, incoming) {
-                    (Some(a), Some(b)) if a == b => Some(a),
-                    _ => None,
-                };
+            let mut changed = false;
+            for (cell, incoming) in existing.locals.iter_mut().zip(frame.locals) {
+                if cell.is_some() && *cell != incoming {
+                    *cell = None;
+                    changed = true;
+                }
             }
-            if merged != existing.locals {
-                entry[successor] = Some(Frame {
-                    stack: existing.stack.clone(),
-                    locals: merged,
-                });
+            if changed {
                 worklist.push(successor);
             }
             Ok(())

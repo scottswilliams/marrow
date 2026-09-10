@@ -332,15 +332,17 @@ fn decode_vacant_operand(reader: &mut Reader) -> Result<ImageType, VerifyRejecti
 }
 
 /// Rewrite jump operands from container byte offsets to tape indices, rejecting a
-/// target that is not an instruction boundary in this function.
-pub(super) fn resolve_jumps(code: &mut [Decoded]) -> Result<(), VerifyRejection> {
+/// target that is not an instruction boundary in this function. Record targets
+/// with a predecessor other than their immediately preceding instruction.
+pub(super) fn resolve_jumps(code: &mut [Decoded]) -> Result<Vec<bool>, VerifyRejection> {
     let offsets: Vec<u32> = code.iter().map(|decoded| decoded.offset).collect();
     let index_of = |byte_offset: usize| -> Result<usize, VerifyRejection> {
         offsets
             .binary_search(&(byte_offset as u32))
             .map_err(|_| reject(VerifyPhase::Function, "jump target is not a boundary"))
     };
-    for decoded in code.iter_mut() {
+    let mut non_fallthrough_entries = vec![false; code.len()];
+    for (index, decoded) in code.iter_mut().enumerate() {
         match &mut decoded.instr {
             SealedInstr::Jump(target)
             | SealedInstr::JumpIfFalse(target)
@@ -352,11 +354,14 @@ pub(super) fn resolve_jumps(code: &mut [Decoded]) -> Result<(), VerifyRejection>
             | SealedInstr::IntDivChecked(target)
             | SealedInstr::IntRemChecked(target) => {
                 *target = index_of(*target)?;
+                if *target != index + 1 {
+                    non_fallthrough_entries[*target] = true;
+                }
             }
             _ => {}
         }
     }
-    Ok(())
+    Ok(non_fallthrough_entries)
 }
 
 #[cfg(test)]

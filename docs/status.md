@@ -115,6 +115,11 @@ has its own platform and layout requirements
 - The runner bounds image input before verification to the 512 KiB image limit
   plus one excess byte. Oversized images are refused with `image.envelope`
   ([execution limits](language/execution-limits.md#limits)).
+- Verifier type flow carries a single frame through linear instruction segments.
+  Retained local and stack payload scales with queued boundaries rather than
+  ordinary straight-line padding. Branch-heavy retention and repeated analysis
+  visits are not covered by a total verifier memory or work budget
+  ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier admits image generation 1. Current store attachment, import and
   audit refuse an active binding to another image generation before engine open,
   preserving data and binding metadata. Older artifacts and data require their

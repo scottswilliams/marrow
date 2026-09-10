@@ -3,13 +3,12 @@
 use super::context::{Ctx, Effects};
 use super::decode_code::decode_code;
 use super::decode_code::resolve_jumps;
-use super::flow::{Frame, branch_key_columns, check_flow};
+use super::flow::{branch_key_columns, check_flow};
 use super::model::{DecodedFunction, DecodedImage};
 use super::reject;
 use super::spans::map_spans;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
-use crate::vtype::VType;
 use marrow_image::{OperationClass, SemanticPath};
 use std::collections::BTreeSet;
 
@@ -485,37 +484,20 @@ fn entry_write_key_slots(
     Some(keys)
 }
 
-/// The successor edges for a two-way branch that keeps the current stack on the
-/// `target` edge and pushes one value on the fallthrough edge (`index + 1`). Shared
-/// by `BranchPresent` (present value) and the checked ops (int result).
-pub(super) fn push_on_fallthrough(
-    frame: &Frame,
-    target: usize,
-    index: usize,
-    pushed: VType,
-    max_stack: &mut usize,
-) -> Result<Vec<(usize, Frame)>, VerifyRejection> {
-    let mut fallthrough = frame.clone();
-    fallthrough.stack.push(pushed);
-    if fallthrough.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
-        return Err(reject(
-            VerifyPhase::Function,
-            "operand stack exceeds depth bound",
-        ));
-    }
-    *max_stack = (*max_stack).max(fallthrough.stack.len());
-    Ok(vec![(target, frame.clone()), (index + 1, fallthrough)])
-}
-
 pub(super) fn verify_function(
     function: &DecodedFunction,
     ctx: &Ctx,
     decoded: &DecodedImage,
 ) -> Result<(SealedFunction, Vec<bool>), VerifyRejection> {
     let mut decoded_code = decode_code(&function.code)?;
-    resolve_jumps(&mut decoded_code)?;
-    let (instrs, max_stack, non_fallthrough_entries) =
-        check_flow(function, ctx, &decoded_code, &decoded.consts)?;
+    let non_fallthrough_entries = resolve_jumps(&mut decoded_code)?;
+    let (instrs, max_stack) = check_flow(
+        function,
+        ctx,
+        &decoded_code,
+        &decoded.consts,
+        &non_fallthrough_entries,
+    )?;
     let spans = map_spans(function, &decoded_code)?;
     Ok((
         SealedFunction {
