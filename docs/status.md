@@ -121,6 +121,11 @@ has its own platform and layout requirements
   presence-fact payload. True joins, branch-target copies and repeated visits
   remain separate costs; there is no total verifier memory or work budget
   ([execution pipeline](implementation/README.md#pipeline)).
+- The verifier extracts direct calls once, rejects cycles across all functions
+  and expands effect closures in callee-first order. Transaction and test-entry
+  checks reuse those calls. Transitive set replication and canonical demand
+  construction remain additional memory and work costs
+  ([execution pipeline](implementation/README.md#pipeline)).
 - The verifier admits image generation 1. Current store attachment, import and
   audit refuse an active binding to another image generation before engine open,
   preserving data and binding metadata. Older artifacts and data require their

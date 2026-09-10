@@ -25,6 +25,16 @@ mod seal;
 mod spans;
 mod tables;
 
+#[cfg(test)]
+#[path = "../../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+#[cfg(test)]
+#[path = "../../../marrow-image/tests/common/image_forgery.rs"]
+mod image_forgery;
+#[cfg(test)]
+#[path = "../../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+
 use container::decode_container;
 use seal::seal;
 

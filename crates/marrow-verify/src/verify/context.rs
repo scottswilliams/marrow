@@ -1,10 +1,8 @@
-//! Shared per-function checking context: Ctx, FnSig, and the Effects accumulator.
+//! Shared checking context, certified direct calls, and durable-effect closures.
 
-use super::flow::borrow_two;
 use super::flow::durable_op_class;
 use super::flow::durable_site;
 use super::flow::is_mutation;
-use super::presence::call_targets;
 use super::presence::flow_successors;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
@@ -14,6 +12,10 @@ use crate::sealed::{
 };
 use marrow_image::{DemandAtom, ExportDemand, ImageType, SemanticPath};
 use std::collections::BTreeSet;
+
+#[cfg(test)]
+#[path = "call_graph_tests.rs"]
+pub(super) mod call_graph_tests;
 
 /// The sealed tables the per-function checks consult.
 pub(super) struct Ctx<'a> {
@@ -32,7 +34,85 @@ pub(super) struct FnSig {
     pub(super) ret: RetShape,
 }
 
-/// Phase 4/5 durable-demand closure and the transaction-flow lattice (design §E).
+/// All direct-call occurrences in tape order, certified acyclic before effects
+/// are allocated. The offsets delimit each function's row; completion order puts
+/// every callee before its callers, including disconnected functions.
+pub(super) struct CallGraph {
+    targets: Vec<u16>,
+    offsets: Vec<usize>,
+    callee_first: Vec<usize>,
+}
+
+impl CallGraph {
+    /// Phase 3 has checked every call operand against this complete function set.
+    /// A Gray edge in the iterative DFS rejects recursion before any closure work.
+    pub(super) fn new(functions: &[SealedFunction]) -> Result<Self, VerifyRejection> {
+        let mut calls = Self {
+            targets: Vec::new(),
+            offsets: Vec::with_capacity(functions.len() + 1),
+            callee_first: Vec::with_capacity(functions.len()),
+        };
+        calls.offsets.push(0);
+        for function in functions {
+            for instr in function.instrs() {
+                #[cfg(test)]
+                call_graph_tests::record_projection_instruction();
+                if let SealedInstr::Call(target) = instr {
+                    calls.targets.push(*target);
+                }
+            }
+            calls.offsets.push(calls.targets.len());
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Colour {
+            White,
+            Gray,
+            Black,
+        }
+        let mut colour = vec![Colour::White; functions.len()];
+        // Each frame is (node, next-child-cursor); reuse the stack across roots.
+        let mut stack = Vec::new();
+        for start in 0..functions.len() {
+            if colour[start] != Colour::White {
+                continue;
+            }
+            stack.push((start, 0));
+            colour[start] = Colour::Gray;
+            while let Some(&(node, cursor)) = stack.last() {
+                let callees = calls.callees(node);
+                if cursor < callees.len() {
+                    stack.last_mut().expect("frame present").1 += 1;
+                    let next = usize::from(callees[cursor]);
+                    match colour[next] {
+                        Colour::Gray => {
+                            return Err(reject(
+                                VerifyPhase::Closure,
+                                "the call graph contains a cycle",
+                            ));
+                        }
+                        Colour::White => {
+                            colour[next] = Colour::Gray;
+                            stack.push((next, 0));
+                        }
+                        Colour::Black => {}
+                    }
+                } else {
+                    colour[node] = Colour::Black;
+                    calls.callee_first.push(node);
+                    stack.pop();
+                }
+            }
+        }
+        Ok(calls)
+    }
+
+    pub(super) fn callees(&self, function: usize) -> &[u16] {
+        &self.targets[self.offsets[function]..self.offsets[function + 1]]
+    }
+}
+
+/// Phase 4/5 durable-demand closure and the transaction-flow lattice.
 ///
 /// The single effects owner: it reconstructs each function's durable-access atom set
 /// over its whole acyclic call closure from the sealed sites its opcodes reference,
@@ -57,76 +137,53 @@ pub(super) struct Effects {
 impl Effects {
     /// Reconstruct demand over the acyclic call graph. `site_paths[s]` is the
     /// semantic path of the node site `s` addresses (parallel to the sealed sites).
-    pub(super) fn compute(functions: &[SealedFunction], site_paths: &[SemanticPath]) -> Self {
+    /// `calls` was certified from this same complete function set.
+    pub(super) fn compute(
+        functions: &[SealedFunction],
+        site_paths: &[SemanticPath],
+        calls: &CallGraph,
+    ) -> Self {
         let count = functions.len();
         // Each function's own atoms and reached sites, before closure.
-        let mut atoms_closure: Vec<BTreeSet<DemandAtom>> = functions
-            .iter()
-            .map(|function| {
-                let mut set = BTreeSet::new();
-                for instr in function.instrs() {
-                    if let (Some(site), Some(class)) =
-                        (durable_site(instr), durable_op_class(instr))
-                    {
-                        set.insert(DemandAtom::new(site_paths[site as usize].clone(), class));
+        let mut atoms_closure = Vec::with_capacity(count);
+        let mut sites_closure = Vec::with_capacity(count);
+        let mut has_begin = Vec::with_capacity(count);
+        let mut has_commit = Vec::with_capacity(count);
+        for function in functions {
+            let mut atoms = BTreeSet::new();
+            let mut sites = BTreeSet::new();
+            let mut begins = false;
+            let mut commits = false;
+            for instr in function.instrs() {
+                if let Some(site) = durable_site(instr) {
+                    sites.insert(site);
+                    if let Some(class) = durable_op_class(instr) {
+                        atoms.insert(DemandAtom::new(site_paths[site as usize].clone(), class));
                     }
                 }
-                set
-            })
-            .collect();
-        let mut sites_closure: Vec<BTreeSet<u16>> = functions
-            .iter()
-            .map(|function| function.instrs().iter().filter_map(durable_site).collect())
-            .collect();
-        let has_begin: Vec<bool> = functions
-            .iter()
-            .map(|function| {
-                function
-                    .instrs()
-                    .iter()
-                    .any(|instr| matches!(instr, SealedInstr::TxnBegin))
-            })
-            .collect();
-        let has_commit: Vec<bool> = functions
-            .iter()
-            .map(|function| {
-                function
-                    .instrs()
-                    .iter()
-                    .any(|instr| matches!(instr, SealedInstr::TxnCommit))
-            })
-            .collect();
-        let callees: Vec<Vec<usize>> = functions.iter().map(call_targets).collect();
-
-        // Fixpoint over the acyclic call graph: a caller's closure unions each
-        // callee's closure. The graph is acyclic (recursion is rejected), so
-        // iterating `count` times converges; the monotone growth stops earlier. The
-        // caller index `f` also indexes the two closures a split borrow updates in
-        // place, so a range loop is used deliberately.
-        #[allow(clippy::needless_range_loop)]
-        for _ in 0..count {
-            let mut changed = false;
-            for f in 0..count {
-                for callee_index in 0..callees[f].len() {
-                    let callee = callees[f][callee_index];
-                    // Split the borrow: a call graph edge never self-loops (no
-                    // recursion), so `f != callee`.
-                    let (dst, src) = borrow_two(&mut atoms_closure, f, callee);
-                    for atom in src.iter() {
-                        if dst.insert(atom.clone()) {
-                            changed = true;
-                        }
-                    }
-                    let (dst_sites, src_sites) = borrow_two(&mut sites_closure, f, callee);
-                    for &site in src_sites.iter() {
-                        if dst_sites.insert(site) {
-                            changed = true;
-                        }
-                    }
+                match instr {
+                    SealedInstr::TxnBegin => begins = true,
+                    SealedInstr::TxnCommit => commits = true,
+                    _ => {}
                 }
             }
-            if !changed {
-                break;
+            atoms_closure.push(atoms);
+            sites_closure.push(sites);
+            has_begin.push(begins);
+            has_commit.push(commits);
+        }
+
+        // Every callee closure is complete before its caller's unions. Duplicate
+        // call occurrences remain separate edges; set union is idempotent.
+        for &caller in &calls.callee_first {
+            for &callee in calls.callees(caller) {
+                #[cfg(test)]
+                call_graph_tests::record_closure_edge();
+                let callee = usize::from(callee);
+                let (dst, src) = borrow_two(&mut atoms_closure, caller, callee);
+                dst.extend(src.iter().cloned());
+                let (dst_sites, src_sites) = borrow_two(&mut sites_closure, caller, callee);
+                dst_sites.extend(src_sites.iter().copied());
             }
         }
 
@@ -155,14 +212,14 @@ impl Effects {
         self.sites_closure[func as usize].iter().copied().collect()
     }
 
-    /// Phase 5: validate one function's transaction flow. A transaction owner (a
-    /// function that mutates in closure and contains `TxnBegin`) runs the
-    /// {BeforeBegin, InTxn, AfterCommit} lattice; every other function must contain
-    /// no transaction marker; and no function may call a transaction owner.
+    /// Phase 5: exports with a begin or mutating closure run the
+    /// {BeforeBegin, InTxn, AfterCommit} lattice. Other functions may not contain
+    /// transaction markers; only test-entry drivers may call transaction owners.
     pub(super) fn check_transaction_flow(
         &self,
         index: usize,
         function: &SealedFunction,
+        calls: &CallGraph,
         is_export_entry: bool,
         is_test_entry: bool,
     ) -> Result<(), VerifyRejection> {
@@ -172,8 +229,8 @@ impl Effects {
         // separately refuses a driver that also performs a direct durable op, which no
         // single session could run.
         if !is_test_entry {
-            for &callee in &call_targets(function) {
-                if self.has_begin[callee] {
+            for &callee in calls.callees(index) {
+                if self.has_begin[usize::from(callee)] {
                     return Err(reject(
                         VerifyPhase::Flow,
                         "a transaction owner may not be called",
@@ -300,5 +357,18 @@ impl Effects {
             }
         }
         Ok(())
+    }
+}
+
+/// The certified call graph excludes self-edges, so a caller can borrow its
+/// callee's complete closure while extending its own distinct set.
+fn borrow_two<T>(slice: &mut [T], dst: usize, src: usize) -> (&mut T, &T) {
+    assert_ne!(dst, src, "a call graph edge never self-loops");
+    if dst < src {
+        let (left, right) = slice.split_at_mut(src);
+        (&mut left[dst], &right[0])
+    } else {
+        let (left, right) = slice.split_at_mut(dst);
+        (&mut right[0], &left[src])
     }
 }

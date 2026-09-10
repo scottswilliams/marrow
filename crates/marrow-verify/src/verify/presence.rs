@@ -1,4 +1,4 @@
-//! Phase 3+ call-graph and presence-flow checking over sealed functions.
+//! Phase 3 function checks and presence flow over sealed functions.
 
 use super::context::{Ctx, Effects};
 use super::decode_code::decode_code;
@@ -17,14 +17,10 @@ use std::collections::BTreeSet;
 mod family_lookup_tests;
 
 #[cfg(test)]
-#[path = "../../../marrow-image/tests/common/admitted_plan.rs"]
-mod admitted_plan;
+use super::{admitted_plan, site_seam};
 #[cfg(test)]
 #[path = "presence/retention_tests.rs"]
 mod retention_tests;
-#[cfg(test)]
-#[path = "../../../marrow-image/tests/common/site_seam.rs"]
-mod site_seam;
 
 /// The validated entry sites indexed by canonical path for the presence phase.
 /// Rows borrow both paths and branch coordinates; no key-column reconstruction is
@@ -62,63 +58,6 @@ impl<'a> EntryFamilies<'a> {
                 (root, branch)
             })
     }
-}
-
-/// Phase 4: reject any cycle in the direct-call graph (recursion is not admitted).
-/// A three-colour DFS over the recorded calls; a back edge to a node on the current
-/// stack is a cycle.
-pub(super) fn reject_call_cycles(functions: &[SealedFunction]) -> Result<(), VerifyRejection> {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Colour {
-        White,
-        Gray,
-        Black,
-    }
-    let mut colour = vec![Colour::White; functions.len()];
-    // Iterative DFS: a frame is (node, next-child-cursor).
-    for start in 0..functions.len() {
-        if colour[start] != Colour::White {
-            continue;
-        }
-        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
-        colour[start] = Colour::Gray;
-        while let Some(&(node, cursor)) = stack.last() {
-            let callees: Vec<usize> = call_targets(&functions[node]);
-            if cursor < callees.len() {
-                stack.last_mut().expect("frame present").1 += 1;
-                let next = callees[cursor];
-                match colour[next] {
-                    Colour::Gray => {
-                        return Err(reject(
-                            VerifyPhase::Closure,
-                            "the call graph contains a cycle",
-                        ));
-                    }
-                    Colour::White => {
-                        colour[next] = Colour::Gray;
-                        stack.push((next, 0));
-                    }
-                    Colour::Black => {}
-                }
-            } else {
-                colour[node] = Colour::Black;
-                stack.pop();
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The direct-call targets of a sealed function, in tape order.
-pub(super) fn call_targets(function: &SealedFunction) -> Vec<usize> {
-    function
-        .instrs()
-        .iter()
-        .filter_map(|instr| match instr {
-            SealedInstr::Call(target) => Some(*target as usize),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The control-flow successors of the sealed instruction at `index`.
@@ -530,7 +469,7 @@ mod presence_root_discrimination {
 
     use marrow_image::Scalar;
 
-    use super::super::context::{Ctx, Effects};
+    use super::super::context::{CallGraph, Ctx, Effects};
     use super::{EntryFamilies, presence_edges};
     use crate::sealed::{SealedInstr, SealedRoot, SealedSite, SealedSiteTarget};
 
@@ -578,7 +517,8 @@ mod presence_root_discrimination {
             SealedInstr::DurCreateEntry(1),
         ];
         let entries = [false; 6];
-        let effects = Effects::compute(&[], &[]);
+        let calls = CallGraph::new(&[]).expect("the empty graph is acyclic");
+        let effects = Effects::compute(&[], &[], &calls);
         let families = EntryFamilies::new(&[], &[]);
         let after_first = presence_edges(
             &code,

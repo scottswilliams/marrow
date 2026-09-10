@@ -1401,19 +1401,6 @@ fn is_durable_read(instr: &SealedInstr) -> bool {
     durable_op_class(instr).is_some_and(|class| !class.mutates())
 }
 
-/// Mutably borrow two distinct elements of a slice. The demand fixpoint unions a
-/// callee's closure into its caller; the call graph is acyclic, so `dst != src`.
-pub(super) fn borrow_two<T>(slice: &mut [T], dst: usize, src: usize) -> (&mut T, &T) {
-    assert_ne!(dst, src, "a call graph edge never self-loops");
-    if dst < src {
-        let (left, right) = slice.split_at_mut(src);
-        (&mut left[dst], &right[0])
-    } else {
-        let (left, right) = slice.split_at_mut(dst);
-        (&mut right[0], &left[src])
-    }
-}
-
 /// Phase-3 type check for durable opcodes and transaction markers (design §D). The
 /// transaction markers leave the stack unchanged; phase 5 checks their flow.
 fn apply_durable(

@@ -52,6 +52,16 @@ upstream meet weakens local facts. Straight-line padding and eligible fork
 fallthroughs add no retained local or stack payload; instruction slots still
 scale with code length. True joins and repeated visits remain separate costs,
 without a total memory or work budget.
+
+After every function passes type flow, `verify/context.rs` extracts direct-call
+occurrences into one flat target vector with per-function offsets. The iterative
+cycle check covers every function and records callee-first completion order.
+Effects collect direct atoms, sites and transaction markers in one instruction
+pass, then expand each recorded call occurrence once in that order. Transaction
+and test-entry checks reuse the graph. Duplicate calls retain their tape order.
+Closure unions still visit and copy callee set contents; the graph remains live
+through presence and test-entry checks. These passes have no total memory bound.
+
 The presence pass uses the same transient destination flags to require an uninterrupted
 key-load, producer and consumer sequence before establishing a guard fact.
 The flags are discarded before the verified image is returned; they add no

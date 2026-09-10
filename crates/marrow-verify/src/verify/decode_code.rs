@@ -1029,12 +1029,7 @@ mod index_site_partition {
         }
     }
 
-    // The shared census, included by path rather than declared as a file module: a nested
-    // module's `#[path]` base is a directory this crate's source tree does not have.
-    mod admitted_plan {
-        include!("../../../marrow-image/tests/common/admitted_plan.rs");
-    }
-    use admitted_plan::admitted_plan;
+    use crate::verify::admitted_plan::admitted_plan;
 
     /// Bind one occurrence, one canonical declaration path, and one target, then request
     /// the site the binding names.

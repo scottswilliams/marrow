@@ -1,14 +1,12 @@
 //! Phase 2 orchestration: seal the decoded image into a VerifiedImage.
 
-use super::context::{Ctx, Effects, FnSig};
+use super::context::{CallGraph, Ctx, Effects, FnSig};
 use super::durable::{
     is_flat_executable_root, member_flat_at_root, seal_branches, seal_groups, seal_root_indexes,
 };
 use super::flow::durable_op_class;
 use super::model::DecodedImage;
-use super::presence::{
-    EntryFamilies, call_targets, check_presence_flow, reject_call_cycles, verify_function,
-};
+use super::presence::{EntryFamilies, check_presence_flow, verify_function};
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
@@ -125,11 +123,11 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
 
     // Phase 4: the call graph over the recorded direct calls must be acyclic
     // (recursion is not admitted).
-    reject_call_cycles(&functions)?;
+    let calls = CallGraph::new(&functions)?;
 
     // Phase 4/5: closure-informed effect and transaction-flow validation. An export
     // entry that mutates in closure is the owner of a transaction.
-    let effects = Effects::compute(&functions, &decoded.site_paths);
+    let effects = Effects::compute(&functions, &decoded.site_paths, &calls);
     let export_entries: Vec<bool> = {
         let mut entries = vec![false; functions.len()];
         for (_, func) in &decoded.exports {
@@ -148,6 +146,7 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         effects.check_transaction_flow(
             index,
             function,
+            &calls,
             export_entries[index],
             test_entry_mask[index],
         )?;
@@ -184,7 +183,7 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         functions[*func as usize].mutating = effects.mutates_closure[*func as usize];
     }
 
-    let test_entries = check_test_entries(&decoded, &functions, &export_entries, &effects)?;
+    let test_entries = check_test_entries(&decoded, &functions, &export_entries, &effects, &calls)?;
 
     // Per-function demand from the same effects owner, so a test-body driver can open
     // the session one export call requires without a second demand model.
@@ -210,15 +209,16 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
     })
 }
 
-/// The test-entry phase (design §E extension): the TEST-ENTRY table names storeless
-/// zero-argument entry points, `assert` is legal only inside one, and a test entry
-/// is never an export, a mutating/reading closure, or a call target. Returns the
-/// sealed entries in the table's ascending-name order.
+/// After transaction and presence checks, validate test-entry identity, signatures,
+/// assert placement and call boundaries. Entries may be storeless, perform direct
+/// durable work, or drive exports; direct work cannot also drive a transaction
+/// owner. Return their demands and kinds in the table's ascending-name order.
 fn check_test_entries(
     decoded: &DecodedImage,
     functions: &[SealedFunction],
     export_entries: &[bool],
     effects: &Effects,
+    calls: &CallGraph,
 ) -> Result<Vec<SealedTestEntry>, VerifyRejection> {
     let mut is_test_entry = vec![false; functions.len()];
     for (_, func) in &decoded.test_entries {
@@ -248,8 +248,7 @@ fn check_test_entries(
         }
     }
 
-    // Each test entry is a storeless zero-argument entry point, disjoint from the
-    // export table.
+    // Each test entry takes no arguments, returns unit, and is not an export.
     for (_, func) in &decoded.test_entries {
         let function = &functions[*func as usize];
         if export_entries[*func as usize] {
@@ -277,9 +276,9 @@ fn check_test_entries(
     }
 
     // A test entry is an entry point: no function may call one.
-    for function in functions {
-        for callee in call_targets(function) {
-            if is_test_entry[callee] {
+    for index in 0..functions.len() {
+        for &callee in calls.callees(index) {
+            if is_test_entry[usize::from(callee)] {
                 return Err(reject(
                     VerifyPhase::TestEntry,
                     "a test entry may not be called",
@@ -301,9 +300,10 @@ fn check_test_entries(
             .instrs()
             .iter()
             .any(|instr| durable_op_class(instr).is_some());
-        let drives_owner = call_targets(function)
+        let drives_owner = calls
+            .callees(usize::from(*func))
             .iter()
-            .any(|&callee| effects.has_begin[callee]);
+            .any(|&callee| effects.has_begin[usize::from(callee)]);
         if has_direct_durable && drives_owner {
             return Err(reject(
                 VerifyPhase::TestEntry,
