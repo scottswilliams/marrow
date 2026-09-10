@@ -5,7 +5,7 @@
 use super::FunctionHead;
 use super::head::{parse_enum_head, parse_resource_head, parse_store_head, parse_struct_head};
 use super::params::parse_function_head;
-use super::statement_capacity::StatementCapacity;
+use super::statement_capacity::outer_count;
 use super::stmt::StmtParser;
 use super::tokens::{
     PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, gap_after,
@@ -31,10 +31,10 @@ pub(crate) struct DeclParser<'a, 'c> {
     pub(super) source: &'a str,
     pub(super) tokens: &'a [Token],
     pub(super) pos: usize,
-    /// The file's declarations, allocated once at the file's top-level statement-start
-    /// count — a declaration opens at least one such start, including the second and
-    /// later ones on a line a preceding declaration's `}` did not end — so the list
-    /// never grows and carries no amortized slack into the finished tree.
+    /// The file's declarations, pre-reserved at its conservative outer statement-start
+    /// count. Each declaration opens at least one start, including later ones on a line
+    /// after a preceding declaration's `}`, so parsing needs no amortized growth.
+    /// Final boxing may shrink capacity left by starts that are not declarations.
     declarations: Vec<Declaration>,
     pub(super) sink: SyntaxSink<'c>,
     /// Nested member-block depth (resource groups, enum categories). The lexer
@@ -50,7 +50,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             source,
             tokens,
             pos: 0,
-            declarations: Vec::with_capacity(StatementCapacity::measure(tokens).body()),
+            declarations: Vec::with_capacity(outer_count(tokens)),
             sink,
             depth: 0,
         }

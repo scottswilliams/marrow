@@ -33,11 +33,16 @@ caller with a heap bound of its own refuses a file before parsing it.
 `marrow-compile` re-derives the rate from the representation and fails if the
 published constant drifts from it.
 
-The AST keeps its allocations exactly sized. A block's statement list, a
-`match` body's arm list, and a file's declaration list are `Box<[T]>`,
-allocated once at a measured count. The pass that measures a count also decides
-the region's structure, so no second counter disagrees about what the tree
-holds. Every path is one `Box<[NameSegment]>` carrying spelling and span
+The AST keeps its final lists in boxed slices. A block's statement list, a
+`match` body's arm list, and a file's declaration list pre-reserve conservative
+statement-start capacities to avoid amortized growth during parsing. Final
+boxing may shrink spare capacity. Declaration allocation uses an outer
+statement-start count with one frame and lexical brace depth, without allocating
+nested-region measurements. Body parsing keeps its regional measurement, which
+also decides which nested regions the parser structures. Both traversals share
+the frame's token classification in `parse_decl/statement_capacity.rs`; their
+different scopes do not change the published parse charges. Every path is one
+`Box<[NameSegment]>` carrying spelling and span
 together. A binary expression holds its ordered left and right children in one
 `Box<BinaryOperands>`. Each child's expression slot remains part of the parse
 charge; sharing their allocation does not reduce the published heap term.

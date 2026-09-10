@@ -1,6 +1,6 @@
 //! How many statements each brace-delimited *region* of a token slice can hold —
-//! a `{ … }` block, a `match` body, and the slice itself — measured before the slice is
-//! parsed so every statement list is allocated once at its final size.
+//! a `{ … }` block, a `match` body, and the slice itself — measured before parsing to
+//! pre-reserve conservative list capacities. Final boxed slices may shrink spare capacity.
 //!
 //! A region holds at most one statement per *statement start* it opens directly: a
 //! significant token at the region's own brace depth that follows a boundary — the
@@ -27,6 +27,8 @@
 //!
 //! One pass with a brace stack measures every region in a slice, so the slice costs a
 //! single walk of its tokens rather than one walk per region.
+//! Declaration allocation needs only the outer count: [`outer_count`] shares the
+//! frame's token classification without allocating or measuring nested regions.
 //!
 //! This pass owns which brace-delimited regions the statement parser structures. Its
 //! stack is bounded by [`NESTING_DEPTH_LIMIT`] rather than by the source, so a `{` nested
@@ -72,8 +74,29 @@ struct Frame {
     in_statement: bool,
 }
 
+/// Count outer starts without constructing the regions used by statement parsing.
+/// Lexical depth continues past the measured limit so nested starts stay nested.
+pub(super) fn outer_count(tokens: &[Token]) -> usize {
+    let mut body = Frame::new(0);
+    let mut depth = 0usize;
+    for token in tokens {
+        if token.kind == TokenKind::RightBrace {
+            depth = depth.saturating_sub(1);
+        }
+        if depth == 0 {
+            body.count_token(token.kind);
+        }
+        if token.kind == TokenKind::LeftBrace {
+            depth += 1;
+        }
+    }
+    body.statements as usize
+}
+
 impl StatementCapacity {
     pub(super) fn measure(tokens: &[Token]) -> Self {
+        #[cfg(test)]
+        tests::record_regional_input(tokens.len());
         let mut body = Frame::new(0);
         let mut open_regions: Vec<Frame> = Vec::with_capacity(NESTING_DEPTH_LIMIT);
         let mut regions: Vec<(u32, u32)> = Vec::new();
@@ -90,7 +113,7 @@ impl StatementCapacity {
                         unmeasured += 1;
                         continue;
                     }
-                    current(&mut body, &mut open_regions).begin_statement();
+                    current(&mut body, &mut open_regions).count_token(token.kind);
                     // Past the limit the parser skips the block rather than structuring
                     // it, so measuring deeper would size lists that are never built —
                     // and would make this stack grow with the source rather than with a
@@ -118,15 +141,16 @@ impl StatementCapacity {
                     // it and structures what follows it on the same line, so letting the
                     // statement in progress run past it would leave every one of those
                     // uncounted.
-                    current(&mut body, &mut open_regions).in_statement = false;
+                    current(&mut body, &mut open_regions).count_token(token.kind);
                 }
                 TokenKind::Newline => {
-                    current(&mut body, &mut open_regions).in_statement = false;
+                    // An unmeasured region still leaves this boundary on the current
+                    // measured frame, matching the body parser's regional sizing.
+                    current(&mut body, &mut open_regions).count_token(token.kind);
                 }
-                TokenKind::Eof => {}
                 _ => {
                     if unmeasured == 0 {
-                        current(&mut body, &mut open_regions).begin_statement();
+                        current(&mut body, &mut open_regions).count_token(token.kind);
                     }
                 }
             }
@@ -170,11 +194,16 @@ impl Frame {
         }
     }
 
-    /// Count a statement start, unless one is already in progress in this block.
-    fn begin_statement(&mut self) {
-        if !self.in_statement {
-            self.statements += 1;
-            self.in_statement = true;
+    /// Boundaries finish an item; the first significant token starts the next one.
+    fn count_token(&mut self, kind: TokenKind) {
+        match kind {
+            TokenKind::RightBrace | TokenKind::Newline => self.in_statement = false,
+            TokenKind::Eof => {}
+            _ if !self.in_statement => {
+                self.statements += 1;
+                self.in_statement = true;
+            }
+            _ => {}
         }
     }
 }
@@ -187,6 +216,124 @@ fn current<'f>(body: &'f mut Frame, open_regions: &'f mut [Frame]) -> &'f mut Fr
 mod tests {
     use super::*;
     use crate::lex_source;
+
+    thread_local! {
+        static REGIONAL_INPUT_TOKENS: std::cell::Cell<Option<usize>> = const {
+            std::cell::Cell::new(None)
+        };
+    }
+
+    pub(super) fn record_regional_input(tokens: usize) {
+        REGIONAL_INPUT_TOKENS.with(|volume| {
+            if let Some(count) = volume.get() {
+                volume.set(Some(count + tokens));
+            }
+        });
+    }
+
+    #[test]
+    fn declaration_allocation_skips_regional_measurement() {
+        use crate::{Declaration, Expression, LiteralKind, Statement};
+
+        const SOURCE: &str = "module m\n\nfn first() {\n    if true {\n        return\n    }\n}\n\nfn second() {\n    return\n}\n";
+        struct Restore(Option<usize>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                REGIONAL_INPUT_TOKENS.with(|volume| volume.set(self.0));
+            }
+        }
+        let restore = Restore(REGIONAL_INPUT_TOKENS.with(|volume| volume.replace(Some(0))));
+        let parsed = crate::parse_source(SOURCE);
+        let observed = REGIONAL_INPUT_TOKENS.with(|volume| volume.get().unwrap());
+        drop(restore);
+
+        assert!(
+            parsed
+                .diagnostics
+                .as_complete()
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let [Declaration::Function(first), Declaration::Function(second)] =
+            parsed.file.declarations.as_ref()
+        else {
+            panic!("both nonempty function bodies are parsed");
+        };
+        assert_eq!((&*first.name, &*second.name), ("first", "second"));
+        for (span, expected) in [
+            (first.span, (10, 22, 3, 1)),
+            (first.body.span, (21, 59, 3, 12)),
+            (second.span, (61, 74, 9, 1)),
+            (second.body.span, (73, 87, 9, 13)),
+        ] {
+            assert_eq!(
+                (span.start_byte, span.end_byte, span.line, span.column),
+                expected
+            );
+        }
+        let [
+            Statement::If {
+                condition,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            },
+        ] = first.body.statements.as_ref()
+        else {
+            panic!("the first function retains its nested block");
+        };
+        assert!(
+            matches!(condition, Expression::Literal { kind: LiteralKind::Bool, text, .. }
+            if text.as_ref() == "true")
+        );
+        assert!(else_ifs.is_empty() && else_block.is_none());
+        assert!(matches!(
+            then_block.statements.as_ref(),
+            [Statement::Return { value: None, .. }]
+        ));
+        assert!(matches!(
+            second.body.statements.as_ref(),
+            [Statement::Return { value: None, .. }]
+        ));
+
+        // The expected input is the two strict body-token slices passed by the
+        // declaration parser. Lexing here is outside the scoped observation.
+        let lexed = lex_source(SOURCE);
+        assert!(
+            lexed
+                .diagnostics
+                .as_complete()
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let body_tokens = [first.body.span, second.body.span].map(|span| {
+            let open = lexed
+                .tokens
+                .iter()
+                .position(|token| {
+                    token.kind == TokenKind::LeftBrace && token.span.start_byte == span.start_byte
+                })
+                .unwrap();
+            let close = lexed
+                .tokens
+                .iter()
+                .position(|token| {
+                    token.kind == TokenKind::RightBrace && token.span.end_byte == span.end_byte
+                })
+                .unwrap();
+            close - open - 1
+        });
+        assert!(body_tokens.iter().all(|count| *count > 0));
+        assert_ne!(body_tokens[0], body_tokens[1]);
+        assert_eq!(
+            observed,
+            body_tokens.iter().sum::<usize>(),
+            "declaration allocation must not measure nested regions"
+        );
+    }
 
     /// A source's tokens, and the indices of its `{`s within the one function body it
     /// holds — the slice `DeclParser` hands the statement parser, which is what
@@ -392,14 +539,14 @@ mod tests {
         );
     }
 
-    /// The same defect at declaration level: the file's declaration list is sized by this
-    /// pass too, and a declaration body also closes on a `}` mid-line.
+    /// A declaration body can close on a `}` mid-line, so the outer count must begin
+    /// the following declaration even without a newline.
     #[test]
     fn declarations_that_share_a_line_are_each_measured() {
         let units = 64;
         let source = format!("module m\n\n{}\n", "fn f(){} ".repeat(units));
         let tokens = crate::lex_source(&source).tokens;
-        let measured = StatementCapacity::measure(&tokens).body();
+        let measured = outer_count(&tokens);
         let structured = crate::parse_source(&source).file.declarations.len();
 
         assert_eq!(
@@ -423,7 +570,7 @@ mod tests {
         let units = 64;
         let source = format!("module m\n{}\n", "const x = 1 }".repeat(units));
         let tokens = crate::lex_source(&source).tokens;
-        let measured = StatementCapacity::measure(&tokens).body();
+        let measured = outer_count(&tokens);
         let structured = crate::parse_source(&source).file.declarations.len();
 
         assert_eq!(
@@ -436,6 +583,33 @@ mod tests {
             "the file was measured at {measured} declarations and the parser built \
              {structured} of them, so the list it was handed grew by doubling"
         );
+    }
+
+    #[test]
+    fn outer_count_matches_regional_body() {
+        let mut deep = nested_to_the_limit(4);
+        deep.push_str("const tail = 1\n");
+        for (case, source) in [
+            (
+                "closed",
+                "module m\nfn f() { if true { return } }\nconst x = 1\n",
+            ),
+            (
+                "members",
+                "module m\nstruct Pair { left: int\nright: int }\nfn f(){}\n",
+            ),
+            ("same line", "module m\nfn f(){} fn g(){}\n"),
+            ("unmatched close", "module m\n} const x = 1 } const y = 2"),
+            ("unclosed", "module m\nfn f() {\nif true {\nreturn\n"),
+            ("beyond limit", deep.as_str()),
+        ] {
+            let tokens = lex_source(source).tokens;
+            assert_eq!(
+                outer_count(&tokens),
+                StatementCapacity::measure(&tokens).body(),
+                "{case}"
+            );
+        }
     }
 
     /// Every counted start belongs to exactly one block, so the measurements sum to the
