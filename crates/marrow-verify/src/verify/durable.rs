@@ -1,16 +1,12 @@
 //! Phase 2 durable graph: root/branch/group/index decoding, sealing, and shape descriptors.
 //!
-//! **Recursion.** Nothing here recurses over bytes a hostile image controls: the member
-//! decode ([`decode_members`]) walks its own explicit stack and checks
-//! [`marrow_image::bounds::MAX_DURABLE_DEPTH`] before entering a nested run, so an
-//! over-deep image is refused at the byte that opens the level rather than by the machine
-//! stack. The one recursive walk in this module is [`seal_branch_run`], and it runs after
-//! that: its input is a [`DurableProductGraph`], whose only constructor refuses a command
-//! vector nesting past the same bound before a row exists, so its depth is structurally
-//! at most `MAX_DURABLE_DEPTH` (16) frames. It is written recursively because its output
-//! is itself a recursive tree ([`SealedBranch`]) — an explicit stack would carry the same
-//! bounded depth in a hand-rolled parent chain and establish no invariant the graph's
-//! constructor does not already hold.
+//! **Recursion.** [`decode_members`] uses an explicit stack and checks
+//! [`marrow_image::bounds::MAX_DURABLE_DEPTH`] before entering a nested run.
+//! [`seal_branch_run`] recursively follows the structurally bounded
+//! [`DurableProductGraph`]. Value-shape decoding also recurses:
+//! [`decode_value_shape`] checks [`marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH`]
+//! at entry before reading the next tag, and [`value_shape_matches`] recursively
+//! follows that decoded shape when comparing its type.
 
 use super::model::{DecodedEnum, DecodedField, DecodedRecordType, DecodedRoot};
 use super::reject;
@@ -1694,19 +1690,6 @@ fn validate_index_projection(
     Ok(())
 }
 
-/// Decode a durable field's stored value shape into `values`, returning a reference to
-/// the node it minted: `u8(value_tag) ‖ body`. A scalar is tag `0x00` (a bare scalar); a
-/// dense struct is tag `0x01` (`u16(count) ‖ value*`); a closed enum is tag `0x02`
-/// (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖ value*]*`). Leaves are minted
-/// before the shape that references them, so the wire tree is consumed without ever
-/// being materialized as one — a shape the image spells twice is decoded into the one
-/// node the arena already holds. An enum's sum and member ids are the identity of the
-/// enum *declaration*. The first occurrence of a given sum id claims it and its member
-/// ids as fresh pairwise-distinct ids; a later occurrence carrying an already-claimed sum
-/// id — the shape a second durable field of that enum emits — is a reference that
-/// reclaims nothing and must carry the identical member ids in order. `depth` bounds
-/// nesting so a hostile image cannot drive unbounded recursion before the value shape is
-/// rechecked (§ law 9).
 /// The arena's closed builder-domain refusal, as a table rejection. The verifier is the
 /// image's only decoder and every image reaching it is untrusted, so an arena that
 /// refuses a mint — a leaf outside it, or an arena at its carrier ceiling — is a
@@ -1722,6 +1705,19 @@ fn mint(
     })
 }
 
+/// Decode a durable field's stored value shape into `values`, returning a reference to
+/// the node it minted: `u8(value_tag) ‖ body`. A scalar is tag `0x00` (a bare scalar); a
+/// dense struct is tag `0x01` (`u16(count) ‖ value*`); a closed enum is tag `0x02`
+/// (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖ value*]*`). Leaves are minted
+/// before the shape that references them, so the wire tree is consumed without ever
+/// being materialized as one — a shape the image spells twice is decoded into the one
+/// node the arena already holds. An enum's sum and member ids are the identity of the
+/// enum *declaration*. The first occurrence of a given sum id claims it and its member
+/// ids as fresh pairwise-distinct ids; a later occurrence carrying an already-claimed sum
+/// id — the shape a second durable field of that enum emits — is a reference that
+/// reclaims nothing and must carry the identical member ids in order. `depth` bounds
+/// nesting so a hostile image cannot drive unbounded recursion before the value shape is
+/// rechecked (§ law 9).
 fn decode_value_shape(
     reader: &mut Reader<'_>,
     depth: usize,

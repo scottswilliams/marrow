@@ -1081,10 +1081,10 @@ impl<'d> DraftTxn<'d> {
         self.draft.add_collection_type(def)
     }
 
-    /// Fill the fields of an already-reserved record type, exactly once: a checked
-    /// lookup — a foreign or stale id is the typed refusal, never a panic — and a
-    /// one-time fill — a second fill is the typed refusal, never an overwrite. A fill
-    /// of a pre-transaction row journals its displaced definition first.
+    /// Fill a live record reservation from this draft, exactly once. The caller owns
+    /// that same-draft precondition: ordinal IDs carry no foreign/stale provenance.
+    /// The setter checks ordinal range and refuses a second fill. A fill of a
+    /// pre-transaction row journals its displaced definition first.
     pub fn set_record_fields(
         &mut self,
         ty: TypeId,

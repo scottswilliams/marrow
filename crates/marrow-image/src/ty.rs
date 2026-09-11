@@ -5,8 +5,8 @@
 //!
 //! One `u8` tag names the base type, with the high bit `0x80` marking an optional
 //! wrapper. This is the single spelling of a type everywhere the image records one
-//! (record field, param, return, `VacantLoad` operand); position restrictions are
-//! enforced by the encoder that writes each and rechecked by the verifier.
+//! (record field, param, return, `VacantLoad` operand). Independent verification
+//! enforces the restrictions on types in each position.
 
 use crate::draft::{CollTypeId, EnumId, RootId, TypeId};
 use crate::measure::wire_ordinal;

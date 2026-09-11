@@ -1,6 +1,6 @@
-//! Narrow exact-symbol absence gates over `marrow-compile/src`: the shapes the
-//! bounded-diagnostic design deletes must not reappear. Each scan matches an
-//! exact type or call shape, never a spelling proxy.
+//! Source-spelling recurrence checks over `marrow-compile/src`, with shared
+//! code projections where noted. Each check describes the spellings, counts or
+//! source inventory it recognizes.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -163,16 +163,15 @@ fn no_raw_source_diagnostic_vector_extend_exists() {
     );
 }
 
-/// The generic instantiation-limit row is the sole one-row retention exception
-/// outside a collector or final output: exactly one `Pending(SourceDiagnostic)`
-/// state exists.
+/// Exactly one projected source line contains `Pending(SourceDiagnostic)`, including
+/// test code. This pins the recognized spelling, not every possible retention form.
 #[test]
-fn the_one_row_exception_is_declared_exactly_once() {
+fn the_pending_diagnostic_spelling_is_pinned_once() {
     let found = occurrences("Pending(SourceDiagnostic)");
     assert_eq!(
         found.len(),
         1,
-        "exactly one one-row exception may exist: {found:?}"
+        "expected one line with the pending-diagnostic spelling: {found:?}"
     );
 }
 
@@ -246,10 +245,10 @@ fn source_diagnostic_fields_stay_private() {
     }
 }
 
-/// The collector is one concrete private type: no generic collector or the
-/// retired generic counter family reappears.
+/// Raw source contains the collector declaration spelling and neither watched
+/// retired spelling. This does not count declarations or recognize every generic form.
 #[test]
-fn the_collector_is_concrete_not_generic() {
+fn collector_declaration_and_retired_spellings_are_pinned() {
     let mut declared = false;
     for path in src_files() {
         let source = fs::read_to_string(&path).expect("read source file");
@@ -257,14 +256,14 @@ fn the_collector_is_concrete_not_generic() {
         for forbidden in ["DiagnosticCollector<", "BoundedDiagnosticCounter"] {
             assert!(
                 !source.contains(forbidden),
-                "{} declares a generic collector shape: `{forbidden}`",
+                "{} contains a forbidden collector spelling: `{forbidden}`",
                 path.display()
             );
         }
     }
     assert!(
         declared,
-        "expected the concrete collector; if it was renamed, update this scan"
+        "expected the collector declaration spelling; if renamed, update this scan"
     );
 }
 
@@ -685,14 +684,11 @@ fn the_production_scanner_still_sees_the_real_compiler() {
     );
 }
 
-/// The projection reaches the END of every scanned production file. The sentinels above
-/// sit at the top and middle of two files; a blanking bug that runs away — an
-/// unterminated literal, an unrecognised raw-string spelling — erases a file's tail
-/// instead, and every gate scanning for a shape in that tail then passes because the
-/// shape was erased rather than absent. The sentinel is derived per file, so it covers
-/// files no list here names and needs no maintenance when a file gains a declaration.
+/// The selected production-header spelling survives projection at a matching source
+/// offset. An earlier identical header can satisfy this check; it does not establish
+/// that the selected occurrence, its body or the file tail survives.
 #[test]
-fn the_projection_reaches_the_end_of_every_scanned_file() {
+fn the_selected_production_header_spelling_survives_projection() {
     let mut unqualified: Vec<PathBuf> = Vec::new();
     for path in src_files() {
         if is_test_only_file(&path) {
@@ -704,34 +700,28 @@ fn the_projection_reaches_the_end_of_every_scanned_file() {
             unqualified.push(path);
             continue;
         };
-        // Searched in the projection, not the source: a match in the source can land in a
-        // region the projection blanks — the same header text inside a test module — and
-        // the gate would then be asking about the tail of the test code it deliberately
-        // erased. Every byte of the projection outside a blanked region is the source's.
+        // Search surviving text, then compare the source at that matching offset.
+        // `sentinel` carries the spelling, not the original occurrence's position.
         let offset = code.rfind(&sentinel).unwrap_or_else(|| {
             panic!(
-                "the projection lost the tail of {}: the file's last production item \
-                 header `{sentinel}` did not survive blanking",
+                "the projection of {} has no surviving selected header spelling \
+                 `{sentinel}`",
                 path.display(),
             )
         });
         assert_eq!(
             &source[offset..offset + sentinel.len()],
             sentinel,
-            "the projection moved the tail of {}: `{sentinel}` survived at a byte offset \
-             that is not the one it occupies in the source, so a reported line number \
-             would not be the source's own",
+            "the projection of {} has `{sentinel}` at an offset with different source \
+             text",
             path.display(),
         );
     }
-    // A file with no qualifying sentinel is skipped, and a skipped file is a file this
-    // gate does not cover. No scanned file is skipped today; if one stops qualifying —
-    // its last production item gains a string, a comment, or a char literal — the gate
-    // says so instead of quietly narrowing to the files that still happen to qualify.
+    // Keep files without an eligible header visible instead of silently skipping them.
     assert!(
         unqualified.is_empty(),
-        "every scanned file must offer a sentinel this gate can follow to its end; \
-         these no longer do: {unqualified:?}",
+        "every scanned production file must offer an eligible header spelling; \
+         these do not: {unqualified:?}",
     );
 }
 
@@ -947,17 +937,11 @@ fn the_deletion_scan_reads_production_code_and_only_production_code() {
     );
 }
 
-/// E5c — a refusal summary built without a report of its own names the pass that
-/// covers it, on an exact allowlist.
-///
-/// `refuse_covered` is the one constructor that mints a retained cause without
-/// pushing the row that reports it. Two shapes need it and no third may: a cause
-/// whose owning pass runs later, and a cause an earlier occurrence of the same
-/// project-wide anchor already reported. Left open, it would become the way a
-/// refusal escapes being reported at all — a refused declaration with no diagnostic
-/// anywhere, which is worse than the fabricated absence this lane removes.
+/// Pin the filenames of recognized `refuse_covered(` source matches, including its
+/// definition. The inventory prompts caller review; it does not exhaustively identify
+/// calls or establish that their covering reports are delivered.
 #[test]
-fn every_covered_refusal_names_its_covering_report() {
+fn covered_refusal_matches_stay_on_the_reviewed_file_list() {
     let calls = production_occurrences("refuse_covered(");
     let sites: Vec<(String, usize)> = calls
         .iter()
@@ -965,9 +949,9 @@ fn every_covered_refusal_names_its_covering_report() {
         .collect();
     // The definition, the two durable classes that use it — a repeated project-wide
     // identity anchor, reported by the first store to reach it, and a durable value
-    // cycle, reported by `types::reject_value_cycles` after lowering — the signature
-    // whose annotation names a cause an earlier use already steered to or the shared
-    // instantiation limit, and the two declaration sites of that same limit, which
+    // cycle, owned by `types::reject_value_cycles` when reached after lowering — the
+    // signature whose annotation names a cause an earlier use already steered to or
+    // the shared instantiation limit, and the two declaration sites of that same limit, which
     // the monomorphization owner reports once for the whole pass rather than at each
     // struct field or resource member that hit it.
     let allowed = [
@@ -981,8 +965,8 @@ fn every_covered_refusal_names_its_covering_report() {
     let names: Vec<&str> = sites.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         names, allowed,
-        "a new `refuse_covered` call site must name the pass that reports its cause \
-         and be added here deliberately: {sites:?}"
+        "the recognized `refuse_covered(` filename inventory changed; review the \
+         callers and their reporting owners: {sites:?}"
     );
 }
 

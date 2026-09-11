@@ -362,14 +362,11 @@ fn the_test_entry_table_admits_past_its_cap_and_only_encode_refuses() {
     );
 }
 
-// ---- The fill setters refuse a foreign or stale id with a typed error.
+// ---- The fill setters refuse out-of-range ordinals and repeated fills.
 
-/// **Flipped under the sanctioned F-3 change, citing the pre-restructure pin this
-/// test carried** (`set_record_fields_with_a_foreign_id_panics`): the fill is a
-/// checked lookup — an id this draft never minted is the closed typed refusal, never
-/// a panic — and the refusal mutates nothing.
+/// An out-of-range record ordinal receives a typed refusal; the row count is unchanged.
 #[test]
-fn set_record_fields_with_a_foreign_id_is_refused() {
+fn set_record_fields_with_an_out_of_range_id_is_refused() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R").expect("a within-domain mint");
@@ -383,15 +380,17 @@ fn set_record_fields_with_a_foreign_id_is_refused() {
         draft.set_record_fields(TypeId::from_index(5), Vec::new()),
         Err(DraftStateError::ForeignDraft),
     );
-    assert_eq!(draft.record_type_count(), 1, "the refusal mutated nothing");
+    assert_eq!(
+        draft.record_type_count(),
+        1,
+        "the record count is unchanged"
+    );
 }
 
-/// **Flipped under the sanctioned F-3 change, citing the pre-restructure pin this
-/// test carried** (`set_enum_variants_with_a_foreign_id_panics`): an id minted by
-/// another draft is the closed typed refusal against this draft's table, never a
-/// panic, and the refusal mutates nothing.
+/// The other draft's enum ordinal is out of range for this empty table. The typed
+/// refusal leaves its row count unchanged.
 #[test]
-fn set_enum_variants_with_a_foreign_id_is_refused() {
+fn set_enum_variants_with_an_out_of_range_id_is_refused() {
     let mut other_owner = ImageDraft::new();
     let mut other = admitted(&mut other_owner);
     let name = other.intern_string("E").expect("a within-domain mint");
@@ -408,13 +407,12 @@ fn set_enum_variants_with_a_foreign_id_is_refused() {
         draft.set_enum_variants(foreign, Vec::new()),
         Err(DraftStateError::ForeignDraft),
     );
-    assert_eq!(draft.enum_type_count(), 0, "the refusal mutated nothing");
+    assert_eq!(draft.enum_type_count(), 0, "the enum count is unchanged");
 }
 
-/// The one-time-fill half of the same law: a second fill of one row is the typed
-/// refusal, never an overwrite, and the first fill's definition survives.
+/// A second fill receives the typed refusal and the committed draft remains encodable.
 #[test]
-fn a_second_fill_of_one_row_is_refused_without_overwriting() {
+fn a_second_fill_is_refused_and_the_draft_remains_encodable() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R").expect("a within-domain mint");
@@ -439,10 +437,7 @@ fn a_second_fill_of_one_row_is_refused_without_overwriting() {
     );
     draft.commit();
     let image = draft_owner.encode().expect("the filled draft encodes");
-    assert!(
-        !image.bytes.is_empty(),
-        "the first fill's definition survived"
-    );
+    assert!(!image.bytes.is_empty(), "the encoded image is nonempty");
 }
 
 // ---- The application identity is set-once-or-same with a sticky latch.

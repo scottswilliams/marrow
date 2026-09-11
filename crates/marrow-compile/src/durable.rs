@@ -898,10 +898,9 @@ enum DurableRefusal<'a> {
     Index { message: String, span: SourceSpan },
     /// A fixed compiler-owned bound on the stored shape was crossed.
     Bound { message: String, span: SourceSpan },
-    /// A durable value cycle. This is the one refusal that pushes no row of its own:
-    /// its cause is the `check.recursion` report from `types::reject_value_cycles`,
-    /// which runs after lowering so that it also sees the instantiations lowering
-    /// mints. The steer names that code without a location.
+    /// A durable value cycle whose code is retained for `types::reject_value_cycles`.
+    /// That pass runs after lowering, including its minted instantiations, when prior
+    /// terminal stops permit it. The steer names `check.recursion` without a location.
     ValueCycle,
     /// The store failed admission before its graph was walked: a missing or mismatched
     /// resource, an out-of-range key tuple, or a key column outside the closed
@@ -909,8 +908,8 @@ enum DurableRefusal<'a> {
     Admission { row: SourceDiagnostic },
 }
 
-/// Report one store refusal and summarize it from that same report, so a retained
-/// refusal can never describe a diagnostic that was not made.
+/// Summarize one store refusal, pushing a local row where this site owns reporting
+/// and retaining the code where another occurrence or pass owns it.
 ///
 /// Exhaustive by match: a new refusal class is a build error here rather than a class
 /// that silently renders as some other class's cause.
@@ -953,8 +952,7 @@ fn refuse_store(
         DurableRefusal::Bound { message, span } => {
             refuse_row(diagnostics, at, resource_limit(at.file, span, message))
         }
-        // Covered by `types::reject_value_cycles` (compile.rs), which reports every
-        // durable value cycle after lowering.
+        // The value-cycle pass owns this report when reached after lowering.
         DurableRefusal::ValueCycle => refuse_covered(at, Code::CheckRecursion.as_str()),
         DurableRefusal::Admission { row } => refuse_row(diagnostics, at, row),
     }
@@ -1532,8 +1530,8 @@ struct IdentityResolver<'a> {
     /// repeat falls within the depth bound is therefore pre-empted here and left to
     /// the later value-cycle `check.recursion` pass alone; a finite acyclic value, or a
     /// cycle whose distinct prefix first crosses the depth bound, reports its own
-    /// `check.resource_limit` (the latter case then also draws `check.recursion` from
-    /// the cycle pass — both are truthful and land at real spans).
+    /// `check.resource_limit`. If the later cycle pass is reached, the latter case
+    /// also draws its `check.recursion` report.
     value_path: Vec<ValueNode>,
     /// The durable-path naming entries collected as this store's nodes resolve, drained
     /// into the [`BuiltRoot`] once the graph is known complete.

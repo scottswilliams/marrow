@@ -214,18 +214,18 @@ pub(crate) struct DeclarationRefusalSummary {
     steered: Cell<bool>,
 }
 
-/// Where the report that carries a refusal's cause was made.
+/// Which occurrence or pass owns reporting a refusal's cause.
 ///
 /// A steer sends the reader to the cause, so it must not claim a location the
-/// report does not occupy. Most refusals report at the declaration itself and can
-/// say so; the covered classes are reported by another pass or another occurrence,
-/// where only the code is known here.
+/// report does not occupy. A covered cause retains its code here while another
+/// occurrence or pass owns reporting; a deferred pass may be pre-empted by a terminal
+/// stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusalReport {
     /// The refusing site pushed the row at this declaration's own span.
     AtDeclaration,
-    /// A different pass or a different occurrence made the report. The steer names
-    /// the code and makes no claim about where the row sits.
+    /// A different pass or occurrence owns reporting. The steer names the code
+    /// without claiming a report location or that a deferred pass has run.
     ByCoveringPass,
     /// A stage that ran before the semantic pass refused the whole source this
     /// declaration was written in, and already reported why. The steer names that
@@ -363,14 +363,9 @@ impl<'a> MemberNamespace<'a> {
     }
 }
 
-/// The same coupling for a refusal whose report is made by a *different* pass or a
-/// *different* occurrence, named by the caller.
-///
-/// Two shapes need it, and no third may: a cause the site cannot report because the
-/// pass that owns it runs later, and a cause an earlier occurrence of the same
-/// project-wide anchor already reported. Both are on the absence gate's allowlist
-/// with the covering report named, so this constructor cannot become the way a
-/// refusal escapes reporting altogether.
+/// Retain the code for a cause whose report another occurrence or pass owns.
+/// The caller supplies that ownership; the filename inventory is a review prompt,
+/// not a report-delivery check. Deferred reporting depends on reaching its pass.
 pub(crate) fn refuse_covered(
     at: DeclarationSite<'_>,
     code: &'static str,
@@ -494,7 +489,7 @@ impl DeclarationRefusalSummary {
         self.namespace
     }
 
-    /// Where the report carrying this refusal's cause was made.
+    /// Which occurrence or pass owns reporting this refusal's cause.
     pub(crate) fn report(&self) -> RefusalReport {
         self.report
     }
@@ -508,11 +503,9 @@ impl DeclarationRefusalSummary {
     /// report actually sits.
     ///
     /// A steer sends the reader to the cause. Most refusals report at the
-    /// declaration itself and can say so; a covered class — a value cycle the later
-    /// cycle pass reports, an anchor an earlier occurrence reported, a source an
-    /// earlier stage refused whole — has its row somewhere else entirely, and
-    /// claiming it sits at this declaration would send the reader to a row that is
-    /// not there.
+    /// declaration itself and can say so. A covered cause names only its code:
+    /// another occurrence owns the row, or a later pass owns it if execution reaches
+    /// that pass. A whole-source refusal instead names its earlier stage.
     pub(crate) fn correction(&self) -> String {
         let (name, code) = (self.name(), self.code());
         match self.report {

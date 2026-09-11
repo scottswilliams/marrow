@@ -1,10 +1,10 @@
 //! Slice K.4 image-bytes fuzz driver (design §E, B02 pattern).
 //!
-//! A bounded, seeded, deterministic driver over the verifier's decoder: the reusable
-//! oracle asserts that `verify` never panics and never allocates unboundedly on
-//! arbitrary or mutated bytes — it always returns a typed rejection (or, rarely, a
-//! valid image). No external fuzz dependency; a fixed iteration budget keeps it in
-//! the default suite. A minimized counterexample becomes a permanent fixture.
+//! A finite, seeded, deterministic driver calls `verify` on generated and mutated
+//! bytes. Each call must return without panic; successful results have their digest
+//! recomputed. Allocation is not observed. No external fuzz dependency; a fixed
+//! iteration budget keeps it in the default suite. A minimized counterexample becomes
+//! a permanent fixture.
 //!
 //! Every site named here is minted through the construction seam's bind-then-request
 //! protocol. That protocol has exactly one owner in the workspace and is included here

@@ -73,19 +73,11 @@
 //!   capacity rather than inventing an exact byte width. The scratch is dropped when
 //!   TEST-ENTRY coherence ends.
 //!
-//! - the DURABLE traversal's ceiling-bounded expansion worklist — the one
-//!   stop-adjudication allocation. Measured through the scheduling harness over both
-//!   worst-case corpora, recording `Vec` capacity (what lives), not length: the
-//!   31-level 64-edge struct chain peaks at 1,954 pending tasks, capacity 2,048 × 16
-//!   bytes/task = 32,768 live bytes; the 31-level enum chain of 256 members × 64
-//!   payload references — the widest scheduling fan-out the §E bounds admit — peaks
-//!   at 9,859 pending tasks, capacity 16,384 × 16 bytes/task = **262,144 live
-//!   bytes**, with a `Vec`-doubling old/new-buffer overlap of at most **393,216
-//!   bytes**. The enum figure bounds the admitted domain.
-//!
-//! The `#[ignore]`d measurement harness that produced these numbers lives beside
-//! the traversal owner (`value_dag.rs`); re-run it with `--ignored` when a
-//! representation widens, and re-gate through the persistent editor-capacity law.
+//! - the DURABLE traversal's `Vec<ExpandTask>` worklist in `value_dag.rs`. Its `Node`
+//!   arm carries a stamped `ValueShapeNodeId`; `EnumMember` borrows a member. The
+//!   retained buffer term is capacity times the actual compiled task size. Length,
+//!   allocator overhead, transient growth allocation, process RSS and total pipeline
+//!   residency are separate quantities; this term has no established maximum here.
 
 use std::collections::HashSet;
 

@@ -548,9 +548,9 @@ mod node_store {
     mod tests {
         use super::ValueShapeNodeStore;
 
-        /// The half of the [`super::super::VALUE_SHAPE_NODE_BYTES`] pricing artifact that
-        /// reaches this module's private fields: a vector added beside these two fails to
-        /// build until the published per-node charge has been re-derived.
+        /// Exhaustively name the private store fields. Adding a field requires this
+        /// destructure to change and the [`super::super::VALUE_SHAPE_NODE_BYTES`]
+        /// pricing to be reviewed.
         #[test]
         fn the_priced_store_names_all_of_its_fields() {
             let _ = |value: &ValueShapeNodeStore| {
@@ -623,9 +623,9 @@ const VSHAPE_ENUM: u8 = 2;
 /// its payload, so a variant is its own work item rather than a position inside its
 /// node's header. A variant task carries the variant itself, borrowed from the arena the
 /// expansion walks, so there is no second lookup to get wrong and no arm for a node kind
-/// the task could never name. Nothing follows a node's references, so the stack never
-/// holds a "resume after children" continuation and its depth is bounded by the shape's
-/// own nesting depth.
+/// the task could never name. No "resume after children" continuation is needed.
+/// Pending siblings make worklist length depend on fan-out and scheduling as well as
+/// nesting.
 enum ExpandTask<'a> {
     Node(ValueShapeNodeId),
     EnumMember(&'a ValueShapeEnumMember),
@@ -635,8 +635,9 @@ enum ExpandTask<'a> {
 /// shape stating an arity no v0 wire form can spell.
 ///
 /// The expansion is iterative and direct-to-sink: no expanded tree is built, and no
-/// intermediate buffer holds one. It returns as soon as the whole shape is written, the
-/// sink reports it is full, or a reference is refused, whichever comes first.
+/// intermediate buffer holds one. Each work iteration checks whether the sink is full;
+/// a scheduling arm can append children before the next check. Expansion otherwise
+/// ends when the worklist is empty or a reference is refused.
 ///
 /// `root` is a caller-supplied id, so the lookup authenticates its exact-node stamp. A
 /// root from independently minted provenance or invalidated by truncation is the same
@@ -791,12 +792,9 @@ mod tests {
         assert_eq!(replacement_text.index(), stale_text.index());
     }
 
-    /// **The enforcement artifact for [`VALUE_SHAPE_NODE_BYTES`].** The arena and its node
-    /// name all of their fields here, so a field added to either fails to build until the
-    /// published per-node charge — and the maximum-live equations derived from it — have
-    /// been re-derived. A new side table would otherwise cost bytes no charge covers.
-    /// The backing store's own three vectors are named by the half of this artifact that
-    /// lives beside them, since its fields are private to their module.
+    /// Exhaustively name the arena and node fields. Adding a field requires these
+    /// destructures to change and the [`VALUE_SHAPE_NODE_BYTES`] pricing to be reviewed.
+    /// The private backing store has its own exhaustive destructure beside its owner.
     #[test]
     fn the_priced_arena_and_node_name_all_of_their_fields() {
         let _ = |value: &CanonicalValueShapeDag| {
@@ -1175,15 +1173,10 @@ mod tests {
         assert_eq!(&section[1..17], ledger_id(1).bytes());
     }
 
-    /// Max-live measurement harness (the editor-capacity term of record; numbers
-    /// recorded in `measure.rs`): drive the real [`expand`] over each worst-case
-    /// corpus with a ceiling-capped counting sink, and beside it a real
-    /// [`Vec<ExpandTask>`] mirroring the three scheduling arms, recording the
-    /// worklist's peak length AND capacity — capacity is what lives — plus the
-    /// `Vec`-doubling old/new-buffer overlap. Two corpora bound the admitted domain:
-    /// the 31-level 64-edge struct chain, and the 31-level enum chain of 256 members
-    /// carrying 64 payload references each, the widest scheduling fan-out the §E
-    /// bounds admit.
+    /// Run production [`expand`] on two fixed corpora and separately mirror its
+    /// scheduling with [`Vec<ExpandTask>`]. The printed lengths, capacities and overlap
+    /// formula describe that mirror and those corpora, not observed production Vec
+    /// growth or a universal capacity maximum.
     #[test]
     #[ignore = "measurement harness: run with --ignored and record the printed numbers"]
     fn measure_the_expansion_worklist_peak_for_the_compact_corpora() {

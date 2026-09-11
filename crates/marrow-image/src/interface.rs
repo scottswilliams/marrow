@@ -22,9 +22,9 @@
 //! covered), a product (`struct`/record), a sum (a user `enum`, or a built-in
 //! `Option`/`Result`, both represented as image enums), a finite `List<T>`, a finite
 //! ordered `Map<K, V>`, and an entry identity `Id(^root)` (the earned transfer
-//! extension, G00b). The graph is closed over every [`ImageType`], so a verified
-//! signature always projects. Because a record field, enum payload, list element, or
-//! map key/value may itself be a composite type, a signature is expanded structurally
+//! extension, G00b). The graph covers every [`ImageType`] kind. Because a record
+//! field, enum payload, list element, or map key/value may itself be a composite
+//! type, a signature is expanded structurally
 //! under a node budget ([`bounds::MAX_INTERFACE_TRANSFER_NODES`](crate::bounds::MAX_INTERFACE_TRANSFER_NODES)).
 //! The type-kind graph is closed, but even a verified acyclic signature can exceed that
 //! expansion budget; reconstruction then returns [`InterfaceError::SignatureTooComplex`]
