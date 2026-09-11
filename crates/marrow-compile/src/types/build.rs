@@ -103,10 +103,7 @@ pub(super) fn register_type_templates(
                 .iter()
                 .filter(|(_, _, d)| d.type_params.is_empty())
                 .any(|(_, _, d)| d.name == name)
-            || registry
-                .type_templates
-                .iter()
-                .any(|template| template.name == name)
+            || registry.named.declared(name)
     };
     for (at, file, decl) in structs {
         if decl.type_params.is_empty() {

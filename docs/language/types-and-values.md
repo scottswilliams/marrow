@@ -492,6 +492,9 @@ inferred from the field or payload values. A parameter that no value
 determines is a `check.type` at the construction. An annotation names an
 application directly: `Pair<int, string>`, `Box<int>`.
 
+Refusing a generic type definition does not free its name. A duplicate
+declaration remains a `check.name_conflict` at its name.
+
 A type parameter may carry one constraint, `T supports equality` or
 `T supports order`, spelled as on a
 [generic function](modules-and-functions.md#generic-functions). The constraint

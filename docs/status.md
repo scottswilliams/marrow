@@ -52,6 +52,9 @@ Branch-field annotations are resolved once per admitted resource Product. Roots
 sharing that Product reuse its canonical field scalars when building executable
 branch descriptors ([compiler pipeline](implementation/README.md#pipeline)).
 
+Refused generic definitions retain their names for duplicate checking
+([generic types](language/types-and-values.md#generic-types)).
+
 A refused function body does not suppress recursion or transaction diagnostics
 in an independent complete call component. Generic bodies continue draining after
 an ordinary body refusal. Effects that require a complete call chain exclude

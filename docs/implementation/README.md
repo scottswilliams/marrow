@@ -167,7 +167,9 @@ each supported alias as a shared global terminal name and optionality. It
 normalizes chains iteratively and refuses unsupported target shapes before
 dependent fills. Type consumers resolve written parameters before aliases and
 carry existing declaration refusals through scalar and value-type checks;
-they do not allocate expanded alias trees.
+they do not allocate expanded alias trees. Generic duplicate checks use the
+named-type ledger, including refused entries; the template vector stores
+admitted payloads for instantiation.
 
 Resource construction resolves each branch-field annotation once per admitted
 Product. The canonical member graph retains the scalar value shape. Root
