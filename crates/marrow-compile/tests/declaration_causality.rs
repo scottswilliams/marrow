@@ -29,6 +29,8 @@ use std::collections::BTreeSet;
 mod ids;
 #[path = "common/project.rs"]
 mod project_capture;
+#[path = "declaration_causality/refused_names.rs"]
+mod refused_names;
 
 fn project(source: &str) -> ProjectInput {
     files(&[("src/main.mw", source.to_string())])
@@ -2842,121 +2844,5 @@ fn member_shape_bounds_keep_the_resource_file() {
         assert_eq!(row.span(), written_span(&schema, owner));
         assert_eq!(row.file().as_str(), "src/schema.mw");
         assert_eq!(row.refused_declaration(), None);
-    }
-}
-
-#[test]
-fn a_refused_generic_struct_occupies_its_name() {
-    compile(&project(
-        "module main\n\npub fn independent(): int {\n    return 7\n}\n",
-    ))
-    .expect("the independent function compiles without either struct");
-
-    const SOURCE: &str = r#"module main
-
-struct Box<T,T> { v: T }
-struct Box<U> { v: U }
-pub fn independent(): int {
-    return 7
-}
-"#;
-    let conflict = marrow_codes::Code::CheckNameConflict.as_str();
-    let repeated_parameter = marrow_syntax::SourceSpan {
-        start_byte: 26,
-        end_byte: 27,
-        line: 3,
-        column: 14,
-    };
-
-    let renamed_source = SOURCE.replacen("struct Box<U>", "struct Other<U>", 1);
-    let renamed = diagnostics(&renamed_source);
-    assert_eq!(
-        rows(&renamed),
-        vec![("src/main.mw", conflict, 3, 14)],
-        "renaming the second struct leaves only the repeated-parameter diagnostic",
-    );
-    assert_eq!(
-        renamed[0].span(),
-        repeated_parameter,
-        "the renamed control preserves the repeated parameter's full span",
-    );
-
-    let collision = diagnostics(SOURCE);
-    let actual: Vec<_> = collision
-        .iter()
-        .map(|row| (row.file().as_str(), row.code(), row.span()))
-        .collect();
-    assert_eq!(
-        actual,
-        vec![
-            ("src/main.mw", conflict, repeated_parameter),
-            (
-                "src/main.mw",
-                conflict,
-                marrow_syntax::SourceSpan {
-                    start_byte: 45,
-                    end_byte: 48,
-                    line: 4,
-                    column: 8,
-                },
-            ),
-        ],
-        "a refused generic struct retains its name against a later declaration",
-    );
-}
-
-#[test]
-fn a_generic_enum_duplicate_preserves_the_original_refusal() {
-    for (declaration, unknown, duplicate, annotation) in [
-        (
-            "enum Box<T> { item(value: Missing) }",
-            (39, 46, 3, 27),
-            (55, 58, 4, 6),
-            (103, 111, 5, 23),
-        ),
-        (
-            "struct Box<T> { value: Missing }",
-            (36, 43, 3, 24),
-            (51, 54, 4, 6),
-            (99, 107, 5, 23),
-        ),
-    ] {
-        let source = format!(
-            "module main\n\n{declaration}\n\
-             enum Box<U> {{ item(value: U) }}\n\
-             pub fn inspect(value: Box<int>): int {{\n    return 7\n}}\n",
-        );
-        let diagnostics = diagnostics(&source);
-        let actual: Vec<_> = diagnostics
-            .iter()
-            .map(|row| {
-                let span = row.span();
-                (
-                    row.file().as_str(),
-                    row.code(),
-                    (span.start_byte, span.end_byte, span.line, span.column),
-                )
-            })
-            .collect();
-        let type_error = marrow_codes::Code::CheckType.as_str();
-        assert_eq!(
-            actual,
-            vec![
-                ("src/main.mw", type_error, unknown),
-                (
-                    "src/main.mw",
-                    marrow_codes::Code::CheckNameConflict.as_str(),
-                    duplicate,
-                ),
-                ("src/main.mw", type_error, annotation),
-            ],
-            "{declaration}",
-        );
-        assert_steers_to(
-            &diagnostics,
-            DeclarationNamespace::NamedType,
-            type_error,
-            RefusalReport::AtDeclaration,
-        );
     }
 }

@@ -169,7 +169,8 @@ dependent fills. Type consumers resolve written parameters before aliases and
 carry existing declaration refusals through scalar and value-type checks;
 they do not allocate expanded alias trees. Generic duplicate checks use the
 named-type ledger, including refused entries; the template vector stores
-admitted payloads for instantiation.
+admitted payloads for instantiation. Enum duplicate checks consult both that
+ledger and reserved enum rows, which enter the ledger during fill.
 
 Resource construction resolves each branch-field annotation once per admitted
 Product. The canonical member graph retains the scalar value shape. Root
@@ -361,14 +362,15 @@ phantom generic arguments are validated as metadata but are not value edges.
 The language reference owns the supported
 [nominal boundaries](../language/types-and-values.md#aliases-and-nominal-ints).
 
-Compilation is a chain of phases, and each phase takes a typed proof of the
-phase before it. `SignaturesComplete` is the zero-size proof that every declared
-signature resolved; `encode` takes that proof, never the resolved registry, so an
-unproven registry cannot reach the encoder.
+Compilation records typed completion artifacts for its prerequisites.
+`SignaturesComplete` is a zero-size token available only when every declared
+function signature was accepted; it is separate from the registry used to
+resolve calls.
 
-A refusal withholds exactly the artifacts that depend on it and no others. A
-signature the checker could not resolve is a refused entry in the declaration
-ledger, so every other body still lowers and reports its own errors. The proof
-is withheld, and that alone fences the program off from `encode`. No phase runs
-because the diagnostic set happens to be empty; each takes its own prerequisite,
-and an unavailable artifact never produces a substitute.
+An ordinary refused signature remains in the declaration ledger and does not
+itself stop lowering other declarations. Shared instantiation limits, resource
+limits and invariant failures can stop remaining work, including later bodies
+and deferred reporting passes. Before constructing a `CheckedProgram`, the
+semantic driver requires an empty diagnostic terminal and all required
+artifacts; artifact availability is not inferred from diagnostic emptiness.
+`encode` consumes that checked program.

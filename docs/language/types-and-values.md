@@ -273,7 +273,9 @@ A declared payload field is a scalar. A struct or enum reaches a payload through
 a type parameter of a [generic enum](#generic-types). An enum declares each
 member once, and a member declares each payload field once; a repeat is a
 `check.name_conflict` at the repeated name. An enum name is project-wide, like a
-struct name.
+struct name. An enum refused for exceeding the member limit retains its name:
+a later declaration is a `check.name_conflict`, and type uses retain the
+original refusal.
 
 ## Option and Result
 

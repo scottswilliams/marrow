@@ -1171,6 +1171,7 @@ pub(super) fn declare_enums<'a>(
                 .iter()
                 .any(|(_, _, resource)| resource.name == decl.name)
             || registry.enum_by_name(&decl.name).is_some()
+            || registry.named.declared(&decl.name)
         {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
