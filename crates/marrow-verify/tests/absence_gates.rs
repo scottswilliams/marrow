@@ -44,15 +44,19 @@ fn workspace_files() -> Vec<PathBuf> {
     files
 }
 
-/// Every `(file, line)` at which `needle` appears in code, comments and string literals
-/// blanked.
-fn occurrences(needle: &str) -> Vec<(PathBuf, usize)> {
-    let mut found = Vec::new();
+type Locations = Vec<(PathBuf, usize)>;
+
+/// Every `(file, line)` for each needle in input order, with comments and string
+/// literals blanked. Each source file is read and projected once per batch.
+fn occurrences<'a>(needles: &[&'a str]) -> Vec<(&'a str, Locations)> {
+    let mut found: Vec<_> = needles.iter().map(|&needle| (needle, Vec::new())).collect();
     for path in workspace_files() {
         let code = without_literals(&fs::read_to_string(&path).expect("read source file"));
         for (index, line) in code.lines().enumerate() {
-            if line.contains(needle) {
-                found.push((path.clone(), index + 1));
+            for (needle, hits) in &mut found {
+                if line.contains(*needle) {
+                    hits.push((path.clone(), index + 1));
+                }
             }
         }
     }
@@ -69,8 +73,7 @@ fn occurrences(needle: &str) -> Vec<(PathBuf, usize)> {
 /// through a verified occurrence handle, so it cannot be asked without naming the root.
 #[test]
 fn no_ledger_id_only_index_incidence_lookup_exists() {
-    for needle in ["field_incidence", "root_incidence"] {
-        let found = occurrences(needle);
+    for (needle, found) in occurrences(&["field_incidence", "root_incidence"]) {
         assert!(
             found.is_empty(),
             "`{needle}` answers an occurrence-scoped effect question from a declaration \
@@ -86,12 +89,12 @@ fn no_ledger_id_only_index_incidence_lookup_exists() {
 #[test]
 fn every_verifier_index_maintenance_answer_is_owned_by_the_occurrence_handle() {
     let owner = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sealed.rs");
-    for needle in [
+    for (needle, found) in occurrences(&[
         "fn entry_maintenance",
         "fn field_maintenance",
         "fn unique_collision_outcomes",
-    ] {
-        let defined: Vec<(PathBuf, usize)> = occurrences(needle)
+    ]) {
+        let defined: Vec<(PathBuf, usize)> = found
             .into_iter()
             .filter(|(path, _)| path.starts_with(Path::new(env!("CARGO_MANIFEST_DIR"))))
             .collect();
@@ -120,14 +123,13 @@ fn every_verifier_index_maintenance_answer_is_owned_by_the_occurrence_handle() {
 /// record-shape and constructor questions and names no root.
 #[test]
 fn no_lookup_recovers_an_occurrence_from_a_declaration_fact() {
-    for needle in [
+    for (needle, found) in occurrences(&[
         "root_by_entry_site",
         "branch_by_record",
         "root_by_resource",
         ".by_resource",
         "by_resource:",
-    ] {
-        let found = occurrences(needle);
+    ]) {
         assert!(
             found.is_empty(),
             "`{needle}` recovers a root occurrence from a fact its Product declaration \
@@ -145,19 +147,20 @@ fn no_lookup_recovers_an_occurrence_from_a_declaration_fact() {
 /// for the wrong reason. So the header layout is written once and included.
 #[test]
 fn the_forged_image_digest_has_one_owner() {
-    let found = occurrences("fn rehash(");
-    assert_eq!(
-        found.len(),
-        1,
-        "the forged-image digest is recomputed in more than one place, so the container \
-         header layout is hand-copied: {found:?}",
-    );
-    assert!(
-        found[0]
-            .0
-            .ends_with("marrow-image/tests/common/image_forgery.rs"),
-        "the one owner is the shared include beside the seam protocol: {found:?}",
-    );
+    for (_, found) in occurrences(&["fn rehash("]) {
+        assert_eq!(
+            found.len(),
+            1,
+            "the forged-image digest is recomputed in more than one place, so the container \
+             header layout is hand-copied: {found:?}",
+        );
+        assert!(
+            found[0]
+                .0
+                .ends_with("marrow-image/tests/common/image_forgery.rs"),
+            "the one owner is the shared include beside the seam protocol: {found:?}",
+        );
+    }
 }
 
 /// A gate that cannot see its own subject passes for the wrong reason.

@@ -274,7 +274,10 @@ fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
 
 fn usage_and_absent_store_refusals_keep_their_codes(toolchain: &Path) {
     let temp = TempDir::new("usage");
-    let (project, _) = project_with_store(toolchain, &temp);
+    let project = temp.root.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), SOURCE);
+    write(&project.join(".marrow/ids"), IDS);
     let output = marrow(toolchain, &project, &["doctor"]);
     assert_eq!(output.status.code(), Some(2));
     let output = marrow(
