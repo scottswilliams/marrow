@@ -998,6 +998,11 @@ enum LimitState {
     Reported,
 }
 
+enum InstantiationLimit {
+    Count,
+    TypeDepth,
+}
+
 /// Which argument domain one generic owner may admit. Concrete compilation never
 /// carries an abstract parameter into a published image; only an isolated template-proof
 /// pass (entered through `enter_template_proof`) may use `Param` while checking one generic
@@ -2199,11 +2204,13 @@ impl TypeRegistry {
                 generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS;
             let over_depth = generics.fill_stack.len() >= MINT_DEPTH_LIMIT;
             if over_count || over_depth {
+                let limit = if over_count {
+                    InstantiationLimit::Count
+                } else {
+                    InstantiationLimit::TypeDepth
+                };
                 drop(generics);
-                self.record_limit(
-                    site,
-                    "a generic type likely nests inside itself over an ever-growing type",
-                );
+                self.record_limit(site, limit);
                 return Err(ResolveError::Refusal(ResolveRefusal::Limit));
             }
         }
@@ -2836,17 +2843,22 @@ impl TypeRegistry {
         Ok(id)
     }
 
-    fn record_limit(&self, site: MintSite<'_>, subject: &str) {
+    fn record_limit(&self, site: MintSite<'_>, limit: InstantiationLimit) {
         let mut generics = self.generics.borrow_mut();
         if matches!(generics.limit, LimitState::Open) {
+            let message = match limit {
+                InstantiationLimit::Count => format!(
+                    "generic instantiation reached the limit of {MAX_INSTANTIATIONS} distinct function and type instances"
+                ),
+                InstantiationLimit::TypeDepth => format!(
+                    "generic type instantiation reached the nesting limit of {MINT_DEPTH_LIMIT}"
+                ),
+            };
             generics.limit = LimitState::Pending(SourceDiagnostic::at(
                 Code::CheckInstantiationLimit.as_str(),
                 site.file,
                 site.span,
-                format!(
-                    "monomorphizing this program requires more than {MAX_INSTANTIATIONS} generic \
-                     instantiations; {subject}"
-                ),
+                message,
             ));
         }
     }

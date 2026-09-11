@@ -496,27 +496,13 @@ fn the_peak_reporter_parser_reads_each_reporters_unit() {
     assert_eq!(reported_peak_rss_bytes("no such line\n"), None);
 }
 
-/// Whether compiling `source` refuses with the shared generic-mint diagnostic — the
-/// observable proof that the corpus really drove generic rows until the compiler stopped
-/// minting them.
+/// Whether compilation returns the shared `check.instantiation_limit` code.
 ///
-/// **This does not identify which bound stopped it, and it cannot.** The compiler refuses a
-/// generic type mint when either `type_insts.len() + fn_insts.len() >= MAX_INSTANTIATIONS`
-/// (4096) or `fill_stack.len() >= MINT_DEPTH_LIMIT` (256), and reports both through one
-/// `check.instantiation_limit` code with one message. A corpus whose divergence is carried
-/// by a *self-nesting field* — `struct Grow<T> { next: Grow<List<T>> }` — recurses through
-/// `fill_type_body`, so it reaches the depth bound at 256 nested mints long before the
-/// count ceiling at 4096. The type and enum arms below are both of that shape.
-///
-/// So the type and enum figures are the peaks of a 256-deep amplification, not of a
-/// 4096-wide one, and they are recorded as such rather than as the count ceiling's maximum.
-/// The function arm is different: `reserve_fn_instance` gates on the count alone with no
-/// depth check, so that arm does reach 4096.
-///
-/// Making the type and enum arms count-bounded needs a breadth-driven shape — divergence
-/// carried by the generic *function* while a wide, non-self-nesting generic type is
-/// resolved once per instance — which is a corpus this lane records as a finding rather
-/// than one it invents a fourth unverified premise about.
+/// This code-only helper does not distinguish the 4096-instance count limit from
+/// the 256-level type-instantiation nesting limit. The self-nesting fields in the
+/// type and enum corpora reach the depth limit first, so their measured peaks do
+/// not establish a 4096-instance-wide bound. The function corpus reaches the
+/// shared count limit because function reservation has no depth guard.
 fn reaches_a_generic_mint_bound(source: &str) -> bool {
     match compile(&project(source)) {
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics

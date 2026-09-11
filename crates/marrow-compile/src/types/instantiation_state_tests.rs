@@ -1871,7 +1871,7 @@ fn template_proof_refuses_every_unstable_fill_or_diagnostic_owner_state() {
         .dependents
         .clear();
 
-    registry.record_limit(site(9), "the real owner is no longer open");
+    registry.record_limit(site(9), InstantiationLimit::Count);
     let pending = stable_snapshot(&registry);
     assert!(matches!(
         registry.enter_template_proof(0, 0),

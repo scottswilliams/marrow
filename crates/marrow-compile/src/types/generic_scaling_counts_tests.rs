@@ -578,6 +578,10 @@ pub fn driver(): int {\n    const ignored = deepen(1)\n    return 0\n}\n";
             column: 21,
         }
     );
+    assert_eq!(
+        row.message(),
+        "generic type instantiation reached the nesting limit of 256"
+    );
 }
 
 #[test]

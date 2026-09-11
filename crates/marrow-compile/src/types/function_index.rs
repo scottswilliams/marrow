@@ -3,8 +3,8 @@
 use marrow_image::{DraftTxn, FuncId};
 
 use super::{
-    FnInst, GArg, GenericCacheInvariant, GenericInvariant, MAX_INSTANTIATIONS, MintSite,
-    ResolveError, ResolveRefusal, TypeRegistry,
+    FnInst, GArg, GenericCacheInvariant, GenericInvariant, InstantiationLimit, MAX_INSTANTIATIONS,
+    MintSite, ResolveError, ResolveRefusal, TypeRegistry,
 };
 
 #[cfg(test)]
@@ -42,10 +42,7 @@ impl TypeRegistry {
         }
         if generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS {
             drop(generics);
-            self.record_limit(
-                site,
-                "a generic function likely recurses over an ever-growing type",
-            );
+            self.record_limit(site, InstantiationLimit::Count);
             return Err(ResolveRefusal::Limit.into());
         }
         let row = generics.fn_insts.len();

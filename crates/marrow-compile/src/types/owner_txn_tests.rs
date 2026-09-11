@@ -484,7 +484,7 @@ fn an_abandoned_batch_leaves_the_diagnostic_owners_to_their_own_custody() {
         let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
             .expect("a settled registry admits an ordinary batch");
         let (registry, _) = batch.parts();
-        registry.record_limit(site(3), "the pinned subject");
+        registry.record_limit(site(3), InstantiationLimit::Count);
         assert!(matches!(
             registry.generics.borrow().limit,
             LimitState::Pending(_)
@@ -664,7 +664,7 @@ fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
             "value",
             proof_collection,
         );
-        registry.record_limit(site(30), "the proof reached its local bound");
+        registry.record_limit(site(30), InstantiationLimit::Count);
 
         // Simulate a proof that failed mid-fill, leaving the transient batch state dirty:
         // the guard must still restore the settled owner exactly. The dirty edges

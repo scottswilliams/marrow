@@ -634,6 +634,10 @@ pub fn driver(): int {
 "#,
     );
     assert_one_located_limit(&diagnostics, 11, 22);
+    assert_eq!(
+        diagnostics[0].message(),
+        "generic instantiation reached the limit of 4096 distinct function and type instances"
+    );
 }
 
 /// Two independent growing roots are both queued before either recursive body is
@@ -1010,6 +1014,10 @@ pub fn driver(): int {
 "#,
     );
     assert_one_located_limit(&diagnostics, 14, 18);
+    assert_eq!(
+        diagnostics[0].message(),
+        "generic instantiation reached the limit of 4096 distinct function and type instances"
+    );
 }
 
 /// The sibling direct generic-enum constructor has the same refusal transfer: a
@@ -1038,6 +1046,10 @@ fn count_limit_at_a_direct_generic_enum_construction_rejects_the_body() {
 
     let diagnostics = compile_err(&source);
     assert_one_located_limit(&diagnostics, constructor_line, 18);
+    assert_eq!(
+        diagnostics[0].message(),
+        "generic instantiation reached the limit of 4096 distinct function and type instances"
+    );
 }
 
 /// Interpolation ordinarily accumulates independent part diagnostics. A shared
