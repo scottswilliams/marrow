@@ -27,6 +27,7 @@
 
 use crate::error::WireError;
 use crate::{MAX_DEPTH, MAX_STRING_BYTES};
+use std::collections::{BTreeMap, btree_map::Entry};
 
 /// A canonical JSON value: the closed set that may appear in a wire message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -503,11 +504,11 @@ impl Parser<'_> {
             return Err(WireError::DepthLimit);
         }
         self.pos += 1; // consume '{'
-        let mut pairs: Vec<(String, Json)> = Vec::new();
+        let mut pairs = BTreeMap::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            return Ok(Json::Object(pairs));
+            return Ok(Json::Object(Vec::new()));
         }
         loop {
             self.skip_ws();
@@ -515,17 +516,17 @@ impl Parser<'_> {
                 return Err(WireError::Malformed);
             }
             let key = self.parse_string()?;
-            // A canonical object has unique keys.
-            if pairs.iter().any(|(existing, _)| existing == &key) {
+            // Duplicate keys take precedence over the following colon or value.
+            let Entry::Vacant(entry) = pairs.entry(key) else {
                 return Err(WireError::Noncanonical);
-            }
+            };
             self.skip_ws();
             if self.peek() != Some(b':') {
                 return Err(WireError::Malformed);
             }
             self.pos += 1;
             let value = self.parse_value(depth + 1)?;
-            pairs.push((key, value));
+            entry.insert(value);
             self.skip_ws();
             match self.peek() {
                 Some(b',') => {
@@ -533,7 +534,7 @@ impl Parser<'_> {
                 }
                 Some(b'}') => {
                     self.pos += 1;
-                    return Ok(Json::Object(pairs));
+                    return Ok(Json::Object(pairs.into_iter().collect()));
                 }
                 _ => return Err(WireError::Malformed),
             }
@@ -727,6 +728,58 @@ mod tests {
             parse_strict(br#"{"a":1,"a":2}"#),
             Err(WireError::Noncanonical)
         );
+    }
+
+    #[test]
+    fn object_keys_preserve_decode_error_order() {
+        let decode = |json: &str| {
+            let len = 1 + json.len();
+            let header = u32::try_from(len).expect("small frame").to_be_bytes();
+            assert_eq!(crate::frame_body_len(header), Ok(len));
+            let mut body = Vec::with_capacity(len);
+            body.push(crate::PROTOCOL_VERSION);
+            body.extend_from_slice(json.as_bytes());
+            crate::ClientMessage::decode_with_turn(&body)
+        };
+        let hello = format!(r#"{{"kind":"hello","nonce":"{}"}}"#, "00".repeat(32));
+        assert!(matches!(
+            decode(&hello),
+            Ok((crate::ClientMessage::Hello { .. }, None))
+        ));
+        for (input, expected) in [
+            (r#"{"a":0,"a"}"#, WireError::Noncanonical),
+            (r#"{"a":0,"a":!}"#, WireError::Noncanonical),
+            (r#"{"a":0,"\u0061":!}"#, WireError::Noncanonical),
+            (r#"{"b":0,"a":0,"b"}"#, WireError::Noncanonical),
+            (r#"{"a":0,"a\uD800":0}"#, WireError::Malformed),
+            (r#"{"b":0,"a":!}"#, WireError::Malformed),
+            (r#"{"b":0,"a":0,}"#, WireError::Malformed),
+            (r#"{"b":0,"a":0}x"#, WireError::Malformed),
+            (r#"{"b":0,"a":0}"#, WireError::Noncanonical),
+        ] {
+            assert_eq!(decode(input), Err(expected), "{input}");
+        }
+        let nested = r#"{"a":{"x":1},"b":{"x":2}}"#;
+        assert_eq!(
+            encode(&parse_strict(nested.as_bytes()).expect("object-local keys")),
+            nested
+        );
+        let deep = format!(
+            "{{\"b\":0,\"a\":{}{}}}",
+            "[".repeat(crate::MAX_DEPTH),
+            "]".repeat(crate::MAX_DEPTH)
+        );
+        assert_eq!(decode(&deep), Err(WireError::DepthLimit));
+        let long_value = format!(
+            r#"{{"b":0,"a":"{}"}}"#,
+            "x".repeat(crate::MAX_STRING_BYTES + 1)
+        );
+        assert_eq!(decode(&long_value), Err(WireError::StringLimit));
+        let long_key = format!(
+            r#"{{"a":0,"{}":0}}"#,
+            "a".repeat(crate::MAX_STRING_BYTES + 1)
+        );
+        assert_eq!(decode(&long_key), Err(WireError::StringLimit));
     }
 
     #[test]

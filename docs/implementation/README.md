@@ -165,6 +165,11 @@ that loader. The verifier owns oversize and image-format refusal; open/read erro
 retain the `io.read` path. The read bound does not establish allocation capacity
 or a time bound for a stream that stops supplying bytes.
 
+The local-wire JSON parser builds each object in one ordered map. Its entry
+lookup rejects a duplicate key before parsing the colon or value. After the
+closing brace, it moves the entries into the existing `Json::Object` vector;
+the final re-encoding comparison still rejects noncanonical input order.
+
 The compiler retains parser syntax. Its private `types/aliases.rs` owner stores
 each supported alias as a shared global terminal name and optionality. It
 normalizes chains iteratively and refuses unsupported target shapes before
