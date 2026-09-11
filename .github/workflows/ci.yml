@@ -35,8 +35,7 @@ jobs:
 
       # --all-features enables marrow-store's `native` (redb) backend so the
       # native engine and its conformance suite are gated alongside the memory
-      # backend. The reduced workspace is exactly marrow-codes, marrow-syntax,
-      # marrow-store, and the thin marrow CLI.
+      # backend.
       - name: Build
         run: cargo build --workspace --all-targets --all-features --locked
 
@@ -197,7 +196,7 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       # ignore-scripts is enforced by editors/vscode/.npmrc, so no dependency
       # lifecycle script runs during install.
