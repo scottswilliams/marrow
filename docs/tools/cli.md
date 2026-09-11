@@ -184,9 +184,14 @@ diagnostic or fault carries its code and span
 
 A returned bare string is limited to 65,536 raw UTF-8 bytes in either format.
 JSON escaping can expand each byte sixfold: the complete string value record
-is at most 393,259 bytes including its terminating LF. This is not a bound on
-arbitrary aggregate text rendering or on total diagnostic output. A rendering
-refusal reports `io.write` and exits `1`. Write or flush failure also exits `1`,
+is at most 393,259 bytes including its terminating LF. In JSONL, bare bytes
+admit at most 65,536 bytes of unquoted hexadecimal text, including `0x`. JSON aggregate and
+identity `data` values admit at most 65,536 encoded bytes, including punctuation
+and escaping. Nested values share this limit, and rendering refuses before an
+append would exceed it. A present optional at the outer JSONL `data` value uses
+its inner value's policy. These limits do not bound aggregate text rendering or
+total diagnostic output. A
+rendering refusal reports `io.write` and exits `1`. Write or flush failure also exits `1`,
 with an `io.write` message on standard error if that channel remains writable.
 Output may be partial. The invocation may already have completed; delivery
 failure does not undo it or retry it.

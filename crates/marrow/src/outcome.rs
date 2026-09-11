@@ -1,10 +1,12 @@
-//! The typed CLI outcome owner (design §H).
+//! The typed CLI outcome owner.
 //!
 //! One typed [`Record`] preserves all four failure families as distinct variants;
 //! its JSONL projection is a canonical one-object-per-line surface the differential
 //! harness and (later) `marrow test` consume. The four families never collapse: a
 //! source diagnostic, an artifact rejection, a source-mapped runtime fault, and an
 //! owner-local operational error are distinct records.
+
+use std::fmt::{self, Write};
 
 use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
@@ -351,142 +353,198 @@ fn render_data(
     types: &[SealedRecordType],
     enums: &[SealedEnumType],
 ) -> Result<String, ()> {
-    Ok(match value {
-        None | Some(Value::Optional(None)) => "null".to_string(),
-        Some(Value::Int(v)) => v.to_string(),
-        Some(Value::Bool(v)) => v.to_string(),
-        Some(Value::Text(v)) => {
-            if v.len() > MAX_TEXT_BYTES {
-                return Err(());
-            }
-            json_string(v)
+    // Bare strings and bytes retain their raw-text/unquoted-hex policies. An
+    // enclosing aggregate instead charges all nested encoding to its own limit.
+    let max_bytes = match value {
+        Some(Value::Optional(Some(inner))) => return render_data(Some(inner), types, enums),
+        Some(Value::Text(_)) => MAX_TEXT_BYTES * 6 + 2,
+        Some(Value::Bytes(_)) => MAX_DATA_BYTES + 2,
+        _ => MAX_DATA_BYTES,
+    };
+    let mut data = JsonData::new(max_bytes);
+    data.value(value, types, enums)?;
+    Ok(data.output)
+}
+
+/// One JSON data destination. Every append checks the remaining encoded bytes;
+/// recursive values never retain separately rendered child strings.
+struct JsonData {
+    output: String,
+    max_bytes: usize,
+}
+
+impl JsonData {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            output: String::new(),
+            max_bytes,
         }
-        Some(Value::Bytes(v)) => {
-            let hex = marrow_vm::render::hex_bytes(v, MAX_DATA_BYTES).map_err(|_| ())?;
-            json_string(&hex)
+    }
+
+    fn append(&mut self, text: &str) -> Result<(), ()> {
+        if text.len() > self.max_bytes - self.output.len() {
+            return Err(());
         }
-        // Temporal values render as their canonical text in a JSON string, like bytes.
-        Some(Value::Date(v)) => json_string(&marrow_vm::render::date_text(*v)),
-        Some(Value::Instant(v)) => json_string(&marrow_vm::render::instant_text(*v)),
-        Some(Value::Duration(v)) => json_string(&marrow_temporal::format_duration(*v)),
-        Some(Value::Optional(Some(inner))) => render_data(Some(inner), types, enums)?,
-        Some(Value::Record(idx, slots)) => {
-            let fields = types.get(*idx as usize).map(SealedRecordType::fields);
-            let mut entries: Vec<(&str, String)> = Vec::with_capacity(slots.len());
-            for (position, slot) in slots.iter().enumerate() {
+        self.output.push_str(text);
+        Ok(())
+    }
+
+    fn string(&mut self, text: &str) -> Result<(), ()> {
+        write_json_string(self, text).map_err(|_| ())
+    }
+
+    fn record(
+        &mut self,
+        idx: u16,
+        slots: &[Option<Value>],
+        types: &[SealedRecordType],
+        enums: &[SealedEnumType],
+    ) -> Result<(), ()> {
+        let fields = types.get(idx as usize).map(SealedRecordType::fields);
+        let mut entries: Vec<_> = slots
+            .iter()
+            .enumerate()
+            .map(|(position, slot)| {
                 let name = fields
                     .and_then(|fields| fields.get(position))
                     .map(|field| field.name.as_ref())
                     .unwrap_or("");
-                entries.push((name, render_data(slot.as_ref(), types, enums)?));
+                (name, slot.as_ref())
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        self.append("{")?;
+        for (position, (name, value)) in entries.into_iter().enumerate() {
+            if position > 0 {
+                self.append(",")?;
             }
-            entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            let mut out = String::from("{");
-            for (position, (name, rendered)) in entries.iter().enumerate() {
-                if position > 0 {
-                    out.push(',');
-                }
-                out.push_str(&json_string(name));
-                out.push(':');
-                out.push_str(rendered);
-            }
-            out.push('}');
-            if out.len() > MAX_DATA_BYTES {
-                return Err(());
-            }
-            out
+            self.string(name)?;
+            self.append(":")?;
+            self.value(value, types, enums)?;
         }
-        // An enum value renders `{"enum": ..., "member": ..., "payload": [...]}`,
-        // keys in ascending byte order.
-        Some(Value::Enum(enum_idx, variant, payload)) => {
-            let enum_def = enums.get(*enum_idx as usize);
-            let variant_def = enum_def.and_then(|e| e.variants().get(*variant as usize));
-            let enum_name = enum_def.map(SealedEnumType::name).unwrap_or("");
-            let member = variant_def.map(|v| v.name.as_ref()).unwrap_or("");
-            let mut items = Vec::with_capacity(payload.len());
-            for value in payload.iter() {
-                items.push(render_data(Some(value), types, enums)?);
-            }
-            let out = format!(
-                r#"{{"enum":{},"member":{},"payload":[{}]}}"#,
-                json_string(enum_name),
-                json_string(member),
-                items.join(",")
-            );
-            if out.len() > MAX_DATA_BYTES {
-                return Err(());
-            }
-            out
-        }
-        // A list renders as a JSON array in insertion order.
-        Some(Value::List(_, _, items)) => {
-            let mut rendered = Vec::with_capacity(items.len());
-            for item in items.iter() {
-                rendered.push(render_data(Some(item), types, enums)?);
-            }
-            let out = format!("[{}]", rendered.join(","));
-            if out.len() > MAX_DATA_BYTES {
-                return Err(());
-            }
-            out
-        }
-        // A map renders as a JSON object with string-rendered keys in ascending key
-        // order (entries are stored sorted).
-        Some(Value::Map(_, _, entries)) => {
-            let mut out = String::from("{");
-            for (position, (key, value)) in entries.iter().enumerate() {
-                if position > 0 {
-                    out.push(',');
-                }
-                let key = marrow_vm::render::key_text(key, MAX_DATA_BYTES).map_err(|_| ())?;
-                out.push_str(&json_string(&key));
-                out.push(':');
-                out.push_str(&render_data(Some(value), types, enums)?);
-            }
-            out.push('}');
-            if out.len() > MAX_DATA_BYTES {
-                return Err(());
-            }
-            out
-        }
-        // An entry identity renders as its `Id(k0, k1)` text in a JSON string.
-        Some(Value::Id(_, keys)) => {
-            let text = marrow_vm::render::id_text(keys, MAX_DATA_BYTES).map_err(|_| ())?;
-            let out = json_string(&text);
-            if out.len() > MAX_DATA_BYTES {
-                return Err(());
-            }
-            out
-        }
-    })
-}
+        self.append("}")
+    }
 
-/// Encode a string as a canonical JSON string (design §H escaping rules): `\"`,
-/// `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, other C0 as lowercase `\u00XX`, everything
-/// else (including `/` and all non-ASCII) passed through as UTF-8.
-fn json_string(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\u{0C}' => out.push_str("\\f"),
-            '\r' => out.push_str("\\r"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+    fn enum_value(
+        &mut self,
+        idx: u16,
+        variant: u16,
+        payload: &[Value],
+        types: &[SealedRecordType],
+        enums: &[SealedEnumType],
+    ) -> Result<(), ()> {
+        let enum_def = enums.get(idx as usize);
+        let variant_def = enum_def.and_then(|e| e.variants().get(variant as usize));
+        self.append(r#"{"enum":"#)?;
+        self.string(enum_def.map(SealedEnumType::name).unwrap_or(""))?;
+        self.append(r#","member":"#)?;
+        self.string(variant_def.map(|v| v.name.as_ref()).unwrap_or(""))?;
+        self.append(r#","payload":["#)?;
+        for (position, value) in payload.iter().enumerate() {
+            if position > 0 {
+                self.append(",")?;
+            }
+            self.value(Some(value), types, enums)?;
+        }
+        self.append("]}")
+    }
+
+    fn value(
+        &mut self,
+        value: Option<&Value>,
+        types: &[SealedRecordType],
+        enums: &[SealedEnumType],
+    ) -> Result<(), ()> {
+        match value {
+            None | Some(Value::Optional(None)) => self.append("null"),
+            Some(Value::Int(v)) => write!(self, "{v}").map_err(|_| ()),
+            Some(Value::Bool(v)) => self.append(if *v { "true" } else { "false" }),
+            Some(Value::Text(v)) => {
+                if v.len() > MAX_TEXT_BYTES {
+                    return Err(());
+                }
+                self.string(v)
+            }
+            Some(Value::Bytes(v)) => {
+                let hex = marrow_vm::render::hex_bytes(v, MAX_DATA_BYTES).map_err(|_| ())?;
+                self.string(&hex)
+            }
+            Some(Value::Date(v)) => self.string(&marrow_vm::render::date_text(*v)),
+            Some(Value::Instant(v)) => self.string(&marrow_vm::render::instant_text(*v)),
+            Some(Value::Duration(v)) => self.string(&marrow_temporal::format_duration(*v)),
+            Some(Value::Optional(Some(inner))) => self.value(Some(inner), types, enums),
+            Some(Value::Record(idx, slots)) => self.record(*idx, slots, types, enums),
+            Some(Value::Enum(idx, variant, payload)) => {
+                self.enum_value(*idx, *variant, payload, types, enums)
+            }
+            Some(Value::List(_, _, items)) => {
+                self.append("[")?;
+                for (position, item) in items.iter().enumerate() {
+                    if position > 0 {
+                        self.append(",")?;
+                    }
+                    self.value(Some(item), types, enums)?;
+                }
+                self.append("]")
+            }
+            Some(Value::Map(_, _, entries)) => {
+                self.append("{")?;
+                for (position, (key, value)) in entries.iter().enumerate() {
+                    if position > 0 {
+                        self.append(",")?;
+                    }
+                    let key = marrow_vm::render::key_text(key, MAX_DATA_BYTES).map_err(|_| ())?;
+                    self.string(&key)?;
+                    self.append(":")?;
+                    self.value(Some(value), types, enums)?;
+                }
+                self.append("}")
+            }
+            Some(Value::Id(_, keys)) => {
+                let text = marrow_vm::render::id_text(keys, MAX_DATA_BYTES).map_err(|_| ())?;
+                self.string(&text)
+            }
         }
     }
-    out.push('"');
+}
+
+impl fmt::Write for JsonData {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.append(text).map_err(|_| fmt::Error)
+    }
+}
+
+/// Encode a string as canonical JSON: `\"`,
+/// `\\`, `\b`, `\t`, `\n`, `\f`, `\r`, other C0 as lowercase `\u00XX`, everything
+/// else (including `/` and all non-ASCII) passed through as UTF-8.
+fn write_json_string(out: &mut dyn fmt::Write, text: &str) -> fmt::Result {
+    out.write_char('"')?;
+    for ch in text.chars() {
+        match ch {
+            '"' => out.write_str("\\\""),
+            '\\' => out.write_str("\\\\"),
+            '\u{08}' => out.write_str("\\b"),
+            '\t' => out.write_str("\\t"),
+            '\n' => out.write_str("\\n"),
+            '\u{0C}' => out.write_str("\\f"),
+            '\r' => out.write_str("\\r"),
+            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32),
+            c => out.write_char(c),
+        }?;
+    }
+    out.write_char('"')
+}
+
+#[expect(clippy::expect_used, reason = "writing to a String is infallible")]
+fn json_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    write_json_string(&mut out, text).expect("writing to a String is infallible");
     out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_DATA_BYTES, Record, json_string, render_data};
+    use super::{JsonData, MAX_DATA_BYTES, Record, json_string, render_data};
     use marrow_vm::Value;
 
     #[test]
@@ -646,7 +704,7 @@ mod tests {
         );
     }
 
-    /// Keys within an object are in ascending byte order (design §H), including the
+    /// Keys within an object are in ascending byte order, including the
     /// nested span object (`column` before `line`).
     #[test]
     fn keys_are_in_ascending_byte_order() {
@@ -673,6 +731,162 @@ mod tests {
         assert_eq!(json_string("\u{01}"), r#""\u0001""#);
         assert_eq!(json_string("a/b"), r#""a/b""#);
         assert_eq!(json_string("café ☕"), "\"café ☕\"");
+    }
+
+    #[test]
+    fn json_data_writer_retains_its_prefix_on_refusal() {
+        let mut data = JsonData::new(3);
+        assert_eq!(data.append("é"), Ok(()));
+        assert_eq!(data.append("a"), Ok(()));
+        assert_eq!(data.output, "éa");
+        assert_eq!(data.append("b"), Err(()));
+        assert_eq!(data.output, "éa");
+        assert_eq!(data.append(""), Ok(()));
+
+        for text in ["a\"b\\c", "\u{08}\t\n\u{0C}\r", "\u{01}", "café ☕/"] {
+            let expected = json_string(text);
+            let mut exact = JsonData::new(expected.len());
+            assert_eq!(exact.string(text), Ok(()));
+            assert_eq!(exact.output, expected);
+            let mut short = JsonData::new(expected.len() - 1);
+            assert_eq!(short.string(text), Err(()));
+            assert!(!short.output.is_empty());
+            assert!(expected.starts_with(&short.output));
+            assert!(short.output.len() < expected.len());
+        }
+    }
+
+    #[test]
+    fn json_value_forms_share_the_encoded_destination() {
+        use marrow_kernel::codec::key::KeyScalar;
+        use std::rc::Rc;
+
+        let cases = [
+            (Value::Int(i64::MIN), "-9223372036854775808"),
+            (Value::Bool(false), "false"),
+            (Value::Text("é\n".into()), r#""é\n""#),
+            (Value::Bytes(vec![0, 171, 255].into()), r#""0x00abff""#),
+            (Value::Date(0), r#""1970-01-01""#),
+            (Value::Instant(0), r#""1970-01-01T00:00:00Z""#),
+            (Value::Duration(0), r#""PT0S""#),
+            (Value::Optional(None), "null"),
+            (Value::Optional(Some(Box::new(Value::Bool(true)))), "true"),
+            (Value::list(0, Rc::new(Vec::new())), "[]"),
+            (Value::map(0, Rc::new(Vec::new())), "{}"),
+            (
+                Value::map(
+                    0,
+                    Rc::new(vec![
+                        (
+                            KeyScalar::Str("a\"\n".to_string()),
+                            Value::Text("é\\".into()),
+                        ),
+                        (KeyScalar::Str("z".to_string()), Value::Optional(None)),
+                    ]),
+                ),
+                r#"{"a\"\n":"é\\","z":null}"#,
+            ),
+            // Missing metadata keeps the existing empty-name fallbacks and stable
+            // field order when those names compare equal.
+            (
+                Value::Record(0, vec![Some(Value::Int(7)), None].into_boxed_slice()),
+                r#"{"":7,"":null}"#,
+            ),
+            (
+                Value::Enum(
+                    0,
+                    0,
+                    vec![Value::list(
+                        0,
+                        Rc::new(vec![Value::Text("é\n".into()), Value::Optional(None)]),
+                    )]
+                    .into_boxed_slice(),
+                ),
+                r#"{"enum":"","member":"","payload":[["é\n",null]]}"#,
+            ),
+            (
+                Value::Id(
+                    0,
+                    vec![KeyScalar::Str("é\n".to_string()), KeyScalar::Int(-2)].into(),
+                ),
+                r#""Id(é\n, -2)""#,
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                render_data(Some(&value), &[], &[]),
+                Ok(expected.to_string())
+            );
+            let mut exact = JsonData::new(expected.len());
+            assert_eq!(exact.value(Some(&value), &[], &[]), Ok(()));
+            assert_eq!(exact.output, expected);
+            let mut short = JsonData::new(expected.len() - 1);
+            assert_eq!(short.value(Some(&value), &[], &[]), Err(()));
+            assert!(expected.starts_with(&short.output));
+            assert!(short.output.len() < expected.len());
+        }
+    }
+
+    #[test]
+    fn outer_and_nested_json_limits_preserve_their_units() {
+        use marrow_kernel::codec::key::KeyScalar;
+        use std::rc::Rc;
+
+        let raw = Value::Text("\0".repeat(MAX_DATA_BYTES).into());
+        let optional = Value::Optional(Some(Box::new(raw.clone())));
+        let encoded = render_data(Some(&optional), &[], &[]).expect("transparent raw text limit");
+        assert_eq!(encoded.len(), MAX_DATA_BYTES * 6 + 2);
+        let nested = Value::list(0, Rc::new(vec![raw]));
+        assert_eq!(render_data(Some(&nested), &[], &[]), Err(()));
+        assert_eq!(
+            Record::Value(Some(nested)).to_text(&[], &[]),
+            Ok(format!("[{}]", "\0".repeat(MAX_DATA_BYTES))),
+        );
+
+        for (extra, accepted) in [(0, true), (1, false)] {
+            let list = Value::list(
+                0,
+                Rc::new(vec![Value::Text(
+                    "a".repeat(MAX_DATA_BYTES - 4 + extra).into(),
+                )]),
+            );
+            let id = Value::Id(
+                0,
+                vec![KeyScalar::Str("a".repeat(MAX_DATA_BYTES - 6 + extra))].into(),
+            );
+            for value in [list, id] {
+                let result = render_data(Some(&value), &[], &[]);
+                if accepted {
+                    assert_eq!(result.expect("exact encoded limit").len(), MAX_DATA_BYTES);
+                } else {
+                    assert_eq!(result, Err(()));
+                }
+            }
+        }
+
+        let bytes = Value::Bytes(vec![0; (MAX_DATA_BYTES - 2) / 2].into());
+        assert_eq!(
+            render_data(
+                Some(&Value::Optional(Some(Box::new(bytes.clone())))),
+                &[],
+                &[]
+            )
+            .expect("transparent unquoted hex limit")
+            .len(),
+            MAX_DATA_BYTES + 2,
+        );
+        let list = Value::list(0, Rc::new(vec![bytes]));
+        assert_eq!(render_data(Some(&list), &[], &[]), Err(()));
+        let exact = Value::list(
+            0,
+            Rc::new(vec![Value::Bytes(vec![0; (MAX_DATA_BYTES - 6) / 2].into())]),
+        );
+        assert_eq!(
+            render_data(Some(&exact), &[], &[])
+                .expect("nested exact hex limit")
+                .len(),
+            MAX_DATA_BYTES,
+        );
     }
 
     #[test]
@@ -706,5 +920,60 @@ mod tests {
 
         let excess = Value::Bytes(vec![0; MAX_DATA_BYTES / 2].into());
         assert_eq!(render_data(Some(&excess), &[], &[]), Err(()));
+    }
+
+    #[test]
+    fn json_aggregate_refuses_before_crossing_data_limit() {
+        use std::rc::Rc;
+
+        let nested = |width| {
+            let inner = Value::list(0, Rc::new(vec![Value::Text("".into()); width]));
+            Value::list(1, Rc::new(vec![inner; width]))
+        };
+        assert_eq!(
+            Record::Value(Some(nested(2))).to_jsonl(&[], &[]),
+            Ok(r#"{"data":[["",""],["",""]],"kind":"run","outcome":"value"}"#.to_string()),
+        );
+
+        let value = nested(256);
+        let Value::List(outer_type, outer_bytes, items) = &value else {
+            panic!("the result is a list");
+        };
+        assert_eq!((*outer_type, *outer_bytes, items.len()), (1, 256, 256));
+        assert_eq!(value.structural_bytes(), 257);
+        assert!(marrow_vm::collection_within_limits(
+            items.len(),
+            *outer_bytes
+        ));
+        let Value::List(_, _, first) = &items[0] else {
+            panic!("the first item is a list");
+        };
+        for item in items.iter() {
+            let Value::List(inner_type, inner_bytes, leaves) = item else {
+                panic!("every item is a list");
+            };
+            assert_eq!((*inner_type, *inner_bytes, leaves.len()), (0, 0, 256));
+            assert!(marrow_vm::collection_within_limits(
+                leaves.len(),
+                *inner_bytes
+            ));
+            assert!(Rc::ptr_eq(first, leaves));
+            assert!(
+                leaves
+                    .iter()
+                    .all(|leaf| matches!(leaf, Value::Text(text) if text.is_empty()))
+            );
+        }
+
+        assert_eq!(render_data(Some(&value), &[], &[]), Err(()));
+        let mut data = JsonData::new(MAX_DATA_BYTES);
+        assert_eq!(data.value(Some(&value), &[], &[]), Err(()));
+        assert_eq!(Record::Value(Some(value)).to_jsonl(&[], &[]), Err(()));
+        let inner_json = format!("[{}]", vec![r#""""#; 256].join(","));
+        let expected = format!("[{}]", vec![inner_json; 256].join(","));
+        assert_eq!(expected.len(), 197_121);
+        assert!(!data.output.is_empty());
+        assert!(expected.starts_with(&data.output));
+        assert!(data.output.len() <= MAX_DATA_BYTES);
     }
 }

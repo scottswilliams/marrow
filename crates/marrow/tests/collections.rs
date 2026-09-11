@@ -125,6 +125,88 @@ pub fn nums(): List<int> {
     assert!(stdout.contains("[1, 2]"), "{stdout}");
 }
 
+#[test]
+fn nested_list_json_refusal_preserves_the_command_outcome() {
+    let workspace = Project::single(
+        r#"pub fn nested(width: int): List<List<string>> {
+    var inner: List<string> = List()
+    var position: int = 0
+    while position < width {
+        inner = append(inner, "")
+        position += 1
+    }
+    var outer: List<List<string>> = List()
+    position = 0
+    while position < width {
+        outer = append(outer, inner)
+        position += 1
+    }
+    return outer
+}
+"#,
+    )
+    .materialize("nested-list-json-limit");
+
+    let accepted = workspace.marrow(&["run", "nested", "--format", "jsonl", "--", "2"]);
+    assert_eq!(accepted.code(), Some(0), "{accepted:?}");
+    assert_eq!(
+        accepted.stdout.as_slice(),
+        b"{\"data\":[[\"\",\"\"],[\"\",\"\"]],\"kind\":\"run\",\"outcome\":\"value\"}\n",
+    );
+    assert!(accepted.stderr.is_empty(), "{accepted:?}");
+
+    let excess = workspace.marrow(&["run", "nested", "--format", "jsonl", "--", "256"]);
+    assert_eq!(excess.code(), Some(1), "{excess:?}");
+    assert_eq!(
+        excess.stdout.as_slice(),
+        b"{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n",
+    );
+    assert!(excess.stderr.is_empty(), "{excess:?}");
+}
+
+#[test]
+fn nested_json_preserves_record_order_enum_payloads_and_escaped_keys() {
+    let workspace = Project::single(
+        r#"enum Choice {
+    item(text: string, n: int)
+}
+
+struct Packet {
+    z: string
+    a: Choice
+}
+
+pub fn shaped(): Packet {
+    return Packet(z: "tail", a: Choice::item(text: "é\n", n: 7))
+}
+
+pub fn named(): Map<string, string> {
+    var values: Map<string, string> = Map()
+    values["z"] = "last"
+    values["a\"\\\n"] = "é\t"
+    return values
+}
+"#,
+    )
+    .materialize("nested-json-shapes");
+
+    for (export, expected) in [
+        (
+            "shaped",
+            r#"{"data":{"a":{"enum":"Choice","member":"item","payload":["é\n",7]},"z":"tail"},"kind":"run","outcome":"value"}"#,
+        ),
+        (
+            "named",
+            r#"{"data":{"a\"\\\n":"é\t","z":"last"},"kind":"run","outcome":"value"}"#,
+        ),
+    ] {
+        let result = workspace.marrow(&["run", export, "--format", "jsonl"]);
+        assert_eq!(result.code(), Some(0), "{result:?}");
+        assert_eq!(result.stdout.as_slice(), format!("{expected}\n").as_bytes());
+        assert!(result.stderr.is_empty(), "{result:?}");
+    }
+}
+
 /// A returned map renders as a JSON object with keys in ascending order under
 /// `--format jsonl` and as `[k: v, ...]` in text.
 #[test]

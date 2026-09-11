@@ -37,9 +37,12 @@ Each variable-size contribution is checked before append, including the complete
 hex expansion before its digit loop. VM conversion passes 65,536 bytes and maps
 the typed refusal to `run.text_limit` at the current instruction. The CLI retains
 its bare-string limit and has no aggregate-text byte ceiling. Its JSON hex, key
-and identity contributions pass the existing data limit; JSON's separate encoding
-and final admission checks remain in `outcome`. These checks bound constructed
-text length, not allocator capacity, recursion or total runtime memory.
+and identity contributions pass the existing data limit. `outcome::JsonData`
+checks remaining encoded bytes before each append; nested values share that
+destination, record sorting borrows field slots, and one escaping loop also serves
+the other outcome records. Bare text and bytes retain their distinct raw-byte and
+unquoted-hex policies. These checks bound constructed text length, not allocator
+capacity, recursion or total runtime memory.
 
 Verifier jump resolution records destinations with a predecessor other than the
 immediately preceding instruction. Type flow carries one working frame through
@@ -295,9 +298,10 @@ verified export signature at the storeless and persistent call boundaries.
 Stdin supplies exactly one bare string parameter; the argument reader materializes
 at most 65,537 input bytes and admits at most 65,536 UTF-8 bytes. Standard input
 buffering may read ahead. The persistent path discovers the companion before
-consuming input. `outcome` checks returned bare-string size before rendering and
-returns rendering refusals to `cmd_run`, whose emitter writes and flushes records
-and fails on rendering or sink errors. Delivery failure can follow a completed
+consuming input. `outcome` checks returned bare-string size before rendering,
+bounds JSON data growth while writing, and returns rendering refusals to
+`cmd_run`, whose emitter writes and flushes records and fails on rendering or
+sink errors. Delivery failure can follow a completed
 invocation; it does not undo or retry it. Aggregate text materialization remains
 outside this string boundary ([CLI](../tools/cli.md)).
 
