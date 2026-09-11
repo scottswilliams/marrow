@@ -17,8 +17,8 @@
 
 use crate::error::WireError;
 use crate::id::Id32;
-use crate::json::{self, Json};
-use crate::{frame, span::Span};
+use crate::json::{self, Json, ObjectWriter, ValueWriter};
+use crate::{EncodedFrame, frame, span::Span};
 
 /// What is known about durable state after an invocation stopped without
 /// completing. This is independent of the source-mapped fault and carries no
@@ -102,7 +102,33 @@ impl ClientMessage {
     /// Encode this message as a full frame, assigning `turn` to a request. Handshake and
     /// provisioning messages have no call turn and therefore ignore the argument.
     pub fn encode_with_turn(&self, turn: u32) -> Result<Vec<u8>, WireError> {
-        frame::assemble(json::encode(&self.to_json(turn)).as_bytes())
+        frame::encode(|slot| {
+            slot.object(|object| match self {
+                ClientMessage::Hello { nonce } => {
+                    object.field("kind", |slot| slot.string("hello"))?;
+                    object.field("nonce", |slot| slot.string(&nonce.to_hex()))
+                }
+                ClientMessage::Request { export, args } => {
+                    object.field("args", |slot| {
+                        slot.array(|array| {
+                            for arg in args {
+                                array.element(|slot| slot.json(arg))?;
+                            }
+                            Ok(())
+                        })
+                    })?;
+                    object.field("export", |slot| slot.string(&export.to_hex()))?;
+                    object.field("kind", |slot| slot.string("request"))?;
+                    object.field("turn", |slot| slot.integer(i64::from(turn)))
+                }
+                ClientMessage::Provision { store, approval } => {
+                    object.field("approval", |slot| slot.string(approval))?;
+                    object.field("kind", |slot| slot.string("provision"))?;
+                    object.field("store", |slot| slot.string(store))
+                }
+            })
+        })
+        .map(EncodedFrame::into_bytes)
     }
 
     /// Decode a client message from a frame body (`version ‖ json`), discarding a request's
@@ -150,26 +176,6 @@ impl ClientMessage {
             _ => Err(WireError::Malformed),
         }
     }
-
-    fn to_json(&self, turn: u32) -> Json {
-        match self {
-            ClientMessage::Hello { nonce } => object(vec![
-                ("kind", Json::Str("hello".to_string())),
-                ("nonce", Json::Str(nonce.to_hex())),
-            ]),
-            ClientMessage::Request { export, args } => object(vec![
-                ("kind", Json::Str("request".to_string())),
-                ("export", Json::Str(export.to_hex())),
-                ("args", Json::Array(args.clone())),
-                ("turn", Json::Int(i64::from(turn))),
-            ]),
-            ClientMessage::Provision { store, approval } => object(vec![
-                ("kind", Json::Str("provision".to_string())),
-                ("store", Json::Str(store.clone())),
-                ("approval", Json::Str(approval.clone())),
-            ]),
-        }
-    }
 }
 
 impl ServerMessage {
@@ -182,7 +188,50 @@ impl ServerMessage {
     /// Encode this message as a full frame, assigning `turn` to a call reply. `Ready` and
     /// `Provisioned` are not call replies and therefore carry no turn.
     pub fn encode_with_turn(&self, turn: u32) -> Result<Vec<u8>, WireError> {
-        frame::assemble(json::encode(&self.to_json(turn)).as_bytes())
+        self.encode_frame(turn).map(EncodedFrame::into_bytes)
+    }
+
+    /// Encode a complete bounded frame, borrowing the message payload.
+    /// Handshake and provision receipts carry no turn.
+    pub fn encode_frame(&self, turn: u32) -> Result<EncodedFrame, WireError> {
+        frame::encode(|slot| {
+            slot.object(|object| match self {
+                ServerMessage::Ready { session, interface } => {
+                    object.field("interface", |slot| slot.string(&interface.to_hex()))?;
+                    object.field("kind", |slot| slot.string("ready"))?;
+                    object.field("session", |slot| slot.string(&session.to_hex()))
+                }
+                ServerMessage::Value { data } => {
+                    write_value_response(object, turn, |slot| slot.json(data))
+                }
+                ServerMessage::Fault { code, span } => {
+                    object.field("code", |slot| slot.string(code))?;
+                    object.field("kind", |slot| slot.string("fault"))?;
+                    object.field("span", |slot| slot.json(&span.to_json()))?;
+                    object.field("turn", |slot| slot.integer(i64::from(turn)))
+                }
+                ServerMessage::Incomplete {
+                    code,
+                    durable,
+                    span,
+                } => {
+                    object.field("code", |slot| slot.string(code))?;
+                    object.field("durable", |slot| slot.string(durable.as_str()))?;
+                    object.field("kind", |slot| slot.string("incomplete"))?;
+                    object.field("span", |slot| slot.json(&span.to_json()))?;
+                    object.field("turn", |slot| slot.integer(i64::from(turn)))
+                }
+                ServerMessage::Reject { code } => {
+                    object.field("code", |slot| slot.string(code))?;
+                    object.field("kind", |slot| slot.string("reject"))?;
+                    object.field("turn", |slot| slot.integer(i64::from(turn)))
+                }
+                ServerMessage::Provisioned { instance } => {
+                    object.field("instance", |slot| slot.string(instance))?;
+                    object.field("kind", |slot| slot.string("provisioned"))
+                }
+            })
+        })
     }
 
     /// Decode a server message from a frame body (`version ‖ json`), discarding a reply's
@@ -258,51 +307,27 @@ impl ServerMessage {
             _ => Err(WireError::Malformed),
         }
     }
+}
 
-    fn to_json(&self, turn: u32) -> Json {
-        match self {
-            ServerMessage::Ready { session, interface } => object(vec![
-                ("kind", Json::Str("ready".to_string())),
-                ("session", Json::Str(session.to_hex())),
-                ("interface", Json::Str(interface.to_hex())),
-            ]),
-            ServerMessage::Value { data } => object(vec![
-                ("kind", Json::Str("value".to_string())),
-                ("data", data.clone()),
-                ("turn", Json::Int(i64::from(turn))),
-            ]),
-            ServerMessage::Fault { code, span } => object(vec![
-                ("kind", Json::Str("fault".to_string())),
-                ("code", Json::Str(code.clone())),
-                ("span", span.to_json()),
-                ("turn", Json::Int(i64::from(turn))),
-            ]),
-            ServerMessage::Incomplete {
-                code,
-                durable,
-                span,
-            } => object(vec![
-                ("kind", Json::Str("incomplete".to_string())),
-                ("code", Json::Str(code.clone())),
-                ("durable", Json::Str(durable.as_str().to_string())),
-                ("span", span.to_json()),
-                ("turn", Json::Int(i64::from(turn))),
-            ]),
-            ServerMessage::Reject { code } => object(vec![
-                ("kind", Json::Str("reject".to_string())),
-                ("code", Json::Str(code.clone())),
-                ("turn", Json::Int(i64::from(turn))),
-            ]),
-            ServerMessage::Provisioned { instance } => object(vec![
-                ("kind", Json::Str("provisioned".to_string())),
-                ("instance", Json::Str(instance.clone())),
-            ]),
-        }
+impl EncodedFrame {
+    /// Encode a successful call while its returned value is borrowed. The callback
+    /// fills exactly one canonical value; only the wire owner writes the envelope.
+    pub fn value(
+        turn: u32,
+        write: impl FnOnce(ValueWriter<'_>) -> Result<(), WireError>,
+    ) -> Result<Self, WireError> {
+        frame::encode(|slot| slot.object(|object| write_value_response(object, turn, write)))
     }
 }
 
-fn object(pairs: Vec<(&str, Json)>) -> Json {
-    Json::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+fn write_value_response(
+    object: &mut ObjectWriter<'_, '_>,
+    turn: u32,
+    write: impl FnOnce(ValueWriter<'_>) -> Result<(), WireError>,
+) -> Result<(), WireError> {
+    object.field("data", write)?;
+    object.field("kind", |slot| slot.string("value"))?;
+    object.field("turn", |slot| slot.integer(i64::from(turn)))
 }
 
 /// A decode-side view over a message object's fields, resolving each by key with
@@ -417,6 +442,10 @@ mod tests {
     use crate::id::Id32;
     use crate::json::{self, Json};
     use crate::span::Span;
+
+    fn object(pairs: Vec<(&str, Json)>) -> Json {
+        Json::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
 
     fn json_of(frame: &[u8]) -> String {
         // Skip the 4-byte length prefix and the version byte.
@@ -604,7 +633,7 @@ mod tests {
             Json::Int(i64::from(u32::MAX) + 1),
             Json::Str("0".into()),
         ] {
-            let encoded = json::encode(&super::object(vec![
+            let encoded = json::encode(&object(vec![
                 ("kind", Json::Str("value".to_string())),
                 ("data", Json::Null),
                 ("turn", bad),
@@ -625,7 +654,7 @@ mod tests {
                 ("extra", Json::Null),
             ],
         ] {
-            let encoded = json::encode(&super::object(pairs));
+            let encoded = json::encode(&object(pairs));
             let body = [&[crate::PROTOCOL_VERSION], encoded.as_bytes()].concat();
             assert!(ServerMessage::decode_with_turn(&body).is_err());
         }
@@ -662,7 +691,7 @@ mod tests {
     /// An extra or missing field is malformed even when the JSON is canonical.
     #[test]
     fn field_sets_are_exact() {
-        let extra = json::encode(&super::object(vec![
+        let extra = json::encode(&object(vec![
             ("kind", Json::Str("value".to_string())),
             ("data", Json::Int(1)),
             ("turn", Json::Int(0)),
@@ -671,14 +700,14 @@ mod tests {
         let body = [&[crate::PROTOCOL_VERSION], extra.as_bytes()].concat();
         assert!(ServerMessage::decode(&body).is_err());
 
-        let bad_durable = json::encode(&super::object(vec![
+        let bad_durable = json::encode(&object(vec![
             ("kind", Json::Str("incomplete".to_string())),
             ("code", Json::Str("run.commit".to_string())),
             ("durable", Json::Str("maybe_new".to_string())),
             ("turn", Json::Int(0)),
             (
                 "span",
-                super::object(vec![("line", Json::Int(1)), ("column", Json::Int(1))]),
+                object(vec![("line", Json::Int(1)), ("column", Json::Int(1))]),
             ),
         ]));
         let body = [&[crate::PROTOCOL_VERSION], bad_durable.as_bytes()].concat();

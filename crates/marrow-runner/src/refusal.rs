@@ -1,6 +1,6 @@
 //! A handler that serves nothing but one typed refusal.
 
-use marrow_local_wire::{ClientMessage, ServerMessage};
+use marrow_local_wire::{ClientMessage, EncodedFrame, ServerMessage, WireError};
 
 use crate::channel::Handler;
 
@@ -16,20 +16,24 @@ use crate::channel::Handler;
 /// source-vocabulary refusal sentence is written to the runner's stderr, the byte-log pipe the
 /// trusted main owns.
 pub struct RefusalService {
-    code: String,
+    response: ServerMessage,
 }
 
 impl RefusalService {
     /// A refusal service that rejects every request with `code`.
     pub fn new(code: impl Into<String>) -> Self {
-        Self { code: code.into() }
+        Self {
+            response: ServerMessage::Reject { code: code.into() },
+        }
     }
 }
 
 impl Handler for RefusalService {
-    fn handle(&mut self, _message: ClientMessage) -> ServerMessage {
-        ServerMessage::Reject {
-            code: self.code.clone(),
-        }
+    fn handle(
+        &mut self,
+        _message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
+        self.response.encode_frame(turn.unwrap_or(0))
     }
 }

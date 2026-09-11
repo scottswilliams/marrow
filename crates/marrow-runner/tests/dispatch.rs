@@ -2,7 +2,9 @@
 //! compiled through the production pipeline. No socket is bound here, so these run
 //! under the ordinary sandbox; the channel discipline is covered by `channel.rs`.
 
-use marrow_local_wire::{ClientMessage, Json, MAX_FRAME, ServerMessage, frame_body_len};
+use marrow_local_wire::{
+    ClientMessage, EncodedFrame, Json, MAX_FRAME, ServerMessage, WireError, frame_body_len,
+};
 use marrow_runner::{Id32, Service};
 
 /// The durable identity ledger used by the durable fixture below.
@@ -52,7 +54,10 @@ fn id_of(idmap: &[(String, Id32)], name: &str) -> Id32 {
 }
 
 fn call(service: &Service, export: Id32, args: Vec<Json>) -> ServerMessage {
-    service.handle(ClientMessage::Request { export, args })
+    let frame = service
+        .handle(ClientMessage::Request { export, args }, Some(0))
+        .expect("reply fits");
+    ServerMessage::decode(&frame.as_bytes()[4..]).expect("reply decodes")
 }
 
 fn framed_call(
@@ -61,6 +66,16 @@ fn framed_call(
     args: Vec<Json>,
     expected_frame_bytes: usize,
 ) -> ServerMessage {
+    let frame = framed_result(service, export, args, expected_frame_bytes).expect("reply fits");
+    ServerMessage::decode(&frame.as_bytes()[4..]).expect("reply decodes")
+}
+
+fn framed_result(
+    service: &Service,
+    export: Id32,
+    args: Vec<Json>,
+    expected_frame_bytes: usize,
+) -> Result<EncodedFrame, WireError> {
     let frame = ClientMessage::Request { export, args }
         .encode()
         .expect("request fits a complete frame");
@@ -69,8 +84,9 @@ fn framed_call(
     let body_len = frame_body_len(header).expect("frame body is admitted");
     assert_eq!(body_len, frame.len() - 4);
     assert!(body_len <= MAX_FRAME);
-    let request = ClientMessage::decode(&frame[4..]).expect("framed request decodes");
-    service.handle(request)
+    let (request, turn) =
+        ClientMessage::decode_with_turn(&frame[4..]).expect("framed request decodes");
+    service.handle(request, turn)
 }
 
 const ADD: &str = r#"pub fn add(a: int, b: int): int {
@@ -87,6 +103,55 @@ fn a_storeless_call_returns_its_value() {
         vec![Json::Int(2), Json::Int(3)],
     );
     assert_eq!(response, ServerMessage::Value { data: Json::Int(5) });
+}
+
+#[test]
+fn shared_text_result_is_bounded_before_frame_construction() {
+    let source = r#"pub fn triple(value: string): List<string> {
+    var xs: List<string> = List()
+    xs = append(xs, value)
+    xs = append(xs, value)
+    xs = append(xs, value)
+    return xs
+}
+"#;
+    let (service, ids) = build(source, None);
+    assert_eq!(ids.len(), 1);
+    let export = id_of(&ids, "triple");
+    let small_frame = framed_result(&service, export, vec![Json::Str("\0".into())], 126)
+        .expect("small reply fits");
+    let frame = small_frame.as_bytes();
+    let small = ServerMessage::decode(&frame[4..]).expect("small reply decodes");
+    assert_eq!(
+        small,
+        ServerMessage::Value {
+            data: array(vec![Json::Str("\0".into()); 3]),
+        }
+    );
+    assert_eq!(frame.len(), 66);
+    assert_eq!(
+        frame_body_len(frame[..4].try_into().expect("header")),
+        Ok(62)
+    );
+    assert_eq!(frame[4], marrow_local_wire::PROTOCOL_VERSION);
+    assert_eq!(
+        &frame[5..],
+        br#"{"data":["\u0000","\u0000","\u0000"],"kind":"value","turn":0}"#,
+    );
+    assert_eq!(
+        ServerMessage::decode_with_turn(&frame[4..]),
+        Ok((small, Some(0))),
+    );
+
+    assert_eq!(
+        framed_result(
+            &service,
+            export,
+            vec![Json::Str("\0".repeat(58_252))],
+            349_632,
+        ),
+        Err(WireError::FrameTooLarge),
+    );
 }
 
 #[test]

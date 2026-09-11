@@ -31,9 +31,9 @@ mod message;
 mod span;
 
 pub use error::WireError;
-pub use frame::frame_body_len;
+pub use frame::{EncodedFrame, frame_body_len};
 pub use id::Id32;
-pub use json::{Json, encode, parse_strict};
+pub use json::{ArrayWriter, Json, ObjectWriter, ValueWriter, encode, parse_strict};
 pub use loss::{HandoffStage, LossClass, classify};
 pub use message::{ClientMessage, DurableState, ServerMessage};
 pub use span::Span;

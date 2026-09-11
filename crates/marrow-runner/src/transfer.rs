@@ -13,7 +13,7 @@
 //! `ImageType`, so a served signature always has a codec.
 
 use marrow_image::{ImageType, Scalar};
-use marrow_local_wire::Json;
+use marrow_local_wire::{Json, ValueWriter, WireError};
 use marrow_verify::{SealedCollectionType, VerifiedImage};
 use marrow_vm::{KeyScalar, Value, collection_within_limits, key_bytes};
 use std::rc::Rc;
@@ -247,80 +247,91 @@ fn decode_key(scalar: Scalar, json: &Json) -> Option<KeyScalar> {
     })
 }
 
-/// Encode a returned value into its wire JSON, or `None` if a value fails to match the
-/// verified transfer graph. Finite lists, ordered maps, and entry identities are members
-/// of that graph and are encoded below.
-pub(crate) fn encode_value(image: &VerifiedImage, value: &Value) -> Option<Json> {
-    Some(match value {
-        Value::Int(n) => Json::Int(*n),
-        Value::Bool(b) => Json::Bool(*b),
-        Value::Text(text) => Json::Str(text.to_string()),
-        Value::Bytes(bytes) => Json::Str(hex_bytes(bytes)),
-        Value::Date(days) => Json::Str(date_text(*days)),
-        Value::Instant(nanos) => Json::Str(instant_text(*nanos)),
-        Value::Duration(nanos) => Json::Str(marrow_temporal::format_duration(*nanos)),
-        Value::Optional(None) => Json::Null,
-        Value::Optional(Some(inner)) => encode_value(image, inner)?,
+/// Stream a returned value while its verified image and payload remain borrowed.
+pub(crate) fn encode_value(
+    image: &VerifiedImage,
+    value: &Value,
+    slot: ValueWriter<'_>,
+) -> Result<(), WireError> {
+    match value {
+        Value::Int(n) => slot.integer(*n),
+        Value::Bool(b) => slot.boolean(*b),
+        Value::Text(text) => slot.string(text),
+        Value::Bytes(bytes) => slot.hex_bytes(bytes),
+        Value::Date(days) => slot.string(&date_text(*days)),
+        Value::Instant(nanos) => slot.string(&instant_text(*nanos)),
+        Value::Duration(nanos) => slot.string(&marrow_temporal::format_duration(*nanos)),
+        Value::Optional(None) => slot.null(),
+        Value::Optional(Some(inner)) => encode_value(image, inner, slot),
         Value::Record(idx, slots) => {
             let record = image.record_type(*idx);
-            let mut pairs = Vec::new();
-            for (position, slot) in slots.iter().enumerate() {
-                // A vacant sparse slot is omitted; a present slot carries its value.
-                if let Some(inner) = slot {
-                    let name = record.fields()[position].name.to_string();
-                    pairs.push((name, encode_value(image, inner)?));
+            let mut fields: Vec<(&str, &Value)> = record
+                .fields()
+                .iter()
+                .zip(slots.iter())
+                .filter_map(|(field, value)| {
+                    value.as_ref().map(|value| (field.name.as_ref(), value))
+                })
+                .collect();
+            fields.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            slot.object(|object| {
+                for (name, value) in fields {
+                    object.field(name, |slot| encode_value(image, value, slot))?;
                 }
-            }
-            Json::Object(pairs)
+                Ok(())
+            })
         }
         Value::Enum(idx, variant, payload) => {
-            let variant_name = image.enums()[*idx as usize].variants()[*variant as usize]
-                .name
-                .to_string();
-            let mut items = Vec::with_capacity(payload.len());
-            for leaf in payload.iter() {
-                items.push(encode_value(image, leaf)?);
-            }
-            Json::Object(vec![
-                ("member".to_string(), Json::Str(variant_name)),
-                ("payload".to_string(), Json::Array(items)),
-            ])
+            let variant_name = &image.enums()[*idx as usize].variants()[*variant as usize].name;
+            slot.object(|object| {
+                object.field("member", |slot| slot.string(variant_name))?;
+                object.field("payload", |slot| {
+                    slot.array(|array| {
+                        for value in payload.iter() {
+                            array.element(|slot| encode_value(image, value, slot))?;
+                        }
+                        Ok(())
+                    })
+                })
+            })
         }
-        Value::List(_, _, items) => {
-            let mut encoded = Vec::with_capacity(items.len());
-            for item in items.iter() {
-                encoded.push(encode_value(image, item)?);
+        Value::List(_, _, items) => slot.array(|array| {
+            for value in items.iter() {
+                array.element(|slot| encode_value(image, value, slot))?;
             }
-            Json::Array(encoded)
-        }
-        // An ordered map crosses as an array of `[key, value]` pair-arrays, never a
-        // JS object, so a non-string key and entry order both survive.
-        Value::Map(_, _, entries) => {
-            let mut encoded = Vec::with_capacity(entries.len());
+            Ok(())
+        }),
+        // Map order and non-string keys survive as pair-arrays.
+        Value::Map(_, _, entries) => slot.array(|array| {
             for (key, value) in entries.iter() {
-                encoded.push(Json::Array(vec![
-                    encode_key(key),
-                    encode_value(image, value)?,
-                ]));
+                array.element(|slot| {
+                    slot.array(|pair| {
+                        pair.element(|slot| encode_key(key, slot))?;
+                        pair.element(|slot| encode_value(image, value, slot))
+                    })
+                })?;
             }
-            Json::Array(encoded)
-        }
-        // An entry identity crosses as the array of its key-column scalars.
-        Value::Id(_, keys) => Json::Array(keys.iter().map(encode_key).collect()),
-    })
+            Ok(())
+        }),
+        Value::Id(_, keys) => slot.array(|array| {
+            for key in keys.iter() {
+                array.element(|slot| encode_key(key, slot))?;
+            }
+            Ok(())
+        }),
+    }
 }
 
-/// Encode a [`KeyScalar`] into its wire JSON, mirroring [`encode_value`]'s scalar
-/// spellings (temporal canonical text, `0x`-hex bytes).
-fn encode_key(key: &KeyScalar) -> Json {
+/// Entry and map keys use the same scalar spelling as returned values.
+fn encode_key(key: &KeyScalar, slot: ValueWriter<'_>) -> Result<(), WireError> {
     match key {
-        KeyScalar::Int(n) => Json::Int(*n),
-        KeyScalar::Bool(b) => Json::Bool(*b),
-        KeyScalar::Str(s) => Json::Str(s.clone()),
-        KeyScalar::Bytes(bytes) => Json::Str(hex_bytes(bytes)),
-        KeyScalar::Date(days) => Json::Str(date_text(*days)),
-        KeyScalar::Instant(nanos) => Json::Str(instant_text(*nanos)),
-        KeyScalar::Duration(nanos) => Json::Str(marrow_temporal::format_duration(*nanos)),
+        KeyScalar::Int(n) => slot.integer(*n),
+        KeyScalar::Bool(b) => slot.boolean(*b),
+        KeyScalar::Str(s) => slot.string(s),
+        KeyScalar::Bytes(bytes) => slot.hex_bytes(bytes),
+        KeyScalar::Date(days) => slot.string(&date_text(*days)),
+        KeyScalar::Instant(nanos) => slot.string(&instant_text(*nanos)),
+        KeyScalar::Duration(nanos) => slot.string(&marrow_temporal::format_duration(*nanos)),
     }
 }
 
@@ -339,17 +350,6 @@ fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
         .collect()
-}
-
-/// Render bytes as `0x`-prefixed lowercase hex.
-fn hex_bytes(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(2 + bytes.len() * 2);
-    out.push_str("0x");
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 fn date_text(days: i32) -> String {

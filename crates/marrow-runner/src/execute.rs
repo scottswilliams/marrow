@@ -1,33 +1,43 @@
-//! Request dispatch: one [`ClientMessage`] to one [`ServerMessage`].
+//! Storeless request dispatch and one-shot provisioning over a launched image.
 //!
-//! A request names an export by identity and carries its JSON arguments. Dispatch
-//! rejects an unknown export, a durable export (storeless only on this beta line),
-//! and an argument set that does not match the verified signature; otherwise it
-//! decodes the arguments, runs the export on the VM, and encodes the result. The
-//! four outcomes map onto the closed response grammar: a value, a source-mapped
-//! fault, or a typed reject.
+//! Requests are admitted against the verified export signature, then run on the VM.
+//! Successful values are encoded while borrowed; a completed frame or an encoding
+//! error leaves this owner. Runtime faults and admission rejects retain their typed
+//! response grammar.
 
 use marrow_codes::Code;
-use marrow_local_wire::{ClientMessage, Json, ServerMessage, Span};
+use marrow_local_wire::{ClientMessage, EncodedFrame, Json, ServerMessage, WireError};
 
 use crate::descriptor::Service;
+use crate::dispatch;
 use crate::transfer;
 
 impl crate::channel::Handler for Service {
-    fn handle(&mut self, message: ClientMessage) -> ServerMessage {
-        Service::handle(self, message)
+    fn handle(
+        &mut self,
+        message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
+        Service::handle(self, message, turn)
     }
 }
 
 impl Service {
-    /// Produce the response to a client message. A `Hello` after the handshake is a
-    /// protocol error, not a second handshake.
-    pub fn handle(&self, message: ClientMessage) -> ServerMessage {
+    /// Produce a complete response while borrowed results are live. A `Hello`
+    /// after the handshake is a protocol error, not a second handshake.
+    pub fn handle(
+        &self,
+        message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
+        let turn = turn.unwrap_or(0);
         match message {
-            ClientMessage::Hello { .. } => reject(Code::RunnerHandshake),
-            ClientMessage::Request { export, args } => self.handle_request(export.bytes(), &args),
+            ClientMessage::Hello { .. } => reject(Code::RunnerHandshake).encode_frame(turn),
+            ClientMessage::Request { export, args } => {
+                self.handle_request(export.bytes(), &args, turn)
+            }
             ClientMessage::Provision { store, approval } => {
-                self.handle_provision(&store, &approval)
+                self.handle_provision(&store, &approval).encode_frame(turn)
             }
         }
     }
@@ -50,12 +60,17 @@ impl Service {
         }
     }
 
-    fn handle_request(&self, export: &[u8; 32], args: &[Json]) -> ServerMessage {
+    fn handle_request(
+        &self,
+        export: &[u8; 32],
+        args: &[Json],
+        turn: u32,
+    ) -> Result<EncodedFrame, WireError> {
         let Some(served) = self.lookup(export) else {
-            return reject(Code::RunnerUnknownExport);
+            return reject(Code::RunnerUnknownExport).encode_frame(turn);
         };
         if served.is_durable() {
-            return reject(Code::RunnerDurableUnsupported);
+            return reject(Code::RunnerDurableUnsupported).encode_frame(turn);
         }
         let image = self.image.image();
         let selected = image
@@ -63,30 +78,18 @@ impl Service {
             .expect("served function belongs to this image");
         let function = selected.body();
         if function.params().len() != args.len() {
-            return reject(Code::RunnerArgMismatch);
+            return reject(Code::RunnerArgMismatch).encode_frame(turn);
         }
         let mut values = Vec::with_capacity(args.len());
         for (ty, json) in function.params().iter().zip(args) {
             match transfer::decode_arg(image, ty, json) {
                 Some(value) => values.push(value),
-                None => return reject(Code::RunnerArgMismatch),
+                None => return reject(Code::RunnerArgMismatch).encode_frame(turn),
             }
         }
         match marrow_vm::run(selected, values) {
-            Ok(None) => ServerMessage::Value { data: Json::Null },
-            Ok(Some(value)) => match transfer::encode_value(image, &value) {
-                Some(data) => ServerMessage::Value { data },
-                // Unreachable for a served export: its return shape is transferable,
-                // so its value encodes. Fail closed rather than emit a partial reply.
-                None => reject(Code::RunnerReplyEncode),
-            },
-            Err(fault) => ServerMessage::Fault {
-                code: fault.code().to_string(),
-                span: Span {
-                    line: fault.line(),
-                    column: fault.column(),
-                },
-            },
+            Ok(value) => dispatch::value_frame(image, value.as_ref(), turn),
+            Err(fault) => dispatch::fault_message(&fault).encode_frame(turn),
         }
     }
 }

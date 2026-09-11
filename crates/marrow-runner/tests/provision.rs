@@ -84,10 +84,18 @@ fn a_provision_request_with_a_matching_approval_provisions() {
     let service = Service::build(marrow_verify::verify(&image_bytes()).expect("verify"))
         .expect("service builds");
 
-    let response = service.handle(ClientMessage::Provision {
-        store: store.display().to_string(),
-        approval: approval_token(&store),
-    });
+    let response = service
+        .handle(
+            ClientMessage::Provision {
+                store: store.display().to_string(),
+                approval: approval_token(&store),
+            },
+            None,
+        )
+        .expect("provision response fits");
+    let (response, turn) =
+        ServerMessage::decode_with_turn(&response.as_bytes()[4..]).expect("response decodes");
+    assert_eq!(turn, None);
 
     match response {
         ServerMessage::Provisioned { instance } => {
@@ -109,10 +117,18 @@ fn a_provision_request_with_a_wrong_approval_is_rejected() {
     let service = Service::build(marrow_verify::verify(&image_bytes()).expect("verify"))
         .expect("service builds");
 
-    let response = service.handle(ClientMessage::Provision {
-        store: store.display().to_string(),
-        approval: "0000000000000000".to_string(),
-    });
+    let response = service
+        .handle(
+            ClientMessage::Provision {
+                store: store.display().to_string(),
+                approval: "0000000000000000".to_string(),
+            },
+            None,
+        )
+        .expect("reject response fits");
+    let (response, turn) =
+        ServerMessage::decode_with_turn(&response.as_bytes()[4..]).expect("response decodes");
+    assert_eq!(turn, Some(0));
 
     assert!(
         matches!(response, ServerMessage::Reject { .. }),

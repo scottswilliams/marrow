@@ -17,14 +17,13 @@
 //! Like the native session, the handshake identity is the exact **image identity**
 //! ([`VerifiedImage::image_id`](marrow_verify::VerifiedImage::image_id)) — the client recomputes
 //! it independently from the bytes it spawned the runner with — and the per-call transfer codec
-//! governs each argument and return value, so a call to a non-transferable export fails closed
-//! at encode time.
+//! decodes arguments against the image and streams returned values into bounded frames.
 //!
 //! [`MemoryAttachment`]: marrow_lifecycle::MemoryAttachment
 
 use marrow_codes::Code;
 use marrow_lifecycle::{EphemeralOutcome, PreparedImage, mint_ephemeral};
-use marrow_local_wire::{ClientMessage, Json, ServerMessage};
+use marrow_local_wire::{ClientMessage, EncodedFrame, Json, ServerMessage, WireError};
 
 use crate::channel::Handler;
 use crate::dispatch;
@@ -54,11 +53,22 @@ impl Handler for AttachedEphemeralService {
     /// Serve one request against the in-memory attachment. `Hello` after the handshake and
     /// `Provision` (an ephemeral store is never provisioned) are protocol rejects; a `Request`
     /// dispatches to the image's export against a session on the held attachment.
-    fn handle(&mut self, message: ClientMessage) -> ServerMessage {
+    fn handle(
+        &mut self,
+        message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
+        let turn = turn.unwrap_or(0);
         match message {
-            ClientMessage::Hello { .. } => dispatch::reject(Code::RunnerHandshake),
-            ClientMessage::Provision { .. } => dispatch::reject(Code::RunnerHandshake),
-            ClientMessage::Request { export, args } => self.handle_request(export.bytes(), &args),
+            ClientMessage::Hello { .. } => {
+                dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
+            }
+            ClientMessage::Provision { .. } => {
+                dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
+            }
+            ClientMessage::Request { export, args } => {
+                self.handle_request(export.bytes(), &args, turn)
+            }
         }
     }
 
@@ -68,32 +78,43 @@ impl Handler for AttachedEphemeralService {
 }
 
 impl AttachedEphemeralService {
-    fn handle_request(&mut self, export_id: &[u8; 32], args: &[Json]) -> ServerMessage {
+    fn handle_request(
+        &mut self,
+        export_id: &[u8; 32],
+        args: &[Json],
+        turn: u32,
+    ) -> Result<EncodedFrame, WireError> {
         let decoded = match dispatch::decode_request(self.outcome.image(), export_id, args) {
             Ok(decoded) => decoded,
-            Err(reject) => return reject,
+            Err(reject) => return reject.encode_frame(turn),
         };
         // A storeless export needs no session, so a parked or failed mint still serves it; a
         // durable one runs against the in-memory store through the same attachment seam the
         // native session uses.
         if let dispatch::Route::Storeless = decoded.route {
-            return dispatch::run_storeless(self.outcome.image(), decoded.export, decoded.values);
+            return dispatch::run_storeless(
+                self.outcome.image(),
+                decoded.export,
+                decoded.values,
+                turn,
+            );
         }
         let projection = match &mut self.outcome {
             EphemeralOutcome::Ready(attachment) => {
                 let run = marrow_vm::run_export(attachment, decoded.export, decoded.values);
-                dispatch::project_durable_run(attachment.image(), run)
+                dispatch::project_durable_run(attachment.image(), run, turn)
             }
             // A durable request against an image whose shape is not yet executable, or whose
             // attachment could not be minted, is a typed reject — never a partial reply.
-            EphemeralOutcome::Parked(_) => {
-                dispatch::RunProjection::Reply(dispatch::reject(Code::RunnerDurableUnsupported))
-            }
-            EphemeralOutcome::Failed { cause, .. } => {
-                dispatch::RunProjection::Reply(ServerMessage::Reject {
+            EphemeralOutcome::Parked(_) => dispatch::RunProjection::Reply(
+                dispatch::reject(Code::RunnerDurableUnsupported).encode_frame(turn),
+            ),
+            EphemeralOutcome::Failed { cause, .. } => dispatch::RunProjection::Reply(
+                ServerMessage::Reject {
                     code: cause.to_string(),
-                })
-            }
+                }
+                .encode_frame(turn),
+            ),
         };
         match projection {
             dispatch::RunProjection::Reply(response) => response,

@@ -28,7 +28,9 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use marrow_local_wire::{ClientMessage, Id32, ServerMessage, WireError, frame_body_len};
+use marrow_local_wire::{
+    ClientMessage, EncodedFrame, Id32, ServerMessage, WireError, frame_body_len,
+};
 
 /// The observer-local deadlines and poll interval for the channel.
 #[derive(Debug, Clone, Copy)]
@@ -216,8 +218,13 @@ impl Drop for Channel {
 /// is written once. `handle` takes `&mut self` because the attached session opens a durable
 /// session per request; the storeless handler ignores the mutability.
 pub trait Handler {
-    /// Produce the response to one client message.
-    fn handle(&mut self, message: ClientMessage) -> ServerMessage;
+    /// Complete the response while returned values remain borrowed. An encoding
+    /// failure after dispatch closes silently; it cannot become an admission reject.
+    fn handle(
+        &mut self,
+        message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError>;
 
     /// Whether the just-produced response is the final response for this session. An
     /// incomplete durable invocation whose state remains unknown closes only after its
@@ -251,25 +258,29 @@ impl Connection {
                     let reject = ServerMessage::Reject {
                         code: wire.code_str().to_string(),
                     };
-                    let _ = self.write_message(&reject, None, deadlines);
+                    if let Ok(frame) = reject.encode_frame(0) {
+                        let _ = self.write_frame(&frame, deadlines);
+                    }
                     return Ok(());
                 }
                 // A stalled half-frame or peer death ends the session fail-closed.
                 Err(ReadError::Timeout | ReadError::PeerDied) => return Ok(()),
                 Err(ReadError::Io(err)) => return Err(err),
             };
-            let (response, turn) = match ClientMessage::decode_with_turn(&body) {
-                Ok((message, turn)) => (handler.handle(message), turn),
-                Err(wire) => (
-                    ServerMessage::Reject {
-                        code: wire.code_str().to_string(),
-                    },
-                    None,
-                ),
+            let response = match ClientMessage::decode_with_turn(&body) {
+                Ok((message, turn)) => handler.handle(message, turn),
+                Err(wire) => ServerMessage::Reject {
+                    code: wire.code_str().to_string(),
+                }
+                .encode_frame(0),
             };
             let close_after_response = handler.close_after_response();
-            if self.write_message(&response, turn, deadlines).is_err() {
-                // The client went away while we replied; end the session.
+            let Ok(frame) = response else {
+                // Dispatch may already have committed. No reject or later request
+                // may follow a response that cannot be encoded.
+                return Ok(());
+            };
+            if self.write_frame(&frame, deadlines).is_err() {
                 return Ok(());
             }
             if close_after_response {
@@ -301,30 +312,9 @@ impl Connection {
         Ok(Some(body))
     }
 
-    fn write_message(
-        &mut self,
-        message: &ServerMessage,
-        turn: Option<u32>,
-        deadlines: &Deadlines,
-    ) -> io::Result<()> {
-        let frame = encode_response(message, turn).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("response encoding failed: {}", error.code_str()),
-            )
-        })?;
+    fn write_frame(&mut self, frame: &EncodedFrame, deadlines: &Deadlines) -> io::Result<()> {
         let deadline = Instant::now() + deadlines.frame;
-        write_all_deadline(&mut self.stream, &frame, deadline, deadlines.poll)
-    }
-}
-
-/// Encode one response frame. A failure after handler dispatch closes the
-/// connection without a reply; it must never be rewritten as a pre-dispatch
-/// reject because the handled invocation may already have committed.
-fn encode_response(message: &ServerMessage, turn: Option<u32>) -> Result<Vec<u8>, WireError> {
-    match turn {
-        Some(turn) => message.encode_with_turn(turn),
-        None => message.encode(),
+        write_all_deadline(&mut self.stream, frame.as_bytes(), deadline, deadlines.poll)
     }
 }
 
@@ -346,9 +336,10 @@ fn handshake(
         session: secrets.session,
         interface,
     };
-    let frame = ready.encode().map_err(|_| HandshakeError)?;
+    let frame = ready.encode_frame(0).map_err(|_| HandshakeError)?;
     let write_deadline = Instant::now() + deadlines.handshake;
-    write_all_deadline(stream, &frame, write_deadline, deadlines.poll).map_err(|_| HandshakeError)
+    write_all_deadline(stream, frame.as_bytes(), write_deadline, deadlines.poll)
+        .map_err(|_| HandshakeError)
 }
 
 /// A handshake failed and the connection must be closed fail-closed.

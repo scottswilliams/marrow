@@ -10,8 +10,8 @@
 //! that exact canonical form, so every wire message has exactly one legal encoding.
 //!
 //! Canonicality is enforced by construction: the parser accepts a tolerant JSON
-//! grammar (bounded in depth and string length so a hostile payload cannot drive
-//! unbounded work), then requires the re-encoding of the parsed value to be
+//! grammar with depth and string-length limits, then requires the re-encoding of
+//! the parsed value to be
 //! byte-identical to the input. Whitespace, unsorted keys, a non-minimal number, or
 //! a non-canonical escape all survive parsing but fail that equality and are
 //! rejected as [`WireError::Noncanonical`]; a structurally invalid body, a
@@ -44,74 +44,261 @@ pub enum Json {
 
 /// Encode a value in its one canonical byte spelling.
 pub fn encode(value: &Json) -> String {
-    let mut out = String::new();
-    encode_into(value, &mut out);
-    out
+    let mut out = Encoder::new(String::new(), None);
+    out.value(|slot| slot.json(value))
+        .expect("an unbounded JSON encoder cannot exceed its destination");
+    out.finish().expect("complete JSON")
 }
 
-fn encode_into(value: &Json, out: &mut String) {
-    match value {
-        Json::Null => out.push_str("null"),
-        Json::Bool(true) => out.push_str("true"),
-        Json::Bool(false) => out.push_str("false"),
-        Json::Int(n) => out.push_str(&n.to_string()),
-        Json::Str(s) => encode_string(s, out),
-        Json::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                encode_into(item, out);
-            }
-            out.push(']');
+/// The one destination for canonical spelling. A frame reserves five UTF-8
+/// placeholder bytes for its header and version; its limit includes those bytes.
+pub(crate) struct Encoder {
+    text: String,
+    limit: Option<usize>,
+    error: Option<WireError>,
+}
+
+impl Encoder {
+    pub(crate) fn new(text: String, limit: Option<usize>) -> Self {
+        Self {
+            text,
+            limit,
+            error: None,
         }
-        Json::Object(pairs) => {
-            // Canonical output sorts keys ascending by byte regardless of the order
-            // the pairs were built in, so a value the runner assembles field-by-field
-            // still encodes canonically.
-            let mut ordered: Vec<&(String, Json)> = pairs.iter().collect();
-            ordered.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            out.push('{');
-            for (i, (key, val)) in ordered.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
+    }
+
+    fn fail(&mut self, error: WireError) -> WireError {
+        *self.error.get_or_insert(error)
+    }
+
+    fn append(&mut self, text: &str) -> Result<(), WireError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self
+            .limit
+            .is_some_and(|limit| text.len() > limit - self.text.len())
+        {
+            return Err(self.fail(WireError::FrameTooLarge));
+        }
+        self.text.push_str(text);
+        Ok(())
+    }
+
+    pub(crate) fn value(
+        &mut self,
+        write: impl FnOnce(ValueWriter<'_>) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        let mut written = false;
+        if let Err(error) = write(ValueWriter {
+            out: self,
+            written: &mut written,
+        }) {
+            return Err(self.fail(error));
+        }
+        if !written {
+            return Err(self.fail(WireError::Malformed));
+        }
+        self.error.map_or(Ok(()), Err)
+    }
+
+    pub(crate) fn finish(self) -> Result<String, WireError> {
+        self.error.map_or(Ok(self.text), Err)
+    }
+
+    fn string(&mut self, text: &str) -> Result<(), WireError> {
+        self.append("\"")?;
+        for ch in text.chars() {
+            match ch {
+                '"' => self.append("\\\"")?,
+                '\\' => self.append("\\\\")?,
+                '\u{08}' => self.append("\\b")?,
+                '\t' => self.append("\\t")?,
+                '\n' => self.append("\\n")?,
+                '\u{0C}' => self.append("\\f")?,
+                '\r' => self.append("\\r")?,
+                c if (c as u32) < 0x20 => {
+                    let byte = c as u8;
+                    let escape = [
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
+                        HEX[usize::from(byte >> 4)],
+                        HEX[usize::from(byte & 15)],
+                    ];
+                    self.append(std::str::from_utf8(&escape).expect("ASCII escape"))?;
                 }
-                encode_string(key, out);
-                out.push(':');
-                encode_into(val, out);
+                c => self.append(c.encode_utf8(&mut [0; 4]))?,
             }
-            out.push('}');
+        }
+        self.append("\"")
+    }
+}
+
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+/// A single canonical JSON value slot, created only by the wire's response encoder.
+/// Consuming scalar methods or scoped containers fill exactly one value.
+pub struct ValueWriter<'a> {
+    out: &'a mut Encoder,
+    written: &'a mut bool,
+}
+
+impl ValueWriter<'_> {
+    fn write(
+        self,
+        write: impl FnOnce(&mut Encoder) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        write(self.out)?;
+        *self.written = true;
+        Ok(())
+    }
+
+    /// Write JSON null.
+    pub fn null(self) -> Result<(), WireError> {
+        self.write(|out| out.append("null"))
+    }
+
+    /// Write a boolean.
+    pub fn boolean(self, value: bool) -> Result<(), WireError> {
+        self.write(|out| out.append(if value { "true" } else { "false" }))
+    }
+
+    /// Write the minimal signed integer spelling.
+    pub fn integer(self, value: i64) -> Result<(), WireError> {
+        self.write(|out| out.append(&value.to_string()))
+    }
+
+    /// Write a string with canonical escaping.
+    pub fn string(self, value: &str) -> Result<(), WireError> {
+        self.write(|out| out.string(value))
+    }
+
+    /// Write bytes as the transfer grammar's lowercase, 0x-prefixed string.
+    pub fn hex_bytes(self, bytes: &[u8]) -> Result<(), WireError> {
+        self.write(|out| {
+            out.append("\"0x")?;
+            for byte in bytes {
+                let hex = [HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 15)]];
+                out.append(std::str::from_utf8(&hex).expect("ASCII hex"))?;
+            }
+            out.append("\"")
+        })
+    }
+
+    /// Write an array through complete child values.
+    pub fn array(
+        self,
+        write: impl FnOnce(&mut ArrayWriter<'_>) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        self.write(|out| {
+            out.append("[")?;
+            write(&mut ArrayWriter { out, first: true })?;
+            out.append("]")
+        })
+    }
+
+    /// Write an object in strictly increasing UTF-8 key order.
+    pub fn object<'key>(
+        self,
+        write: impl FnOnce(&mut ObjectWriter<'_, 'key>) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        self.write(|out| {
+            out.append("{")?;
+            write(&mut ObjectWriter {
+                out,
+                first: true,
+                previous: None,
+            })?;
+            out.append("}")
+        })
+    }
+
+    pub(crate) fn json(self, value: &Json) -> Result<(), WireError> {
+        match value {
+            Json::Null => self.null(),
+            Json::Bool(value) => self.boolean(*value),
+            Json::Int(value) => self.integer(*value),
+            Json::Str(value) => self.string(value),
+            Json::Array(items) => self.array(|array| {
+                for item in items {
+                    array.element(|slot| slot.json(item))?;
+                }
+                Ok(())
+            }),
+            Json::Object(pairs) => {
+                let mut ordered: Vec<_> = pairs.iter().collect();
+                ordered.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+                self.object(|object| {
+                    for (key, value) in ordered {
+                        // The existing Json encoder sorts but does not reject duplicates.
+                        object.field_value(key, |slot| slot.json(value))?;
+                    }
+                    Ok(())
+                })
+            }
         }
     }
 }
 
-/// Append the canonical JSON string encoding of `text`.
-fn encode_string(text: &str, out: &mut String) {
-    out.push('"');
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\u{0C}' => out.push_str("\\f"),
-            '\r' => out.push_str("\\r"),
-            c if (c as u32) < 0x20 => {
-                out.push_str("\\u00");
-                let byte = c as u32;
-                out.push(hex_digit((byte >> 4) as u8));
-                out.push(hex_digit((byte & 0xf) as u8));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
+/// Scoped array elements; punctuation belongs to the wire encoder.
+pub struct ArrayWriter<'a> {
+    out: &'a mut Encoder,
+    first: bool,
 }
 
-fn hex_digit(nibble: u8) -> char {
-    char::from_digit(u32::from(nibble), 16).expect("nibble is one hex digit")
+impl ArrayWriter<'_> {
+    /// Append one complete array element.
+    pub fn element(
+        &mut self,
+        write: impl FnOnce(ValueWriter<'_>) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        if !self.first {
+            self.out.append(",")?;
+        }
+        self.first = false;
+        self.out.value(write)
+    }
+}
+
+/// Scoped object fields with borrowed, strictly ordered names.
+pub struct ObjectWriter<'a, 'key> {
+    out: &'a mut Encoder,
+    first: bool,
+    previous: Option<&'key str>,
+}
+
+impl<'key> ObjectWriter<'_, 'key> {
+    /// Append a field whose name follows the previous name in UTF-8 byte order.
+    pub fn field(
+        &mut self,
+        key: &'key str,
+        write: impl FnOnce(ValueWriter<'_>) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        if self
+            .previous
+            .is_some_and(|previous| previous.as_bytes() >= key.as_bytes())
+        {
+            return Err(self.out.fail(WireError::Noncanonical));
+        }
+        self.previous = Some(key);
+        self.field_value(key, write)
+    }
+
+    fn field_value(
+        &mut self,
+        key: &str,
+        write: impl FnOnce(ValueWriter<'_>) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        if !self.first {
+            self.out.append(",")?;
+        }
+        self.first = false;
+        self.out.string(key)?;
+        self.out.append(":")?;
+        self.out.value(write)
+    }
 }
 
 /// Parse a value, accepting only its canonical form. See the module docs for how
@@ -368,8 +555,95 @@ fn utf8_len(lead: u8) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Json, encode, parse_strict};
+    use super::{Encoder, Json, encode, parse_strict};
     use crate::error::WireError;
+
+    #[test]
+    fn bounded_destination_retains_only_canonical_prefix() {
+        let mut out = Encoder::new(String::new(), Some(8));
+        assert_eq!(
+            out.value(|slot| slot.string("\0é")),
+            Err(WireError::FrameTooLarge)
+        );
+        assert_eq!(out.text.as_bytes(), b"\"\\u0000");
+        assert_eq!(out.append("x"), Err(WireError::FrameTooLarge));
+        assert_eq!(out.text.as_bytes(), b"\"\\u0000");
+        let mut exact = Encoder::new(String::new(), Some(10));
+        exact.value(|slot| slot.string("\0é")).expect("exact fit");
+        assert_eq!(exact.finish().expect("complete string"), "\"\\u0000é\"");
+    }
+
+    #[test]
+    fn value_slots_refuse_missing_values_and_latched_errors() {
+        use crate::EncodedFrame;
+        assert_eq!(
+            EncodedFrame::value(0, |_| Ok(())),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(
+            EncodedFrame::value(0, |slot| slot.array(|array| {
+                let _ = array.element(|_| Ok(()));
+                let _ = array.element(|slot| slot.null());
+                Ok(())
+            })),
+            Err(WireError::Malformed),
+        );
+        for next in ["a", "0"] {
+            assert_eq!(
+                EncodedFrame::value(0, |slot| slot.object(|object| {
+                    object.field("a", |slot| slot.null())?;
+                    let _ = object.field(next, |slot| slot.null());
+                    Ok(())
+                })),
+                Err(WireError::Noncanonical),
+            );
+        }
+    }
+
+    #[test]
+    fn streamed_values_match_canonical_json() {
+        use crate::{EncodedFrame, ServerMessage};
+        let text = "\0\u{08}\t\n\u{0c}\r\"\\/é";
+        let streamed = EncodedFrame::value(17, |slot| {
+            slot.object(|object| {
+                object.field("bytes", |slot| slot.hex_bytes(&[0, 15, 255]))?;
+                object.field("items", |slot| {
+                    slot.array(|array| {
+                        array.element(|slot| slot.integer(i64::MIN))?;
+                        array.element(|slot| slot.boolean(false))?;
+                        array.element(|slot| slot.null())?;
+                        array.element(|slot| slot.string(text))
+                    })
+                })
+            })
+        })
+        .expect("streamed frame");
+        let message = ServerMessage::Value {
+            data: obj(vec![
+                (
+                    "items",
+                    Json::Array(vec![
+                        Json::Int(i64::MIN),
+                        Json::Bool(false),
+                        Json::Null,
+                        Json::Str(text.into()),
+                    ]),
+                ),
+                ("bytes", Json::Str("0x000fff".into())),
+            ]),
+        };
+        assert_eq!(
+            streamed.as_bytes(),
+            message.encode_with_turn(17).expect("existing message")
+        );
+        let (decoded, turn) =
+            ServerMessage::decode_with_turn(&streamed.as_bytes()[4..]).expect("decode");
+        assert_eq!(turn, Some(17));
+        assert_eq!(
+            decoded.encode().expect("decoded"),
+            message.encode().expect("original")
+        );
+    }
 
     fn obj(pairs: Vec<(&str, Json)>) -> Json {
         Json::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())

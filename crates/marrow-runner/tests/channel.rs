@@ -24,8 +24,8 @@ use std::thread;
 use std::time::Duration;
 
 use marrow_local_wire::{
-    ClientMessage, DurableState, HandoffStage, Id32, Json, LossClass, MAX_FRAME, ServerMessage,
-    Span, classify, frame_body_len,
+    ClientMessage, DurableState, EncodedFrame, HandoffStage, Id32, Json, LossClass, MAX_FRAME,
+    ServerMessage, Span, WireError, classify, frame_body_len,
 };
 use marrow_runner::{Channel, Deadlines, Handler, LaunchSecrets, Service, mint_id};
 
@@ -164,12 +164,17 @@ fn end_to_end_storeless_call() {
 struct UnknownIncompleteHandler;
 
 impl Handler for UnknownIncompleteHandler {
-    fn handle(&mut self, _message: ClientMessage) -> ServerMessage {
+    fn handle(
+        &mut self,
+        _message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
         ServerMessage::Incomplete {
             code: "run.commit".to_string(),
             durable: DurableState::Unknown,
             span: Span { line: 4, column: 2 },
         }
+        .encode_frame(turn.unwrap_or(0))
     }
 
     fn close_after_response(&self) -> bool {
@@ -236,7 +241,11 @@ struct ClassifiedBeforeReplyHandler {
 }
 
 impl Handler for ClassifiedBeforeReplyHandler {
-    fn handle(&mut self, _message: ClientMessage) -> ServerMessage {
+    fn handle(
+        &mut self,
+        _message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
         self.classified.send(()).expect("signal classification");
         self.release.recv().expect("release response");
         ServerMessage::Incomplete {
@@ -244,6 +253,7 @@ impl Handler for ClassifiedBeforeReplyHandler {
             durable: DurableState::KnownNew,
             span: Span { line: 7, column: 3 },
         }
+        .encode_frame(turn.unwrap_or(0))
     }
 }
 
@@ -309,9 +319,13 @@ fn oversized_response() -> ServerMessage {
 }
 
 impl Handler for OversizedResponseHandler {
-    fn handle(&mut self, _message: ClientMessage) -> ServerMessage {
+    fn handle(
+        &mut self,
+        _message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
         self.calls += 1;
-        oversized_response()
+        oversized_response().encode_frame(turn.unwrap_or(0))
     }
 }
 

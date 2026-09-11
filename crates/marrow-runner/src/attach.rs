@@ -18,11 +18,9 @@
 //! **image identity** ([`VerifiedImage::image_id`](marrow_verify::VerifiedImage::image_id))
 //! as its handshake identity rather than the transfer-graph interface identity. The terminal
 //! shares the exact image bytes it spawned the runner with, so it verifies that identity
-//! directly — a stronger binding than interface shape, and one that works for any program,
-//! including one with a non-transferable export (an entry-identity return, a collection) that
-//! has no whole-program wire interface. The per-call transfer codec still governs each
-//! argument and return value, so a call to a non-transferable export fails closed at encode
-//! time rather than being served partially.
+//! directly. Argument decoding and returned-value encoding still use that image's
+//! verified transfer types, including collections and entry identities. Outbound
+//! framing finishes while the returned value and its image remain borrowed.
 //!
 //! The service takes only the attachment the lifecycle actor returned; no image travels
 //! beside it, so a foreign image cannot be served against an admitted store.
@@ -38,7 +36,7 @@
 
 use marrow_codes::Code;
 use marrow_lifecycle::NativeAttachment;
-use marrow_local_wire::{ClientMessage, Json, ServerMessage};
+use marrow_local_wire::{ClientMessage, EncodedFrame, Json, WireError};
 use marrow_vm::{DurableExecutionFault, DurableRun, IncompleteDisposition};
 
 use crate::channel::Handler;
@@ -67,11 +65,22 @@ impl Handler for AttachedService {
     /// Serve one request against the attached store. `Hello` after the handshake and
     /// `Provision` (a separate one-shot command, never a mid-session operation) are protocol
     /// rejects; a `Request` dispatches to the image's export against a fresh durable session.
-    fn handle(&mut self, message: ClientMessage) -> ServerMessage {
+    fn handle(
+        &mut self,
+        message: ClientMessage,
+        turn: Option<u32>,
+    ) -> Result<EncodedFrame, WireError> {
+        let turn = turn.unwrap_or(0);
         match message {
-            ClientMessage::Hello { .. } => dispatch::reject(Code::RunnerHandshake),
-            ClientMessage::Provision { .. } => dispatch::reject(Code::RunnerHandshake),
-            ClientMessage::Request { export, args } => self.handle_request(export.bytes(), &args),
+            ClientMessage::Hello { .. } => {
+                dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
+            }
+            ClientMessage::Provision { .. } => {
+                dispatch::reject(Code::RunnerHandshake).encode_frame(turn)
+            }
+            ClientMessage::Request { export, args } => {
+                self.handle_request(export.bytes(), &args, turn)
+            }
         }
     }
 
@@ -81,20 +90,30 @@ impl Handler for AttachedService {
 }
 
 impl AttachedService {
-    fn handle_request(&mut self, export_id: &[u8; 32], args: &[Json]) -> ServerMessage {
+    fn handle_request(
+        &mut self,
+        export_id: &[u8; 32],
+        args: &[Json],
+        turn: u32,
+    ) -> Result<EncodedFrame, WireError> {
         // A retired session has already asked the channel to close; a request that still
         // arrives is outside the protocol.
         let Some(attachment) = self.attachment.as_mut() else {
-            return dispatch::reject(Code::RunnerHandshake);
+            return dispatch::reject(Code::RunnerHandshake).encode_frame(turn);
         };
         let decoded = match dispatch::decode_request(attachment.image(), export_id, args) {
             Ok(decoded) => decoded,
-            Err(reject) => return reject,
+            Err(reject) => return reject.encode_frame(turn),
         };
         // A storeless export needs no session; a durable one runs against the native store
         // through the same attachment seam the ephemeral session uses.
         if let dispatch::Route::Storeless = decoded.route {
-            return dispatch::run_storeless(attachment.image(), decoded.export, decoded.values);
+            return dispatch::run_storeless(
+                attachment.image(),
+                decoded.export,
+                decoded.values,
+                turn,
+            );
         }
         let run = marrow_vm::run_export(attachment, decoded.export, decoded.values);
         match run {
@@ -105,7 +124,7 @@ impl AttachedService {
                             self.attachment.take();
                             self.close_after_response = true;
                         }
-                        dispatch::incomplete_message(&fault, durable)
+                        dispatch::incomplete_message(&fault, durable).encode_frame(turn)
                     }
                     IncompleteDisposition::Pending { fault, recovery } => {
                         let attachment = self
@@ -116,11 +135,11 @@ impl AttachedService {
                         self.attachment = recovered;
                         self.close_after_response =
                             durable == marrow_vm::DurableCommitState::Unknown;
-                        dispatch::incomplete_message(&fault, durable)
+                        dispatch::incomplete_message(&fault, durable).encode_frame(turn)
                     }
                 }
             }
-            run => match dispatch::project_durable_run(attachment.image(), run) {
+            run => match dispatch::project_durable_run(attachment.image(), run, turn) {
                 dispatch::RunProjection::Reply(response) => response,
                 dispatch::RunProjection::RetireAfter(response) => {
                     self.attachment.take();

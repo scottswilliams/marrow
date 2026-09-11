@@ -13,7 +13,7 @@
 
 use marrow_codes::Code;
 use marrow_image::ExportId;
-use marrow_local_wire::{DurableState, Json, ServerMessage, Span};
+use marrow_local_wire::{DurableState, EncodedFrame, Json, ServerMessage, Span, WireError};
 use marrow_verify::VerifiedImage;
 use marrow_vm::{
     DurableCommitState, DurableExecutionFault, DurableRun, IncompleteDisposition, Value,
@@ -84,42 +84,46 @@ pub(crate) fn run_storeless(
     image: &VerifiedImage,
     export: ExportId,
     values: Vec<Value>,
-) -> ServerMessage {
+    turn: u32,
+) -> Result<EncodedFrame, WireError> {
     let Some(export) = image.export_by_id(export) else {
-        return reject(Code::RunnerUnknownExport);
+        return reject(Code::RunnerUnknownExport).encode_frame(turn);
     };
     let function = image
         .function(export.function())
         .expect("verified export function");
     match marrow_vm::run(function, values) {
-        Ok(value) => value_message(image, value.as_ref()),
-        Err(fault) => fault_message(&fault),
+        Ok(value) => value_frame(image, value.as_ref(), turn),
+        Err(fault) => fault_message(&fault).encode_frame(turn),
     }
 }
 
-/// Project a durable run outcome onto a wire response. A verified durable export whose shape the
-/// attachment cannot serve, or a session that could not open, is a typed reject — never a
-/// partial reply.
-#[must_use = "a retirement projection must close its attached service after replying"]
+/// Encoding failure cannot discard the attachment's retirement decision.
+#[must_use = "a retirement projection must close its attached service even if encoding failed"]
 pub(crate) enum RunProjection {
-    Reply(ServerMessage),
-    RetireAfter(ServerMessage),
+    Reply(Result<EncodedFrame, WireError>),
+    RetireAfter(Result<EncodedFrame, WireError>),
 }
 
-/// Project the attachment's own run of an export. `None` — the attachment's image carries no
-/// such export — cannot follow a successful decode against that same image, and is the same
-/// typed reject.
-pub(crate) fn project_durable_run(image: &VerifiedImage, run: Option<DurableRun>) -> RunProjection {
+/// Project the attachment's own run of an export. The caller applies retirement
+/// before returning the contained encoding result.
+pub(crate) fn project_durable_run(
+    image: &VerifiedImage,
+    run: Option<DurableRun>,
+    turn: u32,
+) -> RunProjection {
     let Some(run) = run else {
-        return RunProjection::Reply(reject(Code::RunnerUnknownExport));
+        return RunProjection::Reply(reject(Code::RunnerUnknownExport).encode_frame(turn));
     };
     let response = match run {
-        DurableRun::Ran(Ok(value)) => value_message(image, value.as_ref()),
-        DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) => fault_message(&fault),
+        DurableRun::Ran(Ok(value)) => value_frame(image, value.as_ref(), turn),
+        DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) => {
+            fault_message(&fault).encode_frame(turn)
+        }
         DurableRun::Ran(Err(DurableExecutionFault::Incomplete(incomplete))) => {
             return match incomplete.into_disposition() {
                 IncompleteDisposition::Classified { fault, durable } => {
-                    let response = incomplete_message(&fault, durable);
+                    let response = incomplete_message(&fault, durable).encode_frame(turn);
                     if durable == DurableCommitState::Unknown {
                         RunProjection::RetireAfter(response)
                     } else {
@@ -132,36 +136,35 @@ pub(crate) fn project_durable_run(image: &VerifiedImage, run: Option<DurableRun>
                     // changes, consuming the fact is paired with an explicit retirement
                     // projection rather than dropping it into an ordinary fault.
                     drop(recovery);
-                    RunProjection::RetireAfter(incomplete_message(
-                        &fault,
-                        DurableCommitState::Unknown,
-                    ))
+                    RunProjection::RetireAfter(
+                        incomplete_message(&fault, DurableCommitState::Unknown).encode_frame(turn),
+                    )
                 }
             };
         }
-        DurableRun::Parked => reject(Code::RunnerDurableUnsupported),
+        DurableRun::Parked => reject(Code::RunnerDurableUnsupported).encode_frame(turn),
         DurableRun::Failed(code) => ServerMessage::Reject {
             code: code.to_string(),
-        },
+        }
+        .encode_frame(turn),
     };
     RunProjection::Reply(response)
 }
 
-/// Encode a returned value into a `Value` response, downgrading an unencodable value (never
-/// reached for a served export, whose return shape is transferable) to a typed reject rather
-/// than a partial reply.
-fn value_message(image: &VerifiedImage, value: Option<&Value>) -> ServerMessage {
-    match value {
-        None => ServerMessage::Value { data: Json::Null },
-        Some(value) => match transfer::encode_value(image, value) {
-            Some(data) => ServerMessage::Value { data },
-            None => reject(Code::RunnerReplyEncode),
-        },
-    }
+/// Complete the response while the result and image are still borrowed.
+pub(crate) fn value_frame(
+    image: &VerifiedImage,
+    value: Option<&Value>,
+    turn: u32,
+) -> Result<EncodedFrame, WireError> {
+    EncodedFrame::value(turn, |slot| match value {
+        None => slot.null(),
+        Some(value) => transfer::encode_value(image, value, slot),
+    })
 }
 
 /// Encode a source-mapped runtime fault into a `Fault` response.
-fn fault_message(fault: &marrow_vm::RuntimeFault) -> ServerMessage {
+pub(crate) fn fault_message(fault: &marrow_vm::RuntimeFault) -> ServerMessage {
     ServerMessage::Fault {
         code: fault.code().to_string(),
         span: Span {

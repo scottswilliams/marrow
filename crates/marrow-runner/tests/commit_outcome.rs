@@ -1,5 +1,15 @@
-use marrow_local_wire::{ClientMessage, DurableState, Id32, Json, ServerMessage};
+use marrow_local_wire::{
+    ClientMessage, DurableState, EncodedFrame, Id32, Json, ServerMessage, WireError,
+};
 use marrow_runner::{AttachedEphemeralService, AttachedService, Handler};
+
+fn decoded(response: Result<EncodedFrame, WireError>) -> ServerMessage {
+    let frame = response.expect("bounded response");
+    let (message, turn) =
+        ServerMessage::decode_with_turn(&frame.as_bytes()[4..]).expect("response decodes");
+    assert_eq!(turn, Some(0));
+    message
+}
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -108,17 +118,23 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
     let mut service = AttachedEphemeralService::mint(marrow_lifecycle::prepare(image));
 
     // A committed value, then a second entry whose `value` collides in the unique index.
-    match service.handle(ClientMessage::Request {
-        export: id_of(&ids, "set"),
-        args: vec![Json::Int(1), Json::Int(5)],
-    }) {
+    match decoded(service.handle(
+        ClientMessage::Request {
+            export: id_of(&ids, "set"),
+            args: vec![Json::Int(1), Json::Int(5)],
+        },
+        Some(0),
+    )) {
         ServerMessage::Value { .. } => {}
         other => panic!("the first entry commits, got {other:?}"),
     }
-    let response = service.handle(ClientMessage::Request {
-        export: id_of(&ids, "set"),
-        args: vec![Json::Int(2), Json::Int(5)],
-    });
+    let response = decoded(service.handle(
+        ClientMessage::Request {
+            export: id_of(&ids, "set"),
+            args: vec![Json::Int(2), Json::Int(5)],
+        },
+        Some(0),
+    ));
     match response {
         ServerMessage::Fault { code, span } => {
             assert_eq!(code, "run.unique_index");
@@ -132,27 +148,36 @@ fn a_unique_index_fault_is_typed_and_does_not_retire_a_healthy_ephemeral_owner()
     );
 
     assert_eq!(
-        service.handle(ClientMessage::Request {
-            export: id_of(&ids, "two"),
-            args: Vec::new(),
-        }),
+        decoded(service.handle(
+            ClientMessage::Request {
+                export: id_of(&ids, "two"),
+                args: Vec::new(),
+            },
+            Some(0)
+        )),
         ServerMessage::Value { data: Json::Int(2) },
     );
     assert_eq!(
-        service.handle(ClientMessage::Request {
-            export: id_of(&ids, "readValue"),
-            args: vec![Json::Int(1)],
-        }),
+        decoded(service.handle(
+            ClientMessage::Request {
+                export: id_of(&ids, "readValue"),
+                args: vec![Json::Int(1)],
+            },
+            Some(0)
+        )),
         ServerMessage::Value { data: Json::Int(5) },
         "the first entry stands after the rolled-back collision",
     );
 }
 
 fn assert_known_new_then_read(service: &mut impl Handler, ids: &[(String, Id32)]) {
-    let response = service.handle(ClientMessage::Request {
-        export: id_of(ids, "writeThenFault"),
-        args: vec![Json::Int(4)],
-    });
+    let response = decoded(service.handle(
+        ClientMessage::Request {
+            export: id_of(ids, "writeThenFault"),
+            args: vec![Json::Int(4)],
+        },
+        Some(0),
+    ));
     match response {
         ServerMessage::Incomplete {
             code,
@@ -170,10 +195,13 @@ fn assert_known_new_then_read(service: &mut impl Handler, ids: &[(String, Id32)]
         "known-new has no live recovery fact and leaves the owner usable",
     );
     assert_eq!(
-        service.handle(ClientMessage::Request {
-            export: id_of(ids, "readValue"),
-            args: vec![Json::Int(4)],
-        }),
+        decoded(service.handle(
+            ClientMessage::Request {
+                export: id_of(ids, "readValue"),
+                args: vec![Json::Int(4)],
+            },
+            Some(0)
+        )),
         ServerMessage::Value { data: Json::Int(7) },
         "the confirmed write remains even though later bytecode faulted",
     );

@@ -2,8 +2,8 @@
 //!
 //! A frame is `u32_be(body_len) ‖ body`, where `body` is `u8(version) ‖ json`. The
 //! length prefix is validated against [`crate::MAX_FRAME`] before the body is read,
-//! so a hostile length cannot drive an unbounded read or allocation (campaign law
-//! 9). The reader is expected to consume exactly four header bytes, call
+//! so the body read and allocation stay within that bound. The reader is expected
+//! to consume exactly four header bytes, call
 //! [`frame_body_len`], read that many body bytes, and hand them to a message
 //! decoder; this crate never touches a socket.
 
@@ -34,23 +34,39 @@ pub(crate) fn body_json(body: &[u8]) -> Result<&[u8], WireError> {
     Ok(json)
 }
 
-/// Assemble a full frame (`length ‖ version ‖ json`) from canonical JSON bytes,
-/// rejecting a body that would exceed [`crate::MAX_FRAME`].
-pub(crate) fn assemble(json: &[u8]) -> Result<Vec<u8>, WireError> {
-    let body_len = 1 + json.len();
-    if body_len > MAX_FRAME {
-        return Err(WireError::FrameTooLarge);
+/// A complete frame produced by the wire owner. The header, version, message
+/// envelope and canonical payload have all been encoded within the frame limit.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EncodedFrame(Vec<u8>);
+
+impl EncodedFrame {
+    /// Borrow the complete length-prefixed frame for transport.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
     }
-    let mut out = Vec::with_capacity(4 + body_len);
-    out.extend_from_slice(&(body_len as u32).to_be_bytes());
-    out.push(PROTOCOL_VERSION);
-    out.extend_from_slice(json);
-    Ok(out)
+
+    /// Consume the frame without copying its bytes.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+pub(crate) fn encode(
+    write: impl FnOnce(crate::json::ValueWriter<'_>) -> Result<(), WireError>,
+) -> Result<EncodedFrame, WireError> {
+    let mut out = crate::json::Encoder::new("\0\0\0\0\0".to_string(), Some(4 + MAX_FRAME));
+    out.value(write)?;
+    // Consume the allocation before filling the binary header and version.
+    let mut bytes = out.finish()?.into_bytes();
+    bytes[4] = PROTOCOL_VERSION;
+    let body_len = u32::try_from(bytes.len() - 4).expect("MAX_FRAME fits u32");
+    bytes[..4].copy_from_slice(&body_len.to_be_bytes());
+    Ok(EncodedFrame(bytes))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{assemble, body_json, frame_body_len};
+    use super::{body_json, encode, frame_body_len};
     use crate::error::WireError;
     use crate::{MAX_FRAME, PROTOCOL_VERSION};
 
@@ -67,11 +83,41 @@ mod tests {
     #[test]
     fn assemble_then_split_round_trips() {
         let json = br#"{"kind":"value"}"#;
-        let frame = assemble(json).expect("assemble");
+        let frame =
+            encode(|slot| slot.object(|object| object.field("kind", |slot| slot.string("value"))))
+                .expect("assemble")
+                .into_bytes();
+        assert_eq!(&frame[5..], json);
         let len = frame_body_len([frame[0], frame[1], frame[2], frame[3]]).expect("len");
         let body = &frame[4..4 + len];
         assert_eq!(body[0], PROTOCOL_VERSION);
         assert_eq!(body_json(body), Ok(&json[..]));
+    }
+
+    #[test]
+    fn streamed_frame_counts_envelope_version_and_maximum_turn() {
+        use crate::EncodedFrame;
+        for (turn, overhead) in [(0, 36), (u32::MAX, 45)] {
+            // Empty string plus fixed envelope, decimal turn and version; header excluded.
+            let text = "x".repeat(MAX_FRAME - overhead);
+            let frame =
+                EncodedFrame::value(turn, |slot| slot.string(&text)).expect("exact body fit");
+            assert_eq!(frame.as_bytes().len(), 4 + MAX_FRAME);
+            assert_eq!(
+                frame_body_len(frame.as_bytes()[..4].try_into().expect("header")),
+                Ok(MAX_FRAME)
+            );
+            assert_eq!(frame.as_bytes()[4], PROTOCOL_VERSION);
+            assert!(
+                frame
+                    .as_bytes()
+                    .ends_with(format!(",\"kind\":\"value\",\"turn\":{turn}}}").as_bytes())
+            );
+            assert_eq!(
+                EncodedFrame::value(turn, |slot| slot.string(&(text + "x"))),
+                Err(WireError::FrameTooLarge),
+            );
+        }
     }
 
     #[test]

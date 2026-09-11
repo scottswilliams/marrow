@@ -101,7 +101,11 @@ An export signature too complex for the fixed interface budget is a
 `cli.interface_unbuildable` error at generation. A wire value nests at most 64
 levels, a string carries at most 64 KiB, and a frame body, including its protocol
 version byte, is at most 1 MiB. The supervision module exports these as
-`MAX_DEPTH`, `MAX_STRING_BYTES`, and `MAX_FRAME`.
+`MAX_DEPTH`, `MAX_STRING_BYTES`, and `MAX_FRAME`. The runner checks outbound
+frame growth before appending, including the message envelope and version byte.
+Only a completed frame is passed to channel I/O. Encoding failure after dispatch closes the
+channel without a reply or another dispatch; the caller cannot confirm the
+invocation's outcome.
 
 The runner also checks [collection limits](../language/execution-limits.md#collection-limits)
 on List and Map arguments, including nested collections. An excess produces
