@@ -180,6 +180,12 @@ named-type ledger, including refused entries; the template vector stores
 admitted payloads for instantiation. Enum duplicate checks consult both that
 ledger and reserved enum rows, which enter the ledger during fill.
 
+Generic struct fills retain one pending vector of interned field names and
+resolved arguments while resolving later fields. Once all fields resolve, the
+fill uses the shared template names to form the image fields and semantic body
+together in declaration order. These final projections are not suspended across
+recursive field resolution; their conversion still overlaps allocations.
+
 Resource construction resolves each branch-field annotation once per admitted
 Product. The canonical member graph retains the scalar value shape. Root
 occurrence capture carries that scalar with the existing field path, and

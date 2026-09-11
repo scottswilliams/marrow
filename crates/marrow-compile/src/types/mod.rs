@@ -2444,16 +2444,12 @@ impl TypeRegistry {
             count_template_body_copy(&fields, <[(String, TypeExpr)]>::len);
             (subst, fields)
         };
-        let mut resolved = Vec::with_capacity(fields.len());
-        let mut defs = Vec::with_capacity(fields.len());
+        // Keep one pending representation across recursive field resolution.
+        let mut pending = Vec::with_capacity(fields.len());
         for (fname, fty) in fields.iter() {
             let arg = self.resolve_garg_env(draft, fty, &subst, site)?;
-            defs.push(FieldDef {
-                name: draft.intern_string(fname)?,
-                ty: arg.image(),
-                required: true,
-            });
-            resolved.push((fname.clone(), arg));
+            let name = draft.intern_string(fname)?;
+            pending.push((name, arg));
         }
         let TypeInstId::Record(ty) = id else {
             return Err(GenericInvariant::TypeBodyKindMismatch {
@@ -2462,6 +2458,20 @@ impl TypeRegistry {
             }
             .into());
         };
+        let (defs, resolved) = fields
+            .iter()
+            .zip(pending)
+            .map(|((fname, _), (name, arg))| {
+                (
+                    FieldDef {
+                        name,
+                        ty: arg.image(),
+                        required: true,
+                    },
+                    (fname.clone(), arg),
+                )
+            })
+            .unzip();
         #[expect(
             clippy::expect_used,
             reason = "reserve-then-fill law: the row was reserved in this batch and fills exactly once"

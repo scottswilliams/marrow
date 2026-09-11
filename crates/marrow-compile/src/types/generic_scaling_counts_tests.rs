@@ -548,3 +548,55 @@ fn nested_type_mint_directory_is_linear_in_instantiation_count() {
         c.directory_builds,
     );
 }
+
+#[test]
+fn recursive_struct_field_refusal_preserves_its_source_span() {
+    use marrow_codes::Code;
+    use marrow_syntax::SourceSpan;
+
+    use crate::compile::CompileFailure;
+
+    compile(&project(type_axis_fixture(1))).expect("Held<N0> must compile");
+
+    let source = "module main\n\n\
+struct Grow<T> {\n    leaf: T\n    next: Grow<List<T>>\n}\n\n\
+fn deepen<T>(x: T): Grow<T> {\n    return deepen(x)\n}\n\n\
+pub fn driver(): int {\n    const ignored = deepen(1)\n    return 0\n}\n";
+    let Err(CompileFailure::Diagnostics(rows)) = compile(&project(source.to_string())) else {
+        panic!("Grow must retain its typed source refusal");
+    };
+    assert_eq!(rows.as_slice().len(), 1);
+    let row = &rows.as_slice()[0];
+    assert_eq!(row.code(), Code::CheckInstantiationLimit.as_str());
+    assert_eq!(row.file().as_str(), "src/main.mw");
+    assert_eq!(
+        row.span(),
+        SourceSpan {
+            start_byte: 89,
+            end_byte: 96,
+            line: 8,
+            column: 21,
+        }
+    );
+}
+
+#[test]
+fn generic_struct_fields_keep_declared_order_and_types() {
+    let source = r#"module main
+
+struct Pair<A, B> {
+    zeta: A
+    alpha: B
+}
+
+pub fn driver(): int {
+    const pair = Pair(alpha: true, zeta: 7)
+    if pair.alpha {
+        return pair.zeta
+    }
+    return 0
+}
+"#;
+    compile(&project(source.to_string()))
+        .expect("both generic field reads must retain their types");
+}
