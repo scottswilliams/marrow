@@ -94,19 +94,32 @@ paths and branch coordinates, built once for the presence phase. Calls use
 binary search without reconstructing key columns; direct erases use the same
 entry-family classifier. This transient lookup is dropped before publication.
 
-Presence verification carries one owned working set through linear segments.
+`PresenceFacts` collects producer and strict-use identities once per function,
+using the existing guard-window and containing-entry helpers. It sorts complete
+root/branch/ordered-slot tuples once, moves each distinct tuple into a private
+vector and maps each matching instruction to its `FactId`. Temporary occurrences
+are dropped before propagation. A known identity does not establish presence:
+guards and creates add IDs dynamically, and strict uses still require live
+membership. Unresolved strict uses retain their refusal at the visited operation.
+Functions without strict presence operations skip both preparation and flow.
+
+Presence verification carries one owned ID set through linear segments.
 A fork propagates its target first, then carries its distinct fallthrough when
 that destination has no other predecessor. Coincident edges both intersect
 before their destination executes. Shared and non-fallthrough destinations
 retain incoming sets for intersection; a shrinking merge requeues the boundary
-and re-executes its carried interior. Functions without strict presence
-operations skip the pass. Otherwise it retains one optional state slot per
-instruction. Carried instructions add no retained incoming fact sets; working
-sets and branch-target copies remain. The guarded-read retention test checks
+and re-executes its carried interior. It retains one optional state slot and one
+optional identity slot per instruction. Carried instructions add no retained
+incoming sets; working sets and branch-target copies remain. The guarded-read
+retention test checks
 two retained sets and zero retained facts across six key-count/padding cases;
-both retained sets are empty. This fixture-specific result does not bound
-transient allocation, true-join retention, repeated visits or total verifier
-memory and work.
+both retained sets are empty. An interleaved-guard regression checks shared
+nonempty tuple storage across unequal retained states, plus refusal of a valid
+but unguarded key tuple. Tuple storage follows distinct identities; membership
+volume, B-tree nodes, forks and intersections still follow flow states. Collection
+temporarily retains duplicate occurrence tuples and overlaps the growing unique
+vector and instruction map. Sorting, prefix copying and repeated visits remain
+costs; these ownership checks establish no total verifier memory or work bound.
 
 `marrow-compile/src/lower/presence.rs` owns scoped presence facts with stable
 identities and typed live or invalidated state. Invalidated identities remain
