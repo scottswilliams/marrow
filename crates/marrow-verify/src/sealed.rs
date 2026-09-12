@@ -773,28 +773,12 @@ impl SealedExport {
     }
 }
 
-/// How a test body reaches durable data, deciding the runtime that drives it. The
-/// three kinds are disjoint: a body that performs a direct durable op and also
-/// drives a transaction owner is refused by the verifier before this classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TestKind {
-    /// No durable demand: runs with no attachment.
-    Storeless,
-    /// Performs durable operations directly in its body: runs against one harness
-    /// session over a fresh attachment.
-    DirectDurable,
-    /// Reaches durable data only through calls: runs as a driver, where each call is
-    /// its own invocation boundary against a fresh persistent attachment.
-    Driver,
-}
-
-/// A report name and execution kind bound to a verified zero-argument function.
+/// A report name bound to a verified zero-argument function.
 /// Its demand is borrowed from that function in the owning image.
 #[derive(Debug, Clone)]
 pub struct SealedTestEntry {
     pub(crate) name: Rc<str>,
     pub(crate) func: u16,
-    pub(crate) kind: TestKind,
 }
 
 impl SealedTestEntry {
@@ -806,11 +790,6 @@ impl SealedTestEntry {
     /// The image function index this test runs.
     pub fn func(&self) -> FunctionIndex {
         FunctionIndex(self.func)
-    }
-
-    /// How this test reaches durable data, deciding which runtime drives it.
-    pub fn kind(&self) -> TestKind {
-        self.kind
     }
 }
 

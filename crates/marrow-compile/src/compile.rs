@@ -609,14 +609,10 @@ struct LoweredFn {
     name: String,
     span: SourceSpan,
     callees: Vec<u16>,
-    /// Whether this function is a public export entry. An export that mutates owns its
-    /// transaction; a non-export helper or test entry receives an ambient transaction
-    /// from its caller or the test harness, so the requirement is reported only at
-    /// export entries.
+    /// Whether this function is a public export entry, responsible for owning its
+    /// transaction when it mutates durable state.
     is_export: bool,
-    /// Whether this is a `test` body. A test body is one of two disjoint kinds: it
-    /// performs durable operations directly, or it drives exports. Mixing the two is
-    /// refused by the strict-separation check.
+    /// Whether this is a `test` body, whose calls are invocation boundaries.
     is_test: bool,
     /// Spans of durable mutations this body performs outside any `transaction` block.
     unwrapped_mutations: Vec<SourceSpan>,
@@ -628,8 +624,6 @@ struct LoweredFn {
     presence_obligations: Vec<PresenceObligation>,
     /// Whether this body performs a durable-place operation directly.
     has_direct_durable_op: bool,
-    /// Whether this body owns a `transaction` block.
-    owns_transaction: bool,
     /// Full source spans parallel to the draft-owned instructions at `func`.
     code_spans: Vec<SourceSpan>,
 }
@@ -1830,7 +1824,7 @@ fn run_semantic(
     // transaction effect: it is callable only inside a `transaction` block or from
     // another function carrying the effect. Reported at check time so the source, not
     // the image, carries the diagnostic; the verifier reconstructs the same closure and
-    // rejects a tampered image (image.flow) as defense in depth. Run once the call
+    // rejects a tampered image as defense in depth. Run once the call
     // owner has selected complete acyclic call components.
     let transactions = lowered_set
         .as_ref()
@@ -1853,13 +1847,10 @@ fn run_semantic(
         reject_transaction_ownership(bodies, acyclic, closure, &mut diagnostics);
     }
 
-    // A test body reaches durable data in one of two disjoint ways — directly, or by
-    // driving exports — and may not do both. Reported at check time so the source
-    // carries the diagnostic; the verifier's test-entry phase rejects a mixed image
-    // (image.test_entry) as defense in depth. Restrict reports to complete acyclic
-    // components.
+    // Tests reach durable data through ordinary invocations. Report direct operations
+    // in complete components here; the verifier independently enforces this boundary.
     if let (Some(set), Some(acyclic)) = (&lowered_set, &call_graph) {
-        reject_mixed_test_bodies(set, acyclic, &mut diagnostics);
+        reject_direct_test_operations(set, acyclic, &mut diagnostics);
     }
 
     // The semantic fence, in exact order. An invariant has already returned above. A
@@ -2127,7 +2118,6 @@ fn registry_phases(
                 erased_families: result.erased_families,
                 presence_obligations: result.presence_obligations,
                 has_direct_durable_op: result.has_direct_durable_op,
-                owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
             },
         );
@@ -2265,7 +2255,6 @@ fn lower_declared_functions(
                     erased_families: result.erased_families,
                     presence_obligations: result.presence_obligations,
                     has_direct_durable_op: result.has_direct_durable_op,
-                    owns_transaction: result.owns_transaction,
                     code_spans: result.code_spans,
                 },
             );
@@ -2383,7 +2372,6 @@ fn lower_declared_tests(
                 erased_families: result.erased_families,
                 presence_obligations: result.presence_obligations,
                 has_direct_durable_op: result.has_direct_durable_op,
-                owns_transaction: result.owns_transaction,
                 code_spans: result.code_spans,
             },
         );
@@ -2600,16 +2588,15 @@ fn reject_recursion(
 }
 
 /// Report `check.requires_transaction` for every durable mutation or mutating call an
-/// export entry performs outside a `transaction` block.
+/// export entry performs outside a `transaction` block, or a test calls without an owner.
 ///
 /// A function *requires an ambient transaction* when it performs a durable mutation
 /// not enclosed in its own `transaction` block — directly, or by calling a function
 /// that itself requires one at a site the block does not cover. The callee-first
 /// order carries that property to each caller. A non-export helper that requires
 /// a transaction is legal: it runs inside its caller's region. The requirement is
-/// therefore reported only where a caller cannot satisfy it — at an export entry, at
-/// the specific unwrapped mutation or call-site span. A test entry receives its
-/// ambient transaction from the test harness and is likewise exempt.
+/// therefore reported where a caller cannot satisfy it: an export entry or a test
+/// invoking the helper. Direct test operations have their own refusal.
 /// `acyclic` owns the callee-before-caller order: every function and relevant edge is
 /// examined once, with no convergence sweep.
 fn reject_missing_transaction(
@@ -2640,16 +2627,19 @@ fn reject_missing_transaction(
         },
     );
 
-    // Report at export entries only. Deduplicate by source position so a single write
+    // Deduplicate by source position so a single write
     // that lowers to several instructions (an upsert's replace and create arms share
     // one span) yields one diagnostic.
     let mut reported = false;
     for function in lowered.eligible(acyclic) {
-        if !function.is_export {
+        if !function.is_export && !function.is_test {
             continue;
         }
         let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
         for span in &function.unwrapped_mutations {
+            if function.is_test {
+                continue;
+            }
             if seen.insert((span.line, span.column)) {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckRequiresTransaction.as_str(),
@@ -2676,11 +2666,18 @@ fn reject_missing_transaction(
                     Code::CheckRequiresTransaction.as_str(),
                     &function.file,
                     *span,
-                    format!(
-                        "calling `{name}` here has no ambient transaction. A durable write, \
+                    if function.is_test {
+                        format!(
+                            "calling `{name}` here has no ambient transaction. Call an export \
+                             that owns the durable work in a `transaction` block."
+                        )
+                    } else {
+                        format!(
+                            "calling `{name}` here has no ambient transaction. A durable write, \
                          replacement, or erase executes only inside a `transaction` block. Wrap \
                          the call in a `transaction {{ … }}` block."
-                    ),
+                        )
+                    },
                 ));
                 reported = true;
             }
@@ -2968,20 +2965,13 @@ fn owner_lattice_violation(
     None
 }
 
-/// Report `check.test_driver_mix` for every `test` body that both performs a durable
-/// operation directly and drives a transaction-owning export. The two invocation
-/// models — one harness session for direct operations, one session per driven export
-/// call — cannot share a body: the driven export's commit would consume the harness
-/// session the direct operation needs. Only a directly-owned transaction counts as a
-/// driven owner; because a transaction owner is never reached through a helper, the
-/// test body's direct call edges carry the whole relation.
-/// The graph owner restricts reporting to complete acyclic call components.
-fn reject_mixed_test_bodies(
+/// Tests contain ordinary values and calls; durable operations belong to their
+/// callees. The graph owner restricts reporting to complete acyclic components.
+fn reject_direct_test_operations(
     lowered: &LoweredFunctionSet,
     acyclic: &AcyclicCallGraph,
     diagnostics: &mut DiagnosticCollector,
 ) {
-    let functions = lowered.functions();
     for test in lowered
         .eligible(acyclic)
         .filter(|function| function.is_test)
@@ -2989,24 +2979,15 @@ fn reject_mixed_test_bodies(
         if !test.has_direct_durable_op {
             continue;
         }
-        let drives_owner = test.callees.iter().any(|callee| {
-            functions[usize::from(*callee)]
-                .as_ref()
-                .is_some_and(|function| function.owns_transaction)
-        });
-        if drives_owner {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckTestDriverMix.as_str(),
-                &test.file,
-                test.span,
-                "this test body performs a durable operation directly and also drives an \
-                 export that owns a transaction. A test either works durable data directly, \
-                 in the harness session, or drives exports, where each call is its own \
-                 invocation boundary; the two cannot share one body. Split them into \
-                 separate tests, or reach the durable data through the exports it drives."
-                    .to_string(),
-            ));
-        }
+        diagnostics.push(SourceDiagnostic::at(
+            Code::CheckTestDurableOperation.as_str(),
+            &test.file,
+            test.span,
+            "this test body performs a durable operation directly. Read through an \
+                 ordinary function or call an export that owns the mutation in a \
+                 `transaction` block."
+                .to_string(),
+        ));
     }
 }
 

@@ -193,7 +193,6 @@ fn named_functions(names: &[&str]) -> Vec<Option<LoweredFn>> {
                 erased_families: Vec::new(),
                 presence_obligations: Vec::new(),
                 has_direct_durable_op: false,
-                owns_transaction: false,
                 code_spans: Vec::new(),
             })
         })

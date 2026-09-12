@@ -29,7 +29,7 @@
 
 use marrow_kernel::durable::{DemandCoverage, InvocationGrant, SessionHost};
 use marrow_lifecycle::{Attachment, FreshTest, TestHost};
-use marrow_verify::{DemandView, ExportId, TestKind, VerifiedFunction};
+use marrow_verify::{DemandView, ExportId, VerifiedFunction};
 
 use crate::fault::{DurableExecutionFault, RuntimeFault};
 use crate::run::{DriverDispatch, run, run_driver, run_durable, run_in_session};
@@ -68,10 +68,9 @@ pub fn run_export<H: SessionHost>(
     Some(run_on_host(function, args, host))
 }
 
-/// Run one fresh source test: a storeless entry with no session, a direct-durable entry
-/// against one harness session over its own fresh store, and a driver entry against that
-/// store with each export call it makes as its own invocation boundary (see
-/// [`TestDriver`]). Kind and demand come from the entry in the test's own image.
+/// Run one fresh source test. A storeless entry needs no session; a durable entry
+/// invokes each callee against the test's fresh store through [`TestDriver`]. The
+/// selected function and demand belong to the test's own image.
 pub fn run_test(mut test: FreshTest) -> DurableRun {
     let execution = test.execution();
     let image = execution.image;
@@ -87,17 +86,8 @@ pub fn run_test(mut test: FreshTest) -> DurableRun {
         TestHost::Parked => return DurableRun::Parked,
         TestHost::Failed(cause) => return DurableRun::Failed(cause),
     };
-    match entry.kind() {
-        // A storeless entry is never minted a store; the arm is total over the kind.
-        TestKind::Storeless => {
-            DurableRun::Ran(run(function, Vec::new()).map_err(DurableExecutionFault::from))
-        }
-        TestKind::DirectDurable => run_on_host(function, Vec::new(), host),
-        TestKind::Driver => {
-            let mut driver = TestDriver { host };
-            DurableRun::Ran(run_driver(function, Vec::new(), &mut driver))
-        }
-    }
+    let mut driver = TestDriver { host };
+    DurableRun::Ran(run_driver(function, Vec::new(), &mut driver))
 }
 
 /// Open the session `func` requires on `host` and run it. A mutating demand

@@ -203,8 +203,14 @@ pub fn validateMove(id: int, expected: int, shelf: string): Result<bool, string>
     return ok(true)
 }
 
+pub fn add(id: int, title: string, revision: int) {
+    transaction {
+        ^books[id] = Book(title: title, revision: revision)
+    }
+}
+
 test "example: validateMove" {
-    ^books[1] = Book(title: "Small Gods", revision: 3)
+    add(1, "Small Gods", 3)
     const accepted: Result<bool, string> = ok(true)
     const stale: Result<bool, string> = err("stale revision 3")
     assert validateMove(1, 3, "fantasy") == accepted

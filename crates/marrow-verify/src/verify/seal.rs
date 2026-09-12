@@ -11,8 +11,7 @@ use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
     RetShape, SealedEnumType, SealedExport, SealedField, SealedFunction, SealedIndex, SealedInstr,
-    SealedRecordType, SealedRoot, SealedSite, SealedTestEntry, SealedVariant, TestKind,
-    VerifiedImage,
+    SealedRecordType, SealedRoot, SealedSite, SealedTestEntry, SealedVariant, VerifiedImage,
 };
 
 pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
@@ -272,7 +271,7 @@ fn check_test_entries(
                 "a test entry must return unit",
             ));
         }
-        // A test entry may touch durable data; its function demand contributes to
+        // A test entry may call durable functions; its demand contributes to
         // the test-image union. It is never an export and carries no wire identity.
     }
 
@@ -288,53 +287,37 @@ fn check_test_entries(
         }
     }
 
-    // A test body is one of two disjoint kinds: it performs durable operations
-    // directly (running in the harness session) or it drives exports, where each
-    // export call is its own invocation boundary. Mixing the two — a direct durable
-    // op together with a call to a transaction owner — is refused: the owner's commit
-    // would consume the harness session out from under the direct op, and no single
-    // session can carry both. The compiler reports the same shape at check time; this
-    // is the independent artifact-level mirror.
+    // Test calls open ordinary invocation sessions. The body has no ambient session
+    // for direct operations or for a mutating helper that does not own a transaction.
     for (_, func) in &decoded.test_entries {
         let function = &functions[*func as usize];
         let has_direct_durable = function
             .instrs()
             .iter()
             .any(|instr| durable_op_class(instr).is_some());
-        let drives_owner = calls
-            .callees(usize::from(*func))
-            .iter()
-            .any(|&callee| effects.has_begin[usize::from(callee)]);
-        if has_direct_durable && drives_owner {
+        if has_direct_durable {
             return Err(reject(
                 VerifyPhase::TestEntry,
-                "a test body performs a direct durable operation and also drives a \
-                 transaction-owning export",
+                "a test body performs a direct durable operation",
             ));
+        }
+        for &callee in calls.callees(usize::from(*func)) {
+            let callee = usize::from(callee);
+            if effects.mutates_closure[callee] && !effects.has_begin[callee] {
+                return Err(reject(
+                    VerifyPhase::TestEntry,
+                    "a test calls a mutating function without its own transaction",
+                ));
+            }
         }
     }
 
     Ok(decoded
         .test_entries
         .iter()
-        .map(|(name, func)| {
-            let demand = effects.demands.get(usize::from(*func));
-            let kind = if demand.is_empty() {
-                TestKind::Storeless
-            } else if functions[*func as usize]
-                .instrs()
-                .iter()
-                .any(|instr| durable_op_class(instr).is_some())
-            {
-                TestKind::DirectDurable
-            } else {
-                TestKind::Driver
-            };
-            SealedTestEntry {
-                name: decoded.strings[*name as usize].clone(),
-                func: *func,
-                kind,
-            }
+        .map(|(name, func)| SealedTestEntry {
+            name: decoded.strings[*name as usize].clone(),
+            func: *func,
         })
         .collect())
 }

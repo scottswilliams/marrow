@@ -96,7 +96,7 @@ pub(crate) fn run_durable(
 /// into its own invocation boundary — opening the session that call's demand
 /// requires, running it, committing or rolling it back, and closing it — exactly as
 /// a terminal invocation does. The driver frame itself performs no direct durable
-/// operation (the test-entry phase refuses a body that mixes the two), so it drives
+/// operation (the test-entry phase refuses those instructions), so it drives
 /// only through calls.
 pub(crate) trait DriverDispatch {
     fn invoke(

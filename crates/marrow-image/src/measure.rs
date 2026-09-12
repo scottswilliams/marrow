@@ -1166,8 +1166,7 @@ fn span_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 /// verifier's seal phase rechecks independently: unique names, unique targets, the
 /// assert-membership law, export/test disjointness, the signature law (zero
 /// parameters first, then the unit return), the no-calls-into-a-test-entry law, and
-/// the driver-mix law (a direct durable operation beside a drive of a
-/// transaction-owning callee).
+/// the absence of direct durable operations in test bodies.
 fn test_entry_relations(
     draft: &ImageDraft,
     function_relations: &mut FunctionRelations,
@@ -1266,22 +1265,8 @@ fn test_entry_relations(
             .code
             .iter()
             .any(|instr| instr.site_operand().is_some());
-        if !has_direct_durable {
-            continue;
-        }
-        for instr in &function.code {
-            if let Instr::Call(target) = instr {
-                let callee = draft.functions()[*target as usize]
-                    .as_ref()
-                    .ok_or(ImageBuildError::InvalidReference("vacant function"))?;
-                if callee
-                    .code
-                    .iter()
-                    .any(|instr| matches!(instr, Instr::TxnBegin))
-                {
-                    return Err(ImageBuildError::InvalidReference("test table"));
-                }
-            }
+        if has_direct_durable {
+            return Err(ImageBuildError::InvalidReference("test table"));
         }
     }
     Ok(())

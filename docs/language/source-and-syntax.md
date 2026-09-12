@@ -26,8 +26,14 @@ pub fn shelfOf(id: int): string {
     return ^books[id].shelf ?? defaultShelf
 }
 
+pub fn add(id: int, title: string) {
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+}
+
 test "an unshelved book" {
-    ^books[1] = Book(title: "Small Gods")
+    add(1, "Small Gods")
     assert shelfOf(1) == "unsorted"
 }
 ```
@@ -36,8 +42,8 @@ The header comes first, then declarations in any order. `resource` and `store`
 describe durable data, `const` names a value, and `pub fn` exports a function.
 `^books[id].shelf` reads one field of one entry; the read is optional because
 either may be absent, and `??` supplies the default. The `test` block runs
-against a fresh in-memory store, and a durable write in a test body is a bare
-statement ([tests](tests.md)). The module rules are in
+against a fresh in-memory store and calls `add` to commit its setup before
+reading it ([tests](tests.md)). The module rules are in
 [modules and functions](modules-and-functions.md).
 
 ## Comments

@@ -45,12 +45,18 @@ pub fn notesFrom(id: int, first: int): string {
     return text
 }
 
+pub fn addBooksWithNotes() {
+    transaction {
+        ^books[1] = Book(title: "Small Gods")
+        ^books[1].notes[1] = Book.notes(text: "a")
+        ^books[1].notes[2] = Book.notes(text: "b")
+        ^books[1].notes[3] = Book.notes(text: "c")
+        ^books[2] = Book(title: "Pyramids")
+    }
+}
+
 test "walks" {
-    ^books[1] = Book(title: "Small Gods")
-    ^books[1].notes[1] = Book.notes(text: "a")
-    ^books[1].notes[2] = Book.notes(text: "b")
-    ^books[1].notes[3] = Book.notes(text: "c")
-    ^books[2] = Book(title: "Pyramids")
+    addBooksWithNotes()
     match noteTotal() {
         ok(total) => {
             assert total == 3
@@ -63,25 +69,37 @@ test "walks" {
     assert notesFrom(1, 1) == "ab..."
 }
 
-test "the visited keys are frozen before the body runs" {
-    ^books[1] = Book(title: "a")
-    ^books[2] = Book(title: "b")
-    var visited = 0
-    var absentAtTwo = false
-    for id in ^books at most 10 {
-        visited += 1
-        if id == 1 {
-            delete ^books[2]
-            ^books[3] = Book(title: "c")
+struct VisitResult {
+    visited: int
+    absentAtTwo: bool
+}
+
+pub fn changeWhileWalking(): VisitResult {
+    transaction {
+        ^books[1] = Book(title: "a")
+        ^books[2] = Book(title: "b")
+        var visited = 0
+        var absentAtTwo = false
+        for id in ^books at most 10 {
+            visited += 1
+            if id == 1 {
+                delete ^books[2]
+                ^books[3] = Book(title: "c")
+            }
+            if id == 2 {
+                absentAtTwo = not exists(^books[id])
+            }
+        } on more {
+            unreachable("no more")
         }
-        if id == 2 {
-            absentAtTwo = not exists(^books[id])
-        }
-    } on more {
-        unreachable("no more")
+        return VisitResult(visited: visited, absentAtTwo: absentAtTwo)
     }
-    assert visited == 2
-    assert absentAtTwo
+}
+
+test "the visited keys are frozen before the body runs" {
+    const result = changeWhileWalking()
+    assert result.visited == 2
+    assert result.absentAtTwo
 }
 ```
 

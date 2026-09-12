@@ -319,8 +319,7 @@ pub(super) struct TraversalTarget<'a, 'e> {
 
 /// Whether an instruction is a direct durable-place operation — a read, write,
 /// presence probe, erase, or managed-index access over a `^` place. A `Duration*`
-/// arithmetic opcode is not one. The test-body strict-separation check uses this to
-/// tell a body that touches durable data directly from one that only drives exports.
+/// arithmetic opcode is not one. Tests must reach these operations through calls.
 pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
     matches!(
         instr,

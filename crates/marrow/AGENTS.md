@@ -18,10 +18,10 @@ compiler-owned `DurableNaming` join. Checking opens no store, executes no progra
 and grants no authority.
 
 Durable command execution and read-only audit use the companion runner and
-lifecycle admission. Currently a direct durable test gets a fresh attachment,
-while a test driver calls exports at their own invocation boundaries. This split
-is current behavior pending the [future test model](../../docs/future/durable-programming.md),
-not a permanent design constraint. Test changes still require production-path
+lifecycle admission. A durable source test gets a fresh attachment and calls
+ordinary functions at their invocation boundaries, including private readers.
+The test body has no ambient session; writes go through transaction-owning exports
+([tests](../../docs/language/tests.md)). Test changes require production-path
 evidence. The client generator consumes the verified image's wire
 interface and emits the supervision module verbatim under byte-exact drift tests.
 

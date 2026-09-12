@@ -13,7 +13,7 @@
 //! addresses.
 
 use marrow_compile::SourceDiagnostic;
-use marrow_verify::{SealedExport, SealedSite, SealedSiteTarget, TestKind, VerifiedImage};
+use marrow_verify::{SealedExport, SealedSite, SealedSiteTarget, VerifiedImage};
 use marrow_vm::{
     DurableRun, EphemeralOutcome, MemoryAttachment, Value, fresh_test, mint_ephemeral, prepare,
     run_export, run_test,
@@ -432,10 +432,11 @@ fn a_two_root_driver_test_drives_both_roots_through_exports() {
         .iter()
         .position(|entry| entry.name() == "cross-root driver round trip")
         .expect("the driver test entry is sealed");
-    assert!(
-        matches!(image.test_entries()[index].kind(), TestKind::Driver),
-        "a test that only calls exports is a driver test",
-    );
+    let demand = image
+        .function(image.test_entries()[index].func())
+        .expect("test function belongs to image")
+        .demand();
+    assert!(demand.reads() && demand.writes());
     let test = fresh_test(&prepare(image.clone()), index).expect("the entry index is sealed");
     match run_test(test) {
         DurableRun::Ran(Ok(_)) => {}

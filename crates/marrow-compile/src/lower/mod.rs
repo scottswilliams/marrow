@@ -172,11 +172,8 @@ pub(crate) struct Lowered {
     pub unwrapped_calls: Vec<(u16, SourceSpan)>,
     /// Whether this body performs a durable-place operation directly (as opposed to
     /// reaching durable data only through calls). Consumed by the test-body
-    /// strict-separation check.
+    /// direct-operation refusal.
     pub has_direct_durable_op: bool,
-    /// Whether this body owns a `transaction` block (emits a begin). A test body that
-    /// drives such a function mixes invocation boundaries and is refused.
-    pub owns_transaction: bool,
     /// Entry families directly erased by this body. Calls inherit only these
     /// erasures when checking the lifetime of a presence fact.
     pub erased_families: Vec<Family>,
@@ -996,7 +993,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let spans = std::mem::take(&mut self.spans);
         let code_spans = std::mem::take(&mut self.full_spans);
         let has_direct_durable_op = code.iter().any(is_durable_place_op);
-        let owns_transaction = code.iter().any(|instr| matches!(instr, Instr::TxnBegin));
         #[cfg(test)]
         let allocation = code.as_ptr();
         self.draft.fill_function(
@@ -1031,7 +1027,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             erased_families: self.erased_families.drain(..).cloned().collect(),
             presence_obligations: std::mem::take(&mut self.presence_obligations),
             has_direct_durable_op,
-            owns_transaction,
             code_spans,
         }))
     }

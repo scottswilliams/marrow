@@ -28,7 +28,7 @@
 //! rollback journey below locks the invocation-boundary isolation law: a faulting export
 //! invocation rolls back without disturbing a prior committed one.
 
-use marrow_verify::{TestKind, VerifiedImage};
+use marrow_verify::VerifiedImage;
 use marrow_vm::{
     DurableRun, EphemeralOutcome, Value, fresh_test, mint_ephemeral, prepare, run_export, run_test,
 };
@@ -218,7 +218,7 @@ struct Row {
 /// The bounded composition matrix: durable op forms (whole-entry read/write,
 /// field read/write, group read/write, branch read/write, index lookup,
 /// identity write, bounded traversal) × contexts (outside a transaction, inside
-/// a mutating region, inside a test body directly, via an export call from a
+/// a mutating region, through test seed and observer calls, via an export call from a
 /// test body). Positive controls pin the executable subset; the three review-of-
 /// record defects pin the current divergence set.
 fn matrix() -> Vec<Row> {
@@ -280,13 +280,13 @@ fn matrix() -> Vec<Row> {
             expect: Expect::RoundTrips { run: false },
         },
         Row {
-            label: "field write + read-back / in a test body directly",
-            ops: "test \"direct field round trip\" {\n    place m = ^books[1]\n    m = Book(title: \"t\", isbn: \"i\")\n    m.subtitle = \"x\"\n    assert ^books[1].subtitle ?? \"n\" == \"x\"\n}",
+            label: "field write + read-back / through seed and private observer calls",
+            ops: "pub fn seedSubtitle() {\n    transaction {\n        place m = ^books[1]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.subtitle = \"x\"\n    }\n}\n\nfn subtitle(): string? {\n    return ^books[1].subtitle\n}\n\ntest \"direct field round trip\" {\n    seedSubtitle()\n    assert subtitle() ?? \"n\" == \"x\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
         Row {
-            label: "whole-entry write + read-back / in a test body directly",
-            ops: "test \"direct whole-entry round trip\" {\n    ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    if const b = ^books[1] {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
+            label: "whole-entry write + read-back / through seed and private observer calls",
+            ops: "pub fn seedBook() {\n    transaction {\n        ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    }\n}\n\nfn book(): Book? {\n    return ^books[1]\n}\n\ntest \"direct whole-entry round trip\" {\n    seedBook()\n    if const b = book() {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A composite-key root place carries several key slots but is still a root, so a
@@ -598,12 +598,14 @@ fn run_all_tests(label: &str, image: &VerifiedImage) {
     );
     let prepared = prepare(image.clone());
     for (index, entry) in image.test_entries().iter().enumerate() {
-        // Each test is selected from the prepared image and runs through the runtime its
-        // kind names: a driver test runs each export call as its own invocation boundary; a
-        // direct-durable test runs against one harness session. A storeless test never
-        // reaches a run row.
+        // Each durable test is selected from its own image; every call uses its
+        // verified demand to open the invocation's session.
         assert!(
-            !matches!(entry.kind(), TestKind::Storeless),
+            !image
+                .function(entry.func())
+                .expect("test function belongs to image")
+                .demand()
+                .is_empty(),
             "{label}: a run-row test entry is durable",
         );
         let test = fresh_test(&prepared, index).expect("the entry index is in the image");

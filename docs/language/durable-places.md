@@ -101,11 +101,25 @@ pub fn titleOrNone(id: int): string {
     return "none"
 }
 
+pub fn add(id: int, title: string) {
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+}
+
+fn present(id: int): bool {
+    return exists(^books[id])
+}
+
+fn subtitle(id: int): string? {
+    return ^books[id].subtitle
+}
+
 test "an absent entry reads absent" {
-    ^books[1] = Book(title: "Small Gods")
-    assert exists(^books[1])
-    assert not exists(^books[2])
-    assert ^books[1].subtitle ?? "none" == "none"
+    add(1, "Small Gods")
+    assert present(1)
+    assert not present(2)
+    assert subtitle(1) ?? "none" == "none"
     assert titleOrNone(2) == "none"
 }
 ```
@@ -123,9 +137,9 @@ the same of that branch, whether or not the book entry is present. Each family
 test uses one bounded scan and faults on encountered own payload without its
 entry marker ([traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
-The test writes `^books[1]` with a bare statement. A test body owns no
-transaction: it touches durable data directly, or it drives exports that do,
-never both ([tests](tests.md#durable-tests)).
+The test calls `add` to commit its setup, then calls readers to observe it.
+The test body owns no transaction or durable session
+([tests](tests.md#durable-tests)).
 
 ## Writing
 
@@ -210,15 +224,39 @@ pub fn replace(id: int, title: string) {
     }
 }
 
+pub fn addSignedBook() {
+    transaction {
+        ^books[1] = Book(title: "Small Gods", subtitle: "A novel")
+        ^books[1].notes[1] = Book.notes(text: "signed")
+    }
+}
+
+pub fn erase(id: int) {
+    transaction {
+        delete ^books[id]
+    }
+}
+
+fn subtitle(id: int): string? {
+    return ^books[id].subtitle
+}
+
+fn noteText(id: int, pos: int): string? {
+    return ^books[id].notes[pos].text
+}
+
+fn present(id: int): bool {
+    return exists(^books[id])
+}
+
 test "replacement and delete leave the branch in place" {
-    ^books[1] = Book(title: "Small Gods", subtitle: "A novel")
-    ^books[1].notes[1] = Book.notes(text: "signed")
-    ^books[1] = Book(title: "Pyramids")
-    assert ^books[1].subtitle ?? "none" == "none"
-    assert ^books[1].notes[1].text ?? "" == "signed"
-    delete ^books[1]
-    assert not exists(^books[1])
-    assert ^books[1].notes[1].text ?? "" == "signed"
+    addSignedBook()
+    replace(1, "Pyramids")
+    assert subtitle(1) ?? "none" == "none"
+    assert noteText(1, 1) ?? "" == "signed"
+    erase(1)
+    assert not present(1)
+    assert noteText(1, 1) ?? "" == "signed"
 }
 ```
 
@@ -373,27 +411,50 @@ pub fn pages(id: int): int? {
     return ^books[id].details.pages
 }
 
+struct DetailChanges {
+    languageAfterPageWrite: string
+    pagesAfterReplacement: int
+    titleAfterReplacement: string
+    languageAfterDelete: string
+}
+
+pub fn changeDetails(): DetailChanges {
+    transaction {
+        place b = ^books[1]
+        b = Book(title: "Small Gods", details: Book.details(pages: 381, language: "en"))
+        b.details.pages = 400
+        const language = b.details.language ?? ""
+        b.details = Book.details(language: "de")
+        const remainingPages = b.details.pages ?? 0
+        const title = b.title
+        delete b.details.language
+        return DetailChanges(
+            languageAfterPageWrite: language,
+            pagesAfterReplacement: remainingPages,
+            titleAfterReplacement: title,
+            languageAfterDelete: b.details.language ?? "none",
+        )
+    }
+}
+
 test "a group is one value of the entry" {
-    place b = ^books[1]
-    b = Book(title: "Small Gods", details: Book.details(pages: 381, language: "en"))
-    b.details.pages = 400
-    assert b.details.language ?? "" == "en"
-    b.details = Book.details(language: "de")
-    assert b.details.pages ?? 0 == 0
-    assert b.title == "Small Gods"
-    delete b.details.language
-    assert b.details.language ?? "none" == "none"
+    const changes = changeDetails()
+    assert changes.languageAfterPageWrite == "en"
+    assert changes.pagesAfterReplacement == 0
+    assert changes.titleAfterReplacement == "Small Gods"
+    assert changes.languageAfterDelete == "none"
 }
 ```
 
 `details` is part of the entry: it is present exactly when the entry is, and it
 is addressed by the entry's key. `^books[id].details.pages` reads one leaf and
-yields `int?`. The test binds `place b = ^books[1]`, and the whole-entry
-assignment through `b` proves it for the rest of the body, so the group writes
-that follow need no further guard. The test writes one leaf and keeps
+yields `int?`. `changeDetails` binds `place b = ^books[1]`, and the whole-entry
+assignment through `b` proves it for the rest of the block, so the group writes
+that follow need no further guard. The function writes one leaf and keeps
 `language`, then assigns the whole group exactly, so the omitted `pages` is
 dropped. `title` is untouched either way, and `delete b.details.language`
-clears one sparse leaf. A group whose leaves are all sparse is cleared with
+clears one sparse leaf. The returned value captures each intermediate observation
+for the test's assertions. A group whose leaves are all sparse is cleared with
 `delete b.details`; a group that declares a required leaf is erased only with
 its entry ([deleting](#deleting)).
 
@@ -423,14 +484,38 @@ pub fn noteText(id: int, pos: int): string? {
     return ^books[id].notes[pos].text
 }
 
+pub fn addTag() {
+    transaction {
+        ^books[1].notes[1].tags["gift"] = Book.notes.tags(weight: 2)
+    }
+}
+
+pub fn addNote() {
+    transaction {
+        ^books[1].notes[1] = Book.notes(text: "signed")
+    }
+}
+
+fn tagWeight(): int? {
+    return ^books[1].notes[1].tags["gift"].weight
+}
+
+fn notePresent(): bool {
+    return exists(^books[1].notes[1])
+}
+
+fn bookPresent(): bool {
+    return exists(^books[1])
+}
+
 test "a branch entry is its own node" {
-    ^books[1].notes[1].tags["gift"] = Book.notes.tags(weight: 2)
-    assert ^books[1].notes[1].tags["gift"].weight ?? 0 == 2
-    assert not exists(^books[1].notes[1])
-    assert not exists(^books[1])
-    ^books[1].notes[1] = Book.notes(text: "signed")
-    assert exists(^books[1].notes[1])
-    assert ^books[1].notes[1].tags["gift"].weight ?? 0 == 2
+    addTag()
+    assert tagWeight() ?? 0 == 2
+    assert not notePresent()
+    assert not bookPresent()
+    addNote()
+    assert notePresent()
+    assert tagWeight() ?? 0 == 2
 }
 ```
 
@@ -439,7 +524,7 @@ test "a branch entry is its own node" {
 fields and further branches, nested at most 16 levels. Every operation on an
 entry applies to a branch entry at its own address.
 
-The test writes a tag under a note and a book that do not exist. The write is
+`addTag` writes a tag under a note and a book that do not exist. The write is
 admitted: each branch entry has its own presence, independent of its ancestors.
 `exists` remains false for the note and book. Creating the note later leaves
 the tag in place. A program can address or traverse a branch beneath an absent

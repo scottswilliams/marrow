@@ -378,7 +378,7 @@ test "example: label renders tag, name, category" {
 test "a fresh catalog has no assets and nothing catalogued yet" {
     // `catalogued()` is the `^tallies` ledger quantity, not a census of `^assets`: on a
     // fresh attachment no asset is present and the ledger has recorded nothing yet.
-    assert not exists(^assets[1])
+    assert not present(1)
     assert catalogued() == 0
 }
 

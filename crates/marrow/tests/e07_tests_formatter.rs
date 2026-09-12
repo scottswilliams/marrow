@@ -4,8 +4,8 @@
 //! `fixtures/v01/e07_tests_formatter/` so each program lives as idiomatic `.mw`
 //! source rather than a Rust string constant:
 //!
-//! - **`marrow test`** over an idiomatic durable application (`catalog`: storeless,
-//!   direct-durable, and driver tests, all passing) and over a segregated
+//! - **`marrow test`** over an idiomatic durable application (`catalog`: storeless
+//!   and durable invocation tests, all passing) and over a segregated
 //!   mixed-outcome program (`outcomes`: one passed, one `run.assert` failure, one
 //!   `run.todo` error) — pinning the JSONL surface (canonical key order, typed
 //!   codes, the summary ledger), the `--filter` selection, and the exit codes.
@@ -69,10 +69,9 @@ fn assert_key_order(record: &str, keys: &[&str]) {
 // `marrow test` — the source-test journey
 // ---------------------------------------------------------------------------
 
-/// The idiomatic durable application's storeless, direct-durable, and driver tests
-/// all pass. Each runs against its own fresh ephemeral attachment, so the direct
-/// write and the driver commit never leak between bodies; the run exits zero and the
-/// summary accounts for all four as passed.
+/// The application's storeless and durable invocation tests all pass. Each durable
+/// test gets a fresh attachment, so committed writes never leak between bodies.
+/// The summary accounts for all four as passed.
 #[test]
 fn catalog_tests_all_pass_with_a_canonical_jsonl_surface() {
     let out = Project::from_fixture("e07_tests_formatter/catalog")

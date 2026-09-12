@@ -1,9 +1,9 @@
-use crate::{FunctionIndex, RetShape, SealedInstr, TestKind, VerifiedImage, VerifyPhase};
+use crate::{FunctionIndex, RetShape, SealedInstr, VerifiedImage, VerifyPhase};
 use marrow_image::{
     ConstId, DeclarationMemberDef, DeclarationMemberShape, DemandAtom, ExportDemand, ExportId,
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, OP_CALL,
-    OP_RETURN, OperationClass, PlannedSiteRef, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticPath, SemanticTarget, SpanEntry,
+    OP_DUR_EXISTS, OP_POP, OP_RETURN, OperationClass, PlannedSiteRef, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticPath, SemanticTarget, SpanEntry,
 };
 use std::cell::Cell;
 use std::panic::{catch_unwind, resume_unwind};
@@ -345,7 +345,6 @@ fn function_and_selected_demands_preserve_driver_semantics() {
     let test = &verified.test_entries()[0];
     assert_eq!(test.func(), FunctionIndex::new(4));
     assert_eq!(test.name(), "f4");
-    assert_eq!(test.kind(), TestKind::Driver);
     assert_eq!(
         verified
             .function(test.func())
@@ -468,7 +467,6 @@ fn unequal_function_demands_borrow_the_same_atoms() {
     let test = &verified.test_entries()[0];
     assert_eq!(test.func(), FunctionIndex::new(0));
     assert_eq!(test.name(), "f0");
-    assert_eq!(test.kind(), TestKind::Driver);
     assert_eq!(
         verified
             .function(test.func())
@@ -669,7 +667,7 @@ fn a_call_into_a_test_entry_reaches_the_verifier_after_cycle_checking() {
     );
     let verified = crate::verify(&bytes).expect("ordinary calls beside a test entry");
     assert_eq!(verified.test_entries().len(), 1);
-    assert_eq!(verified.test_entries()[0].kind(), TestKind::Storeless);
+    assert!(verified.test_demand_union().is_empty());
     replace_terminal_call(&mut bytes, 1, 2);
     assert_refusal(
         &bytes,
@@ -685,69 +683,123 @@ fn a_call_into_a_test_entry_reaches_the_verifier_after_cycle_checking() {
 }
 
 #[test]
-fn a_mixed_test_driver_is_rejected_by_the_verifier() {
-    for direct in [false, true] {
+fn tests_call_owners_and_private_readers_with_their_verified_demands() {
+    let bytes = image(
+        |key, entry| {
+            vec![
+                vec![
+                    Instr::TxnBegin,
+                    Instr::Call(1),
+                    Instr::TxnCommit,
+                    Instr::Return,
+                ],
+                presence_read(key, entry),
+                vec![Instr::Call(0), Instr::Call(1), Instr::Return],
+            ]
+        },
+        Some(0),
+        Some(2),
+    );
+    let verified = crate::verify(&bytes).expect("owner and private read invocations");
+    for function in [
+        verified.exports()[0].function(),
+        verified.test_entries()[0].func(),
+    ] {
+        assert_eq!(
+            verified
+                .function(function)
+                .expect("verified entry function")
+                .demand(),
+            presence_demand().as_view()
+        );
+    }
+}
+
+#[test]
+fn rehashed_test_calls_to_mutating_helpers_reject_at_test_entry() {
+    for callee in [1, 2] {
         let mut bytes = image(
             |key, entry| {
-                let test = if direct {
-                    vec![
-                        Instr::ConstLoad(key),
-                        Instr::DurExists(entry.clone()),
-                        Instr::Pop,
-                        Instr::Call(1),
-                        Instr::Return,
-                    ]
-                } else {
-                    vec![Instr::Call(0), Instr::Return]
-                };
                 vec![
                     vec![
                         Instr::TxnBegin,
-                        Instr::ConstLoad(key),
-                        Instr::DurExists(entry.clone()),
-                        Instr::Pop,
+                        Instr::Call(2),
                         Instr::TxnCommit,
                         Instr::Return,
                     ],
-                    vec![Instr::Return],
-                    test,
+                    vec![
+                        Instr::ConstLoad(key),
+                        Instr::DurEraseEntry(entry.clone()),
+                        Instr::Return,
+                    ],
+                    vec![Instr::Call(1), Instr::Return],
+                    vec![Instr::Call(0), Instr::Return],
                 ]
             },
             Some(0),
-            Some(2),
+            Some(3),
         );
-        let verified = crate::verify(&bytes).expect("separate durable test and owner driver");
-        assert_eq!(
-            verified
-                .function(verified.exports()[0].function())
-                .expect("verified export function")
-                .demand(),
-            presence_demand().as_view()
-        );
-        let test = &verified.test_entries()[0];
-        assert_eq!(
-            verified
-                .function(test.func())
-                .expect("verified test function")
-                .demand(),
-            presence_demand().as_view()
-        );
-        assert_eq!(
-            test.kind(),
-            if direct {
-                TestKind::DirectDurable
-            } else {
-                TestKind::Driver
-            },
-        );
-        if direct {
-            replace_terminal_call(&mut bytes, 1, 0);
-            assert_refusal(
-                &bytes,
-                VerifyPhase::TestEntry,
-                "a test body performs a direct durable operation and also drives a \
-                 transaction-owning export",
+        let verified = crate::verify(&bytes).expect("the owner supplies its helpers' transaction");
+        assert!(verified.test_demand_union().writes());
+        for helper in [1, 2] {
+            assert!(
+                verified
+                    .function(FunctionIndex::new(helper))
+                    .expect("verified helper function")
+                    .demand()
+                    .writes()
             );
         }
+        replace_terminal_call(&mut bytes, 0, callee);
+        let refusal =
+            crate::verify(&bytes).expect_err("a test cannot supply an ambient transaction");
+        assert_eq!(refusal.phase(), VerifyPhase::TestEntry);
+        assert_eq!(refusal.code(), VerifyPhase::TestEntry.code());
     }
+}
+
+#[test]
+fn rehashed_direct_read_beside_an_owner_call_rejects_at_test_entry() {
+    let mut bytes = image(
+        |key, entry| {
+            vec![
+                vec![
+                    Instr::TxnBegin,
+                    Instr::ConstLoad(key),
+                    Instr::DurExists(entry.clone()),
+                    Instr::Pop,
+                    Instr::TxnCommit,
+                    Instr::Return,
+                ],
+                vec![Instr::Return],
+                vec![
+                    Instr::ConstLoad(key),
+                    Instr::Call(1),
+                    Instr::Pop,
+                    Instr::Call(0),
+                    Instr::Return,
+                ],
+            ]
+        },
+        Some(0),
+        Some(2),
+    );
+    crate::verify(&bytes).expect("a test may discard a value and invoke an owner");
+    let needle = [OP_CALL, 0, 1, OP_POP, OP_CALL, 0, 0];
+    assert_eq!(
+        bytes
+            .windows(needle.len())
+            .filter(|part| *part == needle)
+            .count(),
+        1
+    );
+    image_forgery::forge(
+        &mut bytes,
+        &needle,
+        0,
+        &[OP_DUR_EXISTS, 0, 0, OP_POP, OP_CALL, 0, 0],
+    );
+    let refusal = crate::verify(&bytes).expect_err("an owner call does not permit a direct read");
+    assert_eq!(refusal.phase(), VerifyPhase::TestEntry);
+    assert_eq!(refusal.code(), VerifyPhase::TestEntry.code());
 }

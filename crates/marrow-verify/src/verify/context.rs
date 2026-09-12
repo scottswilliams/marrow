@@ -245,9 +245,8 @@ impl Effects {
     ) -> Result<(), VerifyRejection> {
         // A function containing `TxnBegin` is a transaction owner and may never be
         // called — except from a test-entry driver, where each export call is its own
-        // invocation boundary (a terminal-style driver). The test-entry phase
-        // separately refuses a driver that also performs a direct durable op, which no
-        // single session could run.
+        // invocation boundary. The test-entry phase separately refuses direct durable
+        // operations and calls to mutating helpers without their own transaction.
         if !is_test_entry {
             for &callee in calls.callees(index) {
                 if self.has_begin[usize::from(callee)] {

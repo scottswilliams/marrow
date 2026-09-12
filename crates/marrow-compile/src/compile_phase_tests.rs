@@ -55,7 +55,6 @@ fn borrowed_bodies_require_the_actual_function_and_every_instruction_span() {
         erased_families: Vec::new(),
         presence_obligations: Vec::new(),
         has_direct_durable_op: false,
-        owns_transaction: false,
         code_spans: vec![SourceSpan::default()],
     };
 

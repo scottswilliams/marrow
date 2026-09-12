@@ -240,6 +240,162 @@ fn compile_verify(source: &str) -> VerifiedImage {
 }
 
 #[test]
+fn tests_do_not_supply_an_ambient_helper_transaction() {
+    let positive = r#"resource Counter {
+    required value: int
+    label: string
+}
+store ^counters[id: int]: Counter
+fn write() {
+    ^counters[1] = Counter(value: 5)
+}
+pub fn seed() {
+    transaction {
+        write()
+    }
+}
+fn observed(): int? {
+    return ^counters[1].value
+}
+test "an owning seed commits for a private observer" {
+    seed()
+    assert (observed() ?? 0) == 5
+}
+test "another test has its own empty store" {
+    if const value = observed() {
+        assert false
+    } else {
+        assert true
+    }
+}
+"#;
+    let negative = r#"resource Counter {
+    required value: int
+    label: string
+}
+store ^counters[id: int]: Counter
+fn write() {
+    ^counters[1] = Counter(value: 5)
+}
+test "a test cannot supply a helper transaction" {
+    write()
+}
+"#;
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let capture = |source: &str| {
+        marrow_project::capture(
+            &manifest,
+            vec![marrow_project::CapturedFile::new(
+                "src/main.mw".to_string(),
+                source.as_bytes().to_vec(),
+            )],
+            Some(IDS.as_bytes()),
+            &marrow_project::CaptureLimits::DEFAULT,
+        )
+        .expect("capture")
+    };
+    let compiled =
+        marrow_compile::compile_with_tests(&capture(positive)).expect("compile controls");
+    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify controls");
+    assert_eq!(image.exports().len(), 1);
+    assert_eq!(
+        image
+            .function(image.exports()[0].function())
+            .expect("export function")
+            .body()
+            .name(),
+        "seed"
+    );
+    assert_eq!(image.test_entries().len(), 2);
+    let prepared = prepare(image);
+    for index in 0..2 {
+        let test = marrow_vm::fresh_test(&prepared, index).expect("control test entry");
+        assert!(
+            matches!(marrow_vm::run_test(test), DurableRun::Ran(Ok(None))),
+            "positive control {index} must pass"
+        );
+    }
+    match marrow_compile::compile_with_tests(&capture(negative)) {
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            let diagnostics = diagnostics.into_vec();
+            assert_eq!(diagnostics.len(), 1);
+            let diagnostic = &diagnostics[0];
+            assert_eq!(
+                diagnostic.code(),
+                marrow_codes::Code::CheckRequiresTransaction.as_str()
+            );
+            assert_eq!(diagnostic.file().as_str(), "src/main.mw");
+            let span = diagnostic.span();
+            assert_eq!((span.start_byte, span.end_byte), (204, 211));
+            assert_eq!((span.line, span.column), (10, 5));
+        }
+        Ok(_) => panic!("a test must not supply its helper's transaction"),
+        Err(other) => panic!("expected the missing-transaction diagnostic, got {other:?}"),
+    }
+}
+
+#[test]
+fn tests_refuse_direct_durable_operations_and_transitive_mutating_helpers() {
+    let prefix = r#"resource Counter {
+    required value: int
+    label: string
+}
+store ^counters[id: int]: Counter
+fn write() { ^counters[1] = Counter(value: 5) }
+fn relay() { write() }
+"#;
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    for (body, code) in [
+        (
+            "assert not exists(^counters[1])",
+            marrow_codes::Code::CheckTestDurableOperation,
+        ),
+        (
+            "^counters[1] = Counter(value: 5)",
+            marrow_codes::Code::CheckTestDurableOperation,
+        ),
+        ("relay()", marrow_codes::Code::CheckRequiresTransaction),
+    ] {
+        let source = format!("{prefix}test \"boundary\" {{\n    {body}\n}}\n");
+        let project = marrow_project::capture(
+            &manifest,
+            vec![marrow_project::CapturedFile::new(
+                "src/main.mw".to_string(),
+                source.as_bytes().to_vec(),
+            )],
+            Some(IDS.as_bytes()),
+            &marrow_project::CaptureLimits::DEFAULT,
+        )
+        .expect("capture");
+        let diagnostics = match marrow_compile::compile_with_tests(&project) {
+            Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+            other => panic!("expected {code:?} for {body}, got {other:?}"),
+        };
+        assert_eq!(diagnostics.len(), 1, "{body}");
+        let diagnostic = &diagnostics[0];
+        assert_eq!(diagnostic.code(), code.as_str(), "{body}");
+        assert_eq!(diagnostic.file().as_str(), "src/main.mw");
+        let span = diagnostic.span();
+        if code == marrow_codes::Code::CheckRequiresTransaction {
+            assert_eq!(
+                &source[span.start_byte as usize..span.end_byte as usize],
+                body
+            );
+        } else {
+            assert_eq!(
+                &source[span.start_byte as usize..span.end_byte as usize],
+                "\"boundary\""
+            );
+            assert_eq!(
+                (span.start_byte as usize, span.end_byte as usize),
+                (prefix.len() + 5, prefix.len() + 15)
+            );
+            assert_eq!((span.line, span.column), (8, 6));
+        }
+    }
+}
+
+#[test]
 fn generic_transaction_bodies_keep_verified_images_and_test_boundaries() {
     let source = r#"resource Counter {
     required value: int

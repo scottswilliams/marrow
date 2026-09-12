@@ -39,43 +39,19 @@ How tests are selected, ordered, and reported is described in
 
 ## Durable tests
 
-A test that reads or writes a durable place gets its own empty in-memory
+A test that calls functions with durable operations gets its own empty in-memory
 store. Nothing carries over from one test to the next, and no test opens a
 store on disk.
 
-A durable test works in one of two ways. A direct test reads and writes
-durable places itself:
+A test sets up data through transaction-owning exports and observes it through
+ordinary read functions. A reader used only by the test can stay private:
 
 ```mw
-module docs::tests::direct
+module docs::tests::durable
 
 resource Book {
     required title: string
     shelf: string
-}
-
-store ^books[id: int]: Book
-
-test "a written entry reads back" {
-    ^books[1] = Book(title: "Small Gods")
-    assert exists(^books[1])
-    assert ^books[1].title ?? "" == "Small Gods"
-    assert not exists(^books[2])
-}
-```
-
-The write is a bare statement; a test body owns no `transaction` block, and
-one inside it is `check.transaction_misplaced`. A value the body writes is
-visible to a later read in the same body. A test seeds the data it needs the
-same way, in its own body first.
-
-A driver test reaches durable data only through the project's exports:
-
-```mw
-module docs::tests::driver
-
-resource Book {
-    required title: string
 }
 
 store ^books[id: int]: Book
@@ -86,8 +62,19 @@ pub fn add(id: int, title: string) {
     }
 }
 
-pub fn titleOf(id: int): string? {
+fn present(id: int): bool {
+    return exists(^books[id])
+}
+
+fn titleOf(id: int): string? {
     return ^books[id].title
+}
+
+test "a written entry reads back" {
+    add(1, "Small Gods")
+    assert present(1)
+    assert titleOf(1) ?? "" == "Small Gods"
+    assert not present(2)
 }
 
 test "add then read back" {
@@ -96,11 +83,15 @@ test "add then read back" {
 }
 ```
 
-Each call behaves like a separate `marrow run`. `add` commits its
+Each call from the test body is an invocation. `add` commits its
 [transaction](errors-and-transactions.md#transactions) to the test's store,
-and `titleOf` reads the committed value.
+and `titleOf` reads the committed value. Related reads within one reader share
+its read session. Helpers called by that function share its session; assertions
+remain in the test body.
 
-A body is either direct or driver. Mixing a direct durable operation with a
-call to an export that owns a `transaction` is `check.test_driver_mix`; split
-such a test in two. A direct test may still call an export that opens no
-`transaction`, such as a reading export.
+The test body has no durable session of its own. A direct durable read, write,
+presence check or traversal is `check.test_durable_operation`. Calling a
+mutating helper without a transaction owner is `check.requires_transaction`.
+A `transaction` block in a test is `check.transaction_misplaced`. Put mutation
+in an owning export and call it from the test. Constructing an entry identity,
+such as `Id(^books, 1)`, is an ordinary value operation and remains legal.

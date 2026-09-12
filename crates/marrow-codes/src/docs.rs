@@ -113,7 +113,7 @@ Static errors found while checking source.
             Code::CheckDurableAfterCommit,
             Code::CheckTransactionMisplaced,
             Code::CheckAssertOutsideTest,
-            Code::CheckTestDriverMix,
+            Code::CheckTestDurableOperation,
             Code::CheckMatchNonexhaustive,
             Code::CheckMatchArm,
             Code::CheckInstantiationLimit,

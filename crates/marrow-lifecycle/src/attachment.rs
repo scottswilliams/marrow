@@ -44,7 +44,7 @@ use marrow_kernel::durable::{
     CeilingIdToken, CommitRecovery, DemandCoverage, DeploymentCeiling, DurableCommitState,
     EphemeralAttachment, SessionHost, StoreProjection,
 };
-use marrow_verify::{CeilingDescriptor, ExportDemand, SealedTestEntry, TestKind, VerifiedImage};
+use marrow_verify::{CeilingDescriptor, ExportDemand, SealedTestEntry, VerifiedImage};
 
 use crate::envelope::StoreEnvelope;
 use crate::head::LogicalHead;
@@ -211,15 +211,22 @@ enum FreshTestState {
 /// mint failure by its stable code.
 pub fn fresh_test(prepared: &PreparedImage, index: usize) -> Option<FreshTest> {
     let entry = prepared.image.test_entries().get(index)?;
-    let state = match (entry.kind(), prepared.projection()) {
-        (TestKind::Storeless, _) => FreshTestState::Storeless,
-        (TestKind::DirectDurable | TestKind::Driver, None) => FreshTestState::Parked,
-        (TestKind::DirectDurable | TestKind::Driver, Some(projection)) => {
-            let ceiling = deployment_ceiling(prepared.image.test_demand_union());
-            match EphemeralAttachment::mint(projection.clone(), ceiling) {
-                Ok(host) => FreshTestState::Ready(Box::new(host)),
-                Err(_) => {
-                    FreshTestState::Failed(marrow_codes::Code::CliDurableUnsupported.as_str())
+    let function = prepared
+        .image
+        .function(entry.func())
+        .expect("verified test function");
+    let state = if function.demand().is_empty() {
+        FreshTestState::Storeless
+    } else {
+        match prepared.projection() {
+            None => FreshTestState::Parked,
+            Some(projection) => {
+                let ceiling = deployment_ceiling(prepared.image.test_demand_union());
+                match EphemeralAttachment::mint(projection.clone(), ceiling) {
+                    Ok(host) => FreshTestState::Ready(Box::new(host)),
+                    Err(_) => {
+                        FreshTestState::Failed(marrow_codes::Code::CliDurableUnsupported.as_str())
+                    }
                 }
             }
         }
@@ -239,7 +246,7 @@ pub struct TestExecution<'a> {
     pub host: TestHost<'a>,
 }
 
-/// Where a fresh test runs; the entry's kind in the owned image says how.
+/// Where a fresh test runs, selected from its verified function demand.
 pub enum TestHost<'a> {
     /// A storeless entry: no session.
     Storeless,

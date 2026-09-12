@@ -3732,9 +3732,7 @@ fn assert_on_a_non_bool_operand_rejects_at_function() {
 
 #[test]
 fn test_entry_may_carry_durable_demand() {
-    // A test entry whose body probes durable data verifies: its demand is
-    // recorded in the parallel test-entry demand table so an ephemeral
-    // attachment can bound its authority. It is still never an export.
+    // A private reader carries the test's durable demand without adding an export.
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let sites = durable_schema(&mut draft);
@@ -3744,9 +3742,20 @@ fn test_entry_may_carry_durable_demand() {
     let code = vec![
         Instr::ConstLoad(key),
         Instr::DurExists(sites.entry),
-        Instr::Assert,
         Instr::Return,
     ];
+    let reader = draft
+        .add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Bool),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    let code = vec![Instr::Call(reader.index()), Instr::Assert, Instr::Return];
     let func = draft
         .add_function(FunctionDef {
             name: title,
@@ -3757,7 +3766,7 @@ fn test_entry_may_carry_durable_demand() {
             spans: spans(&code),
             code,
         })
-        .expect("every site operand is live");
+        .expect("the private reader call is live");
     draft.add_test_entry(title, func);
     let image = verify(&draft.encode().unwrap().bytes).expect("durable test entry verifies");
     let entry = &image.test_entries()[0];
@@ -3770,6 +3779,70 @@ fn test_entry_may_carry_durable_demand() {
     assert!(!union.writes());
     // A test entry is never an export.
     assert!(image.exports().is_empty());
+}
+
+#[test]
+fn rehashed_direct_durable_test_operations_reject_at_test_entry() {
+    for mutates in [false, true] {
+        let mut draft_owner = ImageDraft::new();
+        let mut draft = admitted(&mut draft_owner);
+        let sites = durable_schema(&mut draft);
+        let src = ok(draft.intern_string("src/main.mw"));
+        let title = ok(draft.intern_string("holds"));
+        let key = ok(draft.intern_text("x"));
+        let mut code = vec![Instr::ConstLoad(key)];
+        if mutates {
+            let value = ok(draft.intern_int(5));
+            code.extend([
+                Instr::ConstLoad(value),
+                Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
+                Instr::RecordNew(sites.record),
+                Instr::DurReplaceEntry(sites.entry),
+            ]);
+        } else {
+            code.extend([Instr::DurExists(sites.entry), Instr::Pop]);
+        }
+        code.push(Instr::Return);
+        let helper = draft
+            .add_function(FunctionDef {
+                name: title,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("the ordinary helper's site is live");
+        let code = vec![Instr::Return];
+        let test = draft
+            .add_function(FunctionDef {
+                name: title,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("a storeless test body");
+        draft.add_test_entry(title, test);
+        let mut bytes = draft
+            .encode()
+            .expect("the helper is not a test entry")
+            .bytes;
+        let image = verify(&bytes).expect("the unused helper and storeless test are legal");
+        assert!(image.test_demand_union().is_empty());
+        assert!(image.exports().is_empty());
+        let (body, _) = test_entry_section(&bytes);
+        let target = body + 4;
+        assert_eq!(&bytes[target..target + 2], &test.index().to_be_bytes());
+        bytes[target..target + 2].copy_from_slice(&helper.index().to_be_bytes());
+        rehash(&mut bytes);
+        let refusal = verify(&bytes).expect_err("a test cannot perform a durable operation");
+        assert_eq!(refusal.phase(), VerifyPhase::TestEntry);
+        assert_eq!(refusal.code(), VerifyPhase::TestEntry.code());
+    }
 }
 
 // The call-into-a-test-entry defect is refused by the producer since the coherence hoist;

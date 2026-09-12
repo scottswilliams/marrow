@@ -756,12 +756,22 @@ pub fn titleOf(id: Id(^books)): string {
     return ^books[id].title ?? "(absent)"
 }
 
+pub fn add(id: int, title: string) {
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+}
+
+fn present(id: Id(^books)): bool {
+    return exists(^books[id])
+}
+
 test "an identity addresses an entry" {
-    ^books[7] = Book(title: "Small Gods")
+    add(7, "Small Gods")
     const id = Id(^books, 7)
     assert titleOf(id) == "Small Gods"
     assert string(id) == "Id(7)"
-    assert not exists(^books[Id(^books, 8)])
+    assert not present(Id(^books, 8))
 }
 ```
 

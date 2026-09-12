@@ -19,6 +19,10 @@ pub fn isRegistered(id: int): bool {
     return exists(^members[id])
 }
 
+fn emailOf(id: int): string? {
+    return ^members[id].email
+}
+
 pub fn greeting(name: string): string {
     return "Hello, " + name
 }
@@ -32,9 +36,9 @@ test "a fresh member is not registered" {
 }
 
 test "a directly written member reads back" {
-    ^members[1] = Member(name: "Ada")
-    assert ^members[1].name ?? "" == "Ada"
-    assert ^members[1].email ?? "none" == "none"
+    register(1, "Ada")
+    assert nameOf(1) ?? "" == "Ada"
+    assert emailOf(1) ?? "none" == "none"
 }
 
 test "register then read back through exports" {

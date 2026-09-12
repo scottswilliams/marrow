@@ -85,11 +85,8 @@ const COUNTERS_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// A durable test — one whose body reads durable data — now runs against a fresh
-/// ephemeral-memory attachment (E01): its reconstructed demand bounds the test
-/// attachment's ceiling, and the read kernel drives the store. On a freshly minted
-/// empty attachment `exists(^counters(1))` is false, so the probe passes. The
-/// storeless test in the same project runs and passes too.
+/// A private observer reads an empty fresh attachment through the test's verified
+/// demand. Its false existence result passes beside a storeless arithmetic test.
 #[test]
 fn a_durable_read_test_runs_against_a_fresh_attachment() {
     let output = Project::single(
@@ -100,12 +97,16 @@ fn a_durable_read_test_runs_against_a_fresh_attachment() {
 
 store ^counters[id: int]: Counter
 
+fn present(): bool {
+    return exists(^counters[1])
+}
+
 test "storeless holds" {
     assert 1 + 1 == 2
 }
 
 test "durable probe" {
-    assert exists(^counters[1]) == false
+    assert present() == false
 }
 "#,
     )
@@ -130,10 +131,8 @@ test "durable probe" {
     assert!(!stdout.contains("cli.durable_unsupported"), "{stdout}");
 }
 
-/// A durable test that asserts against durable state observes an empty store and a
-/// false-expecting probe — the failing-assert path through the durable attachment
-/// reports `failed` with `run.assert`, distinct from an operational error. Proves
-/// the read kernel's runtime fault reaches the test report.
+/// An assertion on a private observer's false result reports `failed` with
+/// `run.assert`, distinct from an operational error.
 #[test]
 fn a_failing_durable_assert_reports_run_assert() {
     let output = Project::single(
@@ -144,8 +143,12 @@ fn a_failing_durable_assert_reports_run_assert() {
 
 store ^counters[id: int]: Counter
 
+fn present(): bool {
+    return exists(^counters[1])
+}
+
 test "present on empty" {
-    assert exists(^counters[1])
+    assert present()
 }
 "#,
     )
@@ -161,28 +164,10 @@ test "present on empty" {
     assert!(durable.contains("run.assert"), "{durable}");
 }
 
-/// The flat-executable durable read/write behaviors extracted from the frozen
-/// prototype's `eval_saved_*`/`eval_keyed_*` runtime families, ported as durable
-/// source tests that run against a fresh ephemeral attachment (E01). Each block is
-/// one behavioral pair from the tag: entry/field presence, field coalesce
-/// present/absent, required and sparse field writes that persist and read back,
-/// last-write-wins, the `if const` binding guard over a present and an absent
-/// field, and cross-test attachment isolation. No raw seeder mints the state — a
-/// block that observes a present value writes it itself, and the fresh-attachment
-/// block writes its own sentinel first, then asserts that sentinel reads back while
-/// another test's key stays absent — so it proves fresh state regardless of run
-/// order (a reordering cannot make it pass vacuously, since a shared attachment
-/// would leak the other write).
-///
-/// The tag's wider families are out of the flat read kernel's scope and stay with
-/// their owning lanes: whole-record read/coalesce and the whole-entry
-/// marker/presence-after-partial-write law (E03, the marker is written only at
-/// commit); the transaction region, required-completeness at commit, nested
-/// transactions, and delete/erase (E02); keyed-leaf/sequence collections, nested
-/// layers, and saved-root/layer streaming loops (E03/E04); nested `group` hops and
-/// widened field values (the group and codec-widening deferrals). The
-/// output-only, local-keyed-parameter, error-code, and compile-time key/type
-/// families are not durable read-kernel behaviors at all.
+/// Ordinary owners seed and update fields; private observers expose committed
+/// entry/field presence, optional values, sparse writes and last-write-wins.
+/// Binding guards retain both present and absent branches. The isolation case
+/// checks its own key 88 sentinel while key 77 from the companion case stays absent.
 #[test]
 fn flat_durable_place_behaviors_run_as_source_tests() {
     let output = Project::single(
@@ -193,63 +178,95 @@ fn flat_durable_place_behaviors_run_as_source_tests() {
 
 store ^counters[id: int]: Counter
 
+pub fn seed(id: int, value: int) {
+    transaction {
+        ^counters[id] = Counter(value: value)
+    }
+}
+
+pub fn replaceValue(value: int) {
+    transaction {
+        place c = ^counters[1]
+        c = Counter(value: 1)
+        c.value = value
+    }
+}
+
+pub fn writeLabel() {
+    transaction {
+        place c = ^counters[1]
+        c = Counter(value: 1)
+        c.label = "hi"
+    }
+}
+
+fn entryExists(id: int): bool {
+    return exists(^counters[id])
+}
+
+fn valueExists(id: int): bool {
+    return exists(^counters[id].value)
+}
+
+fn valueOf(id: int): int? {
+    return ^counters[id].value
+}
+
+fn labelOf(id: int): string? {
+    return ^counters[id].label
+}
+
 test "entry absent on a fresh attachment" {
-    assert exists(^counters[9]) == false
+    assert entryExists(9) == false
 }
 
 test "field absent on a fresh attachment" {
-    assert exists(^counters[1].value) == false
+    assert valueExists(1) == false
 }
 
 test "field present after a write" {
-    ^counters[1] = Counter(value: 5)
-    assert exists(^counters[1].value)
+    seed(1, 5)
+    assert valueExists(1)
 }
 
 test "field coalesce returns the default when absent" {
-    assert ^counters[1].value ?? 0 == 0
+    assert valueOf(1) ?? 0 == 0
 }
 
 test "field coalesce returns the value when present" {
-    ^counters[1] = Counter(value: 5)
-    assert ^counters[1].value ?? 0 == 5
+    seed(1, 5)
+    assert valueOf(1) ?? 0 == 5
 }
 
 test "required field write persists and reads back" {
-    place c = ^counters[1]
-    c = Counter(value: 1)
-    c.value = 7
-    assert ^counters[1].value ?? 0 == 7
+    replaceValue(7)
+    assert valueOf(1) ?? 0 == 7
 }
 
 test "sparse field write persists and reads back" {
-    place c = ^counters[1]
-    c = Counter(value: 1)
-    c.label = "hi"
-    assert ^counters[1].label ?? "x" == "hi"
+    writeLabel()
+    assert labelOf(1) ?? "x" == "hi"
 }
 
 test "sparse field coalesce returns the default when absent" {
-    assert ^counters[1].label ?? "none" == "none"
+    assert labelOf(1) ?? "none" == "none"
 }
 
 test "overwrite keeps the last write" {
-    place c = ^counters[1]
-    c = Counter(value: 1)
-    c.value = 2
-    assert ^counters[1].value ?? 0 == 2
+    replaceValue(2)
+    assert valueOf(1) ?? 0 == 2
 }
 
 test "binding guard skips an absent field" {
-    if const v = ^counters[1].value {
+    if const v = valueOf(1) {
         assert false
     }
     assert true
 }
 
 test "binding guard reads a present field" {
-    ^counters[1] = Counter(value: 42)
-    if const v = ^counters[1].value {
+    seed(1, 42)
+    if const v = valueOf(1) {
         assert v == 42
     } else {
         assert false
@@ -257,14 +274,14 @@ test "binding guard reads a present field" {
 }
 
 test "one test writes a field" {
-    ^counters[77] = Counter(value: 1)
-    assert ^counters[77].value ?? 0 == 1
+    seed(77, 1)
+    assert valueOf(77) ?? 0 == 1
 }
 
 test "a fresh attachment does not observe another test's write" {
-    ^counters[88] = Counter(value: 2)
-    assert ^counters[88].value ?? -1 == 2
-    assert ^counters[77].value ?? -1 == -1
+    seed(88, 2)
+    assert valueOf(88) ?? -1 == 2
+    assert valueOf(77) ?? -1 == -1
 }
 "#,
     )
@@ -333,9 +350,8 @@ test "driver sets then reads back" {
     assert!(!stdout.contains("cli.durable_unsupported"), "{stdout}");
 }
 
-/// A test body may not both perform a durable operation directly and drive an export
-/// that owns a transaction — the driven export's commit would consume the harness
-/// session the direct operation needs. The compiler refuses the mix at check time.
+/// A test body may not perform a durable operation directly, including after an
+/// ordinary transaction-owning call. The observation belongs in a read function.
 #[test]
 fn mixing_a_direct_durable_op_and_driving_an_export_is_a_check_diagnostic() {
     let output = Project::single(
@@ -363,7 +379,7 @@ test "mixed body" {
     assert!(!output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(r#""outcome":"diagnostic""#), "{stdout}");
-    assert!(stdout.contains("check.test_driver_mix"), "{stdout}");
+    assert!(stdout.contains("check.test_durable_operation"), "{stdout}");
 }
 
 /// `--filter` selects tests by a substring of their name and fails when none match.

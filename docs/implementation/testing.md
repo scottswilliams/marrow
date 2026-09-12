@@ -17,6 +17,14 @@ takes the cheapest layer that proves its invariant; [compilation and test
 speed](speed.md) states the rule and the opt-in for slow tests, and [project
 status](../status.md#measurements) records what each clock has measured.
 
+Source-test bodies execute ordinary values and calls. The compiler and independent
+verifier refuse direct durable operations and calls to mutating non-owner helpers
+in a test body. Lifecycle selects storeless execution from the verified function's
+demand or creates a fresh attachment for that test. The VM dispatches each call
+from a durable test through its own invocation session, including private readers;
+nested helpers retain the caller's session. The test body has no ambient durable
+session. Assertions stay in test entries.
+
 ## Release-profile performance leg
 
 The latency budgets in `crates/marrow-compile/tests/query_local_syntax.rs`

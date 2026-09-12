@@ -30,12 +30,6 @@ survive the executable representation
 ([compiled programs](compiled-programs.md)). Do not widen unrelated syntax to
 remove an application string-tag workaround.
 
-Select one durable test model. Setup uses ordinary seed exports, each
-transaction-owning export executes as a normal invocation, and read-only
-observations inspect committed state between calls. Tests need no extra public
-read exports solely for assertions. Migrate the current direct-write tests and
-remove their implicit transaction path and the direct/driver split together.
-
 Provisioning creates metadata, then ordinary exports seed application data.
 The data-populating importer retires only after the external EMR baseline has an
 equivalent seed path and bounded external ingestion remains possible. Setup

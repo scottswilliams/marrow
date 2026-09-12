@@ -1100,14 +1100,11 @@ fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
     );
 }
 
-/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
-/// carried: the producer now refuses this draft with
-/// `InvalidReference("test table")` before any byte is measured or emitted.
-/// The corrected twin — the same direct-durable test without the owner call — still
-/// encodes and verifies, so the refusal is the mix's alone.
+/// Direct test operations are refused by the producer before measurement. Moving
+/// the observation into a private reader preserves its demand without an export.
 #[test]
-fn a_test_driver_mix_draws_the_test_table_refusal() {
-    let build = |drives_owner: bool| {
+fn a_direct_test_operation_draws_the_test_table_refusal() {
+    let build = |direct: Option<bool>, drives_owner: bool| {
         let (mut draft_owner, root) = durable_parts(TableRef::Valid, None, false);
         let mut draft = admitted(&mut draft_owner);
         let handle = draft
@@ -1119,8 +1116,7 @@ fn a_test_driver_mix_draws_the_test_table_refusal() {
             .expect("a keyed placement");
         let owner_site = draft.request_site(&handle).expect("a live demand");
         draft.intern_int(0).expect("a within-domain mint");
-        // Ordinal 0: the transaction-owning export the mixed test drives (its
-        // transaction must itself perform a durable operation to be a valid owner).
+        // The owner must touch durable data for its transaction to be meaningful.
         let owner = add_plain_function(
             &mut draft,
             "put",
@@ -1137,13 +1133,25 @@ fn a_test_driver_mix_draws_the_test_table_refusal() {
         assert_eq!(owner.index(), 0, "the call names the owner");
         draft.add_export(ExportId::of_local("", "put"), owner);
         let site = draft.request_site(&handle).expect("a live demand");
-        // The direct durable op (an existence probe over the root key)...
-        let mut code = vec![
+        let read = vec![
             Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
-            Instr::DurExists(site),
+            Instr::DurExists(site.clone()),
             Instr::Pop,
+            Instr::Return,
         ];
-        // ...beside the drive of the transaction owner.
+        let reader = add_plain_function(&mut draft, "read", ImageType::Unit, read);
+        let mut code = match direct {
+            None => vec![Instr::Call(reader.index())],
+            Some(false) => vec![
+                Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+                Instr::DurExists(site),
+                Instr::Pop,
+            ],
+            Some(true) => vec![
+                Instr::ConstLoad(marrow_image::ConstId::from_index(0)),
+                Instr::DurEraseEntry(site),
+            ],
+        };
         if drives_owner {
             code.push(Instr::Call(0));
         }
@@ -1160,13 +1168,20 @@ fn a_test_driver_mix_draws_the_test_table_refusal() {
             ImageType::scalar(Scalar::Int),
         )
     };
-    let corrected = build(false).encode().expect("the corrected twin encodes");
-    let outcome = verify(&corrected.bytes);
-    assert!(outcome.is_ok(), "{outcome:?}");
-    assert_eq!(
-        build(true).encode().map(|_| ()),
-        Err(ImageBuildError::InvalidReference("test table")),
-    );
+    for drives_owner in [false, true] {
+        let corrected = build(None, drives_owner)
+            .encode()
+            .expect("the private-reader twin encodes");
+        let image = verify(&corrected.bytes).expect("private reader and ordinary owner verify");
+        assert!(image.test_demand_union().reads());
+        assert!(!image.test_demand_union().writes());
+        for mutates in [false, true] {
+            assert_eq!(
+                build(Some(mutates), drives_owner).encode().map(|_| ()),
+                Err(ImageBuildError::InvalidReference("test table")),
+            );
+        }
+    }
 }
 
 /// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test

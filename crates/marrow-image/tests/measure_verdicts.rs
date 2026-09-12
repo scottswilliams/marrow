@@ -2168,9 +2168,7 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_draws_the_type_table_referenc
 //   test name, export/test overlap, the test-signature law (both decision sites:
 //   nonzero params and non-unit return), a call into a test entry, `Assert`
 //   membership (a tape-position instruction whose only check is the verifier's
-//   TEST-ENTRY seal scan — the encoder writes the opcode unchecked), and the
-//   test-driver-mix law (a direct durable op beside a call to a transaction-owning
-//   export — both halves ordinary unchecked tape writes): nothing here sits after
+//   TEST-ENTRY seal scan — the encoder writes the opcode unchecked): nothing here sits after
 //   every encode cutpoint — the tape-carried members precede the DURABLE fence and
 //   the final ceiling, and the EXPORTS/TEST-ENTRY rows precede the final ceiling;
 //   only the VERIFIER-side relation decisions occur after a successful encode. The
@@ -2183,6 +2181,9 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_draws_the_type_table_referenc
 //   below, their CodeBytes cells derive by the position argument, and their
 //   ImageBytes cells split: fence overage via unchecked-write-completes, final
 //   overage via the literal final-overage × duplicate-export-target cell.
+// Direct durable operations in test entries are a local relation checked before
+// policy caps. Moving the operation behind a private reader changes that relation
+// without changing test-table size or the reader's durable demand.
 
 /// Flipped under the sanctioned checked-conversion class (`type table`), citing the
 /// pre-restructure pin this test carried: the hoisted coherence check decides
