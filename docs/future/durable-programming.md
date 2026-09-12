@@ -30,16 +30,6 @@ survive the executable representation
 ([compiled programs](compiled-programs.md)). Do not widen unrelated syntax to
 remove an application string-tag workaround.
 
-Select one rule for function exits. An exit before entering a transaction has
-no staged writes to commit. Every normal exit from an entered transaction commits,
-including explicit returns and returns propagated by `try` or `require`.
-A fault before commit rolls back; a fault after commit leaves the committed
-change. A helper's return does not exit its caller's transaction. Business
-rejection must precede mutation when it intends no change: a `Result` tag is
-ordinary data, not an implicit rollback instruction. The current pre-commit
-`try` and `require` restrictions remain documented until this change is
-implemented. No abort syntax, nested transaction or replay mechanism is selected.
-
 Select one durable test model. Setup uses ordinary seed exports, each
 transaction-owning export executes as a normal invocation, and read-only
 observations inspect committed state between calls. Tests need no extra public

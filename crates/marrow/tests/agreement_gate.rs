@@ -405,17 +405,11 @@ fn matrix() -> Vec<Row> {
                 code: "check.requires_presence",
             },
         },
-        // ---- REQ01: the `require` guard mirrors the try transaction law. ----
-        // A `require` inside an owned region: its implicit `err` exit carries no
-        // commit, so the checker refuses it (`check.transaction_uncommitted`)
-        // before an image is minted, and the verifier would reconstruct the same
-        // uncommitted exit from a tampered image (`image.flow`) — the two agree.
+        // A require failure commits its owner's active region before returning.
         Row {
-            label: "REQ01: require inside an owned region (uncommitted implicit exit)",
+            label: "require inside an owned region",
             ops: "pub fn addPositive(id: int): Result<bool, string> {\n    transaction {\n        require id > 0 else \"id must be positive\"\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n        return ok(true)\n    }\n}",
-            expect: Expect::CheckerRejects {
-                code: "check.transaction_uncommitted",
-            },
+            expect: Expect::RoundTrips { run: false },
         },
         // The admitted shape: the guard lives in a helper joining the export's
         // region, so the failure exit is ordinary control flow into the export's
@@ -717,16 +711,15 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
     // and TX02 promoted the last divergence — the empty (no-op) transaction — to a check-time
     // diagnostic, so the checker-accept/verify-reject ledger is now empty. A new divergence
     // added without a ledger row fails an individual row above; these counts fail if a
-    // closed checker-rejected row silently changes verdict. The three rejections are the
-    // TX02-promoted empty transaction, the REQ01 require-inside-an-owned-region law, and
-    // the unproven inline field write.
+    // closed checker-rejected row silently changes verdict. The two rejections are the
+    // empty transaction and the unproven inline field write.
     assert_eq!(
         known_divergent, 0,
         "the divergence ledger is empty after TX02"
     );
     assert_eq!(
-        checker_rejected, 3,
-        "expected exactly the empty-transaction, require-in-region, and unproven-field-write \
+        checker_rejected, 2,
+        "expected exactly the empty-transaction and unproven-field-write \
          check-time rejections",
     );
 }

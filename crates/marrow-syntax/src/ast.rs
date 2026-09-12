@@ -926,10 +926,7 @@ pub enum Statement {
     /// `require <condition> else <value>`: a boolean guard statement. The
     /// condition is a `bool`; the value is the bare failure value of the
     /// enclosing function's `Result` error type, evaluated only on the failure
-    /// path. Pure lowering sugar for `if not <condition> { return err(<value>) }`;
-    /// like prefix `try`, its implicit failure exit carries no transaction
-    /// commit, so the checker rejects it on a path that would exit a region its
-    /// own function owns.
+    /// path. Pure lowering sugar for `if not <condition> { return err(<value>) }`.
     Require {
         condition: Expression,
         value: Expression,

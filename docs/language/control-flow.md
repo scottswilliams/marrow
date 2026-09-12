@@ -367,10 +367,10 @@ the body below them runs with both established. `require` originates a
 failure; `try` propagates one. The [guard prelude](idioms.md#guard-prelude)
 shows the guard forms together.
 
-In an export that owns a `transaction` block, a `require` stands on no path
-before the commit, inside the block or ahead of it; its failure exit carries no
-commit (`check.transaction_uncommitted`,
-[guards inside a block](errors-and-transactions.md#guards-inside-a-block)).
+A failed `require` follows the enclosing function's
+[transaction exit rule](errors-and-transactions.md#guards-inside-a-block):
+inside its owned block, it evaluates the error value, commits, then returns.
+Before the block it has no staged writes; after commit it does not commit again.
 
 ## Prefix try
 
@@ -407,8 +407,8 @@ test "spanOfTwo propagates the first failure" {
 The second `try` does not run when the first fails: `spanOfTwo(-1, 3)` returns
 `err("shelf number is negative")` after one call.
 
-Inside a `transaction` block, `try` keeps this meaning. Its failure exit
-carries no commit, so in an export that owns a block a `try` stands on no path
-before the commit, inside the block or ahead of it
-(`check.transaction_uncommitted`,
-[guards inside a block](errors-and-transactions.md#guards-inside-a-block)).
+An error propagated by `try` follows the enclosing function's
+[transaction exit rule](errors-and-transactions.md#guards-inside-a-block).
+Inside its owned block, the function commits after evaluating the result and
+before returning the error. A helper's propagated return does not commit its
+caller's block.

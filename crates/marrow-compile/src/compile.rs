@@ -1841,7 +1841,7 @@ fn run_semantic(
         });
 
     // The remaining transaction-ownership laws — exactly one region per mutating export,
-    // committed on every path with no durable operation after the commit; a `transaction`
+    // committed on every normal exit after begin, with no durable operation after commit; a `transaction`
     // marker only in the export that owns it; and no call to a transaction owner — are
     // reconstructed from the lowered tape and reported at the offending source construct.
     // Reported at check time so the source, not the image, carries the diagnostic; the
@@ -2718,21 +2718,18 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 
 /// Report the transaction-ownership lattice laws at check time, at their source spans.
 ///
-/// The ownership contract has four remaining laws the verifier reconstructs from the
+/// The ownership contract has three remaining laws the verifier reconstructs from the
 /// image (image.flow) and this pass promotes to source-facing `check.*` diagnostics:
 ///
 /// - the owner lattice — a mutating export owns exactly one `transaction` region,
-///   begun once and committed on every path, with no durable operation after the
+///   begun at most once and committed on every normal exit after begin, with no durable operation after the
 ///   commit and no empty (no-op) region;
 /// - a transaction owner is not called by another function;
-/// - a `transaction` marker sits only in the export that owns it;
-/// - a prefix `try` whose implicit `err` exit would leave an owned region uncommitted
-///   is an uncommitted exit (a `return` is a commit site; a `try` is not).
+/// - a `transaction` marker sits only in the export that owns it.
 ///
 /// The pass walks each function's lowered tape — the same instruction sequence the
-/// verifier reconstructs from the image — so a program the checker rejects here is
-/// exactly one the verifier would reject at image.flow: the checker is never stricter
-/// than the boundary. The requires-ambient-transaction pass runs first and already
+/// verifier reconstructs from the image. The verifier separately checks agreement
+/// at control-flow joins. The requires-ambient-transaction pass runs first and already
 /// covers a durable mutation outside any region, so this pass need not restate it.
 /// `closure` is the prerequisite, not an unused argument: an unsatisfied
 /// requires-ambient-transaction report already stands otherwise, and a single
@@ -2935,22 +2932,18 @@ fn owner_lattice_violation(
                     Code::CheckTransactionReopened.as_str(),
                     function.code_spans[idx],
                     "this reopens a `transaction` region the export already owns. A mutating \
-                     export begins its region exactly once and commits it on every path; \
+                     export may begin its region only once; \
                      combine the durable work into a single `transaction` block."
                         .to_string(),
                 ));
             }
-            Instr::Return if state != TxnState::AfterCommit => {
+            Instr::Return if state == TxnState::InTxn => {
                 return Some((
                     Code::CheckTransactionUncommitted.as_str(),
                     function.code_spans[idx],
-                    "this path leaves the `transaction` region without committing it. A \
-                     region's commit sites are its exits — each `return` inside the block and \
-                     the closing brace — so an exit that bypasses them leaves staged writes \
-                     uncommitted. Spell a deliberate failure as an in-region `return` (a \
-                     commit site), and place a guard that must not commit before the block. A \
-                     prefix `try` or a `require` guard is ordinary control flow, not a commit, \
-                     so its implicit `err` exit may not cross a region its own function owns."
+                    "this path returns while its `transaction` region is still open. \
+                     Every normal exit from an entered region must commit its staged writes \
+                     after evaluating the exit value and before returning."
                         .to_string(),
                 ));
             }

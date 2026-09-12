@@ -271,8 +271,8 @@ impl Effects {
             ));
         }
 
-        // An export entry that owns a transaction runs the lattice: it must begin and
-        // commit on every path with every mutation inside. A read-only region (a
+        // An export entry that owns a transaction runs the lattice: every mutation
+        // is inside the region and every normal exit after begin commits. A read-only region (a
         // transaction whose closure only reads) is admitted here — the read demand
         // inside the owned region is coherent — while a mutating export with no begin is
         // still caught, since the lattice rejects a mutation before begin.
@@ -326,7 +326,7 @@ impl Effects {
                     State::AfterCommit
                 }
                 SealedInstr::Return => {
-                    if state != State::AfterCommit {
+                    if state == State::InTxn {
                         return Err(reject(
                             VerifyPhase::Flow,
                             "a path returns without committing the transaction",

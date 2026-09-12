@@ -3005,7 +3005,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             },
             span,
         )?;
-        self.push(Instr::Return, span)?;
+        self.emit_region_return(span)?;
         let ok_here = self.here();
         self.patch(to_ok, ok_here);
         self.push(Instr::LocalGet(slot), span)?;

@@ -12,7 +12,7 @@
 //! These tests exercise the same VM transaction semantics directly over an ephemeral
 //! attachment, without process setup.
 
-use marrow_verify::{SealedExport, VerifiedImage};
+use marrow_verify::{RetShape, SealedExport, VerifiedImage};
 use marrow_vm::{
     DurableRun, EphemeralOutcome, MemoryAttachment, Value, mint_ephemeral, prepare, run_export,
 };
@@ -413,6 +413,29 @@ fn attach(image: &VerifiedImage) -> MemoryAttachment {
         }
         EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
     }
+}
+
+fn result_value(image: &VerifiedImage, name: &str, variant: &str, payload: Value) -> Option<Value> {
+    let RetShape::Enum {
+        idx,
+        optional: false,
+    } = image
+        .function(export(image, name).function())
+        .expect("verified function")
+        .body()
+        .ret()
+    else {
+        panic!("{name} returns a non-optional Result");
+    };
+    let variant = u16::try_from(
+        image.enums()[usize::from(idx)]
+            .variants()
+            .iter()
+            .position(|candidate| candidate.name.as_ref() == variant)
+            .expect("verified Result variant"),
+    )
+    .expect("verified variant index fits u16");
+    Some(Value::Enum(idx, variant, vec![payload].into_boxed_slice()))
 }
 
 /// A committed transaction is observable by a later read invocation on the same
@@ -859,15 +882,53 @@ fn a_return_err_after_staged_writes_commits_them() {
     );
 }
 
-/// Prefix `try` may not cross an owned region. Its implicit `err` exit carries no
-/// commit, so a `try` on a path that returns before the region's commit leaves the
-/// transaction uncommitted. TX02 promoted this law to check time: the checker refuses
-/// it (`check.transaction_uncommitted`) with the sharpened rationale that a spelled
-/// `return` is a visible commit sentence while `try`'s exit is implicit and carries
-/// none. A tampered image is still refused at verify with `image.flow` — *a path
-/// returns without committing the transaction* (see the `marrow-verify` hostiles).
 #[test]
-fn a_try_crossing_a_region_is_still_rejected() {
+fn a_require_after_staged_writes_matches_explicit_return() {
+    let require_source = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn setUnlessBig(id: int, v: int): Result<int, string> {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        require v <= 100 else "value is large"
+    }
+    return ok(v)
+}
+
+pub fn getValue(id: int): int? {
+    return ^counters[id].value
+}
+"#;
+    for source in [RESULT_SOURCE, require_source] {
+        let image = compile_verify(source);
+        let mut attachment = attach(&image);
+        for (id, value, variant, payload) in [
+            (1, 200, "err", Value::Text("value is large".into())),
+            (2, 50, "ok", Value::Int(50)),
+        ] {
+            assert_eq!(
+                run(
+                    &image,
+                    &mut attachment,
+                    "setUnlessBig",
+                    vec![Value::Int(id), Value::Int(value)],
+                ),
+                result_value(&image, "setUnlessBig", variant, payload),
+            );
+            assert_eq!(
+                run(&image, &mut attachment, "getValue", vec![Value::Int(id)]),
+                Some(Value::Optional(Some(Box::new(Value::Int(value))))),
+            );
+        }
+    }
+}
+
+#[test]
+fn a_try_crossing_a_region_commits_before_returning() {
     let try_crossing = r#"resource Counter {
     required value: int
     label: string
@@ -889,11 +950,185 @@ pub fn setChecked(id: int, v: int): Result<int, string> {
     }
     return ok(v)
 }
+
+pub fn getValue(id: int): int? { return ^counters[id].value }
 "#;
-    assert_eq!(
-        compile_error_codes(try_crossing),
-        vec!["check.transaction_uncommitted".to_string()],
+    let image = compile_verify(try_crossing);
+    let mut attachment = attach(&image);
+    for (value, variant, payload, stored) in [
+        (0, "err", Value::Text("value must be positive".into()), None),
+        (7, "ok", Value::Int(7), Some(Box::new(Value::Int(7)))),
+    ] {
+        assert_eq!(
+            run(
+                &image,
+                &mut attachment,
+                "setChecked",
+                vec![Value::Int(1), Value::Int(value)]
+            ),
+            result_value(&image, "setChecked", variant, payload),
+        );
+        assert_eq!(
+            run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+            Some(Value::Optional(stored)),
+        );
+    }
+}
+
+#[test]
+fn normal_exits_observe_the_owned_transaction_state() {
+    for guard in [
+        "if v == LIMIT { return err(\"rejected\") }",
+        "require v != LIMIT else \"rejected\"",
+        "try reject(v, LIMIT)",
+    ] {
+        let before = guard.replace("LIMIT", "-1");
+        let inside = guard.replace("LIMIT", "-2");
+        let after = guard.replace("LIMIT", "-3");
+        let source = format!(
+            r#"{RESULT_SOURCE}
+fn reject(v: int, rejected: int): Result<int, string> {{
+    if v == rejected {{ return err("rejected") }}
+    return ok(v)
+}}
+pub fn exitAt(id: int, v: int): Result<int, string> {{
+    {before}
+    transaction {{
+        ^counters[id] = Counter(value: v)
+        {inside}
+    }}
+    {after}
+    return ok(v)
+}}
+"#
+        );
+        let image = compile_verify(&source);
+        let mut attachment = attach(&image);
+        run(
+            &image,
+            &mut attachment,
+            "setUnlessBig",
+            vec![Value::Int(1), Value::Int(10)],
+        );
+        for (value, stored, variant, payload) in [
+            (-1, 10, "err", Value::Text("rejected".into())),
+            (-2, -2, "err", Value::Text("rejected".into())),
+            (-3, -3, "err", Value::Text("rejected".into())),
+            (50, 50, "ok", Value::Int(50)),
+        ] {
+            assert_eq!(
+                run(
+                    &image,
+                    &mut attachment,
+                    "exitAt",
+                    vec![Value::Int(1), Value::Int(value)]
+                ),
+                result_value(&image, "exitAt", variant, payload),
+            );
+            assert_eq!(
+                run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+                Some(Value::Optional(Some(Box::new(Value::Int(stored))))),
+            );
+        }
+    }
+}
+
+#[test]
+fn propagated_exits_preserve_helper_and_evaluation_boundaries() {
+    let source = format!(
+        r#"{RESULT_SOURCE}
+fn stageAndReject(id: int, v: int): Result<int, string> {{
+    ^counters[id] = Counter(value: v)
+    require false else "rejected"
+    return ok(v)
+}}
+pub fn catchThenContinue(id: int, v: int): Result<int, string> {{
+    transaction {{
+        const outcome = stageAndReject(id, v)
+        match outcome {{
+            err(message) => {{ ^counters[id] = Counter(value: v + 1) }}
+            ok(value) => {{ return ok(value) }}
+        }}
+    }}
+    return ok(v + 1)
+}}
+pub fn catchThenFault(id: int, v: int): Result<int, string> {{
+    transaction {{
+        const outcome = stageAndReject(id, v)
+        return ok(v / 0)
+    }}
+}}
+pub fn propagate(id: int, v: int): Result<int, string> {{
+    transaction {{
+        try stageAndReject(id, v)
+    }}
+    return ok(v)
+}}
+fn faultingResult(v: int): Result<int, string> {{ return ok(v / 0) }}
+pub fn tryFault(id: int, v: int): Result<int, string> {{
+    transaction {{
+        ^counters[id] = Counter(value: v)
+        const value = try faultingResult(v)
+        return ok(value)
+    }}
+}}
+pub fn requireFault(id: int, v: int): Result<int, int> {{
+    transaction {{
+        ^counters[id] = Counter(value: v)
+        require false else v / 0
+    }}
+    return ok(v)
+}}
+pub fn loopExit(id: int, v: int): Result<int, string> {{
+    transaction {{
+        ^counters[id] = Counter(value: v)
+        var n = 0
+        while n < 2 {{
+            require v > n else "rejected"
+            n = n + 1
+        }}
+    }}
+    return ok(v)
+}}
+"#
     );
+    let image = compile_verify(&source);
+    let mut attachment = attach(&image);
+    for (name, value, stored, variant, payload) in [
+        ("catchThenContinue", 10, 11, "ok", Value::Int(11)),
+        ("propagate", 20, 20, "err", Value::Text("rejected".into())),
+        ("loopExit", 1, 1, "err", Value::Text("rejected".into())),
+        ("loopExit", 2, 2, "ok", Value::Int(2)),
+    ] {
+        assert_eq!(
+            run(
+                &image,
+                &mut attachment,
+                name,
+                vec![Value::Int(1), Value::Int(value)]
+            ),
+            result_value(&image, name, variant, payload),
+        );
+        assert_eq!(
+            run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+            Some(Value::Optional(Some(Box::new(Value::Int(stored))))),
+        );
+    }
+    for name in ["catchThenFault", "requireFault", "tryFault"] {
+        assert_eq!(
+            run_faulting(
+                &image,
+                &mut attachment,
+                name,
+                vec![Value::Int(1), Value::Int(99)]
+            ),
+            "run.divide_by_zero",
+        );
+        assert_eq!(
+            run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+            Some(Value::Optional(Some(Box::new(Value::Int(2))))),
+        );
+    }
 }
 
 /// The typed check-time diagnostic codes a source produces, or an empty vector when

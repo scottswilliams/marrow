@@ -2744,6 +2744,59 @@ fn flow_return_without_commit_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
+/// Separate exits may return before begin or after commit without merging states.
+#[test]
+fn flow_return_before_begin_verifies() {
+    let draft = put_export(|sites| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::DurExists(sites.entry.clone()),
+            Instr::JumpIfFalse(4),
+            Instr::Return,
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurEraseEntry(sites.entry.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+/// Individually legal return states must not merge into one instruction state.
+#[test]
+fn flow_before_begin_and_after_commit_join_rejects() {
+    let draft = put_export(|sites| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::DurExists(sites.entry.clone()),
+            Instr::JumpIfFalse(8),
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurEraseEntry(sites.entry.clone()),
+            Instr::TxnCommit,
+            Instr::Jump(8),
+            Instr::Return,
+        ]
+    });
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
+#[test]
+fn flow_double_commit_rejects() {
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurEraseEntry(sites.entry.clone()),
+            Instr::TxnCommit,
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
 /// DX01 artifact-level positive: an in-region `return` on a guarded branch verifies
 /// when a `TxnCommit` precedes the `Return` on that path. The present edge commits and
 /// returns (indices 4–5); the absent edge writes, then commits at the closing brace and

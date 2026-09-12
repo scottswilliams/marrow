@@ -7,14 +7,13 @@
 //! `image.flow` (see `marrow-verify` hostiles); these are earlier, friendlier reports.
 //!
 //! The laws:
-//! - the owner lattice — a mutating export owns exactly one region, begun once and
-//!   committed on every path, with no empty region and no durable operation after the
-//!   commit (`check.transaction_empty`, `check.transaction_reopened`,
+//! - the owner lattice — a mutating export owns one region, begun at most once and
+//!   committed on every normal exit after begin, with no empty region and no durable
+//!   operation after commit (`check.transaction_empty`, `check.transaction_reopened`,
 //!   `check.transaction_uncommitted`, `check.durable_after_commit`);
 //! - a transaction owner is not called (`check.transaction_owner_called`);
 //! - a `transaction` marker sits only in the owning export (`check.transaction_misplaced`);
-//! - a prefix `try` may not cross a region its own function owns
-//!   (`check.transaction_uncommitted`).
+//! - explicit and propagated returns commit only their own active region.
 
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
@@ -99,11 +98,6 @@ fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
             "fn readTagged<T>(id: int, tag: T): int? { return ^counters[id].value }\npub fn owner(id: int): int? {\n    transaction { ^counters[id] = Counter(value: identity(7)) }\n    return readTagged(id, true)\n}\n",
             "readTagged(id, true)",
         ),
-        (
-            "check.transaction_uncommitted",
-            "pub fn owner(id: int): int {\n    if identity(true) { return 0 }\n    transaction { ^counters[id] = Counter(value: 7) }\n    return 1\n}\n",
-            "return 0",
-        ),
     ];
     for (code, body, needle) in cases {
         let ops = format!("{prelude}{body}");
@@ -124,6 +118,8 @@ fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
             "{code} must keep its complete source coordinate"
         );
     }
+    let early_return = "pub fn owner(id: int): int {\n    if identity(true) { return 0 }\n    transaction { ^counters[id] = Counter(value: 7) }\n    return 1\n}\n";
+    assert!(diagnostics(&format!("{prelude}{early_return}")).is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -159,19 +155,11 @@ fn a_second_region_reopens_an_owned_transaction() {
     );
 }
 
-/// A conditional region leaves one path returning without committing: the guard's early
-/// `return` runs before the region begins on that path.
+/// An early return before begin has no staged writes to commit.
 #[test]
-fn an_early_return_before_the_region_is_uncommitted() {
+fn an_early_return_before_the_region_compiles() {
     let ops = "pub fn maybeSet(id: int, v: int, skip: bool) {\n    if skip {\n        return\n    }\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n}\n";
-    let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
-    assert!(
-        diagnostic.message().contains("commit site")
-            || diagnostic.message().contains("without committing"),
-        "steers to spelling the exit as an in-region return: {}",
-        diagnostic.message()
-    );
+    assert!(diagnostics(ops).is_empty());
 }
 
 /// A durable read after the region's commit cannot reach a live session; refused at the
@@ -235,64 +223,32 @@ fn a_helper_owning_a_region_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Law (d): a prefix `try` may not cross a region its own function owns.
+// Normal exits commit only the exiting function's active region.
 // ---------------------------------------------------------------------------
 
-/// A `try` inside an owned region whose `err` exit would return from inside the region
-/// is an uncommitted exit — a `try` is ordinary control flow, not a commit. Refused at
-/// check time (the verifier reports the same from the image as `image.flow`).
+/// A propagated error commits its owner's active region before returning.
 #[test]
-fn a_try_crossing_an_owned_region_is_rejected() {
+fn a_try_exiting_an_owned_region_compiles() {
     let ops = "fn check(v: int): Result<int, string> {\n    if v > 0 {\n        return ok(v)\n    }\n    return err(\"value must be positive\")\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        const w = try check(v)\n        ^counters[id] = Counter(value: w)\n    }\n    return ok(v)\n}\n";
-    let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
-    assert!(
-        diagnostic.message().contains("try") && diagnostic.message().contains("commit"),
-        "names `try` and the commit rule: {}",
-        diagnostic.message()
-    );
+    assert!(diagnostics(ops).is_empty());
 }
 
 // ---------------------------------------------------------------------------
-// Law (d), require mirror: a `require` may not stand on a path exiting a region
-// its own function owns — its implicit failure exit carries no commit, exactly
-// like `try`'s.
+// Require and try follow the same region-exit rule.
 // ---------------------------------------------------------------------------
 
-/// A `require` inside an owned region: its implicit `err` exit would return from
-/// inside the region without committing. Refused at check time at the `require`.
+/// A require failure commits its owner's active region before returning.
 #[test]
-fn a_require_inside_an_owned_region_is_rejected() {
+fn a_require_inside_an_owned_region_compiles() {
     let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        require v > 0 else \"value must be positive\"\n        ^counters[id] = Counter(value: v)\n        return ok(v)\n    }\n}\n";
-    let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
-    assert_eq!(
-        diagnostic.line(),
-        line_of(ops, "require v > 0"),
-        "reported at the `require`: {}",
-        diagnostic.message()
-    );
-    assert!(
-        diagnostic.message().contains("commit"),
-        "names the commit rule: {}",
-        diagnostic.message()
-    );
+    assert!(diagnostics(ops).is_empty());
 }
 
-/// A `require` before the owned region begins: its failure path exits the
-/// function while the region's commit sites are still ahead, the same law an
-/// early spelled `return` breaks.
+/// A require failure before begin returns without opening a region.
 #[test]
-fn a_require_before_an_owned_region_is_rejected() {
+fn a_require_before_an_owned_region_compiles() {
     let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    require v > 0 else \"value must be positive\"\n    transaction {\n        ^counters[id] = Counter(value: v)\n        return ok(v)\n    }\n}\n";
-    let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
-    assert_eq!(
-        diagnostic.line(),
-        line_of(ops, "require v > 0"),
-        "reported at the `require`: {}",
-        diagnostic.message()
-    );
+    assert!(diagnostics(ops).is_empty());
 }
 
 /// A `require` inside a region nested in another region: the reopened-region law
@@ -305,25 +261,15 @@ fn a_require_inside_a_nested_region_is_still_refused() {
     assert_eq!(diagnostic.code(), "check.transaction_reopened");
 }
 
-/// A `try` and a `require` both inside an owned region: the tape is scanned in
-/// index order, so the earliest uncommitted exit — the `try` — is the one
-/// reported, deterministically.
+/// Either propagated exit commits; success continues to the explicit return.
 #[test]
-fn try_then_require_inside_a_region_reports_the_earliest_exit() {
+fn try_then_require_inside_a_region_compile() {
     let ops = "fn check(v: int): Result<int, string> {\n    if v > 0 {\n        return ok(v)\n    }\n    return err(\"value must be positive\")\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        const w = try check(v)\n        require w < 100 else \"value too large\"\n        ^counters[id] = Counter(value: w)\n        return ok(w)\n    }\n}\n";
-    let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
-    assert_eq!(
-        diagnostic.line(),
-        line_of(ops, "const w = try check(v)"),
-        "the earliest exit is reported: {}",
-        diagnostic.message()
-    );
+    assert!(diagnostics(ops).is_empty());
 }
 
 // ---------------------------------------------------------------------------
-// Soundness controls: the checker is never stricter than the verifier — the
-// accepted forms the laws above reject-by-contrast must still compile clean.
+// Accepted helper and owner forms retain their separate region ownership.
 // ---------------------------------------------------------------------------
 
 /// A `require` in a helper that joins its caller's region owns no region itself:

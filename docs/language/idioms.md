@@ -135,8 +135,9 @@ makes the two one unit to read and to move.
 
 A `pub fn` opens with its preconditions, one per line, before the happy path.
 A boolean precondition is a `require`. A presence check is a `const` with a
-diverging `else`. Inside the function's own `transaction` block, a guard is a
-plain `if` with a `return`, because that return commits.
+diverging `else`. Inside the function's own `transaction` block, a failed
+`require` commits staged writes just as an explicit `return err(...)` does.
+Place a guard before mutation when rejection intends no change.
 
 ```mw
 module docs::idioms::lookup

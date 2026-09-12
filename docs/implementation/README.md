@@ -213,6 +213,12 @@ body refusals leave queued work intact; resource and invariant failures still st
 An ambient-transaction diagnostic still suppresses subsequent transaction-ownership
 checks for that drive to avoid cascading reports.
 
+`lower/stmts.rs::emit_region_return` emits explicit, `try` and `require` exits
+after their values have been lowered. Lexical transaction depth selects whether
+to emit a commit; helper bodies have no owned region. The compiler's owner scan
+rejects a return with an open region. The verifier independently reconstructs
+transaction states and rejects inconsistent joins and uncommitted returns.
+
 The draft keeps a saturating charge of the bytes its retained bodies alone commit
 the image to (one byte per instruction plus one span row per span), snapshotted and
 restored with its transactions. After each settled body the compiler polls it; once

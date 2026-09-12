@@ -62,8 +62,9 @@ export that owns a block is called only from a [test](tests.md) body
 (`check.transaction_owner_called`). A read may precede the block.
 
 The block stages its writes. A read inside the block sees writes staged earlier
-in the same block. The block commits at each of its exits: the closing brace and
-every `return` written inside it. A `return` inside the block evaluates its
+in the same block. The block commits at its closing brace and every normal
+function exit inside it, including `return`, `try` failure and `require` failure.
+An exit inside the block evaluates its
 value, then commits, then returns, so `return ^books[id].loans` returns the
 staged value. An export opens its block once (`check.transaction_reopened`), the
 block touches at least one durable place (`check.transaction_empty`), and no
@@ -71,7 +72,7 @@ durable read or write follows the commit (`check.durable_after_commit`).
 
 ## Guards inside a block
 
-A deliberate failure is a `return err(...)` placed before the first write:
+A guard that intends no change precedes the first write:
 
 ```mw
 module docs::errors::guard
@@ -85,9 +86,7 @@ store ^books[id: int]: Book
 
 pub fn add(id: int, title: string, copies: int): Result<int, string> {
     transaction {
-        if copies < 0 {
-            return err("copies cannot be negative")
-        }
+        require copies >= 0 else "copies cannot be negative"
         ^books[id] = Book(title: title, copies: copies)
     }
     return ok(id)
@@ -109,17 +108,16 @@ The guard returns from inside the block with nothing staged, so the first call
 commits nothing and the test reads no title. The second call passes the guard
 and commits the entry.
 
-Every `return` inside the block commits, whatever value it carries. A
-`return err(...)` placed after a write commits that write, so the guard goes
-before the write.
+Every normal function exit inside the block commits, whatever value it carries.
+A `return err(...)`, [prefix `try`](control-flow.md#prefix-try) failure or
+[`require` guard](control-flow.md#require-guards) failure after a write commits
+that write. A `Result` error is a value, not a rollback instruction.
 
-[Prefix `try`](control-flow.md#prefix-try) and a
-[`require` guard](control-flow.md#require-guards) leave the function without
-committing. In an export that owns a block, neither stands on a path before the
-commit, inside the block or ahead of it; the report is
-`check.transaction_uncommitted` at the `try` or the `require`. A helper called
-inside the block owns no block, so its `try` and `require` keep their ordinary
-meaning.
+Before the block begins, a normal exit has no staged writes to commit. After
+the block commits, a normal exit does not commit again. Static writer admission
+may still acquire a session before an early return. A helper owns no block:
+its return does not commit its caller's transaction. The caller can inspect the
+helper's result and continue, or propagate it through its own committing exit.
 
 ## Rollback and isolation
 

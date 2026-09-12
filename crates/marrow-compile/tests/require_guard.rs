@@ -3,15 +3,14 @@
 //! `require C else E` is pure lowering sugar for `if not C { return err(E) }`:
 //! the condition is a `bool`, the bare failure value types against the enclosing
 //! function's `Result` error type, and the failure exit is an implicit return
-//! that — like prefix `try` — carries no transaction commit. This suite pins the
+//! that commits only the function's active region. This suite pins the
 //! checker-side typing rules and the pure-sugar claim itself: the sugar and its
 //! handwritten form compile to images whose every section except the
 //! source-position table is byte-identical. (The span section necessarily
 //! differs: the two spellings occupy different source positions.)
 //!
-//! The transaction-law mirror (a `require` on a path exiting a region its own
-//! function owns is `check.transaction_uncommitted`) is pinned beside the other
-//! ownership laws in `transaction_ownership.rs`.
+//! Transaction-owner and helper exits are pinned beside the other ownership
+//! laws in `transaction_ownership.rs`.
 
 use std::collections::BTreeMap;
 

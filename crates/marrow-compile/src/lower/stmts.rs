@@ -697,35 +697,18 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
     }
 
-    /// Emit a function-exit `return`. Inside an owned `transaction` region an explicit
-    /// `return` is a commit site: the region's staged writes commit before the frame
-    /// exits. The return expression is already lowered (its durable reads ran while the
-    /// region was open), so the ordering is evaluate → commit → return, with the value
-    /// left on the stack across the stack-neutral `TxnCommit`. Only the owning export
-    /// runs with `txn_depth > 0`; a helper called inside the region lowers at depth zero,
-    /// so its own `return` carries no commit and is not a region exit. `try`'s implicit
-    /// `err` exit is emitted separately and never routes here, so it stays barred from
-    /// crossing a region. The verifier independently proves a `TxnCommit` precedes the
-    /// `Return` on every in-region path.
-    fn emit_region_return(&mut self, span: SourceSpan) -> ConstructResult<()> {
+    /// The exit value is already on the stack, so evaluation precedes the
+    /// stack-neutral commit. Only the function owning this lexical region has
+    /// positive depth; a helper's return never commits its caller's region.
+    pub(super) fn emit_region_return(&mut self, span: SourceSpan) -> ConstructResult<()> {
         if self.txn_depth > 0 {
             self.push(Instr::TxnCommit, span)?;
         }
         self.push(Instr::Return, span)
     }
 
-    /// Lower `require <condition> else <value>`: pure sugar for
-    /// `if not <condition> { return err(<value>) }`, emitting the identical tape —
-    /// condition, `BoolNot`, a branch over the failure arm, the bare failure value
-    /// lowered as the enclosing function's `Result` error type, the error
-    /// construction, and a `Return`. The failure value is evaluated only on the
-    /// failure path. The `Return` is emitted bare (never through
-    /// [`emit_region_return`]): like `try`'s implicit `err` exit, a `require`
-    /// failure carries no commit, so the owner-lattice scan reports
-    /// `check.transaction_uncommitted` at the `require` when its exit would cross
-    /// a region this function owns — exactly the try law. Outside an owned region
-    /// the bare `Return` and the handwritten form's uncommitted `Return` coincide,
-    /// which is what makes the byte-identity artifact hold.
+    /// `require` emits the same tape as `if not condition { return err(value) }`.
+    /// The failure value is evaluated only on the failure path, before any commit.
     fn lower_require(
         &mut self,
         condition: &Expression,
@@ -775,7 +758,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             },
             span,
         )?;
-        self.push(Instr::Return, span)?;
+        self.emit_region_return(span)?;
         let next = self.here();
         self.patch(jif, next);
         Ok(Flow::Fallthrough)

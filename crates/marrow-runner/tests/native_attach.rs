@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use marrow_runner::{CallOutcome, Json, attach_and_call};
-use marrow_verify::VerifiedImage;
+use marrow_verify::{RetShape, VerifiedImage};
 use marrow_vm::Value;
 
 fn fixture_dir() -> PathBuf {
@@ -31,8 +31,7 @@ fn compile_verify() -> (VerifiedImage, Vec<u8>) {
     compile_verify_with("")
 }
 
-/// Compile the Workshop image, optionally appending `extra` source (used to produce a
-/// body-only-edited image with the same durable contract, interface, and ceiling).
+/// Compile the Workshop image with additional source over its existing durable schema.
 fn compile_verify_with(extra: &str) -> (VerifiedImage, Vec<u8>) {
     let mut source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
     source.extend_from_slice(extra.as_bytes());
@@ -151,7 +150,27 @@ fn present_name(name: &str) -> Option<Value> {
 /// at its prior committed value — all surviving the close/reopen between every call.
 #[test]
 fn workshop_journey_over_the_companion_path() {
-    let (image, bytes) = compile_verify();
+    let (image, bytes) = compile_verify_with(
+        r#"
+pub fn setMovesExplicit(v: int): Result<int, string> {
+    transaction {
+        ^tallies["moves"] = Tally(count: v)
+        if v > 100 {
+            return err("value is large")
+        }
+    }
+    return ok(v)
+}
+
+pub fn setMovesRequired(v: int): Result<int, string> {
+    transaction {
+        ^tallies["moves"] = Tally(count: v)
+        require v <= 100 else "value is large"
+    }
+    return ok(v)
+}
+"#,
+    );
     let store = scratch();
     std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
     provision(&store, &image);
@@ -224,6 +243,47 @@ fn workshop_journey_over_the_companion_path() {
     );
     assert_eq!(terminal.value("catalogued", vec![]), Some(Value::Int(1)));
     assert_eq!(terminal.value("moveCount", vec![]), Some(Value::Int(1)));
+
+    // Each returned Result is followed by a fresh companion reading a changed tally.
+    for name in ["setMovesExplicit", "setMovesRequired"] {
+        let id = export_id(&terminal.image, name);
+        let export = terminal
+            .image
+            .exports()
+            .iter()
+            .find(|export| export.id().bytes() == &id)
+            .expect("verified export");
+        let RetShape::Enum {
+            idx,
+            optional: false,
+        } = terminal
+            .image
+            .function(export.function())
+            .expect("verified function")
+            .body()
+            .ret()
+        else {
+            panic!("{name} returns a non-optional Result");
+        };
+        let variants = terminal.image.enums()[usize::from(idx)].variants();
+        for (value, member, payload) in [
+            (200, "err", Value::Text("value is large".into())),
+            (50, "ok", Value::Int(50)),
+        ] {
+            let variant = u16::try_from(
+                variants
+                    .iter()
+                    .position(|candidate| candidate.name.as_ref() == member)
+                    .expect("verified Result member"),
+            )
+            .expect("verified member index fits u16");
+            assert_eq!(
+                terminal.value(name, vec![Json::Int(value)]),
+                Some(Value::Enum(idx, variant, vec![payload].into_boxed_slice())),
+            );
+            assert_eq!(terminal.value("moveCount", vec![]), Some(Value::Int(value)),);
+        }
+    }
 
     let _ = std::fs::remove_dir_all(terminal.store.parent().expect("parent"));
 }
