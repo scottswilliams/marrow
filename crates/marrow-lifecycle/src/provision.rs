@@ -140,11 +140,12 @@ impl std::error::Error for ProvisionError {}
 /// database created through the path kernel, then the envelope and head bytes written and
 /// flushed — then atomically renames it onto `dest`. A rename onto an existing non-empty
 /// destination fails, so exactly one racing provisioner wins and the destination is never
-/// left partial. On any failure before the rename, the temporary directory is removed, so a
-/// failed provision leaves no published file.
+/// left partial. A creation failure leaves an existing temporary path untouched. After
+/// successful creation, a failure before rename removes this invocation's temporary directory.
 pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, ProvisionError> {
     let instance = request.envelope.instance;
     let temp = temp_sibling(dest);
+    create_private_dir(&temp).map_err(ProvisionError::Io)?;
     // Build the whole store in the temp directory; on any error, remove it and surface.
     match build_in_temp(&temp, &request) {
         Ok(()) => {}
@@ -178,12 +179,10 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
     Ok(Provisioned { instance })
 }
 
-/// Build the store's artifacts in the private temporary directory `temp`: create the
-/// owner-only directory, create the engine database through the path kernel, write the
+/// Build the store's artifacts in the already-created private temporary directory `temp`:
+/// create the engine database through the path kernel, write the
 /// envelope and head bytes, and flush every file and the directory to disk.
 fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), ProvisionError> {
-    create_private_dir(temp).map_err(ProvisionError::Io)?;
-
     // Provisioning is the sole create/stamp path. It returns no engine or store
     // capability, so the newly created body cannot escape without an owner lock.
     NativeStore::provision(temp).map_err(ProvisionError::Store)?;
@@ -484,8 +483,8 @@ fn decode_head(dir: &AdmittedStoreDir) -> Result<LogicalHead, OpenError> {
 
 /// A private sibling temporary directory for building a store before its atomic claim: the
 /// destination's own name prefixed with a recognizable marker plus the process id and a
-/// monotonic counter, so concurrent provisioners never collide and a leaked temp (from a
-/// crash before the rename) is identifiable and never mistaken for a published store.
+/// monotonic counter. Exclusive directory creation claims the candidate; the name alone
+/// grants no ownership because a prior process with the same pid may have left it behind.
 pub(crate) fn temp_sibling(dest: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);

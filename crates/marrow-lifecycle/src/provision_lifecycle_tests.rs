@@ -245,6 +245,11 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
     });
 
     assert_eq!(winners.len(), 1, "exactly one provisioner wins the race");
+    assert_eq!(
+        list(&dir.path),
+        vec!["store"],
+        "losers remove their own stages"
+    );
     assert_eq!(classify(&store), Preflight::Complete);
     let opened = open(&store, projection()).expect("open the survivor");
     assert_eq!(
@@ -395,4 +400,145 @@ fn list(dir: &Path) -> Vec<String> {
         .unwrap_or_default();
     names.sort();
     names
+}
+
+/// A fresh exact-test process isolates the temporary-name counter without a production
+/// override. Directory, file and symlink collisions retain the original objects.
+#[test]
+fn failed_temp_creation_preserves_existing_directory() {
+    const CHILD_BASE: &str = "MARROW_LC_CREATE_COLLISION_CHILD_BASE";
+    if let Some(base) = std::env::var_os(CHILD_BASE) {
+        let base = PathBuf::from(base);
+        let dest = base.join("store");
+        // This exact-test subprocess has not called provision or temp_sibling.
+        let temp = base.join(format!(".store.provisioning.{}.0", std::process::id()));
+        std::fs::create_dir(&temp).expect("create existing directory");
+        let sentinel = temp.join("sentinel");
+        std::fs::write(&sentinel, b"pre-existing bytes").expect("write sentinel");
+        let before = std::fs::metadata(&temp).expect("existing metadata");
+        let sentinel_before = std::fs::metadata(&sentinel).expect("sentinel metadata");
+        assert!(!dest.exists());
+
+        match provision(&dest, request(instance())) {
+            Err(ProvisionError::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            }
+            other => panic!("expected directory creation refusal, got {other:?}"),
+        }
+
+        assert_eq!(
+            std::fs::read(&sentinel).expect("sentinel survives"),
+            b"pre-existing bytes"
+        );
+        let after = std::fs::metadata(&temp).expect("existing directory survives");
+        let sentinel_after = std::fs::metadata(&sentinel).expect("sentinel metadata survives");
+        assert_eq!(
+            before.permissions().readonly(),
+            after.permissions().readonly()
+        );
+        assert_eq!(
+            sentinel_before.permissions().readonly(),
+            sentinel_after.permissions().readonly()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                (before.dev(), before.ino(), before.mode()),
+                (after.dev(), after.ino(), after.mode())
+            );
+            assert_eq!(
+                (
+                    sentinel_before.dev(),
+                    sentinel_before.ino(),
+                    sentinel_before.mode()
+                ),
+                (
+                    sentinel_after.dev(),
+                    sentinel_after.ino(),
+                    sentinel_after.mode()
+                )
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&temp)
+                .expect("list existing directory")
+                .count(),
+            1
+        );
+        let file = base.join(format!(".store.provisioning.{}.1", std::process::id()));
+        std::fs::write(&file, b"existing file").expect("create existing file");
+        let file_before = std::fs::symlink_metadata(&file).expect("file metadata");
+        assert!(matches!(
+            provision(&dest, request(instance())),
+            Err(ProvisionError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(
+            std::fs::read(&file).expect("file survives"),
+            b"existing file"
+        );
+        let file_after = std::fs::symlink_metadata(&file).expect("file metadata survives");
+        assert_eq!(file_before.permissions(), file_after.permissions());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, symlink};
+            assert_eq!(
+                (file_before.dev(), file_before.ino(), file_before.mode()),
+                (file_after.dev(), file_after.ino(), file_after.mode())
+            );
+            let link = base.join(format!(".store.provisioning.{}.2", std::process::id()));
+            symlink(&temp, &link).expect("create directory link");
+            let link_before = std::fs::symlink_metadata(&link).expect("link metadata");
+            assert!(matches!(
+                provision(&dest, request(instance())),
+                Err(ProvisionError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
+            ));
+            let link_after = std::fs::symlink_metadata(&link).expect("link survives");
+            assert_eq!(
+                (link_before.dev(), link_before.ino(), link_before.mode()),
+                (link_after.dev(), link_after.ino(), link_after.mode())
+            );
+            assert_eq!(std::fs::read_link(&link).expect("link target"), temp);
+            assert_eq!(
+                std::fs::read(&sentinel).expect("referent survives"),
+                b"pre-existing bytes"
+            );
+        }
+        assert!(!dest.exists());
+        return;
+    }
+
+    let dir = TempDir::new("create-collision");
+    let mut child = std::process::Command::new(std::env::current_exe().expect("current exe"))
+        .args([
+            "--exact",
+            "provision_lifecycle_tests::failed_temp_creation_preserves_existing_directory",
+            "--nocapture",
+        ])
+        .env(CHILD_BASE, &dir.path)
+        .spawn()
+        .expect("spawn exact collision test");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "collision child failed: {status}");
+                break;
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            outcome => {
+                let pid = child.id();
+                let killed = child.kill();
+                let waited = child.wait();
+                if waited.is_err() {
+                    std::mem::forget(dir);
+                }
+                panic!(
+                    "collision child {pid} did not finish: {outcome:?}; kill: {killed:?}; wait: {waited:?}"
+                );
+            }
+        }
+    }
 }
