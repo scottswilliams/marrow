@@ -61,8 +61,10 @@ process exit. `close()` is the orderly form.
 `provision(options)` is a module function of `./client/marrow-supervisor.mjs`,
 not a method of `Client`. It creates a store for an image. It takes `runner`,
 `image`, and a `store` path that does not exist yet, and resolves with a
-`ProvisionReceipt` naming the store instance and path. A store on disk needs the companion layout described under
-[install](../install.md#running-against-a-store).
+`ProvisionReceipt` naming the store instance and path. Relative image and store paths resolve
+against the calling process's working directory; a single-component store path
+such as `store` is supported. A store on disk needs the companion layout described
+under [install](../install.md#running-against-a-store).
 
 ## Type projection
 

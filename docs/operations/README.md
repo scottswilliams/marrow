@@ -15,9 +15,14 @@ provisions the directory, and binds the new store to that program ([marrow
 import](../tools/cli.md#marrow-import)). The corpus is read and committed in
 bounded batches, so a corpus larger than memory imports the same way.
 
-`import` is the only command that creates a store. It mints no identity: the
-ledger `.marrow/ids` comes from one storeless `marrow run` before the import
+Within the `marrow` project CLI, `import` is the only command that creates a store.
+It mints no identity: the ledger `.marrow/ids` comes from one storeless
+`marrow run` before the import
 ([identity ledger](../tools/projects.md#identity-ledger)).
+
+The generated TypeScript supervisor also provides
+[`provision(options)`](../tools/typescript-client.md#launching), which creates an
+empty store bound to a compiled image without importing a corpus.
 
 Current tools provision stores with logical-head generation 2. The entry layout
 requires fresh provisioning; there is no automatic conversion of older stores

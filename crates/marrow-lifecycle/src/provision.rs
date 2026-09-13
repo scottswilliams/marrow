@@ -77,7 +77,7 @@ pub fn preflight(dir: &Path) -> Result<Preflight, StoreAccessError> {
 }
 
 /// The inputs to a provision: the persisted envelope and logical head to publish. The
-/// caller (the lifecycle actor) derives these from a verified image; F02a provisions an
+/// caller (the lifecycle actor) derives these from a verified image; provision creates an
 /// empty engine (no user data), so no store shape is needed to create it.
 pub struct ProvisionRequest {
     pub envelope: StoreEnvelope,
@@ -174,6 +174,12 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
     }
     // Make the new directory entry durable in the parent.
     if let Some(parent) = dest.parent() {
+        // A single-component relative path has an empty parent, meaning the current directory.
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
         sync_dir(parent).map_err(ProvisionError::Io)?;
     }
     Ok(Provisioned { instance })

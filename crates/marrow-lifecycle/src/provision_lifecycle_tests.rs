@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::provision::open_unadmitted as open;
 use crate::{
-    ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
-    ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
+    preflight, provision, ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight,
+    ProvisionError, ProvisionRequest, StoreEnvelope, StoreInstanceId,
 };
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
@@ -481,7 +481,7 @@ fn failed_temp_creation_preserves_existing_directory() {
         assert_eq!(file_before.permissions(), file_after.permissions());
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{MetadataExt, symlink};
+            use std::os::unix::fs::{symlink, MetadataExt};
             assert_eq!(
                 (file_before.dev(), file_before.ino(), file_before.mode()),
                 (file_after.dev(), file_after.ino(), file_after.mode())
@@ -508,21 +508,92 @@ fn failed_temp_creation_preserves_existing_directory() {
         return;
     }
 
-    let dir = TempDir::new("create-collision");
+    run_exact_child(
+        TempDir::new("create-collision"),
+        "provision_lifecycle_tests::failed_temp_creation_preserves_existing_directory",
+        CHILD_BASE,
+    );
+}
+
+#[test]
+fn relative_provision_reports_success_after_publication() {
+    const CHILD_BASE: &str = "MARROW_LC_RELATIVE_PROVISION_CHILD_BASE";
+    if let Some(base) = std::env::var_os(CHILD_BASE) {
+        let base = PathBuf::from(base);
+        assert_eq!(
+            std::env::current_dir().expect("child cwd"),
+            base.canonicalize().expect("owned base identity")
+        );
+        std::fs::create_dir(base.join("nested")).expect("create nested parent");
+        let cases: [(PathBuf, &[&str]); 4] = [
+            (PathBuf::from("./dotted-store"), &["dotted-store", "nested"]),
+            (PathBuf::from("nested/store"), &["dotted-store", "nested"]),
+            (
+                base.join("absolute-store"),
+                &["absolute-store", "dotted-store", "nested"],
+            ),
+            (
+                PathBuf::from("store"),
+                &["absolute-store", "dotted-store", "nested", "store"],
+            ),
+        ];
+        for (destination, expected) in cases {
+            assert_eq!(
+                preflight(&destination).expect("destination preflight"),
+                Preflight::Absent
+            );
+            let id = instance();
+            let outcome = provision(&destination, request(id));
+            assert_eq!(
+                preflight(&destination).expect("published destination preflight"),
+                Preflight::Complete
+            );
+            assert!(std::fs::symlink_metadata(&destination)
+                .expect("published directory")
+                .is_dir());
+            assert_eq!(list(&destination), ["envelope", "head", "store.redb"]);
+            for name in ["envelope", "head", "store.redb"] {
+                let metadata =
+                    std::fs::symlink_metadata(destination.join(name)).expect("published artifact");
+                assert!(metadata.is_file() && metadata.len() > 0);
+            }
+            assert_eq!(list(&base), expected);
+            if destination == Path::new("nested/store") {
+                assert_eq!(list(&base.join("nested")), ["store"]);
+            }
+            match outcome {
+                Ok(provisioned) => assert_eq!(provisioned.instance, id),
+                Err(error) => panic!(
+                    "complete destination {} must report successful provision: {error:?}",
+                    destination.display()
+                ),
+            }
+        }
+        return;
+    }
+
+    run_exact_child(
+        TempDir::new("relative-provision"),
+        "provision_lifecycle_tests::relative_provision_reports_success_after_publication",
+        CHILD_BASE,
+    );
+}
+
+/// Each parent owns its child's cwd until reaping; an unconfirmed reap preserves it.
+fn run_exact_child(dir: TempDir, test: &str, marker: &str) {
     let mut child = std::process::Command::new(std::env::current_exe().expect("current exe"))
-        .args([
-            "--exact",
-            "provision_lifecycle_tests::failed_temp_creation_preserves_existing_directory",
-            "--nocapture",
-        ])
-        .env(CHILD_BASE, &dir.path)
+        .args(["--exact", test, "--nocapture"])
+        .current_dir(&dir.path)
+        .env_remove("MARROW_LC_CREATE_COLLISION_CHILD_BASE")
+        .env_remove("MARROW_LC_RELATIVE_PROVISION_CHILD_BASE")
+        .env(marker, &dir.path)
         .spawn()
-        .expect("spawn exact collision test");
+        .expect("spawn exact child test");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                assert!(status.success(), "collision child failed: {status}");
+                assert!(status.success(), "child test {test} failed: {status}");
                 break;
             }
             Ok(None) if std::time::Instant::now() < deadline => {
@@ -536,7 +607,7 @@ fn failed_temp_creation_preserves_existing_directory() {
                     std::mem::forget(dir);
                 }
                 panic!(
-                    "collision child {pid} did not finish: {outcome:?}; kill: {killed:?}; wait: {waited:?}"
+                    "child test {test} ({pid}) did not finish: {outcome:?}; kill: {killed:?}; wait: {waited:?}"
                 );
             }
         }
