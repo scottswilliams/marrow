@@ -12,7 +12,7 @@ use marrow_store::{
     PendingNativeEngineOwner, StoreError,
 };
 
-use super::audit::{AuditReport, ContentDigest};
+use super::audit::{AuditReport, ContentDigest, ExportError, ExportSink};
 use super::session_host::SessionHost;
 use super::store::{DurableStore, ReadSession, TxnSession};
 use super::{
@@ -117,6 +117,19 @@ impl NativeStoreOwner {
         self.store
             .as_mut()
             .expect("a live native owner retains its semantic store")
+    }
+
+    /// Stream provisional transfer cells while retaining this store's owner.
+    /// Output is usable only after the complete report is clean.
+    pub fn export_cells(
+        &self,
+        digest: &mut dyn ContentDigest,
+        sink: &mut dyn ExportSink,
+    ) -> Result<AuditReport, ExportError> {
+        self.store
+            .as_ref()
+            .expect("a live native owner retains its semantic store")
+            .export_cells(digest, sink)
     }
 }
 

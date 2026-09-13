@@ -3,7 +3,7 @@
 
 use marrow_store::{ByteEngine, ReadView, StoreError};
 
-use super::super::audit::{self, AuditReport, ContentDigest};
+use super::super::audit::{self, AuditReport, ContentDigest, ExportError, ExportSink};
 use super::super::physical;
 use super::super::{
     AuthorizedSite, CommitRecovery, CommitRecoveryScope, DemandCoverage, Denied,
@@ -13,7 +13,8 @@ use super::super::{
 use super::resolve::resolve_site;
 use super::{ReadSession, TxnSession};
 
-/// The durable store handle. CLI-only caller at T01; dies at D00.
+/// One admitted projection and its numbered paths over an ordered-byte engine.
+/// Persistent execution keeps this handle inside the opaque native owner.
 pub struct DurableStore<E: ByteEngine> {
     pub(super) engine: E,
     /// The store's shape: one root schema per durable root in declaration position, each
@@ -173,6 +174,26 @@ impl<E: ByteEngine> DurableStore<E> {
         self.check_poison()?;
         let view = self.engine.read_view().map_err(SessionError::Engine)?;
         audit::walk(&view, &self.projection, &self.numbering, digest).map_err(SessionError::Engine)
+    }
+
+    /// Export canonical entry/index cells and audit them in one coherent view.
+    /// The sink must keep its output private until the returned report is clean.
+    pub fn export_cells(
+        &self,
+        digest: &mut dyn ContentDigest,
+        sink: &mut dyn ExportSink,
+    ) -> Result<AuditReport, ExportError> {
+        self.check_poison().map_err(ExportError::Read)?;
+        let view = self
+            .engine
+            .read_view()
+            .map_err(|error| ExportError::Read(SessionError::Engine(error)))?;
+        audit::export(&view, &self.projection, &self.numbering, digest, sink).map_err(|error| {
+            match error {
+                audit::WalkError::Store(error) => ExportError::Read(SessionError::Engine(error)),
+                audit::WalkError::Consumer(error) => ExportError::Output(error),
+            }
+        })
     }
 
     /// Refuse a session or audit on a poisoned handle. An earlier indeterminate commit sets

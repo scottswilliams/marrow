@@ -1,4 +1,4 @@
-//! The typed durable runtime the VM drives (design §G).
+//! The typed durable runtime the VM drives.
 //!
 //! The kernel sits below the language. It consumes verified sites and typed
 //! scalars — never source — and turns durable operations into ordered-byte engine
@@ -6,14 +6,11 @@
 //! operation algebra outcomes, the authority triple, the id-keyed physical layout
 //! ([`number_store`] assigns every node its cell-key number), and the commit witness.
 //!
-//! The kernel provides the flat read/write kernel and the ephemeral-memory
-//! attachment: a fresh in-memory store minted from a verified image's schema,
-//! sites, and deployment ceiling, driving read and single-write sessions bounded
-//! by `demand ∩ ceiling ∩ grant`. The executable physical layout is the
-//! id-keyed root — its fields each a scalar or a widened value (`struct`/`enum`/
-//! `Option`, framed inline) — plus keyed branches nested to any depth; groups,
-//! composite-keyed branches, nominal-typed fields, and composite root keys stay
-//! parked until their owners land them.
+//! Read and write sessions are bounded by `demand ∩ ceiling ∩ grant`. Complete
+//! entries own their fields and groups; keyed descendants occupy independent
+//! families, including below absent ancestors. Managed indexes project from
+//! root entries. The admitted projection carries the declared key and value
+//! shapes, while one numbered layout serves native and in-memory execution.
 
 mod attach;
 mod audit;
@@ -29,8 +26,8 @@ pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
 };
 pub use audit::{
-    AuditFault, AuditFinding, AuditReport, AuditSite, AuditSummary, ContentDigest,
-    MAX_REPORTED_FINDINGS,
+    AuditFault, AuditFinding, AuditReport, AuditSite, AuditSummary, ContentDigest, ExportError,
+    ExportSink, MAX_REPORTED_FINDINGS,
 };
 pub use native_owner::{NativeStoreOwner, PendingNativeStoreOwner};
 pub(crate) use schema::IndexComponentRef;

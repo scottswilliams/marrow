@@ -45,6 +45,38 @@ pub trait ContentDigest {
     fn absorb(&mut self, key: &[u8], value: &[u8]);
 }
 
+/// A fallible consumer of canonical entry and managed-index cells. Cells are
+/// provisional until the complete audit report is clean; a later finding can
+/// invalidate bytes already delivered. Commit witnesses are never delivered.
+pub trait ExportSink {
+    fn cell(&mut self, key: &[u8], value: &[u8]) -> std::io::Result<()>;
+}
+
+/// Export preserves the distinction between a failed store read and failed output.
+#[derive(Debug)]
+pub enum ExportError {
+    Read(super::SessionError),
+    Output(std::io::Error),
+}
+
+pub(super) enum WalkError<E> {
+    Store(StoreError),
+    Consumer(E),
+}
+
+impl<E> From<StoreError> for WalkError<E> {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CellKind {
+    Entry,
+    Index,
+    Other,
+}
+
 /// What one finding reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditFault {
@@ -139,6 +171,41 @@ pub(super) fn walk<V: ReadView>(
     numbering: &[RootNumbering],
     digest: &mut dyn ContentDigest,
 ) -> Result<AuditReport, StoreError> {
+    match walk_cells(view, projection, numbering, digest, |_, _, _| {
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(report) => Ok(report),
+        Err(WalkError::Store(error)) => Err(error),
+        Err(WalkError::Consumer(impossible)) => match impossible {},
+    }
+}
+
+pub(super) fn export<V: ReadView>(
+    view: &V,
+    projection: &StoreProjection,
+    numbering: &[RootNumbering],
+    digest: &mut dyn ContentDigest,
+    sink: &mut dyn ExportSink,
+) -> Result<AuditReport, WalkError<std::io::Error>> {
+    walk_cells(
+        view,
+        projection,
+        numbering,
+        digest,
+        |kind, key, value| match kind {
+            CellKind::Entry | CellKind::Index => sink.cell(key, value),
+            CellKind::Other => Ok(()),
+        },
+    )
+}
+
+fn walk_cells<V: ReadView, E>(
+    view: &V,
+    projection: &StoreProjection,
+    numbering: &[RootNumbering],
+    digest: &mut dyn ContentDigest,
+    mut consume: impl FnMut(CellKind, &[u8], &[u8]) -> Result<(), E>,
+) -> Result<AuditReport, WalkError<E>> {
     let tables = Tables::new(projection, numbering);
     let mut walker = Walker {
         view,
@@ -153,7 +220,8 @@ pub(super) fn walk<V: ReadView>(
     };
     // Paging is strictly after its cursor; the empty key has no preceding cursor.
     if let Some(value) = view.get(&[])? {
-        walker.cell(&[], &value)?;
+        let kind = walker.cell(&[], &value)?;
+        consume(kind, &[], &value).map_err(WalkError::Consumer)?;
     }
     let mut cursor: Vec<u8> = Vec::new();
     loop {
@@ -163,7 +231,8 @@ pub(super) fn walk<V: ReadView>(
         };
         cursor = last.clone();
         for (key, value) in &page {
-            walker.cell(key, value)?;
+            let kind = walker.cell(key, value)?;
+            consume(kind, key, value).map_err(WalkError::Consumer)?;
         }
     }
     walker.close_entry()?;
@@ -474,7 +543,7 @@ fn decode_keys<'a>(
 }
 
 impl<V: ReadView> Walker<'_, V> {
-    fn cell(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+    fn cell(&mut self, key: &[u8], value: &[u8]) -> Result<CellKind, StoreError> {
         self.summary.cells += 1;
         if self
             .frame
@@ -483,7 +552,7 @@ impl<V: ReadView> Walker<'_, V> {
         {
             self.digest.absorb(key, value);
             self.within_node(key, value);
-            Ok(())
+            Ok(CellKind::Entry)
         } else {
             self.close_entry()?;
             self.top_level(key, value)
@@ -492,7 +561,7 @@ impl<V: ReadView> Walker<'_, V> {
 
     /// Classify a cell under no open entry: a declared entry family, a managed-index cell,
     /// the commit witness, or a cell outside every declared family.
-    fn top_level(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+    fn top_level(&mut self, key: &[u8], value: &[u8]) -> Result<CellKind, StoreError> {
         let tables = self.tables;
         if let Some(family) = seek_prefix(
             &tables.families,
@@ -502,7 +571,7 @@ impl<V: ReadView> Walker<'_, V> {
         ) {
             self.digest.absorb(key, value);
             self.enter_entry(family, key, value);
-            return Ok(());
+            return Ok(CellKind::Entry);
         }
         if let Some(index) = seek_prefix(
             &tables.indexes,
@@ -510,7 +579,8 @@ impl<V: ReadView> Walker<'_, V> {
             &mut self.index_cursor,
             key,
         ) {
-            return self.index_cell(&tables.indexes[index], key, value);
+            self.index_cell(&tables.indexes[index], key, value)?;
+            return Ok(CellKind::Index);
         }
         if key == tables.witness.as_slice() {
             if !witness_well_formed(value) {
@@ -519,7 +589,7 @@ impl<V: ReadView> Walker<'_, V> {
                     AuditSite::Cell { key: key.to_vec() },
                 );
             }
-            return Ok(());
+            return Ok(CellKind::Other);
         }
         let site = match seek_prefix(
             &tables.roots,
@@ -540,7 +610,7 @@ impl<V: ReadView> Walker<'_, V> {
             None => AuditSite::Cell { key: key.to_vec() },
         };
         self.finding(AuditFault::OutsideSchema, site);
-        Ok(())
+        Ok(CellKind::Other)
     }
 
     /// Decode the full ancestor-and-own tuple once when entering a concrete entry.
@@ -1024,6 +1094,113 @@ mod tests {
         fn absorb(&mut self, key: &[u8], value: &[u8]) {
             self.cells.push((key.to_vec(), value.to_vec()));
         }
+    }
+
+    impl ExportSink for Recording {
+        fn cell(&mut self, key: &[u8], value: &[u8]) -> std::io::Result<()> {
+            self.absorb(key, value);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn export_keeps_the_logical_digest_and_adds_indexes_without_witnesses() {
+        let store = populated();
+        let (expected, expected_digest) = audit(&store);
+        let mut digest = Recording::default();
+        let mut sink = Recording::default();
+        let report = store.export_cells(&mut digest, &mut sink).expect("export");
+        assert_eq!(report, expected);
+        assert!(report.is_clean());
+        assert_eq!(digest.cells, expected_digest.cells);
+        assert_eq!(
+            sink.cells.len(),
+            digest.cells.len() + report.summary.index_cells as usize
+        );
+        assert_eq!(sink.cells[..digest.cells.len()], digest.cells);
+        assert!(sink.cells.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(
+            sink.cells
+                .iter()
+                .all(|(key, _)| *key != physical::meta_key(WITNESS))
+        );
+    }
+
+    #[test]
+    fn export_stops_at_the_first_sink_failure_and_preserves_its_kind() {
+        struct FailingSink(usize);
+        impl ExportSink for FailingSink {
+            fn cell(&mut self, _: &[u8], _: &[u8]) -> std::io::Result<()> {
+                self.0 += 1;
+                if self.0 == 2 {
+                    Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let mut sink = FailingSink(0);
+        let result = populated().export_cells(&mut Recording::default(), &mut sink);
+        assert!(matches!(result, Err(ExportError::Output(error))
+            if error.kind() == std::io::ErrorKind::StorageFull));
+        assert_eq!(sink.0, 2);
+    }
+
+    #[test]
+    fn export_preserves_a_store_read_failure_without_calling_the_sink() {
+        struct Unreadable;
+        impl ReadView for Unreadable {
+            fn get(&self, _: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+                Err(StoreError::RecoveryRequired)
+            }
+            fn scan_after(
+                &self,
+                _: &[u8],
+                _: &[u8],
+            ) -> Result<Vec<marrow_store::Cell>, StoreError> {
+                Err(StoreError::RecoveryRequired)
+            }
+        }
+        impl ByteEngine for Unreadable {
+            type View<'a> = Unreadable;
+            type Txn<'a> = <MemoryEngine as ByteEngine>::Txn<'a>;
+            fn read_view(&self) -> Result<Self::View<'_>, StoreError> {
+                Ok(Unreadable)
+            }
+            fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError> {
+                Err(StoreError::RecoveryRequired)
+            }
+            fn require_write_access(&self, _: &'static str) -> Result<(), StoreError> {
+                Ok(())
+            }
+            fn audit_integrity(&mut self) -> Result<(), StoreError> {
+                Err(StoreError::RecoveryRequired)
+            }
+        }
+        let store = DurableStore::from_engine(Unreadable, projection());
+        let mut sink = Recording::default();
+        let result = store.export_cells(&mut Recording::default(), &mut sink);
+        assert!(matches!(
+            result,
+            Err(ExportError::Read(super::super::SessionError::Engine(
+                StoreError::RecoveryRequired
+            )))
+        ));
+        assert!(sink.cells.is_empty());
+    }
+
+    #[test]
+    fn export_does_not_turn_emitted_bytes_into_a_clean_report() {
+        let store = tamper(populated(), |txn| {
+            txn.remove(&physical::stem_field_leaf(&a_stem(), numbers().fields()[0]))
+                .expect("remove required title");
+        });
+        let mut sink = Recording::default();
+        let report = store
+            .export_cells(&mut Recording::default(), &mut sink)
+            .expect("output succeeded");
+        assert!(!sink.cells.is_empty());
+        assert!(faults(&report).contains(&AuditFault::RequiredMissing));
     }
 
     fn audit(store: &DurableStore<MemoryEngine>) -> (AuditReport, Recording) {
@@ -1627,6 +1804,16 @@ mod tests {
             ]
         );
         assert_eq!(digest.cells.len(), 13);
+        let mut exported_digest = Recording::default();
+        let mut sink = Recording::default();
+        let exported = store
+            .export_cells(&mut exported_digest, &mut sink)
+            .expect("export");
+        assert_eq!(exported, report);
+        assert_eq!(exported_digest.cells, digest.cells);
+        for cell in child_cells {
+            assert!(sink.cells.contains(&cell));
+        }
     }
 
     #[test]
