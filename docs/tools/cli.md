@@ -12,6 +12,8 @@ marrow test [--format text | jsonl] [--filter <substring>]
 marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
 marrow doctor --store <dir> [--format text | jsonl]
 marrow recover --store <dir> [--format text | jsonl]
+marrow backup --store <dir> --out <backup> [--format text | jsonl]
+marrow restore --from <backup> --store <dir> [--format text | jsonl]
 marrow image --out <dir> --accept-ceiling <id>
 marrow client typescript [--out <dir>]
 marrow --version
@@ -319,6 +321,36 @@ findings and `listed` counts the records that follow; each finding carries
 failures go to standard error in either format; compiler resource and invariant
 failures retain `cli.compiler_resource_limit` and `cli.compiler_invariant`.
 
+## marrow backup and restore
+
+`marrow backup --store <dir> --out <backup>` compiles the current project and
+exports its exact active store through the release-verified runner. A code-only
+edit refuses with `store.image_not_active`; backup does not rebind it.
+`marrow restore --from <backup> --store <dir>` uses the embedded verified image
+and works outside a project. Both require an unoccupied destination and accept
+`--format text | jsonl`, defaulting to text.
+
+JSON receipts contain `kind` (`backup` or `restore`), `store`, `backup`, and
+`outcome`. A `complete` outcome includes `instance`, `image` and `content_digest`;
+backup additionally includes `backup_digest`, which binds the complete transfer
+and is distinct from the entry-content digest. Restore's instance is fresh.
+
+An `error` outcome includes `code`. `unpublished` names a possible retained
+artifact; it does not certify completeness or exclusive custody of that path.
+Backup may report `cleanup_failed: true`. Restore includes a known published
+`instance` for publication/activation uncertainty. `store.restore_commit` adds
+`batch_outcome` (`aborted` or `indeterminate`) for the failed construction batch;
+earlier confirmed batches may remain. Text output carries the same fields, with
+the primary failure explanation on stderr.
+
+Success exits `0`; lifecycle or required-output failure exits `1`; invalid
+arguments exit `2`. Input-open and image-read failures precede lifecycle effects
+and report diagnostics on stderr. A failed receipt write attempts to preserve
+the known lifecycle result on stderr and still exits `1`; if both streams fail,
+the caller receives no receipt. Never infer absence of effects from a nonzero
+exit. [Backup and restore operations](../operations/README.md#logical-backup-and-fresh-restore)
+define the data, validation, synchronization and retained-stage behavior.
+
 ## marrow recover
 
 `marrow recover --store <dir> [--format text | jsonl]` compiles the current
@@ -387,6 +419,6 @@ transfer type, so a project that verifies also generates.
 | `1` | A diagnostic, fault, or operational error was reported, `doctor` found something wrong with the store, or the command has no implementation today. |
 | `2` | The command line was wrong: a bare `marrow`, an unknown command or export, a bad flag or argument, or a filter that matches nothing. |
 
-`data`, `evolve`, `serve`, `backup`, and `restore` are recognized names with
+`data`, `evolve`, and `serve` are recognized names with
 no implementation today; each reports `cli.command_unsupported` and exits `1`
 ([status](../status.md)).

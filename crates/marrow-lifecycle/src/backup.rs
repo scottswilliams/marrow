@@ -56,6 +56,57 @@ impl From<BackupFault> for BackupError {
     }
 }
 
+impl BackupError {
+    pub fn code(&self) -> &'static str {
+        use marrow_codes::Code;
+        match &self.fault {
+            BackupFault::Image(error) => error.code(),
+            BackupFault::Audit(error) => error.code(),
+            BackupFault::Invalid(_) => Code::StoreCorruption.as_str(),
+            BackupFault::Format(error) => error.code(),
+            BackupFault::Io(_) => Code::StoreIo.as_str(),
+            BackupFault::PublicationUncertain { .. } => Code::StorePublicationUncertain.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for BackupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.fault {
+            BackupFault::Image(error) => write!(f, "{error}"),
+            BackupFault::Audit(error) => write!(f, "{error}"),
+            BackupFault::Invalid(report) => write!(
+                f,
+                "source audit found {} inconsistencies",
+                report.summary.findings
+            ),
+            BackupFault::Format(error) => write!(f, "backup output {error}"),
+            BackupFault::Io(error) => write!(f, "backup output failed: {error}"),
+            BackupFault::PublicationUncertain {
+                destination,
+                source,
+            } => write!(
+                f,
+                "backup was published at {}, but publication durability is unconfirmed: {source}",
+                destination.display()
+            ),
+        }?;
+        if let Some(path) = &self.unpublished {
+            write!(
+                f,
+                "; possible unpublished backup retained at {}",
+                path.display()
+            )?;
+        }
+        if let Some(error) = &self.cleanup {
+            write!(f, "; cleanup failed: {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for BackupError {}
+
 fn stream_fault(error: StreamError) -> BackupFault {
     match error {
         StreamError::Io(error) => BackupFault::Io(error),

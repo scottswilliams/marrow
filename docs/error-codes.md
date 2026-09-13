@@ -133,7 +133,8 @@ code is stable.
 | Code | Meaning |
 |---|---|
 | `store.io` | An I/O operation on a store failed. |
-| `store.publication_uncertain` | The complete store was published, but synchronizing its parent directory failed. Preserve the destination; publication durability is unconfirmed. |
+| `store.publication_uncertain` | A complete store or backup file was published, but its destination mapping or parent-directory synchronization could not be confirmed. Preserve the destination; publication durability is unconfirmed. |
+| `store.restore_commit` | A private restore batch aborted or has an indeterminate completion. The reported batch_outcome distinguishes them. Earlier confirmed batches may remain in the unpublished stage. Head is not installed, ordinary admission and explicit recovery refuse the stage, and the restore does not retry the batch. Preserve the reported stage. |
 | `store.activation_uncertain` | A lifecycle activation did not receive its final durability acknowledgment. Preserve the store and inspect its current state through explicit recovery; this is not permission to replay the operation. |
 | `store.activation_required` | A pending lifecycle transition or legacy envelope requires explicit validated activation. Ordinary service is refused before engine opening. |
 | `store.permission_denied` | The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry. |
@@ -147,7 +148,7 @@ code is stable.
 | `store.read_only` | A write was requested through a read-only store handle. |
 | `store.contract_changed` | The program image changes the durable contract or the exported interface versus the store's active binding, so it is not a code-only update. The store is intact and the prior program remains usable. Accepting a changed contract is future work; today a new store is provisioned from the new program. [Changing the program](operations/README.md#changing-the-program) describes the outcomes. |
 | `store.demand_exceeds_ceiling` | The program image's durable demand exceeds the ceiling the store was provisioned under. The message names, for each place beyond the ceiling, the export, the effect (read, write, presence, delete, or iterate), and the place. No store call is made and the store is intact. Expand the store's accepted ceiling to cover the named demand before running the new program. |
-| `store.image_not_active` | The program is a code-only edit of the store's active program, and the requested operation does not rebind. `marrow import` and `marrow doctor` work only under the store's active program. Present that program and retry. A deliberate code update through `marrow run --store` is a separate operation. The store is intact. |
+| `store.image_not_active` | The program is a code-only edit of the store's active program, and the requested operation does not rebind. Import, doctor, recovery and backup require the active program. Present that program and retry. A deliberate code update through `marrow run --store` is a separate operation. The store is intact. |
 | `store.audit_undecodable` | `marrow doctor` found a cell whose key or value does not decode under the store's layout or the declared shape of its field. The finding names the field or, for a key the layout cannot place, the raw cell. |
 | `store.audit_outside_schema` | `marrow doctor` found a well-formed cell that belongs to no declared root, field, group, branch, or index of the active program. The finding names an undeclared index by its identity when possible, or the raw cell. |
 | `store.audit_required_missing` | `marrow doctor` found a present entry without one of its required fields. The finding names the entry and the field. |

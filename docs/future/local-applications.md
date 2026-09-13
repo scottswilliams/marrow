@@ -53,9 +53,11 @@ One populated application keeps its state across code changes, contract
 changes, crashes, lost replies, backup and restore, terminal and client calls,
 and a clean install. Include a sparse-field update, exact erasure that preserves
 children, bounded history removal after references are cleared, traversal with
-overflow, and a lost reply followed by reconciliation without replay. A complete
-logical backup includes every declared entry family, even beneath absent
-ancestors, and restores into a validated fresh store before serving invocations.
+overflow, and a lost reply followed by reconciliation without replay. Exercise
+the current [logical backup and fresh restore](../operations/README.md#logical-backup-and-fresh-restore)
+across populated application invariants, including descendants beneath absent
+ancestors. Command and focused semantic tests do not establish that application
+lifetime qualification.
 
 The external suite must test application invariants on both sides of a
 relationship, not merely whether commands succeed. Maintained use must span at

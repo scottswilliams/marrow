@@ -264,6 +264,179 @@ enum ClosedStream {
     Stderr,
 }
 
+#[test]
+fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
+    use std::process::{Command, Stdio};
+    for restore in [false, true] {
+        for close_diagnostic in [false, true] {
+            let base = scratch();
+            std::fs::create_dir_all(&base).expect("scratch");
+            eprintln!("preserved transfer output failure: {}", base.display());
+            let bytes = image_bytes();
+            let image = marrow_verify::verify(&bytes).expect("image");
+            let image_path = base.join("program.image");
+            std::fs::write(&image_path, &bytes).expect("image file");
+            let source = base.join("source");
+            let prepared = marrow_lifecycle::prepare(image);
+            let report = ProvisionReport::new(&source, &prepared).expect("report");
+            let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
+            let provisioned =
+                marrow_lifecycle::provision_image(&source, &prepared, &approval).expect("source");
+            let head = std::fs::read(source.join(marrow_lifecycle::HEAD_FILE)).expect("head");
+            let backup = base.join("backup");
+            marrow_lifecycle::backup(&source, &bytes, &backup).expect("complete input");
+            let destination = base.join("destination");
+            let mut command = Command::new(env!("CARGO_BIN_EXE_marrow-runner"));
+            if restore {
+                command
+                    .arg("restore")
+                    .arg("--from")
+                    .arg(&backup)
+                    .arg("--store")
+                    .arg(&destination);
+            } else {
+                command
+                    .arg("backup")
+                    .arg("--image")
+                    .arg(&image_path)
+                    .arg("--store")
+                    .arg(&source)
+                    .arg("--out")
+                    .arg(&destination);
+            }
+            let (reader, writer) = std::io::pipe().expect("stdout pipe");
+            drop(reader);
+            command
+                .args(["--format", "jsonl"])
+                .stdin(Stdio::null())
+                .stdout(writer);
+            if close_diagnostic {
+                let (reader, writer) = std::io::pipe().expect("stderr pipe");
+                drop(reader);
+                command.stderr(writer);
+            } else {
+                command.stderr(Stdio::piped());
+            }
+            let output = command.output().expect("transfer exits");
+            assert_eq!(output.status.code(), Some(1));
+            if restore {
+                assert_eq!(
+                    std::fs::read(destination.join(marrow_lifecycle::HEAD_FILE))
+                        .expect("published head"),
+                    head
+                );
+                assert!(matches!(
+                    marrow_lifecycle::preflight(&destination).expect("artifact presence"),
+                    marrow_lifecycle::Preflight::Complete
+                ));
+            } else {
+                assert_eq!(
+                    std::fs::read(&destination).expect("published backup"),
+                    std::fs::read(&backup).expect("complete backup")
+                );
+            }
+            if !close_diagnostic {
+                let diagnostic = String::from_utf8(output.stderr).expect("diagnostic");
+                let line = diagnostic
+                    .lines()
+                    .find(|line| line.starts_with('{'))
+                    .expect("retained lifecycle result");
+                let receipt = marrow_local_wire::parse_strict(line.as_bytes()).expect("receipt");
+                let marrow_local_wire::Json::Object(fields) = receipt else {
+                    panic!("receipt object")
+                };
+                assert!(fields.contains(&(
+                    "outcome".into(),
+                    marrow_local_wire::Json::Str("complete".into())
+                )));
+                let (_, marrow_local_wire::Json::Str(instance)) = fields
+                    .iter()
+                    .find(|(key, _)| key == "instance")
+                    .expect("known instance")
+                else {
+                    panic!("instance string")
+                };
+                assert_eq!(instance.len(), 32);
+                if restore {
+                    assert_ne!(instance, &provisioned.instance.to_hex());
+                } else {
+                    assert_eq!(instance, &provisioned.instance.to_hex());
+                }
+            }
+            // Inspect bytes only after the failed child. Never reopen its native body.
+        }
+    }
+}
+
+#[test]
+fn restore_command_refuses_incomplete_input_without_a_usable_destination() {
+    use std::process::Command;
+    let base = scratch();
+    std::fs::create_dir_all(&base).expect("scratch");
+    eprintln!("preserved invalid transfer inputs: {}", base.display());
+    let bytes = image_bytes();
+    let source = base.join("source");
+    let prepared = marrow_lifecycle::prepare(marrow_verify::verify(&bytes).expect("image"));
+    let report = ProvisionReport::new(&source, &prepared).expect("report");
+    let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
+    marrow_lifecycle::provision_image(&source, &prepared, &approval).expect("source");
+    let backup = base.join("backup");
+    marrow_lifecycle::backup(&source, &bytes, &backup).expect("backup");
+    let mut truncated = std::fs::read(&backup).expect("complete backup");
+    truncated.pop();
+    let mut oversized = b"MWBK\0".to_vec();
+    oversized
+        .extend_from_slice(&((marrow_image::bounds::MAX_IMAGE_BYTES + 1) as u32).to_be_bytes());
+    for (name, input, expected_code, has_stage) in [
+        (
+            "header",
+            b"bad".to_vec(),
+            marrow_codes::Code::StoreCorruption,
+            false,
+        ),
+        ("bound", oversized, marrow_codes::Code::StoreLimit, false),
+        (
+            "truncated",
+            truncated,
+            marrow_codes::Code::StoreCorruption,
+            true,
+        ),
+    ] {
+        let path = base.join(name);
+        std::fs::write(&path, input).expect("invalid input");
+        let destination = base.join(format!("{name}-store"));
+        let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
+            .arg("restore")
+            .arg("--from")
+            .arg(&path)
+            .arg("--store")
+            .arg(&destination)
+            .args(["--format", "jsonl"])
+            .output()
+            .expect("restore returns");
+        assert_eq!(output.status.code(), Some(1));
+        assert!(!destination.exists());
+        let receipt =
+            marrow_local_wire::parse_strict(output.stdout.trim_ascii()).expect("refusal receipt");
+        let marrow_local_wire::Json::Object(fields) = receipt else {
+            panic!("receipt object")
+        };
+        assert!(fields.contains(&(
+            "code".into(),
+            marrow_local_wire::Json::Str(expected_code.as_str().into())
+        )));
+        let stage = fields.iter().find(|(key, _)| key == "unpublished");
+        assert_eq!(stage.is_some(), has_stage);
+        if let Some((_, marrow_local_wire::Json::Str(stage))) = stage {
+            assert!(
+                !std::path::Path::new(stage)
+                    .join(marrow_lifecycle::HEAD_FILE)
+                    .exists()
+            );
+        }
+    }
+}
+
 fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
     use marrow_local_wire::{Id32, Json};
     use marrow_runner::{AttachedService, Handler};

@@ -46,8 +46,9 @@ Recompilation and code-only rebind do not convert those stores. The refusal
 preserves the engine file, head and envelope; owner-marker bookkeeping may occur.
 
 Keep an older store with its source, identity ledger, image and matching tools
-for data extraction. No automatic conversion or complete backup/restore command
-is available. New-generation stores require fresh provisioning. Changing an
+for data extraction. Current logical backup/restore admits only supported image
+and head/layout generations; it does not convert older stores. New-generation
+stores require fresh provisioning or a compatible logical restore. Changing an
 image header or stored binding is not a conversion. The image digest domain
 separates generations but does not authenticate the compiler. Historical tools
 may ignore the stored image generation; use each store with its matching tools.
@@ -83,5 +84,7 @@ that links a crate directly has no compatibility promise.
 Raw store files are private implementation data with no public format contract. A
 store is bound to one program;
 [operations](operations/README.md#changing-the-program) states which program
-changes it accepts. Backup, restore, and schema evolution are future work
-([status](status.md#not-yet-available)).
+changes it accepts. [Logical backup/restore](operations/README.md#logical-backup-and-fresh-restore)
+uses a versioned bounded transfer containing the exact image, head and canonical
+entry/index cells. It is not an enduring format-support promise or a schema
+conversion. Schema evolution remains future work ([status](status.md#not-yet-available)).

@@ -257,6 +257,24 @@ Physical checksum verification is not part of logical inspection. A scalar
 change that remains valid under its declared type can pass even when its
 physical checksum is wrong ([operations](../operations/README.md#auditing-a-store)).
 
+## Logical transfer
+
+`marrow-kernel::durable::audit` shares one paged traversal between logical audit
+and export. Its tables classify entry, index and witness namespaces. The private
+`transfer` module consumes canonical entry/index cells into bounded confirmed
+batches; witness and metadata cells are refused before insertion. Its final
+physical/logical validation uses the existing native owner and audit tables.
+
+Lifecycle `backup_stream` owns bounded framing and completion checks under the
+distinct `StoreBackupDigest` domain. `backup` keeps source admission and export
+under one owner/read view, then uses `durable_fs::Publication` for no-replace file
+publication. `restore` admits the embedded image/head before private construction
+and withholds Head until transfer and audits finish. Provision and restore share
+`complete_publication`; recovery and restore share `audit::admit_published` for
+the final descriptor-based reread, reusing derived image facts. The
+[operations reference](../operations/README.md#logical-backup-and-fresh-restore)
+owns the observable validation, synchronization and failure limits.
+
 ## Explicit recovery
 
 `marrow-lifecycle::recover` holds one owner through metadata admission, integrity

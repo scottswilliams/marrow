@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 /// the kernel's durable session module path, the durable store owner, a native
 /// engine, and the two session-opening methods.
 const FORBIDDEN_STORE_OPEN: &[&str] = &[
+    "marrow_lifecycle::",
     "marrow_kernel::durable",
     "DurableStore",
     "NativeEngine",

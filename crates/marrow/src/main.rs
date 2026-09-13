@@ -32,6 +32,8 @@ Usage:
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow doctor --store <dir> [--format text|jsonl]
   marrow recover --store <dir> [--format text|jsonl]
+  marrow backup --store <dir> --out <backup> [--format text|jsonl]
+  marrow restore --from <backup> --store <dir> [--format text|jsonl]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
   marrow image --out <dir> --accept-ceiling <id>
@@ -57,7 +59,9 @@ entry-content digest. Physical integrity is not checked. `client typescript`
 compiles and verifies the project, then emits the generated strict TypeScript client and the pinned Node supervision
 module. `image` compiles and verifies the project and writes the verified
 program.image a deployment ships, requiring the owner to accept the image's
-deployment ceiling id. The data, evolve, serve, backup, and restore commands are
+deployment ceiling id. `backup` compiles the active project and exports its store
+with that exact image. `restore` constructs a fresh store from the backup's
+embedded image without compiling a project. The data, evolve, and serve commands are
 being refounded and return through their later lanes; invoking one reports
 cli.command_unsupported.
 ";
@@ -104,7 +108,7 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
 /// The command names whose owning capability is being refounded and returns
 /// through a later lane. Recognizing them keeps the not-yet-supported response
 /// distinct from an unknown-command usage error.
-const REFOUNDING_COMMANDS: &[&str] = &["data", "evolve", "serve", "backup", "restore"];
+const REFOUNDING_COMMANDS: &[&str] = &["data", "evolve", "serve"];
 
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
     match command {
@@ -115,6 +119,8 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "import" => cmd_import::import(rest),
         "doctor" => cmd_store::run(cmd_store::Operation::Doctor, rest),
         "recover" => cmd_store::run(cmd_store::Operation::Recover, rest),
+        "backup" => cmd_store::run(cmd_store::Operation::Backup, rest),
+        "restore" => cmd_store::run(cmd_store::Operation::Restore, rest),
         "test" => cmd_test::test(rest),
         "client" => cmd_client::client(rest),
         "image" => cmd_image::image(rest),

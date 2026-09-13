@@ -22,6 +22,26 @@ pub enum StreamError {
     Format(FormatError),
 }
 
+impl StreamError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(_) => marrow_codes::Code::IoRead.as_str(),
+            Self::Format(error) => error.code(),
+        }
+    }
+}
+
+impl std::fmt::Display for StreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "backup input could not be read: {error}"),
+            Self::Format(error) => write!(f, "backup input {error}"),
+        }
+    }
+}
+
+impl std::error::Error for StreamError {}
+
 impl From<io::Error> for StreamError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)

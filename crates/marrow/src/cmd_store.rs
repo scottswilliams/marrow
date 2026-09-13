@@ -1,7 +1,6 @@
-//! Terminal store inspection and recovery. Compile without opening the store or
-//! minting identities, stage the image, and delegate once to the release-verified
-//! companion. Doctor remains a read-only logical inspection; explicit recovery
-//! validates physical and logical integrity and establishes fresh activation.
+//! Terminal store operations delegate once to the release-verified companion.
+//! Image-based operations compile without opening the store or minting identities.
+//! Restore uses its backup's image and needs no project capture or compilation.
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -14,6 +13,8 @@ use crate::project::capture_project;
 pub(crate) enum Operation {
     Doctor,
     Recover,
+    Backup,
+    Restore,
 }
 
 impl Operation {
@@ -21,12 +22,16 @@ impl Operation {
         match self {
             Self::Doctor => "doctor",
             Self::Recover => "recover",
+            Self::Backup => "backup",
+            Self::Restore => "restore",
         }
     }
     fn runner_command(self) -> &'static str {
         match self {
             Self::Doctor => "audit",
             Self::Recover => "recover",
+            Self::Backup => "backup",
+            Self::Restore => "restore",
         }
     }
 }
@@ -41,6 +46,13 @@ enum Format {
 struct Args {
     store: PathBuf,
     format: Format,
+    action: Action,
+}
+
+enum Action {
+    Inspect,
+    Backup(PathBuf),
+    Restore(PathBuf),
 }
 
 pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
@@ -48,6 +60,16 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         Ok(args) => args,
         Err(code) => return code,
     };
+
+    // Restore's embedded image is authoritative; no project is captured or compiled.
+    if let Action::Restore(input) = &args.action {
+        let mut command = match companion_command(operation, &args) {
+            Ok(command) => command,
+            Err(code) => return code,
+        };
+        command.arg("--from").arg(input);
+        return run_companion(command);
+    }
 
     let project = match capture_project(&PathBuf::from(".")) {
         Ok(project) => project,
@@ -57,7 +79,7 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         }
     };
 
-    // Both operations require the committed identities of the stored program.
+    // Image-based operations require the stored program's committed identities.
     let compiled = match compile(&project) {
         Ok(compiled) => compiled,
         Err(CompileFailure::Diagnostics(diagnostics)) => {
@@ -83,17 +105,6 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         }
     };
 
-    let runner = match crate::companion::discover_companion() {
-        Ok(runner) => runner,
-        Err(damage) => {
-            crate::report_simple_error(
-                marrow_codes::Code::CliInstallationDamaged.as_str(),
-                damage.message(),
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-
     let image = match crate::companion::stage_image(operation.name(), &compiled.image.bytes) {
         Ok(image) => image,
         Err(err) => {
@@ -102,11 +113,28 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         }
     };
 
-    let mut command = Command::new(&runner);
+    let mut command = match companion_command(operation, &args) {
+        Ok(command) => command,
+        Err(code) => return code,
+    };
+    command.arg("--image").arg(image.path());
+    if let Action::Backup(output) = &args.action {
+        command.arg("--out").arg(output);
+    }
+    run_companion(command)
+}
+
+fn companion_command(operation: Operation, args: &Args) -> Result<Command, ExitCode> {
+    let runner = crate::companion::discover_companion().map_err(|damage| {
+        crate::report_simple_error(
+            marrow_codes::Code::CliInstallationDamaged.as_str(),
+            damage.message(),
+        );
+        ExitCode::FAILURE
+    })?;
+    let mut command = Command::new(runner);
     command
         .arg(operation.runner_command())
-        .arg("--image")
-        .arg(image.path())
         .arg("--store")
         .arg(&args.store)
         .arg("--format")
@@ -114,7 +142,10 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
             Format::Text => "text",
             Format::Jsonl => "jsonl",
         });
+    Ok(command)
+}
 
+fn run_companion(mut command: Command) -> ExitCode {
     match command.status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
@@ -128,11 +159,22 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
 fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
     let mut store: Option<PathBuf> = None;
     let mut format = Format::Text;
+    let mut transfer = None;
+    let mut seen_format = false;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--store" => store = Some(PathBuf::from(next_value(operation, &mut iter, "--store")?)),
-            "--format" => {
+            "--store" if store.is_none() => {
+                store = Some(PathBuf::from(next_value(operation, &mut iter, "--store")?))
+            }
+            "--out" if matches!(operation, Operation::Backup) && transfer.is_none() => {
+                transfer = Some(PathBuf::from(next_value(operation, &mut iter, "--out")?))
+            }
+            "--from" if matches!(operation, Operation::Restore) && transfer.is_none() => {
+                transfer = Some(PathBuf::from(next_value(operation, &mut iter, "--from")?))
+            }
+            "--format" if !seen_format => {
+                seen_format = true;
                 format = match next_value(operation, &mut iter, "--format")?.as_str() {
                     "text" => Format::Text,
                     "jsonl" => Format::Jsonl,
@@ -145,7 +187,20 @@ fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
     let Some(store) = store else {
         return Err(usage(operation, "`--store` must name the store directory"));
     };
-    Ok(Args { store, format })
+    let action = match operation {
+        Operation::Doctor | Operation::Recover => Action::Inspect,
+        Operation::Backup => Action::Backup(
+            transfer.ok_or_else(|| usage(operation, "`--out` must name the backup file"))?,
+        ),
+        Operation::Restore => Action::Restore(
+            transfer.ok_or_else(|| usage(operation, "`--from` must name the backup file"))?,
+        ),
+    };
+    Ok(Args {
+        store,
+        format,
+        action,
+    })
 }
 
 fn next_value(
@@ -160,8 +215,13 @@ fn next_value(
 }
 
 fn usage(operation: Operation, message: &str) -> ExitCode {
+    let transfer = match operation {
+        Operation::Backup => " --out <backup>",
+        Operation::Restore => " --from <backup>",
+        _ => "",
+    };
     eprintln!(
-        "{message}\nusage: marrow {} --store <dir> [--format text|jsonl]",
+        "{message}\nusage: marrow {} --store <dir>{transfer} [--format text|jsonl]",
         operation.name()
     );
     ExitCode::from(2)

@@ -37,8 +37,185 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// The staged toolchain: a private directory holding `marrow`, `marrow-runner`, and the
-/// manifest naming the runner by its release identity. Staged once per test binary.
+const BACKUP_SOURCE: &str = r#"resource Book {
+    required title: string
+    required isbn: string
+    details {
+        pages: int
+        language: string
+    }
+    notes[noteId: string] {
+        required text: string
+        tags[tagId: int] {
+            required weight: int
+        }
+    }
+}
+
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+}
+
+pub fn bootstrap(): int { return 0 }
+
+pub fn seed() {
+    transaction {
+        ^books[0] = Book(title: "kept", isbn: "zero", details: Book.details(pages: 37))
+        ^books[-1] = Book(title: "removed", isbn: "negative")
+        ^books[-1].notes["n"] = Book.notes(text: "removed")
+        ^books[-1].notes["n"].tags[0] = Book.notes.tags(weight: 91)
+        delete ^books[-1].notes["n"]
+        delete ^books[-1]
+    }
+}
+
+pub fn retained(): int { return ^books[-1].notes["n"].tags[0].weight ?? -1 }
+pub fn rootPresent(): bool { return exists(^books[-1]) }
+pub fn notePresent(): bool { return exists(^books[-1].notes["n"]) }
+pub fn pages(): int { return ^books[0].details.pages ?? -1 }
+pub fn lookup(): string {
+    if const id = ^books.byIsbn["zero"] {
+        if const book = ^books[id] { return book.title }
+    }
+    return "missing"
+}
+"#;
+
+// This process-level control earns its cost by crossing compiler, companion,
+// native publication and restore without the original project being available.
+fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Path) {
+    let temp = std::mem::ManuallyDrop::new(TempDir::new("backup"));
+    eprintln!(
+        "backup command fixture retained on failure: {}",
+        temp.root.display()
+    );
+    let project = temp.root.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), BACKUP_SOURCE);
+    let run = |dir: &Path, args: &[&str]| {
+        let result = marrow(toolchain, dir, args);
+        assert!(
+            result.status.success(),
+            "{args:?}: {}",
+            text(&result.stderr)
+        );
+        result
+    };
+    run(&project, &["run", "main.bootstrap"]);
+    let refused = marrow(toolchain, &project, &["image", "--out", "deployment"]);
+    assert!(!refused.status.success());
+    let stderr = text(&refused.stderr);
+    let ceiling = stderr
+        .split("deployment ceiling id is ")
+        .nth(1)
+        .expect("ceiling")
+        .split(';')
+        .next()
+        .expect("ceiling delimiter");
+    run(
+        &project,
+        &["image", "--out", "deployment", "--accept-ceiling", ceiling],
+    );
+    let image = project.join("deployment/program.image");
+    let store = temp.root.join("source");
+    let provision = Command::new(toolchain.join("marrow-runner"))
+        .args(["provision", "--image"])
+        .arg(&image)
+        .arg("--store")
+        .arg(&store)
+        .arg("--yes")
+        .output()
+        .expect("provision");
+    assert!(provision.status.success(), "{}", text(&provision.stderr));
+    run(
+        &project,
+        &["run", "main.seed", "--store", store.to_str().unwrap()],
+    );
+    let head = fs::read(store.join("head")).expect("source head");
+    let backup = temp.root.join("complete.backup");
+    let receipt = run(
+        &project,
+        &[
+            "backup",
+            "--store",
+            store.to_str().unwrap(),
+            "--out",
+            backup.to_str().unwrap(),
+            "--format",
+            "jsonl",
+        ],
+    );
+    let backed: serde_json::Value =
+        serde_json::from_slice(&receipt.stdout).expect("backup receipt");
+    assert_eq!(backed["outcome"], "complete");
+
+    // A code edit cannot silently change the source binding for backup.
+    write(
+        &project.join("src/main.mw"),
+        &BACKUP_SOURCE.replace("return 0", "return 1"),
+    );
+    let refused_path = temp.root.join("stale.backup");
+    let refused = marrow(
+        toolchain,
+        &project,
+        &[
+            "backup",
+            "--store",
+            store.to_str().unwrap(),
+            "--out",
+            refused_path.to_str().unwrap(),
+            "--format",
+            "jsonl",
+        ],
+    );
+    assert!(!refused.status.success());
+    let failure: serde_json::Value = serde_json::from_slice(&refused.stdout).expect("refusal");
+    assert_eq!(
+        failure["code"],
+        marrow_codes::Code::StoreImageNotActive.as_str()
+    );
+    assert!(!refused_path.exists());
+    assert_eq!(fs::read(store.join("head")).unwrap(), head);
+    write(&project.join("src/main.mw"), "not valid Marrow");
+    let restored = temp.root.join("restored");
+    let receipt = run(
+        &temp.root,
+        &[
+            "restore",
+            "--from",
+            backup.to_str().unwrap(),
+            "--store",
+            restored.to_str().unwrap(),
+            "--format",
+            "jsonl",
+        ],
+    );
+    let restored_receipt: serde_json::Value =
+        serde_json::from_slice(&receipt.stdout).expect("restore receipt");
+    assert_eq!(restored_receipt["outcome"], "complete");
+    assert_ne!(backed["instance"], restored_receipt["instance"]);
+    assert_eq!(backed["image"], restored_receipt["image"]);
+    assert_eq!(backed["content_digest"], restored_receipt["content_digest"]);
+    assert_eq!(fs::read(restored.join("head")).unwrap(), head);
+    write(&project.join("src/main.mw"), BACKUP_SOURCE);
+    for (export, expected) in [
+        ("main.retained", "91"),
+        ("main.rootPresent", "false"),
+        ("main.notePresent", "false"),
+        ("main.pages", "37"),
+        ("main.lookup", "kept"),
+    ] {
+        let result = run(
+            &project,
+            &["run", export, "--store", restored.to_str().unwrap()],
+        );
+        assert_eq!(text(&result.stdout).trim(), expected, "{export}");
+    }
+    // Only the successful fixture is retired; failure unwinding keeps its original bytes.
+    drop(std::mem::ManuallyDrop::into_inner(temp));
+}
+
+/// Stage the CLI, runner and release manifest once for the command suite.
 fn toolchain() -> TempDir {
     let runner = Path::new(MARROW)
         .parent()
@@ -422,6 +599,7 @@ fn doctor_reports_and_refusals_share_one_owned_toolchain() {
     usage_and_absent_store_refusals_keep_their_codes(&path);
     a_storeless_program_has_nothing_to_audit(&path);
     an_invalid_scalar_reports_a_logical_finding(&path);
+    backup_restores_absent_ancestor_descendants_without_a_project(&path);
     drop(staged);
     assert!(!path.exists(), "the suite removes its staged toolchain");
 }

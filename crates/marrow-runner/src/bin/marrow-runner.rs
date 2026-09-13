@@ -32,14 +32,19 @@ use marrow_runner::{
     AttachedEphemeralService, Channel, Deadlines, Handler, Id32, LaunchSecrets, Service, mint_id,
 };
 
+mod store_transfer;
+
 /// The bounded number of connection attempts admitted before giving up (the
 /// first-connection-wins bound: a same-uid racer costs one attempt).
 const MAX_ACCEPT_ATTEMPTS: u32 = 16;
 
 /// The command the runner was invoked to perform.
 enum Command {
+    Transfer(store_transfer::Command),
     /// Serve the image's storeless exports over a private channel.
-    Serve { image: PathBuf },
+    Serve {
+        image: PathBuf,
+    },
     /// Provision a fresh persistent store for the image at `store`. `accept` is `--yes`.
     Provision {
         image: PathBuf,
@@ -47,7 +52,10 @@ enum Command {
         accept: bool,
     },
     /// Attach the image to the persistent store at `store` and serve its exports.
-    Attach { image: PathBuf, store: PathBuf },
+    Attach {
+        image: PathBuf,
+        store: PathBuf,
+    },
     /// Inspect or explicitly recover the store against a verified image.
     Store {
         operation: StoreOperation,
@@ -57,7 +65,9 @@ enum Command {
     },
     /// Attach the image to a fresh process-local in-memory store and serve its exports. The
     /// store never persists — it is discarded when this process exits.
-    AttachEphemeral { image: PathBuf },
+    AttachEphemeral {
+        image: PathBuf,
+    },
     /// Populate the store at `store` from a flat-scalar JSONL corpus through the trusted
     /// importer. Provisions the store first when it does not yet exist.
     Import {
@@ -84,6 +94,7 @@ enum ReportFormat {
 
 fn main() -> ExitCode {
     match parse_args() {
+        Some(Command::Transfer(command)) => finish_output(store_transfer::run(command)),
         Some(Command::Serve { image }) => serve(&image),
         Some(Command::Store {
             operation,
@@ -117,7 +128,9 @@ fn main() -> ExitCode {
                  <path>\n       marrow-runner import --image <path> --store <dir> \
                  --jsonl <path> --root <name> --keys <col,...>\n       marrow-runner audit \
                  --image <path> --store <dir> [--format text|jsonl]\n       marrow-runner recover \
-                 --image <path> --store <dir> [--format text|jsonl]"
+                 --image <path> --store <dir> [--format text|jsonl]\n       marrow-runner backup \
+                 --image <path> --store <dir> --out <backup> [--format text|jsonl]\n       marrow-runner restore \
+                 --from <backup> --store <dir> [--format text|jsonl]"
             );
             ExitCode::from(2)
         }
@@ -127,6 +140,14 @@ fn main() -> ExitCode {
 /// Read and verify the program image at `path`, printing a typed diagnostic and returning the
 /// exit code on failure. Every command loads its image through this owner.
 fn load_image(path: &Path) -> Result<marrow_verify::VerifiedImage, ExitCode> {
+    let bytes = read_image_bytes(path)?;
+    marrow_verify::verify(&bytes).map_err(|rejection| {
+        let _ = writeln!(std::io::stderr(), "{}", rejection.code());
+        ExitCode::FAILURE
+    })
+}
+
+fn read_image_bytes(path: &Path) -> Result<Vec<u8>, ExitCode> {
     let mut bytes = Vec::new();
     // One excess byte lets verification refuse oversize without waiting for EOF.
     let read = std::fs::File::open(path).and_then(|file| {
@@ -141,10 +162,7 @@ fn load_image(path: &Path) -> Result<marrow_verify::VerifiedImage, ExitCode> {
         );
         return Err(ExitCode::FAILURE);
     }
-    marrow_verify::verify(&bytes).map_err(|rejection| {
-        let _ = writeln!(std::io::stderr(), "{}", rejection.code());
-        ExitCode::FAILURE
-    })
+    Ok(bytes)
 }
 
 /// Provision a persistent store for the image at `store`. Renders the provision report in
@@ -505,6 +523,8 @@ fn parse_args() -> Option<Command> {
         Some("import") => parse_import(args),
         Some("audit") => parse_store(args, StoreOperation::Audit),
         Some("recover") => parse_store(args, StoreOperation::Recover),
+        Some("backup") => store_transfer::parse("backup", args).map(Command::Transfer),
+        Some("restore") => store_transfer::parse("restore", args).map(Command::Transfer),
         Some("--image") => args.next().map(|image| Command::Serve {
             image: PathBuf::from(image),
         }),
@@ -1295,6 +1315,16 @@ mod output_tests {
     #[test]
     fn durable_command_output_uses_fallible_writers() {
         let source = include_str!("marrow-runner.rs");
+        let transfer = include_str!("store_transfer/mod.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("command source");
+        for name in ["print", "println", "eprint", "eprintln"] {
+            assert!(
+                !transfer.contains(&format!("{name}!")),
+                "transfer contains {name}"
+            );
+        }
         for (start, end) in [
             ("fn main()", "/// Read and verify"),
             ("fn load_image(", "/// Serve the image"),

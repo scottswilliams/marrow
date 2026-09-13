@@ -185,6 +185,7 @@ code is stable.
         rows(&[
             Code::StoreIo,
             Code::StorePublicationUncertain,
+            Code::StoreRestoreCommit,
             Code::StoreActivationUncertain,
             Code::StoreActivationRequired,
             Code::StorePermissionDenied,

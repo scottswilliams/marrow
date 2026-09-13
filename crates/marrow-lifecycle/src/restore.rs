@@ -52,11 +52,127 @@ pub struct RestoreError {
     pub stage: Option<PathBuf>,
 }
 
+/// The failed construction batch, not the state of earlier confirmed batches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreBatchOutcome {
+    Aborted,
+    Indeterminate,
+}
+
 impl From<RestoreFault> for RestoreError {
     fn from(fault: RestoreFault) -> Self {
         Self { fault, stage: None }
     }
 }
+
+impl RestoreError {
+    pub fn batch_outcome(&self) -> Option<RestoreBatchOutcome> {
+        use marrow_kernel::durable::RestoreError as Body;
+        match &self.fault {
+            RestoreFault::Body(Body::Aborted) => Some(RestoreBatchOutcome::Aborted),
+            RestoreFault::Body(Body::Indeterminate) => Some(RestoreBatchOutcome::Indeterminate),
+            _ => None,
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        use marrow_codes::Code;
+        use marrow_kernel::durable::RestoreError as Body;
+        match &self.fault {
+            RestoreFault::Input(error) | RestoreFault::Body(Body::Input(error)) => error.code(),
+            RestoreFault::Image(error) => error.code(),
+            RestoreFault::Admission(error) => error.code(),
+            RestoreFault::Entropy(_) => Code::IoRead.as_str(),
+            RestoreFault::Io(_) => Code::StoreIo.as_str(),
+            RestoreFault::Provision(error) => error.code(),
+            RestoreFault::Open(NativeOwnerOpenError::Lock(error)) => error.code(),
+            RestoreFault::Open(NativeOwnerOpenError::Store(error))
+            | RestoreFault::Body(Body::Store(error)) => error.code(),
+            RestoreFault::Open(NativeOwnerOpenError::Refused(never)) => match *never {},
+            RestoreFault::Body(Body::CellLimit) => Code::StoreLimit.as_str(),
+            RestoreFault::Body(Body::Aborted | Body::Indeterminate) => {
+                Code::StoreRestoreCommit.as_str()
+            }
+            RestoreFault::Body(
+                Body::NotEmpty | Body::Unordered | Body::OutsideNamespace | Body::Invalid(_),
+            ) => Code::StoreCorruption.as_str(),
+            RestoreFault::Completion { .. } => Code::StoreActivationUncertain.as_str(),
+        }
+    }
+
+    /// The published store identity, only when this failure knows publication occurred.
+    pub fn published_instance(&self) -> Option<StoreInstanceId> {
+        match &self.fault {
+            RestoreFault::Provision(
+                ProvisionFault::PublicationUncertain { instance, .. }
+                | ProvisionFault::ActivationUncertain { instance, .. },
+            )
+            | RestoreFault::Completion { instance, .. } => Some(*instance),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use marrow_kernel::durable::RestoreError as Body;
+        match &self.fault {
+            RestoreFault::Input(error) | RestoreFault::Body(Body::Input(error)) => {
+                write!(f, "{error}")
+            }
+            RestoreFault::Image(error) => write!(f, "{error}"),
+            RestoreFault::Admission(error) => write!(f, "{error}"),
+            RestoreFault::Entropy(error) => write!(f, "{error}"),
+            RestoreFault::Io(error) => write!(f, "restore failed: {error}"),
+            RestoreFault::Provision(error) => write!(f, "{error}"),
+            RestoreFault::Open(NativeOwnerOpenError::Lock(error)) => write!(f, "{error}"),
+            RestoreFault::Open(NativeOwnerOpenError::Store(error))
+            | RestoreFault::Body(Body::Store(error)) => write!(f, "{error}"),
+            RestoreFault::Open(NativeOwnerOpenError::Refused(never)) => match *never {},
+            RestoreFault::Body(Body::NotEmpty) => {
+                write!(f, "restore construction body is not empty")
+            }
+            RestoreFault::Body(Body::CellLimit) => {
+                write!(f, "backup cell exceeds its representation bound")
+            }
+            RestoreFault::Body(Body::Unordered) => {
+                write!(f, "backup cells are not strictly ordered")
+            }
+            RestoreFault::Body(Body::OutsideNamespace) => write!(
+                f,
+                "backup contains a cell outside the admitted entry and index families"
+            ),
+            RestoreFault::Body(Body::Aborted) => write!(
+                f,
+                "restore batch aborted; earlier confirmed batches remain in the unpublished stage"
+            ),
+            RestoreFault::Body(Body::Indeterminate) => write!(
+                f,
+                "restore batch completion is indeterminate; preserve the unpublished stage without retrying"
+            ),
+            RestoreFault::Body(Body::Invalid(report)) => write!(
+                f,
+                "restored body audit found {} inconsistencies",
+                report.summary.findings
+            ),
+            RestoreFault::Completion { instance, source } => write!(
+                f,
+                "store {} was published, but final active admission failed: {source}",
+                instance.to_hex()
+            ),
+        }?;
+        if let Some(path) = &self.stage {
+            write!(
+                f,
+                "; possible unpublished stage retained at {}",
+                path.display()
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RestoreError {}
 
 /// Restore into a fresh directory from the backup's own verified image and
 /// accepted head. No current source is compiled and no embedded export executes.
@@ -196,6 +312,26 @@ fn build_body(
 mod tests {
     use super::*;
     use crate::backup::tests::{Scratch, image_bytes};
+
+    #[test]
+    fn batch_failure_preserves_completion_fact_without_claiming_publication() {
+        use marrow_kernel::durable::RestoreError as Body;
+        for (body, outcome) in [
+            (Body::Aborted, RestoreBatchOutcome::Aborted),
+            (Body::Indeterminate, RestoreBatchOutcome::Indeterminate),
+        ] {
+            let error = RestoreError {
+                fault: RestoreFault::Body(body),
+                stage: Some(PathBuf::from("private-stage")),
+            };
+            assert_eq!(
+                error.code(),
+                marrow_codes::Code::StoreRestoreCommit.as_str()
+            );
+            assert_eq!(error.batch_outcome(), Some(outcome));
+            assert_eq!(error.published_instance(), None);
+        }
+    }
 
     thread_local! {
         static FINAL_CHANGE: std::cell::Cell<Option<Artifact>> = const { std::cell::Cell::new(None) };

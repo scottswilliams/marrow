@@ -109,7 +109,7 @@ transactions, sync, and native recovery. Language representation, typed paths,
 authority, lifecycle, logical integrity, and backup/restore belong above it.
 Engine-specific names and formats stay out of `.mw` source and public APIs.
 Representation changes must preserve a bounded path to full logical backup and
-fresh restore; this requirement does not claim those future tools exist.
+fresh restore through the current logical-transfer owners.
 
 **Diagnostics.** A typed variant couples stable code, payload, locations, and
 severity. One renderer produces prose. Semantic tests assert the variant, code,

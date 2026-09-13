@@ -256,14 +256,14 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 | `marrow-image` | The program-image container, the validating `ImageDraft`, the canonical encoder, and the `ImageId` digest. Holds no decoder | [Compiled programs](../future/compiled-programs.md) |
 | `marrow-verify` | The only image decoder and the phased verifier that seals a `VerifiedImage`; rebuilds each export's durable access demand from the image alone | [Trust boundaries](../status.md#trust-boundaries) |
 | `marrow-vm` | The stack VM over a sealed image: source-mapped runtime faults, execution bounds (`value.rs::collection_within_limits`, `Value::structural_bytes`, `run.rs::bounded_list`), and durable execution of an export or a source test through the attachment the lifecycle prepared | [Execution limits](../language/execution-limits.md) |
-| `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, commit recovery, and the read-only audit walk | [Storage](storage.md) |
+| `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, commit recovery, the shared audit/export walk, and consuming private restore construction | [Storage](storage.md) |
 | `marrow-store` | The ordered-byte engine contract, the in-memory and redb engines, and the conformance suite both must pass | [Storage](storage.md) |
-| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, and explicit recovery. The envelope gates ordinary service on Active. `ProvisionError` retains a primary fault and optional failed cleanup independently. Recovery validates the exact current head, physical integrity and logical contents before fresh activation. | [Operations](../operations/README.md) |
+| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, explicit recovery, and logical backup/restore. The envelope gates ordinary service on Active. `ProvisionError` retains a primary fault and optional failed cleanup independently. Recovery validates the exact current head, physical integrity and logical contents before fresh activation. | [Operations](../operations/README.md) |
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
 | `marrow-project` | Manifest schema, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, one canonical JSON writer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
-| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, borrowed returned-value encoding through wire-owned value slots, collection admission, and canonical Map construction in `transfer.rs::decode_collection`. One-shot provision, import, audit and recovery share lifecycle owners; fallible output preserves uncertainty and cleanup evidence. Attachment settlement reports the invocation result independently of companion cleanup. | [Operations](../operations/README.md) |
+| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, borrowed returned-value encoding through wire-owned value slots, collection admission, and canonical Map construction in `transfer.rs::decode_collection`. One-shot provision, import, audit, recovery, backup and restore share lifecycle owners; fallible output preserves uncertainty and cleanup evidence. Attachment settlement reports the invocation result independently of companion cleanup. | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
@@ -331,6 +331,14 @@ is released before the runner renders the report. Physical integrity is not
 checked, and inspection leaves an inherited unclean-shutdown obligation
 undischarged ([storage](storage.md#auditing-a-store)). This report grants no
 recovery or admission permit.
+
+`marrow backup` shares project capture and image staging with doctor through
+`cmd_store`. The runner's `store_transfer` command module reads bounded image
+bytes and delegates their single verification and exact active-store admission
+to lifecycle backup. `marrow restore` bypasses project capture and compilation;
+the runner streams the file to lifecycle restore, which owns embedded-image
+verification, construction and final admission. Transfer receipt delivery is
+fallible and retains known results in a best-effort diagnostic on failure.
 
 `marrow recover --store <dir>` shares project capture, compilation and companion
 dispatch with doctor through `cmd_store`. The runner calls lifecycle recovery

@@ -2,11 +2,59 @@
 
 A durable program keeps its data in a store: a directory on disk bound to one
 program. This page covers creating a store, running against it, changing the
-program, interrupted commits, auditing a store, and explicit recovery.
+program, interrupted commits, auditing a store, explicit recovery, and logical backup/restore.
 
 Today, a store runs on one machine under one process at a time. Served
-execution, backup, restore, and schema evolution are future work
+execution and schema evolution are future work
 ([status](../status.md#not-yet-available)).
+
+## Logical backup and fresh restore
+
+`marrow backup` writes a complete logical backup under the source store's retained
+owner. It compiles the current project, which must match the store's exact active
+image; it does not rebind a code edit. Restore uses the backup's embedded image
+and needs neither the original project nor current-source compilation.
+
+```sh
+marrow backup --store ./store --out ./complete.backup
+marrow restore --from ./complete.backup --store ./restored
+```
+
+The artifact carries the exact executable image, accepted head and ceiling, and
+all canonical entry and managed-index cells, including descendants beneath
+absent ancestors. Commit witnesses, engine files and operational store identity
+are not transferred. Restore creates a fresh store instance, retaining the
+image, logical data and accepted facts. It executes no embedded export. It
+does not merge stores, evolve a schema or replace an occupied destination.
+
+Backup performs logical audit and export in one coherent read view. A finding
+prevents completion. It does not verify physical source checksums. The bounded
+stream checks order, lengths, count, a completion digest and exact end of input;
+the digest detects altered bytes but does not authenticate their producer.
+Only the supported image and logical-layout generations are admitted
+([compatibility](../compatibility.md)).
+
+Backup checks unbuffered writes and file synchronization, releases the file,
+publishes without replacement and synchronizes the parent. File release uses
+Rust Drop; its close result is unobserved. These operations use the existing
+filesystem synchronization contract, not a guarantee against every filesystem
+or hardware failure. A failure after publication preserves the file and reports
+`store.publication_uncertain` with its location.
+
+Restore constructs a private sibling store in bounded confirmed batches. Head
+remains absent until complete input, physical validation and full logical/index
+audit pass. Only then does it install Head, publish without replacement, complete
+activation barriers and reread the exact active metadata under the retained
+owner. An aborted or indeterminate batch stops construction without retry. Earlier
+confirmed batches may remain in the reported unpublished stage; missing Head
+makes both ordinary admission and explicit recovery refuse it.
+
+Failures retain possible unpublished stages or report a published instance when
+known. Preserve those paths: no automatic resume, removal or replacement is
+performed by restore. A failed final barrier may leave the destination present
+and Active visible; failure is not proof that no work occurred. A failed receipt
+write exits unsuccessfully without undoing completed work and attempts to report
+the known result on stderr. See the [command receipts](../tools/cli.md#marrow-backup-and-restore).
 
 ## A store on disk
 
