@@ -133,11 +133,52 @@ impl Channel {
         deadlines: &Deadlines,
         max_attempts: u32,
     ) -> Result<Connection, AcceptError> {
+        self.accept_response(
+            secrets,
+            &ServerMessage::Ready {
+                session: secrets.session,
+                interface,
+            },
+            deadlines,
+            max_attempts,
+        )
+    }
+
+    /// Authenticate one peer, report the actual uncertain activation, and close.
+    /// This path never returns a connection or constructs a request handler.
+    pub fn report_activation_uncertain(
+        &self,
+        secrets: &LaunchSecrets,
+        interface: Id32,
+        instance: marrow_lifecycle::StoreInstanceId,
+        deadlines: &Deadlines,
+        max_attempts: u32,
+    ) -> Result<(), AcceptError> {
+        self.accept_response(
+            secrets,
+            &ServerMessage::ActivationUncertain {
+                session: secrets.session,
+                interface,
+                instance: instance.to_hex(),
+            },
+            deadlines,
+            max_attempts,
+        )
+        .map(drop)
+    }
+
+    fn accept_response(
+        &self,
+        secrets: &LaunchSecrets,
+        response: &ServerMessage,
+        deadlines: &Deadlines,
+        max_attempts: u32,
+    ) -> Result<Connection, AcceptError> {
         let accept_deadline = Instant::now() + deadlines.accept;
         for _ in 0..max_attempts {
             let mut stream = self.accept_polled(accept_deadline, deadlines.poll)?;
             stream.set_nonblocking(true).map_err(AcceptError::Io)?;
-            match handshake(&mut stream, secrets, interface, deadlines) {
+            match handshake(&mut stream, secrets, response, deadlines) {
                 Ok(()) => return Ok(Connection { stream }),
                 // Fail closed: drop this connection and try the next attempt.
                 Err(_) => {
@@ -319,11 +360,11 @@ impl Connection {
 }
 
 /// The runner side of the handshake: read the client's `Hello`, verify the nonce,
-/// then prove the session token and interface identity with `Ready`.
+/// then send the chosen session-bound startup response.
 fn handshake(
     stream: &mut UnixStream,
     secrets: &LaunchSecrets,
-    interface: Id32,
+    response: &ServerMessage,
     deadlines: &Deadlines,
 ) -> Result<(), HandshakeError> {
     let deadline = Instant::now() + deadlines.handshake;
@@ -332,11 +373,7 @@ fn handshake(
         Ok(ClientMessage::Hello { nonce }) if nonce == secrets.expected_nonce => {}
         _ => return Err(HandshakeError),
     }
-    let ready = ServerMessage::Ready {
-        session: secrets.session,
-        interface,
-    };
-    let frame = ready.encode_frame(0).map_err(|_| HandshakeError)?;
+    let frame = response.encode_frame(0).map_err(|_| HandshakeError)?;
     let write_deadline = Instant::now() + deadlines.handshake;
     write_all_deadline(stream, frame.as_bytes(), write_deadline, deadlines.poll)
         .map_err(|_| HandshakeError)

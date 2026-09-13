@@ -418,9 +418,21 @@ pub enum NativeOpenAccess {
     ReadWrite,
     /// Inspect without repairing the engine or discharging an inherited obligation.
     ReadOnly,
+    /// Explicit recovery always verifies physical integrity, even after a clean close.
+    Recovery,
 }
 
 impl PendingNativeEngineOwner {
+    /// Metadata of the retained directory node whose advisory lock this owner holds.
+    /// Renaming the directory does not redirect this observation to its old pathname.
+    pub fn directory_metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.lock
+            .directory_node
+            .as_ref()
+            .expect("a pending owner retains its directory lock")
+            .metadata()
+    }
+
     /// The canonical store directory this owner holds. The owner above reads the
     /// directory's own artifacts from here under the exclusion already taken.
     pub fn directory(&self) -> &Path {
@@ -428,10 +440,10 @@ impl PendingNativeEngineOwner {
     }
 
     /// Publish `instance` in the owner marker, run the zero-capability admission
-    /// callback, then open with the requested access. A read-write open fully audits
-    /// an inherited unclean engine; inspection preserves that obligation. The callback runs after the marker
-    /// names the store and before any engine call, so a refusal makes zero engine
-    /// calls and hands the obligation on intact.
+    /// callback, then open with the requested access. Service audits an inherited
+    /// unclean engine; explicit recovery always audits; inspection preserves the
+    /// obligation. The callback runs after the marker names the store and before
+    /// any engine call, so a refusal hands the obligation on intact.
     pub fn bind_and_open_existing<R>(
         mut self,
         access: NativeOpenAccess,
@@ -445,11 +457,17 @@ impl PendingNativeEngineOwner {
 
         let path = self.directory.join(NATIVE_ENGINE_FILE);
         let mut engine = match access {
-            NativeOpenAccess::ReadWrite => NativeEngine::open_existing(&path),
+            NativeOpenAccess::ReadWrite | NativeOpenAccess::Recovery => {
+                NativeEngine::open_existing(&path)
+            }
             NativeOpenAccess::ReadOnly => NativeEngine::open_read_only(&path),
         }
         .map_err(NativeOwnerOpenError::Store)?;
-        if self.prior_unclean && access == NativeOpenAccess::ReadWrite {
+        #[cfg(all(test, unix))]
+        tests::mutate_after_open_if_armed(&self.directory);
+        if access == NativeOpenAccess::Recovery
+            || (self.prior_unclean && access == NativeOpenAccess::ReadWrite)
+        {
             engine
                 .audit_integrity()
                 .map_err(NativeOwnerOpenError::Store)?;
@@ -460,7 +478,12 @@ impl PendingNativeEngineOwner {
             prior_unclean,
             ..
         } = self;
-        if !prior_unclean || access == NativeOpenAccess::ReadWrite {
+        if !prior_unclean
+            || matches!(
+                access,
+                NativeOpenAccess::ReadWrite | NativeOpenAccess::Recovery
+            )
+        {
             lock.mark_clean();
         }
         Ok(NativeEngineOwner {
@@ -815,6 +838,38 @@ mod tests {
 
     fn marker_bytes(dir: &Path) -> Vec<u8> {
         std::fs::read(dir.join(NATIVE_LOCK_FILE)).expect("read the owner marker")
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn retained_directory_metadata_and_exclusion_survive_rename() {
+        use std::os::unix::fs::MetadataExt;
+
+        let scratch = Scratch::new("retained-directory");
+        let original = scratch.0.join("original");
+        let moved = scratch.0.join("moved");
+        std::fs::create_dir(&original).expect("create directory");
+        let owner = NativeEngineOwner::acquire_existing(&original).expect("acquire owner");
+        let identity = |metadata: std::fs::Metadata| (metadata.dev(), metadata.ino());
+        let held = identity(owner.directory_metadata().expect("retained metadata"));
+        std::fs::rename(&original, &moved).expect("rename owned directory");
+        std::fs::create_dir(&original).expect("replace old pathname");
+        assert_eq!(
+            identity(owner.directory_metadata().expect("retained metadata")),
+            held
+        );
+        assert_ne!(
+            identity(std::fs::metadata(&original).expect("replacement metadata")),
+            held
+        );
+        assert!(matches!(
+            NativeEngineOwner::acquire_existing(&moved),
+            Err(NativeOwnerAcquireError::Lock(
+                NativeLockError::StoreInUse { .. }
+            ))
+        ));
+        drop(owner);
+        drop(NativeEngineOwner::acquire_existing(&moved).expect("released owner"));
     }
 
     /// Duplicates retain the same lock descriptions as handles inherited across fork.
@@ -1725,6 +1780,69 @@ mod tests {
         file.seek(SeekFrom::Start(0)).expect("rewind live engine");
         file.write_all(&bytes).expect("write hostile mutation");
         file.sync_all().expect("sync hostile mutation");
+    }
+
+    #[cfg(unix)]
+    thread_local! {
+        static MUTATE_AFTER_OPEN: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(unix)]
+    pub(super) fn mutate_after_open_if_armed(directory: &Path) {
+        let mutate = MUTATE_AFTER_OPEN.with(|slot| {
+            let mut armed = slot.borrow_mut();
+            if armed.as_deref() == Some(directory) {
+                armed.take();
+                true
+            } else {
+                false
+            }
+        });
+        if mutate {
+            corrupt_live_engine_for_audit(directory);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_recovery_audits_even_after_a_clean_shutdown() {
+        let scratch = Scratch::new("clean-recovery-audit");
+        NativeEngineOwner::provision(&scratch.0).expect("provision");
+        seed_audit_body(&scratch.0);
+        assert!(marker_bytes(&scratch.0).is_empty(), "seed closes cleanly");
+        let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
+        assert!(!pending.prior_unclean, "no inherited audit obligation");
+        MUTATE_AFTER_OPEN.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(pending.directory().to_path_buf());
+        });
+        let result = pending
+            .bind_and_open_existing(NativeOpenAccess::Recovery, [0x70; 16], || Ok::<(), ()>(()));
+        assert!(
+            MUTATE_AFTER_OPEN.with(|slot| slot.borrow().is_none()),
+            "mutation followed successful engine open"
+        );
+        if let Ok(owner) = result {
+            let path = scratch.0.clone();
+            std::mem::forget(owner);
+            std::mem::forget(scratch);
+            panic!(
+                "clean-marker recovery skipped the physical audit; preserve {}",
+                path.display()
+            );
+        }
+        let error = result.err().expect("audit refuses");
+        assert!(
+            matches!(
+                error,
+                NativeOwnerOpenError::Store(StoreError::Corruption { .. })
+            ),
+            "{error:?}"
+        );
+        assert!(
+            !marker_bytes(&scratch.0).is_empty(),
+            "failed audit retains the obligation"
+        );
     }
 
     #[cfg(unix)]

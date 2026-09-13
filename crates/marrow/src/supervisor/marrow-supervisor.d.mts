@@ -118,6 +118,8 @@ export function dId(
 ): (d: WireValue) => { root: string; key: unknown[] };
 
 export interface LaunchOptions {
+  /** Expected native image or storeless interface identity; generated clients always supply it. */
+  expectedIdentity?: string;
   /** Path to the `marrow-runner` executable. */
   runner: string;
   /** Path to the compiled program image the runner serves. */
@@ -149,12 +151,35 @@ export interface ProvisionReceipt {
   store: string;
 }
 
-/** The store was published, but its parent-directory durability is unconfirmed. */
+/** Provision reached an unconfirmed publication or activation barrier. */
 export class ProvisionUncertainError extends Error {
-  constructor(instance: string, store: string);
-  readonly code: "store.publication_uncertain";
+  constructor(instance: string, store: string, code?: "store.publication_uncertain" | "store.activation_uncertain");
+  readonly code: "store.publication_uncertain" | "store.activation_uncertain";
   readonly instance: string;
   readonly store: string;
+}
+
+/** Provision failed before publication; cleanup may have partially removed its stage. */
+export class ProvisionFailedError extends Error {
+  constructor(code: string, store: string, cleanup: { code: "store.io"; stage: string; os_error: number | null });
+  readonly code: string;
+  readonly store: string;
+  /** The generated stage is a sibling of store, not a child or permission to retry cleanup. */
+  readonly cleanup: { code: "store.io"; stage: string; os_error: number | null };
+}
+
+/** No invocation was sent; authenticated attach reported unconfirmed activation. */
+export class ActivationUncertainError extends Error {
+  constructor(instance: string, store: string);
+  readonly code: "store.activation_uncertain";
+  readonly instance: string;
+  readonly store: string;
+}
+
+/** Native attach may have changed the binding; no trusted startup result was received. */
+export class ActivationOutcomeUnknownError extends Error {
+  constructor(detail: string);
+  readonly loss: "outcome_unknown";
 }
 
 export class Session {
@@ -164,6 +189,12 @@ export class Session {
   terminate(): void;
 }
 
+/**
+ * Opens an authenticated session. Native attach can reject with ActivationUncertainError
+ * only when expectedIdentity was supplied and verified. Missing or untrusted native startup
+ * delivery is ActivationOutcomeUnknownError with no instance. No invocation was sent.
+ * A confirmed spawn failure remains LaunchError. Generated clients always supply the pin.
+ */
 export function launch(options: LaunchOptions): Promise<Session>;
 
 /**
@@ -171,6 +202,7 @@ export function launch(options: LaunchOptions): Promise<Session>;
  * MAX_FRAME and matching the requested store spelling. Configuration is checked
  * before spawn. Spawn failure is LaunchError; delivery failure after spawn is
  * MarrowLossError with outcome_unknown, never permission to retry automatically.
- * A completely delivered publication uncertainty rejects with ProvisionUncertainError.
+ * A completely delivered publication or activation uncertainty rejects with ProvisionUncertainError.
+ * A failure with an unsuccessful private-stage cleanup rejects with ProvisionFailedError.
  */
 export function provision(options: ProvisionOptions): Promise<ProvisionReceipt>;

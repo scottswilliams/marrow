@@ -1,6 +1,5 @@
-//! The one-shot lifecycle actor: the only path that pairs a prepared image with a persistent
-//! store, the only one that can change which verified program image a store is bound to, and
-//! the only one that compares the store's head-map pin.
+//! Persistent image attachment and binding-only updates. Shared image admission
+//! owns the binding, authority ceiling and head-map checks used by lifecycle operations.
 //!
 //! An attach consumes a [`PreparedImage`], takes the store's single-owner lock, rereads the
 //! persisted head from disk (never a cached copy), and classifies the image against the
@@ -24,10 +23,9 @@
 //!   recovery-shaped; the head, envelope, and engine data are unchanged (acquisition has
 //!   already rewritten the lock's owner marker, so the next successful open audits).
 //! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
-//!   image's code (its byte identity) differs. The actor rewrites the head and then the
-//!   envelope as two separately atomic ordered commits, with a valid state between them
-//!   (`rewrite_atomically` states the ordering and what a crash there leaves), and issues a
-//!   receipt *after* the second commit confirms. The receipt
+//!   image's code (its byte identity) differs. The actor durably writes Pending before
+//!   changing the head, and Active only after the head's directory barrier. A receipt
+//!   follows the final Active directory barrier. The receipt
 //!   claims only that the code was updated with the durable contract unchanged — never that
 //!   program meaning is preserved. The accepted ceiling is preserved verbatim across the
 //!   rebind (a standing maximum is expanded only by conscious re-acceptance).
@@ -181,9 +179,8 @@ pub enum AttachOutcome {
     /// byte-unchanged (taking the lock rewrote its owner marker first, as on every attach).
     /// The store is open and ready.
     AlreadyActive(NativeAttachment),
-    /// The image was a binding-only code update: the head and then the envelope were
-    /// rewritten to the new image, each commit atomic, and the rebind is committed. The
-    /// receipt reports what that commit made active.
+    /// The image was a binding-only code update. Pending, the new head and final Active
+    /// each passed their directory barrier. The receipt reports the resulting binding.
     Rebound {
         attachment: NativeAttachment,
         receipt: RebindReceipt,
@@ -191,7 +188,8 @@ pub enum AttachOutcome {
 }
 
 /// What a binding-only rebind reports: the store instance and the newly active image
-/// identity, returned only once both commits are durable. Reading one from an
+/// identity, returned only after Pending, head and final Active directory barriers.
+/// Reading one from an
 /// [`AttachOutcome::Rebound`] therefore means "the active code was updated, the durable
 /// contract unchanged" — that is the actor's guarantee about the value it returned, not a
 /// property of the value itself. The fields are public and `StoreInstanceId::from_bytes` is
@@ -279,7 +277,12 @@ pub enum LifecycleError {
     /// acquisition.
     HeadMapPin(HeadMapPinMismatch),
     /// Rewriting the envelope or head during a rebind failed.
-    Io(std::io::Error),
+    Metadata(store_dir::AdmissionError),
+    /// Earlier rebind barriers passed, but final activation was not confirmed.
+    ActivationUncertain {
+        instance: crate::StoreInstanceId,
+        source: store_dir::AdmissionError,
+    },
 }
 
 impl LifecycleError {
@@ -291,7 +294,8 @@ impl LifecycleError {
             LifecycleError::DemandExceedsCeiling(refusal) => refusal.code(),
             LifecycleError::ContractChanged(refusal) => refusal.code(),
             LifecycleError::HeadMapPin(refusal) => refusal.code(),
-            LifecycleError::Io(_) => Code::StoreIo.as_str(),
+            LifecycleError::Metadata(error) => error.code(),
+            LifecycleError::ActivationUncertain { .. } => Code::StoreActivationUncertain.as_str(),
         }
     }
 }
@@ -307,7 +311,14 @@ impl std::fmt::Display for LifecycleError {
             LifecycleError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
             LifecycleError::ContractChanged(refusal) => write!(f, "{refusal}"),
             LifecycleError::HeadMapPin(refusal) => write!(f, "{refusal}"),
-            LifecycleError::Io(error) => write!(f, "the rebind could not be committed: {error}"),
+            LifecycleError::Metadata(error) => {
+                write!(f, "rebind metadata update failed: {error}")
+            }
+            LifecycleError::ActivationUncertain { instance, source } => write!(
+                f,
+                "store {} rebind activation is unconfirmed: {source}",
+                instance.to_hex()
+            ),
         }
     }
 }
@@ -318,8 +329,8 @@ impl std::error::Error for LifecycleError {}
 /// projection. Takes the store's single-owner lock, rereads the persisted head, and
 /// classifies the image against the active binding (see the module documentation): an
 /// identical image opens already-active, and a binding-only code update is rebound and
-/// receipted once both commits confirm. The classification runs after the admission gate
-/// and after the engine's physical open, so a binding-fact change is the typed
+/// receipted after Pending, head and final Active directory barriers. The classification
+/// runs after the admission gate and after the engine's physical open, so a binding-fact change is the typed
 /// [`LifecycleError::ContractChanged`] refusal pointing at `marrow apply` when the store
 /// admits the image and the engine opens; a demand beyond the accepted ceiling, a head-map
 /// pin disagreement, or an engine that fails to open surfaces as its own refusal instead. The
@@ -371,8 +382,8 @@ pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, Life
     }
 
     // Binding-only rebind: the durable contract, interface, and ceiling are unchanged and
-    // only the image code differs. Atomically commit the head (the active-binding commit
-    // point) then the envelope (writer provenance), preserving the head map and reserved slots.
+    // only the image code differs. Persist Pending before the head change, preserving the
+    // head map and reserved slots, and return service only after durable Active completion.
     let new_envelope = crate::envelope::StoreEnvelope {
         writer_toolchain: current_toolchain(),
         ..opened.envelope.clone()
@@ -381,7 +392,12 @@ pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, Life
         binding: incoming,
         ..opened.head.clone()
     };
-    rewrite_atomically(dir, &new_envelope, &new_head).map_err(LifecycleError::Io)?;
+    let new_digest = rewrite_atomically(
+        &opened.directory,
+        &new_envelope,
+        &new_head,
+        opened.head_digest,
+    )?;
 
     let receipt = RebindReceipt {
         instance: new_envelope.instance,
@@ -389,6 +405,7 @@ pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, Life
     };
     opened.envelope = new_envelope;
     opened.head = new_head;
+    opened.head_digest = new_digest;
     Ok(AttachOutcome::Rebound {
         attachment: Attachment::new(image, opened),
         receipt,
@@ -412,24 +429,52 @@ fn current_toolchain() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Rewrite the head and envelope durably. The head is the active-binding commit point, so it
-/// is committed *first* — written to a sibling temporary path, flushed, atomically renamed
-/// over the live head, then the directory is flushed so the rename is durable. Only then is
-/// the envelope (writer provenance) rewritten the same way and the directory flushed again.
-/// Each single-file rename is atomic (a reader sees the file wholly old or wholly new, never
-/// torn), and committing the head before the envelope means the recorded provenance can never
-/// precede the active binding it describes: a crash between the two leaves the new binding
-/// active with slightly stale provenance — forensic-only — never a provenance describing a
-/// write the binding does not reflect. The receipt issues only after the final directory
-/// flush returns.
+/// Persist Pending and its version discriminator before changing the head. Active may
+/// replace it only after the new head's directory barrier. No receipt precedes the final sync.
 fn rewrite_atomically(
-    dir: &Path,
+    dir: &store_dir::AdmittedStoreDir,
     envelope: &crate::envelope::StoreEnvelope,
     head: &LogicalHead,
-) -> std::io::Result<()> {
-    use crate::durable_fs::{replace_file, sync_dir};
-    replace_file(&store_dir::head_path(dir), &head.encode())?;
-    sync_dir(dir)?;
-    replace_file(&store_dir::envelope_path(dir), &envelope.encode())?;
-    sync_dir(dir)
+    old: marrow_image::StoreHeadDigest,
+) -> Result<marrow_image::StoreHeadDigest, LifecycleError> {
+    use crate::envelope::{EnvelopeRecord, EnvelopeState};
+    use store_dir::{AdmissionError, Artifact, StoreEntry};
+    let (head_bytes, new) = head.encode_with_digest();
+    let mut record = EnvelopeRecord {
+        metadata: envelope.clone(),
+        state: EnvelopeState::Rebind { old, new },
+    };
+    let persist_pending_head = || -> Result<(), AdmissionError> {
+        dir.replace(
+            Artifact::Envelope,
+            &record
+                .encode()
+                .map_err(|error| AdmissionError::format(StoreEntry::Envelope, error))?,
+        )?;
+        #[cfg(test)]
+        store_dir::barrier_fault::check(dir, store_dir::barrier_fault::Point::RebindPending)?;
+        dir.sync()?;
+        dir.replace(Artifact::Head, &head_bytes)?;
+        #[cfg(test)]
+        store_dir::barrier_fault::check(dir, store_dir::barrier_fault::Point::RebindHead)?;
+        dir.sync()
+    };
+    persist_pending_head().map_err(LifecycleError::Metadata)?;
+    record.state = EnvelopeState::Active;
+    let activate = || -> Result<(), AdmissionError> {
+        dir.replace(
+            Artifact::Envelope,
+            &record
+                .encode()
+                .map_err(|error| AdmissionError::format(StoreEntry::Envelope, error))?,
+        )?;
+        #[cfg(test)]
+        store_dir::barrier_fault::check(dir, store_dir::barrier_fault::Point::RebindActive)?;
+        dir.sync()
+    };
+    activate().map_err(|source| LifecycleError::ActivationUncertain {
+        instance: envelope.instance,
+        source,
+    })?;
+    Ok(new)
 }

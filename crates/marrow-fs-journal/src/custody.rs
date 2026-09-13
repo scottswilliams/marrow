@@ -440,6 +440,13 @@ impl AdmittedDir {
     pub fn rename_noreplace(&self, from: &EntryName, to: &EntryName) -> Result<(), CustodyError> {
         sys::rename_noreplace(&self.handle, from.as_str(), to.as_str())
     }
+
+    /// Atomically replace `to` with `from` within this retained directory.
+    /// This changes the entry, not an already-open destination inode. The caller
+    /// must sync this directory before claiming durable completion.
+    pub fn rename_replace(&self, from: &EntryName, to: &EntryName) -> Result<(), CustodyError> {
+        sys::rename_replace(&self.handle, from.as_str(), to.as_str())
+    }
 }
 
 /// Require an opened handle to be a regular file and witness its inode.

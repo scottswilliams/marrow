@@ -21,10 +21,10 @@ prerequisites.
 | Transactions | One `transaction` block per mutating export. Every normal function exit inside it commits, including `try` and `require` failure; a fault before commit rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; root and branch key acquisition uses at most `N + 1` bounded scans, independent of child populations; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs `test` blocks through ordinary function calls. Each durable test has a fresh in-memory store; transaction-owning calls commit setup, and private readers can observe it. Direct durable operations and calls to mutating non-owner helpers are refused in test bodies. | [Tests](language/tests.md) |
-| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript`. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
+| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `recover`, `image`, and `client typescript`. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. Whole-analysis resource stops complete the affected revision with request refusals, an unlocated explanation, and retractions of prior diagnostics. A later edit that permits project capture and analysis can recover. | [Language server](tools/lsp.md) |
-| Store lifecycle | `marrow import` provisions a store and populates an existing one only under its active program; `marrow run --store` runs an export against it through the companion runner, which executes only the program the store admitted; an interrupted commit reopens as `known_old`, `known_new`, or `unknown`; `marrow doctor --store` performs read-only logical inspection against the active program and reports an entry-content digest, without checking physical integrity. | [Operations](operations/README.md) |
-| TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner checks List/Map length and aggregate structural size before execution, normalizes unique Map argument pairs to ascending typed key order, and bounds outbound frame construction before appending. Provision receipts are bounded and validated after child/stream closure; confirmed publication uncertainty retains the published instance identity, while missing delivery after spawn has an unknown outcome. | [TypeScript client](tools/typescript-client.md) |
+| Store lifecycle | `marrow import` provisions or populates a store under its active program; `marrow run --store` runs through the admitted companion. Pending activation blocks ordinary access. `marrow recover --store` validates the exact stored image, physical integrity and logical contents, then establishes fresh activation barriers without replaying a missing head update. `marrow doctor --store` remains read-only logical inspection without physical verification. | [Operations](operations/README.md) |
+| TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner checks List/Map length and aggregate structural size before execution, normalizes unique Map argument pairs to ascending typed key order, and bounds outbound frame construction before appending. Provision records retain publication/activation uncertainty or primary failure plus failed cleanup. Authenticated native startup distinguishes activation uncertainty from invocation outcomes. Missing delivery remains uncertain. | [TypeScript client](tools/typescript-client.md) |
 
 The command names `data`, `evolve`, `serve`, `backup`, and `restore` are
 recognized; each reports `cli.command_unsupported`.
@@ -84,9 +84,9 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
 - Backup and restore ([local applications](future/local-applications.md)).
 - Complete subtree enumeration and removal when absent ancestors' keys are
   unknown ([deleting](language/durable-places.md#deleting)).
-- Full read-only physical-checksum verification and complete image/schema/store
-  validation followed by fresh admission before recovery resumes service. The
-  logical audit does not establish these requirements
+- Read-only physical-checksum verification by `marrow doctor`. Explicit recovery
+  uses a read-write physical integrity check and exact-image logical validation;
+  a logical audit alone does not establish those properties
   ([auditing a store](operations/README.md#auditing-a-store)).
 - Bare whole-entry/group reads through a proved place and automatic traversal-pin
   presence facts carried by region. Today required fields and group leaves read bare

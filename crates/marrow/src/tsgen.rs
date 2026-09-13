@@ -65,14 +65,11 @@ pub(crate) fn generate_client(
         "  /** Launch the runner and open one authenticated session; refuses a runner\n   * whose served identity is not the one this client was generated for. A\n   * storeless launch proves the interface identity; a native attached-session\n   * launch (`options.store` set) proves the exact image identity. */\n",
     );
     out.push_str("  static async launch(options: M.LaunchOptions): Promise<Client> {\n");
-    out.push_str("    const session = await M.launch(options);\n");
     out.push_str("    const expected = options.store === undefined ? INTERFACE_ID : IMAGE_ID;\n");
-    out.push_str("    if (session.interfaceId !== expected) {\n");
-    out.push_str("      session.terminate();\n");
     out.push_str(
-        "      throw new Error(`identity mismatch: runner serves ${session.interfaceId}`);\n",
+        "    const session = await M.launch({ ...options, expectedIdentity: expected });\n",
     );
-    out.push_str("    }\n    return new Client(session);\n  }\n\n");
+    out.push_str("    return new Client(session);\n  }\n\n");
     out.push_str("  /** Hang up and wait for the runner to exit. */\n");
     out.push_str("  async close(): Promise<void> {\n    await this.session.close();\n  }\n\n");
     out.push_str("  /** Immediate fail-closed shutdown; outstanding calls classify as lost. */\n");

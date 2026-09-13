@@ -21,6 +21,19 @@ const MAX_DATA_BYTES: usize = 64 * 1024;
 /// A single run outcome record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Record {
+    /// The direct child was not confirmed reaped; its stage was retained.
+    CompanionUnreaped {
+        pid: u32,
+        staging: String,
+        cause: String,
+        kill_error: Option<String>,
+    },
+    /// No child remains to reap, but stage removal failed.
+    CompanionStaging { path: String, cause: String },
+    /// Attach reported unconfirmed activation before any invocation was sent.
+    ActivationUncertain { instance: String },
+    /// Native attach was spawned, but its result could not be established.
+    ActivationOutcomeUnknown { cause_code: &'static str },
     /// A successful value (or `None` for a Unit return).
     Value(Option<Value>),
     /// Family 1: a source diagnostic (parse/check).
@@ -86,6 +99,28 @@ impl Record {
         enums: &[SealedEnumType],
     ) -> Result<String, ()> {
         Ok(match self {
+            Record::CompanionUnreaped {
+                pid,
+                staging,
+                cause,
+                kill_error,
+            } => format!(
+                "companion cleanup unconfirmed: observed child PID {pid}, retained staging {staging}: {cause}{}",
+                kill_error
+                    .as_ref()
+                    .map(|error| format!("; kill request: {error}"))
+                    .unwrap_or_default(),
+            ),
+            Record::CompanionStaging { path, cause } => {
+                format!("companion staging removal failed for {path}: {cause}")
+            }
+            Record::ActivationUncertain { instance } => format!(
+                "{}: activation is unconfirmed for store {instance}; no invocation was sent",
+                marrow_codes::Code::StoreActivationUncertain.as_str(),
+            ),
+            Record::ActivationOutcomeUnknown { cause_code } => format!(
+                "activation outcome unknown: attach may have changed the binding; no invocation was sent (cause: {cause_code})",
+            ),
             Record::Value(Some(Value::Text(text))) if text.len() > MAX_TEXT_BYTES => return Err(()),
             // Aggregate text has no byte ceiling; the bare-string limit is checked above.
             Record::Value(Some(value)) => {
@@ -139,6 +174,25 @@ impl Record {
         enums: &[SealedEnumType],
     ) -> Result<String, ()> {
         Ok(match self {
+            Record::CompanionUnreaped {
+                pid,
+                staging,
+                cause,
+                kill_error,
+            } => format!(
+                r#"{{"cause":{},"kill_error":{},"kind":"cleanup","outcome":"unreaped","pid":{pid},"staging":{}}}"#,
+                json_string(cause),
+                kill_error
+                    .as_ref()
+                    .map(|error| json_string(error))
+                    .unwrap_or_else(|| "null".into()),
+                json_string(staging),
+            ),
+            Record::CompanionStaging { path, cause } => format!(
+                r#"{{"cause":{},"kind":"cleanup","outcome":"staging_removal_failed","path":{}}}"#,
+                json_string(cause),
+                json_string(path),
+            ),
             Record::Value(value) => {
                 let data = render_data(value.as_ref(), types, enums)?;
                 format!(r#"{{"data":{data},"kind":"run","outcome":"value"}}"#)
@@ -169,6 +223,15 @@ impl Record {
                 json_string(code),
                 json_string(durable_state_name(*durable)),
                 span_object(*line, *column),
+            ),
+            Record::ActivationUncertain { instance } => format!(
+                r#"{{"code":{},"instance":{},"kind":"activation","outcome":"uncertain"}}"#,
+                json_string(marrow_codes::Code::StoreActivationUncertain.as_str()),
+                json_string(instance),
+            ),
+            Record::ActivationOutcomeUnknown { cause_code } => format!(
+                r#"{{"cause_code":{},"kind":"activation","outcome":"outcome_unknown"}}"#,
+                json_string(cause_code),
             ),
             Record::OperationalError { code, .. } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"error"}}"#,
@@ -546,6 +609,60 @@ fn json_string(text: &str) -> String {
 mod tests {
     use super::{JsonData, MAX_DATA_BYTES, Record, json_string, render_data};
     use marrow_vm::Value;
+
+    #[test]
+    fn cleanup_records_preserve_observation_and_staging_without_reclassifying_the_call() {
+        let retained = Record::CompanionUnreaped {
+            pid: 123,
+            staging: "/tmp/retained".into(),
+            cause: "deadline".into(),
+            kill_error: Some("signal failed".into()),
+        };
+        assert_eq!(
+            retained.to_jsonl(&[], &[]).unwrap(),
+            r#"{"cause":"deadline","kill_error":"signal failed","kind":"cleanup","outcome":"unreaped","pid":123,"staging":"/tmp/retained"}"#
+        );
+        let removal = Record::CompanionStaging {
+            path: "/tmp/stage".into(),
+            cause: "denied".into(),
+        };
+        assert_eq!(
+            removal.to_jsonl(&[], &[]).unwrap(),
+            r#"{"cause":"denied","kind":"cleanup","outcome":"staging_removal_failed","path":"/tmp/stage"}"#
+        );
+        assert_eq!(
+            Record::Value(Some(Value::Int(7)))
+                .to_jsonl(&[], &[])
+                .unwrap(),
+            r#"{"data":7,"kind":"run","outcome":"value"}"#
+        );
+    }
+
+    #[test]
+    fn activation_outcomes_preserve_identity_without_claiming_an_invocation() {
+        let reported = Record::ActivationUncertain {
+            instance: "12".repeat(16),
+        };
+        assert_eq!(
+            reported.to_jsonl(&[], &[]).unwrap(),
+            r#"{"code":"store.activation_uncertain","instance":"12121212121212121212121212121212","kind":"activation","outcome":"uncertain"}"#
+        );
+        let missing = Record::ActivationOutcomeUnknown {
+            cause_code: "runner.handshake",
+        };
+        assert_eq!(
+            missing.to_jsonl(&[], &[]).unwrap(),
+            r#"{"cause_code":"runner.handshake","kind":"activation","outcome":"outcome_unknown"}"#
+        );
+        for record in [reported, missing] {
+            assert!(
+                record
+                    .to_text(&[], &[])
+                    .unwrap()
+                    .contains("no invocation was sent")
+            );
+        }
+    }
 
     #[test]
     fn value_record_is_canonical_jsonl() {

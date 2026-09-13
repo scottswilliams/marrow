@@ -280,6 +280,137 @@ fn assert_driver_passed(output: &Output) {
 
 #[test]
 #[ignore = "requires Node and executable child fixtures"]
+fn native_startup_outcomes_preserve_activation_evidence() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new("activation-startup");
+    let project = prepare(&temp, "project", &read_only_source());
+    let runner = project.join("startup-child.mjs");
+    write(
+        &runner,
+        r#"#!/usr/bin/env node
+import { createServer } from 'node:net';
+import { mkdtempSync, appendFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as M from './gen/marrow-supervisor.mjs';
+import { IMAGE_ID } from './gen/client.mts';
+const mode = process.env.MARROW_CASE;
+appendFileSync(process.env.MARROW_MARKER, 'spawn\n');
+if (mode === 'exit') process.exit(1);
+const session = '56'.repeat(32);
+const identity = mode === 'wrong-image' || mode === 'wrong-image-ready' ? '78'.repeat(32) : IMAGE_ID;
+const socket = join(mkdtempSync(join(tmpdir(), 'marrow-startup-wire-')), 's');
+const server = createServer(peer => {
+  let received = Buffer.alloc(0);
+  let greeted = false;
+  peer.on('data', chunk => {
+    if (greeted) { appendFileSync(process.env.MARROW_MARKER, 'request\n'); return; }
+    received = Buffer.concat([received, chunk]);
+    if (received.length < 4 || received.length < 4 + received.readUInt32BE(0)) return;
+    const hello = M.parseCanonical(received.subarray(5, 4 + received.readUInt32BE(0)));
+    if (hello.kind !== 'hello' || hello.nonce !== process.env.MARROW_RUNNER_NONCE) {
+      peer.destroy(); return;
+    }
+    greeted = true;
+    appendFileSync(process.env.MARROW_MARKER, 'hello\n');
+    const response = mode === 'ready' || mode === 'wrong-image-ready'
+      ? { interface: identity, kind: 'ready', session }
+      : { code: 'store.activation_uncertain', instance: '12'.repeat(16),
+          interface: identity, kind: 'activation_uncertain',
+          session: mode === 'wrong-session' ? '90'.repeat(32) : session };
+    const frame = M.encodeFrame(response);
+    if (mode === 'ready' || mode === 'wrong-image-ready') peer.write(frame);
+    else peer.end(mode === 'truncated' ? frame.subarray(0, 12) : frame);
+  });
+  peer.on('error', () => {});
+  peer.on('close', () => server.close());
+});
+server.listen(socket, () => {
+  if (mode === 'uncertain-log') process.stderr.write('diagnostic');
+  process.stdout.write(M.encodeCanonical({ interface: identity, session, socket }) + '\n'
+    + (mode === 'uncertain-log' ? 'observational output' : ''));
+});
+"#,
+    );
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o700)).expect("executable fixture");
+    write(
+        &project.join("driver.mjs"),
+        r#"import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import * as M from './gen/marrow-supervisor.mjs';
+import { Client, IMAGE_ID } from './gen/client.mts';
+const options = { runner: process.env.MARROW_RUNNER, image: process.env.MARROW_IMAGE,
+  store: process.env.MARROW_STORE };
+const reset = mode => { process.env.MARROW_CASE = mode; writeFileSync(process.env.MARROW_MARKER, ''); };
+const noRequest = () => assert.ok(!readFileSync(process.env.MARROW_MARKER, 'utf8').includes('request'));
+reset('exit');
+let lost;
+try { await Client.launch(options); } catch (error) { lost = error; }
+assert.equal(lost.loss, M.LOSS.OUTCOME_UNKNOWN, 'native spawn may have changed the binding before exit');
+assert.ok(lost instanceof M.ActivationOutcomeUnknownError);
+assert.equal('instance' in lost, false);
+for (const mode of ['truncated', 'wrong-session', 'wrong-image', 'wrong-image-ready']) {
+  reset(mode);
+  await assert.rejects(Client.launch(options), error =>
+    error instanceof M.ActivationOutcomeUnknownError && !('instance' in error), mode);
+  noRequest();
+}
+reset('uncertain');
+await assert.rejects(Client.launch({ ...options, expectedIdentity: 'ff'.repeat(32) }), error =>
+  error instanceof M.ActivationUncertainError && error.code === 'store.activation_uncertain'
+  && error.instance === '12'.repeat(16) && error.store === options.store && !('loss' in error));
+noRequest();
+reset('uncertain');
+await assert.rejects(M.launch(options), error =>
+  error instanceof M.ActivationOutcomeUnknownError && !('instance' in error));
+noRequest();
+reset('uncertain');
+await assert.rejects(M.launch({ ...options, store: undefined, expectedIdentity: IMAGE_ID }), error =>
+  error instanceof M.LaunchError && error.loss === M.LOSS.NOT_STARTED && !('instance' in error));
+noRequest();
+reset('uncertain');
+await assert.rejects(M.launch({ ...options, expectedIdentity: IMAGE_ID }), error =>
+  error instanceof M.ActivationUncertainError && error.instance === '12'.repeat(16));
+noRequest();
+reset('uncertain-log');
+let escaped = 0;
+const observeEscape = error => {
+  if (error.message === 'observational callback') escaped++;
+  else { console.error(error); process.exitCode = 1; }
+};
+process.on('uncaughtException', observeEscape);
+await assert.rejects(M.launch({ ...options, expectedIdentity: IMAGE_ID,
+  log: () => { throw new Error('observational callback'); } }), error =>
+  error instanceof M.ActivationUncertainError && error.instance === '12'.repeat(16));
+assert.equal(escaped, 0, 'log callbacks must not escape startup settlement');
+process.removeListener('uncaughtException', observeEscape);
+noRequest();
+for (const launch of [() => M.launch(options), () => Client.launch(options)]) {
+  reset('ready'); const client = await launch(); await client.close(); noRequest();
+}
+reset('exit');
+await assert.rejects(Client.launch({ ...options, runner: options.runner + '-absent' }), error =>
+  error instanceof M.LaunchError && error.loss === M.LOSS.NOT_STARTED);
+assert.equal(readFileSync(process.env.MARROW_MARKER, 'utf8'), '');
+await assert.rejects(M.launch({ ...options, expectedIdentity: 'bad' }), TypeError);
+assert.equal(readFileSync(process.env.MARROW_MARKER, 'utf8'), '');
+console.log('DRIVER: all passed');
+"#,
+    );
+    let output = node(
+        &project,
+        "driver.mjs",
+        &runner,
+        &[
+            ("MARROW_STORE", &project.join("store")),
+            ("MARROW_MARKER", &project.join("events")),
+        ],
+    );
+    assert_driver_passed(&output);
+}
+
+#[test]
+#[ignore = "requires Node and executable child fixtures"]
 fn provision_rejects_a_completed_child_without_a_valid_receipt() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -296,11 +427,19 @@ writeFileSync(marker, 'child ran');
 const store = process.argv[process.argv.indexOf('--store') + 1];
 const instance = '0123456789abcdef0123456789abcdef';
 const receipt = JSON.stringify({ instance, store }) + '\n';
-const uncertain = (destination = store) => JSON.stringify({
-  code: 'store.publication_uncertain', instance, kind: 'provision_uncertain', store: destination,
+const uncertain = (destination = store, code = 'store.publication_uncertain') => JSON.stringify({
+  code, instance, kind: 'provision_uncertain', store: destination,
 }) + '\n';
 switch (process.env.MARROW_CASE ?? 'null') {
+  case 'cleanup-custom': process.stdout.write(process.env.MARROW_CLEANUP_RECORD + '\n'); process.exitCode = 1; break;
+  case 'cleanup':
+  case 'cleanup-errno': process.stdout.write(JSON.stringify({
+    cleanup: { code: 'store.io', os_error: process.env.MARROW_CASE === 'cleanup' ? null : 13, stage: '.marrow-provisioning.123.0' },
+    code: 'store.locked', kind: 'provision_failed', store,
+  }) + '\n'); process.exitCode = 1; break;
   case 'uncertain': process.stdout.write(uncertain()); process.exitCode = 1; break;
+  case 'activation-uncertain': process.stdout.write(uncertain(store, 'store.activation_uncertain')); process.exitCode = 1; break;
+  case 'uncertain-code': process.stdout.write(uncertain(store, 'store.io')); process.exitCode = 1; break;
   case 'uncertain-zero': process.stdout.write(uncertain()); break;
   case 'uncertain-exit': process.stdout.write(uncertain()); process.exitCode = 2; break;
   case 'uncertain-store': process.stdout.write(uncertain(store + '-other')); process.exitCode = 1; break;
@@ -355,21 +494,56 @@ assert.ok(failure instanceof M.MarrowLossError);
 assert.equal(failure.loss, M.LOSS.OUTCOME_UNKNOWN);
 for (const mode of ['empty', 'truncated', 'no-lf', 'extra', 'prefix', 'blank',
   'malformed', 'utf8', 'wrong-instance', 'wrong-store', 'extra-field', 'oversize', 'nonzero',
-  'uncertain-zero', 'uncertain-exit', 'uncertain-store', 'uncertain-truncated', 'uncertain-oversize']) {
+  'uncertain-zero', 'uncertain-exit', 'uncertain-store', 'uncertain-truncated', 'uncertain-oversize', 'uncertain-code']) {
   process.env.MARROW_CASE = mode;
   unlinkSync(process.env.MARROW_MARKER);
   await assert.rejects(M.provision(options), error =>
     error instanceof M.MarrowLossError && error.loss === M.LOSS.OUTCOME_UNKNOWN, mode);
   assert.equal(readFileSync(process.env.MARROW_MARKER, 'utf8'), 'child ran', mode);
 }
-process.env.MARROW_CASE = 'uncertain';
+for (const [mode, code] of [['uncertain', 'store.publication_uncertain'],
+  ['activation-uncertain', 'store.activation_uncertain']]) {
+process.env.MARROW_CASE = mode;
 let continued = false;
 await assert.rejects(M.provision(options).then(() => { continued = true; }), error =>
   error instanceof M.ProvisionUncertainError
-  && error.code === 'store.publication_uncertain'
+  && error.code === code
   && error.instance === '0123456789abcdef0123456789abcdef'
   && error.store === options.store);
 assert.equal(continued, false);
+}
+for (const mode of ['cleanup', 'cleanup-errno']) {
+process.env.MARROW_CASE = mode;
+await assert.rejects(M.provision(options), error =>
+  error instanceof M.ProvisionFailedError
+  && error.code === 'store.locked' && error.store === options.store
+  && error.cleanup.code === 'store.io' && error.cleanup.os_error === (mode === 'cleanup' ? null : 13)
+  && error.cleanup.stage === '.marrow-provisioning.123.0'
+  && !('instance' in error));
+}
+const cleanupRecord = () => ({ cleanup: { code: 'store.io', os_error: null,
+  stage: '.marrow-provisioning.123.0' }, code: 'store.locked', kind: 'provision_failed', store: options.store });
+for (const edit of [
+  r => { r.cleanup.stage = '../stage'; },
+  r => { r.cleanup.stage = '.marrow-provisioning.0123.0'; },
+  r => { r.cleanup.stage = '.marrow-provisioning.4294967296.0'; },
+  r => { r.cleanup.stage = '.marrow-provisioning.1.18446744073709551616'; },
+  r => { r.cleanup.os_error = 2147483648n; },
+  r => { r.cleanup.os_error = -2147483649n; },
+  r => { r.cleanup.os_error = true; },
+  r => { delete r.cleanup.os_error; },
+  r => { r.cleanup.code = 'store.locked'; },
+  r => { r.instance = '0123456789abcdef0123456789abcdef'; },
+  r => { r.turn = 0n; },
+  r => { r.store += '-other'; },
+]) {
+  const record = cleanupRecord(); edit(record);
+  process.env.MARROW_CASE = 'cleanup-custom';
+  process.env.MARROW_CLEANUP_RECORD = M.encodeCanonical(record).toString('utf8');
+  await assert.rejects(M.provision(options), error =>
+    error instanceof M.MarrowLossError && error.loss === M.LOSS.OUTCOME_UNKNOWN);
+}
+delete process.env.MARROW_CLEANUP_RECORD;
 for (const mode of ['valid', 'split', 'late-close', 'log']) {
   process.env.MARROW_CASE = mode;
   let logged = false;

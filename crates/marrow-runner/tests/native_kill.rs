@@ -190,15 +190,18 @@ fn call_value(
     name: &str,
     args: Vec<Json>,
 ) -> Option<Value> {
-    match attach_and_call(
+    let completion = attach_and_call(
         &runner_exe(),
         image,
         bytes,
         store,
         *export_id(image, name).bytes(),
         args,
-    )
-    .unwrap_or_else(|error| panic!("post-crash `{name}` call failed: {}", error.code()))
+    );
+    completion.cleanup.expect("post-crash companion settled");
+    match completion
+        .outcome
+        .unwrap_or_else(|error| panic!("post-crash `{name}` call failed: {}", error.code()))
     {
         CallOutcome::Value(value) => value,
         CallOutcome::Fault { code, .. } => panic!("post-crash `{name}` faulted: {code}"),

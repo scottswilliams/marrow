@@ -1,17 +1,7 @@
-//! `marrow doctor --store <dir> [--format text|jsonl]`: audit a store read-only against the
-//! program it is bound to, reporting logical inconsistencies and a content digest.
-//!
-//! The terminal compiles the project at the working directory, exactly like `marrow run
-//! --store`, and never opens the store itself: it writes the compiled image to a private
-//! temporary file and hands the audit to the release-verified companion runner
-//! (`marrow-runner audit`), the sole opener of the store, which prints the report in the
-//! requested format. The runner takes the store's owner lock, admits the image as the
-//! store's exact active binding, and runs the kernel's bounded logical walk through a
-//! read-only engine. It releases the lock before printing. The report states that physical
-//! integrity was not checked; it cannot qualify recovery. A code-only edit the store has
-//! not been rebound to is `store.image_not_active`. The exit code is the runner's: `0`
-//! when the logical walk found no inconsistency, `1` for findings, engine errors, or a
-//! refusal.
+//! Terminal store inspection and recovery. Compile without opening the store or
+//! minting identities, stage the image, and delegate once to the release-verified
+//! companion. Doctor remains a read-only logical inspection; explicit recovery
+//! validates physical and logical integrity and establishes fresh activation.
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -20,7 +10,28 @@ use marrow_compile::{CompileFailure, compile};
 
 use crate::project::capture_project;
 
-/// The output format for `marrow doctor`.
+#[derive(Clone, Copy)]
+pub(crate) enum Operation {
+    Doctor,
+    Recover,
+}
+
+impl Operation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Doctor => "doctor",
+            Self::Recover => "recover",
+        }
+    }
+    fn runner_command(self) -> &'static str {
+        match self {
+            Self::Doctor => "audit",
+            Self::Recover => "recover",
+        }
+    }
+}
+
+/// The output format requested from the companion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     Text,
@@ -32,8 +43,8 @@ struct Args {
     format: Format,
 }
 
-pub(crate) fn doctor(rest: &[String]) -> ExitCode {
-    let args = match parse_args(rest) {
+pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
+    let args = match parse_args(operation, rest) {
         Ok(args) => args,
         Err(code) => return code,
     };
@@ -46,15 +57,14 @@ pub(crate) fn doctor(rest: &[String]) -> ExitCode {
         }
     };
 
-    // Compile without opening a store and without minting: the audit compares the store with
-    // the committed program, so a missing identity points at `marrow check`.
+    // Both operations require the committed identities of the stored program.
     let compiled = match compile(&project) {
         Ok(compiled) => compiled,
         Err(CompileFailure::Diagnostics(diagnostics)) => {
             for diagnostic in diagnostics.iter() {
                 eprintln!("{}: {}", diagnostic.code(), diagnostic.message());
             }
-            eprintln!("the project does not compile; run `marrow check` before auditing a store");
+            eprintln!("the project does not compile; run `marrow check` before accessing a store");
             return ExitCode::FAILURE;
         }
         Err(CompileFailure::ResourceLimit(limit)) => {
@@ -84,7 +94,7 @@ pub(crate) fn doctor(rest: &[String]) -> ExitCode {
         }
     };
 
-    let image = match crate::companion::stage_image("doctor", &compiled.image.bytes) {
+    let image = match crate::companion::stage_image(operation.name(), &compiled.image.bytes) {
         Ok(image) => image,
         Err(err) => {
             crate::report_simple_error(marrow_codes::Code::IoWrite.as_str(), &err.to_string());
@@ -94,7 +104,7 @@ pub(crate) fn doctor(rest: &[String]) -> ExitCode {
 
     let mut command = Command::new(&runner);
     command
-        .arg("audit")
+        .arg(operation.runner_command())
         .arg("--image")
         .arg(image.path())
         .arg("--store")
@@ -115,37 +125,44 @@ pub(crate) fn doctor(rest: &[String]) -> ExitCode {
     }
 }
 
-fn parse_args(rest: &[String]) -> Result<Args, ExitCode> {
+fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
     let mut store: Option<PathBuf> = None;
     let mut format = Format::Text;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--store" => store = Some(PathBuf::from(next_value(&mut iter, "--store")?)),
+            "--store" => store = Some(PathBuf::from(next_value(operation, &mut iter, "--store")?)),
             "--format" => {
-                format = match next_value(&mut iter, "--format")?.as_str() {
+                format = match next_value(operation, &mut iter, "--format")?.as_str() {
                     "text" => Format::Text,
                     "jsonl" => Format::Jsonl,
-                    other => return Err(usage(&format!("unknown format `{other}`"))),
+                    other => return Err(usage(operation, &format!("unknown format `{other}`"))),
                 }
             }
-            other => return Err(crate::unknown_option("doctor", other)),
+            other => return Err(crate::unknown_option(operation.name(), other)),
         }
     }
     let Some(store) = store else {
-        return Err(usage("`--store` names the store directory to audit"));
+        return Err(usage(operation, "`--store` must name the store directory"));
     };
     Ok(Args { store, format })
 }
 
-fn next_value(iter: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, ExitCode> {
+fn next_value(
+    operation: Operation,
+    iter: &mut std::slice::Iter<'_, String>,
+    flag: &str,
+) -> Result<String, ExitCode> {
     match iter.next() {
         Some(value) => Ok(value.clone()),
-        None => Err(usage(&format!("`{flag}` needs a value"))),
+        None => Err(usage(operation, &format!("`{flag}` needs a value"))),
     }
 }
 
-fn usage(message: &str) -> ExitCode {
-    eprintln!("{message}\nusage: marrow doctor --store <dir> [--format text|jsonl]");
+fn usage(operation: Operation, message: &str) -> ExitCode {
+    eprintln!(
+        "{message}\nusage: marrow {} --store <dir> [--format text|jsonl]",
+        operation.name()
+    );
     ExitCode::from(2)
 }

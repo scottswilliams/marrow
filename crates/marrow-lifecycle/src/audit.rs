@@ -151,7 +151,12 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
     let opened = open_admitted(dir, projection, NativeOpenAccess::ReadOnly, |head| {
         admission.admit_exact(head)
     })
-    .map_err(|error| match error {
+    .map_err(open_error)?;
+    inspect(&opened, &names, image.image_id())
+}
+
+pub(crate) fn open_error(error: AdmitError<ExactRefusal>) -> AuditError {
+    match error {
         AdmitError::Open(error) => AuditError::Open(error),
         AdmitError::Refused(ExactRefusal::NotActive) => AuditError::ImageNotActive,
         AdmitError::Refused(ExactRefusal::InconsistentBinding) => AuditError::InconsistentBinding,
@@ -167,9 +172,15 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
         AdmitError::Refused(ExactRefusal::Admission(AdmissionRefusal::Pin(refusal))) => {
             AuditError::HeadMapPin(refusal)
         }
-    })?;
+    }
+}
+
+pub(crate) fn inspect(
+    opened: &crate::OpenStore,
+    names: &Names,
+    image_id: ImageId,
+) -> Result<StoreAudit, AuditError> {
     let instance = opened.envelope.instance;
-    let image_id = image.image_id();
     let mut digest = ChainDigest::new();
     let report = opened
         .logical_audit(&mut digest)
@@ -219,12 +230,12 @@ impl ContentDigest for ChainDigest {
 /// group, and field names, and each index's ledger identity (the image carries no index
 /// name, so an index cell is named by the identity `.marrow/ids` records for it). Raw
 /// bytes — an identity or an unplaceable key — render as lowercase hex.
-struct Names {
+pub(crate) struct Names {
     roots: Vec<StoreSchema>,
 }
 
 impl Names {
-    fn new(projection: &StoreProjection) -> Self {
+    pub(crate) fn new(projection: &StoreProjection) -> Self {
         Self {
             roots: projection.roots().to_vec(),
         }

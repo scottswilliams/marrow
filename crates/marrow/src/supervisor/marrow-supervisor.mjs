@@ -106,14 +106,25 @@ export class MarrowReject extends Error {
   }
 }
 
-/** A complete store is published, but parent-directory durability is unconfirmed. */
+/** Provision reached an unconfirmed publication or activation barrier. */
 export class ProvisionUncertainError extends Error {
-  constructor(instance, store) {
-    super(`Publication durability is unconfirmed for store ${instance}`);
+  constructor(instance, store, code = "store.publication_uncertain") {
+    super(`${code}: durability is unconfirmed for store ${instance}`);
     this.name = "ProvisionUncertainError";
-    this.code = "store.publication_uncertain";
+    this.code = code;
     this.instance = instance;
     this.store = store;
+  }
+}
+
+/** Provision failed before publication and could not remove its private sibling stage. */
+export class ProvisionFailedError extends Error {
+  constructor(code, store, cleanup) {
+    super(`${code}: cleanup failed for sibling ${cleanup.stage}`);
+    this.name = "ProvisionFailedError";
+    this.code = code;
+    this.store = store;
+    this.cleanup = cleanup;
   }
 }
 
@@ -132,6 +143,26 @@ export class LaunchError extends Error {
     super(detail);
     this.name = "LaunchError";
     this.loss = LOSS.NOT_STARTED;
+  }
+}
+
+/** The authenticated, expected-image attach reported an unconfirmed activation. */
+export class ActivationUncertainError extends Error {
+  constructor(instance, store) {
+    super(`store.activation_uncertain: activation is unconfirmed for store ${instance}`);
+    this.name = "ActivationUncertainError";
+    this.code = "store.activation_uncertain";
+    this.instance = instance;
+    this.store = store;
+  }
+}
+
+/** Native attach was spawned, but no trusted startup result was received. */
+export class ActivationOutcomeUnknownError extends Error {
+  constructor(detail) {
+    super(detail);
+    this.name = "ActivationOutcomeUnknownError";
+    this.loss = LOSS.OUTCOME_UNKNOWN;
   }
 }
 
@@ -825,6 +856,14 @@ function isReady(value) {
   );
 }
 
+function isActivationUncertain(value) {
+  return hasExactKeys(value, ["code", "instance", "interface", "kind", "session"])
+    && value.code === "store.activation_uncertain"
+    && value.kind === "activation_uncertain"
+    && typeof value.instance === "string" && /^[0-9a-f]{32}$/.test(value.instance)
+    && isId32(value.session) && isId32(value.interface);
+}
+
 export function dUnit(d) {
   if (d !== null) throw protocol("expected null");
   return undefined;
@@ -999,13 +1038,26 @@ export function dSum(variants) {
  * - `log` (optional): `(chunk: Buffer) => void` receiving drained runner
  *   stderr/extra-stdout bytes (byte-clean; never interleaved with protocol).
  *
- * Resolves to a `Session` after `ready` proves the session token, or rejects
- * with a `LaunchError` (loss class `not_started`: no call was ever admitted).
+ * `expectedIdentity`, when supplied, pins the native image or storeless interface
+ * before any startup outcome is exposed. Generated clients always supply it.
+ * Resolves after authenticated `ready`. A pinned native activation failure rejects
+ * with ActivationUncertainError. Missing or untrusted delivery after native spawn
+ * rejects with ActivationOutcomeUnknownError, without an instance. A native caller
+ * without a pin can accept Ready, but cannot accept reported activation evidence.
+ * No invocation is sent during startup; that does not mean attach left the store unchanged.
+ * Confirmed spawn failure and storeless startup failures remain LaunchError.
  */
 export function launch(options) {
   return new Promise((resolve, reject) => {
+    const expectedIdentity = options.expectedIdentity;
+    if (expectedIdentity !== undefined && !isId32(expectedIdentity)) {
+      reject(new TypeError("expectedIdentity must be a canonical 64-hex identity"));
+      return;
+    }
     const nonce = randomBytes(32).toString("hex");
-    const log = options.log ?? (() => {});
+    const log = chunk => {
+      try { options.log?.(chunk); } catch { /* Observational callbacks cannot alter startup or delivery. */ }
+    };
     // The store, when set, selects the native attached-session launch. Both
     // launches pass the image by `--image`; neither exposes a shell, an
     // environment beyond the nonce, or a data path to the renderer.
@@ -1022,10 +1074,11 @@ export function launch(options) {
     let settled = false;
     let stdoutBuffer = Buffer.alloc(0);
     let descriptor = null;
+    let socket = null;
+    let spawned = false;
 
-    // The runner cleans its private socket directory on its own orderly exit,
-    // but a fail-closed SIGKILL leaves it no chance — so the supervisor also
-    // removes the directory, completing the channel law's cleanup obligation.
+    // The supervisor also attempts to remove the private socket directory because
+    // a killed runner cannot perform its own cleanup. Removal is best-effort.
     const removeChannelDir = () => {
       if (descriptor !== null && typeof descriptor.socket === "string") {
         try {
@@ -1041,7 +1094,10 @@ export function launch(options) {
       settled = true;
       child.kill("SIGKILL");
       removeChannelDir();
-      reject(new LaunchError(detail));
+      clearTimeout(deadline);
+      socket?.destroy();
+      reject(options.store !== undefined && spawned
+        ? new ActivationOutcomeUnknownError(detail) : new LaunchError(detail));
     };
 
     const deadline = setTimeout(
@@ -1050,9 +1106,11 @@ export function launch(options) {
     );
     deadline.unref?.();
 
+    child.on("spawn", () => { spawned = true; });
     child.on("error", (error) => failLaunch(`spawn failed: ${error.message}`));
-    child.on("exit", () => {
-      if (!settled) failLaunch("runner exited before the handshake completed");
+    child.on("close", () => {
+      // Socket data can follow process exit; drain its framed response before classifying loss.
+      if (!settled && socket === null) failLaunch("runner exited before the handshake completed");
     });
     child.stderr.on("data", log);
 
@@ -1073,6 +1131,10 @@ export function launch(options) {
           return;
         }
         descriptor = parsed;
+        if (expectedIdentity !== undefined && descriptor.interface !== expectedIdentity) {
+          failLaunch(`identity mismatch: runner serves ${descriptor.interface}`);
+          return;
+        }
       } catch (error) {
         failLaunch(`bad launch descriptor: ${error.message}`);
         return;
@@ -1086,7 +1148,7 @@ export function launch(options) {
         failLaunch("incomplete launch descriptor");
         return;
       }
-      const socket = createConnection(descriptor.socket);
+      socket = createConnection(descriptor.socket);
       const frames = new FrameReader();
       socket.on("error", (error) => failLaunch(`connect failed: ${error.message}`));
       socket.on("connect", () => {
@@ -1103,11 +1165,24 @@ export function launch(options) {
         }
         if (ready === undefined) return;
         if (
-          !isReady(ready) ||
+          !(isReady(ready) || isActivationUncertain(ready)) ||
           ready.session !== descriptor.session ||
           ready.interface !== descriptor.interface
         ) {
           failLaunch("handshake refused");
+          return;
+        }
+        if (ready.kind === "activation_uncertain") {
+          if (options.store === undefined || expectedIdentity === undefined) {
+            failLaunch("activation result lacks the expected native image identity");
+            return;
+          }
+          settled = true;
+          clearTimeout(deadline);
+          socket.destroy();
+          child.kill("SIGKILL");
+          removeChannelDir();
+          reject(new ActivationUncertainError(ready.instance, options.store));
           return;
         }
         settled = true;
@@ -1138,8 +1213,9 @@ export function launch(options) {
  * the child's stdin closed, accepting the exact provision report and publishing
  * the store. Resolves the parsed one-line JSON receipt (`{ instance, store }`)
  * the runner prints on a clean exit, after its streams close. A spawn failure
- * rejects with `LaunchError`; a complete publication-uncertainty record with exit 1
- * rejects with `ProvisionUncertainError`; lost delivery after spawn rejects with
+ * rejects with `LaunchError`; a complete publication or activation uncertainty record with exit 1
+ * rejects with `ProvisionUncertainError`; a complete failure with retained cleanup
+ * details rejects with `ProvisionFailedError`; lost delivery after spawn rejects with
  * `MarrowLossError(OUTCOME_UNKNOWN)`. This is a one-shot lifecycle action, not a
  * `Session`: no channel is bound and no call is served. The destination is
  * chosen by this trusted-main config, never by a calling renderer.
@@ -1203,17 +1279,39 @@ export function provision(options) {
         if (stdout.at(-1) !== 0x0a) throw new Error("provision receipt lacks final LF");
         const receipt = parseCanonical(stdout.subarray(0, -1));
         if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)
-          || typeof receipt.instance !== "string" || !/^[0-9a-f]{32}$/.test(receipt.instance)
           || receipt.store !== store) {
           throw new Error("provision receipt identity mismatch");
+        }
+        if (code === 1 && receipt.kind === "provision_failed") {
+          const cleanup = receipt.cleanup;
+          if (Object.keys(receipt).length !== 4
+            || typeof receipt.code !== "string" || !/^[a-z0-9._]+$/.test(receipt.code)
+            || cleanup === null || typeof cleanup !== "object" || Array.isArray(cleanup)
+            || Object.keys(cleanup).length !== 3 || cleanup.code !== "store.io"
+            || typeof cleanup.stage !== "string"
+            || !/^\.marrow-provisioning\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,19})$/.test(cleanup.stage)
+            || BigInt(cleanup.stage.split(".")[2]) > 4294967295n
+            || BigInt(cleanup.stage.split(".")[3]) > 18446744073709551615n
+            || (cleanup.os_error !== null && (typeof cleanup.os_error !== "bigint"
+              || cleanup.os_error < -2147483648n || cleanup.os_error > 2147483647n))) {
+            throw new Error("invalid provision cleanup failure record");
+          }
+          reject(new ProvisionFailedError(receipt.code, receipt.store, {
+            code: cleanup.code, stage: cleanup.stage,
+            os_error: cleanup.os_error === null ? null : Number(cleanup.os_error),
+          }));
+          return;
+        }
+        if (typeof receipt.instance !== "string" || !/^[0-9a-f]{32}$/.test(receipt.instance)) {
+          throw new Error("provision receipt instance mismatch");
         }
         if (code === 1) {
           if (Object.keys(receipt).length !== 4
             || receipt.kind !== "provision_uncertain"
-            || receipt.code !== "store.publication_uncertain") {
+            || !["store.publication_uncertain", "store.activation_uncertain"].includes(receipt.code)) {
             throw new Error("invalid provision uncertainty record");
           }
-          reject(new ProvisionUncertainError(receipt.instance, receipt.store));
+          reject(new ProvisionUncertainError(receipt.instance, receipt.store, receipt.code));
           return;
         }
         if (Object.keys(receipt).length !== 2) throw new Error("invalid provision success receipt");
@@ -1500,8 +1598,7 @@ export class Session {
     process.removeListener("exit", this.exitHook);
     this.child.kill("SIGKILL");
     this.socket.destroy();
-    // The runner cannot remove its private directory after a SIGKILL, so the
-    // supervisor completes the channel law's cleanup obligation.
+    // Attempt directory cleanup for a killed runner; removal is best-effort.
     try {
       rmSync(dirname(this.socketPath), { recursive: true, force: true });
     } catch {

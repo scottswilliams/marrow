@@ -206,11 +206,7 @@ fn instance_of(line: &str) -> &str {
     &line[start..start + 32]
 }
 
-#[test]
-#[ignore = "OPEN B4 physical-integrity obligation: logical doctor does not verify engine checksums"]
-fn an_altered_engine_is_reported_as_corruption_with_exit_one() {
-    let staged = toolchain();
-    let toolchain = &staged.root;
+fn recovery_refuses_an_altered_engine_with_exit_one(toolchain: &Path) {
     let temp = TempDir::new("flip");
     let (project, store) = project_with_store(toolchain, &temp);
     let engine = store.join("store.redb");
@@ -221,15 +217,33 @@ fn an_altered_engine_is_reported_as_corruption_with_exit_one() {
         .expect("the stored label is in the engine file");
     bytes[at] = b'T';
     fs::write(&engine, bytes).expect("write engine");
+    let envelope = fs::read(store.join("envelope")).expect("envelope");
+    fs::write(store.join("envelope.replacing"), b"unexplained").expect("debris");
 
     let output = marrow(
         toolchain,
         &project,
-        &["doctor", "--store", store.to_str().expect("store path")],
+        &[
+            "recover",
+            "--store",
+            store.to_str().expect("store path"),
+            "--format",
+            "jsonl",
+        ],
     );
     assert_eq!(output.status.code(), Some(1));
-    let out = text(&output.stdout);
-    assert!(out.contains("\nstore.corruption: "), "{out}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("recovery error");
+    assert_eq!(report["outcome"], "error");
+    assert_eq!(report["code"], "store.corruption");
+    assert!(report["preserved"].as_array().expect("names").is_empty());
+    assert_eq!(
+        fs::read(store.join("envelope")).expect("no activation"),
+        envelope
+    );
+    assert_eq!(
+        fs::read(store.join("envelope.replacing")).expect("debris unmoved"),
+        b"unexplained"
+    );
 }
 
 fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
@@ -400,10 +414,130 @@ fn doctor_reports_and_refusals_share_one_owned_toolchain() {
     let staged = toolchain();
     let path = staged.root.clone();
     a_clean_store_audits_with_a_stable_digest_and_exit_zero(&path);
+    explicit_recovery_preserves_data_and_reports_moved_files(&path);
+    recovery_refuses_an_altered_engine_with_exit_one(&path);
+    #[cfg(unix)]
+    recovery_failure_reports_a_preservation_move(&path);
     a_code_only_edit_must_be_rebound_before_it_audits(&path);
     usage_and_absent_store_refusals_keep_their_codes(&path);
     a_storeless_program_has_nothing_to_audit(&path);
     an_invalid_scalar_reports_a_logical_finding(&path);
     drop(staged);
     assert!(!path.exists(), "the suite removes its staged toolchain");
+}
+
+fn explicit_recovery_preserves_data_and_reports_moved_files(toolchain: &Path) {
+    use serde_json::Value;
+
+    let temp = TempDir::new("recover");
+    let (project, store) = project_with_store(toolchain, &temp);
+    let store_arg = store.to_str().expect("store path");
+    let before = marrow(
+        toolchain,
+        &project,
+        &["doctor", "--store", store_arg, "--format", "jsonl"],
+    );
+    assert!(before.status.success(), "{}", text(&before.stderr));
+    fs::write(store.join("envelope.replacing"), b"partial envelope").expect("debris");
+    let recovered = marrow(
+        toolchain,
+        &project,
+        &["recover", "--store", store_arg, "--format", "jsonl"],
+    );
+    if !recovered.status.success() {
+        let original = temp.root.clone();
+        std::mem::forget(temp);
+        panic!(
+            "explicit recovery failed: {}; preserve {}",
+            text(&recovered.stderr),
+            original.display()
+        );
+    }
+    let Value::Object(fields) = serde_json::from_slice(&recovered.stdout).expect("recovery record")
+    else {
+        panic!("recovery object");
+    };
+    assert_eq!(fields["kind"], "recovery");
+    assert_eq!(fields["outcome"], "activated");
+    assert_eq!(fields["store"], store_arg);
+    let prior: Value = serde_json::from_slice(&before.stdout).expect("doctor record");
+    assert_eq!(fields["instance"], prior["instance"]);
+    assert_eq!(fields["image"], prior["image"]);
+    let Some(Value::Array(names)) = fields.get("preserved") else {
+        panic!("preserved names");
+    };
+    assert_eq!(names.len(), 1);
+    let Value::String(name) = &names[0] else {
+        panic!("preserved filename");
+    };
+    assert_eq!(
+        fs::read(store.join(name)).expect("preserved bytes"),
+        b"partial envelope"
+    );
+    let after = marrow(
+        toolchain,
+        &project,
+        &["doctor", "--store", store_arg, "--format", "jsonl"],
+    );
+    assert!(after.status.success(), "{}", text(&after.stderr));
+    assert_eq!(after.stdout, before.stdout);
+}
+
+#[cfg(unix)]
+fn recovery_failure_reports_a_preservation_move(toolchain: &Path) {
+    for format in ["text", "jsonl"] {
+        let temp = TempDir::new("recover-refusal");
+        let (project, store) = project_with_store(toolchain, &temp);
+        let envelope = fs::read(store.join("envelope")).expect("envelope");
+        let head = fs::read(store.join("head")).expect("head");
+        let peer = temp.root.join("peer");
+        fs::write(&peer, b"peer bytes").expect("peer");
+        fs::write(store.join("envelope.replacing"), b"partial envelope").expect("first slot");
+        std::os::unix::fs::symlink(&peer, store.join("head.replacing"))
+            .expect("refused second slot");
+        let output = marrow(
+            toolchain,
+            &project,
+            &[
+                "recover",
+                "--store",
+                store.to_str().expect("path"),
+                "--format",
+                format,
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+        let name = if format == "jsonl" {
+            let report: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("failure record");
+            assert_eq!(report["kind"], "recovery");
+            assert_eq!(report["outcome"], "error");
+            assert_eq!(report["code"], "store.corruption");
+            assert!(report.get("instance").is_none());
+            assert_eq!(report["preserved"].as_array().expect("names").len(), 1);
+            report["preserved"][0].as_str().expect("name").to_owned()
+        } else {
+            let report = text(&output.stdout);
+            assert!(report.starts_with("store.corruption:"));
+            report
+                .lines()
+                .find_map(|line| line.strip_prefix("preserved "))
+                .expect("known move")
+                .to_owned()
+        };
+        assert_eq!(
+            fs::read(store.join(name)).expect("known move bytes"),
+            b"partial envelope"
+        );
+        assert_eq!(
+            fs::read(store.join("envelope")).expect("no activation"),
+            envelope
+        );
+        assert_eq!(fs::read(store.join("head")).expect("head unchanged"), head);
+        assert_eq!(
+            fs::read_link(store.join("head.replacing")).expect("link retained"),
+            peer
+        );
+        assert_eq!(fs::read(&peer).expect("peer unchanged"), b"peer bytes");
+    }
 }

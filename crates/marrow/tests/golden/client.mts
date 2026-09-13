@@ -25,12 +25,8 @@ export class Client {
    * storeless launch proves the interface identity; a native attached-session
    * launch (`options.store` set) proves the exact image identity. */
   static async launch(options: M.LaunchOptions): Promise<Client> {
-    const session = await M.launch(options);
     const expected = options.store === undefined ? INTERFACE_ID : IMAGE_ID;
-    if (session.interfaceId !== expected) {
-      session.terminate();
-      throw new Error(`identity mismatch: runner serves ${session.interfaceId}`);
-    }
+    const session = await M.launch({ ...options, expectedIdentity: expected });
     return new Client(session);
   }
 

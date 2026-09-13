@@ -258,12 +258,12 @@ the ledger. Both the CLI and the language server enter through `marrow-project-f
 | `marrow-vm` | The stack VM over a sealed image: source-mapped runtime faults, execution bounds (`value.rs::collection_within_limits`, `Value::structural_bytes`, `run.rs::bounded_list`), and durable execution of an export or a source test through the attachment the lifecycle prepared | [Execution limits](../language/execution-limits.md) |
 | `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, commit recovery, and the read-only audit walk | [Storage](storage.md) |
 | `marrow-store` | The ordered-byte engine contract, the in-memory and redb engines, and the conformance suite both must pass | [Storage](storage.md) |
-| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, and audit of a persistent store: store identity, envelope, active head, admission, recovery after an interrupted commit, and the audit's digest. `ProvisionError::PublicationUncertain` retains the published instance when the final parent-directory sync fails. | [Operations](../operations/README.md) |
+| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, and explicit recovery. The envelope gates ordinary service on Active. `ProvisionError` retains a primary fault and optional failed cleanup independently. Recovery validates the exact current head, physical integrity and logical contents before fresh activation. | [Operations](../operations/README.md) |
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
 | `marrow-project` | Manifest schema, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, one canonical JSON writer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
-| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, borrowed returned-value encoding through wire-owned value slots, collection admission, and canonical Map construction in `transfer.rs::decode_collection`, classification of an outcome the client could not confirm, and the one-shot provision, import, and audit commands. The binary's `write_receipt` owns provision/import receipt delivery. | [Operations](../operations/README.md) |
+| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, borrowed returned-value encoding through wire-owned value slots, collection admission, and canonical Map construction in `transfer.rs::decode_collection`. One-shot provision, import, audit and recovery share lifecycle owners; fallible output preserves uncertainty and cleanup evidence. Attachment settlement reports the invocation result independently of companion cleanup. | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
@@ -306,8 +306,8 @@ a store the lifecycle mints in memory from the prepared image, through
 dropped when the test returns.
 
 `marrow run <export> --store <dir>` replaces the last step. `marrow-lifecycle`
-admits the prepared image against the store's active binding, `marrow-store`
-takes the engine lock, and `marrow-runner` dispatches the export through the
+acquires the native owner lock and admits the prepared image against the stored
+binding before engine open. `marrow-runner` dispatches the export through the
 returned attachment over the persistent redb engine.
 
 The CLI's `cmd_run` materializes positional or stdin arguments against the
@@ -331,6 +331,14 @@ is released before the runner renders the report. Physical integrity is not
 checked, and inspection leaves an inherited unclean-shutdown obligation
 undischarged ([storage](storage.md#auditing-a-store)). This report grants no
 recovery or admission permit.
+
+`marrow recover --store <dir>` shares project capture, compilation and companion
+dispatch with doctor through `cmd_store`. The runner calls lifecycle recovery
+once and writes a fallible result retaining preservation moves even on failure.
+The lifecycle performs physical and logical validation under one owner, establishes
+fresh barriers and repeats exact metadata admission before returning. It neither
+returns an application attachment nor rewrites the selected head
+([storage](storage.md#explicit-recovery)).
 
 ## Guides
 

@@ -121,6 +121,51 @@ fn secrets(nonce: Id32, session: Id32) -> LaunchSecrets {
     }
 }
 
+/// The failure path authenticates but yields no request-session capability.
+#[test]
+#[ignore = "binds a Unix socket; run with the sandbox disabled"]
+fn activation_uncertainty_authenticates_then_closes_without_a_request_session() {
+    let channel = Channel::bind().expect("bind");
+    let path = channel.socket_path().to_path_buf();
+    let nonce = Id32::from_bytes([1; 32]);
+    let session = Id32::from_bytes([2; 32]);
+    let interface = Id32::from_bytes([3; 32]);
+    let instance = marrow_lifecycle::StoreInstanceId::from_bytes([4; 16]);
+    let client = thread::spawn(move || {
+        let mut unauthenticated = connect(&path);
+        send(
+            &mut unauthenticated,
+            &ClientMessage::Hello {
+                nonce: Id32::from_bytes([9; 32]),
+            },
+        )
+        .expect("wrong nonce");
+        assert!(recv(&mut unauthenticated).is_none());
+        let mut authenticated = connect(&path);
+        send(&mut authenticated, &ClientMessage::Hello { nonce }).expect("nonce");
+        assert_eq!(
+            recv_with_turn(&mut authenticated),
+            Some((
+                ServerMessage::ActivationUncertain {
+                    session,
+                    interface,
+                    instance: instance.to_hex()
+                },
+                None,
+            ))
+        );
+        assert!(
+            recv(&mut authenticated).is_none(),
+            "failure must close without Ready or a call result"
+        );
+    });
+    channel
+        .report_activation_uncertain(&secrets(nonce, session), interface, instance, &quick(), 2)
+        .expect("deliver failure to authenticated peer");
+    channel.teardown();
+    client.join().expect("client controls");
+}
+
 /// The happy path: a generated-style client handshakes and gets a real value back.
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]

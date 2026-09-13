@@ -20,6 +20,69 @@ fn root(scratch: &Scratch) -> AdmittedDir {
 }
 
 #[test]
+fn replacing_rename_uses_the_retained_directory_and_preserves_open_old_bytes() {
+    let scratch = Scratch::new("replace-retained");
+    let path = scratch.path().join("original");
+    let moved = scratch.path().join("moved");
+    std::fs::create_dir(&path).expect("original");
+    let dir = AdmittedDir::admit_trusted_root(&path).expect("admit original");
+    let mut old = dir.create_file_excl(&name("live")).expect("old file");
+    old.append(b"old").expect("old body");
+    let mut new = dir
+        .create_file_excl(&name("replacement"))
+        .expect("replacement");
+    new.append(b"new").expect("new body");
+    new.sync().expect("new body barrier");
+    std::fs::rename(&path, &moved).expect("move directory");
+    std::fs::create_dir(&path).expect("substitute directory");
+    std::fs::write(path.join("live"), b"substitute").expect("substitute body");
+    dir.rename_replace(&name("replacement"), &name("live"))
+        .expect("replace");
+    dir.sync().expect("directory barrier");
+    assert_eq!(old.read_prefix(10).expect("held old body"), b"old");
+    assert_eq!(
+        std::fs::read(moved.join("live")).expect("new named body"),
+        b"new"
+    );
+    assert_eq!(
+        std::fs::read(path.join("live")).expect("substitute unchanged"),
+        b"substitute"
+    );
+    assert_eq!(
+        dir.stat_entry(&name("live"))
+            .expect("entry")
+            .expect("present")
+            .identity(),
+        new.identity()
+    );
+    assert!(
+        dir.stat_entry(&name("replacement"))
+            .expect("entry")
+            .is_none()
+    );
+}
+
+#[test]
+fn replacing_rename_with_no_source_preserves_the_destination() {
+    let scratch = Scratch::new("replace-missing");
+    let dir = root(&scratch);
+    let mut old = dir.create_file_excl(&name("live")).expect("old file");
+    old.append(b"old").expect("old body");
+    assert!(matches!(
+        dir.rename_replace(&name("missing"), &name("live")),
+        Err(CustodyError::NotFound { .. })
+    ));
+    assert_eq!(
+        dir.stat_entry(&name("live"))
+            .expect("entry")
+            .expect("present")
+            .identity(),
+        old.identity()
+    );
+    assert_eq!(old.read_prefix(10).expect("old body"), b"old");
+}
+
+#[test]
 fn a_directory_root_is_admitted_with_its_identity() {
     let scratch = Scratch::new("root");
     let dir = root(&scratch);

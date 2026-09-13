@@ -23,9 +23,10 @@ use marrow_local_wire::{ClientMessage, HandoffStage, Id32, Json, LossClass, clas
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
-    self, CALL_DEADLINE, CallOutcome, ClientError, Companion, OutcomeUnknownCause,
-    connect_and_handshake, post_dispatch_cause, read_message_with_turn, reply_to_outcome,
-    require_interface, require_reply_turn, spawn_companion, write_message_with_turn,
+    self, CALL_DEADLINE, CallOutcome, ClientError, Companion, CompanionCleanupError,
+    CompanionStartupError, OutcomeUnknownCause, connect_and_handshake, post_dispatch_cause,
+    read_message_with_turn, reply_to_outcome, require_interface, require_reply_turn,
+    spawn_companion, write_message_with_turn,
 };
 
 /// The result of one call over an ephemeral session.
@@ -42,18 +43,14 @@ pub enum EphemeralCall {
     OutcomeUnknown(OutcomeUnknownCause),
 }
 
-/// A live ephemeral-memory session: the spawned runner, the handshaken socket, and the served
-/// image. Dropping it hangs up the socket and tears the runner down; the in-memory store the
-/// runner held is discarded with the process.
+/// A live ephemeral-memory session. [`Self::close`] reports direct-child settlement.
+/// Dropping hangs up the socket and attempts bounded cleanup without confirming its result.
 pub struct EphemeralSession<'a> {
     image: &'a VerifiedImage,
-    // `stream` is declared before `_companion` so it drops first: the hangup the runner observes
-    // precedes the drop guard's kill, giving the ordinary end a clean exit.
+    // Socket hangup precedes the companion's fallback exit observation during field drop.
     stream: UnixStream,
-    // An RAII guard, never read: dropping it kills the spawned runner and removes its staging
-    // directory. `None` only for the in-crate unit tests, which drive `call` over a socket pair
-    // without a spawned process; the production `open` path always holds a companion.
-    _companion: Option<Companion>,
+    // Production sessions own one child; socket-pair unit tests have no process to settle.
+    companion: Option<Companion>,
     // Set once a call detects a post-write failure (or an earlier transport loss). A dead session never writes
     // to the wire again, so a call on it provably never starts.
     dead: bool,
@@ -71,23 +68,49 @@ impl<'a> EphemeralSession<'a> {
         runner_exe: &Path,
         image: &'a VerifiedImage,
         image_bytes: &[u8],
-    ) -> Result<Self, ClientError> {
+    ) -> Result<Self, CompanionStartupError> {
         let nonce = terminal::mint_nonce()?;
         let (companion, descriptor) =
             spawn_companion(runner_exe, "attach-ephemeral", image_bytes, None, nonce)?;
 
-        // The companion must serve exactly the image we spawned it with, or we refuse before any
-        // call.
-        require_interface(&descriptor, image)?;
-
-        let stream = connect_and_handshake(&descriptor, nonce, CALL_DEADLINE)?;
+        let startup = descriptor.and_then(|descriptor| {
+            require_interface(&descriptor, image)?;
+            connect_and_handshake(
+                &descriptor,
+                nonce,
+                CALL_DEADLINE,
+                crate::terminal::StartupKind::Ephemeral,
+            )
+        });
+        let stream = match startup {
+            Ok(stream) => stream,
+            Err(error) => {
+                return Err(CompanionStartupError {
+                    error,
+                    cleanup: companion.settle(),
+                });
+            }
+        };
         Ok(Self {
             image,
             stream,
-            _companion: Some(companion),
+            companion: Some(companion),
             dead: false,
             next_turn: Some(0),
         })
+    }
+
+    /// Close the transport, observe direct-child exit and remove staging only after reap.
+    /// An unconfirmed reap retains staging and reports the launched child's observed PID.
+    pub fn close(self) -> Result<(), CompanionCleanupError> {
+        let Self {
+            stream, companion, ..
+        } = self;
+        drop(stream);
+        match companion {
+            Some(companion) => companion.settle(),
+            None => Ok(()),
+        }
     }
 
     /// Submit one call to `export_id` with `args` against this session's store and resolve its
@@ -173,7 +196,7 @@ mod tests {
         let session = EphemeralSession {
             image,
             stream: client,
-            _companion: None,
+            companion: None,
             dead: false,
             next_turn: Some(0),
         };
@@ -525,7 +548,7 @@ mod tests {
         let EphemeralSession {
             image: _,
             stream: _,
-            _companion: _,
+            companion: _,
             dead: _,
             next_turn: _,
         } = session;

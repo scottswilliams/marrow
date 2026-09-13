@@ -73,7 +73,10 @@ directory and keeps the advisory lock inseparable from the engine. Provisioning
 calls a create-only operation that stamps the engine format. An open of an
 existing store has two phases: acquire the lock on the directory node with no
 engine call, then bind the store instance and open the engine under the same
-lock. `NativeOpenAccess` selects service read/write access or read-only
+lock. Lifecycle admission pairs its retained directory descriptor with that
+locked directory identity before reading the envelope and head. Ordinary access
+requires an active envelope; pending and legacy envelopes require recovery.
+`NativeOpenAccess` selects service read/write, explicit recovery or read-only
 inspection through that same opening path. Inspection cannot write or invoke
 the repairing integrity operation; it preserves any inherited unclean-shutdown
 obligation. An indeterminate commit quarantines the lock until process exit; the
@@ -92,9 +95,10 @@ code-only rebind, logical audit, and import read that fence before opening the
 engine. Refusal preserves the engine file, head, and envelope; owner-marker and
 lock bookkeeping can precede it. There is no automatic rewrite or migration
 reader. Generation 2 changes branch-entry keys; root, index, and metadata
-encodings retain their generation-1 shapes. Image, envelope, and engine formats
-are unchanged, and the head's sequencing and data-digest fields retain their
-reserved-zero meanings
+encodings retain their generation-1 shapes. The head's sequencing and data-digest
+fields retain their reserved-zero meanings. Envelope version 1 separately records
+active or pending publication state; explicit recovery can upgrade a legacy
+version-0 envelope without changing the head layout or logical data
 ([compatibility](../compatibility.md#versioning)).
 
 ## Reading a field
@@ -237,7 +241,34 @@ recovery permit.
 
 Physical checksum verification is not part of logical inspection. A scalar
 change that remains valid under its declared type can pass even when its
-physical checksum is wrong. Full physical and image/schema/store validation
-with fresh read-only admission before recovery resumes service remains
-unimplemented. The existing service recovery path and its limitations are
-unchanged ([operations](../operations/README.md#auditing-a-store)).
+physical checksum is wrong ([operations](../operations/README.md#auditing-a-store)).
+
+## Explicit recovery
+
+`marrow-lifecycle::recover` holds one owner through metadata admission, integrity
+checking and activation. It admits the present head's exact digest against the
+pending transition and the supplied image before opening the engine.
+`NativeOpenAccess::Recovery` forces physical integrity checking even when the
+owner marker indicates a clean shutdown. The existing logical walk then checks
+the contents against the image. Recovery is a read-write operation; doctor does
+not inherit its repair capability.
+
+After validation, only `envelope.replacing` and `head.replacing` are eligible for
+preservation. Regular single-link files move without replacement to reported
+entropy-suffixed sibling names. At most two moves occur per attempt; earlier
+preserved files remain. A later failure reports moves already made. Recovery
+never decodes those files as a missing head update or deletes them as stale work.
+
+A legacy envelope first becomes pending upgrade with the exact current head
+digest. Recovery synchronizes artifacts, the store directory and its current
+parent, then writes Active and synchronizes the directory. It verifies the
+current location and rereads the actual envelope and head for final exact-image
+admission. It preserves the instance, selected head and logical data and records
+the recovery toolchain as envelope writer. No application attachment escapes
+this operation.
+
+These checks establish a fresh result at the current location. They reconstruct
+no lost acknowledgment and do not authenticate the engine file, detect arbitrary
+rollback, or qualify sudden power loss. Directory custody does not remove the
+cooperative filesystem assumptions
+([recovery](../operations/README.md#recovering-a-store)).

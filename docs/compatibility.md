@@ -23,6 +23,16 @@ generation-2 stores. Neither a code-only rebind nor `import` converts a store.
 A version refusal preserves the engine file, head, and envelope and occurs before engine
 open ([changing the program](operations/README.md#changing-the-program)).
 
+The current store-envelope version is 1. It records whether activation completed
+or a provision, rebind or explicit envelope upgrade is pending. Ordinary access
+refuses both pending records and legacy version-0 envelopes with
+`store.activation_required`. `marrow recover` can explicitly upgrade a version-0
+envelope after validating the present exact image, supported head and engine,
+and physical and logical contents. It leaves logical data and the selected head
+in place and retains the store instance. This is an envelope upgrade, not a
+head-layout or program-contract migration. Version-0 readers refuse the new
+envelope ([recovery](operations/README.md#recovering-a-store)).
+
 The compiler refuses public aggregate inputs and bound durable values containing
 nominal integers because their transfer and stored shapes erase nominal
 intervals. Recompiling such source reports `check.unsupported`

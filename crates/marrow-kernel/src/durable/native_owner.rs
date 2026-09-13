@@ -137,6 +137,11 @@ pub struct PendingNativeStoreOwner {
 }
 
 impl PendingNativeStoreOwner {
+    /// Metadata from the lower owner's retained, locked directory node.
+    pub fn directory_metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.pending.directory_metadata()
+    }
+
     /// The canonical store directory this owner holds.
     pub fn directory(&self) -> &Path {
         self.pending.directory()
@@ -144,7 +149,7 @@ impl PendingNativeStoreOwner {
 
     /// Bind `instance` into the owner marker, run the zero-capability admission
     /// callback, and open the engine with the requested access under the same lock. Only
-    /// read-write access may discharge an inherited physical-audit obligation. The
+    /// service or explicit recovery access may discharge a physical-audit obligation. The
     /// recovery scope is minted here, from the instance the caller bound and the
     /// directory the lock was taken over, so no scope can name a store this owner
     /// does not hold.

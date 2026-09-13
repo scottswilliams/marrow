@@ -46,8 +46,8 @@ impl Service {
     /// accepted-report `approval` token. Borrows the prepared image, rebuilds the report the
     /// approval must match (so an approval for a different store or image is refused), and
     /// publishes a complete store, reporting uncertainty if the final directory sync fails.
-    /// A parked durable shape, a mismatched
-    /// approval, or a taken destination each surface as a typed reject.
+    /// Ordinary refusal is a typed reject. If removal of an owned unpublished stage
+    /// also fails, the reply retains both the primary code and cleanup evidence.
     fn handle_provision(&self, store: &str, approval: &str) -> ServerMessage {
         let approval = marrow_lifecycle::ProvisionApproval::from_token(approval);
         provision_reply(marrow_lifecycle::provision_image(
@@ -98,12 +98,25 @@ fn provision_reply(
         Ok(provisioned) => ServerMessage::Provisioned {
             instance: provisioned.instance.to_hex(),
         },
-        Err(error) => match error.uncertain_instance() {
-            Some(instance) => ServerMessage::ProvisionUncertain {
+        Err(error) => match error.uncertainty() {
+            Some((reason, instance)) => ServerMessage::ProvisionUncertain {
+                reason,
                 instance: instance.to_hex(),
             },
-            None => ServerMessage::Reject {
-                code: error.code().to_string(),
+            None => match error.cleanup() {
+                Some(cleanup) => ServerMessage::ProvisionFailed {
+                    code: error.code().to_string(),
+                    stage: cleanup
+                        .stage
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .expect("provision creates a generated ASCII stage component")
+                        .to_string(),
+                    os_error: cleanup.source.raw_os_error(),
+                },
+                None => ServerMessage::Reject {
+                    code: error.code().to_string(),
+                },
             },
         },
     }
@@ -118,20 +131,62 @@ fn reject(code: Code) -> ServerMessage {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn publication_uncertainty_preserves_instance_in_actual_reply_projection() {
+    fn provision_uncertainty_preserves_reason_and_instance_in_actual_reply_projection() {
         let instance = marrow_lifecycle::StoreInstanceId::from_bytes([0x12; 16]);
-        let error = marrow_lifecycle::ProvisionImageError::Provision(
-            marrow_lifecycle::ProvisionError::PublicationUncertain {
-                instance,
-                source: std::io::Error::from(std::io::ErrorKind::Other),
-            },
-        );
-        let reply = super::provision_reply(Err(error));
+        for (reason, error) in [
+            (
+                marrow_codes::StoreUncertainty::Publication,
+                marrow_lifecycle::ProvisionFault::PublicationUncertain {
+                    instance,
+                    source: std::io::Error::from(std::io::ErrorKind::Other),
+                },
+            ),
+            (
+                marrow_codes::StoreUncertainty::Activation,
+                marrow_lifecycle::ProvisionFault::ActivationUncertain {
+                    instance,
+                    source: marrow_lifecycle::AdmissionError {
+                        entry: marrow_lifecycle::StoreEntry::Envelope,
+                        fault: marrow_lifecycle::AdmissionFault::MultiplyLinked { links: 2 },
+                    },
+                },
+            ),
+        ] {
+            let reply = super::provision_reply(Err(
+                marrow_lifecycle::ProvisionImageError::Provision(error.into()),
+            ));
+            let expected = marrow_local_wire::ServerMessage::ProvisionUncertain {
+                reason,
+                instance: instance.to_hex(),
+            };
+            assert_eq!(reply, expected);
+            let encoded = reply.encode_frame(0).expect("encode actual reply");
+            assert_eq!(
+                marrow_local_wire::ServerMessage::decode(&encoded.as_bytes()[4..]),
+                Ok(expected)
+            );
+        }
+        let cleanup =
+            marrow_lifecycle::ProvisionImageError::Provision(marrow_lifecycle::ProvisionError {
+                fault: marrow_lifecycle::ProvisionFault::AlreadyProvisioned,
+                cleanup: Some(marrow_lifecycle::ProvisionCleanupFailure {
+                    stage: std::path::PathBuf::from("parent/.marrow-provisioning.123.0"),
+                    source: std::io::Error::from_raw_os_error(13),
+                }),
+            });
+        let reply = super::provision_reply(Err(cleanup));
         assert_eq!(
             reply,
-            marrow_local_wire::ServerMessage::ProvisionUncertain {
-                instance: instance.to_hex()
+            marrow_local_wire::ServerMessage::ProvisionFailed {
+                code: marrow_codes::Code::StoreLocked.as_str().into(),
+                stage: ".marrow-provisioning.123.0".into(),
+                os_error: Some(13),
             }
+        );
+        let frame = reply.encode_with_turn(99).unwrap();
+        assert_eq!(
+            marrow_local_wire::ServerMessage::decode_with_turn(&frame[4..]),
+            Ok((reply, None))
         );
         assert!(matches!(
             super::provision_reply(Err(marrow_lifecycle::ProvisionImageError::Unapproved)),

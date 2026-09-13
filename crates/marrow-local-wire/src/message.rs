@@ -71,6 +71,12 @@ pub enum ServerMessage {
     /// The handshake succeeded: the runner proves its session token and pins the
     /// interface identity the launched image serves.
     Ready { session: Id32, interface: Id32 },
+    /// The authenticated attach could not confirm activation. No request session opens.
+    ActivationUncertain {
+        session: Id32,
+        interface: Id32,
+        instance: String,
+    },
     /// A successful call result (JSON `null` for a unit return).
     Value { data: Json },
     /// A source-mapped runtime fault raised while running the export.
@@ -90,8 +96,18 @@ pub enum ServerMessage {
     /// A store was provisioned: `instance` is the fresh store instance identity
     /// (lowercase hex). The receipt of a completed provision.
     Provisioned { instance: String },
-    /// A complete store was published, but parent-directory durability is unconfirmed.
-    ProvisionUncertain { instance: String },
+    /// Provision reached an unconfirmed publication or activation barrier.
+    ProvisionUncertain {
+        reason: marrow_codes::StoreUncertainty,
+        instance: String,
+    },
+    /// Provision failed before publication and cleanup of its private stage also failed.
+    /// `stage` is a generated sibling component of the requested destination, not a child.
+    ProvisionFailed {
+        code: String,
+        stage: String,
+        os_error: Option<i32>,
+    },
 }
 
 impl ClientMessage {
@@ -196,7 +212,12 @@ impl ServerMessage {
     /// Encode a complete bounded frame, borrowing the message payload.
     /// Handshake and provision receipts carry no turn.
     pub fn encode_frame(&self, turn: u32) -> Result<EncodedFrame, WireError> {
-        if let Self::ProvisionUncertain { instance } = self {
+        if let Self::ProvisionFailed { stage, .. } = self {
+            validate_provision_stage(stage)?;
+        }
+        if let Self::ProvisionUncertain { instance, .. }
+        | Self::ActivationUncertain { instance, .. } = self
+        {
             validate_store_instance(instance)?;
         }
         frame::encode(|slot| {
@@ -204,6 +225,19 @@ impl ServerMessage {
                 ServerMessage::Ready { session, interface } => {
                     object.field("interface", |slot| slot.string(&interface.to_hex()))?;
                     object.field("kind", |slot| slot.string("ready"))?;
+                    object.field("session", |slot| slot.string(&session.to_hex()))
+                }
+                ServerMessage::ActivationUncertain {
+                    session,
+                    interface,
+                    instance,
+                } => {
+                    object.field("code", |slot| {
+                        slot.string(marrow_codes::Code::StoreActivationUncertain.as_str())
+                    })?;
+                    object.field("instance", |slot| slot.string(instance))?;
+                    object.field("interface", |slot| slot.string(&interface.to_hex()))?;
+                    object.field("kind", |slot| slot.string("activation_uncertain"))?;
                     object.field("session", |slot| slot.string(&session.to_hex()))
                 }
                 ServerMessage::Value { data } => {
@@ -235,12 +269,28 @@ impl ServerMessage {
                     object.field("instance", |slot| slot.string(instance))?;
                     object.field("kind", |slot| slot.string("provisioned"))
                 }
-                ServerMessage::ProvisionUncertain { instance } => {
-                    object.field("code", |slot| {
-                        slot.string(marrow_codes::Code::StorePublicationUncertain.as_str())
-                    })?;
+                ServerMessage::ProvisionUncertain { reason, instance } => {
+                    object.field("code", |slot| slot.string(reason.code().as_str()))?;
                     object.field("instance", |slot| slot.string(instance))?;
                     object.field("kind", |slot| slot.string("provision_uncertain"))
+                }
+                ServerMessage::ProvisionFailed {
+                    code,
+                    stage,
+                    os_error,
+                } => {
+                    object.field("cleanup", |slot| {
+                        slot.object(|cleanup| {
+                            cleanup.field("code", |slot| slot.string("store.io"))?;
+                            cleanup.field("os_error", |slot| match os_error {
+                                Some(value) => slot.integer(i64::from(*value)),
+                                None => slot.json(&Json::Null),
+                            })?;
+                            cleanup.field("stage", |slot| slot.string(stage))
+                        })
+                    })?;
+                    object.field("code", |slot| slot.string(code))?;
+                    object.field("kind", |slot| slot.string("provision_failed"))
                 }
             })
         })
@@ -264,6 +314,22 @@ impl ServerMessage {
                     ServerMessage::Ready {
                         session: object.id("session")?,
                         interface: object.id("interface")?,
+                    },
+                    None,
+                ))
+            }
+            "activation_uncertain" => {
+                object.exact(&["code", "instance", "interface", "kind", "session"])?;
+                if object.code("code")? != marrow_codes::Code::StoreActivationUncertain.as_str() {
+                    return Err(WireError::Malformed);
+                }
+                let instance = object.string("instance")?;
+                validate_store_instance(&instance)?;
+                Ok((
+                    ServerMessage::ActivationUncertain {
+                        session: object.id("session")?,
+                        interface: object.id("interface")?,
+                        instance,
                     },
                     None,
                 ))
@@ -318,12 +384,37 @@ impl ServerMessage {
             }
             "provision_uncertain" => {
                 object.exact(&["code", "instance", "kind"])?;
-                if object.code("code")? != marrow_codes::Code::StorePublicationUncertain.as_str() {
-                    return Err(WireError::Malformed);
-                }
+                let reason = marrow_codes::Code::from_code(&object.code("code")?)
+                    .and_then(marrow_codes::StoreUncertainty::from_code)
+                    .ok_or(WireError::Malformed)?;
                 let instance = object.string("instance")?;
                 validate_store_instance(&instance)?;
-                Ok((ServerMessage::ProvisionUncertain { instance }, None))
+                Ok((ServerMessage::ProvisionUncertain { reason, instance }, None))
+            }
+            "provision_failed" => {
+                object.exact(&["cleanup", "code", "kind"])?;
+                let cleanup = Fields::new(object.get("cleanup")?)?;
+                cleanup.exact(&["code", "os_error", "stage"])?;
+                if cleanup.code("code")? != "store.io" {
+                    return Err(WireError::Malformed);
+                }
+                let stage = cleanup.string("stage")?;
+                validate_provision_stage(&stage)?;
+                let os_error = match cleanup.get("os_error")? {
+                    Json::Null => None,
+                    Json::Int(value) => {
+                        Some(i32::try_from(*value).map_err(|_| WireError::Malformed)?)
+                    }
+                    _ => return Err(WireError::Malformed),
+                };
+                Ok((
+                    ServerMessage::ProvisionFailed {
+                        code: object.code("code")?,
+                        stage,
+                        os_error,
+                    },
+                    None,
+                ))
             }
             _ => Err(WireError::Malformed),
         }
@@ -339,6 +430,19 @@ impl EncodedFrame {
     ) -> Result<Self, WireError> {
         frame::encode(|slot| slot.object(|object| write_value_response(object, turn, write)))
     }
+}
+
+fn validate_provision_stage(stage: &str) -> Result<(), WireError> {
+    let (pid, counter) = stage
+        .strip_prefix(".marrow-provisioning.")
+        .and_then(|suffix| suffix.split_once('.'))
+        .ok_or(WireError::Malformed)?;
+    let pid_value = pid.parse::<u32>().map_err(|_| WireError::Malformed)?;
+    let counter_value = counter.parse::<u64>().map_err(|_| WireError::Malformed)?;
+    if pid_value.to_string() != pid || counter_value.to_string() != counter {
+        return Err(WireError::Malformed);
+    }
+    Ok(())
 }
 
 fn validate_store_instance(instance: &str) -> Result<(), WireError> {
@@ -485,6 +589,65 @@ mod tests {
         String::from_utf8(frame[5..].to_vec()).expect("utf8 json")
     }
 
+    #[test]
+    fn provision_cleanup_failure_round_trips_without_a_call_turn() {
+        for errno in ["null", "-2147483648", "2147483647"] {
+            let text = format!(
+                "{{\"cleanup\":{{\"code\":\"store.io\",\"os_error\":{errno},\"stage\":\".marrow-provisioning.4294967295.18446744073709551615\"}},\"code\":\"store.already_provisioned\",\"kind\":\"provision_failed\"}}"
+            );
+            let mut body = vec![crate::PROTOCOL_VERSION];
+            body.extend_from_slice(text.as_bytes());
+            let (message, turn) = ServerMessage::decode_with_turn(&body)
+                .expect("preserve the complete primary and cleanup failure");
+            assert_eq!(turn, None);
+            assert_eq!(json_of(&message.encode_with_turn(42).unwrap()), text);
+        }
+    }
+
+    #[test]
+    fn provision_cleanup_failure_rejects_unbounded_or_ambiguous_records() {
+        let valid = r#"{"cleanup":{"code":"store.io","os_error":null,"stage":".marrow-provisioning.123.0"},"code":"store.locked","kind":"provision_failed"}"#;
+        let invalid = [
+            valid.replace(".marrow-provisioning.123.0", "../stage"),
+            valid.replace(".marrow-provisioning.123.0", ".marrow-provisioning.0123.0"),
+            valid.replace(
+                ".marrow-provisioning.123.0",
+                ".marrow-provisioning.4294967296.0",
+            ),
+            valid.replace(
+                ".marrow-provisioning.123.0",
+                ".marrow-provisioning.1.18446744073709551616",
+            ),
+            valid.replace("null", "2147483648"),
+            valid.replace("null", "-2147483649"),
+            valid.replace("null", "true"),
+            valid.replace("store.io", "store.locked"),
+            valid.replace("\"os_error\":null,", ""),
+            valid.replace(
+                "\"code\":\"store.locked\"",
+                "\"code\":\"store.locked\",\"instance\":\"00000000000000000000000000000000\"",
+            ),
+            valid.replace(
+                "\"kind\":\"provision_failed\"",
+                "\"kind\":\"provision_failed\",\"turn\":0",
+            ),
+        ];
+        for text in invalid {
+            let mut body = vec![crate::PROTOCOL_VERSION];
+            body.extend_from_slice(text.as_bytes());
+            assert!(ServerMessage::decode(&body).is_err(), "accepted {text}");
+        }
+        assert!(
+            ServerMessage::ProvisionFailed {
+                code: "store.io".into(),
+                stage: "../stage".into(),
+                os_error: None,
+            }
+            .encode()
+            .is_err()
+        );
+    }
+
     /// Frozen canonical spellings for each message kind.
     #[test]
     fn message_json_is_frozen() {
@@ -593,15 +756,55 @@ mod tests {
     }
 
     #[test]
-    fn provision_uncertainty_round_trips_without_an_invocation_turn() {
-        let message = ServerMessage::ProvisionUncertain {
-            instance: "12".repeat(16),
-        };
-        let encoded = message.encode().expect("encode uncertainty");
-        let (decoded, turn) =
-            ServerMessage::decode_with_turn(&encoded[4..]).expect("decode uncertainty");
-        assert_eq!(decoded, message);
+    fn activation_uncertainty_is_a_closed_handshake_response() {
+        let json = format!(
+            "{{\"code\":\"store.activation_uncertain\",\"instance\":\"{}\",\"interface\":\"{}\",\"kind\":\"activation_uncertain\",\"session\":\"{}\"}}",
+            "12".repeat(16),
+            "34".repeat(32),
+            "56".repeat(32)
+        );
+        let body = [&[crate::PROTOCOL_VERSION], json.as_bytes()].concat();
+        let (message, turn) = ServerMessage::decode_with_turn(&body)
+            .expect("authenticated activation uncertainty has a typed handshake response");
         assert_eq!(turn, None);
+        assert_eq!(&message.encode_with_turn(42).expect("encode")[4..], body);
+        for invalid in [
+            json.replace("store.activation_uncertain", "store.publication_uncertain"),
+            json.replace(&"12".repeat(16), "12"),
+            json.replace(&"34".repeat(32), "34"),
+            json.replace(&"56".repeat(32), &"AB".repeat(32)),
+            json.replace("}", ",\"turn\":0}"),
+        ] {
+            let body = [&[crate::PROTOCOL_VERSION], invalid.as_bytes()].concat();
+            assert!(ServerMessage::decode(&body).is_err());
+        }
+    }
+
+    #[test]
+    fn provision_uncertainty_round_trips_without_an_invocation_turn() {
+        for reason in [
+            marrow_codes::StoreUncertainty::Publication,
+            marrow_codes::StoreUncertainty::Activation,
+        ] {
+            let message = ServerMessage::ProvisionUncertain {
+                reason,
+                instance: "12".repeat(16),
+            };
+            let encoded = message.encode_with_turn(19).expect("encode uncertainty");
+            assert_eq!(
+                &encoded[5..],
+                format!(
+                    "{{\"code\":\"{}\",\"instance\":\"{}\",\"kind\":\"provision_uncertain\"}}",
+                    reason.code().as_str(),
+                    "12".repeat(16)
+                )
+                .as_bytes()
+            );
+            let (decoded, turn) =
+                ServerMessage::decode_with_turn(&encoded[4..]).expect("decode uncertainty");
+            assert_eq!(decoded, message);
+            assert_eq!(turn, None);
+        }
     }
 
     #[test]
@@ -614,6 +817,7 @@ mod tests {
         ] {
             assert!(
                 ServerMessage::ProvisionUncertain {
+                    reason: marrow_codes::StoreUncertainty::Publication,
                     instance: instance.into()
                 }
                 .encode()

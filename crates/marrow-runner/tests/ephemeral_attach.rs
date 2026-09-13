@@ -161,7 +161,6 @@ fn workshop_journey_over_one_ephemeral_session() {
         present_name("Bay 3"),
     );
     assert_eq!(session.value("moveCount", vec![]), Some(Value::Int(1)));
-
     // The catalogued tally is staged before the duplicate asset tag faults at its write.
     // Rollback must discard that earlier mutation of the other root.
     assert_eq!(
@@ -193,6 +192,7 @@ fn workshop_journey_over_one_ephemeral_session() {
     );
     assert_eq!(session.value("catalogued", vec![]), Some(Value::Int(1)));
     assert_eq!(session.value("moveCount", vec![]), Some(Value::Int(1)));
+    session.inner.close().expect("session settled");
 }
 
 /// A committed add is observable with its `log` descendant on a later call in the same session:
@@ -226,6 +226,7 @@ fn a_committed_add_is_observable_with_its_log_descendant() {
         session.value("noteText", vec![Json::Int(7), Json::Int(1)]),
         present_name("catalogued"),
     );
+    session.inner.close().expect("session settled");
 }
 
 /// A fresh session opens an empty store: an asset committed in one session is *not* visible in a
@@ -256,6 +257,7 @@ fn a_new_session_starts_from_an_empty_store() {
             first.value("assetName", vec![Json::Int(5)]),
             present_name("Jigsaw"),
         );
+        first.inner.close().expect("first session settled");
     }
 
     // A second session's store is empty: the prior asset is absent.
@@ -268,4 +270,5 @@ fn a_new_session_starts_from_an_empty_store() {
         second.value("present", vec![Json::Int(5)]),
         Some(Value::Bool(false)),
     );
+    second.inner.close().expect("second session settled");
 }

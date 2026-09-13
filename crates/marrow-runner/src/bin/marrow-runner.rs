@@ -48,8 +48,9 @@ enum Command {
     },
     /// Attach the image to the persistent store at `store` and serve its exports.
     Attach { image: PathBuf, store: PathBuf },
-    /// Audit the persistent store at `store` read-only against the image.
-    Audit {
+    /// Inspect or explicitly recover the store against a verified image.
+    Store {
+        operation: StoreOperation,
         image: PathBuf,
         store: PathBuf,
         format: ReportFormat,
@@ -68,7 +69,13 @@ enum Command {
     },
 }
 
-/// How `audit` renders its report.
+#[derive(Clone, Copy)]
+enum StoreOperation {
+    Audit,
+    Recover,
+}
+
+/// How store inspection and recovery render their results.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReportFormat {
     Text,
@@ -78,11 +85,15 @@ enum ReportFormat {
 fn main() -> ExitCode {
     match parse_args() {
         Some(Command::Serve { image }) => serve(&image),
-        Some(Command::Audit {
+        Some(Command::Store {
+            operation,
             image,
             store,
             format,
-        }) => audit_command(&image, &store, format),
+        }) => match operation {
+            StoreOperation::Audit => audit_command(&image, &store, format),
+            StoreOperation::Recover => finish_output(recovery_output(&image, &store, format)),
+        },
         Some(Command::Provision {
             image,
             store,
@@ -105,6 +116,7 @@ fn main() -> ExitCode {
                  --store <dir>\n       marrow-runner attach-ephemeral --image \
                  <path>\n       marrow-runner import --image <path> --store <dir> \
                  --jsonl <path> --root <name> --keys <col,...>\n       marrow-runner audit \
+                 --image <path> --store <dir> [--format text|jsonl]\n       marrow-runner recover \
                  --image <path> --store <dir> [--format text|jsonl]"
             );
             ExitCode::from(2)
@@ -160,6 +172,7 @@ fn write_receipt(output: &mut dyn Write, receipt: &str) -> std::io::Result<()> {
 }
 
 fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::Result<ExitCode> {
+    let store_text = validate_store_output(store)?;
     let image = match load_image(image_path) {
         Ok(image) => image,
         Err(code) => return Ok(code),
@@ -199,36 +212,83 @@ fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::R
                         "instance".to_string(),
                         Json::Str(provisioned.instance.to_hex()),
                     ),
-                    ("store".to_string(), Json::Str(store.display().to_string())),
+                    ("store".to_string(), Json::Str(store_text.into())),
                 ])),
             )?;
             Ok(ExitCode::SUCCESS)
         }
         Err(error) => {
             let _ = writeln!(stderr, "{}: {error}", error.code());
-            write_provision_uncertainty(&mut std::io::stdout().lock(), store, &error)?;
+            write_provision_failure(&mut std::io::stdout().lock(), store, &error)?;
             Ok(ExitCode::FAILURE)
         }
     }
 }
 
-fn write_provision_uncertainty(
+fn write_provision_failure(
     output: &mut dyn Write,
     store: &Path,
     error: &marrow_lifecycle::ProvisionImageError,
 ) -> std::io::Result<()> {
-    let Some(instance) = error.uncertain_instance() else {
-        return Ok(());
-    };
-    write_receipt(
-        output,
-        &encode(&Json::Object(vec![
-            ("code".into(), Json::Str(error.code().into())),
+    let mut fields = if let Some((reason, instance)) = error.uncertainty() {
+        vec![
+            ("code".into(), Json::Str(reason.code().as_str().into())),
             ("instance".into(), Json::Str(instance.to_hex())),
             ("kind".into(), Json::Str("provision_uncertain".into())),
-            ("store".into(), Json::Str(store.display().to_string())),
-        ])),
-    )
+        ]
+    } else if let Some(cleanup) = error.cleanup() {
+        let stage = cleanup
+            .stage
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid provision stage component",
+                )
+            })?;
+        vec![
+            (
+                "cleanup".into(),
+                Json::Object(vec![
+                    ("code".into(), Json::Str("store.io".into())),
+                    (
+                        "os_error".into(),
+                        cleanup
+                            .source
+                            .raw_os_error()
+                            .map_or(Json::Null, |value| Json::Int(i64::from(value))),
+                    ),
+                    ("stage".into(), Json::Str(stage.into())),
+                ]),
+            ),
+            ("code".into(), Json::Str(error.code().into())),
+            ("kind".into(), Json::Str("provision_failed".into())),
+        ]
+    } else {
+        return Ok(());
+    };
+    fields.push((
+        "store".into(),
+        Json::Str(validate_store_output(store)?.into()),
+    ));
+    write_receipt(output, &encode(&Json::Object(fields)))
+}
+
+fn validate_store_output(store: &Path) -> std::io::Result<&str> {
+    let text = store.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "store spelling must be UTF-8",
+        )
+    })?;
+    if text.len() > marrow_local_wire::MAX_STRING_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "store spelling exceeds the output string bound",
+        ));
+    }
+    Ok(text)
 }
 
 /// Serve the image's storeless exports over a private local channel (the `--image` command).
@@ -240,7 +300,8 @@ fn serve(image_path: &Path) -> ExitCode {
     let service = match Service::build(image) {
         Ok(service) => service,
         Err(error) => {
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr().lock(),
                 "{}: {error}",
                 marrow_codes::Code::CliInterfaceUnbuildable.as_str()
             );
@@ -274,19 +335,29 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         // unchanged; the store is open on the new image. The receipt is confirmed-commit
         // evidence, consumed here rather than echoed to the client (the spawn is invisible).
         Ok(marrow_lifecycle::AttachOutcome::Rebound { attachment, .. }) => attachment,
-        // A demand-exceeds-ceiling authority refusal happens before the store is opened (zero
-        // engine calls). Rather than exit — which the terminal would see only as a spawn
-        // failure — serve a typed refusal over the channel so the terminal renders a
-        // `CallOutcome::Reject`; the full source-vocabulary sentence goes to stderr, the
-        // byte-log pipe the trusted main owns. Binding the channel and proving the handshake
-        // open no store, so the refusal path stays zero-engine-call.
+        // This authority refusal precedes every engine call. The authenticated refusal
+        // service exposes that known result; exiting before the handshake would leave
+        // activation outcome unknown to the client. Channel setup opens no store.
         Err(marrow_lifecycle::LifecycleError::DemandExceedsCeiling(refusal)) => {
-            eprintln!("{}: {refusal}", refusal.code());
+            let _ = writeln!(std::io::stderr().lock(), "{}: {refusal}", refusal.code());
             let code = refusal.code();
             return serve_over_channel(identity, move || marrow_runner::RefusalService::new(code));
         }
+        Err(error @ marrow_lifecycle::LifecycleError::ActivationUncertain { instance, .. }) => {
+            let _ = writeln!(std::io::stderr().lock(), "{}: {error}", error.code());
+            let _ = with_channel(identity, move |channel, secrets, deadlines| {
+                channel.report_activation_uncertain(
+                    secrets,
+                    identity,
+                    instance,
+                    deadlines,
+                    MAX_ACCEPT_ATTEMPTS,
+                )
+            });
+            return ExitCode::FAILURE;
+        }
         Err(error) => {
-            eprintln!("{}: {error}", error.code());
+            let _ = writeln!(std::io::stderr().lock(), "{}: {error}", error.code());
             return ExitCode::FAILURE;
         }
     };
@@ -324,6 +395,22 @@ fn attach_ephemeral(image_path: &Path) -> ExitCode {
 /// handler opens on construction — the ephemeral-memory store — never opens for an unauthenticated
 /// peer. The eager modes (storeless, native) pass a closure returning an already-built handler.
 fn serve_over_channel<H: Handler>(interface: Id32, make_handler: impl FnOnce() -> H) -> ExitCode {
+    with_channel(interface, move |channel, secrets, deadlines| {
+        channel.accept_and_serve(
+            secrets,
+            interface,
+            deadlines,
+            MAX_ACCEPT_ATTEMPTS,
+            make_handler,
+        )
+    })
+}
+
+/// Publish one fallible launch descriptor and own channel cleanup for both startup outcomes.
+fn with_channel(
+    interface: Id32,
+    run: impl FnOnce(&Channel, &LaunchSecrets, &Deadlines) -> Result<(), marrow_runner::AcceptError>,
+) -> ExitCode {
     let expected_nonce = match nonce_from_env() {
         Ok(nonce) => nonce,
         Err(()) => return ExitCode::FAILURE,
@@ -333,7 +420,11 @@ fn serve_over_channel<H: Handler>(interface: Id32, make_handler: impl FnOnce() -
         None => match mint_id() {
             Ok(nonce) => (nonce, Some(nonce)),
             Err(err) => {
-                eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "{}: {err}",
+                    marrow_codes::Code::IoRead.as_str()
+                );
                 return ExitCode::FAILURE;
             }
         },
@@ -341,7 +432,11 @@ fn serve_over_channel<H: Handler>(interface: Id32, make_handler: impl FnOnce() -
     let session = match mint_id() {
         Ok(session) => session,
         Err(err) => {
-            eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}: {err}",
+                marrow_codes::Code::IoRead.as_str()
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -349,47 +444,47 @@ fn serve_over_channel<H: Handler>(interface: Id32, make_handler: impl FnOnce() -
     let channel = match Channel::bind() {
         Ok(channel) => channel,
         Err(err) => {
-            eprintln!("{}: {err}", marrow_codes::Code::IoWrite.as_str());
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}: {err}",
+                marrow_codes::Code::IoWrite.as_str()
+            );
             return ExitCode::FAILURE;
         }
     };
 
-    println!(
-        "{}",
-        launch_descriptor(
-            interface,
-            // A minted nonce is published for a standalone launch; a supervisor-set
-            // one is already known to the supervisor and is not echoed.
-            published_nonce,
-            session,
-            channel.socket_path().to_string_lossy().as_ref(),
-        )
+    let descriptor = launch_descriptor(
+        interface,
+        // A minted nonce is published for a standalone launch; a supervisor-set
+        // one is already known to the supervisor and is not echoed.
+        published_nonce,
+        session,
+        channel.socket_path().to_string_lossy().as_ref(),
     );
+    if let Err(error) = write_receipt(&mut std::io::stdout().lock(), &descriptor) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "{}: {error}",
+            marrow_codes::Code::IoWrite.as_str()
+        );
+        channel.teardown();
+        return ExitCode::FAILURE;
+    }
 
     let deadlines = Deadlines::default();
     let secrets = LaunchSecrets {
         expected_nonce,
         session,
     };
-    // The handler is built only once a client authenticates, so the ephemeral store never opens
-    // for an unauthenticated peer.
-    let outcome = channel
-        .accept_and_serve(
-            &secrets,
-            interface,
-            &deadlines,
-            MAX_ACCEPT_ATTEMPTS,
-            make_handler,
-        )
-        .map_err(|error| {
-            // A session I/O error keeps the read code; a failure to admit a client is a handshake
-            // failure.
-            let code = match error {
-                marrow_runner::AcceptError::Io(_) => marrow_codes::Code::IoRead,
-                _ => marrow_codes::Code::RunnerHandshake,
-            };
-            eprintln!("{}: {error:?}", code.as_str());
-        });
+    let outcome = run(&channel, &secrets, &deadlines).map_err(|error| {
+        // A session I/O error keeps the read code; a failure to admit a client is a handshake
+        // failure.
+        let code = match error {
+            marrow_runner::AcceptError::Io(_) => marrow_codes::Code::IoRead,
+            _ => marrow_codes::Code::RunnerHandshake,
+        };
+        let _ = writeln!(std::io::stderr().lock(), "{}: {error:?}", code.as_str());
+    });
     channel.teardown();
 
     match outcome {
@@ -408,7 +503,8 @@ fn parse_args() -> Option<Command> {
         Some("attach") => parse_attach(args),
         Some("attach-ephemeral") => parse_attach_ephemeral(args),
         Some("import") => parse_import(args),
-        Some("audit") => parse_audit(args),
+        Some("audit") => parse_store(args, StoreOperation::Audit),
+        Some("recover") => parse_store(args, StoreOperation::Recover),
         Some("--image") => args.next().map(|image| Command::Serve {
             image: PathBuf::from(image),
         }),
@@ -433,9 +529,12 @@ fn parse_attach(mut args: impl Iterator<Item = String>) -> Option<Command> {
     })
 }
 
-/// Parse `audit --image <path> --store <dir> [--format text|jsonl]` in any flag order.
+/// Parse the image, store and format shared by audit and recovery.
 /// `--image` and `--store` are required; the format defaults to text.
-fn parse_audit(mut args: impl Iterator<Item = String>) -> Option<Command> {
+fn parse_store(
+    mut args: impl Iterator<Item = String>,
+    operation: StoreOperation,
+) -> Option<Command> {
     let mut image: Option<PathBuf> = None;
     let mut store: Option<PathBuf> = None;
     let mut format = ReportFormat::Text;
@@ -453,7 +552,8 @@ fn parse_audit(mut args: impl Iterator<Item = String>) -> Option<Command> {
             _ => return None,
         }
     }
-    Some(Command::Audit {
+    Some(Command::Store {
+        operation,
         image: image?,
         store: store?,
         format,
@@ -552,6 +652,7 @@ fn import_output(
     root_name: &str,
     keys: &[String],
 ) -> std::io::Result<ExitCode> {
+    validate_store_output(store)?;
     let image = match load_image(image_path) {
         Ok(image) => image,
         Err(code) => return Ok(code),
@@ -614,7 +715,7 @@ fn import_output(
                 }
                 Err(error) => {
                     let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
-                    write_provision_uncertainty(&mut std::io::stdout().lock(), store, &error)?;
+                    write_provision_failure(&mut std::io::stdout().lock(), store, &error)?;
                     return Ok(ExitCode::FAILURE);
                 }
             }
@@ -668,6 +769,88 @@ fn import_output(
     }
 }
 
+fn recovery_output(
+    image_path: &Path,
+    store: &Path,
+    format: ReportFormat,
+) -> std::io::Result<ExitCode> {
+    let store_text = validate_store_output(store)?;
+    let image = match load_image(image_path) {
+        Ok(image) => image,
+        Err(code) => return Ok(code),
+    };
+    let result = marrow_lifecycle::recover(store, marrow_lifecycle::prepare(image));
+    write_recovery_result(&mut std::io::stdout().lock(), store_text, &result, format)
+}
+
+fn write_recovery_result(
+    output: &mut dyn Write,
+    store: &str,
+    result: &Result<marrow_lifecycle::RecoveredStore, marrow_lifecycle::RecoveryError>,
+    format: ReportFormat,
+) -> std::io::Result<ExitCode> {
+    let preserved = match result {
+        Ok(receipt) => &receipt.preserved,
+        Err(error) => &error.preserved,
+    };
+    match format {
+        ReportFormat::Jsonl => {
+            let mut fields = vec![
+                ("kind".into(), Json::Str("recovery".into())),
+                ("store".into(), Json::Str(store.into())),
+                (
+                    "preserved".into(),
+                    Json::Array(preserved.iter().cloned().map(Json::Str).collect()),
+                ),
+            ];
+            match result {
+                Ok(receipt) => fields.extend([
+                    ("outcome".into(), Json::Str("activated".into())),
+                    ("instance".into(), Json::Str(receipt.instance.to_hex())),
+                    ("image".into(), Json::Str(receipt.image_id.to_hex())),
+                ]),
+                Err(error) => {
+                    fields.extend([
+                        ("outcome".into(), Json::Str("error".into())),
+                        ("code".into(), Json::Str(error.code().into())),
+                    ]);
+                    let instance = match &error.fault {
+                        marrow_lifecycle::RecoveryFault::Completion { instance, .. } => {
+                            Some(*instance)
+                        }
+                        marrow_lifecycle::RecoveryFault::Logical(report) => Some(report.instance),
+                        _ => None,
+                    };
+                    if let Some(instance) = instance {
+                        fields.push(("instance".into(), Json::Str(instance.to_hex())));
+                    }
+                }
+            }
+            write_receipt(output, &encode(&Json::Object(fields)))?;
+        }
+        ReportFormat::Text => {
+            match result {
+                Ok(receipt) => writeln!(
+                    output,
+                    "Activated store {store}\ninstance {}\nimage {}",
+                    receipt.instance.to_hex(),
+                    receipt.image_id.to_hex()
+                )?,
+                Err(error) => writeln!(output, "{}: {error}", error.code())?,
+            }
+            for name in preserved {
+                writeln!(output, "preserved {name}")?;
+            }
+            output.flush()?;
+        }
+    }
+    Ok(if result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
 /// Audit the store read-only against the image (the `audit` command). The lifecycle takes
 /// the store's single-owner lock, admits the image as the exact active binding, runs the
 /// kernel's logical walk through a read-only engine, and releases the lock; this command
@@ -683,7 +866,9 @@ fn audit_command(image_path: &Path, store: &Path, format: ReportFormat) -> ExitC
         Ok(audit) => audit,
         Err(error) => {
             match format {
-                ReportFormat::Text => eprintln!("{}: {error}", error.code()),
+                ReportFormat::Text => {
+                    let _ = writeln!(std::io::stderr().lock(), "{}: {error}", error.code());
+                }
                 ReportFormat::Jsonl => println!(
                     "{}",
                     encode(&Json::Object(vec![
@@ -796,7 +981,8 @@ fn audit_records(audit: &marrow_lifecycle::StoreAudit, store: String) -> Vec<Jso
 fn nonce_from_env() -> Result<Option<Id32>, ()> {
     match std::env::var("MARROW_RUNNER_NONCE") {
         Ok(text) => Id32::from_hex(&text).map(Some).ok_or_else(|| {
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr().lock(),
                 "{}: MARROW_RUNNER_NONCE is not 64 lowercase hex",
                 marrow_codes::Code::ConfigInvalid.as_str()
             );
@@ -821,16 +1007,86 @@ fn launch_descriptor(interface: Id32, nonce: Option<Id32>, session: Id32, socket
 #[cfg(test)]
 mod output_tests {
     #[test]
+    fn durable_mutators_validate_output_spelling_before_loading_or_effects() {
+        let mut invalid = vec![PathBuf::from(
+            "s".repeat(marrow_local_wire::MAX_STRING_BYTES + 1),
+        )];
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            invalid.push(PathBuf::from(std::ffi::OsString::from_vec(vec![0xff])));
+        }
+        for store in invalid {
+            let image = Path::new("absent-validation-image");
+            for result in [
+                provision_output(image, &store, true),
+                import_output(image, &store, Path::new("absent-import"), "root", &[]),
+                recovery_output(image, &store, ReportFormat::Jsonl),
+            ] {
+                assert_eq!(
+                    result
+                        .expect_err("reject spelling before image load")
+                        .kind(),
+                    std::io::ErrorKind::InvalidInput
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provision_output_preserves_primary_and_cleanup_failure() {
+        let error =
+            marrow_lifecycle::ProvisionImageError::Provision(marrow_lifecycle::ProvisionError {
+                fault: marrow_lifecycle::ProvisionFault::AlreadyProvisioned,
+                cleanup: Some(marrow_lifecycle::ProvisionCleanupFailure {
+                    stage: PathBuf::from("parent/.marrow-provisioning.123.0"),
+                    source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                }),
+            });
+        let mut output = Vec::new();
+        write_provision_failure(&mut output, Path::new("parent/store"), &error).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&output).unwrap(),
+            "{\"cleanup\":{\"code\":\"store.io\",\"os_error\":null,\"stage\":\".marrow-provisioning.123.0\"},\"code\":\"store.locked\",\"kind\":\"provision_failed\",\"store\":\"parent/store\"}\n"
+        );
+        for limit in [0, 7, output.len() - 1] {
+            let mut sink = Sink {
+                bytes: Vec::new(),
+                failure: Failure::WriteAt(limit),
+            };
+            assert_eq!(
+                write_provision_failure(&mut sink, Path::new("parent/store"), &error)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::BrokenPipe
+            );
+            assert_eq!(sink.bytes, output[..limit]);
+        }
+        let mut sink = Sink {
+            bytes: Vec::new(),
+            failure: Failure::Flush,
+        };
+        assert_eq!(
+            write_provision_failure(&mut sink, Path::new("parent/store"), &error)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(sink.bytes, output);
+    }
+
+    #[test]
     fn uncertainty_output_preserves_published_identity_and_ordinary_refusal_is_silent() {
         let instance = marrow_lifecycle::StoreInstanceId::from_bytes([0x12; 16]);
         let error = marrow_lifecycle::ProvisionImageError::Provision(
-            marrow_lifecycle::ProvisionError::PublicationUncertain {
+            marrow_lifecycle::ProvisionFault::PublicationUncertain {
                 instance,
                 source: std::io::Error::from(std::io::ErrorKind::Other),
-            },
+            }
+            .into(),
         );
         let mut output = Vec::new();
-        super::write_provision_uncertainty(&mut output, std::path::Path::new("store"), &error)
+        super::write_provision_failure(&mut output, std::path::Path::new("store"), &error)
             .expect("write uncertainty");
         assert_eq!(
             String::from_utf8(output).expect("UTF-8"),
@@ -840,7 +1096,7 @@ mod output_tests {
             )
         );
         let mut output = Vec::new();
-        super::write_provision_uncertainty(
+        super::write_provision_failure(
             &mut output,
             std::path::Path::new("store"),
             &marrow_lifecycle::ProvisionImageError::Unapproved,
@@ -849,6 +1105,32 @@ mod output_tests {
         assert!(output.is_empty());
     }
     use super::*;
+
+    #[test]
+    fn provision_activation_uncertainty_keeps_the_actual_instance_in_output() {
+        let instance = marrow_lifecycle::StoreInstanceId::from_bytes([0x34; 16]);
+        let error = marrow_lifecycle::ProvisionImageError::Provision(
+            marrow_lifecycle::ProvisionFault::ActivationUncertain {
+                instance,
+                source: marrow_lifecycle::AdmissionError {
+                    entry: marrow_lifecycle::StoreEntry::Envelope,
+                    fault: marrow_lifecycle::AdmissionFault::MultiplyLinked { links: 2 },
+                },
+            }
+            .into(),
+        );
+        let mut output = Vec::new();
+        write_provision_failure(&mut output, Path::new("store"), &error)
+            .expect("write uncertainty");
+        assert_eq!(
+            output,
+            format!(
+                "{{\"code\":\"store.activation_uncertain\",\"instance\":\"{}\",\"kind\":\"provision_uncertain\",\"store\":\"store\"}}\n",
+                instance.to_hex()
+            )
+            .as_bytes()
+        );
+    }
 
     enum Failure {
         WriteAt(usize),
@@ -908,6 +1190,106 @@ mod output_tests {
         let mut healthy = Vec::new();
         write_receipt(&mut healthy, receipt).expect("healthy receipt");
         assert_eq!(healthy, expected.as_bytes());
+    }
+
+    #[test]
+    fn recovery_results_keep_identity_preservation_and_delivery_failures() {
+        let instance = marrow_lifecycle::StoreInstanceId::from_bytes([0x51; 16]);
+        let image_id = marrow_image::ImageId([0x62; 32]);
+        let preserved =
+            vec!["envelope.replacing.preserved.00000000000000000000000000000001".into()];
+        let results = [
+            Ok(marrow_lifecycle::RecoveredStore {
+                instance,
+                image_id,
+                preserved: preserved.clone(),
+            }),
+            Err(marrow_lifecycle::RecoveryError {
+                fault: marrow_lifecycle::RecoveryFault::Completion {
+                    instance,
+                    source: marrow_lifecycle::AuditError::Open(marrow_lifecycle::OpenError::Io(
+                        std::io::ErrorKind::Other.into(),
+                    )),
+                },
+                preserved: preserved.clone(),
+            }),
+            Err(marrow_lifecycle::RecoveryError {
+                fault: marrow_lifecycle::RecoveryFault::HeadMismatch,
+                preserved: Vec::new(),
+            }),
+        ];
+        for (index, result) in results.iter().enumerate() {
+            for format in [ReportFormat::Text, ReportFormat::Jsonl] {
+                let mut healthy = Vec::new();
+                assert_eq!(
+                    write_recovery_result(&mut healthy, "store", result, format).expect("output"),
+                    if result.is_ok() {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                );
+                let rendered = std::str::from_utf8(&healthy).expect("UTF-8");
+                if format == ReportFormat::Jsonl {
+                    let mut fields = vec![
+                        ("kind".into(), Json::Str("recovery".into())),
+                        ("store".into(), Json::Str("store".into())),
+                        (
+                            "preserved".into(),
+                            Json::Array(if index < 2 {
+                                preserved.iter().cloned().map(Json::Str).collect()
+                            } else {
+                                Vec::new()
+                            }),
+                        ),
+                        (
+                            "outcome".into(),
+                            Json::Str(if index == 0 { "activated" } else { "error" }.into()),
+                        ),
+                    ];
+                    if index < 2 {
+                        fields.push(("instance".into(), Json::Str(instance.to_hex())));
+                    }
+                    match index {
+                        0 => fields.push(("image".into(), Json::Str(image_id.to_hex()))),
+                        1 => fields.push((
+                            "code".into(),
+                            Json::Str("store.activation_uncertain".into()),
+                        )),
+                        _ => fields.push(("code".into(), Json::Str("store.corruption".into()))),
+                    }
+                    assert_eq!(rendered, format!("{}\n", encode(&Json::Object(fields))));
+                    assert!(
+                        marrow_local_wire::parse_strict(
+                            healthy.strip_suffix(b"\n").expect("one record newline")
+                        )
+                        .is_ok()
+                    );
+                } else {
+                    if index < 2 {
+                        assert!(rendered.contains(&instance.to_hex()));
+                        assert!(rendered.contains(&format!("preserved {}\n", preserved[0])));
+                    } else {
+                        assert!(!rendered.contains("preserved "));
+                    }
+                    if let Err(error) = result {
+                        assert!(rendered.starts_with(error.code()));
+                    }
+                }
+                for failure in [Failure::WriteAt(0), Failure::WriteAt(5), Failure::Flush] {
+                    let mut sink = Sink {
+                        bytes: Vec::new(),
+                        failure,
+                    };
+                    assert_eq!(
+                        write_recovery_result(&mut sink, "store", result, format)
+                            .unwrap_err()
+                            .kind(),
+                        std::io::ErrorKind::BrokenPipe
+                    );
+                }
+            }
+        }
     }
 
     #[test]

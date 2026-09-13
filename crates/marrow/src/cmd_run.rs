@@ -557,19 +557,57 @@ fn run_persistent(
         return usage("this export cannot be called from the terminal");
     };
 
-    match marrow_runner::attach_and_call(&runner, image, image_bytes, store, export_id, args) {
-        Ok(outcome) => {
-            let record = call_outcome_to_record(outcome);
-            let exit = match &record {
-                Record::Value(_) => ExitCode::SUCCESS,
-                _ => ExitCode::FAILURE,
-            };
-            emit(format, &[record], image.record_types(), image.enums(), exit)
+    let completion =
+        marrow_runner::attach_and_call(&runner, image, image_bytes, store, export_id, args);
+    let (records, exit) = attached_records(completion);
+    emit(format, &records, image.record_types(), image.enums(), exit)
+}
+
+fn attached_records(completion: marrow_runner::AttachCompletion) -> (Vec<Record>, ExitCode) {
+    let record = match completion.outcome {
+        Ok(outcome) => call_outcome_to_record(outcome),
+        Err(marrow_runner::ClientError::ActivationUncertain { instance }) => {
+            Record::ActivationUncertain { instance }
         }
-        Err(error) => {
-            let _ = writeln!(io::stderr().lock(), "{}", error.code());
-            ExitCode::FAILURE
+        Err(marrow_runner::ClientError::ActivationOutcomeUnknown { cause }) => {
+            Record::ActivationOutcomeUnknown {
+                cause_code: cause.code(),
+            }
         }
+        Err(error) => Record::OperationalError {
+            code: error.code(),
+            detail: None,
+        },
+    };
+    let exit = if matches!(record, Record::Value(_)) && completion.cleanup.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    let mut records = vec![record];
+    if let Err(error) = completion.cleanup {
+        records.push(cleanup_record(error));
+    }
+    (records, exit)
+}
+
+fn cleanup_record(error: marrow_runner::CompanionCleanupError) -> Record {
+    match error {
+        marrow_runner::CompanionCleanupError::Unreaped {
+            pid,
+            staging,
+            cause,
+            kill_error,
+        } => Record::CompanionUnreaped {
+            pid,
+            staging: staging.display().to_string(),
+            cause: cause.to_string(),
+            kill_error: kill_error.map(|error| error.to_string()),
+        },
+        marrow_runner::CompanionCleanupError::Staging { path, cause } => Record::CompanionStaging {
+            path: path.display().to_string(),
+            cause: cause.to_string(),
+        },
     }
 }
 
@@ -917,6 +955,57 @@ mod terminal_tests {
     use super::*;
 
     const TEXT_LIMIT: usize = 65_536;
+
+    #[test]
+    fn attach_emits_known_outcome_and_cleanup_failure_as_separate_records() {
+        let instance = "12".repeat(16);
+        for (outcome, first) in [
+            (
+                Ok(marrow_runner::CallOutcome::Value(Some(Value::Int(7)))),
+                Record::Value(Some(Value::Int(7))),
+            ),
+            (
+                Err(marrow_runner::ClientError::ActivationUncertain {
+                    instance: instance.clone(),
+                }),
+                Record::ActivationUncertain { instance },
+            ),
+            (
+                Err(marrow_runner::ClientError::ActivationOutcomeUnknown {
+                    cause: Box::new(marrow_runner::ClientError::Handshake),
+                }),
+                Record::ActivationOutcomeUnknown {
+                    cause_code: "runner.handshake",
+                },
+            ),
+        ] {
+            let (records, exit) = attached_records(marrow_runner::AttachCompletion {
+                outcome,
+                cleanup: Err(marrow_runner::CompanionCleanupError::Unreaped {
+                    pid: 123,
+                    staging: PathBuf::from("/tmp/retained"),
+                    cause: io::ErrorKind::TimedOut.into(),
+                    kill_error: None,
+                }),
+            });
+            assert_eq!(exit, ExitCode::FAILURE);
+            assert_eq!(records.len(), 2);
+            assert_eq!(records[0], first);
+            assert!(
+                matches!(&records[1], Record::CompanionUnreaped { pid: 123, staging, .. } if staging == "/tmp/retained")
+            );
+            let mut bytes = Vec::new();
+            assert_eq!(
+                emit_to(&mut bytes, Format::Jsonl, &records, &[], &[], exit).expect("emit"),
+                ExitCode::FAILURE
+            );
+            let text = String::from_utf8(bytes).expect("UTF-8 output");
+            let lines: Vec<_> = text.lines().collect();
+            assert_eq!(lines.len(), 2);
+            assert_eq!(lines[0], first.to_jsonl(&[], &[]).unwrap());
+            assert!(lines[1].contains("\"kind\":\"cleanup\""));
+        }
+    }
 
     fn text(value: &str) -> Record {
         Record::Value(Some(Value::Text(Rc::from(value))))

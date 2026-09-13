@@ -325,6 +325,15 @@ mod imp {
             .map_err(|errno| map("rename-noreplace", Reading::RenameFlagged, errno))
     }
 
+    pub(crate) fn rename_replace(
+        dir: &DirHandle,
+        from: &str,
+        to: &str,
+    ) -> Result<(), CustodyError> {
+        rustix::fs::renameat(dir, from, dir, to)
+            .map_err(|errno| map("rename-replace", Reading::Plain, errno))
+    }
+
     pub(crate) fn append(file: &mut FileHandle, bytes: &[u8]) -> Result<(), CustodyError> {
         file.write_all(bytes).map_err(|source| CustodyError::Io {
             op: "append",
@@ -591,6 +600,14 @@ mod imp {
     }
 
     pub(crate) fn rename_noreplace(
+        dir: &DirHandle,
+        _from: &str,
+        _to: &str,
+    ) -> Result<(), CustodyError> {
+        match *dir {}
+    }
+
+    pub(crate) fn rename_replace(
         dir: &DirHandle,
         _from: &str,
         _to: &str,

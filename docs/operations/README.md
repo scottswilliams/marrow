@@ -2,7 +2,7 @@
 
 A durable program keeps its data in a store: a directory on disk bound to one
 program. This page covers creating a store, running against it, changing the
-program, what an interrupted commit leaves behind, and auditing a store.
+program, interrupted commits, auditing a store, and explicit recovery.
 
 Today, a store runs on one machine under one process at a time. Served
 execution, backup, restore, and schema evolution are future work
@@ -32,8 +32,21 @@ supervisor exposes a fully delivered uncertainty record as `ProvisionUncertainEr
 A failed success-receipt delivery also leaves the published store in place.
 The supervisor waits for child and stream closure and validates the complete
 record; missing or invalid delivery has an unknown outcome. Neither result
-authorizes automatic reprovisioning. This classification does not persist a
-service veto across process death or provide a recovery procedure.
+authorizes automatic reprovisioning.
+
+Provisioning records a pending state before publishing the directory. Ordinary
+attach, import and audit refuse a pending store with `store.activation_required`.
+After the publication barrier, a failure to confirm final activation is
+`store.activation_uncertain`. Explicit [recovery](#recovering-a-store) validates
+the stored program and establishes fresh barriers. It does not reconstruct a
+lost acknowledgment.
+
+If construction or publication fails before the directory is published, the
+runner attempts to remove its owned staging directory. A removal failure retains
+both the original error and the actual stage location; removal may have deleted
+some contents already. The supervisor exposes a complete cleanup-failure record
+as `ProvisionFailedError`. Its stage name is a sibling of the requested store,
+not a child. No automatic cleanup retry is performed.
 
 Current tools provision stores with logical-head generation 2. The entry layout
 requires fresh provisioning; there is no automatic conversion of older stores
@@ -81,16 +94,22 @@ A store is bound to the program that provisioned it. Every `run --store`
 compiles the project and, once the store's format is admitted, compares the
 result with that binding:
 
-- An identical program opens the store with no write.
+- An identical program opens an active store without changing its program binding.
 - A program whose code changed, and whose resources, store roots, indexes, and
   exported functions are unchanged, rebinds the store to the new code. Every
-  stored value stays in place, and the next run uses the new code.
+  stored value stays in place, and the next run uses the new code. The transition
+  records the exact old and new heads before replacing the head; activation is
+  confirmed only after the required metadata and directory barriers.
 - A program whose durable contract or exported interface changed is
   `store.contract_changed`. The store is untouched, and the prior program still
   runs against it.
 - A program that touches more durable places than the store accepted at
   provisioning is `store.demand_exceeds_ceiling`. The refusal names the export,
   the place, and the access. The store is untouched.
+
+An interrupted rebind may leave either recorded head in place. Ordinary access
+refuses a pending transition. Recovery requires the program matching the head
+actually present; it does not replay the missing update. A third head is refused.
 
 The durable contract is the set of resources, store roots, keys, fields, and
 indexes the program declares. No transition rewrites stored data. Accepting a
@@ -176,10 +195,50 @@ scalar can remain valid under its declared type and pass, including when the
 stored checksum no longer matches. Exit `0` therefore means no logical
 inconsistency was found; findings, engine errors, and refusals exit `1`.
 Inspection does not repair the engine or clear the unclean-shutdown status
-inherited from a prior owner. Complete physical and image/schema/store
-validation, followed by fresh read-only admission before recovery resumes
-service, remains future work. A logical audit report does not establish that
-recovery is safe ([status](../status.md#trust-boundaries)).
+inherited from a prior owner. A logical audit report is not a recovery result
+([status](../status.md#trust-boundaries)).
+
+## Recovering a store
+
+`marrow recover --store <dir>` validates and activates the store at its current
+location without running an export. The working project's source and identity
+ledger must compile to the exact image named by the stored head:
+
+```sh
+marrow recover --store ./store
+marrow recover --store ./store --format jsonl
+```
+
+Recovery acquires the exclusive owner lock, checks the envelope and head before
+opening the engine, forces physical integrity checking, and inspects logical
+contents against the admitted image. A pending transition permits only its
+recorded head or heads. Failure of these initial checks prevents activation. Physical recovery
+uses a read-write engine open and is not a read-only inspection.
+
+After successful validation, recovery preserves regular single-link files in the
+two metadata replacement slots under generated names rather than replaying or
+deleting their bytes. Other slot shapes are refused. At
+most one envelope slot and one head slot are moved per attempt. It then
+synchronizes the stored artifacts, directory and current parent, writes the
+active envelope, and rereads the exact envelope and head for final admission.
+The command releases ownership before returning its result; it does not start an
+application session.
+
+Recovery leaves logical data and the selected head in place. A legacy version-0
+envelope is explicitly upgraded to version 1 through a pending state; supported
+head, image and engine stamps are still required. It preserves the instance
+identity and does not migrate the data layout or a changed program contract.
+Version-0 tools refuse the upgraded envelope. Keep matching source, ledger,
+image and tools with stored data ([compatibility](../compatibility.md#versioning)).
+
+The result names preservation moves known to this attempt, including on failure.
+Final activation uncertainty is `store.activation_uncertain`. The Active record
+may already be visible when its final barrier or reread fails; not every uncertain
+result leaves a pending admission veto. Missing result delivery does not prove
+that no work occurred. A later recovery performs fresh
+validation and cannot reconstruct a previous attempt's lost receipt. Recovery
+does not authenticate copied store files, detect rollback to a structurally valid
+snapshot, or establish application intent.
 
 ## Durability
 

@@ -1,7 +1,7 @@
 # CLI
 
 `marrow` creates, formats, checks, runs, and tests a [project](projects.md),
-audits a store bound to it, and writes the artifacts a deployment ships.
+audits or recovers a store bound to it, and writes the artifacts a deployment ships.
 
 ```text
 marrow init <projectdir>
@@ -11,6 +11,7 @@ marrow run <export> [--stdin] [--store <dir>] [--format text | jsonl] [-- <args>
 marrow test [--format text | jsonl] [--filter <substring>]
 marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
 marrow doctor --store <dir> [--format text | jsonl]
+marrow recover --store <dir> [--format text | jsonl]
 marrow image --out <dir> --accept-ceiling <id>
 marrow client typescript [--out <dir>]
 marrow --version
@@ -317,6 +318,26 @@ findings and `listed` counts the records that follow; each finding carries
 `outcome: "error"` and its `code`. Project compilation and companion-installation
 failures go to standard error in either format; compiler resource and invariant
 failures retain `cli.compiler_resource_limit` and `cli.compiler_invariant`.
+
+## marrow recover
+
+`marrow recover --store <dir> [--format text | jsonl]` compiles the current
+project without minting identities and delegates to the verified companion.
+The program must match the exact stored image. Recovery validates physical and
+logical integrity and establishes fresh activation barriers; it runs no export
+and replays no missing head update
+([recovering a store](../operations/README.md#recovering-a-store)).
+
+The default output is text. JSONL output contains one record with `kind` set to
+`recovery`, the requested `store` spelling, and a `preserved` array of names moved
+by this attempt. Success adds `outcome: "activated"`, `instance`, and `image`.
+Failure adds `outcome: "error"` and `code`; logical-integrity findings and final
+activation uncertainty also include `instance`. Preservation moves can accompany failure.
+
+Success exits `0`; recovery or output-delivery failure exits `1`; invalid
+arguments exit `2`. Compilation and installation failures are reported on stderr.
+Failed delivery does not undo activation or permit reconstruction of a lost
+receipt. Unlike `doctor`, recovery is not read-only.
 
 ## marrow image
 

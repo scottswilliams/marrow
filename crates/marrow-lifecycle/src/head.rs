@@ -181,16 +181,24 @@ impl LogicalHead {
     /// The head's canonical bytes: its body followed by the 32-byte [`StoreHeadDigest`]
     /// sealing that body.
     pub fn encode(&self) -> Vec<u8> {
+        self.encode_with_digest().0
+    }
+
+    pub(crate) fn encode_with_digest(&self) -> (Vec<u8>, StoreHeadDigest) {
         let mut out = self.body();
         let digest = StoreHeadDigest::compute(&out);
         out.extend_from_slice(digest.bytes());
-        out
+        (out, digest)
     }
 
     /// Decode a head from `bytes`, rejecting a bad magic, an unknown version, an embedded
     /// head map beyond its bounds or violating its bijection, a digest that does not reseal
     /// the body, or trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
+        Self::decode_with_digest(bytes).map(|(head, _)| head)
+    }
+
+    pub(crate) fn decode_with_digest(bytes: &[u8]) -> Result<(Self, StoreHeadDigest), FormatError> {
         let mut reader = Reader::new(bytes);
         reader.magic(MAGIC)?;
         let version = reader.u8()?;
@@ -236,7 +244,8 @@ impl LogicalHead {
             head_map,
             accepted_ceiling,
         };
-        if StoreHeadDigest::from_bytes(sealed) != StoreHeadDigest::compute(&head.body()) {
+        let digest = StoreHeadDigest::from_bytes(sealed);
+        if digest != StoreHeadDigest::compute(&head.body()) {
             return Err(FormatError::DigestMismatch);
         }
         if head.binding.image_format_version != marrow_image::IMAGE_FORMAT_VERSION {
@@ -244,7 +253,7 @@ impl LogicalHead {
                 found: head.binding.image_format_version,
             });
         }
-        Ok(head)
+        Ok((head, digest))
     }
 }
 

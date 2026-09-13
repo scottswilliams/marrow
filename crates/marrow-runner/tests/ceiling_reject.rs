@@ -127,8 +127,11 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         &store,
         export_id(&broadened, "readValue"),
         vec![Json::Int(1)],
-    )
-    .expect("the runner serves a typed reject, not a spawn failure");
+    );
+    outcome.cleanup.expect("rejected companion settled");
+    let outcome = outcome
+        .outcome
+        .expect("the runner serves a typed reject, not a spawn failure");
 
     match outcome {
         CallOutcome::Reject { code } => assert_eq!(
@@ -156,8 +159,9 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         &store,
         export_id(&read_only, "readValue"),
         vec![Json::Int(1)],
-    )
-    .expect("the prior program still attaches");
+    );
+    prior.cleanup.expect("prior companion settled");
+    let prior = prior.outcome.expect("the prior program still attaches");
     match prior {
         CallOutcome::Value(Some(marrow_vm::Value::Int(0))) => {}
         CallOutcome::Value(other) => {

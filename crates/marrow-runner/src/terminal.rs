@@ -10,9 +10,11 @@
 //!
 //! The deadline discipline matches the runner's channel: a non-blocking poll against a monotonic
 //! clock, never `set_read_timeout` (`SO_RCVTIMEO` is `EINVAL` on `AF_UNIX` on macOS), so both
-//! ends of one wire share one discipline and a hung runner never hangs the terminal.
+//! ends of one wire share one discipline for descriptor and framed I/O. Child settlement is
+//! separate from those I/O deadlines.
 
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -28,6 +30,277 @@ use marrow_vm::Value;
 use crate::channel::mint_id;
 use crate::descriptor::ret_to_image;
 use crate::transfer;
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_unconfirmed_reap_retains_stage_and_reports_observation() {
+        let dir = stage_dir();
+        create_private_dir(&dir).expect("owned stage");
+        std::fs::write(dir.join("image.mwi"), b"retained image").expect("image");
+        // No OS process is represented by this synthetic observation.
+        let companion = Companion {
+            child: None,
+            dir: dir.clone(),
+        };
+        let result = companion.finish_settlement(
+            123,
+            ReapObservation::Unconfirmed {
+                cause: io::ErrorKind::TimedOut.into(),
+                kill_error: Some(io::ErrorKind::PermissionDenied.into()),
+            },
+        );
+        drop(companion);
+        assert!(matches!(result, Err(CompanionCleanupError::Unreaped {
+            pid: 123, staging, cause, kill_error: Some(kill),
+        }) if staging == dir && cause.kind() == io::ErrorKind::TimedOut && kill.kind() == io::ErrorKind::PermissionDenied));
+        assert_eq!(
+            std::fs::read(dir.join("image.mwi")).expect("retained after Drop"),
+            b"retained image"
+        );
+        std::fs::remove_dir_all(&dir).expect("remove synthetic fixture");
+    }
+
+    #[test]
+    #[ignore = "spawns clean-exit companion controls"]
+    fn confirmed_reap_distinguishes_removed_stage_from_removal_failure() {
+        for replacement in [false, true] {
+            let dir = stage_dir();
+            create_private_dir(&dir).expect("stage");
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "exit 0"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("clean child");
+            assert!(
+                observe_exit(&mut child, Duration::from_secs(1))
+                    .expect("observe reap")
+                    .is_some()
+            );
+            assert!(
+                child
+                    .try_wait()
+                    .expect("cached reap")
+                    .expect("exit")
+                    .success()
+            );
+            if replacement {
+                std::fs::remove_dir(&dir).expect("remove empty fixture stage");
+                std::fs::write(&dir, b"retained replacement").expect("replacement file");
+            }
+            let companion = Companion {
+                child: Some(child),
+                dir: dir.clone(),
+            };
+            let result = companion.settle();
+            if replacement {
+                assert!(
+                    matches!(result, Err(CompanionCleanupError::Staging { path, .. }) if path == dir)
+                );
+                assert_eq!(
+                    std::fs::read(&dir).expect("retained after Drop"),
+                    b"retained replacement"
+                );
+                std::fs::remove_file(&dir).expect("remove owned replacement fixture");
+            } else {
+                result.expect("settled");
+                assert!(!dir.exists());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "spawns a parent-controlled companion"]
+    fn companion_settlement_does_not_wait_for_parent_release() {
+        let dir = stage_dir();
+        create_private_dir(&dir).expect("private stage");
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read gate"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("controlled child");
+        let gate = child.stdin.take().expect("parent release gate");
+        let (send, receive) = std::sync::mpsc::channel();
+        let observed_dir = dir.clone();
+        let owner = std::thread::spawn(move || {
+            let mut companion = Companion {
+                child: Some(child),
+                dir,
+            };
+            let result =
+                companion.settle_inner(Duration::from_millis(10), Duration::from_millis(100));
+            let _ = send.send(result);
+        });
+        let observed = receive.recv_timeout(Duration::from_millis(200));
+        drop(gate);
+        owner.join().expect("owner released and child reaped");
+        assert!(!observed_dir.exists(), "reaped child's stage removed");
+        assert!(
+            matches!(observed, Ok(Ok(()))),
+            "settlement must finish before parent release"
+        );
+    }
+
+    fn descriptor_json(socket: &str) -> String {
+        format!(
+            "{{\"interface\":\"{}\",\"session\":\"{}\",\"socket\":\"{socket}\"}}",
+            "12".repeat(32),
+            "34".repeat(32)
+        )
+    }
+
+    #[test]
+    fn descriptor_requires_exact_fields_lf_and_byte_bound() {
+        let valid = descriptor_json("/tmp/socket");
+        let overhead = descriptor_json("").len() + 1;
+        for (bytes, accepted) in [
+            (format!("{valid}\n"), true),
+            (valid.clone(), false),
+            (format!(" {valid}\n"), false),
+            (format!("{valid}\r\n"), false),
+            (
+                format!("{}\n", valid.replace("}", ",\"extra\":\"value\"}")),
+                false,
+            ),
+            (
+                format!(
+                    "{}\n",
+                    descriptor_json(&"p".repeat(MAX_DESCRIPTOR_BYTES - overhead))
+                ),
+                true,
+            ),
+            (
+                format!(
+                    "{}\n",
+                    descriptor_json(&"p".repeat(MAX_DESCRIPTOR_BYTES - overhead + 1))
+                ),
+                false,
+            ),
+        ] {
+            let (mut read, mut write) = UnixStream::pair().expect("stdout");
+            let writer = std::thread::spawn(move || {
+                let _ = write.write_all(bytes.as_bytes());
+            });
+            let result = read_descriptor(&mut read, Duration::from_secs(1));
+            drop(read);
+            writer.join().expect("writer closes");
+            assert_eq!(result.is_ok(), accepted);
+        }
+    }
+
+    #[test]
+    fn a_preloaded_partial_descriptor_times_out_with_its_writer_still_open() {
+        let (mut read, mut write) = UnixStream::pair().expect("stdout");
+        write.write_all(b"{\"interface\":").expect("partial prefix");
+        assert!(
+            matches!(read_descriptor(&mut read, Duration::from_millis(10)),
+                Err(ClientError::Io(error)) if error.kind() == io::ErrorKind::TimedOut
+            )
+        );
+        write
+            .write_all(b"still open")
+            .expect("writer remained open through observation");
+    }
+
+    #[test]
+    #[ignore = "spawns a parent-controlled descriptor writer"]
+    fn descriptor_read_does_not_wait_for_a_live_child_to_close_stdout() {
+        for prefix in ["", "partial"] {
+            let (mut stdout, child_stdout) = UnixStream::pair().expect("private stdout");
+            let mut child = Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "printf %s \"$1\"; read gate",
+                    "descriptor-writer",
+                    prefix,
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::from(OwnedFd::from(child_stdout)))
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("controlled child");
+            let gate = child.stdin.take().expect("parent release gate");
+            let (send, receive) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let result = read_descriptor(&mut stdout, Duration::from_millis(10));
+                let _ = send.send(result);
+                child.wait().expect("reap controlled child");
+            });
+            let observed = receive.recv_timeout(Duration::from_millis(200));
+            drop(gate);
+            reader.join().expect("descriptor reader cleanup");
+            assert!(
+                matches!(observed,
+                    Ok(Err(ClientError::Io(error))) if error.kind() == io::ErrorKind::TimedOut
+                ),
+                "descriptor read must finish before the parent releases stdout"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "binds a Unix socket; run with the sandbox disabled"]
+    fn activation_report_requires_both_session_and_image_agreement() {
+        for mismatch in [None, Some("session"), Some("image"), Some("ephemeral")] {
+            let channel = crate::Channel::bind().expect("bind");
+            let nonce = Id32::from_bytes([1; 32]);
+            let session = Id32::from_bytes([2; 32]);
+            let interface = Id32::from_bytes([3; 32]);
+            let instance = marrow_lifecycle::StoreInstanceId::from_bytes([4; 16]);
+            let descriptor = Descriptor {
+                session: if mismatch == Some("session") {
+                    Id32::from_bytes([5; 32])
+                } else {
+                    session
+                },
+                interface: if mismatch == Some("image") {
+                    Id32::from_bytes([6; 32])
+                } else {
+                    interface
+                },
+                socket: channel.socket_path().to_path_buf(),
+            };
+            let server = std::thread::spawn(move || {
+                let result = channel.report_activation_uncertain(
+                    &crate::LaunchSecrets {
+                        expected_nonce: nonce,
+                        session,
+                    },
+                    interface,
+                    instance,
+                    &crate::Deadlines::default(),
+                    1,
+                );
+                channel.teardown();
+                result.expect("delivered response");
+            });
+            let kind = if mismatch == Some("ephemeral") {
+                StartupKind::Ephemeral
+            } else {
+                StartupKind::Native
+            };
+            let error = connect_and_handshake(&descriptor, nonce, Duration::from_secs(1), kind)
+                .expect_err("no invocation stream on uncertainty")
+                .activation_unknown();
+            if mismatch.is_none() {
+                assert!(
+                    matches!(error, ClientError::ActivationUncertain { instance: actual } if actual == instance.to_hex())
+                );
+            } else {
+                assert!(
+                    matches!(error, ClientError::ActivationOutcomeUnknown { cause } if matches!(*cause, ClientError::Handshake))
+                );
+            }
+            server.join().expect("server");
+        }
+    }
+}
 
 /// The outcome of one companion call: the durable-run outcomes projected onto the terminal — a
 /// returned value (or unit), a source-mapped runtime fault, or a typed reject the runner issued
@@ -125,6 +398,8 @@ pub(crate) fn post_dispatch_cause(error: ClientError) -> OutcomeUnknownCause {
         ClientError::Wire(error) => OutcomeUnknownCause::Wire(error),
         ClientError::ReplyDecode => OutcomeUnknownCause::ReplyDecode,
         ClientError::Handshake
+        | ClientError::ActivationUncertain { .. }
+        | ClientError::ActivationOutcomeUnknown { .. }
         | ClientError::ImageStage(_)
         | ClientError::Spawn(_)
         | ClientError::Descriptor => OutcomeUnknownCause::UnsolicitedMessage,
@@ -136,6 +411,11 @@ pub(crate) fn post_dispatch_cause(error: ClientError) -> OutcomeUnknownCause {
 /// without wire vocabulary.
 #[derive(Debug)]
 pub enum ClientError {
+    /// An authenticated, image-bound attach reported an unconfirmed activation.
+    ActivationUncertain { instance: String },
+    /// Native attach was spawned, but its startup outcome could not be established.
+    /// No invocation was sent; the binding may nevertheless have changed.
+    ActivationOutcomeUnknown { cause: Box<ClientError> },
     /// The temporary image could not be written for the runner to read.
     ImageStage(std::io::Error),
     /// The companion could not be spawned.
@@ -158,12 +438,23 @@ impl ClientError {
     pub fn code(&self) -> &'static str {
         use marrow_codes::Code;
         match self {
+            ClientError::ActivationUncertain { .. } => Code::StoreActivationUncertain.as_str(),
+            ClientError::ActivationOutcomeUnknown { cause } => cause.code(),
             ClientError::ImageStage(_) => Code::IoWrite.as_str(),
             ClientError::Spawn(_) => Code::RunnerSpawn.as_str(),
             ClientError::Descriptor | ClientError::Handshake => Code::RunnerHandshake.as_str(),
             ClientError::Io(_) => Code::IoRead.as_str(),
             ClientError::Wire(wire) => wire.code_str(),
             ClientError::ReplyDecode => Code::RunnerReplyEncode.as_str(),
+        }
+    }
+
+    pub(crate) fn activation_unknown(self) -> Self {
+        match self {
+            Self::ActivationUncertain { .. } | Self::ActivationOutcomeUnknown { .. } => self,
+            cause => Self::ActivationOutcomeUnknown {
+                cause: Box::new(cause),
+            },
         }
     }
 }
@@ -207,18 +498,131 @@ pub(crate) struct Descriptor {
     pub(crate) socket: PathBuf,
 }
 
-/// A spawned companion plus its private staging directory, torn down on drop so a panic or an
-/// early return never leaks the child process or the temporary image.
+/// A cleanup failure independent of the companion's reported call or startup outcome.
+#[derive(Debug)]
+pub enum CompanionCleanupError {
+    /// Direct-child reap could not be confirmed. The stage is retained. `pid` identifies
+    /// the child at observation time; it is not authority to signal a reused PID later.
+    Unreaped {
+        pid: u32,
+        staging: PathBuf,
+        cause: io::Error,
+        kill_error: Option<io::Error>,
+    },
+    /// No child was spawned, or its reap was confirmed, but stage removal failed.
+    Staging { path: PathBuf, cause: io::Error },
+}
+
+/// Startup failed and no session was returned. Cleanup does not replace the startup error.
+#[derive(Debug)]
+pub struct CompanionStartupError {
+    pub error: ClientError,
+    pub cleanup: Result<(), CompanionCleanupError>,
+}
+
+impl From<ClientError> for CompanionStartupError {
+    fn from(error: ClientError) -> Self {
+        Self {
+            error,
+            cleanup: Ok(()),
+        }
+    }
+}
+
+fn remove_stage(dir: &Path) -> Result<(), CompanionCleanupError> {
+    std::fs::remove_dir_all(dir).map_err(|cause| CompanionCleanupError::Staging {
+        path: dir.to_path_buf(),
+        cause,
+    })
+}
+
+/// A spawned direct child and its staging directory. Explicit settlement reports failure;
+/// Drop only attempts the same bounded observation and retains unconfirmed staging.
 pub(crate) struct Companion {
-    pub(crate) child: Child,
+    child: Option<Child>,
     dir: PathBuf,
+}
+
+enum ReapObservation {
+    Confirmed,
+    Unconfirmed {
+        cause: io::Error,
+        kill_error: Option<io::Error>,
+    },
+}
+
+impl Companion {
+    pub(crate) fn settle(mut self) -> Result<(), CompanionCleanupError> {
+        self.settle_inner(Duration::from_millis(100), Duration::from_secs(1))
+    }
+
+    fn settle_inner(
+        &mut self,
+        grace: Duration,
+        reap: Duration,
+    ) -> Result<(), CompanionCleanupError> {
+        // Taking custody prevents Drop from repeating signals or cleanup after any result.
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+        let initial = observe_exit(&mut child, grace);
+        let observation = if matches!(initial, Ok(Some(_))) {
+            ReapObservation::Confirmed
+        } else {
+            let kill_error = child.kill().err();
+            match observe_exit(&mut child, reap) {
+                Ok(Some(_)) => ReapObservation::Confirmed,
+                result => ReapObservation::Unconfirmed {
+                    cause: result
+                        .err()
+                        .or_else(|| initial.err())
+                        .unwrap_or_else(|| io::ErrorKind::TimedOut.into()),
+                    kill_error,
+                },
+            }
+        };
+        self.finish_settlement(child.id(), observation)
+    }
+
+    fn finish_settlement(
+        &self,
+        pid: u32,
+        observation: ReapObservation,
+    ) -> Result<(), CompanionCleanupError> {
+        match observation {
+            ReapObservation::Confirmed => remove_stage(&self.dir),
+            ReapObservation::Unconfirmed { cause, kill_error } => {
+                Err(CompanionCleanupError::Unreaped {
+                    pid,
+                    staging: self.dir.clone(),
+                    cause,
+                    kill_error,
+                })
+            }
+        }
+    }
+}
+
+fn observe_exit(
+    child: &mut Child,
+    timeout: Duration,
+) -> io::Result<Option<std::process::ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        sleep(Duration::from_millis(1).min(remaining));
+    }
 }
 
 impl Drop for Companion {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = self.settle_inner(Duration::from_millis(100), Duration::from_secs(1));
     }
 }
 
@@ -232,59 +636,97 @@ pub(crate) fn spawn_companion(
     image_bytes: &[u8],
     store: Option<&Path>,
     nonce: Id32,
-) -> Result<(Companion, Descriptor), ClientError> {
+) -> Result<(Companion, Result<Descriptor, ClientError>), CompanionStartupError> {
+    let (mut stdout, child_stdout) = UnixStream::pair().map_err(ClientError::Io)?;
     let dir = stage_dir();
     create_private_dir(&dir).map_err(ClientError::ImageStage)?;
     let image_path = dir.join("image.mwi");
-    write_private(&image_path, image_bytes).map_err(ClientError::ImageStage)?;
+    write_private(&image_path, image_bytes).map_err(|error| CompanionStartupError {
+        error: ClientError::ImageStage(error),
+        cleanup: remove_stage(&dir),
+    })?;
 
     let mut command = Command::new(runner_exe);
     command.arg(subcommand).arg("--image").arg(&image_path);
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
-    let mut child = command
+    let child = command
         .env("MARROW_RUNNER_NONCE", nonce.to_hex())
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(OwnedFd::from(child_stdout)))
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|error| {
-            let _ = std::fs::remove_dir_all(&dir);
-            ClientError::Spawn(error)
+        .map_err(|error| CompanionStartupError {
+            error: ClientError::Spawn(error),
+            cleanup: remove_stage(&dir),
         })?;
-
-    let descriptor = match read_descriptor(&mut child) {
-        Ok(descriptor) => descriptor,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(error);
-        }
+    // Command retains its stdout endpoint for another spawn; release that parent copy.
+    drop(command);
+    let companion = Companion {
+        child: Some(child),
+        dir,
     };
-    Ok((Companion { child, dir }, descriptor))
+    let descriptor = read_descriptor(&mut stdout, CALL_DEADLINE).map_err(|error| {
+        if store.is_some() {
+            error.activation_unknown()
+        } else {
+            error
+        }
+    });
+    Ok((companion, descriptor))
 }
 
 /// The most bytes the one launch-descriptor line may occupy — bounded before allocation (law 9)
-/// even though the companion is release-verified. The line is a small fixed JSON object (three
-/// 64-hex ids and a socket path).
-const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
+/// even though the companion is release-verified. Includes the final LF; the object carries
+/// two 64-hex identities and a socket path.
+const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024;
 
 /// Read and parse the one launch-descriptor line the runner prints to stdout.
-fn read_descriptor(child: &mut Child) -> Result<Descriptor, ClientError> {
-    let stdout = child.stdout.take().ok_or(ClientError::Descriptor)?;
-    let mut line = String::new();
-    BufReader::new(stdout.take(MAX_DESCRIPTOR_BYTES))
-        .read_line(&mut line)
-        .map_err(ClientError::Io)?;
-    parse_descriptor(&line).ok_or(ClientError::Descriptor)
+fn read_descriptor(stdout: &mut UnixStream, timeout: Duration) -> Result<Descriptor, ClientError> {
+    stdout.set_nonblocking(true).map_err(ClientError::Io)?;
+    let deadline = Instant::now() + timeout;
+    let mut line = Vec::new();
+    let mut chunk = [0; 1024];
+    loop {
+        if Instant::now() >= deadline {
+            return Err(ClientError::Io(io::ErrorKind::TimedOut.into()));
+        }
+        let remaining = (MAX_DESCRIPTOR_BYTES - line.len()).min(chunk.len());
+        match stdout.read(&mut chunk[..remaining]) {
+            Ok(0) => return Err(ClientError::Descriptor),
+            Ok(count) => {
+                if let Some(end) = chunk[..count].iter().position(|byte| *byte == b'\n') {
+                    line.extend_from_slice(&chunk[..end]);
+                    return std::str::from_utf8(&line)
+                        .ok()
+                        .and_then(parse_descriptor)
+                        .ok_or(ClientError::Descriptor);
+                }
+                line.extend_from_slice(&chunk[..count]);
+                if line.len() == MAX_DESCRIPTOR_BYTES {
+                    return Err(ClientError::Descriptor);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                sleep(
+                    Duration::from_millis(1)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(ClientError::Io(error)),
+        }
+    }
 }
 
 fn parse_descriptor(line: &str) -> Option<Descriptor> {
-    let Json::Object(pairs) = parse_strict(line.trim().as_bytes()).ok()? else {
+    let Json::Object(pairs) = parse_strict(line.as_bytes()).ok()? else {
         return None;
     };
+    if pairs.len() != 3 {
+        return None;
+    }
     let field = |name: &str| {
         pairs.iter().find_map(|(key, value)| match value {
             Json::Str(text) if key == name => Some(text.clone()),
@@ -298,6 +740,13 @@ fn parse_descriptor(line: &str) -> Option<Descriptor> {
     })
 }
 
+/// Which lifecycle evidence the requesting client can accept at startup.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupKind {
+    Native,
+    Ephemeral,
+}
+
 /// Connect the private socket, prove `nonce`, and verify the runner proves its session token and
 /// served interface identity back. Returns the non-blocking stream positioned just after the
 /// handshake, ready for one or more request/reply exchanges.
@@ -305,6 +754,7 @@ pub(crate) fn connect_and_handshake(
     descriptor: &Descriptor,
     nonce: Id32,
     deadline: Duration,
+    kind: StartupKind,
 ) -> Result<UnixStream, ClientError> {
     let mut stream = UnixStream::connect(&descriptor.socket).map_err(ClientError::Io)?;
     stream.set_nonblocking(true).map_err(ClientError::Io)?;
@@ -313,6 +763,19 @@ pub(crate) fn connect_and_handshake(
     match read_message_with_turn(&mut stream, deadline)? {
         (ServerMessage::Ready { session, interface }, None)
             if session == descriptor.session && interface == descriptor.interface => {}
+        (
+            ServerMessage::ActivationUncertain {
+                session,
+                interface,
+                instance,
+            },
+            None,
+        ) if kind == StartupKind::Native
+            && session == descriptor.session
+            && interface == descriptor.interface =>
+        {
+            return Err(ClientError::ActivationUncertain { instance });
+        }
         _ => return Err(ClientError::Handshake),
     }
     Ok(stream)
@@ -345,7 +808,9 @@ pub(crate) fn reply_to_outcome(
         ServerMessage::Reject { code } => Ok(CallOutcome::Reject { code }),
         ServerMessage::Ready { .. }
         | ServerMessage::Provisioned { .. }
-        | ServerMessage::ProvisionUncertain { .. } => Err(ClientError::Handshake),
+        | ServerMessage::ProvisionUncertain { .. }
+        | ServerMessage::ProvisionFailed { .. }
+        | ServerMessage::ActivationUncertain { .. } => Err(ClientError::Handshake),
     }
 }
 

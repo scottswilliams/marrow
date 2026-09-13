@@ -19,7 +19,10 @@ use crate::envelope::{EngineKind, StoreEnvelope};
 use crate::head::LogicalHead;
 use crate::image::{active_binding, head_map};
 use crate::instance::{EntropyUnavailable, StoreInstanceId};
-use crate::provision::{ProvisionError, ProvisionRequest, Provisioned, provision};
+use crate::provision::{
+    ProvisionCleanupFailure, ProvisionError, ProvisionFault, ProvisionRequest, Provisioned,
+    provision,
+};
 
 /// The report a first provision presents for acceptance, in source vocabulary only. It names
 /// the destination, the durable roots by name, and whether the program reads and/or writes
@@ -152,12 +155,18 @@ pub enum ProvisionImageError {
 }
 
 impl ProvisionImageError {
-    /// The published instance when the final directory sync did not confirm durability.
-    pub fn uncertain_instance(&self) -> Option<StoreInstanceId> {
+    /// The unconfirmed lifecycle stage and its actual store instance.
+    pub fn uncertainty(&self) -> Option<(marrow_codes::StoreUncertainty, StoreInstanceId)> {
+        use marrow_codes::StoreUncertainty;
         match self {
-            Self::Provision(ProvisionError::PublicationUncertain { instance, .. }) => {
-                Some(*instance)
-            }
+            Self::Provision(ProvisionError {
+                fault: ProvisionFault::PublicationUncertain { instance, .. },
+                ..
+            }) => Some((StoreUncertainty::Publication, *instance)),
+            Self::Provision(ProvisionError {
+                fault: ProvisionFault::ActivationUncertain { instance, .. },
+                ..
+            }) => Some((StoreUncertainty::Activation, *instance)),
             _ => None,
         }
     }
@@ -171,6 +180,14 @@ impl ProvisionImageError {
             ProvisionImageError::Entropy(_) => Code::IoRead.as_str(),
             ProvisionImageError::Head(error) => error.code(),
             ProvisionImageError::Provision(error) => error.code(),
+        }
+    }
+
+    /// Failed cleanup of an unpublished stage, independent of the primary failure.
+    pub fn cleanup(&self) -> Option<&ProvisionCleanupFailure> {
+        match self {
+            Self::Provision(error) => error.cleanup.as_ref(),
+            _ => None,
         }
     }
 }

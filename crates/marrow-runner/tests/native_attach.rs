@@ -27,6 +27,150 @@ fn runner_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"))
 }
 
+#[test]
+#[ignore = "spawns a native runner inside a controlled lingering direct child"]
+fn exact_reply_survives_forced_settlement_of_a_lingering_companion() {
+    use std::os::unix::fs::PermissionsExt;
+    let (image, bytes) = compile_verify();
+    let store = scratch();
+    let root = store.parent().expect("fixture parent");
+    std::fs::create_dir_all(root).expect("fixture directory");
+    provision(&store, &image);
+    let wrapper = root.join("lingering-runner");
+    let marker = root.join("entered-linger");
+    let quote = |path: &Path| {
+        format!(
+            "'{}'",
+            path.to_str()
+                .expect("fixture UTF-8 path")
+                .replace('\'', "'\\''")
+        )
+    };
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n{} \"$@\"\nprintf waiting > {}\nexec /bin/sleep 2\n",
+            quote(&runner_exe()),
+            quote(&marker),
+        ),
+    )
+    .expect("controlled wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).expect("executable");
+    let started = std::time::Instant::now();
+    let completion = attach_and_call(
+        &wrapper,
+        &image,
+        &bytes,
+        &store,
+        export_id(&image, "catalogued"),
+        vec![],
+    );
+    let elapsed = started.elapsed();
+    completion
+        .cleanup
+        .expect("direct child reaped and stage removed");
+    assert!(matches!(
+        completion.outcome,
+        Ok(CallOutcome::Value(Some(Value::Int(0))))
+    ));
+    assert_eq!(
+        std::fs::read(&marker).expect("stock runner exited before linger"),
+        b"waiting"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "settlement must not wait for the two-second linger: {elapsed:?}"
+    );
+    std::fs::remove_dir_all(root).expect("remove owned successful fixture");
+}
+
+#[test]
+#[ignore = "spawns executable child controls"]
+fn startup_loss_distinguishes_native_spawn_from_spawn_failure() {
+    let (image, bytes) = compile_verify();
+    let store = scratch();
+    let export = export_id(&image, "assetName");
+    let failed_spawn = attach_and_call(
+        &store.join("absent-runner"),
+        &image,
+        &bytes,
+        &store,
+        export,
+        Vec::new(),
+    );
+    failed_spawn.cleanup.expect("no spawned child");
+    assert!(matches!(
+        failed_spawn.outcome,
+        Err(marrow_runner::ClientError::Spawn(_))
+    ));
+    let exited = attach_and_call(
+        &std::env::current_exe().expect("test executable rejects runner arguments"),
+        &image,
+        &bytes,
+        &store,
+        export,
+        Vec::new(),
+    );
+    exited.cleanup.expect("exited child reaped");
+    assert!(matches!(exited.outcome,
+        Err(marrow_runner::ClientError::ActivationOutcomeUnknown { cause })
+            if matches!(*cause, marrow_runner::ClientError::Descriptor)
+    ));
+    assert!(!store.exists(), "the fixture child never opened a store");
+}
+
+#[test]
+#[ignore = "spawns native attach and binds a Unix socket"]
+fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
+    use std::process::{Command, Stdio};
+    let (old, _) = compile_verify();
+    let (new, bytes) = compile_verify_with("\nfn version(): int { return 2 }\n");
+    assert_ne!(old.image_id(), new.image_id());
+    for capture_diagnostic in [true, false] {
+        let store = scratch();
+        let base = store.parent().expect("parent");
+        std::fs::create_dir(base).expect("fixture directory");
+        provision(&store, &old);
+        let before = marrow_lifecycle::audit(&store, marrow_lifecycle::prepare(old.clone()))
+            .expect("old active store");
+        let image = base.join("program.image");
+        std::fs::write(&image, &bytes).expect("image");
+        let (reader, writer) = std::io::pipe().expect("descriptor pipe");
+        drop(reader);
+        let diagnostic = if capture_diagnostic {
+            Stdio::piped()
+        } else {
+            let (reader, writer) = std::io::pipe().expect("diagnostic pipe");
+            drop(reader);
+            Stdio::from(writer)
+        };
+        let output = Command::new(runner_exe())
+            .args(["attach", "--image"])
+            .arg(&image)
+            .arg("--store")
+            .arg(&store)
+            .stdin(Stdio::null())
+            .stdout(writer)
+            .stderr(diagnostic)
+            .output()
+            .expect("attach child");
+        std::fs::write(base.join("stderr"), &output.stderr).expect("retain diagnostic");
+        assert_eq!(output.status.code(), Some(1), "{}", base.display());
+        if capture_diagnostic {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains(marrow_codes::Code::IoWrite.as_str())
+            );
+        }
+        let after = marrow_lifecycle::audit(&store, marrow_lifecycle::prepare(new.clone()))
+            .expect("new image is already active without a second attach");
+        assert_eq!(after.instance, before.instance);
+        assert_eq!(after.image_id, new.image_id());
+        assert!(after.is_clean());
+        std::fs::remove_dir_all(base).expect("remove successful fixture");
+    }
+}
+
 fn compile_verify() -> (VerifiedImage, Vec<u8>) {
     compile_verify_with("")
 }
@@ -103,15 +247,18 @@ struct Terminal {
 
 impl Terminal {
     fn call(&self, name: &str, args: Vec<Json>) -> CallOutcome {
-        attach_and_call(
+        let completion = attach_and_call(
             &self.runner,
             &self.image,
             &self.bytes,
             &self.store,
             export_id(&self.image, name),
             args,
-        )
-        .unwrap_or_else(|error| panic!("companion call `{name}` failed: {}", error.code()))
+        );
+        completion.cleanup.expect("companion settled");
+        completion
+            .outcome
+            .unwrap_or_else(|error| panic!("companion call `{name}` failed: {}", error.code()))
     }
 
     fn value(&self, name: &str, args: Vec<Json>) -> Option<Value> {
@@ -464,7 +611,7 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
     let runner = runner_exe();
 
     // Commit an asset under image A.
-    match attach_and_call(
+    let added = attach_and_call(
         &runner,
         &image_a,
         &bytes_a,
@@ -477,9 +624,9 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
             Json::Str("power".into()),
             Json::Str(epoch),
         ],
-    )
-    .expect("add under image A")
-    {
+    );
+    added.cleanup.expect("image A companion settled");
+    match added.outcome.expect("add under image A") {
         CallOutcome::Value(Some(Value::Bool(true))) => {}
         other => panic!("add did not return true: {}", describe(&other)),
     }
@@ -493,9 +640,9 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
         &store,
         export_id(&image_b, "assetName"),
         vec![Json::Int(3)],
-    )
-    .expect("assetName under image B");
-    match read {
+    );
+    read.cleanup.expect("image B companion settled");
+    match read.outcome.expect("assetName under image B") {
         CallOutcome::Value(value) => assert_eq!(value, present_name("Impact Driver")),
         other => panic!(
             "assetName under B did not return the committed name: {}",

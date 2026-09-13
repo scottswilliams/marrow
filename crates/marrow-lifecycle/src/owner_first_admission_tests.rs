@@ -122,8 +122,107 @@ fn provisioned(tag: &str) -> (TempDir, PathBuf) {
     (dir, store)
 }
 
+#[test]
+fn admission_refuses_a_directory_other_than_the_locked_node() {
+    for corrupt_engine in [false, true] {
+        let (dir, store) = provisioned("directory-substitution");
+        let replacement = dir.path.join("replacement");
+        let displaced = dir.path.join("displaced");
+        provision(&replacement, request(instance())).expect("provision replacement");
+        if corrupt_engine {
+            std::fs::write(replacement.join(crate::ENGINE_FILE), b"invalid engine")
+                .expect("make engine access distinguishable from admission refusal");
+        }
+        let artifacts = |path: &Path| {
+            [crate::ENVELOPE_FILE, crate::HEAD_FILE, crate::ENGINE_FILE]
+                .map(|name| std::fs::read(path.join(name)).expect("read artifact"))
+        };
+        let original_bytes = artifacts(&store);
+        let replacement_bytes = artifacts(&replacement);
+        let opened = crate::provision::admission_substitution::with_swap(
+            &store,
+            &displaced,
+            &replacement,
+            || open(&store, projection()),
+        );
+        let identity_refusal = matches!(
+            &opened,
+            Err(OpenError::Admission(crate::AdmissionError {
+                entry: crate::StoreEntry::Directory,
+                fault: crate::AdmissionFault::Custody(crate::CustodyError::IdentityDrift { .. }),
+            }))
+        );
+        if !identity_refusal {
+            drop(opened);
+            let retained = dir.path.clone();
+            std::mem::forget(dir);
+            panic!(
+                "missing locked-directory identity refusal; retained fault store: {}",
+                retained.display()
+            );
+        }
+        assert_eq!(artifacts(&displaced), original_bytes);
+        assert_eq!(artifacts(&store), replacement_bytes);
+        drop(
+            marrow_kernel::durable::NativeStore::acquire_existing(&displaced)
+                .expect("refusal released the original owner"),
+        );
+    }
+}
+
 fn envelope_path(store: &Path) -> PathBuf {
     store.join(crate::ENVELOPE_FILE)
+}
+
+#[test]
+fn pending_and_legacy_records_refuse_before_engine_open() {
+    use crate::envelope::{EnvelopeRecord, EnvelopeState, LEGACY_FIXTURE};
+    let legacy = EnvelopeRecord::decode(&LEGACY_FIXTURE).expect("legacy metadata");
+    let digest = marrow_image::StoreHeadDigest::from_bytes([0x31; 32]);
+    for state in [
+        EnvelopeState::Legacy,
+        EnvelopeState::Provision { head: digest },
+        EnvelopeState::Rebind {
+            old: digest,
+            new: digest,
+        },
+        EnvelopeState::Upgrade { head: digest },
+    ] {
+        let dir = TempDir::new("pending-refusal");
+        let store = dir.store();
+        let id = legacy.metadata.instance;
+        provision(
+            &store,
+            ProvisionRequest {
+                envelope: legacy.metadata.clone(),
+                head: head(1, vec![0x44]),
+            },
+        )
+        .expect("provision");
+        let record = EnvelopeRecord {
+            metadata: legacy.metadata.clone(),
+            state,
+        };
+        let bytes = if state == EnvelopeState::Legacy {
+            LEGACY_FIXTURE.to_vec()
+        } else {
+            record.encode().expect("pending record")
+        };
+        std::fs::write(envelope_path(&store), &bytes).expect("write record");
+        std::fs::write(store.join(crate::ENGINE_FILE), b"invalid engine")
+            .expect("invalid engine control");
+        assert!(
+            matches!(open(&store, projection()), Err(OpenError::ActivationRequired { instance }) if instance == id)
+        );
+        assert_eq!(
+            std::fs::read(envelope_path(&store)).expect("record unchanged"),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(store.join(crate::ENGINE_FILE)).expect("engine unchanged"),
+            b"invalid engine"
+        );
+    }
 }
 
 fn head_path(store: &Path) -> PathBuf {
@@ -520,16 +619,23 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
 }
 
 /// The exact envelope ceiling, driven at N and N+1. The largest envelope the encoder can
-/// produce — a writer toolchain at its own bound — is exactly 126 bytes and opens; one byte
-/// more is refused as a representational limit rather than as corruption, which is what
-/// proves the ceiling was applied before the decoder saw the bytes.
+/// produce carries a maximal writer and two pending-rebind digests. It decodes and refuses
+/// as pending; one byte more is a representation limit before the state can be interpreted.
 #[test]
 fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     let dir = TempDir::new("envelope-ceiling");
     let store = dir.store();
     let id = instance();
     let maximal = envelope(id, &"t".repeat(64));
-    let bytes = maximal.encode();
+    let bytes = crate::envelope::EnvelopeRecord {
+        metadata: maximal.clone(),
+        state: crate::envelope::EnvelopeState::Rebind {
+            old: marrow_image::StoreHeadDigest::from_bytes([1; 32]),
+            new: marrow_image::StoreHeadDigest::from_bytes([2; 32]),
+        },
+    }
+    .encode()
+    .expect("maximal record");
     assert_eq!(
         bytes.len() as u64,
         crate::MAX_ENVELOPE_FILE_BYTES,
@@ -547,6 +653,11 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     let opened = open(&store, projection()).expect("a maximal envelope is admitted");
     assert_eq!(opened.envelope.instance, id);
     drop(opened);
+
+    std::fs::write(envelope_path(&store), &bytes).expect("write maximal pending record");
+    assert!(
+        matches!(open(&store, projection()), Err(OpenError::ActivationRequired { instance }) if instance == id)
+    );
 
     let mut oversize = bytes.clone();
     oversize.push(0x00);

@@ -3,14 +3,12 @@
 //! Every provisioned store draws a fresh [`StoreInstanceId`] from OS entropy at provision
 //! and records it in its envelope. It is the store's durable-store UID — distinct from the
 //! program image's identity, the durable-contract identity, and any logical path identity:
-//! two stores provisioned from one image have distinct instance ids, and a fresh restore
-//! mints a new one, so a store instance is never confused with the image it was provisioned
-//! from or with a peer store of the same program.
+//! provisioning draws independently for each store, including stores of the same program.
+//! Persisted bytes reconstruct the identity when the store is opened.
 
-/// A persistent store's nonforgeable instance identity: 128 bits drawn from OS entropy at
-/// provision. Unguessable and constructible only through [`StoreInstanceId::draw`], never
-/// derived from the image, a clock, or a counter, so a forged image or a copied envelope
-/// header cannot reproduce a live store's instance id.
+/// A persistent store's 128-bit instance identity. Provisioning draws it from OS entropy;
+/// [`StoreInstanceId::from_bytes`] reconstructs it from persisted bytes. Copying those bytes
+/// copies the identity. It does not authenticate a store or establish its origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoreInstanceId([u8; 16]);
 
@@ -43,7 +41,7 @@ impl StoreInstanceId {
     }
 }
 
-/// The OS entropy source was unavailable, so no nonforgeable store identity could be
+/// The OS entropy source was unavailable, so no random store identity could be
 /// drawn; provision fails without minting a store rather than substituting a predictable
 /// value.
 #[derive(Debug)]

@@ -38,6 +38,7 @@ mod import;
 mod instance;
 mod lock;
 mod provision;
+mod recovery;
 mod report;
 mod store_dir;
 
@@ -79,9 +80,10 @@ pub use marrow_kernel::durable::InvocationGrant;
 // taking an edge to the adapter crate itself.
 pub use marrow_fs_journal::CustodyError;
 pub use provision::{
-    OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, preflight,
-    provision,
+    OpenError, OpenStore, Preflight, ProvisionCleanupFailure, ProvisionError, ProvisionFault,
+    ProvisionRequest, Provisioned, preflight, provision,
 };
+pub use recovery::{RecoveredStore, RecoveryError, RecoveryFault, recover};
 pub use report::{ProvisionApproval, ProvisionImageError, ProvisionReport, provision_image};
 pub use store_dir::{
     AdmissionError, AdmissionFault, ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, Instability, LOCK_FILE,

@@ -75,15 +75,23 @@ spelling must be representable within the canonical 64 KiB UTF-8 string bound.
 The optional `log` callback observes stderr; callback exceptions are ignored.
 
 A complete canonical uncertainty record with exit 1 rejects with
-`ProvisionUncertainError`. Its `code` is `store.publication_uncertain`; `instance`
-names the published store and `store` matches the requested path. It means the
-store was renamed into place but its parent-directory sync failed. The destination
-is retained and publication durability is unconfirmed.
+`ProvisionUncertainError`. Its `code` is `store.publication_uncertain` when the
+parent-directory durability barrier failed, or `store.activation_uncertain` when
+final activation was not confirmed. `instance` names the actual store and `store`
+matches the requested path. The destination is retained.
+
+A complete `provision_failed` record with exit 1 rejects with
+`ProvisionFailedError`. Its `code` identifies the original provisioning failure;
+`cleanup` records a separate failed removal with code `store.io`, an OS error
+number or `null`, and the generated `stage` name. The stage is a sibling of the
+requested store, under the same parent directory. Cleanup may have removed some
+of its contents before failing. This error carries no store instance or call
+outcome and does not authorize a cleanup retry.
 
 A confirmed spawn failure rejects with `LaunchError` (`not_started`). Missing,
 invalid or failed delivery after spawn rejects with `MarrowLossError`
 (`outcome_unknown`), including a nonzero exit with a success receipt or an
-uncertainty record with any exit other than 1.
+uncertainty or cleanup-failure record with any exit other than 1.
 The store may already exist after that failure. The supervisor does not retry,
 undo provisioning, open the store to reconstruct a receipt, or clear recovery
 state. Waiting for stream closure does not establish a finite process lifetime.
@@ -154,6 +162,26 @@ queued reject as `interrupted`, later calls reject as `not_started`, and none is
 retried.
 
 ## Supervision and the local channel
+
+Generated clients supply their expected image identity for native attach, or
+interface identity for storeless launch, before the supervisor accepts a startup
+result. The supervisor checks that identity and the session token at the handshake
+boundary. A native attach can change the active binding before any function call.
+An authenticated, expected-image activation failure rejects launch with
+`ActivationUncertainError`, carrying `code: "store.activation_uncertain"`, the
+actual `instance`, and the requested `store`. No request session is created.
+
+Missing or untrusted startup delivery after native spawn rejects with
+`ActivationOutcomeUnknownError` (`loss: "outcome_unknown"`) and no instance.
+A confirmed spawn failure remains `LaunchError` (`not_started`). No function
+request has been sent in either case; this does not establish that native attach
+left the store unchanged. The supervisor does not retry attach.
+
+Raw `launch` callers may supply `expectedIdentity`. Without it, the existing
+authenticated Ready/session behavior remains available, but a reported native
+activation failure is treated as unknown rather than exposing an image-validated
+store instance. Generated clients always provide their own pin, overriding an
+`expectedIdentity` in caller options.
 
 `launch` spawns the runner without a shell, passes a fresh 256-bit launch nonce
 by environment, and reads one launch-descriptor line from the runner's stdout.

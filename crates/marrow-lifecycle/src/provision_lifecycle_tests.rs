@@ -86,6 +86,59 @@ fn instance() -> StoreInstanceId {
     StoreInstanceId::draw().expect("entropy")
 }
 
+#[test]
+fn unsupported_envelope_stamp_refuses_provision_before_creating_files() {
+    let scratch = TempDir::new("unsupported-stamp");
+    let mut req = request(instance());
+    req.envelope.engine_format_version = u32::MAX;
+    let result = provision(&scratch.store(), req);
+    if result.is_ok() {
+        let original = scratch.path.clone();
+        std::mem::forget(scratch);
+        panic!(
+            "unsupported envelope stamp was published; preserve {}",
+            original.display()
+        );
+    }
+    assert!(matches!(
+        result,
+        Err(ProvisionError {
+            fault: crate::ProvisionFault::Store(
+                marrow_kernel::durable::StoreError::FormatVersion {
+                    found: u32::MAX,
+                    ..
+                }
+            ),
+            ..
+        })
+    ));
+    assert_eq!(
+        std::fs::read_dir(&scratch.path)
+            .expect("scratch entries")
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn provision_accepts_a_long_valid_destination_name() {
+    let scratch = std::mem::ManuallyDrop::new(TempDir::new("long-destination"));
+    let store = scratch.path.join("s".repeat(240));
+    // Establish that the filesystem accepts the destination component itself.
+    std::fs::create_dir(&store).expect("valid destination component");
+    std::fs::remove_dir(&store).expect("return destination to absent");
+    let id = instance();
+    let provisioned = provision(&store, request(id)).unwrap_or_else(|error| {
+        panic!(
+            "provision valid destination: {error}; preserve {}",
+            scratch.path.display()
+        )
+    });
+    assert_eq!(provisioned.instance, id);
+    assert_eq!(classify(&store), Preflight::Complete);
+    drop(std::mem::ManuallyDrop::into_inner(scratch));
+}
+
 /// The classification of a destination this test can examine. A preflight that cannot look
 /// is a distinct outcome with its own coverage; nothing here reaches it.
 fn classify(dir: &Path) -> Preflight {
@@ -119,13 +172,45 @@ fn provision_publishes_complete_and_open_reopens() {
 }
 
 #[test]
+fn uncertain_publication_refuses_ordinary_reopen() {
+    let dir = TempDir::new("publication-reopen");
+    let store = dir.store();
+    let id = instance();
+    let error = crate::provision::publication_sync_fault::with_failure(
+        &store,
+        crate::provision::publication_sync_fault::Point::Publication,
+        || provision(&store, request(id)),
+    )
+    .expect_err("the publication parent sync failed");
+    assert!(
+        matches!(error.fault, crate::ProvisionFault::PublicationUncertain { instance, .. } if instance == id)
+    );
+
+    match open(&store, projection()) {
+        Err(OpenError::ActivationRequired { instance }) => assert_eq!(instance, id),
+        Err(error) => panic!("unexpected refusal: {error}"),
+        Ok(opened) => {
+            drop(opened);
+            let retained = dir.path.clone();
+            std::mem::forget(dir);
+            panic!(
+                "ordinary open admitted an uncertain publication; retained fault store: {}",
+                retained.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
     let dir = TempDir::new("publication-sync");
     let store = dir.store();
     let id = instance();
-    let error = crate::provision::publication_sync_fault::with_failure(&store, || {
-        provision(&store, request(id))
-    })
+    let error = crate::provision::publication_sync_fault::with_failure(
+        &store,
+        crate::provision::publication_sync_fault::Point::Publication,
+        || provision(&store, request(id)),
+    )
     .expect_err("the final parent sync failed");
 
     assert_eq!(classify(&store), Preflight::Complete);
@@ -136,25 +221,56 @@ fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
     assert_eq!(children, [std::ffi::OsString::from("store")]);
     assert_eq!(error.code(), "store.publication_uncertain");
     assert!(
-        matches!(error, ProvisionError::PublicationUncertain { instance, source }
+        matches!(error.fault, crate::ProvisionFault::PublicationUncertain { instance, source }
         if instance == id && source.kind() == std::io::ErrorKind::Other)
     );
-    let envelope_path = crate::store_dir::envelope_path(&store);
+    let envelope_path = store.join(crate::store_dir::ENVELOPE_FILE);
     let before = std::fs::read(&envelope_path).expect("published envelope");
     assert_eq!(
-        StoreEnvelope::decode(&before)
+        crate::envelope::EnvelopeRecord::decode(&before)
             .expect("valid envelope")
+            .metadata
             .instance,
         id
     );
     assert!(matches!(
         provision(&store, request(instance())),
-        Err(ProvisionError::AlreadyProvisioned)
+        Err(ProvisionError {
+            fault: crate::ProvisionFault::AlreadyProvisioned,
+            ..
+        })
     ));
     assert_eq!(
         std::fs::read(envelope_path).expect("retained envelope"),
         before
     );
+}
+
+#[test]
+fn failed_active_sync_reports_distinct_uncertainty_after_publication_barrier() {
+    let dir = TempDir::new("active-sync");
+    let store = dir.store();
+    let id = instance();
+    let error = crate::provision::publication_sync_fault::with_failure(
+        &store,
+        crate::provision::publication_sync_fault::Point::Activation,
+        || provision(&store, request(id)),
+    )
+    .expect_err("final Active directory sync failed");
+    assert!(
+        matches!(error.fault, crate::ProvisionFault::ActivationUncertain { instance, .. } if instance == id)
+    );
+    assert_eq!(
+        error.code(),
+        marrow_codes::Code::StoreActivationUncertain.as_str()
+    );
+    let record = crate::envelope::EnvelopeRecord::decode(
+        &std::fs::read(store.join(crate::store_dir::ENVELOPE_FILE)).expect("visible record"),
+    )
+    .expect("valid record");
+    assert_eq!(record.state, crate::envelope::EnvelopeState::Active);
+    let opened = open(&store, projection()).expect("the prior publication barrier succeeded");
+    assert_eq!(opened.envelope.instance, id);
 }
 
 /// Kill-point: BEFORE the rename only a temporary directory exists and the destination is
@@ -168,7 +284,7 @@ fn a_pre_rename_crash_state_keeps_the_destination_absent() {
     // Model the pre-rename crash state: a leftover temp-shaped sibling, destination absent.
     let leftover = dir
         .path
-        .join(format!(".store.provisioning.{}.999", std::process::id()));
+        .join(format!(".marrow-provisioning.{}.999", std::process::id()));
     std::fs::create_dir_all(leftover.join("junk")).expect("leftover temp");
 
     assert_eq!(
@@ -271,7 +387,10 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
                             assert_eq!(p.instance, id);
                             Some(id)
                         }
-                        Err(ProvisionError::AlreadyProvisioned) => None,
+                        Err(ProvisionError {
+                            fault: crate::ProvisionFault::AlreadyProvisioned,
+                            cleanup: None,
+                        }) => None,
                         Err(other) => panic!("unexpected provision error in race: {other}"),
                     }
                 })
@@ -450,7 +569,7 @@ fn failed_temp_creation_preserves_existing_directory() {
         let base = PathBuf::from(base);
         let dest = base.join("store");
         // This exact-test subprocess has not called provision or temp_sibling.
-        let temp = base.join(format!(".store.provisioning.{}.0", std::process::id()));
+        let temp = base.join(format!(".marrow-provisioning.{}.0", std::process::id()));
         std::fs::create_dir(&temp).expect("create existing directory");
         let sentinel = temp.join("sentinel");
         std::fs::write(&sentinel, b"pre-existing bytes").expect("write sentinel");
@@ -459,7 +578,10 @@ fn failed_temp_creation_preserves_existing_directory() {
         assert!(!dest.exists());
 
         match provision(&dest, request(instance())) {
-            Err(ProvisionError::Io(error)) => {
+            Err(ProvisionError {
+                fault: crate::ProvisionFault::Io(error),
+                cleanup: None,
+            }) => {
                 assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
             }
             other => panic!("expected directory creation refusal, got {other:?}"),
@@ -505,12 +627,12 @@ fn failed_temp_creation_preserves_existing_directory() {
                 .count(),
             1
         );
-        let file = base.join(format!(".store.provisioning.{}.1", std::process::id()));
+        let file = base.join(format!(".marrow-provisioning.{}.1", std::process::id()));
         std::fs::write(&file, b"existing file").expect("create existing file");
         let file_before = std::fs::symlink_metadata(&file).expect("file metadata");
         assert!(matches!(
             provision(&dest, request(instance())),
-            Err(ProvisionError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
+            Err(ProvisionError { fault: crate::ProvisionFault::Io(error), cleanup: None }) if error.kind() == std::io::ErrorKind::AlreadyExists
         ));
         assert_eq!(
             std::fs::read(&file).expect("file survives"),
@@ -525,12 +647,12 @@ fn failed_temp_creation_preserves_existing_directory() {
                 (file_before.dev(), file_before.ino(), file_before.mode()),
                 (file_after.dev(), file_after.ino(), file_after.mode())
             );
-            let link = base.join(format!(".store.provisioning.{}.2", std::process::id()));
+            let link = base.join(format!(".marrow-provisioning.{}.2", std::process::id()));
             symlink(&temp, &link).expect("create directory link");
             let link_before = std::fs::symlink_metadata(&link).expect("link metadata");
             assert!(matches!(
                 provision(&dest, request(instance())),
-                Err(ProvisionError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
+                Err(ProvisionError { fault: crate::ProvisionFault::Io(error), cleanup: None }) if error.kind() == std::io::ErrorKind::AlreadyExists
             ));
             let link_after = std::fs::symlink_metadata(&link).expect("link survives");
             assert_eq!(
@@ -550,6 +672,55 @@ fn failed_temp_creation_preserves_existing_directory() {
     run_exact_child(
         TempDir::new("create-collision"),
         "provision_lifecycle_tests::failed_temp_creation_preserves_existing_directory",
+        CHILD_BASE,
+    );
+}
+
+#[test]
+fn generated_stage_name_cannot_be_the_destination() {
+    const CHILD_BASE: &str = "MARROW_LC_STAGE_ALIAS_CHILD_BASE";
+    if let Some(base) = std::env::var_os(CHILD_BASE) {
+        let base = PathBuf::from(base);
+        let destination = base.join(format!(".marrow-provisioning.{}.0", std::process::id()));
+        let alternate = base.join(format!(".marrow-provisioning.{}.1", std::process::id()));
+        std::fs::create_dir(&alternate).expect("occupy alternate stage");
+        std::fs::write(alternate.join("sentinel"), b"existing stage").expect("sentinel");
+        let result = provision(&destination, request(instance()));
+        assert!(
+            matches!(result, Err(ProvisionError {
+            fault: crate::ProvisionFault::Io(ref error), cleanup: None,
+        }) if error.kind() == std::io::ErrorKind::AlreadyExists),
+            "unexpected {result:?}"
+        );
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read(alternate.join("sentinel")).unwrap(),
+            b"existing stage"
+        );
+        assert_eq!(
+            list(&base),
+            [alternate.file_name().unwrap().to_str().unwrap()]
+        );
+        let destination = base.join(format!(".MARROW-PROVISIONING.{}.2", std::process::id()));
+        let id = instance();
+        let result =
+            provision(&destination, request(id)).expect("publish an alias-shaped destination");
+        assert_eq!(result.instance, id);
+        assert_eq!(classify(&destination), Preflight::Complete);
+        assert!(
+            !base
+                .join(format!(".marrow-provisioning.{}.3", std::process::id()))
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read(alternate.join("sentinel")).unwrap(),
+            b"existing stage"
+        );
+        return;
+    }
+    run_exact_child(
+        TempDir::new("stage-alias"),
+        "provision_lifecycle_tests::generated_stage_name_cannot_be_the_destination",
         CHILD_BASE,
     );
 }
@@ -592,7 +763,10 @@ fn relative_provision_reports_success_after_publication() {
                     .expect("published directory")
                     .is_dir()
             );
-            assert_eq!(list(&destination), ["envelope", "head", "store.redb"]);
+            assert_eq!(
+                list(&destination),
+                ["envelope", "head", "lock", "store.redb"]
+            );
             for name in ["envelope", "head", "store.redb"] {
                 let metadata =
                     std::fs::symlink_metadata(destination.join(name)).expect("published artifact");
@@ -627,6 +801,7 @@ fn run_exact_child(dir: TempDir, test: &str, marker: &str) {
         .current_dir(&dir.path)
         .env_remove("MARROW_LC_CREATE_COLLISION_CHILD_BASE")
         .env_remove("MARROW_LC_RELATIVE_PROVISION_CHILD_BASE")
+        .env_remove("MARROW_LC_STAGE_ALIAS_CHILD_BASE")
         .env(marker, &dir.path)
         .spawn()
         .expect("spawn exact child test");
@@ -634,7 +809,14 @@ fn run_exact_child(dir: TempDir, test: &str, marker: &str) {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                assert!(status.success(), "child test {test} failed: {status}");
+                if !status.success() {
+                    let original = dir.path.clone();
+                    std::mem::forget(dir);
+                    panic!(
+                        "child test {test} failed: {status}; preserve {}",
+                        original.display()
+                    );
+                }
                 break;
             }
             Ok(None) if std::time::Instant::now() < deadline => {

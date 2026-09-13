@@ -11,6 +11,31 @@
 mod docs;
 pub use docs::generate;
 
+/// A store lifecycle operation whose final durability was not confirmed.
+/// This closed classification never denotes an ordinary pre-write refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreUncertainty {
+    Publication,
+    Activation,
+}
+
+impl StoreUncertainty {
+    pub const fn code(self) -> Code {
+        match self {
+            Self::Publication => Code::StorePublicationUncertain,
+            Self::Activation => Code::StoreActivationUncertain,
+        }
+    }
+
+    pub const fn from_code(code: Code) -> Option<Self> {
+        match code {
+            Code::StorePublicationUncertain => Some(Self::Publication),
+            Code::StoreActivationUncertain => Some(Self::Activation),
+            _ => None,
+        }
+    }
+}
+
 /// The family a code belongs to, named by the first dotted segment of its string.
 /// The family fixes the tooling [`Family::kind`] a code reports.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -182,6 +207,8 @@ codes! {
     ValueRange => r#"value.range"#, Value, Active, r#"A durable value cannot be represented by the store codec: at a durable write, a composite field's individually bounded scalar leaves exceed the dynamic 1 MiB aggregate encoded-value limit. Encoding completes before any store write, so the rejected write has no store effect. The same code closes codec range arms, such as a date outside 0001-9999, that checked source cannot produce."#;
     StoreIo => r#"store.io"#, Store, Active, r#"An I/O operation on a store failed."#;
     StorePublicationUncertain => r#"store.publication_uncertain"#, Store, Active, r#"The complete store was published, but synchronizing its parent directory failed. Preserve the destination; publication durability is unconfirmed."#;
+    StoreActivationUncertain => r#"store.activation_uncertain"#, Store, Active, r#"A lifecycle activation did not receive its final durability acknowledgment. Preserve the store and inspect its current state through explicit recovery; this is not permission to replay the operation."#;
+    StoreActivationRequired => r#"store.activation_required"#, Store, Active, r#"A pending lifecycle transition or legacy envelope requires explicit validated activation. Ordinary service is refused before engine opening."#;
     StorePermissionDenied => r#"store.permission_denied"#, Store, Active, r#"The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry."#;
     StoreLocked => r#"store.locked"#, Store, Active, r#"The store file is held open by another process (a writer or a read-only inspection). Close the other process, then retry."#;
     StoreFormatVersion => r#"store.format_version"#, Store, Active, r#"The store records a format version this build does not support."#;

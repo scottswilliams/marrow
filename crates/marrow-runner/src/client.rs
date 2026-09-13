@@ -21,10 +21,17 @@ use marrow_local_wire::{ClientMessage, HandoffStage, Id32, Json, LossClass, clas
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
-    self, CALL_DEADLINE, CallOutcome, ClientError, connect_and_handshake, post_dispatch_cause,
-    read_message_with_turn, reply_to_outcome, require_interface, require_reply_turn,
-    spawn_companion, write_message_with_turn,
+    self, CALL_DEADLINE, CallOutcome, ClientError, CompanionCleanupError, connect_and_handshake,
+    post_dispatch_cause, read_message_with_turn, reply_to_outcome, require_interface,
+    require_reply_turn, spawn_companion, write_message_with_turn,
 };
+
+/// A one-shot call outcome and the independent result of settling its direct child.
+#[must_use]
+pub struct AttachCompletion {
+    pub outcome: Result<CallOutcome, ClientError>,
+    pub cleanup: Result<(), CompanionCleanupError>,
+}
 
 /// Spawn the verified companion at `runner_exe`, attach it to the persistent store at `store`,
 /// and submit exactly one call to `export_id` with `args`. The companion is the sole opener of
@@ -37,23 +44,32 @@ pub fn attach_and_call(
     store: &Path,
     export_id: [u8; 32],
     args: Vec<Json>,
-) -> Result<CallOutcome, ClientError> {
+) -> AttachCompletion {
     let deadline = CALL_DEADLINE;
-    let nonce = terminal::mint_nonce()?;
-
-    let (mut companion, descriptor) =
-        spawn_companion(runner_exe, "attach", image_bytes, Some(store), nonce)?;
-
-    // The companion must serve exactly the image we spawned it with, or we refuse before sending
-    // the call.
-    require_interface(&descriptor, image)?;
-
-    let outcome = call_over_socket(image, &descriptor, nonce, export_id, args, deadline);
-    // The call is done and its socket dropped, so the companion has already seen the client hang
-    // up and is exiting; wait for it here so the ordinary path is a clean exit rather than the
-    // drop guard's kill. The guard still removes the staging directory.
-    let _ = companion.child.wait();
-    outcome
+    let launch = terminal::mint_nonce()
+        .map_err(terminal::CompanionStartupError::from)
+        .and_then(|nonce| {
+            spawn_companion(runner_exe, "attach", image_bytes, Some(store), nonce)
+                .map(|(companion, descriptor)| (nonce, companion, descriptor))
+        });
+    let (nonce, companion, descriptor) = match launch {
+        Ok(launch) => launch,
+        Err(error) => {
+            return AttachCompletion {
+                outcome: Err(error.error),
+                cleanup: error.cleanup,
+            };
+        }
+    };
+    let outcome = descriptor.and_then(|descriptor| {
+        require_interface(&descriptor, image).map_err(ClientError::activation_unknown)?;
+        call_over_socket(image, &descriptor, nonce, export_id, args, deadline)
+    });
+    // All descriptor and invocation transports are closed before observing child exit.
+    AttachCompletion {
+        outcome,
+        cleanup: companion.settle(),
+    }
 }
 
 /// Connect, prove the nonce, verify the runner proves the session and interface back, submit one
@@ -66,10 +82,11 @@ fn call_over_socket(
     args: Vec<Json>,
     deadline: Duration,
 ) -> Result<CallOutcome, ClientError> {
-    // Before the request is on the wire, a connect/handshake or write failure means the call
-    // provably did not start (`LossClass::NotStarted`): it surfaces as a `ClientError` the
-    // caller may treat as undone, and is never replayed.
-    let mut stream = connect_and_handshake(descriptor, nonce, deadline)?;
+    // Attach may already have rebound the store before the handshake. A missing startup
+    // result cannot establish its outcome, even though no invocation has been sent.
+    let mut stream =
+        connect_and_handshake(descriptor, nonce, deadline, terminal::StartupKind::Native)
+            .map_err(ClientError::activation_unknown)?;
     const TURN: u32 = 0;
     write_message_with_turn(
         &mut stream,

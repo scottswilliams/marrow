@@ -188,6 +188,77 @@ enum ImportStore {
     Existing,
 }
 
+#[test]
+fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
+    use std::process::{Command, Stdio};
+
+    for format in ["text", "jsonl"] {
+        let base = scratch();
+        std::fs::create_dir_all(&base).expect("scratch base");
+        let bytes = image_bytes();
+        let image_path = base.join("program.image");
+        std::fs::write(&image_path, &bytes).expect("image");
+        let store = base.join("store");
+        let image = marrow_verify::verify(&bytes).expect("verify");
+        let prepared = marrow_lifecycle::prepare(image.clone());
+        let report = ProvisionReport::new(&store, &prepared).expect("report");
+        let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
+        let provisioned =
+            marrow_lifecycle::provision_image(&store, &prepared, &approval).expect("provision");
+        let head = std::fs::read(store.join(marrow_lifecycle::HEAD_FILE)).expect("head");
+        std::fs::write(store.join("envelope.replacing"), b"interrupted metadata").expect("debris");
+        let (reader, writer) = std::io::pipe().expect("output pipe");
+        drop(reader);
+        let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
+            .arg("recover")
+            .arg("--image")
+            .arg(&image_path)
+            .arg("--store")
+            .arg(&store)
+            .args(["--format", format])
+            .stdin(Stdio::null())
+            .stdout(writer)
+            .stderr(Stdio::piped())
+            .output()
+            .expect("recovery child completes");
+        std::fs::write(base.join("stderr"), &output.stderr).expect("retain child diagnostic");
+        assert_eq!(output.status.code(), Some(1), "fixture: {}", base.display());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .starts_with(marrow_codes::Code::IoWrite.as_str())
+        );
+        assert!(!store.join("envelope.replacing").exists());
+        let preserved: Vec<_> = std::fs::read_dir(&store)
+            .expect("fixture entries")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .starts_with("envelope.replacing.preserved.")
+            })
+            .collect();
+        assert_eq!(preserved.len(), 1);
+        assert_eq!(
+            std::fs::read(&preserved[0]).expect("preserved bytes"),
+            b"interrupted metadata"
+        );
+        assert_eq!(
+            std::fs::read(store.join(marrow_lifecycle::HEAD_FILE)).expect("head unchanged"),
+            head
+        );
+        let marrow_lifecycle::AttachOutcome::AlreadyActive(attachment) =
+            marrow_lifecycle::attach(&store, marrow_lifecycle::prepare(image))
+                .expect("activation survived delivery failure")
+        else {
+            panic!("no rebind");
+        };
+        assert_eq!(attachment.envelope().instance, provisioned.instance);
+        drop(attachment);
+        std::fs::remove_dir_all(base).expect("remove successful fixture");
+    }
+}
+
 enum ClosedStream {
     Stdout,
     Stderr,

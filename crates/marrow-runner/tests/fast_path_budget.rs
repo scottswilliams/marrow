@@ -165,15 +165,16 @@ fn fast_path_costs_are_recorded() {
     let runner = PathBuf::from(env!("CARGO_BIN_EXE_marrow-runner"));
     let present = export_id(&image, "present");
     let end_to_end = measure(11, || {
-        attach_and_call(
+        let completion = attach_and_call(
             &runner,
             &image,
             &bytes,
             &call_store,
             present,
             vec![Json::Int(1)],
-        )
-        .expect("call");
+        );
+        completion.cleanup.expect("companion settled");
+        completion.outcome.expect("call");
     });
 
     println!("F02b fast-path measured medians (this host):");

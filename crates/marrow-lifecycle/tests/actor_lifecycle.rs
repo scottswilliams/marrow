@@ -108,6 +108,161 @@ fn now_nonce() -> u128 {
         .unwrap_or(0)
 }
 
+#[test]
+fn explicit_recovery_preserves_populated_program_data() {
+    use marrow_vm::{DurableRun, Value, run_export};
+    let source = format!(
+        "{BASE_SOURCE}\npub fn setValue(n: int, v: int) {{ transaction {{ ^counters[n] = Counter(value: v) }} }}\n"
+    );
+    let image = compile(&source, BASE_IDS);
+    let export = |name: &str| {
+        image
+            .exports()
+            .iter()
+            .find(|export| {
+                image
+                    .function(export.function())
+                    .expect("verified function")
+                    .body()
+                    .name()
+                    == name
+            })
+            .expect("declared export")
+            .id()
+    };
+    let set_value = export("setValue");
+    let read_value = export("readValue");
+    let scratch = Scratch::new("populated-recovery");
+    let instance = provision_from(scratch.dir(), &image);
+    {
+        let AttachOutcome::AlreadyActive(mut attachment) =
+            attach(scratch.dir(), prepare(image.clone())).expect("attach")
+        else {
+            panic!("provisioned binding")
+        };
+        assert!(matches!(
+            run_export(
+                &mut attachment,
+                set_value,
+                vec![Value::Int(7), Value::Int(42)]
+            ),
+            Some(DurableRun::Ran(Ok(None)))
+        ));
+    }
+    let before =
+        marrow_lifecycle::audit(scratch.dir(), prepare(image.clone())).expect("before audit");
+    assert_eq!(before.summary.entries, 1);
+    let head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head");
+    let receipt =
+        marrow_lifecycle::recover(scratch.dir(), prepare(image.clone())).expect("recovery");
+    assert_eq!(receipt.instance, instance);
+    assert_eq!(receipt.image_id, image.image_id());
+    assert_eq!(
+        std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head unchanged"),
+        head
+    );
+    let after =
+        marrow_lifecycle::audit(scratch.dir(), prepare(image.clone())).expect("after audit");
+    assert!(after.is_clean());
+    assert_eq!(after.digest, before.digest);
+    assert_eq!(after.summary.entries, 1);
+    let AttachOutcome::AlreadyActive(mut attachment) =
+        attach(scratch.dir(), prepare(image)).expect("attach recovered")
+    else {
+        panic!("recovery does not rebind")
+    };
+    assert!(matches!(
+        run_export(&mut attachment, read_value, vec![Value::Int(7)]),
+        Some(DurableRun::Ran(Ok(Some(Value::Int(42)))))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn rebind_preserves_an_occupied_replacement_slot() {
+    use marrow_lifecycle::{AdmissionError, AdmissionFault, OpenError, StoreEntry};
+    use std::os::unix::fs::MetadataExt;
+    let image = compile(BASE_SOURCE, BASE_IDS);
+    let edited = compile(&BASE_SOURCE.replace("?? 0", "?? 1"), BASE_IDS);
+    for (slot, entry) in [
+        ("envelope.replacing", StoreEntry::Envelope),
+        ("head.replacing", StoreEntry::Head),
+    ] {
+        for shape in ["empty", "partial", "symlink", "directory", "hardlink"] {
+            let scratch = Scratch::new("replacement-shape");
+            provision_from(scratch.dir(), &image);
+            let path = scratch.dir().join(slot);
+            let peer = scratch.dir().join("unrelated");
+            std::fs::write(&peer, b"unrelated bytes").expect("peer");
+            match shape {
+                "empty" => std::fs::write(&path, b"").expect("empty sibling"),
+                "partial" => std::fs::write(&path, b"partial").expect("partial sibling"),
+                "symlink" => std::os::unix::fs::symlink(&peer, &path).expect("symlink sibling"),
+                "directory" => std::fs::create_dir(&path).expect("directory sibling"),
+                "hardlink" => std::fs::hard_link(&peer, &path).expect("hardlink sibling"),
+                _ => unreachable!(),
+            }
+            let before = std::fs::symlink_metadata(&path).expect("sibling metadata");
+            let head = std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head");
+            let envelope = std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+                .expect("envelope");
+            let error = attach(scratch.dir(), prepare(edited.clone()))
+                .err()
+                .expect("occupied slot refuses");
+            assert!(
+                matches!(error, LifecycleError::Metadata(AdmissionError {
+                entry: found,
+                fault: AdmissionFault::Custody(marrow_fs_journal::CustodyError::AlreadyExists { .. }),
+            }) if found == entry),
+                "{slot} {shape}: {error:?}"
+            );
+            let after = std::fs::symlink_metadata(&path).expect("retained sibling");
+            assert_eq!(
+                (
+                    after.dev(),
+                    after.ino(),
+                    after.mode(),
+                    after.nlink(),
+                    after.len()
+                ),
+                (
+                    before.dev(),
+                    before.ino(),
+                    before.mode(),
+                    before.nlink(),
+                    before.len()
+                )
+            );
+            assert_eq!(
+                std::fs::read(&peer).expect("peer unchanged"),
+                b"unrelated bytes"
+            );
+            if shape == "partial" {
+                assert_eq!(std::fs::read(&path).expect("partial unchanged"), b"partial");
+            }
+            if shape == "symlink" {
+                assert_eq!(std::fs::read_link(&path).expect("link unchanged"), peer);
+            }
+            assert_eq!(
+                std::fs::read(scratch.dir().join(HEAD_FILE)).expect("head unchanged"),
+                head
+            );
+            if entry == StoreEntry::Envelope {
+                assert_eq!(
+                    std::fs::read(scratch.dir().join(marrow_lifecycle::ENVELOPE_FILE))
+                        .expect("envelope unchanged"),
+                    envelope
+                );
+            } else {
+                assert!(matches!(
+                    attach(scratch.dir(), prepare(image.clone())),
+                    Err(LifecycleError::Open(OpenError::ActivationRequired { .. }))
+                ));
+            }
+        }
+    }
+}
+
 /// Provision a fresh store at `dir` bound to `image`.
 fn provision_from(dir: &Path, image: &VerifiedImage) -> StoreInstanceId {
     let instance = StoreInstanceId::draw().expect("entropy");
@@ -529,45 +684,6 @@ fn open_head(dir: &Path, image: &VerifiedImage) -> LogicalHead {
         AttachOutcome::AlreadyActive(attachment) => attachment.head().clone(),
         AttachOutcome::Rebound { .. } => panic!("the active image is already active"),
     }
-}
-
-/// The fast-path crash matrix (F02b): a kill during a binding-only rebind, after the head
-/// (the active-binding commit point) is renamed into place but before the envelope (writer
-/// provenance) is rewritten, recovers to the complete NEW binding — the store reopens cleanly
-/// and its active binding is the new image, with the stale envelope forensic-only. A kill
-/// before the head rename leaves the OLD binding, since a single-file rename is atomic (each
-/// artifact is wholly old or wholly new, never torn); this test exercises the new-binding leg,
-/// the one the ordering makes non-trivial.
-#[test]
-fn a_crash_between_head_and_envelope_commit_recovers_to_the_new_binding() {
-    let scratch = Scratch::new("crash-rebind");
-    let image_a = compile(BASE_SOURCE, BASE_IDS);
-    provision_from(scratch.dir(), &image_a);
-
-    // A body-only edit: same durable contract, interface, and ceiling; different code.
-    let edited = compile(&BASE_SOURCE.replace("?? 0", "?? 1"), BASE_IDS);
-    let binding_b = active_binding(&edited);
-
-    // Simulate the crash: read the persisted head, stamp the new binding into it (the commit
-    // point), and write only the head back — leaving the old envelope, exactly the on-disk
-    // state a kill between the head rename and the envelope rewrite leaves.
-    let crashed_head = LogicalHead {
-        binding: binding_b,
-        ..open_head(scratch.dir(), &image_a)
-    }
-    .encode();
-    std::fs::write(scratch.dir().join(HEAD_FILE), &crashed_head).expect("write crashed head");
-
-    // Reopen: the store is complete and runnable, and the active binding is the new image B.
-    let reopened = open_head(scratch.dir(), &edited);
-    assert_eq!(
-        reopened.binding.image_id, binding_b.image_id,
-        "reopen after the crash yields the new binding (the head is the commit point)",
-    );
-    assert!(
-        reopened.binding.facts_equal(&binding_b),
-        "the recovered binding facts match the new image",
-    );
 }
 
 /// Rewrite the store's head at `dir` with the same binding and ceiling as `image` but a

@@ -6,12 +6,12 @@ use crate::term_style::{Stream, Style};
 
 mod cmd_check;
 mod cmd_client;
-mod cmd_doctor;
 mod cmd_fmt;
 mod cmd_image;
 mod cmd_import;
 mod cmd_init;
 mod cmd_run;
+mod cmd_store;
 mod cmd_test;
 mod command_output;
 mod companion;
@@ -31,6 +31,7 @@ Usage:
   marrow run <export> [--stdin] [--store <dir>] [--format text|jsonl] [-- <args>...]
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow doctor --store <dir> [--format text|jsonl]
+  marrow recover --store <dir> [--format text|jsonl]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
   marrow image --out <dir> --accept-ceiling <id>
@@ -112,7 +113,8 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "init" => cmd_init::init(rest),
         "run" => cmd_run::run(rest),
         "import" => cmd_import::import(rest),
-        "doctor" => cmd_doctor::doctor(rest),
+        "doctor" => cmd_store::run(cmd_store::Operation::Doctor, rest),
+        "recover" => cmd_store::run(cmd_store::Operation::Recover, rest),
         "test" => cmd_test::test(rest),
         "client" => cmd_client::client(rest),
         "image" => cmd_image::image(rest),

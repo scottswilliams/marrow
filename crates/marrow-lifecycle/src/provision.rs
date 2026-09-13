@@ -32,8 +32,9 @@ use marrow_kernel::durable::{
     ReadSession, SessionError, SessionHost, StoreError, StoreProjection, TxnSession,
 };
 
-use crate::durable_fs::{sync_dir, write_file};
+use crate::durable_fs::sync_dir;
 use crate::envelope::StoreEnvelope;
+use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
 use crate::lock::LockError;
@@ -95,7 +96,7 @@ pub struct Provisioned {
 
 /// Why a provision failed.
 #[derive(Debug)]
-pub enum ProvisionError {
+pub enum ProvisionFault {
     /// A complete or partially-formed store already occupies the destination: the caller lost
     /// the one-winner claim, or a prior provision is present. The destination is untouched.
     AlreadyProvisioned,
@@ -111,82 +112,167 @@ pub enum ProvisionError {
         instance: StoreInstanceId,
         source: std::io::Error,
     },
+    /// Publication passed its parent barrier, but Active completion was not acknowledged.
+    ActivationUncertain {
+        instance: StoreInstanceId,
+        source: AdmissionError,
+    },
+}
+
+/// Failed provision and independent cleanup evidence for its unpublished stage.
+#[derive(Debug)]
+pub struct ProvisionError {
+    pub fault: ProvisionFault,
+    pub cleanup: Option<ProvisionCleanupFailure>,
+}
+
+/// Removing an owned unpublished stage failed. Removal may have been partial.
+#[derive(Debug)]
+pub struct ProvisionCleanupFailure {
+    pub stage: PathBuf,
+    pub source: std::io::Error,
+}
+
+impl From<ProvisionFault> for ProvisionError {
+    fn from(fault: ProvisionFault) -> Self {
+        Self {
+            fault,
+            cleanup: None,
+        }
+    }
 }
 
 impl ProvisionError {
-    /// The stable dotted code a tool reports.
+    /// The primary failure's code, independent of cleanup.
     pub fn code(&self) -> &'static str {
-        match self {
-            ProvisionError::AlreadyProvisioned => Code::StoreLocked.as_str(),
-            ProvisionError::Admission(error) => error.code(),
-            ProvisionError::Store(error) => error.code(),
-            ProvisionError::Io(_) => Code::StoreIo.as_str(),
-            ProvisionError::PublicationUncertain { .. } => Code::StorePublicationUncertain.as_str(),
-        }
+        self.fault.code()
     }
 }
 
 impl std::fmt::Display for ProvisionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fault.fmt(f)?;
+        if let Some(cleanup) = &self.cleanup {
+            write!(
+                f,
+                "; cleanup failed for unpublished stage {}: {}",
+                cleanup.stage.display(),
+                cleanup.source
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ProvisionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.fault)
+    }
+}
+
+impl ProvisionFault {
+    /// The stable dotted code a tool reports.
+    pub fn code(&self) -> &'static str {
         match self {
-            ProvisionError::AlreadyProvisioned => {
+            ProvisionFault::AlreadyProvisioned => Code::StoreLocked.as_str(),
+            ProvisionFault::Admission(error) => error.code(),
+            ProvisionFault::Store(error) => error.code(),
+            ProvisionFault::Io(_) => Code::StoreIo.as_str(),
+            ProvisionFault::PublicationUncertain { .. } => Code::StorePublicationUncertain.as_str(),
+            ProvisionFault::ActivationUncertain { .. } => Code::StoreActivationUncertain.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for ProvisionFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProvisionFault::AlreadyProvisioned => {
                 write!(f, "a store already exists at the destination")
             }
-            ProvisionError::Admission(error) => write!(f, "{error}"),
-            ProvisionError::Store(error) => {
+            ProvisionFault::Admission(error) => write!(f, "{error}"),
+            ProvisionFault::Store(error) => {
                 write!(f, "the store engine could not be created: {error}")
             }
-            ProvisionError::Io(error) => write!(f, "provisioning failed: {error}"),
-            ProvisionError::PublicationUncertain { instance, source } => write!(
+            ProvisionFault::Io(error) => write!(f, "provisioning failed: {error}"),
+            ProvisionFault::PublicationUncertain { instance, source } => write!(
                 f,
                 "store {} was published, but directory durability is unconfirmed: {source}",
+                instance.to_hex()
+            ),
+            ProvisionFault::ActivationUncertain { instance, source } => write!(
+                f,
+                "store {} was published, but activation completion is unconfirmed: {source}",
                 instance.to_hex()
             ),
         }
     }
 }
 
-impl std::error::Error for ProvisionError {}
+impl std::error::Error for ProvisionFault {}
 
-/// Provision a fresh store at `dest`. Builds the whole
-/// store in a private sibling temporary directory (owner-only, mode `0700`) — the engine
-/// database created through the path kernel, then the envelope and head bytes written and
-/// flushed — then atomically renames it onto `dest`. A rename onto an existing non-empty
+/// Provision a fresh store at `dest` in a private sibling directory (mode `0700`).
+/// Write and flush the envelope and head, create the engine through the path kernel,
+/// sync the completed stage, then atomically rename it onto `dest`. A rename onto an existing non-empty
 /// destination fails, so exactly one racing provisioner wins and the destination is never
 /// left partial. A creation failure leaves an existing temporary path untouched. After
-/// successful creation, a failure before rename removes this invocation's temporary directory.
+/// successful creation, a failure before rename attempts to remove this invocation's
+/// temporary directory. Cleanup failure can leave that stage behind.
 /// A parent-directory sync failure after rename retains `dest` and returns its instance
 /// identity in `PublicationUncertain`; it does not confirm publication durability.
 pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, ProvisionError> {
+    check_engine_stamp(&request.envelope).map_err(ProvisionFault::Store)?;
     let instance = request.envelope.instance;
     let temp = temp_sibling(dest);
-    create_private_dir(&temp).map_err(ProvisionError::Io)?;
-    // Build the whole store in the temp directory; on any error, remove it and surface.
-    match build_in_temp(&temp, &request) {
-        Ok(()) => {}
+    create_private_dir(&temp).map_err(ProvisionFault::Io)?;
+    // Build the store before publication; cleanup after a failed build is best-effort.
+    #[cfg(test)]
+    let built = tests::construct(dest, &temp, || build_in_temp(&temp, &request));
+    #[cfg(not(test))]
+    let built = build_in_temp(&temp, &request);
+    let (owner, admitted) = match built {
+        Ok(owner) => owner,
         Err(error) => {
-            let _ = std::fs::remove_dir_all(&temp);
-            return Err(error);
+            return Err(cleanup_after_failure(&temp, error));
         }
-    }
+    };
+
+    #[cfg(all(test, unix))]
+    tests::observe_publication(
+        tests::PublicationPoint::Staged,
+        dest,
+        &temp,
+        &owner,
+        &admitted,
+    );
 
     // The one-winner atomic claim: rename the fully-formed temp directory onto the
     // destination. A rename onto an existing non-empty directory fails (the destination is
-    // an existing store or another winner's claim), so the loser cleans up its temp and
-    // reports the destination taken.
+    // an existing store or another winner's claim). The loser attempts owned-stage
+    // cleanup and reports any removal failure alongside the primary refusal.
     match std::fs::rename(&temp, dest) {
         Ok(()) => {}
         Err(error) => {
-            let _ = std::fs::remove_dir_all(&temp);
             // A destination that now exists is another winner (or a prior store), not our
             // I/O fault.
-            return if dest.exists() {
-                Err(ProvisionError::AlreadyProvisioned)
+            let fault = if dest.exists() {
+                ProvisionFault::AlreadyProvisioned
             } else {
-                Err(ProvisionError::Io(error))
+                ProvisionFault::Io(error)
             };
+            drop(admitted);
+            drop(owner);
+            return Err(cleanup_after_failure(&temp, fault));
         }
     }
+    #[cfg(all(test, unix))]
+    tests::observe_publication(
+        tests::PublicationPoint::Renamed,
+        dest,
+        dest,
+        &owner,
+        &admitted,
+    );
     // Make the new directory entry durable in the parent.
     if let Some(parent) = dest.parent() {
         // A single-component relative path has an empty parent, meaning the current directory.
@@ -196,11 +282,40 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
             parent
         };
         #[cfg(test)]
-        let synced = publication_sync_fault::sync_parent(dest, parent);
+        let synced =
+            publication_sync_fault::sync(dest, parent, publication_sync_fault::Point::Publication);
         #[cfg(not(test))]
         let synced = sync_dir(parent);
-        synced.map_err(|source| ProvisionError::PublicationUncertain { instance, source })?;
+        synced.map_err(|source| ProvisionFault::PublicationUncertain { instance, source })?;
     }
+    let active = EnvelopeRecord {
+        metadata: request.envelope,
+        state: EnvelopeState::Active,
+    }
+    .encode()
+    .map_err(|error| {
+        ProvisionFault::Admission(AdmissionError::format(StoreEntry::Envelope, error))
+    })?;
+    admitted
+        .replace(Artifact::Envelope, &active)
+        .map_err(|source| ProvisionFault::ActivationUncertain { instance, source })?;
+    #[cfg(test)]
+    publication_sync_fault::check(dest, publication_sync_fault::Point::Activation).map_err(
+        |source| ProvisionFault::ActivationUncertain {
+            instance,
+            source: AdmissionError {
+                entry: StoreEntry::Directory,
+                fault: store_dir::AdmissionFault::Custody(marrow_fs_journal::CustodyError::Io {
+                    op: "activation directory sync",
+                    source,
+                }),
+            },
+        },
+    )?;
+    admitted
+        .sync()
+        .map_err(|source| ProvisionFault::ActivationUncertain { instance, source })?;
+    drop(owner);
     Ok(Provisioned { instance })
 }
 
@@ -209,26 +324,44 @@ pub(crate) mod publication_sync_fault {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
 
-    thread_local! {
-        static DESTINATION: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Point {
+        Publication,
+        Activation,
     }
 
-    pub(crate) fn with_failure<T>(destination: &Path, action: impl FnOnce() -> T) -> T {
-        struct Restore(Option<PathBuf>);
+    thread_local! {
+        static DESTINATION: RefCell<Option<(PathBuf, Point)>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn with_failure<T>(
+        destination: &Path,
+        point: Point,
+        action: impl FnOnce() -> T,
+    ) -> T {
+        struct Restore(Option<(PathBuf, Point)>);
         impl Drop for Restore {
             fn drop(&mut self) {
                 DESTINATION.with(|slot| *slot.borrow_mut() = self.0.take());
             }
         }
-        let previous = DESTINATION.with(|slot| slot.replace(Some(destination.to_owned())));
+        let previous = DESTINATION.with(|slot| slot.replace(Some((destination.to_owned(), point))));
         let _restore = Restore(previous);
         action()
     }
 
-    pub(super) fn sync_parent(destination: &Path, parent: &Path) -> std::io::Result<()> {
+    pub(super) fn sync(destination: &Path, directory: &Path, point: Point) -> std::io::Result<()> {
+        check(destination, point)?;
+        super::sync_dir(directory)
+    }
+
+    pub(super) fn check(destination: &Path, point: Point) -> std::io::Result<()> {
         let fail = DESTINATION.with(|slot| {
             let mut armed = slot.borrow_mut();
-            if armed.as_deref() == Some(destination) {
+            if armed
+                .as_ref()
+                .is_some_and(|(path, at)| path == destination && *at == point)
+            {
                 armed.take();
                 true
             } else {
@@ -238,31 +371,69 @@ pub(crate) mod publication_sync_fault {
         if fail {
             Err(std::io::Error::from(std::io::ErrorKind::Other))
         } else {
-            super::sync_dir(parent)
+            Ok(())
         }
     }
 }
 
-/// Build the store's artifacts in the already-created private temporary directory `temp`:
-/// create the engine database through the path kernel, write the
-/// envelope and head bytes, and flush every file and the directory to disk.
-fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), ProvisionError> {
+fn cleanup_after_failure(stage: &Path, fault: ProvisionFault) -> ProvisionError {
+    let cleanup = remove_unpublished_stage(stage)
+        .err()
+        .map(|source| ProvisionCleanupFailure {
+            stage: stage.to_path_buf(),
+            source,
+        });
+    ProvisionError { fault, cleanup }
+}
+
+fn remove_unpublished_stage(stage: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    tests::removal_fault(stage)?;
+    std::fs::remove_dir_all(stage)
+}
+
+/// Build metadata, create the engine, then sync the stage before returning its owner.
+fn build_in_temp(
+    temp: &Path,
+    request: &ProvisionRequest,
+) -> Result<
+    (
+        marrow_kernel::durable::PendingNativeStoreOwner,
+        AdmittedStoreDir,
+    ),
+    ProvisionFault,
+> {
+    let owner = NativeStore::acquire_existing(temp)
+        .map_err(|error| ProvisionFault::Io(std::io::Error::other(error)))?;
+    let admitted =
+        AdmittedStoreDir::admit_under_owner(&owner).map_err(ProvisionFault::Admission)?;
+    let (head_bytes, head) = request.head.encode_with_digest();
+    let pending = EnvelopeRecord {
+        metadata: request.envelope.clone(),
+        state: EnvelopeState::Provision { head },
+    }
+    .encode()
+    .map_err(|error| {
+        ProvisionFault::Admission(AdmissionError::format(StoreEntry::Envelope, error))
+    })?;
+    admitted
+        .write_new(Artifact::Envelope, &pending)
+        .map_err(ProvisionFault::Admission)?;
+    admitted
+        .write_new(Artifact::Head, &head_bytes)
+        .map_err(ProvisionFault::Admission)?;
     // Provisioning is the sole create/stamp path. It returns no engine or store
     // capability, so the newly created body cannot escape without an owner lock.
-    NativeStore::provision(temp).map_err(ProvisionError::Store)?;
+    NativeStore::provision(temp).map_err(ProvisionFault::Store)?;
 
-    write_file(&store_dir::envelope_path(temp), &request.envelope.encode())
-        .map_err(ProvisionError::Io)?;
-    write_file(&store_dir::head_path(temp), &request.head.encode()).map_err(ProvisionError::Io)?;
-    sync_dir(temp).map_err(ProvisionError::Io)?;
-
-    // Fail closed where an open never could succeed. An open admits the store directory as a
-    // descriptor, and the platforms that support those operations are narrower than the
-    // platforms this crate builds for; publishing a store that could never be opened again
-    // would move that refusal from the provision to every later open.
-    AdmittedStoreDir::admit(temp)
-        .map(drop)
-        .map_err(ProvisionError::Admission)
+    #[cfg(test)]
+    crate::store_dir::barrier_fault::check(
+        &admitted,
+        crate::store_dir::barrier_fault::Point::ConstructionStage,
+    )
+    .map_err(ProvisionFault::Admission)?;
+    admitted.sync().map_err(ProvisionFault::Admission)?;
+    Ok((owner, admitted))
 }
 
 /// A held-open provisioned store: the native store the kernel drives, its envelope and head,
@@ -289,8 +460,10 @@ fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), Provisio
 /// ```
 pub struct OpenStore {
     owner: NativeStore,
+    pub(crate) directory: AdmittedStoreDir,
     pub(crate) envelope: StoreEnvelope,
     pub(crate) head: LogicalHead,
+    pub(crate) head_digest: marrow_image::StoreHeadDigest,
 }
 
 impl SessionHost for OpenStore {
@@ -334,16 +507,20 @@ impl OpenStore {
     ) -> (DurableCommitState, Option<Self>) {
         let Self {
             owner,
+            directory,
             envelope,
             head,
+            head_digest,
         } = self;
         let (state, owner) = owner.resolve_recovery(recovery);
         (
             state,
             owner.map(|owner| Self {
                 owner,
+                directory,
                 envelope,
                 head,
+                head_digest,
             }),
         )
     }
@@ -352,6 +529,8 @@ impl OpenStore {
 /// Why an open failed.
 #[derive(Debug)]
 pub enum OpenError {
+    /// A pending transition or legacy envelope requires explicit validated activation.
+    ActivationRequired { instance: StoreInstanceId },
     /// No store exists at the path.
     NotProvisioned,
     /// The store directory could not be examined at all, so nothing about the store it may
@@ -382,6 +561,7 @@ impl OpenError {
     pub fn code(&self) -> &'static str {
         match self {
             OpenError::NotProvisioned => Code::StoreIo.as_str(),
+            OpenError::ActivationRequired { .. } => Code::StoreActivationRequired.as_str(),
             OpenError::Access(error) => error.code(),
             OpenError::Incomplete | OpenError::Corruption { .. } => Code::StoreCorruption.as_str(),
             OpenError::Admission(error) => error.code(),
@@ -396,6 +576,11 @@ impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OpenError::NotProvisioned => write!(f, "no store exists at the destination"),
+            OpenError::ActivationRequired { instance } => write!(
+                f,
+                "store {} requires explicit validated activation before service",
+                instance.to_hex()
+            ),
             OpenError::Access(error) => write!(f, "{error}"),
             OpenError::Incomplete => {
                 write!(
@@ -439,71 +624,154 @@ pub(crate) enum AdmitError<R> {
 /// that obligation and never repairs. On success the
 /// returned [`OpenStore`] holds the lock for the store's whole open life. The lifecycle actor
 /// and the importer supply an `admit` that admits the presented image against the head; a
-/// refusal is surfaced as [`AdmitError::Refused`]. This is the only constructor of an
-/// [`OpenStore`].
+/// refusal is surfaced as [`AdmitError::Refused`]. Explicit recovery shares the
+/// same [`LockedStore`] owner composition with a distinct state eligibility check.
 pub(crate) fn open_admitted<R>(
     dir: &Path,
     projection: StoreProjection,
     access: NativeOpenAccess,
     admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
 ) -> Result<OpenStore, AdmitError<R>> {
-    decide_before_locking(dir).map_err(AdmitError::Open)?;
-
-    // Acquiring pins the store directory to its canonical path and takes the lock without
-    // naming an instance or touching the engine. Retaining caller-relative text would allow a
-    // later cwd change to redirect indeterminate-commit recovery while the original store's
-    // owner lock remained held.
-    let pending = NativeStore::acquire_existing(dir).map_err(|error| match error {
-        NativeOwnerAcquireError::Io(error) => AdmitError::Open(OpenError::Io(error)),
-        NativeOwnerAcquireError::Lock(error) => {
-            AdmitError::Open(OpenError::Lock(LockError::from(error)))
-        }
-    })?;
-    let dir = pending.directory().to_path_buf();
-
-    // From here to the engine open, one owner holds the store: the completeness verdict, the
-    // envelope, and the head are one admission snapshot rather than three separately racing
-    // observations, all read through one retained directory descriptor.
-    let admitted = AdmittedStoreDir::admit(&dir)
-        .map_err(|error| AdmitError::Open(OpenError::Admission(error)))?;
-    if !admitted
-        .is_complete()
-        .map_err(|error| AdmitError::Open(OpenError::Admission(error)))?
-    {
-        return Err(AdmitError::Open(OpenError::Incomplete));
+    let locked = LockedStore::acquire(dir).map_err(AdmitError::Open)?;
+    if locked.envelope.state != EnvelopeState::Active {
+        return Err(AdmitError::Open(OpenError::ActivationRequired {
+            instance: locked.envelope.metadata.instance,
+        }));
     }
-    let envelope = decode_envelope(&admitted).map_err(AdmitError::Open)?;
-    let mut admitted_head = None;
+    locked.open(projection, access, |head, _| admit(head))
+}
 
-    // The kernel capsule binds the instance the envelope named into the owner marker, runs
-    // admission, and composes the existing-only engine open with any inherited audit without
-    // exposing its lower owner.
-    let owner = pending
-        .bind_and_open_existing(access, *envelope.instance.bytes(), projection, || {
-            // Read and admit the mutable logical head under the same owner. The callback
-            // receives no store capability.
-            let head = decode_head(&admitted).map_err(Ok)?;
-            admit(&head).map_err(Err)?;
-            admitted_head = Some(head);
-            Ok::<(), Result<OpenError, R>>(())
-        })
-        .map_err(|error| match error {
-            NativeOwnerOpenError::Lock(error) => {
-                AdmitError::Open(OpenError::Lock(LockError::from(error)))
-            }
-            NativeOwnerOpenError::Refused(Ok(error)) => AdmitError::Open(error),
-            NativeOwnerOpenError::Refused(Err(refusal)) => AdmitError::Refused(refusal),
-            NativeOwnerOpenError::Store(StoreError::Corruption { message }) => {
-                AdmitError::Open(OpenError::Corruption { message })
-            }
-            NativeOwnerOpenError::Store(error) => AdmitError::Open(OpenError::Store(error)),
+/// Owner-held directory and envelope before engine opening.
+/// Ordinary open requires Active; explicit recovery validates the retained state.
+pub(crate) struct LockedStore {
+    pending: marrow_kernel::durable::PendingNativeStoreOwner,
+    directory: AdmittedStoreDir,
+    pub(crate) envelope: EnvelopeRecord,
+}
+
+impl LockedStore {
+    pub(crate) fn acquire(dir: &Path) -> Result<Self, OpenError> {
+        decide_before_locking(dir)?;
+        let pending = NativeStore::acquire_existing(dir).map_err(|error| match error {
+            NativeOwnerAcquireError::Io(error) => OpenError::Io(error),
+            NativeOwnerAcquireError::Lock(error) => OpenError::Lock(LockError::from(error)),
         })?;
+        #[cfg(test)]
+        admission_substitution::apply(pending.directory());
+        let directory =
+            AdmittedStoreDir::admit_under_owner(&pending).map_err(OpenError::Admission)?;
+        if !directory.is_complete().map_err(OpenError::Admission)? {
+            return Err(OpenError::Incomplete);
+        }
+        let envelope = decode_record(&directory)?;
+        check_engine_stamp(&envelope.metadata).map_err(OpenError::Store)?;
+        Ok(Self {
+            pending,
+            directory,
+            envelope,
+        })
+    }
 
-    Ok(OpenStore {
-        owner,
-        envelope,
-        head: admitted_head.expect("a successful open completed head admission"),
-    })
+    pub(crate) fn directory_path(&self) -> &Path {
+        self.pending.directory()
+    }
+
+    pub(crate) fn open<R>(
+        self,
+        projection: StoreProjection,
+        access: NativeOpenAccess,
+        admit: impl FnOnce(&LogicalHead, marrow_image::StoreHeadDigest) -> Result<(), R>,
+    ) -> Result<OpenStore, AdmitError<R>> {
+        let Self {
+            pending,
+            directory,
+            envelope,
+        } = self;
+        let envelope = envelope.metadata;
+        let mut admitted_head = None;
+        let owner = pending
+            .bind_and_open_existing(access, *envelope.instance.bytes(), projection, || {
+                let (head, digest) = decode_head(&directory).map_err(Ok)?;
+                admit(&head, digest).map_err(Err)?;
+                admitted_head = Some((head, digest));
+                Ok::<(), Result<OpenError, R>>(())
+            })
+            .map_err(|error| match error {
+                NativeOwnerOpenError::Lock(error) => {
+                    AdmitError::Open(OpenError::Lock(LockError::from(error)))
+                }
+                NativeOwnerOpenError::Refused(Ok(error)) => AdmitError::Open(error),
+                NativeOwnerOpenError::Refused(Err(refusal)) => AdmitError::Refused(refusal),
+                NativeOwnerOpenError::Store(StoreError::Corruption { message }) => {
+                    AdmitError::Open(OpenError::Corruption { message })
+                }
+                NativeOwnerOpenError::Store(error) => AdmitError::Open(OpenError::Store(error)),
+            })?;
+        let (head, head_digest) =
+            admitted_head.expect("a successful open completed head admission");
+        Ok(OpenStore {
+            owner,
+            directory,
+            envelope,
+            head,
+            head_digest,
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod admission_substitution {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    struct Swap {
+        original: PathBuf,
+        displaced: PathBuf,
+        replacement: PathBuf,
+    }
+
+    thread_local! {
+        static SWAP: RefCell<Option<Swap>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn with_swap<T>(
+        original: &Path,
+        displaced: &Path,
+        replacement: &Path,
+        action: impl FnOnce() -> T,
+    ) -> T {
+        struct Restore(Option<Swap>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SWAP.with(|slot| *slot.borrow_mut() = self.0.take());
+            }
+        }
+        let swap = Swap {
+            original: std::fs::canonicalize(original).expect("existing original"),
+            displaced: displaced.to_owned(),
+            replacement: replacement.to_owned(),
+        };
+        let _restore = Restore(SWAP.with(|slot| slot.replace(Some(swap))));
+        action()
+    }
+
+    pub(super) fn apply(directory: &Path) {
+        let swap = SWAP.with(|slot| {
+            let mut armed = slot.borrow_mut();
+            if armed
+                .as_ref()
+                .is_some_and(|swap| swap.original == directory)
+            {
+                armed.take()
+            } else {
+                None
+            }
+        });
+        if let Some(swap) = swap {
+            std::fs::rename(&swap.original, &swap.displaced).expect("move held directory");
+            std::fs::rename(&swap.replacement, &swap.original).expect("substitute directory");
+        }
+    }
 }
 
 /// Everything an open settles before it takes the owner lock, and nothing else.
@@ -529,35 +797,54 @@ fn decide_before_locking(dir: &Path) -> Result<(), OpenError> {
     }
 }
 
-fn decode_envelope(dir: &AdmittedStoreDir) -> Result<StoreEnvelope, OpenError> {
+fn check_engine_stamp(envelope: &StoreEnvelope) -> Result<(), StoreError> {
+    let supported = marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION;
+    if envelope.engine_format_version != supported {
+        return Err(StoreError::FormatVersion {
+            found: envelope.engine_format_version,
+            supported,
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn decode_record(dir: &AdmittedStoreDir) -> Result<EnvelopeRecord, OpenError> {
     let bytes = dir
         .read(Artifact::Envelope, crate::envelope::file_ceiling)
         .map_err(OpenError::Admission)?;
-    StoreEnvelope::decode(&bytes)
+    EnvelopeRecord::decode(&bytes)
         .map_err(|error| OpenError::Admission(AdmissionError::format(StoreEntry::Envelope, error)))
 }
 
-fn decode_head(dir: &AdmittedStoreDir) -> Result<LogicalHead, OpenError> {
+pub(crate) fn decode_head(
+    dir: &AdmittedStoreDir,
+) -> Result<(LogicalHead, marrow_image::StoreHeadDigest), OpenError> {
     let bytes = dir
         .read(Artifact::Head, crate::head::file_ceiling)
         .map_err(OpenError::Admission)?;
-    LogicalHead::decode(&bytes)
+    LogicalHead::decode_with_digest(&bytes)
         .map_err(|error| OpenError::Admission(AdmissionError::format(StoreEntry::Head, error)))
 }
 
 /// A private sibling temporary directory for building a store before its atomic claim: the
-/// destination's own name prefixed with a recognizable marker plus the process id and a
-/// monotonic counter. Exclusive directory creation claims the candidate; the name alone
+/// bounded ASCII component contains only a marker, process id and monotonic counter,
+/// with no destination spelling embedded. Exclusive directory creation claims the candidate;
+/// the name alone
 /// grants no ownership because a prior process with the same pid may have left it behind.
 pub(crate) fn temp_sibling(dest: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let name = dest
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "store".to_string());
-    let temp_name = format!(".{name}.provisioning.{}.{counter}", std::process::id());
+    let mut counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    // A caller may choose a name in this private namespace. Use a different decimal
+    // suffix even when the filesystem folds the marker's case. This skips a candidate
+    // before creation; an occupied selected candidate still refuses without retry.
+    if dest.file_name().is_some_and(|name| {
+        name.as_encoded_bytes()
+            .ends_with(format!(".{counter}").as_bytes())
+    }) {
+        counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    }
+    let temp_name = format!(".marrow-provisioning.{}.{counter}", std::process::id());
     match dest.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.join(temp_name),
         _ => PathBuf::from(temp_name),
@@ -597,6 +884,381 @@ mod tests {
     use crate::head::ActiveBinding;
     use crate::headmap::HeadMap;
     use marrow_image::LedgerIdBytes;
+
+    struct ConstructionFault {
+        destination: PathBuf,
+        point: Option<crate::store_dir::barrier_fault::Point>,
+        removal: Option<std::io::ErrorKind>,
+        observed: Option<(PathBuf, Vec<std::ffi::OsString>)>,
+    }
+
+    thread_local! {
+        static CONSTRUCTION: std::cell::RefCell<Option<ConstructionFault>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn construct<T>(destination: &Path, stage: &Path, action: impl FnOnce() -> T) -> T {
+        let point = CONSTRUCTION.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .filter(|fault| fault.destination == destination)
+                .map(|fault| fault.point)
+        });
+        let Some(point) = point else { return action() };
+        let result = match point {
+            Some(point) => crate::store_dir::barrier_fault::with_failure(stage, point, action),
+            None => action(),
+        };
+        let mut names: Vec<_> = std::fs::read_dir(stage)
+            .expect("owned stage before cleanup")
+            .map(|entry| entry.expect("stage entry").file_name())
+            .collect();
+        names.sort();
+        CONSTRUCTION.with(|slot| {
+            slot.borrow_mut()
+                .as_mut()
+                .expect("armed construction")
+                .observed = Some((stage.to_path_buf(), names))
+        });
+        result
+    }
+
+    pub(super) fn removal_fault(stage: &Path) -> std::io::Result<()> {
+        let failure = CONSTRUCTION.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let fault = slot.as_mut()?;
+            if fault.observed.as_ref()?.0 == stage {
+                fault.removal.take()
+            } else {
+                None
+            }
+        });
+        match failure {
+            Some(kind) => Err(kind.into()),
+            None => Ok(()),
+        }
+    }
+
+    #[test]
+    fn provision_retains_the_original_failure_and_failed_cleanup_location() {
+        use crate::store_dir::barrier_fault::Point;
+        struct Restore(Option<ConstructionFault>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                CONSTRUCTION.with(|slot| *slot.borrow_mut() = self.0.take());
+            }
+        }
+        for point in [Some(Point::NewBody(Artifact::Envelope)), None] {
+            let scratch = std::mem::ManuallyDrop::new(ScratchDir::new("cleanup-failure"));
+            eprintln!("cleanup-failure fixture: {}", scratch.0.display());
+            let destination = scratch.0.join("destination");
+            if point.is_none() {
+                std::fs::create_dir(&destination).expect("occupied destination");
+                std::fs::write(destination.join("sentinel"), b"existing destination")
+                    .expect("sentinel");
+            }
+            let (_, request) = compiled_request();
+            let _restore = Restore(CONSTRUCTION.with(|slot| {
+                slot.replace(Some(ConstructionFault {
+                    destination: destination.clone(),
+                    point,
+                    removal: Some(std::io::ErrorKind::PermissionDenied),
+                    observed: None,
+                }))
+            }));
+            let error = provision(&destination, request).expect_err("provision failed");
+            let stage = CONSTRUCTION.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .expect("armed")
+                    .observed
+                    .as_ref()
+                    .expect("observed stage")
+                    .0
+                    .clone()
+            });
+            assert!(stage.exists(), "forced cleanup failure retains owned stage");
+            let cleanup = error.cleanup.as_ref().expect("typed cleanup evidence");
+            assert_eq!(cleanup.stage, stage);
+            assert_eq!(cleanup.source.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(matches!(
+                (&point, &error.fault),
+                (Some(_), ProvisionFault::Admission(_))
+                    | (None, ProvisionFault::AlreadyProvisioned)
+            ));
+            assert_eq!(
+                error.code(),
+                if point.is_some() {
+                    Code::StoreIo.as_str()
+                } else {
+                    Code::StoreLocked.as_str()
+                }
+            );
+            if point.is_none() {
+                assert_eq!(
+                    std::fs::read(destination.join("sentinel")).expect("destination untouched"),
+                    b"existing destination"
+                );
+            } else {
+                assert!(!destination.exists());
+            }
+            // The user-facing failure must identify the actual directory whose cleanup failed.
+            assert!(
+                error
+                    .to_string()
+                    .contains(stage.to_str().expect("fixture path")),
+                "failure lost the owned stage location: {error}"
+            );
+            drop(std::mem::ManuallyDrop::into_inner(scratch));
+        }
+    }
+
+    #[test]
+    fn construction_failures_remove_only_the_stage_this_invocation_created() {
+        use crate::store_dir::barrier_fault::Point;
+        struct Restore(Option<ConstructionFault>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                CONSTRUCTION.with(|slot| *slot.borrow_mut() = self.0.take());
+            }
+        }
+        for point in [
+            Point::NewBody(Artifact::Envelope),
+            Point::NewBody(Artifact::Head),
+            Point::ConstructionStage,
+        ] {
+            let scratch = std::mem::ManuallyDrop::new(ScratchDir::new("construction-prefix"));
+            eprintln!("construction-prefix fixture: {}", scratch.0.display());
+            let destination = scratch.0.join("destination");
+            let unrelated = scratch.0.join("unrelated.provisioning");
+            std::fs::create_dir(&unrelated).expect("unrelated sibling");
+            std::fs::write(unrelated.join("sentinel"), b"keep me").expect("sentinel");
+            let (_, request) = compiled_request();
+            let _restore = Restore(CONSTRUCTION.with(|slot| {
+                slot.replace(Some(ConstructionFault {
+                    destination: destination.clone(),
+                    point: Some(point),
+                    removal: None,
+                    observed: None,
+                }))
+            }));
+            let error =
+                provision(&destination, request).expect_err("failed construction cannot publish");
+            assert_eq!(error.code(), Code::StoreIo.as_str());
+            assert!(
+                error.cleanup.is_none(),
+                "successful cleanup has no failure evidence"
+            );
+            assert!(matches!(
+                error.fault,
+                ProvisionFault::Admission(AdmissionError {
+                    fault: store_dir::AdmissionFault::Custody(
+                        marrow_fs_journal::CustodyError::Io { .. }
+                    ),
+                    ..
+                })
+            ));
+            let (stage, names) = CONSTRUCTION.with(|slot| {
+                slot.borrow_mut()
+                    .as_mut()
+                    .expect("armed")
+                    .observed
+                    .take()
+                    .expect("actual stage observed")
+            });
+            let mut expected: Vec<std::ffi::OsString> =
+                vec![store_dir::ENVELOPE_FILE.into(), store_dir::LOCK_FILE.into()];
+            if point != Point::NewBody(Artifact::Envelope) {
+                expected.push(store_dir::HEAD_FILE.into());
+            }
+            if point == Point::ConstructionStage {
+                expected.push(store_dir::ENGINE_FILE.into());
+            }
+            expected.sort();
+            assert_eq!(names, expected);
+            assert!(!destination.exists());
+            assert!(!stage.exists(), "only the owned stage is removed");
+            assert_eq!(
+                std::fs::read(unrelated.join("sentinel")).expect("unrelated retained"),
+                b"keep me"
+            );
+            assert_eq!(std::fs::read_dir(&scratch.0).expect("parent").count(), 1);
+            drop(std::mem::ManuallyDrop::into_inner(scratch));
+        }
+    }
+
+    fn compiled_request() -> (marrow_verify::VerifiedImage, ProvisionRequest) {
+        let source = "resource Item { required value: int }\nstore ^items[key: int]: Item\npub fn read(key: int): int { return ^items[key].value ?? 0 }\n";
+        let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nhigh-water 0\nend\n";
+        let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+        let project = marrow_project::capture(
+            &manifest,
+            vec![marrow_project::CapturedFile::new(
+                "src/main.mw".into(),
+                source.as_bytes().to_vec(),
+            )],
+            Some(ids.as_bytes()),
+            &marrow_project::CaptureLimits::DEFAULT,
+        )
+        .expect("capture");
+        let compiled = marrow_compile::compile(&project).expect("compile");
+        let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
+        let request = ProvisionRequest {
+            envelope: StoreEnvelope {
+                instance: StoreInstanceId::draw().expect("instance"),
+                writer_toolchain: env!("CARGO_PKG_VERSION").into(),
+                engine_kind: crate::EngineKind::Redb,
+                engine_format_version: marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION,
+            },
+            head: LogicalHead::provision(
+                crate::active_binding(&image),
+                crate::accepted_ceiling(&image),
+                crate::head_map(&image).expect("head map"),
+            ),
+        };
+        (image, request)
+    }
+
+    #[test]
+    fn a_complete_unpublished_stage_is_adopted_at_its_current_location() {
+        let scratch = ScratchDir::new("complete-stage");
+        let destination = scratch.0.join("destination");
+        let stage = temp_sibling(&destination);
+        create_private_dir(&stage).expect("private stage");
+        let (image, request) = compiled_request();
+        let instance = request.envelope.instance;
+        let (owner, admitted) = build_in_temp(&stage, &request).expect("complete production stage");
+        let (head, digest) = decode_head(&admitted).expect("head");
+        let head = head.encode();
+        assert_eq!(
+            decode_record(&admitted).expect("record").state,
+            EnvelopeState::Provision { head: digest }
+        );
+        assert!(!destination.exists());
+        let held = crate::recover(&stage, crate::prepare(image.clone()))
+            .expect_err("construction owner held");
+        assert!(matches!(
+            held.fault,
+            crate::RecoveryFault::Validation(crate::AuditError::Open(OpenError::Lock(
+                LockError::StoreInUse { .. }
+            )))
+        ));
+        drop(admitted);
+        drop(owner);
+        assert!(matches!(
+            crate::attach(&stage, crate::prepare(image.clone())),
+            Err(crate::LifecycleError::Open(
+                OpenError::ActivationRequired { .. }
+            ))
+        ));
+        let recovered =
+            crate::recover(&stage, crate::prepare(image.clone())).expect("adopt current stage");
+        assert_eq!(recovered.instance, instance);
+        assert_eq!(recovered.image_id, image.image_id());
+        assert_eq!(
+            std::fs::read(stage.join(crate::HEAD_FILE)).expect("head unchanged"),
+            head
+        );
+        assert!(matches!(
+            crate::attach(&stage, crate::prepare(image)).expect("active at stage"),
+            crate::AttachOutcome::AlreadyActive(_)
+        ));
+        assert!(
+            !destination.exists(),
+            "recovery must not reconstruct a former destination"
+        );
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum PublicationPoint {
+        Staged,
+        Renamed,
+    }
+
+    #[cfg(unix)]
+    struct PublicationObservation {
+        destination: PathBuf,
+        seen: Vec<(PublicationPoint, u64, u64)>,
+    }
+
+    #[cfg(unix)]
+    thread_local! {
+        static PUBLICATION_OBSERVATION: std::cell::RefCell<Option<PublicationObservation>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(unix)]
+    pub(super) fn observe_publication(
+        point: PublicationPoint,
+        destination: &Path,
+        location: &Path,
+        owner: &marrow_kernel::durable::PendingNativeStoreOwner,
+        admitted: &AdmittedStoreDir,
+    ) {
+        use std::os::unix::fs::MetadataExt;
+        PUBLICATION_OBSERVATION.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(observation) = slot
+                .as_mut()
+                .filter(|observation| observation.destination == destination)
+            else {
+                return;
+            };
+            let held = owner
+                .directory_metadata()
+                .expect("retained owner directory");
+            let actual = std::fs::metadata(location).expect("current location");
+            assert_eq!((held.dev(), held.ino()), (actual.dev(), actual.ino()));
+            admitted
+                .verify_location(location)
+                .expect("same admitted descriptor");
+            assert!(matches!(
+                NativeStore::acquire_existing(location),
+                Err(NativeOwnerAcquireError::Lock(
+                    marrow_kernel::durable::NativeLockError::StoreInUse { .. }
+                ))
+            ));
+            observation.seen.push((point, actual.dev(), actual.ino()));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_provision_holds_the_same_directory_owner_across_rename() {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                PUBLICATION_OBSERVATION.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            }
+        }
+        let scratch = ScratchDir::new("rename-owner");
+        let destination = scratch.0.join("store");
+        let (image, request) = compiled_request();
+        let _clear = Clear;
+        PUBLICATION_OBSERVATION.with(|slot| {
+            *slot.borrow_mut() = Some(PublicationObservation {
+                destination: destination.clone(),
+                seen: Vec::new(),
+            })
+        });
+        provision(&destination, request).expect("public provision");
+        PUBLICATION_OBSERVATION.with(|slot| {
+            let observation = slot.borrow_mut().take().expect("observations");
+            assert_eq!(observation.seen.len(), 2);
+            let (point, device, inode) = observation.seen[0];
+            assert_eq!(point, PublicationPoint::Staged);
+            assert_eq!(
+                observation.seen[1],
+                (PublicationPoint::Renamed, device, inode)
+            );
+        });
+        assert!(matches!(
+            crate::attach(&destination, crate::prepare(image))
+                .expect("released completed provision"),
+            crate::AttachOutcome::AlreadyActive(_)
+        ));
+    }
 
     /// The empty store shape: no roots, so no site to resolve. These cases exercise the
     /// directory lifecycle, not the store's own shape.
@@ -739,7 +1401,13 @@ mod tests {
                 engine_kind: crate::envelope::EngineKind::Redb,
                 engine_format_version: 1,
             };
-            std::fs::write(store_dir::envelope_path(&store), replacement.encode())
+            let replacement = EnvelopeRecord {
+                metadata: replacement,
+                state: EnvelopeState::Active,
+            }
+            .encode()
+            .expect("encode replacement record");
+            std::fs::write(store.join(store_dir::ENVELOPE_FILE), replacement)
                 .expect("rewrite the envelope mid-admission");
             assert_eq!(head.binding.image_id, [0x11; 32]);
             Ok::<(), std::convert::Infallible>(())
