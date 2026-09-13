@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::provision::open_unadmitted as open;
 use crate::{
-    preflight, provision, ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight,
-    ProvisionError, ProvisionRequest, StoreEnvelope, StoreInstanceId,
+    ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
+    ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
 };
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
@@ -481,7 +481,7 @@ fn failed_temp_creation_preserves_existing_directory() {
         assert_eq!(file_before.permissions(), file_after.permissions());
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{symlink, MetadataExt};
+            use std::os::unix::fs::{MetadataExt, symlink};
             assert_eq!(
                 (file_before.dev(), file_before.ino(), file_before.mode()),
                 (file_after.dev(), file_after.ino(), file_after.mode())
@@ -548,9 +548,11 @@ fn relative_provision_reports_success_after_publication() {
                 preflight(&destination).expect("published destination preflight"),
                 Preflight::Complete
             );
-            assert!(std::fs::symlink_metadata(&destination)
-                .expect("published directory")
-                .is_dir());
+            assert!(
+                std::fs::symlink_metadata(&destination)
+                    .expect("published directory")
+                    .is_dir()
+            );
             assert_eq!(list(&destination), ["envelope", "head", "store.redb"]);
             for name in ["envelope", "head", "store.redb"] {
                 let metadata =
