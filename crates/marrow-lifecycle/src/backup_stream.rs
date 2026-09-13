@@ -10,7 +10,7 @@
 use std::io::{self, Read, Write};
 
 use marrow_image::{StoreBackupDigest, bounds::MAX_IMAGE_BYTES};
-use marrow_kernel::durable::{ExportSink, MAX_KEY_LEN, MAX_VALUE_LEN};
+use marrow_kernel::durable::{Cell, ExportSink, MAX_KEY_LEN, MAX_VALUE_LEN};
 
 use crate::{FormatError, MAX_HEAD_FILE_BYTES};
 
@@ -229,7 +229,7 @@ impl<'a> Decoder<'a> {
         ))
     }
 
-    pub fn next_cell(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, StreamError> {
+    pub fn next_cell(&mut self) -> Result<Option<Cell>, StreamError> {
         match self.state {
             State::Finished => return Ok(None),
             State::Failed => {
@@ -250,7 +250,7 @@ impl<'a> Decoder<'a> {
         Ok(cell)
     }
 
-    fn read_record(&mut self) -> Result<Option<(Vec<u8>, Vec<u8>)>, StreamError> {
+    fn read_record(&mut self) -> Result<Option<Cell>, StreamError> {
         match exact::<1>(self.input)?[0] {
             1 => {
                 let key = read_block(self.input, MAX_KEY_LEN, "backup key")?;

@@ -171,7 +171,15 @@ pub(super) fn walk<V: ReadView>(
     numbering: &[RootNumbering],
     digest: &mut dyn ContentDigest,
 ) -> Result<AuditReport, StoreError> {
-    match walk_cells(view, projection, numbering, digest, |_, _, _| {
+    inspect(view, &Tables::new(projection, numbering), digest)
+}
+
+pub(super) fn inspect<V: ReadView>(
+    view: &V,
+    tables: &Tables<'_>,
+    digest: &mut dyn ContentDigest,
+) -> Result<AuditReport, StoreError> {
+    match walk_cells(view, tables, digest, |_, _, _| {
         Ok::<_, std::convert::Infallible>(())
     }) {
         Ok(report) => Ok(report),
@@ -189,8 +197,7 @@ pub(super) fn export<V: ReadView>(
 ) -> Result<AuditReport, WalkError<std::io::Error>> {
     walk_cells(
         view,
-        projection,
-        numbering,
+        &Tables::new(projection, numbering),
         digest,
         |kind, key, value| match kind {
             CellKind::Entry | CellKind::Index => sink.cell(key, value),
@@ -201,15 +208,13 @@ pub(super) fn export<V: ReadView>(
 
 fn walk_cells<V: ReadView, E>(
     view: &V,
-    projection: &StoreProjection,
-    numbering: &[RootNumbering],
+    tables: &Tables<'_>,
     digest: &mut dyn ContentDigest,
     mut consume: impl FnMut(CellKind, &[u8], &[u8]) -> Result<(), E>,
 ) -> Result<AuditReport, WalkError<E>> {
-    let tables = Tables::new(projection, numbering);
     let mut walker = Walker {
         view,
-        tables: &tables,
+        tables,
         digest,
         frame: None,
         family_cursor: 0,
@@ -299,7 +304,7 @@ struct RootShape {
 }
 
 /// The fixed tables the walk classifies against, built once from the projection.
-struct Tables<'a> {
+pub(super) struct Tables<'a> {
     /// Every entry family in store-number order, which is also physical prefix order.
     families: Vec<FamilyShape<'a>>,
     /// Every root in declaration order, for managed-index source identity.
@@ -310,7 +315,7 @@ struct Tables<'a> {
 }
 
 impl<'a> Tables<'a> {
-    fn new(projection: &'a StoreProjection, numbering: &[RootNumbering]) -> Self {
+    pub(super) fn new(projection: &'a StoreProjection, numbering: &[RootNumbering]) -> Self {
         let mut families = Vec::new();
         let mut indexes = Vec::new();
         let mut roots = Vec::with_capacity(projection.roots().len());
@@ -368,6 +373,34 @@ impl<'a> Tables<'a> {
             witness: physical::meta_key(WITNESS),
         }
     }
+
+    pub(super) fn namespace(
+        &self,
+        key: &[u8],
+        family_cursor: &mut usize,
+        index_cursor: &mut usize,
+    ) -> Option<Namespace> {
+        if let Some(family) = seek_prefix(
+            &self.families,
+            |family| family.prefix.as_slice(),
+            family_cursor,
+            key,
+        ) {
+            return Some(Namespace::Entry(family));
+        }
+        seek_prefix(
+            &self.indexes,
+            |index| index.prefix.as_slice(),
+            index_cursor,
+            key,
+        )
+        .map(Namespace::Index)
+    }
+}
+
+pub(super) enum Namespace {
+    Entry(usize),
+    Index(usize),
 }
 
 fn index_shape(
@@ -563,24 +596,17 @@ impl<V: ReadView> Walker<'_, V> {
     /// the commit witness, or a cell outside every declared family.
     fn top_level(&mut self, key: &[u8], value: &[u8]) -> Result<CellKind, StoreError> {
         let tables = self.tables;
-        if let Some(family) = seek_prefix(
-            &tables.families,
-            |family| family.prefix.as_slice(),
-            &mut self.family_cursor,
-            key,
-        ) {
-            self.digest.absorb(key, value);
-            self.enter_entry(family, key, value);
-            return Ok(CellKind::Entry);
-        }
-        if let Some(index) = seek_prefix(
-            &tables.indexes,
-            |index| index.prefix.as_slice(),
-            &mut self.index_cursor,
-            key,
-        ) {
-            self.index_cell(&tables.indexes[index], key, value)?;
-            return Ok(CellKind::Index);
+        match tables.namespace(key, &mut self.family_cursor, &mut self.index_cursor) {
+            Some(Namespace::Entry(family)) => {
+                self.digest.absorb(key, value);
+                self.enter_entry(family, key, value);
+                return Ok(CellKind::Entry);
+            }
+            Some(Namespace::Index(index)) => {
+                self.index_cell(&tables.indexes[index], key, value)?;
+                return Ok(CellKind::Index);
+            }
+            None => {}
         }
         if key == tables.witness.as_slice() {
             if !witness_well_formed(value) {
@@ -1201,6 +1227,58 @@ mod tests {
             .expect("output succeeded");
         assert!(!sink.cells.is_empty());
         assert!(faults(&report).contains(&AuditFault::RequiredMissing));
+    }
+
+    #[test]
+    fn restore_exported_cells_preserves_content_and_indexes_without_witnesses() {
+        let source = populated();
+        let mut cells = Recording::default();
+        let mut before = Recording::default();
+        let report = source.export_cells(&mut before, &mut cells).unwrap();
+        assert!(report.is_clean());
+        let mut input = cells.cells.clone().into_iter();
+        let mut after = Recording::default();
+        let restored = DurableStore::from_engine(MemoryEngine::new(), projection())
+            .restore(|| Ok::<_, ()>(input.next()), &mut after);
+        let (restored, report) = match restored {
+            Ok(result) => result,
+            Err(error) => panic!("restore failed: {error:?}"),
+        };
+        assert!(report.is_clean());
+        assert_eq!(before.cells, after.cells);
+        let mut output = Recording::default();
+        restored
+            .export_cells(&mut Recording::default(), &mut output)
+            .unwrap();
+        assert_eq!(output.cells, cells.cells);
+        assert_eq!(
+            restored
+                .into_engine()
+                .read_view()
+                .unwrap()
+                .get(&physical::meta_key(WITNESS))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn restore_rejects_logically_incomplete_export_even_when_input_completes() {
+        let source = tamper(populated(), |txn| {
+            txn.remove(&physical::stem_field_leaf(&a_stem(), numbers().fields()[0]))
+                .unwrap();
+        });
+        let mut cells = Recording::default();
+        source
+            .export_cells(&mut Recording::default(), &mut cells)
+            .unwrap();
+        let mut input = cells.cells.into_iter();
+        let result = DurableStore::from_engine(MemoryEngine::new(), projection())
+            .restore(|| Ok::<_, ()>(input.next()), &mut Recording::default());
+        assert!(
+            matches!(result, Err(super::super::RestoreError::Invalid(report))
+            if faults(&report).contains(&AuditFault::RequiredMissing))
+        );
     }
 
     fn audit(store: &DurableStore<MemoryEngine>) -> (AuditReport, Recording) {

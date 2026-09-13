@@ -163,6 +163,16 @@ impl<E: ByteEngine> DurableStore<E> {
         self.engine
     }
 
+    pub(crate) fn restore<R>(
+        mut self,
+        next: impl FnMut() -> Result<Option<marrow_store::Cell>, R>,
+        digest: &mut dyn ContentDigest,
+    ) -> Result<(Self, AuditReport), super::super::RestoreError<R>> {
+        let tables = audit::Tables::new(&self.projection, &self.numbering);
+        let report = super::super::transfer::populate(&mut self.engine, &tables, next, digest)?;
+        Ok((self, report))
+    }
+
     /// One bounded read-only walk over every cell of the store against its projection
     /// (see [`audit`]): the typed findings and counts, with the logical content streamed
     /// to `digest` in key order. It opens a coherent read view and no session, so it

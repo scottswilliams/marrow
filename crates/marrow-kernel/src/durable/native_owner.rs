@@ -149,7 +149,40 @@ pub struct PendingNativeStoreOwner {
     pending: PendingNativeEngineOwner,
 }
 
+/// Opening a private construction body or populating it failed.
+#[derive(Debug)]
+pub enum NativeRestoreError<A, R> {
+    Open(NativeOwnerOpenError<A>),
+    Restore(super::RestoreError<R>),
+}
+
 impl PendingNativeStoreOwner {
+    /// Construct an empty, privately staged body under its retained owner.
+    /// The lifecycle caller admits the intended head in memory and keeps its
+    /// Head artifact absent until this operation succeeds. `next` reports None
+    /// only after complete transfer framing has been validated.
+    ///
+    /// No usable owner escapes on input, commit or audit failure. In particular,
+    /// an indeterminate native commit retains the lower owner's quarantine.
+    pub fn restore<A, R>(
+        self,
+        instance: [u8; 16],
+        projection: StoreProjection,
+        admit: impl FnOnce() -> Result<(), A>,
+        next: impl FnMut() -> Result<Option<super::Cell>, R>,
+        digest: &mut dyn ContentDigest,
+    ) -> Result<(NativeStoreOwner, AuditReport), NativeRestoreError<A, R>> {
+        let mut owner = self
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, projection, admit)
+            .map_err(NativeRestoreError::Open)?;
+        let store = owner.store.take().expect("new owner retains its store");
+        let (store, report) = store
+            .restore(next, digest)
+            .map_err(NativeRestoreError::Restore)?;
+        owner.store = Some(store);
+        Ok((owner, report))
+    }
+
     /// Metadata from the lower owner's retained, locked directory node.
     pub fn directory_metadata(&self) -> std::io::Result<std::fs::Metadata> {
         self.pending.directory_metadata()
@@ -273,6 +306,51 @@ mod tests {
             NativeEngineOwner::acquire_existing(path),
             Err(NativeOwnerAcquireError::Lock(
                 NativeLockError::StoreInUse { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn empty_restore_retains_owner_and_metadata_input_returns_no_owner() {
+        struct Digest;
+        impl ContentDigest for Digest {
+            fn absorb(&mut self, _: &[u8], _: &[u8]) {}
+        }
+        let scratch = Scratch::new("restore-complete");
+        NativeStoreOwner::provision(&scratch.0).unwrap();
+        let result = NativeStoreOwner::acquire_existing(&scratch.0)
+            .unwrap()
+            .restore(
+                [0x51; 16],
+                StoreProjection::builder().finish().unwrap(),
+                || Ok::<_, ()>(()),
+                || Ok::<_, ()>(None),
+                &mut Digest,
+            );
+        let (owner, report) = match result {
+            Ok(result) => result,
+            Err(error) => panic!("restore failed: {error:?}"),
+        };
+        assert!(report.is_clean());
+        assert_excluded(&scratch.0);
+        drop(owner);
+        let mut cell = Some((
+            super::super::physical::meta_key(super::super::store::WITNESS),
+            witness(0),
+        ));
+        let result = NativeStoreOwner::acquire_existing(&scratch.0)
+            .unwrap()
+            .restore(
+                [0x51; 16],
+                StoreProjection::builder().finish().unwrap(),
+                || Ok::<_, ()>(()),
+                || Ok::<_, ()>(cell.take()),
+                &mut Digest,
+            );
+        assert!(matches!(
+            result,
+            Err(NativeRestoreError::Restore(
+                super::super::RestoreError::OutsideNamespace
             ))
         ));
     }

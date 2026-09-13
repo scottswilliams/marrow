@@ -21,6 +21,7 @@ mod schema;
 mod session_host;
 mod site;
 mod store;
+mod transfer;
 
 pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
@@ -29,7 +30,7 @@ pub use audit::{
     AuditFault, AuditFinding, AuditReport, AuditSite, AuditSummary, ContentDigest, ExportError,
     ExportSink, MAX_REPORTED_FINDINGS,
 };
-pub use native_owner::{NativeStoreOwner, PendingNativeStoreOwner};
+pub use native_owner::{NativeRestoreError, NativeStoreOwner, PendingNativeStoreOwner};
 pub(crate) use schema::IndexComponentRef;
 pub use schema::{
     BranchSchema, FieldSchema, GroupSchema, IndexComponent, IndexSchema, MAX_DURABLE_DEPTH,
@@ -39,12 +40,13 @@ pub use session_host::SessionHost;
 pub(crate) use site::SiteSlot;
 pub use site::{ProjectionBuildError, SiteTarget, StoreProjection, StoreProjectionBuilder};
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
+pub use transfer::RestoreError;
 
 /// The engine error the store surfaces, re-exported so a downstream lifecycle owner can
 /// classify a native open/audit failure without a direct dependency on the byte-engine
 /// crate (the path kernel stays the engine's only consumer).
 pub use marrow_store::{
-    MAX_KEY_LEN, MAX_VALUE_LEN, NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError,
+    Cell, MAX_KEY_LEN, MAX_VALUE_LEN, NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError,
     NativeLockOwner, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError,
     SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS, StoreError,
 };
