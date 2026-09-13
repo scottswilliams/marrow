@@ -50,7 +50,7 @@ const REPLY_DEADLINE_MS = 30000;
 // ---------------------------------------------------------------------------
 // Typed failures.
 
-/** The closed loss classification for a call whose reply never arrived. */
+/** The closed loss classification for an operation without an acknowledgment. */
 export const LOSS = Object.freeze({
   NOT_STARTED: "not_started",
   INTERRUPTED: "interrupted",
@@ -64,10 +64,10 @@ export const DURABLE_STATE = Object.freeze({
   UNKNOWN: "unknown",
 });
 
-/** A call was lost to runner death; `loss` is one of the `LOSS` classes. */
+/** An operation lost its acknowledgment; `loss` is one of the `LOSS` classes. */
 export class MarrowLossError extends Error {
   constructor(loss, cause = undefined) {
-    super(`marrow call lost: ${loss}`);
+    super(`marrow operation lost: ${loss}`);
     this.name = "MarrowLossError";
     this.loss = loss;
     this.cause = cause;
@@ -1126,53 +1126,80 @@ export function launch(options) {
  * Spawns `provision --image <image> --store <store> --yes` without a shell, with
  * the child's stdin closed, accepting the exact provision report and publishing
  * the store. Resolves the parsed one-line JSON receipt (`{ instance, store }`)
- * the runner prints on a clean exit, or rejects with a `LaunchError` on a
- * non-zero exit or a spawn failure. This is a one-shot lifecycle action, not a
+ * the runner prints on a clean exit, after its streams close. A spawn failure
+ * rejects with `LaunchError`; lost delivery after spawn rejects with
+ * `MarrowLossError(OUTCOME_UNKNOWN)`. This is a one-shot lifecycle action, not a
  * `Session`: no channel is bound and no call is served. The destination is
  * chosen by this trusted-main config, never by a calling renderer.
  */
 export function provision(options) {
   return new Promise((resolve, reject) => {
+    const { runner, image, store } = options;
+    if (typeof store !== "string" || Buffer.byteLength(store, "utf8") > MAX_STRING_BYTES) {
+      throw new TypeError("provision store must fit the canonical string bound");
+    }
+    if (parseCanonical(encodeCanonical(store)) !== store) {
+      throw new TypeError("provision store must be representable as UTF-8");
+    }
     const log = options.log ?? (() => {});
-    const child = spawn(
-      options.runner,
-      ["provision", "--image", options.image, "--store", options.store, "--yes"],
-      { shell: false, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } },
-    );
-    let stdout = Buffer.alloc(0);
-    let settled = false;
-    const fail = (detail) => {
-      if (settled) return;
-      settled = true;
-      reject(new LaunchError(detail));
-    };
-    child.on("error", (error) => fail(`provision spawn failed: ${error.message}`));
-    child.stderr.on("data", log);
-    child.stdout.on("data", (chunk) => {
-      stdout = Buffer.concat([stdout, chunk]);
+    let child;
+    try {
+      child = spawn(
+        runner,
+        ["provision", "--image", image, "--store", store, "--yes"],
+        { shell: false, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } },
+      );
+    } catch (error) {
+      reject(new LaunchError(`provision spawn failed: ${error.message}`));
+      return;
+    }
+    let spawned = false;
+    let failure;
+    let chunks = [];
+    let bytes = 0;
+    child.on("spawn", () => { spawned = true; });
+    child.on("error", (error) => { failure ??= error; });
+    child.stdout.on("error", (error) => { failure ??= error; });
+    child.stderr.on("error", (error) => { failure ??= error; });
+    child.stderr.on("data", (chunk) => {
+      try { log(chunk); } catch {
+        // An observational callback cannot abandon the child's pipes.
+      }
     });
-    child.on("exit", (code) => {
-      if (settled) return;
-      if (code !== 0) {
-        fail(`provision exited with code ${code}`);
+    child.stdout.on("data", (chunk) => {
+      if (failure) return;
+      if (chunk.length > MAX_FRAME - bytes) {
+        failure = new Error("provision receipt exceeds MAX_FRAME");
+        chunks = [];
         return;
       }
-      // The receipt is the one canonical JSON line the runner prints on stdout;
-      // the human-readable report went to stderr (the `log`).
-      const line = stdout.toString("utf8").split("\n").filter((l) => l.length > 0).pop();
-      if (line === undefined) {
-        fail("provision printed no receipt");
+      bytes += chunk.length;
+      chunks.push(chunk);
+    });
+    child.on("close", (code) => {
+      if (!spawned) {
+        reject(new LaunchError(`provision spawn failed: ${failure?.message}`));
         return;
       }
-      let receipt;
+      if (failure || code !== 0) {
+        reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN,
+          failure ?? new Error(`provision exited with code ${code}`)));
+        return;
+      }
       try {
-        receipt = parseCanonical(Buffer.from(line, "utf8"));
+        const stdout = Buffer.concat(chunks, bytes);
+        if (stdout.at(-1) !== 0x0a) throw new Error("provision receipt lacks final LF");
+        const receipt = parseCanonical(stdout.subarray(0, -1));
+        if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)
+          || Object.keys(receipt).length !== 2
+          || typeof receipt.instance !== "string" || !/^[0-9a-f]{32}$/.test(receipt.instance)
+          || receipt.store !== store) {
+          throw new Error("provision receipt identity mismatch");
+        }
+        resolve(receipt);
       } catch (error) {
-        fail(`bad provision receipt: ${error.message}`);
-        return;
+        reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN, error));
       }
-      settled = true;
-      resolve(receipt);
     });
   });
 }

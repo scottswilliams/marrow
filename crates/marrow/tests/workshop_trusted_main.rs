@@ -278,6 +278,124 @@ fn assert_driver_passed(output: &Output) {
     );
 }
 
+#[test]
+#[ignore = "requires Node and executable child fixtures"]
+fn provision_rejects_a_completed_child_without_a_valid_receipt() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new("provision-receipt");
+    let project = prepare(&temp, "project", &read_only_source());
+    let runner = project.join("receipt-child.mjs");
+    write(
+        &runner,
+        r#"#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+const marker = process.env.MARROW_MARKER;
+writeFileSync(marker, 'child ran');
+const store = process.argv[process.argv.indexOf('--store') + 1];
+const instance = '0123456789abcdef0123456789abcdef';
+const receipt = JSON.stringify({ instance, store }) + '\n';
+switch (process.env.MARROW_CASE ?? 'null') {
+  case 'null': process.stdout.write('null\n'); break;
+  case 'valid': process.stdout.write(receipt); break;
+  case 'split':
+    process.stdout.write(receipt.slice(0, 7));
+    setImmediate(() => process.stdout.write(receipt.slice(7)));
+    break;
+  case 'empty': break;
+  case 'truncated': process.stdout.write(receipt.slice(0, 7)); break;
+  case 'no-lf': process.stdout.write(receipt.slice(0, -1)); break;
+  case 'extra': process.stdout.write(receipt + receipt); break;
+  case 'prefix': process.stdout.write('junk\n' + receipt); break;
+  case 'blank': process.stdout.write(receipt + '\n'); break;
+  case 'malformed': process.stdout.write('{\n'); break;
+  case 'utf8': process.stdout.write(Buffer.concat([Buffer.from([0xff]), Buffer.from(receipt)])); break;
+  case 'wrong-instance': process.stdout.write(JSON.stringify({ instance: instance.toUpperCase(), store }) + '\n'); break;
+  case 'wrong-store': process.stdout.write(JSON.stringify({ instance, store: store + '-other' }) + '\n'); break;
+  case 'extra-field': process.stdout.write(JSON.stringify({ extra: true, instance, store }) + '\n'); break;
+  case 'oversize': process.stdout.write('x'.repeat((1 << 20) + 1) + receipt); break;
+  case 'nonzero': process.stdout.write(receipt); process.exitCode = 1; break;
+  case 'log': process.stderr.write('report'); process.stdout.write(receipt); break;
+  case 'late-close':
+    process.stdout.write(receipt);
+    // The parent exits while its finite descendant still holds both pipes.
+    spawn(process.execPath, ['-e', `setTimeout(() => {
+      require('node:fs').writeFileSync(process.env.MARROW_MARKER + '.closed', 'pipes finishing');
+    }, 100);`], { stdio: ['ignore', 1, 2] }).unref();
+    break;
+  default: throw new Error('unknown fixture');
+}
+"#,
+    );
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o700)).expect("executable fixture");
+    write(
+        &project.join("driver.mjs"),
+        r#"import assert from 'node:assert/strict';
+import { readFileSync, existsSync, unlinkSync } from 'node:fs';
+import * as M from './gen/marrow-supervisor.mjs';
+const options = { runner: process.env.MARROW_RUNNER,
+  image: process.env.MARROW_IMAGE, store: process.env.MARROW_STORE };
+process.env.MARROW_CASE = 'null';
+let failure;
+try {
+  await M.provision(options);
+} catch (error) { failure = error; }
+assert.equal(readFileSync(process.env.MARROW_MARKER, 'utf8'), 'child ran');
+assert.ok(failure instanceof M.MarrowLossError);
+assert.equal(failure.loss, M.LOSS.OUTCOME_UNKNOWN);
+for (const mode of ['empty', 'truncated', 'no-lf', 'extra', 'prefix', 'blank',
+  'malformed', 'utf8', 'wrong-instance', 'wrong-store', 'extra-field', 'oversize', 'nonzero']) {
+  process.env.MARROW_CASE = mode;
+  unlinkSync(process.env.MARROW_MARKER);
+  await assert.rejects(M.provision(options), error =>
+    error instanceof M.MarrowLossError && error.loss === M.LOSS.OUTCOME_UNKNOWN, mode);
+  assert.equal(readFileSync(process.env.MARROW_MARKER, 'utf8'), 'child ran', mode);
+}
+for (const mode of ['valid', 'split', 'late-close', 'log']) {
+  process.env.MARROW_CASE = mode;
+  let logged = false;
+  const receipt = await M.provision({ ...options, log: () => {
+    logged = true;
+    throw new Error('observational callback');
+  } });
+  assert.deepEqual(Object.keys(receipt), ['instance', 'store']);
+  assert.equal(receipt.instance, '0123456789abcdef0123456789abcdef');
+  assert.equal(receipt.store, options.store);
+  if (mode === 'late-close') {
+    assert.equal(readFileSync(process.env.MARROW_MARKER + '.closed', 'utf8'), 'pipes finishing');
+  }
+  if (mode === 'log') assert.ok(logged);
+}
+unlinkSync(process.env.MARROW_MARKER);
+await assert.rejects(M.provision({ ...options, runner: options.runner + '-absent' }),
+  error => error instanceof M.LaunchError && error.loss === M.LOSS.NOT_STARTED);
+assert.equal(existsSync(process.env.MARROW_MARKER), false);
+for (const store of ['x'.repeat(M.MAX_STRING_BYTES + 1), '\ud800']) {
+  await assert.rejects(M.provision({ ...options, store }));
+  assert.equal(existsSync(process.env.MARROW_MARKER), false);
+}
+console.log('DRIVER: all passed');
+"#,
+    );
+    let output = node(
+        &project,
+        "driver.mjs",
+        &runner,
+        &[
+            ("MARROW_STORE", &project.join("store")),
+            ("MARROW_MARKER", &project.join("child-ran")),
+        ],
+    );
+    if !output.status.success() {
+        fs::write(project.join("driver.stdout"), &output.stdout).expect("retain stdout");
+        fs::write(project.join("driver.stderr"), &output.stderr).expect("retain stderr");
+        eprintln!("retained protocol fixture: {}", temp.display());
+        std::mem::forget(temp);
+    }
+    assert_driver_passed(&output);
+}
+
 /// A tiny assertion harness over the generated client and the trusted main.
 const PRELUDE: &str = r#"
 import { Client } from "./gen/client.mts";

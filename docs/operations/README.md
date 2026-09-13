@@ -24,6 +24,13 @@ The generated TypeScript supervisor also provides
 [`provision(options)`](../tools/typescript-client.md#launching), which creates an
 empty store bound to a compiled image without importing a corpus.
 
+The runner writes and flushes the provisioning report before publishing the
+store. After publication, a failed success-receipt delivery leaves the published
+store in place. The supervisor waits for child and stream closure and validates
+the complete receipt; a spawned child without a valid successful reply has an
+unknown outcome. This delivery classification does not resolve filesystem
+publication uncertainty or authorize automatic reprovisioning.
+
 Current tools provision stores with logical-head generation 2. The entry layout
 requires fresh provisioning; there is no automatic conversion of older stores
 ([compatibility](../compatibility.md#versioning)).

@@ -256,6 +256,12 @@ provisioned a fresh store at ./store
 {"batches_committed":1,"rows_imported":2}
 ```
 
+The final import receipt must be written and flushed for a successful exit.
+Delivery failure exits `1`, with `io.write` on standard error when writable;
+it does not undo provisioning or committed batches. Failure to print the
+informational fresh-store notice does not stop the import. Do not infer that
+the store is unchanged from a failed command or missing receipt.
+
 The file is read and committed in bounded batches. `import` writes no
 identity: a missing one is `check.durable_identity`. An existing store with an
 unsupported format generation is `store.format_version`; import does not

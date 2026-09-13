@@ -66,6 +66,21 @@ against the calling process's working directory; a single-component store path
 such as `store` is supported. A store on disk needs the companion layout described
 under [install](../install.md#running-against-a-store).
 
+Provision resolves only after zero child exit and closure of its output streams.
+It accepts exactly one canonical UTF-8 JSON receipt with final LF, containing
+only a 32-digit lowercase hexadecimal `instance` and the exact requested `store`
+spelling. Receipt output is limited to the existing 1 MiB `MAX_FRAME` bound;
+excess output is discarded while the pipes drain. Before spawning, the store
+spelling must be representable within the canonical 64 KiB UTF-8 string bound.
+The optional `log` callback observes stderr; callback exceptions are ignored.
+
+A confirmed spawn failure rejects with `LaunchError` (`not_started`). Missing,
+invalid or failed delivery after spawn rejects with `MarrowLossError`
+(`outcome_unknown`), including a nonzero exit with an otherwise valid receipt.
+The store may already exist after that failure. The supervisor does not retry,
+undo provisioning, open the store to reconstruct a receipt, or clear recovery
+state. Waiting for stream closure does not establish a finite process lifetime.
+
 ## Type projection
 
 The wire carries the closed transfer graph. Its TypeScript projection:

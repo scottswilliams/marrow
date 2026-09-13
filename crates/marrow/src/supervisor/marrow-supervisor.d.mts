@@ -137,9 +137,9 @@ export interface ProvisionOptions {
   runner: string;
   /** Path to the compiled program image to provision the store for. */
   image: string;
-  /** The destination store directory (must not already exist). */
+  /** Absent destination directory; must fit the canonical UTF-8 string bound. */
   store: string;
-  /** Receives the runner's provision report (its stderr bytes). */
+  /** Observes stderr bytes. Callback exceptions are ignored while pipes drain. */
   log?: (chunk: Uint8Array) => void;
 }
 
@@ -158,4 +158,10 @@ export class Session {
 
 export function launch(options: LaunchOptions): Promise<Session>;
 
+/**
+ * Resolves after zero exit and stream closure with one valid receipt, bounded by
+ * MAX_FRAME and matching the requested store spelling. Configuration is checked
+ * before spawn. Spawn failure is LaunchError; delivery failure after spawn is
+ * MarrowLossError with outcome_unknown, never permission to retry automatically.
+ */
 export function provision(options: ProvisionOptions): Promise<ProvisionReceipt>;

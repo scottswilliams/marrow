@@ -23,7 +23,7 @@
 //! Teardown of the listener, socket, and temp dir is explicit and runs on every
 //! non-panic exit path.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -98,7 +98,8 @@ fn main() -> ExitCode {
             keys,
         }) => import_command(&image, &store, &jsonl, &root, &keys),
         None => {
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr(),
                 "usage: marrow-runner --image <path>\n       marrow-runner provision --image \
                  <path> --store <dir> [--yes]\n       marrow-runner attach --image <path> \
                  --store <dir>\n       marrow-runner attach-ephemeral --image \
@@ -121,11 +122,15 @@ fn load_image(path: &Path) -> Result<marrow_verify::VerifiedImage, ExitCode> {
             .read_to_end(&mut bytes)
     });
     if let Err(err) = read {
-        eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}: {err}",
+            marrow_codes::Code::IoRead.as_str()
+        );
         return Err(ExitCode::FAILURE);
     }
     marrow_verify::verify(&bytes).map_err(|rejection| {
-        eprintln!("{}", rejection.code());
+        let _ = writeln!(std::io::stderr(), "{}", rejection.code());
         ExitCode::FAILURE
     })
 }
@@ -135,25 +140,50 @@ fn load_image(path: &Path) -> Result<marrow_verify::VerifiedImage, ExitCode> {
 /// store, printing a one-line JSON receipt; otherwise it prints the report and exits without
 /// writing.
 fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode {
+    finish_output(provision_output(image_path, store, accept))
+}
+
+fn finish_output(result: std::io::Result<ExitCode>) -> ExitCode {
+    result.unwrap_or_else(|error| {
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}: {error}",
+            marrow_codes::Code::IoWrite.as_str()
+        );
+        ExitCode::FAILURE
+    })
+}
+
+fn write_receipt(output: &mut dyn Write, receipt: &str) -> std::io::Result<()> {
+    writeln!(output, "{receipt}")?;
+    output.flush()
+}
+
+fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::Result<ExitCode> {
     let image = match load_image(image_path) {
         Ok(image) => image,
-        Err(code) => return code,
+        Err(code) => return Ok(code),
     };
     let prepared = marrow_lifecycle::prepare(image);
     let report = match marrow_lifecycle::ProvisionReport::new(store, &prepared) {
         Ok(report) => report,
         Err(error) => {
-            eprintln!("{}: {error}", error.code());
-            return ExitCode::FAILURE;
+            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+            return Ok(ExitCode::FAILURE);
         }
     };
     // The report is the guided first-use flow: destination, roots, effects, and initial
     // ceiling in source vocabulary. Printed for review before any write.
-    eprint!("{}", report.render());
+    let mut stderr = std::io::stderr().lock();
+    stderr.write_all(report.render().as_bytes())?;
+    stderr.flush()?;
 
     if !accept {
-        eprintln!("Re-run with --yes to accept this report and provision the store.");
-        return ExitCode::from(2);
+        let _ = writeln!(
+            stderr,
+            "Re-run with --yes to accept this report and provision the store."
+        );
+        return Ok(ExitCode::from(2));
     }
 
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
@@ -161,21 +191,22 @@ fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode 
         Ok(provisioned) => {
             // The receipt names the store instance and destination in a canonical JSON line;
             // it prints no internal identity hash as its primary output.
-            println!(
-                "{}",
-                encode(&Json::Object(vec![
+            let mut stdout = std::io::stdout().lock();
+            write_receipt(
+                &mut stdout,
+                &encode(&Json::Object(vec![
                     (
                         "instance".to_string(),
                         Json::Str(provisioned.instance.to_hex()),
                     ),
-                    ("store".to_string(), Json::Str(store.display().to_string()),),
-                ]))
-            );
-            ExitCode::SUCCESS
+                    ("store".to_string(), Json::Str(store.display().to_string())),
+                ])),
+            )?;
+            Ok(ExitCode::SUCCESS)
         }
         Err(error) => {
-            eprintln!("{}: {error}", error.code());
-            ExitCode::FAILURE
+            let _ = writeln!(stderr, "{}: {error}", error.code());
+            Ok(ExitCode::FAILURE)
         }
     }
 }
@@ -491,9 +522,19 @@ fn import_command(
     root_name: &str,
     keys: &[String],
 ) -> ExitCode {
+    finish_output(import_output(image_path, store, jsonl, root_name, keys))
+}
+
+fn import_output(
+    image_path: &Path,
+    store: &Path,
+    jsonl: &Path,
+    root_name: &str,
+    keys: &[String],
+) -> std::io::Result<ExitCode> {
     let image = match load_image(image_path) {
         Ok(image) => image,
-        Err(code) => return code,
+        Err(code) => return Ok(code),
     };
     let prepared = marrow_lifecycle::prepare(image);
     // The import target indexes the store's root table, which is the prepared projection's.
@@ -501,19 +542,20 @@ fn import_command(
         let error = marrow_lifecycle::ImportError::UnsupportedShape(
             marrow_lifecycle::ShapeFault::NotExecutable,
         );
-        eprintln!("{}: {error}", error.code());
-        return ExitCode::FAILURE;
+        let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+        return Ok(ExitCode::FAILURE);
     };
     let Some(root_index) = projection
         .roots()
         .iter()
         .position(|schema| schema.root_name() == root_name)
     else {
-        eprintln!(
+        let _ = writeln!(
+            std::io::stderr(),
             "{}: no store root named `{root_name}` in this program",
             marrow_codes::Code::ConfigInvalid.as_str()
         );
-        return ExitCode::FAILURE;
+        return Ok(ExitCode::FAILURE);
     };
 
     // Provision on first import; an existing complete store is imported into as-is. A
@@ -522,18 +564,19 @@ fn import_command(
     let classified = match marrow_lifecycle::preflight(store) {
         Ok(classified) => classified,
         Err(error) => {
-            eprintln!("{}: {error}", error.code());
-            return ExitCode::FAILURE;
+            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+            return Ok(ExitCode::FAILURE);
         }
     };
     match classified {
         marrow_lifecycle::Preflight::Complete => {}
         marrow_lifecycle::Preflight::Incomplete => {
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr(),
                 "{}: a partially formed store exists at the destination; remove it and retry",
                 marrow_codes::Code::StoreIo.as_str()
             );
-            return ExitCode::FAILURE;
+            return Ok(ExitCode::FAILURE);
         }
         marrow_lifecycle::Preflight::Absent => {
             let provisioned =
@@ -542,10 +585,16 @@ fn import_command(
                     marrow_lifecycle::provision_image(store, &prepared, &approval)
                 });
             match provisioned {
-                Ok(_) => eprintln!("provisioned a fresh store at {}", store.display()),
+                Ok(_) => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "provisioned a fresh store at {}",
+                        store.display()
+                    );
+                }
                 Err(error) => {
-                    eprintln!("{}: {error}", error.code());
-                    return ExitCode::FAILURE;
+                    let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+                    return Ok(ExitCode::FAILURE);
                 }
             }
         }
@@ -554,8 +603,12 @@ fn import_command(
     let file = match std::fs::File::open(jsonl) {
         Ok(file) => file,
         Err(err) => {
-            eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
-            return ExitCode::FAILURE;
+            let _ = writeln!(
+                std::io::stderr(),
+                "{}: {err}",
+                marrow_codes::Code::IoRead.as_str()
+            );
+            return Ok(ExitCode::FAILURE);
         }
     };
     let target = marrow_lifecycle::ImportTarget {
@@ -571,9 +624,10 @@ fn import_command(
         marrow_lifecycle::ImportLimits::DEFAULT,
     ) {
         Ok(report) => {
-            println!(
-                "{}",
-                encode(&Json::Object(vec![
+            let mut stdout = std::io::stdout().lock();
+            write_receipt(
+                &mut stdout,
+                &encode(&Json::Object(vec![
                     (
                         "rows_imported".to_string(),
                         Json::Int(report.rows_imported as i64),
@@ -582,13 +636,13 @@ fn import_command(
                         "batches_committed".to_string(),
                         Json::Int(report.batches_committed as i64),
                     ),
-                ]))
-            );
-            ExitCode::SUCCESS
+                ])),
+            )?;
+            Ok(ExitCode::SUCCESS)
         }
         Err(error) => {
-            eprintln!("{}: {error}", error.code());
-            ExitCode::FAILURE
+            let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+            Ok(ExitCode::FAILURE)
         }
     }
 }
@@ -741,4 +795,93 @@ fn launch_descriptor(interface: Id32, nonce: Option<Id32>, session: Id32, socket
         pairs.push(("nonce".to_string(), Json::Str(nonce.to_hex())));
     }
     encode(&Json::Object(pairs))
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    enum Failure {
+        WriteAt(usize),
+        Flush,
+    }
+
+    struct Sink {
+        bytes: Vec<u8>,
+        failure: Failure,
+    }
+
+    impl Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let count = match self.failure {
+                Failure::WriteAt(limit) => bytes.len().min(limit.saturating_sub(self.bytes.len())),
+                Failure::Flush => bytes.len(),
+            };
+            if count == 0 {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.bytes.extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            match self.failure {
+                Failure::Flush => Err(std::io::ErrorKind::BrokenPipe.into()),
+                Failure::WriteAt(_) => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_delivery_stops_at_partial_write_and_requires_flush() {
+        let receipt = "{\"instance\":\"0123456789abcdef0123456789abcdef\",\"store\":\"fixture\"}";
+        let expected = format!("{receipt}\n");
+        for limit in [0, 5, receipt.len()] {
+            let mut sink = Sink {
+                bytes: Vec::new(),
+                failure: Failure::WriteAt(limit),
+            };
+            assert_eq!(
+                write_receipt(&mut sink, receipt).unwrap_err().kind(),
+                std::io::ErrorKind::BrokenPipe
+            );
+            assert_eq!(sink.bytes, expected.as_bytes()[..limit]);
+        }
+        let mut sink = Sink {
+            bytes: Vec::new(),
+            failure: Failure::Flush,
+        };
+        assert_eq!(
+            write_receipt(&mut sink, receipt).unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(sink.bytes, expected.as_bytes());
+        let mut healthy = Vec::new();
+        write_receipt(&mut healthy, receipt).expect("healthy receipt");
+        assert_eq!(healthy, expected.as_bytes());
+    }
+
+    #[test]
+    fn durable_command_output_uses_fallible_writers() {
+        let source = include_str!("marrow-runner.rs");
+        for (start, end) in [
+            ("fn main()", "/// Read and verify"),
+            ("fn load_image(", "/// Serve the image"),
+            ("fn import_command(", "/// Audit the store"),
+        ] {
+            let body = source
+                .split_once(start)
+                .expect("owner start")
+                .1
+                .split_once(end)
+                .expect("owner end")
+                .0;
+            for name in ["print", "println", "eprint", "eprintln"] {
+                assert!(
+                    !body.contains(&format!("{name}!")),
+                    "{start} contains {name}"
+                );
+            }
+        }
+    }
 }
