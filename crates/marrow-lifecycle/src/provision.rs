@@ -281,6 +281,20 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
         &owner,
         &admitted,
     );
+    complete_publication(dest, &publication, &admitted, request.envelope)?;
+    drop(owner);
+    Ok(Provisioned { instance })
+}
+
+/// Confirm the published name and parent barrier, then complete Active under
+/// the retained store descriptor. The caller keeps its native owner alive.
+pub(crate) fn complete_publication(
+    dest: &Path,
+    publication: &Publication,
+    admitted: &AdmittedStoreDir,
+    envelope: StoreEnvelope,
+) -> Result<(), ProvisionFault> {
+    let instance = envelope.instance;
     admitted
         .verify_location(dest)
         .map_err(|source| ProvisionFault::PublicationUncertain {
@@ -295,7 +309,7 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
         .sync()
         .map_err(|source| ProvisionFault::PublicationUncertain { instance, source })?;
     let active = EnvelopeRecord {
-        metadata: request.envelope,
+        metadata: envelope,
         state: EnvelopeState::Active,
     }
     .encode()
@@ -321,8 +335,7 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
     admitted
         .sync()
         .map_err(|source| ProvisionFault::ActivationUncertain { instance, source })?;
-    drop(owner);
-    Ok(Provisioned { instance })
+    Ok(())
 }
 
 #[cfg(test)]

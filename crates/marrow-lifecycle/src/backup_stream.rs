@@ -17,7 +17,7 @@ use crate::{FormatError, MAX_HEAD_FILE_BYTES};
 const PREFIX: &[u8; 5] = b"MWBK\0";
 
 #[derive(Debug)]
-pub(crate) enum StreamError {
+pub enum StreamError {
     Io(io::Error),
     Format(FormatError),
 }

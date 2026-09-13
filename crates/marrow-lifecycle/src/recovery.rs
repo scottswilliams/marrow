@@ -11,7 +11,7 @@ use marrow_kernel::durable::NativeOpenAccess;
 use crate::actor::ImageAdmission;
 use crate::audit::{self, AuditError, Names, StoreAudit};
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
-use crate::provision::{AdmitError, LockedStore, OpenError, decode_head, decode_record};
+use crate::provision::{AdmitError, LockedStore, OpenError};
 use crate::store_dir::{AdmissionError, Artifact, StoreEntry};
 use crate::{PreparedImage, StoreInstanceId};
 
@@ -237,22 +237,15 @@ fn recover_inner(
         )
         .map_err(metadata_error)?;
         opened.directory.sync().map_err(metadata_error)?;
-        opened
-            .directory
-            .verify_location(&location)
-            .map_err(metadata_error)?;
         #[cfg(test)]
         tests::replace_before_final_read(&opened.directory, &location).map_err(metadata_error)?;
-        let actual = decode_record(&opened.directory).map_err(AuditError::Open)?;
-        let (head, digest) = decode_head(&opened.directory).map_err(AuditError::Open)?;
-        if actual != record || digest != opened.head_digest {
-            return Err(AuditError::Open(OpenError::Corruption {
-                message: "activation metadata changed before final admission".into(),
-            }));
-        }
-        admission
-            .admit_exact(&head)
-            .map_err(|error| audit::open_error(AdmitError::Refused(error)))
+        audit::admit_published(
+            &opened.directory,
+            &location,
+            &record,
+            opened.head_digest,
+            &admission,
+        )
     };
     finish().map_err(|source| RecoveryFault::Completion { instance, source })?;
     Ok((instance, image.image_id()))

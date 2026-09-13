@@ -27,7 +27,7 @@ pub struct StoreBackup {
 pub enum BackupFault {
     Image(VerifyRejection),
     Audit(AuditError),
-    Invalid(StoreAudit),
+    Invalid(Box<StoreAudit>),
     Format(FormatError),
     Io(io::Error),
     PublicationUncertain {
@@ -181,14 +181,14 @@ fn write_backup(
         digest: content.finish(),
     };
     if !audit.is_clean() {
-        return Err(BackupFault::Invalid(audit));
+        return Err(BackupFault::Invalid(Box::new(audit)));
     }
     let digest = encoder.finish().map_err(BackupFault::Io)?;
     Ok(StoreBackup { audit, digest })
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{EngineKind, LogicalHead, ProvisionRequest, StoreEnvelope, StoreInstanceId};
 
@@ -222,10 +222,10 @@ mod tests {
         }
     }
 
-    fn image_bytes() -> &'static [u8] {
+    pub(crate) fn image_bytes() -> &'static [u8] {
         static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
         BYTES.get_or_init(|| {
-            let source = "resource Item { required value: int }\nstore ^items[key: int]: Item\npub fn read(key: int): int { return ^items[key].value ?? 0 }\n";
+            let source = "resource Item { required value: int }\nstore ^items[key: int]: Item\npub fn read(key: int): int { return ^items[key].value ?? 0 }\npub fn seed() { transaction { ^items[7] = Item(value: 42) } }\n";
             let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nhigh-water 0\nend\n";
             let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").unwrap();
             let project = marrow_project::capture(&manifest, vec![marrow_project::CapturedFile::new("src/main.mw".into(), source.as_bytes().to_vec())], Some(ids.as_bytes()), &marrow_project::CaptureLimits::DEFAULT).unwrap();
@@ -233,9 +233,9 @@ mod tests {
         })
     }
 
-    struct Scratch(PathBuf);
+    pub(crate) struct Scratch(pub(crate) PathBuf);
     impl Scratch {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -247,10 +247,10 @@ mod tests {
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }
-        fn source(&self) -> PathBuf {
+        pub(crate) fn source(&self) -> PathBuf {
             self.0.join("store")
         }
-        fn provision(&self) {
+        pub(crate) fn provision(&self) {
             let image = marrow_verify::verify(image_bytes()).unwrap();
             crate::provision(
                 &self.source(),

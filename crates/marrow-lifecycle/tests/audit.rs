@@ -109,6 +109,10 @@ pub fn ping(): int {
 "#;
 
 fn compile(source: &str, ids: &str) -> VerifiedImage {
+    verify(&compile_bytes(source, ids)).expect("verify")
+}
+
+fn compile_bytes(source: &str, ids: &str) -> Vec<u8> {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -122,7 +126,68 @@ fn compile(source: &str, ids: &str) -> VerifiedImage {
     )
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
-    verify(&compiled.image.bytes).expect("verify")
+    compiled.image.bytes
+}
+
+#[test]
+fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
+    use marrow_vm::{DurableRun, Value};
+    let bytes = compile_bytes(EDITED_SOURCE, IDS);
+    let image = verify(&bytes).unwrap();
+    let export = |name: &str| {
+        image
+            .exports()
+            .iter()
+            .find(|export| image.function(export.function()).unwrap().body().name() == name)
+            .unwrap()
+            .id()
+    };
+    let add = export("add");
+    let name_of = export("nameOf");
+    let scratch = std::mem::ManuallyDrop::new(Scratch::new("backup-restore"));
+    eprintln!("backup restore fixture: {}", scratch.base.display());
+    let source = scratch.store("source");
+    provision_from(&source, &image);
+    let AttachOutcome::AlreadyActive(mut source_attachment) =
+        attach(&source, prepare(image.clone())).unwrap()
+    else {
+        panic!("exact active image")
+    };
+    assert!(matches!(
+        marrow_vm::run_export(
+            &mut source_attachment,
+            add,
+            vec![Value::Int(7), Value::Text("Ada".into())]
+        )
+        .unwrap(),
+        DurableRun::Ran(Ok(_))
+    ));
+    drop(source_attachment);
+    let artifact = scratch.store("backup");
+    let backed = marrow_lifecycle::backup(&source, &bytes, &artifact).unwrap();
+    let destination = scratch.store("restored");
+    let restored =
+        marrow_lifecycle::restore(&mut std::fs::File::open(artifact).unwrap(), &destination)
+            .unwrap();
+    assert_ne!(restored.audit.instance, backed.audit.instance);
+    assert_eq!(restored.audit.image_id, backed.audit.image_id);
+    assert_eq!(restored.audit.digest, backed.audit.digest);
+    assert_eq!(restored.audit.summary.entries, 1);
+    assert_eq!(restored.audit.summary.index_cells, 1);
+    assert_eq!(
+        std::fs::read(destination.join(marrow_lifecycle::HEAD_FILE)).unwrap(),
+        std::fs::read(source.join(marrow_lifecycle::HEAD_FILE)).unwrap()
+    );
+    let AttachOutcome::AlreadyActive(mut attachment) =
+        attach(&destination, prepare(image)).unwrap()
+    else {
+        panic!("restored active binding")
+    };
+    assert!(
+        matches!(marrow_vm::run_export(&mut attachment, name_of, vec![Value::Int(7)]).unwrap(), DurableRun::Ran(Ok(Some(Value::Optional(Some(value))))) if matches!(*value, Value::Text(ref name) if name.as_ref() == "Ada"))
+    );
+    drop(attachment);
+    drop(std::mem::ManuallyDrop::into_inner(scratch));
 }
 
 struct Scratch {
