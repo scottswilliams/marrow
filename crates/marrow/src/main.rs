@@ -13,6 +13,7 @@ mod cmd_import;
 mod cmd_init;
 mod cmd_run;
 mod cmd_test;
+mod command_output;
 mod companion;
 mod demand;
 mod outcome;

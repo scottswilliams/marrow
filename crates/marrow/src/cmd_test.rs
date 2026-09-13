@@ -11,6 +11,7 @@
 //! `kind: "test"` JSONL stream ending in a summary, or human text. The command
 //! exits nonzero when any test fails or errors.
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -258,29 +259,48 @@ fn parse_args(rest: &[String]) -> Result<TestArgs, ExitCode> {
 }
 
 fn usage(message: &str) -> ExitCode {
-    eprintln!("{message}; run marrow --help for usage");
+    let _ = writeln!(
+        io::stderr().lock(),
+        "{message}; run marrow --help for usage"
+    );
     ExitCode::from(2)
 }
 
 /// Emit typed failure records (capture/compile/verify) and return `exit`.
 fn emit_records(format: Format, records: &[Record], exit: ExitCode) -> ExitCode {
+    crate::command_output::finish(emit_records_to(
+        &mut io::stdout().lock(),
+        format,
+        records,
+        exit,
+    ))
+}
+
+fn emit_records_to(
+    writer: &mut impl Write,
+    format: Format,
+    records: &[Record],
+    exit: ExitCode,
+) -> io::Result<ExitCode> {
     // The test command's typed failure records are never a value, so they carry no
     // record types to render.
     for record in records {
         match format {
-            Format::Jsonl => println!(
+            Format::Jsonl => writeln!(
+                writer,
                 "{}",
                 record.to_jsonl(&[], &[]).expect("non-value failure record")
-            ),
+            )?,
             Format::Text => {
                 let text = record.to_text(&[], &[]).expect("non-value failure record");
                 if !text.is_empty() {
-                    println!("{text}");
+                    writeln!(writer, "{text}")?;
                 }
             }
         }
     }
-    exit
+    writer.flush()?;
+    Ok(exit)
 }
 
 /// Emit each test record then the summary in the selected format, returning `exit`.
@@ -290,21 +310,119 @@ fn emit_tests(
     summary: &TestSummary,
     exit: ExitCode,
 ) -> ExitCode {
+    crate::command_output::finish(emit_tests_to(
+        &mut io::stdout().lock(),
+        format,
+        records,
+        summary,
+        exit,
+    ))
+}
+
+fn emit_tests_to(
+    writer: &mut impl Write,
+    format: Format,
+    records: &[TestRecord],
+    summary: &TestSummary,
+    exit: ExitCode,
+) -> io::Result<ExitCode> {
     match format {
         Format::Jsonl => {
             for record in records {
-                println!("{}", record.to_jsonl());
+                writeln!(writer, "{}", record.to_jsonl())?;
             }
-            println!("{}", summary.to_jsonl());
+            writeln!(writer, "{}", summary.to_jsonl())?;
         }
         Format::Text => {
             for record in records {
-                println!("{}", record.to_text());
+                writeln!(writer, "{}", record.to_text())?;
             }
-            println!("{}", summary.to_text());
+            writeln!(writer, "{}", summary.to_text())?;
         }
     }
-    exit
+    writer.flush()?;
+    Ok(exit)
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    struct FailingWriter {
+        remaining: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            let count = self.remaining.min(bytes.len());
+            self.bytes.extend_from_slice(&bytes[..count]);
+            self.remaining -= count;
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    #[test]
+    fn failure_records_and_results_stop_at_write_or_flush_failure() {
+        let records = [Record::OperationalError {
+            code: Code::IoRead.as_str(),
+            detail: None,
+        }];
+        let tests = [TestRecord {
+            name: "passes".into(),
+            file: "src/main.mw".into(),
+            decl_line: 1,
+            decl_column: 1,
+            outcome: TestOutcome::Passed,
+        }];
+        let summary = TestSummary {
+            passed: 1,
+            failed: 0,
+            errored: 0,
+            total: 1,
+        };
+        for format in [Format::Text, Format::Jsonl] {
+            for failure_records in [false, true] {
+                let mut expected = Vec::new();
+                if failure_records {
+                    emit_records_to(&mut expected, format, &records, ExitCode::FAILURE)
+                } else {
+                    emit_tests_to(&mut expected, format, &tests, &summary, ExitCode::SUCCESS)
+                }
+                .expect("ordinary output succeeds");
+                for accepted in [0, 3, usize::MAX] {
+                    let mut writer = FailingWriter {
+                        remaining: accepted,
+                        bytes: Vec::new(),
+                    };
+                    let error = if failure_records {
+                        emit_records_to(&mut writer, format, &records, ExitCode::FAILURE)
+                    } else {
+                        emit_tests_to(&mut writer, format, &tests, &summary, ExitCode::SUCCESS)
+                    }
+                    .expect_err("write or final flush fails");
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                    assert_eq!(writer.bytes, expected[..accepted.min(expected.len())]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn run_and_test_have_no_panicking_print_macros() {
+        for source in [include_str!("cmd_run.rs"), include_str!("cmd_test.rs")] {
+            for name in ["print", "println", "eprint", "eprintln"] {
+                assert!(!source.contains(&format!("{name}!(")), "{name}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

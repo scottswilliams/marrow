@@ -235,7 +235,10 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     let Some(export) = image.export_by_id(export_id) else {
         // The directory named an id the verified image does not carry: a compiler
         // bug, since the same draft produced both.
-        eprintln!("internal error: export directory and image disagree");
+        let _ = writeln!(
+            io::stderr().lock(),
+            "internal error: export directory and image disagree"
+        );
         return ExitCode::FAILURE;
     };
     let function = image
@@ -408,7 +411,8 @@ fn mint_missing_identities(
 /// it never affects records, exit codes, or the published artifact.
 fn emit_commit_steer(root: &Path) {
     if ledger_absent_from_git_index(root) == Some(true) {
-        eprintln!(
+        let _ = writeln!(
+            io::stderr().lock(),
             "note: {} is not tracked by Git; commit it — durable identity travels with the source",
             marrow_project::IDS_FILE
         );
@@ -534,7 +538,8 @@ fn run_persistent(
     let runner = match crate::companion::discover_companion() {
         Ok(runner) => runner,
         Err(damage) => {
-            eprintln!(
+            let _ = writeln!(
+                io::stderr().lock(),
                 "{}: {}",
                 marrow_codes::Code::CliInstallationDamaged.as_str(),
                 damage.message(),
@@ -562,7 +567,7 @@ fn run_persistent(
             emit(format, &[record], image.record_types(), image.enums(), exit)
         }
         Err(error) => {
-            eprintln!("{}", error.code());
+            let _ = writeln!(io::stderr().lock(), "{}", error.code());
             ExitCode::FAILURE
         }
     }
@@ -833,7 +838,10 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
 }
 
 fn usage(message: &str) -> ExitCode {
-    eprintln!("{message}; run marrow --help for usage");
+    let _ = writeln!(
+        io::stderr().lock(),
+        "{message}; run marrow --help for usage"
+    );
     ExitCode::from(2)
 }
 
@@ -846,24 +854,14 @@ fn emit(
     enums: &[SealedEnumType],
     exit: ExitCode,
 ) -> ExitCode {
-    match emit_to(
+    crate::command_output::finish(emit_to(
         &mut io::stdout().lock(),
         format,
         records,
         types,
         enums,
         exit,
-    ) {
-        Ok(exit) => exit,
-        Err(error) => {
-            let _ = writeln!(
-                io::stderr().lock(),
-                "{}: {error}",
-                marrow_codes::Code::IoWrite.as_str()
-            );
-            ExitCode::FAILURE
-        }
-    }
+    ))
 }
 
 fn emit_to(

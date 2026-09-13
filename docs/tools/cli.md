@@ -234,6 +234,10 @@ ok    put then lookup
 
 `--filter <substring>` selects tests by title; a filter that matches nothing is
 a usage error. `--format jsonl` prints one object per test and a summary.
+Write or final-flush failure exits `1`, with `io.write` on standard error when
+that channel remains writable. Output may be partial; tests are not rerun.
+Usage errors retain exit `2` even when their standard-error message cannot be
+delivered. The same usage-error rule applies to `marrow run`.
 
 ## marrow import
 

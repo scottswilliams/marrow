@@ -9,6 +9,45 @@ mod common;
 
 use common::Project;
 
+/// The reader is gone before launch, so the first output write fails regardless
+/// of scheduling. Ordinary invocation controls use the same source and format.
+#[test]
+fn test_output_failure_returns_io_write_without_panicking() {
+    let workspace = Project::single("test \"passes\" {\n    assert true\n}\n")
+        .materialize("test-output-failure");
+    for format in ["text", "jsonl"] {
+        let args = ["test", "--format", format];
+        assert!(workspace.marrow(&args).success());
+        let (reader, writer) = std::io::pipe().expect("create output pipe");
+        drop(reader);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_marrow"))
+            .args(args)
+            .current_dir(workspace.dir())
+            .stdin(std::process::Stdio::null())
+            .stdout(writer)
+            .output()
+            .expect("run test with a closed output pipe");
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stderr.starts_with(b"io.write:"), "{output:?}");
+    }
+}
+
+#[test]
+fn run_and_test_usage_preserve_their_exit_when_stderr_is_closed() {
+    for args in [vec!["run"], vec!["test", "--unknown"]] {
+        let (reader, writer) = std::io::pipe().expect("create diagnostic pipe");
+        drop(reader);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_marrow"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(writer)
+            .output()
+            .expect("run usage with a closed diagnostic pipe");
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+    }
+}
+
 /// One passing and one failing test drive `marrow test --format jsonl`: the
 /// passing test reports `passed`, the failing one reports `failed` with the
 /// `run.assert` code, and the run ends with a typed summary. The command exits
