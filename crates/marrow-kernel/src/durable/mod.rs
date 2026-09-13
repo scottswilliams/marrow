@@ -44,8 +44,9 @@ pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 /// classify a native open/audit failure without a direct dependency on the byte-engine
 /// crate (the path kernel stays the engine's only consumer).
 pub use marrow_store::{
-    NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError, NativeLockOwner, NativeOpenAccess,
-    NativeOwnerAcquireError, NativeOwnerOpenError, StoreError,
+    MAX_KEY_LEN, MAX_VALUE_LEN, NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError,
+    NativeLockOwner, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError,
+    SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS, StoreError,
 };
 
 /// The opaque native, redb-backed durable-store owner. Named as an alias so a

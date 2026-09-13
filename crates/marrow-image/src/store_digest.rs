@@ -1,8 +1,7 @@
-//! Domain-separated digests for the persistent store's durability contracts (F02a).
+//! Domain-separated digests for persistent-store durability contracts.
 //!
-//! A persistent store records a typed envelope and a typed logical active head, each
-//! sealed by a digest over its canonical payload, and reserves a data-root digest slot
-//! (FR01 §2) a later full-walk operation populates. Each is a distinct typed 32-byte
+//! Envelopes, logical heads, entry content and complete backup framing have distinct
+//! typed 32-byte
 //! domain-separated SHA-256 (the identity rule): `SHA-256( kind ‖ u64_be(len(payload)) ‖
 //! payload )`, minted through the shared [`frame_id`](crate::demand::frame_id) framing so
 //! the same payload frames to distinct digests under distinct kinds. The mint lives here,
@@ -25,10 +24,13 @@ pub const STORE_ENVELOPE_KIND: &[u8] = b"marrow.store.env.v0";
 /// sequencing/data-digest slots, and the head identity map).
 pub const STORE_HEAD_KIND: &[u8] = b"marrow.store.head.v0";
 
-/// The digest kind of the store's logical data-root digest (FR01 §2): the digest over the
-/// canonical logical cell stream, reserved by F02a and populated only by a later full-walk
-/// operation (audit/backup/restore at F04+).
+/// The digest kind used by the logical audit's hash chain over entry cells.
+/// Managed indexes, witnesses and backup framing are outside this digest.
 pub const STORE_DATA_KIND: &[u8] = b"marrow.store.data.v0";
+
+/// The digest domain for complete logical backup framing, including image,
+/// accepted head, entry/index records and completion. Distinct from entry content.
+pub const STORE_BACKUP_KIND: &[u8] = b"marrow.store.backup.v0";
 
 /// The digest kind of the store's interface binding fingerprint: a digest over the store's
 /// export set (declaration identities), one of the binding facts a binding-only rebind
@@ -112,9 +114,13 @@ store_digest! {
     StoreHeadDigest, STORE_HEAD_KIND
 }
 store_digest! {
-    /// The store data-root digest (kind [`STORE_DATA_KIND`], FR01 §2). Reserved by F02a and
-    /// populated only by a later full-walk operation; F02a never computes one.
+    /// The logical entry-content digest (kind [`STORE_DATA_KIND`]).
     StoreDataDigest, STORE_DATA_KIND
+}
+
+store_digest! {
+    /// A backup framing digest, not an entry-only logical-content digest.
+    StoreBackupDigest, STORE_BACKUP_KIND
 }
 
 #[cfg(test)]
@@ -125,7 +131,16 @@ mod tests {
         INTERFACE_ID_KIND, image_id,
     };
 
-    /// The three store digest kinds domain-separate from one another and from every image
+    #[test]
+    fn backup_digest_known_answer() {
+        // Independently computed SHA-256 of kind, big-endian u64 length, and payload.
+        assert_eq!(
+            StoreBackupDigest::compute(b"abc").to_hex(),
+            "862c67e5908cf574f69240272ca9be154faddffafac522d35cb1d2d3987723b1"
+        );
+    }
+
+    /// The store digest kinds domain-separate from one another and from every image
     /// identity kind: the same payload frames to a distinct digest under each. This is the
     /// identity-rule recurrence gate — a future kind reusing another's byte-string would
     /// collide two of these and fail here.
@@ -136,8 +151,12 @@ mod tests {
         let envelope = StoreEnvelopeDigest::compute(payload);
         let head = StoreHeadDigest::compute(payload);
         let data = StoreDataDigest::compute(payload);
+        let backup = StoreBackupDigest::compute(payload);
+        assert_ne!(backup.bytes(), envelope.bytes());
+        assert_ne!(backup.bytes(), head.bytes());
+        assert_ne!(backup.bytes(), data.bytes());
 
-        // The three store digests over one payload are pairwise distinct.
+        // The remaining store digests over one payload are pairwise distinct.
         assert_ne!(envelope.bytes(), head.bytes());
         assert_ne!(envelope.bytes(), data.bytes());
         assert_ne!(head.bytes(), data.bytes());
@@ -147,10 +166,12 @@ mod tests {
         assert_ne!(envelope.bytes(), &image.0);
         assert_ne!(head.bytes(), &image.0);
         assert_ne!(data.bytes(), &image.0);
+        assert_ne!(backup.bytes(), &image.0);
 
         // Every kind byte-string is pairwise distinct from every other identity kind in the
         // crate: domain separation is exactly the distinctness of these strings.
-        let kinds: [&[u8]; 9] = [
+        let kinds: [&[u8]; 10] = [
+            STORE_BACKUP_KIND,
             STORE_ENVELOPE_KIND,
             STORE_HEAD_KIND,
             STORE_DATA_KIND,

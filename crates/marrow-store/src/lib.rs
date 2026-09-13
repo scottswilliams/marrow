@@ -36,6 +36,7 @@ mod traversal;
 #[cfg(test)]
 mod conformance;
 
+pub use engine::limits::{MAX_KEY_LEN, MAX_VALUE_LEN, SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS};
 pub use engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn};
 pub use error::StoreError;
 pub use mem::MemoryEngine;

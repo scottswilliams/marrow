@@ -31,15 +31,15 @@ use crate::error::StoreError;
 pub(crate) mod limits {
     /// The largest key the engine will store. A key beyond this is a
     /// [`LimitExceeded`](crate::error::StoreError::LimitExceeded).
-    pub(crate) const MAX_KEY_LEN: usize = 4096;
+    pub const MAX_KEY_LEN: usize = 4096;
     /// The largest value the engine will store.
-    pub(crate) const MAX_VALUE_LEN: usize = 1 << 20;
+    pub const MAX_VALUE_LEN: usize = 1 << 20;
     /// The most cells one [`scan_after`](super::ReadView::scan_after) returns. The
     /// kernel walks one cell at a time, so a small page bounds a subtree walk.
-    pub(crate) const SCAN_MAX_RECORDS: usize = 64;
+    pub const SCAN_MAX_RECORDS: usize = 64;
     /// The most bytes one `scan_after` page accumulates before it stops early
     /// (always returning at least one cell so progress is guaranteed).
-    pub(crate) const SCAN_MAX_AGGREGATE_BYTES: usize = 1 << 20;
+    pub const SCAN_MAX_AGGREGATE_BYTES: usize = 1 << 20;
 }
 
 /// One ordered-byte cell: its key and value.

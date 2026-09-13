@@ -28,6 +28,7 @@ mod actor;
 mod attachment;
 mod audit;
 mod authority;
+mod backup_stream;
 mod codec;
 mod durable_fs;
 mod envelope;
