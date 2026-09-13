@@ -24,8 +24,17 @@ The generated TypeScript supervisor also provides
 [`provision(options)`](../tools/typescript-client.md#launching), which creates an
 empty store bound to a compiled image without importing a corpus.
 
+Provisioning never replaces an existing destination entry, including an empty
+directory, file or symbolic link. The destination basename must be a normal
+UTF-8 entry of at most 255 bytes, without control characters, backslashes or a
+drive-style prefix such as `a:`. The immediate parent must be an existing
+directory, not a symbolic link, with owner read, write and search permissions.
+These constraints are checked before staging begins. A single-component
+relative destination uses the current directory as its parent.
+
 The runner writes and flushes the provisioning report before publishing the
-store. If synchronizing the parent directory fails after rename, the runner
+store. If the destination no longer names the retained store or synchronizing
+the parent directory fails after rename, the runner
 reports `store.publication_uncertain` with the published instance identity and
 leaves the destination in place. Import stops before reading the corpus. The
 supervisor exposes a fully delivered uncertainty record as `ProvisionUncertainError`.
@@ -42,7 +51,10 @@ the stored program and establishes fresh barriers. It does not reconstruct a
 lost acknowledgment.
 
 If construction or publication fails before the directory is published, the
-runner attempts to remove its owned staging directory. A removal failure retains
+runner attempts to remove its owned staging directory. After successful
+construction, failed publication checks that the stage name still identifies
+the retained directory before removal. Construction-failure cleanup assumes
+cooperating parent paths. A cleanup failure retains
 both the original error and the actual stage location; removal may have deleted
 some contents already. The supervisor exposes a complete cleanup-failure record
 as `ProvisionFailedError`. Its stage name is a sibling of the requested store,

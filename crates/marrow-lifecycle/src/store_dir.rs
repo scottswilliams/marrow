@@ -342,6 +342,10 @@ pub(crate) struct AdmittedStoreDir {
 }
 
 impl AdmittedStoreDir {
+    pub(crate) fn identity(&self) -> marrow_fs_journal::FsIdentity {
+        self.dir.identity()
+    }
+
     /// Create and sync a fresh metadata file without replacing an existing entry.
     /// The caller syncs the directory after constructing the complete stage.
     pub(crate) fn write_new(&self, artifact: Artifact, bytes: &[u8]) -> Result<(), AdmissionError> {

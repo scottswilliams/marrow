@@ -2,7 +2,7 @@
 //!
 //! Provision builds the whole store in a
 //! private sibling temporary directory and atomically renames it into place. A rename onto
-//! an existing non-empty store directory fails, so exactly one provisioner wins a race and a
+//! any existing destination fails, so exactly one provisioner wins a race and a
 //! crash before the rename leaves only a temporary directory — the destination is never a
 //! partially-formed store. Failed parent-directory sync after rename reports publication
 //! uncertainty and retains the destination; namespace completeness does not confirm durability.
@@ -32,7 +32,7 @@ use marrow_kernel::durable::{
     ReadSession, SessionError, SessionHost, StoreError, StoreProjection, TxnSession,
 };
 
-use crate::durable_fs::sync_dir;
+use crate::durable_fs::Publication;
 use crate::envelope::StoreEnvelope;
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::head::LogicalHead;
@@ -126,7 +126,8 @@ pub struct ProvisionError {
     pub cleanup: Option<ProvisionCleanupFailure>,
 }
 
-/// Removing an owned unpublished stage failed. Removal may have been partial.
+/// Cleanup of an unpublished stage failed or its changed identity prevented safe
+/// removal. An attempted removal may have been partial.
 #[derive(Debug)]
 pub struct ProvisionCleanupFailure {
     pub stage: PathBuf,
@@ -213,7 +214,7 @@ impl std::error::Error for ProvisionFault {}
 
 /// Provision a fresh store at `dest` in a private sibling directory (mode `0700`).
 /// Write and flush the envelope and head, create the engine through the path kernel,
-/// sync the completed stage, then atomically rename it onto `dest`. A rename onto an existing non-empty
+/// sync the completed stage, then atomically rename it onto `dest`. A rename onto any existing
 /// destination fails, so exactly one racing provisioner wins and the destination is never
 /// left partial. A creation failure leaves an existing temporary path untouched. After
 /// successful creation, a failure before rename attempts to remove this invocation's
@@ -224,6 +225,7 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
     check_engine_stamp(&request.envelope).map_err(ProvisionFault::Store)?;
     let instance = request.envelope.instance;
     let temp = temp_sibling(dest);
+    let publication = Publication::admit(&temp, dest).map_err(ProvisionFault::Io)?;
     create_private_dir(&temp).map_err(ProvisionFault::Io)?;
     // Build the store before publication; cleanup after a failed build is best-effort.
     #[cfg(test)]
@@ -246,20 +248,26 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
         &admitted,
     );
 
-    // The one-winner atomic claim: rename the fully-formed temp directory onto the
-    // destination. A rename onto an existing non-empty directory fails (the destination is
-    // an existing store or another winner's claim). The loser attempts owned-stage
-    // cleanup and reports any removal failure alongside the primary refusal.
-    match std::fs::rename(&temp, dest) {
+    // The retained parent performs the no-replace claim. Any occupied destination
+    // refuses; a loser cleans only its unpublished stage.
+    match publication.publish(admitted.identity()) {
         Ok(()) => {}
         Err(error) => {
-            // A destination that now exists is another winner (or a prior store), not our
-            // I/O fault.
-            let fault = if dest.exists() {
-                ProvisionFault::AlreadyProvisioned
-            } else {
-                ProvisionFault::Io(error)
+            let fault = match error {
+                marrow_fs_journal::CustodyError::AlreadyExists { .. } => {
+                    ProvisionFault::AlreadyProvisioned
+                }
+                error => ProvisionFault::Io(crate::durable_fs::custody_io(error)),
             };
+            if let Err(error) = admitted.verify_location(&temp) {
+                return Err(ProvisionError {
+                    fault,
+                    cleanup: Some(ProvisionCleanupFailure {
+                        stage: temp,
+                        source: std::io::Error::other(error),
+                    }),
+                });
+            }
             drop(admitted);
             drop(owner);
             return Err(cleanup_after_failure(&temp, fault));
@@ -273,21 +281,19 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
         &owner,
         &admitted,
     );
+    admitted
+        .verify_location(dest)
+        .map_err(|source| ProvisionFault::PublicationUncertain {
+            instance,
+            source: std::io::Error::other(source),
+        })?;
     // Make the new directory entry durable in the parent.
-    if let Some(parent) = dest.parent() {
-        // A single-component relative path has an empty parent, meaning the current directory.
-        let parent = if parent.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            parent
-        };
-        #[cfg(test)]
-        let synced =
-            publication_sync_fault::sync(dest, parent, publication_sync_fault::Point::Publication);
-        #[cfg(not(test))]
-        let synced = sync_dir(parent);
-        synced.map_err(|source| ProvisionFault::PublicationUncertain { instance, source })?;
-    }
+    #[cfg(test)]
+    publication_sync_fault::check(dest, publication_sync_fault::Point::Publication)
+        .map_err(|source| ProvisionFault::PublicationUncertain { instance, source })?;
+    publication
+        .sync()
+        .map_err(|source| ProvisionFault::PublicationUncertain { instance, source })?;
     let active = EnvelopeRecord {
         metadata: request.envelope,
         state: EnvelopeState::Active,
@@ -348,11 +354,6 @@ pub(crate) mod publication_sync_fault {
         let previous = DESTINATION.with(|slot| slot.replace(Some((destination.to_owned(), point))));
         let _restore = Restore(previous);
         action()
-    }
-
-    pub(super) fn sync(destination: &Path, directory: &Path, point: Point) -> std::io::Result<()> {
-        check(destination, point)?;
-        super::sync_dir(directory)
     }
 
     pub(super) fn check(destination: &Path, point: Point) -> std::io::Result<()> {
@@ -885,6 +886,53 @@ mod tests {
     use crate::headmap::HeadMap;
     use marrow_image::LedgerIdBytes;
 
+    #[test]
+    fn provision_never_replaces_an_existing_empty_directory() {
+        let scratch = ScratchDir::new("occupied-empty");
+        let destination = scratch.0.join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        let (_, request) = compiled_request();
+        let result = provision(&destination, request);
+        assert!(matches!(
+            result,
+            Err(ProvisionError {
+                fault: ProvisionFault::AlreadyProvisioned,
+                ..
+            })
+        ));
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn occupied_files_and_dangling_links_refuse_without_replacement() {
+        let scratch = ScratchDir::new("occupied-entries");
+        for dangling in [false, true] {
+            let destination = scratch.0.join(if dangling { "link" } else { "file" });
+            if dangling {
+                std::os::unix::fs::symlink("missing-target", &destination).unwrap();
+            } else {
+                std::fs::write(&destination, b"existing bytes").unwrap();
+            }
+            let (_, request) = compiled_request();
+            assert!(matches!(
+                provision(&destination, request),
+                Err(ProvisionError {
+                    fault: ProvisionFault::AlreadyProvisioned,
+                    ..
+                })
+            ));
+            if dangling {
+                assert_eq!(
+                    std::fs::read_link(&destination).unwrap(),
+                    Path::new("missing-target")
+                );
+            } else {
+                assert_eq!(std::fs::read(&destination).unwrap(), b"existing bytes");
+            }
+        }
+    }
+
     struct ConstructionFault {
         destination: PathBuf,
         point: Option<crate::store_dir::barrier_fault::Point>,
@@ -1179,6 +1227,13 @@ mod tests {
     struct PublicationObservation {
         destination: PathBuf,
         seen: Vec<(PublicationPoint, u64, u64)>,
+        mutation: Option<(PublicationPoint, PublicationMutation)>,
+    }
+
+    #[cfg(unix)]
+    enum PublicationMutation {
+        Occupy,
+        Substitute(PathBuf),
     }
 
     #[cfg(unix)]
@@ -1218,6 +1273,20 @@ mod tests {
                 ))
             ));
             observation.seen.push((point, actual.dev(), actual.ino()));
+            if observation
+                .mutation
+                .as_ref()
+                .is_some_and(|(at, _)| *at == point)
+            {
+                match observation.mutation.take().unwrap().1 {
+                    PublicationMutation::Occupy => std::fs::create_dir(destination).unwrap(),
+                    PublicationMutation::Substitute(saved) => {
+                        std::fs::rename(location, saved).unwrap();
+                        std::fs::create_dir(location).unwrap();
+                        std::fs::write(location.join("replacement"), b"do not delete").unwrap();
+                    }
+                }
+            }
         });
     }
 
@@ -1240,6 +1309,7 @@ mod tests {
             *slot.borrow_mut() = Some(PublicationObservation {
                 destination: destination.clone(),
                 seen: Vec::new(),
+                mutation: None,
             })
         });
         provision(&destination, request).expect("public provision");
@@ -1258,6 +1328,117 @@ mod tests {
                 .expect("released completed provision"),
             crate::AttachOutcome::AlreadyActive(_)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn late_collision_and_identity_changes_preserve_actual_custody() {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                PUBLICATION_OBSERVATION.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        for case in 0..3 {
+            let scratch = std::mem::ManuallyDrop::new(ScratchDir::new("publication-custody"));
+            eprintln!(
+                "preserved publication custody fixture {case}: {}",
+                scratch.0.display()
+            );
+            let destination = scratch.0.join("store");
+            let saved = scratch.0.join("retained-original");
+            let (at, action) = match case {
+                0 => (PublicationPoint::Staged, PublicationMutation::Occupy),
+                1 => (
+                    PublicationPoint::Staged,
+                    PublicationMutation::Substitute(saved.clone()),
+                ),
+                _ => (
+                    PublicationPoint::Renamed,
+                    PublicationMutation::Substitute(saved.clone()),
+                ),
+            };
+            let (_, request) = compiled_request();
+            let instance = request.envelope.instance;
+            let _clear = Clear;
+            PUBLICATION_OBSERVATION.with(|slot| {
+                *slot.borrow_mut() = Some(PublicationObservation {
+                    destination: destination.clone(),
+                    seen: Vec::new(),
+                    mutation: Some((at, action)),
+                })
+            });
+            let error = provision(&destination, request).unwrap_err();
+            match case {
+                0 => {
+                    assert!(matches!(error.fault, ProvisionFault::AlreadyProvisioned));
+                    assert!(error.cleanup.is_none());
+                    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+                }
+                1 => {
+                    assert!(matches!(error.fault, ProvisionFault::Io(_)));
+                    let cleanup = error.cleanup.expect("replacement must not be removed");
+                    assert_eq!(
+                        std::fs::read(cleanup.stage.join("replacement")).unwrap(),
+                        b"do not delete"
+                    );
+                    assert!(saved.join(crate::HEAD_FILE).is_file());
+                    assert!(!destination.exists());
+                }
+                _ => {
+                    assert!(
+                        matches!(error.fault, ProvisionFault::PublicationUncertain { instance: found, .. } if found == instance)
+                    );
+                    assert!(error.cleanup.is_none());
+                    assert_eq!(
+                        std::fs::read(destination.join("replacement")).unwrap(),
+                        b"do not delete"
+                    );
+                    assert!(saved.join(crate::HEAD_FILE).is_file());
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inadmissible_destination_names_refuse_before_stage_creation() {
+        use std::os::unix::ffi::OsStringExt;
+        let scratch = ScratchDir::new("publication-name-admission");
+        for name in [
+            std::ffi::OsString::from("a\\b"),
+            std::ffi::OsString::from("a:store"),
+            std::ffi::OsString::from("control\u{1}"),
+            std::ffi::OsString::from_vec(vec![0xff]),
+        ] {
+            let (_, request) = compiled_request();
+            let error = provision(&scratch.0.join(name), request).unwrap_err();
+            assert!(
+                matches!(error.fault, ProvisionFault::Io(source) if source.kind() == std::io::ErrorKind::InvalidInput)
+            );
+            assert!(error.cleanup.is_none());
+            assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_parent_and_missing_owner_permissions_refuse_before_staging() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = ScratchDir::new("publication-parent-admission");
+        let parent = scratch.0.join("parent");
+        std::fs::create_dir(&parent).unwrap();
+        let link = scratch.0.join("link");
+        std::os::unix::fs::symlink(&parent, &link).unwrap();
+        let (_, request) = compiled_request();
+        assert!(provision(&link.join("store"), request).is_err());
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let (_, request) = compiled_request();
+        let result = provision(&parent.join("store"), request);
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
     }
 
     /// The empty store shape: no roots, so no site to resolve. These cases exercise the

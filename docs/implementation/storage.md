@@ -88,6 +88,20 @@ gap is recorded in [project status](../status.md#trust-boundaries); the
 [audit](#auditing-a-store) reports what a substituted file's contents disagree
 with, not where the file came from.
 
+Lifecycle publication retains one admitted parent descriptor for no-replace
+rename and the following parent sync. It checks the stage's identity through that
+parent before rename and the store's destination mapping after rename. An
+occupied destination is refused by the rename operation; there is no preliminary
+existence check that authorizes replacement. After successful construction, a
+changed stage mapping prevents path-based cleanup on publication failure.
+Construction-failure cleanup retains its cooperating-path assumption.
+A changed destination mapping after rename reports
+publication uncertainty and does not delete the published store. Path-based
+engine creation still assumes cooperating earlier path components; these checks
+do not establish protection against arbitrary concurrent namespace substitution.
+The admitted name and parent constraints are described in
+[operations](../operations/README.md#a-store-on-disk).
+
 The lifecycle's existing logical-head generation selects the entry layout.
 Generation 2 is written by fresh provisioning; generation 1 and every other
 unsupported generation are refused with `store.format_version`. Attach,
