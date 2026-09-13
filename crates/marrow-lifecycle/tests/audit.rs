@@ -406,6 +406,65 @@ fn an_engine_swapped_under_another_provisions_head_is_reported() {
 }
 
 #[test]
+fn backup_rejects_inconsistent_source_indexes_without_publishing() {
+    let scratch = std::mem::ManuallyDrop::new(Scratch::new("backup-invalid-index"));
+    eprintln!(
+        "preserved invalid-index backup fixture: {}",
+        scratch.base.display()
+    );
+    let populated = scratch.store("populated");
+    let source = scratch.store("source");
+    let image = compile(SOURCE, IDS);
+    let bytes = compile_bytes(SOURCE, OTHER_INDEX_IDS);
+    let other_image = verify(&bytes).unwrap();
+    provision_from(&populated, &image);
+    add_person(&populated, &image, 1, "Ada", Some("ada@example.org"));
+    provision_from(&source, &other_image);
+    // Both engines were created normally. The fresh mismatched copy exercises
+    // logical audit failure after exact image admission, without raw engine APIs.
+    std::fs::copy(populated.join(ENGINE_FILE), source.join(ENGINE_FILE)).unwrap();
+    let files = [
+        ENGINE_FILE,
+        marrow_lifecycle::HEAD_FILE,
+        marrow_lifecycle::ENVELOPE_FILE,
+    ];
+    let before: Vec<_> = files
+        .iter()
+        .map(|name| std::fs::read(source.join(name)).unwrap())
+        .collect();
+    let destination = scratch.store("backup");
+    let error = marrow_lifecycle::backup(&source, &bytes, &destination).unwrap_err();
+    let marrow_lifecycle::BackupFault::Invalid(report) = error.fault else {
+        panic!("expected completed non-clean audit: {error:?}");
+    };
+    assert_eq!(report.findings.len(), 2);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == marrow_codes::Code::StoreAuditIndexMissing)
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == marrow_codes::Code::StoreAuditOutsideSchema)
+    );
+    assert!(error.unpublished.is_none());
+    assert!(error.cleanup.is_none());
+    assert!(!destination.exists());
+    for (name, before) in files.iter().zip(before) {
+        assert_eq!(std::fs::read(source.join(name)).unwrap(), before);
+    }
+    let mut remaining: Vec<_> = std::fs::read_dir(&scratch.base)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    remaining.sort();
+    assert_eq!(remaining, ["populated", "source"]);
+}
+
+#[test]
 fn a_same_shape_scalar_change_is_not_physical_integrity_evidence() {
     let scratch = Scratch::new("flip");
     let store = scratch.store("store");

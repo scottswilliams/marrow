@@ -149,6 +149,57 @@ mod tests {
     }
 
     #[test]
+    fn native_late_input_failure_keeps_exact_confirmed_prefix_under_same_owner() {
+        use marrow_store::{NativeEngineOwner, NativeOpenAccess};
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "marrow-transfer-prefix-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        eprintln!("preserved native transfer prefix: {}", directory.display());
+        NativeEngineOwner::provision(&directory).unwrap();
+        let mut owner = NativeEngineOwner::acquire_existing(&directory)
+            .unwrap()
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x73; 16], || {
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap();
+        let projection = projection();
+        let tables = Tables::new(&projection, &number_store(&projection));
+        let input = cells(&projection, 65);
+        let mut remaining = input.clone().into_iter();
+        let error = populate(
+            &mut owner,
+            &tables,
+            || remaining.next().map(Some).ok_or("late input"),
+            &mut Digest,
+        )
+        .unwrap_err();
+        assert!(matches!(error, RestoreError::Input("late input")));
+        // The 65th valid cell triggers the preceding 64-cell commit. Observe
+        // the same still-open native owner; no failed-body reopen is involved.
+        let view = owner.read_view().unwrap();
+        let mut actual = Vec::new();
+        let mut after = Vec::new();
+        loop {
+            let page = view.scan_after(&[], &after).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().unwrap().0.clone();
+            actual.extend(page);
+        }
+        assert_eq!(actual, input[..64]);
+        assert_eq!(view.get(&input[64].0).unwrap(), None);
+        drop(view);
+        drop(owner);
+    }
+
+    #[test]
     fn valid_witness_is_rejected_after_prior_batch_committed() {
         let projection = projection();
         let numbers = number_store(&projection);

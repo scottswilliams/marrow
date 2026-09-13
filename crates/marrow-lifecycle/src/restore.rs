@@ -312,6 +312,256 @@ fn build_body(
 mod tests {
     use super::*;
     use crate::backup::tests::{Scratch, image_bytes};
+    use crate::backup_stream::{Encoder, Header};
+    use marrow_kernel::durable::{Cell, ExportSink};
+
+    fn populated_transfer(scratch: &Scratch, count: i64) -> (Header, Vec<Cell>) {
+        use marrow_kernel::codec::{key::KeyScalar, value::RuntimeScalar};
+        use marrow_kernel::durable::{DemandCoverage, Durable, EntryValue, InvocationGrant};
+        use marrow_kernel::equality::ValueDomain;
+        scratch.provision();
+        let image = marrow_verify::verify(image_bytes()).unwrap();
+        let write_site = image
+            .sites()
+            .iter()
+            .position(|site| {
+                matches!(
+                    site,
+                    marrow_verify::SealedSite::Flat {
+                        root: 0,
+                        target: marrow_verify::SealedSiteTarget::WholePayload
+                    }
+                )
+            })
+            .unwrap() as u16;
+        let crate::AttachOutcome::AlreadyActive(mut attachment) =
+            crate::attach(&scratch.source(), prepare(image)).unwrap()
+        else {
+            panic!("active fixture")
+        };
+        let (_, host) = attachment.bridge();
+        let mut txn = host
+            .txn_session(
+                InvocationGrant::full_store(),
+                DemandCoverage {
+                    read: true,
+                    write: true,
+                },
+            )
+            .unwrap();
+        let site = txn.site(write_site);
+        for key in 0..count {
+            txn.create_entry(
+                &site,
+                &[KeyScalar::Int(key)],
+                EntryValue {
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(key + 1000)))],
+                    groups: Vec::new(),
+                },
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            txn.commit(),
+            marrow_kernel::durable::CommitResult::Committed
+        ));
+        drop(txn);
+        drop(attachment);
+        let path = scratch.0.join("source.backup");
+        let backup = crate::backup(&scratch.source(), image_bytes(), &path).unwrap();
+        assert_eq!(backup.audit.summary.entries, count as u64);
+        assert_eq!(backup.audit.summary.index_cells, count as u64);
+        decode_transfer(&std::fs::read(path).unwrap())
+    }
+
+    fn decode_transfer(bytes: &[u8]) -> (Header, Vec<Cell>) {
+        let mut input = io::Cursor::new(bytes);
+        let (mut decoder, header) = Decoder::new(&mut input).unwrap();
+        let mut cells = Vec::new();
+        while let Some(cell) = decoder.next_cell().unwrap() {
+            cells.push(cell);
+        }
+        (header, cells)
+    }
+
+    fn encode_transfer(header: &Header, cells: &[Cell]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut encoder = Encoder::new(&mut bytes, &header.image, &header.head).unwrap();
+        for (key, value) in cells {
+            encoder.cell(key, value).unwrap();
+        }
+        encoder.finish().unwrap();
+        // A semantic refusal must not be masked by bad framing or a stale digest.
+        let (decoded, actual) = decode_transfer(&bytes);
+        assert_eq!(decoded.image, header.image);
+        assert_eq!(decoded.head, header.head);
+        assert_eq!(actual, cells);
+        bytes
+    }
+
+    fn assert_headless_refusal(stage: &Path) {
+        assert!(!stage.join(crate::HEAD_FILE).exists());
+        let image = marrow_verify::verify(image_bytes()).unwrap();
+        assert!(matches!(
+            crate::attach(stage, prepare(image.clone())),
+            Err(crate::LifecycleError::Open(crate::OpenError::Incomplete))
+        ));
+        assert!(matches!(
+            crate::recover(stage, prepare(image)).unwrap_err().fault,
+            crate::RecoveryFault::Validation(AuditError::Open(crate::OpenError::Incomplete))
+        ));
+    }
+
+    #[test]
+    fn populated_truncation_retains_headless_stage_and_refuses_service() {
+        let scratch = std::mem::ManuallyDrop::new(Scratch::new());
+        eprintln!(
+            "preserved populated truncated transfer: {}",
+            scratch.0.display()
+        );
+        let (header, cells) = populated_transfer(&scratch, 130);
+        assert_eq!(cells.len(), 390);
+        let mut bytes = encode_transfer(&header, &cells);
+        bytes.pop();
+        let destination = scratch.0.join("restored");
+        let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
+        assert!(matches!(
+            error.fault,
+            RestoreFault::Body(marrow_kernel::durable::RestoreError::Input(
+                BackupReadError::Format(crate::FormatError::Truncated)
+            ))
+        ));
+        assert!(!destination.exists());
+        assert_headless_refusal(&error.stage.unwrap());
+    }
+
+    #[test]
+    fn rehashed_witness_and_missing_or_stale_index_refuse_before_head() {
+        use marrow_kernel::durable::{AuditFault, RestoreError as Body};
+        let scratch = std::mem::ManuallyDrop::new(Scratch::new());
+        eprintln!(
+            "preserved semantic transfer refusals: {}",
+            scratch.0.display()
+        );
+        let (header, original) = populated_transfer(&scratch, 3);
+        let mut witness = original.clone();
+        // Canonical v1 generation-zero witness from the kernel's witness codec.
+        // This fixed hostile artifact is valid metadata, never application content.
+        witness.push((b"\x10witness\0\0".to_vec(), [vec![1], vec![0; 16]].concat()));
+        let mut missing = original.clone();
+        let last = missing.pop().unwrap();
+        assert_eq!(last.0[0], 2, "fixture's final cell is a managed index");
+        let mut stale = original.clone();
+        let first_index_value = original
+            .iter()
+            .find(|(key, _)| key[0] == 2)
+            .unwrap()
+            .1
+            .clone();
+        stale.last_mut().unwrap().1 = first_index_value;
+        for (name, cells, finding) in [
+            ("witness", witness, None),
+            ("missing", missing, Some(AuditFault::IndexMissing)),
+            ("stale", stale, Some(AuditFault::IndexStale)),
+        ] {
+            let bytes = encode_transfer(&header, &cells);
+            let destination = scratch.0.join(name);
+            let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
+            match (error.fault, finding) {
+                (RestoreFault::Body(Body::OutsideNamespace), None) => {}
+                (RestoreFault::Body(Body::Invalid(report)), Some(finding)) => {
+                    assert!(report.findings.iter().any(|actual| actual.fault == finding))
+                }
+                (fault, expected) => panic!("{name}: {fault:?}, expected {expected:?}"),
+            }
+            assert!(!destination.exists());
+            assert_headless_refusal(&error.stage.unwrap());
+        }
+    }
+
+    #[test]
+    fn fresh_populated_publication_prefix_recovers_without_replaying_construction() {
+        let scratch = Scratch::new();
+        let (header, cells) = populated_transfer(&scratch, 70);
+        let bytes = encode_transfer(&header, &cells);
+        let image = marrow_verify::verify(&header.image).unwrap();
+        let (image, projection) = prepare(image).into_parts();
+        let projection = projection.unwrap();
+        let (head, digest) = LogicalHead::decode_with_digest(&header.head).unwrap();
+        assert!(
+            ImageAdmission::derive(&image, &projection)
+                .admit_exact(&head)
+                .is_ok()
+        );
+        let instance = StoreInstanceId::draw().unwrap();
+        let envelope = StoreEnvelope {
+            instance,
+            writer_toolchain: env!("CARGO_PKG_VERSION").into(),
+            engine_kind: EngineKind::Redb,
+            engine_format_version: marrow_kernel::durable::NATIVE_ENGINE_FORMAT_VERSION,
+        };
+        let pending = EnvelopeRecord {
+            metadata: envelope,
+            state: EnvelopeState::Provision { head: digest },
+        }
+        .encode()
+        .unwrap();
+        let stage = scratch.0.join("complete-stage");
+        let destination = scratch.0.join("published");
+        let publication = Publication::admit(&stage, &destination).unwrap();
+        create_private_dir(&stage).unwrap();
+        let mut input = io::Cursor::new(&bytes);
+        let (mut decoder, _) = Decoder::new(&mut input).unwrap();
+        let (owner, directory, report) = build_body(
+            &stage,
+            &pending,
+            instance,
+            projection,
+            &mut decoder,
+            &mut ChainDigest::new(),
+        )
+        .unwrap();
+        assert_eq!(report.summary.entries, 70);
+        assert_eq!(report.summary.index_cells, 70);
+        assert!(!stage.join(crate::HEAD_FILE).exists());
+        directory.write_new(Artifact::Head, &header.head).unwrap();
+        directory.sync().unwrap();
+        publication.publish(directory.identity()).unwrap();
+        publication.sync().unwrap();
+        // This fresh positive fixture deliberately stops at the supported
+        // published Provision prefix. It is not a reopened archived failure,
+        // and orderly owner release is not an OS-crash durability experiment.
+        drop(directory);
+        drop(owner);
+        drop(publication);
+        assert!(matches!(
+            crate::attach(&destination, prepare((*image).clone())),
+            Err(crate::LifecycleError::Open(
+                crate::OpenError::ActivationRequired { .. }
+            ))
+        ));
+        let recovered = crate::recover(&destination, prepare((*image).clone())).unwrap();
+        assert_eq!(recovered.instance, instance);
+        assert_eq!(recovered.image_id, image.image_id());
+        assert_eq!(
+            std::fs::read(destination.join(crate::HEAD_FILE)).unwrap(),
+            header.head
+        );
+        assert_eq!(
+            crate::provision::decode_record(&AdmittedStoreDir::admit(&destination).unwrap())
+                .unwrap()
+                .state,
+            EnvelopeState::Active
+        );
+        let artifact = scratch.0.join("recovered.backup");
+        let backup = crate::backup(&destination, &header.image, &artifact).unwrap();
+        assert_eq!(backup.audit.instance, instance);
+        assert_eq!(std::fs::read(artifact).unwrap(), bytes);
+        assert!(matches!(
+            crate::attach(&destination, prepare((*image).clone())).unwrap(),
+            crate::AttachOutcome::AlreadyActive(_)
+        ));
+    }
 
     #[test]
     fn batch_failure_preserves_completion_fact_without_claiming_publication() {
