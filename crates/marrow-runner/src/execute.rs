@@ -109,6 +109,12 @@ fn provision_reply(
     }
 }
 
+fn reject(code: Code) -> ServerMessage {
+    ServerMessage::Reject {
+        code: code.as_str().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -131,11 +137,5 @@ mod tests {
             super::provision_reply(Err(marrow_lifecycle::ProvisionImageError::Unapproved)),
             marrow_local_wire::ServerMessage::Reject { .. }
         ));
-    }
-}
-
-fn reject(code: Code) -> ServerMessage {
-    ServerMessage::Reject {
-        code: code.as_str().to_string(),
     }
 }
