@@ -273,15 +273,27 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) const SOURCE: &str = "resource Item { required value: int }\nstore ^items[key: int]: Item { index byValue[value] unique }\npub fn read(key: int): int { return ^items[key].value ?? 0 }\npub fn seed() { transaction { ^items[7] = Item(value: 42) } }\n";
+
     pub(crate) fn image_bytes() -> &'static [u8] {
         static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-        BYTES.get_or_init(|| {
-            let source = "resource Item { required value: int }\nstore ^items[key: int]: Item { index byValue[value] unique }\npub fn read(key: int): int { return ^items[key].value ?? 0 }\npub fn seed() { transaction { ^items[7] = Item(value: 42) } }\n";
-            let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nid index items.byValue 06060606060606060606060606060606\nhigh-water 0\nend\n";
-            let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").unwrap();
-            let project = marrow_project::capture(&manifest, vec![marrow_project::CapturedFile::new("src/main.mw".into(), source.as_bytes().to_vec())], Some(ids.as_bytes()), &marrow_project::CaptureLimits::DEFAULT).unwrap();
-            marrow_compile::compile(&project).unwrap().image.bytes
-        })
+        BYTES.get_or_init(|| compile_image(SOURCE))
+    }
+
+    pub(crate) fn compile_image(source: &str) -> Vec<u8> {
+        let ids = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 01010101010101010101010101010101\nid product Item 02020202020202020202020202020202\nid field Item.value 03030303030303030303030303030303\nid root items 04040404040404040404040404040404\nid key items.key 05050505050505050505050505050505\nid index items.byValue 06060606060606060606060606060606\nhigh-water 0\nend\n";
+        let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").unwrap();
+        let project = marrow_project::capture(
+            &manifest,
+            vec![marrow_project::CapturedFile::new(
+                "src/main.mw".into(),
+                source.as_bytes().to_vec(),
+            )],
+            Some(ids.as_bytes()),
+            &marrow_project::CaptureLimits::DEFAULT,
+        )
+        .unwrap();
+        marrow_compile::compile(&project).unwrap().image.bytes
     }
 
     pub(crate) struct Scratch(pub(crate) PathBuf);

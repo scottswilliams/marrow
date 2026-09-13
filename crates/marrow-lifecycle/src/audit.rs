@@ -61,8 +61,8 @@ impl StoreAudit {
     }
 }
 
-/// Why a store could not be audited. Every variant is an operational refusal decided before
-/// any cell is read, except an engine failure during [`AuditError::Read`].
+/// Failure to admit or inspect a store. Callers may also use admission after
+/// construction or publication; the error alone does not describe prior effects.
 #[derive(Debug)]
 pub enum AuditError {
     /// The image's durable shape is not executable by the store kernel, so no store can be

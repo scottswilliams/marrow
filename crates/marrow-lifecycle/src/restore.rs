@@ -480,6 +480,54 @@ mod tests {
     }
 
     #[test]
+    fn rehashed_incompatible_headers_refuse_before_private_construction() {
+        use crate::backup::tests::{SOURCE, compile_image};
+        let scratch = Scratch::new();
+        let (header, cells) = populated_transfer(&scratch, 0);
+        let other = compile_image(&SOURCE.replace("42", "43"));
+        assert_ne!(
+            marrow_verify::verify(&other).unwrap().image_id(),
+            marrow_verify::verify(&header.image).unwrap().image_id()
+        );
+        let mut old_head = header.head.clone();
+        old_head[4] = 1;
+        let body_len = old_head.len() - 32;
+        let digest = marrow_image::StoreHeadDigest::compute(&old_head[..body_len]);
+        old_head[body_len..].copy_from_slice(digest.bytes());
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(&scratch.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        for (name, image, head) in [
+            ("binding", other, header.head.clone()),
+            ("generation", header.image.clone(), old_head),
+            ("image", b"invalid image".to_vec(), header.head),
+        ] {
+            let bytes = encode_transfer(&Header { image, head }, &cells);
+            let destination = scratch.0.join(name);
+            let error = restore(&mut io::Cursor::new(bytes), &destination).unwrap_err();
+            match (name, &error.fault) {
+                ("binding", RestoreFault::Admission(AuditError::ImageNotActive))
+                | (
+                    "generation",
+                    RestoreFault::Input(BackupReadError::Format(
+                        crate::FormatError::UnknownVersion { found: 1 },
+                    )),
+                )
+                | ("image", RestoreFault::Image(_)) => {}
+                _ => panic!("{name}: {error:?}"),
+            }
+            assert!(error.stage.is_none());
+            assert!(!destination.exists());
+            let after: std::collections::BTreeSet<_> = std::fs::read_dir(&scratch.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(after, before);
+        }
+    }
+
+    #[test]
     fn fresh_populated_publication_prefix_recovers_without_replaying_construction() {
         let scratch = Scratch::new();
         let (header, cells) = populated_transfer(&scratch, 70);

@@ -138,7 +138,7 @@ fn main() -> ExitCode {
 }
 
 /// Read and verify the program image at `path`, printing a typed diagnostic and returning the
-/// exit code on failure. Every command loads its image through this owner.
+/// exit code on failure.
 fn load_image(path: &Path) -> Result<marrow_verify::VerifiedImage, ExitCode> {
     let bytes = read_image_bytes(path)?;
     marrow_verify::verify(&bytes).map_err(|rejection| {

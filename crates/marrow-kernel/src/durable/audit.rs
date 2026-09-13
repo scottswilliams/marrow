@@ -2073,6 +2073,26 @@ mod tests {
         assert_eq!(report.summary.entries, 1, "neither ancestor needs a marker");
         assert_eq!(digest.cells, cells);
 
+        let mut exported = Recording::default();
+        let exported_report = store
+            .export_cells(&mut Recording::default(), &mut exported)
+            .unwrap();
+        assert_eq!(exported_report, report);
+        let mut input = exported.cells.clone().into_iter();
+        let mut restored_digest = Recording::default();
+        let (restored, restored_report) =
+            DurableStore::from_engine(MemoryEngine::new(), projection.clone())
+                .restore(|| Ok::<_, ()>(input.next()), &mut restored_digest)
+                .unwrap();
+        assert_eq!(restored_report, report);
+        assert_eq!(restored_digest.cells, digest.cells);
+        let mut output = Recording::default();
+        let final_report = restored
+            .export_cells(&mut Recording::default(), &mut output)
+            .unwrap();
+        assert_eq!(final_report, report);
+        assert_eq!(output.cells, exported.cells);
+
         let tables = Tables::new(&projection, &numbering);
         let engine = MemoryEngine::new();
         let view = engine.read_view().expect("view");
