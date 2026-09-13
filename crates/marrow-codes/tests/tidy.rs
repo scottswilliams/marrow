@@ -868,16 +868,14 @@ fn durable_execution_failure_has_no_generic_collapse_surface() {
     }
 }
 
-/// The source of one function, from its signature to its own closing brace — whichever of
-/// the module-level or `impl`-level indentation closes it first. Enough to assert what a
-/// phase does and does not reach.
+/// The source of one formatted function through its own closing indentation.
+/// Nested blocks and struct literals must not truncate the phase being checked.
 fn fn_body<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
     let start = source.find(signature)?;
     let rest = &source[start..];
-    let end = ["\n}\n", "\n    }\n"]
-        .iter()
-        .filter_map(|close| rest.find(close))
-        .min()?;
+    let line = source[..start].rsplit('\n').next()?;
+    let indentation: String = line.chars().take_while(|ch| ch.is_whitespace()).collect();
+    let end = rest.find(&format!("\n{indentation}}}\n"))?;
     Some(&rest[..end])
 }
 
@@ -940,96 +938,127 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         1,
         "lifecycle provisioning must call the one non-returning create operation once",
     );
-    let build = lifecycle_product
-        .find("fn build_in_temp(")
-        .expect("provision build owner exists");
-    let create = lifecycle_product
-        .find(&provision_call)
-        .expect("provision create call exists");
-    let ordinary = lifecycle_product
-        .find("fn open_admitted<")
-        .expect("ordinary open owner exists");
+    let build =
+        fn_body(lifecycle_product, "fn build_in_temp(").expect("private construction owner exists");
+    let locked = lifecycle_product
+        .split("impl LockedStore {")
+        .nth(1)
+        .expect("locked store owner exists");
+    let acquire =
+        fn_body(locked, "pub(crate) fn acquire(").expect("ordinary acquisition owner exists");
+    let open =
+        fn_body(locked, "pub(crate) fn open<R>(").expect("admitted engine opening owner exists");
+    let ordinary =
+        fn_body(lifecycle_product, "fn open_admitted<R>(").expect("ordinary state gate exists");
+    let acquire_call = "NativeStore::acquire_existing(";
     assert!(
-        build < create && create < ordinary,
-        "the sole create-capable call must remain inside provisioning",
+        !lifecycle_product.contains("AdmittedStoreDir::admit("),
+        "lifecycle directory admission must require the physical owner",
+    );
+    assert_eq!(
+        lifecycle_product.matches(acquire_call).count(),
+        2,
+        "only private construction and ordinary acquisition take an owner"
+    );
+    for body in [build, acquire] {
+        assert_eq!(
+            body.matches(acquire_call).count(),
+            1,
+            "each acquisition belongs to its named owner"
+        );
+    }
+    assert_eq!(
+        build.matches(&provision_call).count(),
+        1,
+        "only private construction creates an engine"
+    );
+    let bind_call = ".bind_and_open_existing(";
+    assert_eq!(
+        lifecycle_product.matches(bind_call).count(),
+        1,
+        "there is one admitted engine opening"
+    );
+    assert_eq!(
+        open.matches(bind_call).count(),
+        1,
+        "the locked store consumes the pending owner when opening"
+    );
+    assert!(
+        !acquire.contains(bind_call),
+        "acquisition cannot open an engine"
+    );
+    assert_eq!(
+        lifecycle_product
+            .matches("AdmittedStoreDir::admit_under_owner(")
+            .count(),
+        2,
+        "both admitted directories must belong to the named acquisition phases"
     );
 
-    // Ordinary open enters through the opaque kernel owner once, in two ordered phases:
-    // exclusion is taken first, and everything the store directory contains is read between
-    // that acquisition and the engine open. Any read hoisted above the acquisition would put
-    // a verdict about the holder's bytes ahead of the exclusion a contender is owed.
-    let acquire = lifecycle_product
-        .match_indices("NativeStore::acquire_existing(")
-        .collect::<Vec<_>>();
-    assert_eq!(
-        acquire.len(),
-        1,
-        "ordinary lifecycle open enters only through the opaque kernel owner",
-    );
-    let bind = lifecycle_product
-        .match_indices(".bind_and_open_existing(")
-        .collect::<Vec<_>>();
-    assert_eq!(
-        bind.len(),
-        1,
-        "the acquired owner is bound and opened exactly once",
-    );
-    let acquired = acquire[0].0;
-    let bound = bind[0].0;
-    // Acquiring the lock creates the store directory's lock entry and writes a marker into
-    // it. A platform where no store directory can be admitted at all is a property of the
-    // build, decidable without touching any path, so it is decided before that write rather
-    // than after it — otherwise every refused open on such a platform leaves an inherited
-    // unclean obligation behind in a store it could never have opened.
-    let decided = lifecycle_product[ordinary..]
-        .find("decide_before_locking(dir)")
-        .map(|offset| offset + ordinary)
-        .expect("the ordinary open settles its pre-lock decisions in one place");
-    assert!(
-        decided < acquired,
-        "an open's pre-lock decisions must be settled before it takes the owner lock",
-    );
+    // These are recurrence guards over the named owners, not a Rust parser. Runtime
+    // ownership and substitution fixtures exercise the corresponding boundaries.
+    let phases: [(&str, &str, &[&str]); 4] = [
+        (
+            "private construction",
+            build,
+            &[
+                "NativeStore::acquire_existing(temp)",
+                "AdmittedStoreDir::admit_under_owner(&owner)",
+                ".write_new(Artifact::Envelope,",
+                ".write_new(Artifact::Head,",
+                "NativeStore::provision(temp)",
+                "admitted.sync()",
+                "Ok((owner, admitted))",
+            ],
+        ),
+        (
+            "ordinary acquisition",
+            acquire,
+            &[
+                "decide_before_locking(dir)",
+                "NativeStore::acquire_existing(dir)",
+                "AdmittedStoreDir::admit_under_owner(&pending)",
+                "directory.is_complete()",
+                "decode_record(&directory)",
+                "check_engine_stamp(&envelope.metadata)",
+            ],
+        ),
+        (
+            "ordinary state gate",
+            ordinary,
+            &[
+                "LockedStore::acquire(dir)",
+                "locked.envelope.state != EnvelopeState::Active",
+                "OpenError::ActivationRequired",
+                "locked.open(",
+            ],
+        ),
+        (
+            "admitted engine opening",
+            open,
+            &[
+                bind_call,
+                "decode_head(&directory)",
+                "admit(&head, digest)",
+                "admitted_head = Some((head, digest))",
+            ],
+        ),
+    ];
+    for (name, body, steps) in phases {
+        let mut next = 0;
+        for step in steps {
+            let at = body
+                .find(step)
+                .unwrap_or_else(|| panic!("{name} lacks {step}"));
+            assert!(at >= next, "{name} places {step} before its prerequisite");
+            next = at + step.len();
+        }
+    }
     let before_locking = fn_body(lifecycle_product, "fn decide_before_locking(dir: &Path)")
         .expect("the pre-lock decision owner exists");
     assert!(
         before_locking.contains("qualified_platform("),
-        "an open must refuse an unqualified platform before it takes the owner lock",
-    );
-    // Provisioning admits the directory it built before publishing it, so an admission may
-    // sit above the ordinary open; inside the open there must be none before the lock.
-    assert!(
-        lifecycle_product
-            .match_indices("AdmittedStoreDir::admit(")
-            .all(|(at, _)| at < ordinary || at > acquired),
-        "an open must admit the store directory only under the physical owner",
-    );
-    let admit_directory = lifecycle_product[acquired..]
-        .find("AdmittedStoreDir::admit(")
-        .map(|offset| offset + acquired)
-        .expect("the store directory is retained for admission under the owner");
-    for (label, read) in [
-        ("directory admission", admit_directory),
-        (
-            "the envelope read",
-            lifecycle_product
-                .find("decode_envelope(&admitted)")
-                .expect("the envelope is read from the retained directory"),
-        ),
-        (
-            "the head read",
-            lifecycle_product
-                .find("decode_head(&admitted)")
-                .expect("the head is read from the retained directory"),
-        ),
-    ] {
-        assert!(
-            acquired < read,
-            "{label} must happen under the physical owner, not ahead of it",
-        );
-    }
-    assert!(
-        acquired < admit_directory && admit_directory < bound,
-        "the store directory must be retained between acquisition and the engine open",
+        "an open must refuse an unqualified platform before taking the owner lock"
     );
     assert!(
         !lifecycle_product.contains("std::fs::read(store_dir::")
@@ -1060,6 +1089,23 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
                 .is_some_and(|body| body.contains("NativeEngine::open_existing(")),
         "the existing-only engine open must live in the binding phase",
     );
+    let lower_bind = fn_body(&lower_owner, "pub fn bind_and_open_existing<R>(")
+        .expect("lower binding phase exists");
+    let admitted = lower_bind
+        .find("admit()")
+        .expect("binding admits the stored image");
+    for engine_open in [
+        "NativeEngine::open_existing(",
+        "NativeEngine::open_read_only(",
+    ] {
+        assert!(
+            admitted
+                < lower_bind
+                    .find(engine_open)
+                    .expect("engine open branch exists"),
+            "every engine branch must follow image admission"
+        );
+    }
     assert!(
         lower_owner.contains("fn acquire(dir: &Path) -> Result<AcquiredLock, NativeLockError>"),
         "lock acquisition must require no store instance",
@@ -1134,7 +1180,10 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     let head = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/head.rs"))
         .expect("read the head codec");
     assert!(
-        envelope.contains("pub const MAX_ENVELOPE_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES")
+        envelope.contains("const LEGACY_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES as u64 + 32")
+            && envelope.contains(
+                "pub const MAX_ENVELOPE_FILE_BYTES: u64 = LEGACY_FILE_BYTES + 1 + 2 * 32"
+            )
             && head.contains("MAX_HEAD_MAP_ENTRIES as u64 * (16 + 4)")
             && head.contains("+ MAX_ACCEPTED_CEILING_BYTES as u64"),
         "an artifact file ceiling must be derived from the bounds its own decoder enforces",

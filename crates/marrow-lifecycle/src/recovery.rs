@@ -314,7 +314,7 @@ mod tests {
     const SOURCE: &str = "resource Counter { required value: int }\nstore ^counters[id: int]: Counter\npub fn readValue(n: int): int { return ^counters[n].value ?? 0 }\n";
     const IDS: &str = "marrow ids v0\nmachine-written by marrow; do not edit\nid application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\nid product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\nid field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\nid root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\nid key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\nhigh-water 0\nend\n";
 
-    fn compile(source: &str) -> VerifiedImage {
+    fn compile_bytes(source: &str) -> Vec<u8> {
         let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
         let project = marrow_project::capture(
             &manifest,
@@ -327,11 +327,7 @@ mod tests {
         )
         .expect("capture");
         let compiled = marrow_compile::compile(&project).expect("compile");
-        marrow_verify::verify(&compiled.image.bytes).expect("verify")
-    }
-
-    fn image() -> VerifiedImage {
-        compile(SOURCE)
+        compiled.image.bytes
     }
 
     struct Scratch(PathBuf);
@@ -427,12 +423,12 @@ mod tests {
     fn logical_corruption_refuses_recovery_before_preserving_debris_or_activating() {
         let populated = Scratch::new();
         let target = Scratch::new();
-        let integer_image = compile(&format!(
+        let integer_image = marrow_verify::verify(&compile_bytes(&format!(
             "{SOURCE}\npub fn setValue(n: int, v: int) {{ transaction {{ ^counters[n] = Counter(value: v) }} }}\n"
-        ));
-        let boolean_image = compile(
+        ))).expect("verify");
+        let boolean_image = marrow_verify::verify(&compile_bytes(
             "resource Counter { required value: bool }\nstore ^counters[id: int]: Counter\npub fn readValue(n: int): bool { return ^counters[n].value ?? false }\n",
-        );
+        )).expect("verify");
         provision(
             &populated.store(),
             request(&integer_image, StoreInstanceId::draw().expect("instance")),
@@ -483,7 +479,7 @@ mod tests {
     fn recovery_activates_an_actual_uncertain_publication_without_replaying_the_head() {
         use crate::provision::publication_sync_fault::{self, Point};
         let scratch = Scratch::new();
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let instance = StoreInstanceId::draw().expect("instance");
         assert!(matches!(
             publication_sync_fault::with_failure(&scratch.store(), Point::Publication, || {
@@ -533,7 +529,7 @@ mod tests {
         ] {
             let scratch = std::mem::ManuallyDrop::new(Scratch::new());
             eprintln!("replacement-prefix fixture: {}", scratch.0.display());
-            let image = image();
+            let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
             let instance = StoreInstanceId::draw().expect("instance");
             assert!(matches!(
                 publication_sync_fault::with_failure(
@@ -627,7 +623,7 @@ mod tests {
     #[test]
     fn legacy_upgrade_keeps_the_instance_and_current_head() {
         let scratch = Scratch::new();
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let legacy =
             EnvelopeRecord::decode(&crate::envelope::LEGACY_FIXTURE).expect("legacy fixture");
         provision(&scratch.store(), request(&image, legacy.metadata.instance)).expect("provision");
@@ -654,7 +650,7 @@ mod tests {
     #[test]
     fn recovery_preserves_occupied_replacements_before_activation() {
         let scratch = Scratch::new();
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
             request(&image, StoreInstanceId::draw().expect("instance")),
@@ -698,7 +694,7 @@ mod tests {
     fn preservation_keeps_file_identity_permissions_and_uninterpreted_bytes() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         for slot in ["envelope.replacing", "head.replacing"] {
             for bytes in [b"".as_slice(), b"partial", &[0xff, 0, 0xfe, 0x80]] {
                 let scratch = Scratch::new();
@@ -748,7 +744,7 @@ mod tests {
             Symlink,
             Hardlink,
         }
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         for slot in ["envelope.replacing", "head.replacing"] {
             for shape in [Shape::Directory, Shape::Symlink, Shape::Hardlink] {
                 let scratch = Scratch::new();
@@ -810,7 +806,7 @@ mod tests {
     #[test]
     fn a_later_preservation_failure_reports_the_earlier_move() {
         let scratch = Scratch::new();
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
             request(&image, StoreInstanceId::draw().expect("instance")),
@@ -854,7 +850,7 @@ mod tests {
     #[test]
     fn a_failed_preservation_barrier_reports_the_move_without_creating_a_replacement() {
         let scratch = Scratch::new();
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
             request(&image, StoreInstanceId::draw().expect("instance")),
@@ -894,8 +890,9 @@ mod tests {
     fn failed_rebind_activation_reports_uncertainty_after_the_new_head_is_visible() {
         use crate::store_dir::barrier_fault::{self, Point};
         let scratch = Scratch::new();
-        let old = image();
-        let new = compile(&SOURCE.replace("?? 0", "?? 1"));
+        let old = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
+        let new =
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
         let instance = StoreInstanceId::draw().expect("instance");
         provision(&scratch.store(), request(&old, instance)).expect("provision");
         let error = match barrier_fault::with_failure(&scratch.store(), Point::RebindActive, || {
@@ -930,8 +927,9 @@ mod tests {
         let source = format!(
             "{SOURCE}\npub fn setValue(n: int, v: int) {{ transaction {{ ^counters[n] = Counter(value: v) }} }}\n"
         );
-        let old = compile(&source);
-        let new = compile(&source.replace("?? 0", "?? 1"));
+        let old = marrow_verify::verify(&compile_bytes(&source)).expect("verify");
+        let new =
+            marrow_verify::verify(&compile_bytes(&source.replace("?? 0", "?? 1"))).expect("verify");
         for point in [
             Point::RebindPending,
             Point::ReplacementBody(Artifact::Head),
@@ -1035,7 +1033,7 @@ mod tests {
         use crate::provision::publication_sync_fault;
         use crate::store_dir::barrier_fault::{self, Point};
 
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         let legacy_record =
             EnvelopeRecord::decode(&crate::envelope::LEGACY_FIXTURE).expect("legacy fixture");
         for legacy in [false, true] {
@@ -1152,7 +1150,7 @@ mod tests {
     #[test]
     fn recovery_refuses_a_held_owner_before_engine_access_or_preservation() {
         let scratch = Scratch::new();
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         provision(
             &scratch.store(),
             request(&image, StoreInstanceId::draw().expect("instance")),
@@ -1194,8 +1192,9 @@ mod tests {
 
     #[test]
     fn final_admission_rereads_both_metadata_files_after_activation() {
-        let image = image();
-        let edited = compile(&SOURCE.replace("?? 0", "?? 1"));
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
+        let edited =
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
         for artifact in [Artifact::Envelope, Artifact::Head] {
             let scratch = Scratch::new();
             let instance = StoreInstanceId::draw().expect("instance");
@@ -1249,8 +1248,9 @@ mod tests {
     #[test]
     fn recovery_refuses_a_different_image_before_opening_the_engine() {
         let scratch = Scratch::new();
-        let image = image();
-        let edited = compile(&SOURCE.replace("?? 0", "?? 1"));
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
+        let edited =
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
         let instance = StoreInstanceId::draw().expect("instance");
         provision(&scratch.store(), request(&image, instance)).expect("provision");
         let engine = scratch.store().join(crate::ENGINE_FILE);
@@ -1272,7 +1272,7 @@ mod tests {
 
     #[test]
     fn unsupported_stamp_refuses_admission_before_engine_or_preservation() {
-        let image = image();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
         for pending in [false, true] {
             let scratch = Scratch::new();
             let req = request(&image, StoreInstanceId::draw().expect("instance"));
@@ -1334,9 +1334,9 @@ mod tests {
     #[test]
     fn rebind_recovery_adopts_only_the_exact_recorded_old_or_new_head() {
         let images = [
-            image(),
-            compile(&SOURCE.replace("?? 0", "?? 1")),
-            compile(&SOURCE.replace("?? 0", "?? 2")),
+            marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify"),
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify"),
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 2"))).expect("verify"),
         ];
         let instance = StoreInstanceId::draw().expect("instance");
         let old = request(&images[0], instance).head.encode_with_digest().1;
