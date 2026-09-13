@@ -1,9 +1,9 @@
 //! Publication's parent-directory barrier. Store metadata writes and barriers
 //! belong to the retained descriptor in `store_dir`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, FsIdentity};
+use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, FsIdentity, OpenedFile};
 
 pub(crate) fn custody_io(error: CustodyError) -> std::io::Error {
     let kind = match &error {
@@ -22,6 +22,7 @@ pub(crate) fn custody_io(error: CustodyError) -> std::io::Error {
 /// an existing entry, including an empty directory or a dangling symbolic link.
 pub(crate) struct Publication {
     parent: AdmittedDir,
+    parent_path: PathBuf,
     stage: EntryName,
     destination: EntryName,
 }
@@ -60,9 +61,11 @@ impl Publication {
                 "publication stage equals destination",
             ));
         }
-        let parent = AdmittedDir::admit_trusted_root(parent(destination)).map_err(custody_io)?;
+        let parent_path = parent(destination).to_path_buf();
+        let parent = AdmittedDir::admit_trusted_root(&parent_path).map_err(custody_io)?;
         Ok(Self {
             parent,
+            parent_path,
             stage,
             destination: destination_name,
         })
@@ -83,6 +86,35 @@ impl Publication {
 
     pub(crate) fn sync(&self) -> std::io::Result<()> {
         self.parent.sync().map_err(custody_io)
+    }
+
+    pub(crate) fn create_file(&self) -> Result<OpenedFile, CustodyError> {
+        self.parent.create_file_excl(&self.stage)
+    }
+
+    pub(crate) fn remove_file(&self, identity: FsIdentity) -> Result<(), CustodyError> {
+        match self.parent.stat_entry(&self.stage)? {
+            None => Ok(()),
+            Some(entry) if entry.identity() == identity => self.parent.unlink(&self.stage),
+            Some(_) => Err(CustodyError::IdentityDrift {
+                op: "remove unpublished file",
+            }),
+        }
+    }
+
+    pub(crate) fn verify_destination(&self, identity: FsIdentity) -> Result<(), CustodyError> {
+        let mapped = AdmittedDir::admit_trusted_root(&self.parent_path)?;
+        if mapped.identity() != self.parent.identity()
+            || self
+                .parent
+                .stat_entry(&self.destination)?
+                .is_none_or(|entry| entry.identity() != identity)
+        {
+            return Err(CustodyError::IdentityDrift {
+                op: "verify published location",
+            });
+        }
+        Ok(())
     }
 }
 

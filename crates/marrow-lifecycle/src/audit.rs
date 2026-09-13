@@ -199,18 +199,18 @@ pub(crate) fn inspect(
 }
 
 /// The hash chain over the kernel's canonical cell stream (see the module documentation).
-struct ChainDigest {
+pub(crate) struct ChainDigest {
     state: StoreDataDigest,
 }
 
 impl ChainDigest {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: StoreDataDigest::compute(&[]),
         }
     }
 
-    fn finish(self) -> StoreDataDigest {
+    pub(crate) fn finish(self) -> StoreDataDigest {
         self.state
     }
 }
@@ -241,7 +241,7 @@ impl Names {
         }
     }
 
-    fn finding(&self, finding: &AuditFinding) -> Finding {
+    pub(crate) fn finding(&self, finding: &AuditFinding) -> Finding {
         Finding {
             code: fault_code(finding.fault),
             place: self.place(&finding.site),

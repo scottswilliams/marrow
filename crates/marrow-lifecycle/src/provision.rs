@@ -488,6 +488,14 @@ impl SessionHost for OpenStore {
 }
 
 impl OpenStore {
+    pub(crate) fn export_cells(
+        &self,
+        digest: &mut dyn ContentDigest,
+        sink: &mut dyn marrow_kernel::durable::ExportSink,
+    ) -> Result<AuditReport, marrow_kernel::durable::ExportError> {
+        self.owner.export_cells(digest, sink)
+    }
+
     /// The kernel's bounded read-only logical walk under the retained lock, with no session.
     pub(crate) fn logical_audit(
         &self,

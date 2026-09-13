@@ -28,6 +28,7 @@ mod actor;
 mod attachment;
 mod audit;
 mod authority;
+mod backup;
 mod backup_stream;
 mod codec;
 mod durable_fs;
@@ -57,6 +58,7 @@ pub use attachment::{
 };
 pub use audit::{AuditError, Finding, StoreAudit, audit};
 pub use authority::{DemandExceedsCeiling, ExceedingDemand};
+pub use backup::{BackupError, BackupFault, StoreBackup, backup};
 pub use codec::FormatError;
 pub use envelope::{EngineKind, MAX_ENVELOPE_FILE_BYTES, StoreEnvelope};
 pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES};
