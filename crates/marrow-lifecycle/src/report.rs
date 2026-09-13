@@ -152,6 +152,16 @@ pub enum ProvisionImageError {
 }
 
 impl ProvisionImageError {
+    /// The published instance when the final directory sync did not confirm durability.
+    pub fn uncertain_instance(&self) -> Option<StoreInstanceId> {
+        match self {
+            Self::Provision(ProvisionError::PublicationUncertain { instance, .. }) => {
+                Some(*instance)
+            }
+            _ => None,
+        }
+    }
+
     /// The stable dotted code a tool reports.
     pub fn code(&self) -> &'static str {
         use marrow_codes::Code;
@@ -193,7 +203,8 @@ impl std::error::Error for ProvisionImageError {}
 /// the report the approval must match (so an approval accepted for a different store, image,
 /// or destination is refused), mints a fresh store identity, derives the envelope (writer and
 /// engine provenance) and the logical head (active binding + head identity map), and publishes
-/// the store complete-or-not-at-all through [`provision`]. The preparation is borrowed: the
+/// the complete store through [`provision`], retaining its identity if the final directory
+/// sync fails. The preparation is borrowed: the
 /// caller keeps it to attach or import into the store it just provisioned.
 pub fn provision_image(
     dest: &Path,

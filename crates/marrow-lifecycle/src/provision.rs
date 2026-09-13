@@ -1,10 +1,12 @@
 //! The persistent provision and open flow.
 //!
-//! Provision publishes a store *complete-or-not-at-all*: it builds the whole store in a
+//! Provision builds the whole store in a
 //! private sibling temporary directory and atomically renames it into place. A rename onto
 //! an existing non-empty store directory fails, so exactly one provisioner wins a race and a
 //! crash before the rename leaves only a temporary directory — the destination is never a
-//! partially-formed store (the publication-uncertainty boundary). Preflight is strictly
+//! partially-formed store. Failed parent-directory sync after rename reports publication
+//! uncertainty and retains the destination; namespace completeness does not confirm durability.
+//! Preflight is strictly
 //! non-creating, so probing a destination never leaves a file behind.
 //!
 //! Open takes the single-owner lock first (naming the live owner on contention), and only
@@ -104,6 +106,11 @@ pub enum ProvisionError {
     Store(StoreError),
     /// A filesystem operation failed.
     Io(std::io::Error),
+    /// The complete store was published, but parent-directory durability is unconfirmed.
+    PublicationUncertain {
+        instance: StoreInstanceId,
+        source: std::io::Error,
+    },
 }
 
 impl ProvisionError {
@@ -114,6 +121,7 @@ impl ProvisionError {
             ProvisionError::Admission(error) => error.code(),
             ProvisionError::Store(error) => error.code(),
             ProvisionError::Io(_) => Code::StoreIo.as_str(),
+            ProvisionError::PublicationUncertain { .. } => Code::StorePublicationUncertain.as_str(),
         }
     }
 }
@@ -129,19 +137,26 @@ impl std::fmt::Display for ProvisionError {
                 write!(f, "the store engine could not be created: {error}")
             }
             ProvisionError::Io(error) => write!(f, "provisioning failed: {error}"),
+            ProvisionError::PublicationUncertain { instance, source } => write!(
+                f,
+                "store {} was published, but directory durability is unconfirmed: {source}",
+                instance.to_hex()
+            ),
         }
     }
 }
 
 impl std::error::Error for ProvisionError {}
 
-/// Provision a fresh store at `dest`, publishing it complete-or-not-at-all. Builds the whole
+/// Provision a fresh store at `dest`. Builds the whole
 /// store in a private sibling temporary directory (owner-only, mode `0700`) — the engine
 /// database created through the path kernel, then the envelope and head bytes written and
 /// flushed — then atomically renames it onto `dest`. A rename onto an existing non-empty
 /// destination fails, so exactly one racing provisioner wins and the destination is never
 /// left partial. A creation failure leaves an existing temporary path untouched. After
 /// successful creation, a failure before rename removes this invocation's temporary directory.
+/// A parent-directory sync failure after rename retains `dest` and returns its instance
+/// identity in `PublicationUncertain`; it does not confirm publication durability.
 pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, ProvisionError> {
     let instance = request.envelope.instance;
     let temp = temp_sibling(dest);
@@ -180,9 +195,52 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
         } else {
             parent
         };
-        sync_dir(parent).map_err(ProvisionError::Io)?;
+        #[cfg(test)]
+        let synced = publication_sync_fault::sync_parent(dest, parent);
+        #[cfg(not(test))]
+        let synced = sync_dir(parent);
+        synced.map_err(|source| ProvisionError::PublicationUncertain { instance, source })?;
     }
     Ok(Provisioned { instance })
+}
+
+#[cfg(test)]
+pub(crate) mod publication_sync_fault {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    thread_local! {
+        static DESTINATION: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn with_failure<T>(destination: &Path, action: impl FnOnce() -> T) -> T {
+        struct Restore(Option<PathBuf>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                DESTINATION.with(|slot| *slot.borrow_mut() = self.0.take());
+            }
+        }
+        let previous = DESTINATION.with(|slot| slot.replace(Some(destination.to_owned())));
+        let _restore = Restore(previous);
+        action()
+    }
+
+    pub(super) fn sync_parent(destination: &Path, parent: &Path) -> std::io::Result<()> {
+        let fail = DESTINATION.with(|slot| {
+            let mut armed = slot.borrow_mut();
+            if armed.as_deref() == Some(destination) {
+                armed.take();
+                true
+            } else {
+                false
+            }
+        });
+        if fail {
+            Err(std::io::Error::from(std::io::ErrorKind::Other))
+        } else {
+            super::sync_dir(parent)
+        }
+    }
 }
 
 /// Build the store's artifacts in the already-created private temporary directory `temp`:

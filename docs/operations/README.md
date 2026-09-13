@@ -25,11 +25,15 @@ The generated TypeScript supervisor also provides
 empty store bound to a compiled image without importing a corpus.
 
 The runner writes and flushes the provisioning report before publishing the
-store. After publication, a failed success-receipt delivery leaves the published
-store in place. The supervisor waits for child and stream closure and validates
-the complete receipt; a spawned child without a valid successful reply has an
-unknown outcome. This delivery classification does not resolve filesystem
-publication uncertainty or authorize automatic reprovisioning.
+store. If synchronizing the parent directory fails after rename, the runner
+reports `store.publication_uncertain` with the published instance identity and
+leaves the destination in place. Import stops before reading the corpus. The
+supervisor exposes a fully delivered uncertainty record as `ProvisionUncertainError`.
+A failed success-receipt delivery also leaves the published store in place.
+The supervisor waits for child and stream closure and validates the complete
+record; missing or invalid delivery has an unknown outcome. Neither result
+authorizes automatic reprovisioning. This classification does not persist a
+service veto across process death or provide a recovery procedure.
 
 Current tools provision stores with logical-head generation 2. The entry layout
 requires fresh provisioning; there is no automatic conversion of older stores
@@ -132,8 +136,9 @@ again, and no commit is retried. The runner then holds the store's lock until it
 exits, and the next command starts a fresh runner.
 
 If no reply from the runner reaches `marrow`, the outcome is
-`run.outcome_unknown`: the call may have run, wholly or in part. In every
-uncertain case, run a read-only export to observe the store before acting again.
+`run.outcome_unknown`: the call may have run, wholly or in part. For this
+invocation-delivery uncertainty, run a read-only export to observe the store
+before acting again. This observation does not settle publication durability.
 
 ## Auditing a store
 

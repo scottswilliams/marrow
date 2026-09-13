@@ -74,9 +74,16 @@ excess output is discarded while the pipes drain. Before spawning, the store
 spelling must be representable within the canonical 64 KiB UTF-8 string bound.
 The optional `log` callback observes stderr; callback exceptions are ignored.
 
+A complete canonical uncertainty record with exit 1 rejects with
+`ProvisionUncertainError`. Its `code` is `store.publication_uncertain`; `instance`
+names the published store and `store` matches the requested path. It means the
+store was renamed into place but its parent-directory sync failed. The destination
+is retained and publication durability is unconfirmed.
+
 A confirmed spawn failure rejects with `LaunchError` (`not_started`). Missing,
 invalid or failed delivery after spawn rejects with `MarrowLossError`
-(`outcome_unknown`), including a nonzero exit with an otherwise valid receipt.
+(`outcome_unknown`), including a nonzero exit with a success receipt or an
+uncertainty record with any exit other than 1.
 The store may already exist after that failure. The supervisor does not retry,
 undo provisioning, open the store to reconstruct a receipt, or clear recovery
 state. Waiting for stream closure does not establish a finite process lifetime.

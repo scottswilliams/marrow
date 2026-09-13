@@ -296,7 +296,16 @@ writeFileSync(marker, 'child ran');
 const store = process.argv[process.argv.indexOf('--store') + 1];
 const instance = '0123456789abcdef0123456789abcdef';
 const receipt = JSON.stringify({ instance, store }) + '\n';
+const uncertain = (destination = store) => JSON.stringify({
+  code: 'store.publication_uncertain', instance, kind: 'provision_uncertain', store: destination,
+}) + '\n';
 switch (process.env.MARROW_CASE ?? 'null') {
+  case 'uncertain': process.stdout.write(uncertain()); process.exitCode = 1; break;
+  case 'uncertain-zero': process.stdout.write(uncertain()); break;
+  case 'uncertain-exit': process.stdout.write(uncertain()); process.exitCode = 2; break;
+  case 'uncertain-store': process.stdout.write(uncertain(store + '-other')); process.exitCode = 1; break;
+  case 'uncertain-truncated': process.stdout.write(uncertain().slice(0, 9)); process.exitCode = 1; break;
+  case 'uncertain-oversize': process.stdout.write('x'.repeat((1 << 20) + 1) + uncertain()); process.exitCode = 1; break;
   case 'null': process.stdout.write('null\n'); break;
   case 'valid': process.stdout.write(receipt); break;
   case 'split':
@@ -345,13 +354,22 @@ assert.equal(readFileSync(process.env.MARROW_MARKER, 'utf8'), 'child ran');
 assert.ok(failure instanceof M.MarrowLossError);
 assert.equal(failure.loss, M.LOSS.OUTCOME_UNKNOWN);
 for (const mode of ['empty', 'truncated', 'no-lf', 'extra', 'prefix', 'blank',
-  'malformed', 'utf8', 'wrong-instance', 'wrong-store', 'extra-field', 'oversize', 'nonzero']) {
+  'malformed', 'utf8', 'wrong-instance', 'wrong-store', 'extra-field', 'oversize', 'nonzero',
+  'uncertain-zero', 'uncertain-exit', 'uncertain-store', 'uncertain-truncated', 'uncertain-oversize']) {
   process.env.MARROW_CASE = mode;
   unlinkSync(process.env.MARROW_MARKER);
   await assert.rejects(M.provision(options), error =>
     error instanceof M.MarrowLossError && error.loss === M.LOSS.OUTCOME_UNKNOWN, mode);
   assert.equal(readFileSync(process.env.MARROW_MARKER, 'utf8'), 'child ran', mode);
 }
+process.env.MARROW_CASE = 'uncertain';
+let continued = false;
+await assert.rejects(M.provision(options).then(() => { continued = true; }), error =>
+  error instanceof M.ProvisionUncertainError
+  && error.code === 'store.publication_uncertain'
+  && error.instance === '0123456789abcdef0123456789abcdef'
+  && error.store === options.store);
+assert.equal(continued, false);
 for (const mode of ['valid', 'split', 'late-close', 'log']) {
   process.env.MARROW_CASE = mode;
   let logged = false;

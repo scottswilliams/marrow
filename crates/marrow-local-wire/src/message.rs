@@ -90,6 +90,8 @@ pub enum ServerMessage {
     /// A store was provisioned: `instance` is the fresh store instance identity
     /// (lowercase hex). The receipt of a completed provision.
     Provisioned { instance: String },
+    /// A complete store was published, but parent-directory durability is unconfirmed.
+    ProvisionUncertain { instance: String },
 }
 
 impl ClientMessage {
@@ -186,7 +188,7 @@ impl ServerMessage {
     }
 
     /// Encode this message as a full frame, assigning `turn` to a call reply. `Ready` and
-    /// `Provisioned` are not call replies and therefore carry no turn.
+    /// provision outcomes are not call replies and therefore carry no turn.
     pub fn encode_with_turn(&self, turn: u32) -> Result<Vec<u8>, WireError> {
         self.encode_frame(turn).map(EncodedFrame::into_bytes)
     }
@@ -194,6 +196,9 @@ impl ServerMessage {
     /// Encode a complete bounded frame, borrowing the message payload.
     /// Handshake and provision receipts carry no turn.
     pub fn encode_frame(&self, turn: u32) -> Result<EncodedFrame, WireError> {
+        if let Self::ProvisionUncertain { instance } = self {
+            validate_store_instance(instance)?;
+        }
         frame::encode(|slot| {
             slot.object(|object| match self {
                 ServerMessage::Ready { session, interface } => {
@@ -229,6 +234,13 @@ impl ServerMessage {
                 ServerMessage::Provisioned { instance } => {
                     object.field("instance", |slot| slot.string(instance))?;
                     object.field("kind", |slot| slot.string("provisioned"))
+                }
+                ServerMessage::ProvisionUncertain { instance } => {
+                    object.field("code", |slot| {
+                        slot.string(marrow_codes::Code::StorePublicationUncertain.as_str())
+                    })?;
+                    object.field("instance", |slot| slot.string(instance))?;
+                    object.field("kind", |slot| slot.string("provision_uncertain"))
                 }
             })
         })
@@ -304,6 +316,15 @@ impl ServerMessage {
                     None,
                 ))
             }
+            "provision_uncertain" => {
+                object.exact(&["code", "instance", "kind"])?;
+                if object.code("code")? != marrow_codes::Code::StorePublicationUncertain.as_str() {
+                    return Err(WireError::Malformed);
+                }
+                let instance = object.string("instance")?;
+                validate_store_instance(&instance)?;
+                Ok((ServerMessage::ProvisionUncertain { instance }, None))
+            }
             _ => Err(WireError::Malformed),
         }
     }
@@ -317,6 +338,18 @@ impl EncodedFrame {
         write: impl FnOnce(ValueWriter<'_>) -> Result<(), WireError>,
     ) -> Result<Self, WireError> {
         frame::encode(|slot| slot.object(|object| write_value_response(object, turn, write)))
+    }
+}
+
+fn validate_store_instance(instance: &str) -> Result<(), WireError> {
+    if instance.len() == 32
+        && instance
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        Ok(())
+    } else {
+        Err(WireError::Malformed)
     }
 }
 
@@ -557,6 +590,49 @@ mod tests {
         let frame = msg.encode().expect("encode");
         let body = &frame[4..];
         assert_eq!(ClientMessage::decode(body), Ok(msg));
+    }
+
+    #[test]
+    fn provision_uncertainty_round_trips_without_an_invocation_turn() {
+        let message = ServerMessage::ProvisionUncertain {
+            instance: "12".repeat(16),
+        };
+        let encoded = message.encode().expect("encode uncertainty");
+        let (decoded, turn) =
+            ServerMessage::decode_with_turn(&encoded[4..]).expect("decode uncertainty");
+        assert_eq!(decoded, message);
+        assert_eq!(turn, None);
+    }
+
+    #[test]
+    fn provision_uncertainty_rejects_invalid_identity_and_envelope() {
+        for instance in [
+            "",
+            "12",
+            "ABABABABABABABABABABABABABABABAB",
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        ] {
+            assert!(
+                ServerMessage::ProvisionUncertain {
+                    instance: instance.into()
+                }
+                .encode()
+                .is_err()
+            );
+        }
+        let valid = r#"{"code":"store.publication_uncertain","instance":"12121212121212121212121212121212","kind":"provision_uncertain"}"#;
+        for invalid in [
+            valid.replace("store.publication_uncertain", "store.io"),
+            valid.replace(
+                "12121212121212121212121212121212",
+                "ABABABABABABABABABABABABABABABAB",
+            ),
+            valid.replace("12121212121212121212121212121212", "12"),
+            valid.replace("uncertain\"}", "uncertain\",\"turn\":0}"),
+        ] {
+            let body = [&[crate::PROTOCOL_VERSION], invalid.as_bytes()].concat();
+            assert!(ServerMessage::decode(&body).is_err(), "accepted {invalid}");
+        }
     }
 
     fn server_round_trip(msg: ServerMessage) {

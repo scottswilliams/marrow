@@ -149,6 +149,14 @@ export interface ProvisionReceipt {
   store: string;
 }
 
+/** The store was published, but its parent-directory durability is unconfirmed. */
+export class ProvisionUncertainError extends Error {
+  constructor(instance: string, store: string);
+  readonly code: "store.publication_uncertain";
+  readonly instance: string;
+  readonly store: string;
+}
+
 export class Session {
   readonly interfaceId: string;
   call<T>(exportId: string, args: WireValue[], decode: (data: WireValue) => T): Promise<T>;
@@ -163,5 +171,6 @@ export function launch(options: LaunchOptions): Promise<Session>;
  * MAX_FRAME and matching the requested store spelling. Configuration is checked
  * before spawn. Spawn failure is LaunchError; delivery failure after spawn is
  * MarrowLossError with outcome_unknown, never permission to retry automatically.
+ * A completely delivered publication uncertainty rejects with ProvisionUncertainError.
  */
 export function provision(options: ProvisionOptions): Promise<ProvisionReceipt>;

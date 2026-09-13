@@ -118,6 +118,45 @@ fn provision_publishes_complete_and_open_reopens() {
     assert_eq!(reopened.envelope.instance, id);
 }
 
+#[test]
+fn failed_publication_sync_reports_uncertainty_and_retains_destination() {
+    let dir = TempDir::new("publication-sync");
+    let store = dir.store();
+    let id = instance();
+    let error = crate::provision::publication_sync_fault::with_failure(&store, || {
+        provision(&store, request(id))
+    })
+    .expect_err("the final parent sync failed");
+
+    assert_eq!(classify(&store), Preflight::Complete);
+    let children = std::fs::read_dir(&dir.path)
+        .expect("read parent")
+        .map(|entry| entry.expect("child").file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(children, [std::ffi::OsString::from("store")]);
+    assert_eq!(error.code(), "store.publication_uncertain");
+    assert!(
+        matches!(error, ProvisionError::PublicationUncertain { instance, source }
+        if instance == id && source.kind() == std::io::ErrorKind::Other)
+    );
+    let envelope_path = crate::store_dir::envelope_path(&store);
+    let before = std::fs::read(&envelope_path).expect("published envelope");
+    assert_eq!(
+        StoreEnvelope::decode(&before)
+            .expect("valid envelope")
+            .instance,
+        id
+    );
+    assert!(matches!(
+        provision(&store, request(instance())),
+        Err(ProvisionError::AlreadyProvisioned)
+    ));
+    assert_eq!(
+        std::fs::read(envelope_path).expect("retained envelope"),
+        before
+    );
+}
+
 /// Kill-point: BEFORE the rename only a temporary directory exists and the destination is
 /// absent — a crash mid-build never publishes a partial store. A leftover provisioning temp
 /// beside an absent destination leaves preflight Absent, and a fresh provision still wins.

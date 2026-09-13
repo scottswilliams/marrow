@@ -184,6 +184,7 @@ code is stable.
             .to_string(),
         rows(&[
             Code::StoreIo,
+            Code::StorePublicationUncertain,
             Code::StorePermissionDenied,
             Code::StoreLocked,
             Code::StoreFormatVersion,

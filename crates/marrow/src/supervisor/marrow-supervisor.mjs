@@ -106,6 +106,17 @@ export class MarrowReject extends Error {
   }
 }
 
+/** A complete store is published, but parent-directory durability is unconfirmed. */
+export class ProvisionUncertainError extends Error {
+  constructor(instance, store) {
+    super(`Publication durability is unconfirmed for store ${instance}`);
+    this.name = "ProvisionUncertainError";
+    this.code = "store.publication_uncertain";
+    this.instance = instance;
+    this.store = store;
+  }
+}
+
 /** A wire-grammar violation detected on this side; `code` mirrors `wire.*`. */
 export class WireFormatError extends Error {
   constructor(code, detail) {
@@ -1127,7 +1138,8 @@ export function launch(options) {
  * the child's stdin closed, accepting the exact provision report and publishing
  * the store. Resolves the parsed one-line JSON receipt (`{ instance, store }`)
  * the runner prints on a clean exit, after its streams close. A spawn failure
- * rejects with `LaunchError`; lost delivery after spawn rejects with
+ * rejects with `LaunchError`; a complete publication-uncertainty record with exit 1
+ * rejects with `ProvisionUncertainError`; lost delivery after spawn rejects with
  * `MarrowLossError(OUTCOME_UNKNOWN)`. This is a one-shot lifecycle action, not a
  * `Session`: no channel is bound and no call is served. The destination is
  * chosen by this trusted-main config, never by a calling renderer.
@@ -1181,7 +1193,7 @@ export function provision(options) {
         reject(new LaunchError(`provision spawn failed: ${failure?.message}`));
         return;
       }
-      if (failure || code !== 0) {
+      if (failure || (code !== 0 && code !== 1)) {
         reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN,
           failure ?? new Error(`provision exited with code ${code}`)));
         return;
@@ -1191,11 +1203,20 @@ export function provision(options) {
         if (stdout.at(-1) !== 0x0a) throw new Error("provision receipt lacks final LF");
         const receipt = parseCanonical(stdout.subarray(0, -1));
         if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)
-          || Object.keys(receipt).length !== 2
           || typeof receipt.instance !== "string" || !/^[0-9a-f]{32}$/.test(receipt.instance)
           || receipt.store !== store) {
           throw new Error("provision receipt identity mismatch");
         }
+        if (code === 1) {
+          if (Object.keys(receipt).length !== 4
+            || receipt.kind !== "provision_uncertain"
+            || receipt.code !== "store.publication_uncertain") {
+            throw new Error("invalid provision uncertainty record");
+          }
+          reject(new ProvisionUncertainError(receipt.instance, receipt.store));
+          return;
+        }
+        if (Object.keys(receipt).length !== 2) throw new Error("invalid provision success receipt");
         resolve(receipt);
       } catch (error) {
         reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN, error));

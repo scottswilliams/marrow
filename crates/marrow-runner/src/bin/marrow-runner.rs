@@ -206,9 +206,29 @@ fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::R
         }
         Err(error) => {
             let _ = writeln!(stderr, "{}: {error}", error.code());
+            write_provision_uncertainty(&mut std::io::stdout().lock(), store, &error)?;
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+fn write_provision_uncertainty(
+    output: &mut dyn Write,
+    store: &Path,
+    error: &marrow_lifecycle::ProvisionImageError,
+) -> std::io::Result<()> {
+    let Some(instance) = error.uncertain_instance() else {
+        return Ok(());
+    };
+    write_receipt(
+        output,
+        &encode(&Json::Object(vec![
+            ("code".into(), Json::Str(error.code().into())),
+            ("instance".into(), Json::Str(instance.to_hex())),
+            ("kind".into(), Json::Str("provision_uncertain".into())),
+            ("store".into(), Json::Str(store.display().to_string())),
+        ])),
+    )
 }
 
 /// Serve the image's storeless exports over a private local channel (the `--image` command).
@@ -594,6 +614,7 @@ fn import_output(
                 }
                 Err(error) => {
                     let _ = writeln!(std::io::stderr(), "{}: {error}", error.code());
+                    write_provision_uncertainty(&mut std::io::stdout().lock(), store, &error)?;
                     return Ok(ExitCode::FAILURE);
                 }
             }
@@ -799,6 +820,34 @@ fn launch_descriptor(interface: Id32, nonce: Option<Id32>, session: Id32, socket
 
 #[cfg(test)]
 mod output_tests {
+    #[test]
+    fn uncertainty_output_preserves_published_identity_and_ordinary_refusal_is_silent() {
+        let instance = marrow_lifecycle::StoreInstanceId::from_bytes([0x12; 16]);
+        let error = marrow_lifecycle::ProvisionImageError::Provision(
+            marrow_lifecycle::ProvisionError::PublicationUncertain {
+                instance,
+                source: std::io::Error::from(std::io::ErrorKind::Other),
+            },
+        );
+        let mut output = Vec::new();
+        super::write_provision_uncertainty(&mut output, std::path::Path::new("store"), &error)
+            .expect("write uncertainty");
+        assert_eq!(
+            String::from_utf8(output).expect("UTF-8"),
+            format!(
+                "{{\"code\":\"store.publication_uncertain\",\"instance\":\"{}\",\"kind\":\"provision_uncertain\",\"store\":\"store\"}}\n",
+                instance.to_hex()
+            )
+        );
+        let mut output = Vec::new();
+        super::write_provision_uncertainty(
+            &mut output,
+            std::path::Path::new("store"),
+            &marrow_lifecycle::ProvisionImageError::Unapproved,
+        )
+        .expect("ordinary refusal");
+        assert!(output.is_empty());
+    }
     use super::*;
 
     enum Failure {

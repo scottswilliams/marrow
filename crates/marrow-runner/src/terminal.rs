@@ -343,9 +343,9 @@ pub(crate) fn reply_to_outcome(
             column: span.column,
         }),
         ServerMessage::Reject { code } => Ok(CallOutcome::Reject { code }),
-        ServerMessage::Ready { .. } | ServerMessage::Provisioned { .. } => {
-            Err(ClientError::Handshake)
-        }
+        ServerMessage::Ready { .. }
+        | ServerMessage::Provisioned { .. }
+        | ServerMessage::ProvisionUncertain { .. } => Err(ClientError::Handshake),
     }
 }
 

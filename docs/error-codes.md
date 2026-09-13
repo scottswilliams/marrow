@@ -133,6 +133,7 @@ code is stable.
 | Code | Meaning |
 |---|---|
 | `store.io` | An I/O operation on a store failed. |
+| `store.publication_uncertain` | The complete store was published, but synchronizing its parent directory failed. Preserve the destination; publication durability is unconfirmed. |
 | `store.permission_denied` | The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry. |
 | `store.locked` | The store file is held open by another process (a writer or a read-only inspection). Close the other process, then retry. |
 | `store.format_version` | The store records a format version this build does not support. |
