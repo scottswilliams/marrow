@@ -50,7 +50,10 @@ fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
             .bind_and_open_existing(
                 marrow_kernel::durable::NativeOpenAccess::ReadWrite,
                 [0x61; 16],
-                || NumberedProjection::accepted(project(&schema(), sites()), &[0, 1], 2)
+                || Ok::<_, std::convert::Infallible>(
+                    NumberedProjection::accepted(project(&schema(), sites()), &[0, 1], 2)
+                        .expect("the two-node fixture has a complete layout")
+                )
             )
             .is_err(),
         "a scoped lifecycle reopen must refuse a missing engine",
