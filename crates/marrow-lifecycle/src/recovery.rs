@@ -1245,7 +1245,9 @@ mod tests {
             request.head.head_map.encode(&mut encoded);
             assert_eq!(request.head.head_map.len(), 2);
             encoded[..4].copy_from_slice(&high_water.to_be_bytes());
-            for (index, entry) in encoded[8..].chunks_exact_mut(20).enumerate() {
+            let (entries, remainder) = encoded[8..].as_chunks_mut::<20>();
+            assert!(remainder.is_empty());
+            for (index, entry) in entries.iter_mut().enumerate() {
                 entry[16..].copy_from_slice(&(17 - index as u32 * 5).to_be_bytes());
             }
             request.head.head_map =
