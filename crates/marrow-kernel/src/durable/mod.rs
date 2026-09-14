@@ -3,8 +3,9 @@
 //! The kernel sits below the language. It consumes verified sites and typed
 //! scalars — never source — and turns durable operations into ordered-byte engine
 //! calls through the narrow [`marrow_store::ByteEngine`] seam. It owns the durable
-//! operation algebra outcomes, the authority triple, the id-keyed physical layout
-//! ([`number_store`] assigns every node its cell-key number), and the commit witness.
+//! operation algebra outcomes, the authority triple, the id-keyed physical layout,
+//! and the commit witness. [`NumberedProjection`] pairs the schema with fresh or
+//! accepted physical addresses.
 //!
 //! Read and write sessions are bounded by `demand ∩ ceiling ∩ grant`. Complete
 //! entries own their fields and groups; keyed descendants occupy independent

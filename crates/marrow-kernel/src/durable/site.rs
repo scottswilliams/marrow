@@ -532,8 +532,8 @@ mod tests {
         assert_eq!(counted, numbered);
     }
 
-    /// One root with the widest field table the number space admits beside it: exactly at
-    /// the bound the projection publishes, one field past it the projection refuses.
+    /// One root and its fields reach the simultaneous node-count limit exactly;
+    /// one additional field exceeds the projection bound.
     #[test]
     fn the_node_count_bound_refuses_at_mint_and_admits_at_the_edge() {
         let build = |fields: u32| {
