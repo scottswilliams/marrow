@@ -32,6 +32,7 @@ use marrow_runner::{
     AttachedEphemeralService, Channel, Deadlines, Handler, Id32, LaunchSecrets, Service, mint_id,
 };
 
+mod store_apply;
 mod store_transfer;
 
 /// The bounded number of connection attempts admitted before giving up (the
@@ -40,6 +41,7 @@ const MAX_ACCEPT_ATTEMPTS: u32 = 16;
 
 /// The command the runner was invoked to perform.
 enum Command {
+    Apply(store_apply::Command),
     Transfer(store_transfer::Command),
     /// Serve the image's storeless exports over a private channel.
     Serve {
@@ -94,6 +96,7 @@ enum ReportFormat {
 
 fn main() -> ExitCode {
     match parse_args() {
+        Some(Command::Apply(command)) => finish_output(store_apply::run(command)),
         Some(Command::Transfer(command)) => finish_output(store_transfer::run(command)),
         Some(Command::Serve { image }) => serve(&image),
         Some(Command::Store {
@@ -127,7 +130,8 @@ fn main() -> ExitCode {
                  --store <dir>\n       marrow-runner attach-ephemeral --image \
                  <path>\n       marrow-runner import --image <path> --store <dir> \
                  --jsonl <path> --root <name> --keys <col,...>\n       marrow-runner audit \
-                 --image <path> --store <dir> [--format text|jsonl]\n       marrow-runner recover \
+                 --image <path> --store <dir> [--format text|jsonl]\n       marrow-runner apply \
+                 --store <dir> --old-image <image> --new-image <image> [--accept-ceiling <id>] [--format text|jsonl]\n       marrow-runner recover \
                  --image <path> --store <dir> [--format text|jsonl]\n       marrow-runner backup \
                  --image <path> --store <dir> --out <backup> [--format text|jsonl]\n       marrow-runner restore \
                  --from <backup> --store <dir> [--format text|jsonl]"
@@ -523,6 +527,7 @@ fn parse_args() -> Option<Command> {
         Some("import") => parse_import(args),
         Some("audit") => parse_store(args, StoreOperation::Audit),
         Some("recover") => parse_store(args, StoreOperation::Recover),
+        Some("apply") => store_apply::parse(args).map(Command::Apply),
         Some("backup") => store_transfer::parse("backup", args).map(Command::Transfer),
         Some("restore") => store_transfer::parse("restore", args).map(Command::Transfer),
         Some("--image") => args.next().map(|image| Command::Serve {

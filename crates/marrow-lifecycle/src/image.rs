@@ -60,9 +60,8 @@ pub fn accepted_ceiling(image: &VerifiedImage) -> Vec<u8> {
 /// number `i` binds to the ledger id of the `i`-th walked node.
 ///
 /// Returns a [`FormatError`] when the node count exceeds the head map's bound, and when the
-/// walk yields one ledger id twice — the map is a bijection over declaration identities, so
-/// a program whose durable nodes do not carry distinct ids (two store roots of one resource
-/// share their members' ids) has no head map and cannot be provisioned today.
+/// walk yields one declaration identity twice. Two roots sharing one resource
+/// share member identities, so this persisted map cannot provision them today.
 pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
     let (nodes, order) = split_order(image);
     let ledger_ids: Vec<LedgerIdBytes> = order.iter().map(|&i| nodes[i].path.node_id()).collect();

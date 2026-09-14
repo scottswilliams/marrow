@@ -99,6 +99,15 @@ is closed and reopened and the marker descriptor is handed off. The accepted
 numbered layout is moved, not reconstructed. An exact active binding uses the
 ordinary service-open path without a transition audit.
 
+Explicit sparse-field apply uses the OLD image's read-only admitted owner for
+the complete logical audit. The lifecycle apply module compares verified graph
+occurrences and value representations, preserves accepted physical numbers, and
+allocates added fields from the accepted next-unused number. It constructs the
+NEW admission once and publishes its map, ceiling and image binding through the
+same Pending/Head/Active publisher after rechecking OLD metadata. Final
+verification precedes the receipt. Apply neither writes data cells nor converts
+the read-only owner into writable service; ordinary attachment admits NEW later.
+
 Read-only success in the pinned redb implementation requires the saved allocator
 state that writable opening uses to avoid full repair. Under uninterrupted
 cooperative access, the reopened owner serves the same logical data. The abort
@@ -106,8 +115,9 @@ callback refuses full repair when invoked; it does not prohibit preceding header
 recovery or allocator recovery that bypasses it. Engine identity checks detect
 replacement during preparation, not external writes to the same inode.
 
-An inherited physical-audit obligation still requires the repairing integrity
-operation after logical admission. A repair is reported as corruption and stops
+For code-only rebind service preparation, an inherited physical-audit obligation
+still requires the repairing integrity operation after logical admission.
+A repair is reported as corruption and stops
 publication; physical bytes may change, including selection of another committed
 state, and the unclean marker obligation is retained. The old Head and envelope
 remain unchanged. After successful preparation, exact old metadata/location

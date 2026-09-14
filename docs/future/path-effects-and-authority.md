@@ -9,7 +9,9 @@ Each export's demand includes durable operations through its acyclic call graph,
 including managed-index maintenance
 ([access demand](../language/durable-places.md#access-demand)).
 The image carries a deployment ceiling accepted by the owner, and the store
-retains that ceiling. An invocation demanding more is refused before durable
+initially retains that ceiling. Explicit apply can expand the store's standing
+ceiling by accepting its exact union with NEW demand. An invocation demanding
+more than the standing ceiling is refused before durable
 work ([changing the program](../operations/README.md#changing-the-program)).
 The current profile has one local owner; fine-grained principals and grants
 are future work.

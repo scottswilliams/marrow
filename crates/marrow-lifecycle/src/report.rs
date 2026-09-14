@@ -148,7 +148,7 @@ pub enum ProvisionImageError {
     Unapproved,
     /// An OS entropy source was unavailable, so no store identity could be minted.
     Entropy(EntropyUnavailable),
-    /// The head identity map could not be built (its node count exceeds the bound).
+    /// The head identity map could not be built: too many nodes or repeated declaration IDs.
     Head(crate::codec::FormatError),
     /// The underlying provision write failed.
     Provision(ProvisionError),

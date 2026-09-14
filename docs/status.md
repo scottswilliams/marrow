@@ -7,9 +7,10 @@ each behavior.
 [Beta scope](vision.md#beta-scope) selects useful storeless programs and a
 recoverable local application. It is a target, not the state of this revision.
 Native opening, recovery and fresh restore retain the accepted Head's physical
-addresses. This does not implement additive contract activation.
+addresses. Explicit apply preserves those addresses while adding sparse scalar
+fields; it does not implement general schema evolution.
 
-Ordinary enum composition, local source reuse, additive updates and full
+Ordinary enum composition, local source reuse and full
 application-lifetime qualification still require work. Broader future features are not
 prerequisites.
 
@@ -24,9 +25,9 @@ prerequisites.
 | Transactions | One `transaction` block per mutating export. Every normal function exit inside it commits, including `try` and `require` failure; a fault before commit rolls the block back. | [Errors and transactions](language/errors-and-transactions.md) |
 | Traversal and indexes | `for ... at most N { } on more { }` over a root, a branch, or an index; root and branch key acquisition uses at most `N + 1` bounded scans, independent of child populations; up to 8 indexes per root; a `unique` index lookup yields `Id(^root)?`. | [Traversal and indexes](language/traversal-and-indexes.md) |
 | Tests | `marrow test` runs `test` blocks through ordinary function calls. Each durable test has a fresh in-memory store; transaction-owning calls commit setup, and private readers can observe it. Direct durable operations and calls to mutating non-owner helpers are refused in test bodies. | [Tests](language/tests.md) |
-| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `recover`, `backup`, `restore`, `image`, and `client typescript`. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
+| CLI | `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `apply`, `recover`, `backup`, `restore`, `image`, and `client typescript`. `run --stdin` supplies one bounded UTF-8 string argument; bare-string results are bounded, JSON data construction checks its byte limit before appending, and rendering or result-delivery failures fail the command. | [CLI](tools/cli.md) |
 | Editor server | `marrow-lsp` serves diagnostics, formatting, hover, definition, completion, signature help, and document symbols over stdio. Whole-analysis resource stops complete the affected revision with request refusals, an unlocated explanation, and retractions of prior diagnostics. A later edit that permits project capture and analysis can recover. | [Language server](tools/lsp.md) |
-| Store lifecycle | `marrow import` provisions or populates a store under its active program; `marrow run --store` runs through the admitted companion. Pending activation blocks ordinary access. `marrow recover --store` validates the exact stored image, physical integrity and logical contents, then establishes fresh activation barriers without replaying a missing head update. `marrow doctor --store` remains read-only logical inspection without physical verification. Doctor and backup preserve source artifacts, including ownership-marker bytes and absence. Logical backup carries the exact image, head and complete entry/index families; restore validates a fresh store without compiling current source. | [Operations](operations/README.md) |
+| Store lifecycle | `marrow import` provisions or populates a store under its active program; `marrow run --store` runs through the admitted companion. Explicit `marrow apply` preserves old representations and adds absent sparse scalar fields using verified OLD and NEW images; authority expansion requires the exact standing-ceiling union. Pending activation blocks ordinary access. `marrow recover --store` validates the exact stored image, physical integrity and logical contents, then establishes fresh activation barriers without replaying a missing head update. `marrow doctor --store` remains read-only logical inspection without physical verification. Doctor and backup preserve source artifacts, including ownership-marker bytes and absence. Logical backup carries the exact image, head and complete entry/index families; restore validates a fresh store without compiling current source. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner checks List/Map length and aggregate structural size before execution, normalizes unique Map argument pairs to ascending typed key order, and bounds outbound frame construction before appending. Provision records retain publication/activation uncertainty or primary failure plus failed cleanup. Authenticated native startup distinguishes activation uncertainty from invocation outcomes. Missing delivery remains uncertain. | [TypeScript client](tools/typescript-client.md) |
 
 The command names `data`, `evolve`, and `serve` are
@@ -68,6 +69,12 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
 
 ## Not yet available
 
+- Native stores with two roots of the same resource. The compiler accepts the
+  declarations, but native provisioning cannot give repeated member declaration
+  IDs distinct accepted addresses and currently reports `store.corruption`
+  before creating the store. This is a native capability and diagnostic
+  limitation, not evidence of damaged stored data. The language's independent
+  root semantics remain the intended behavior ([durable places](language/durable-places.md#keys)).
 - Third-party packages ([packages](future/packages.md)).
 - Closures ([general-purpose language](future/general-purpose-language.md)).
 - Public aggregate inputs and bound durable values containing nominal integers;
@@ -81,8 +88,10 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
   fields ([resources](language/resources.md)).
 - `decimal` ([types and values](language/types-and-values.md)).
 - Index rename and retirement ([traversal and indexes](language/traversal-and-indexes.md)).
-- Schema evolution. Today a changed durable contract is a
-  `store.contract_changed` refusal and the prior program stays usable
+- Schema evolution beyond explicit sparse scalar additions. Ordinary attachment
+  refuses a changed durable contract as `store.contract_changed`; explicit
+  [`marrow apply`](tools/cli.md#marrow-apply) preserves old representations and
+  accepts sparse scalar fields with separately accepted authority expansion
   ([admission and activation](future/admission-and-activation.md)).
 - Complete subtree enumeration and removal when absent ancestors' keys are
   unknown ([deleting](language/durable-places.md#deleting)).

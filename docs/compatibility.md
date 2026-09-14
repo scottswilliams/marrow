@@ -87,4 +87,5 @@ store is bound to one program;
 changes it accepts. [Logical backup/restore](operations/README.md#logical-backup-and-fresh-restore)
 uses a versioned bounded transfer containing the exact image, head and canonical
 entry/index cells. It is not an enduring format-support promise or a schema
-conversion. Schema evolution remains future work ([status](status.md#not-yet-available)).
+conversion. Evolution beyond explicit sparse scalar additions remains future
+work ([status](status.md#not-yet-available)).

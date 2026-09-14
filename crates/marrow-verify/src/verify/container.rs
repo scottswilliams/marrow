@@ -98,6 +98,7 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
     let DecodedDurable {
+        graph: durable_graph,
         roots,
         sites,
         site_paths,
@@ -118,6 +119,7 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     let test_entries = decode_test_entries(sections[7].1, strings.len(), functions.len())?;
 
     Ok(DecodedImage {
+        durable_graph,
         image_id: image_id(payload),
         strings,
         types,

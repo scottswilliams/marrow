@@ -48,10 +48,9 @@ pub struct ExceedingDemand {
     pub place: Option<String>,
 }
 
-/// An attach refusal: the presented image's verified demand exceeds the store's accepted
-/// deployment ceiling. A typed lifecycle refusal, never corruption — the store is intact, no
-/// engine call occurred, and the prior program remains usable. The owner consciously expands
-/// the accepted ceiling to admit exactly the named demand.
+/// The presented image's verified demand exceeds the accepted deployment ceiling.
+/// This pure comparison does not establish store integrity or service readiness.
+/// Its named effects also describe the expansion required by explicit apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandExceedsCeiling {
     /// Every exceeding atom, in a stable order (by place spelling, then effect), so the
@@ -110,11 +109,12 @@ fn effect_verb(effect: OperationClass) -> &'static str {
 /// otherwise [`DemandExceedsCeiling`] naming every atom the ceiling does not admit. No engine
 /// call is made — this is a pure comparison over reconstructed demand and the persisted
 /// ceiling. The `accepted` ceiling is the reconstruction of the head's persisted payload.
-pub fn admit(
+pub(crate) fn admit_demand(
     image: &VerifiedImage,
+    demand: &marrow_image::ExportDemand,
     accepted: &CeilingDescriptor,
 ) -> Result<(), DemandExceedsCeiling> {
-    let exceeding_atoms = image.demand_union().not_admitted_by(accepted.demand());
+    let exceeding_atoms = demand.not_admitted_by(accepted.demand());
     if exceeding_atoms.is_empty() {
         return Ok(());
     }

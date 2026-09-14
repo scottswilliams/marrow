@@ -5,7 +5,7 @@
 //! exercised through its real owner:
 //!
 //! 1. **demand ∩ ceiling** — an image whose verified demand exceeds the store's accepted
-//!    deployment ceiling is refused at attach, before any engine call (`authority::admit`).
+//!    deployment ceiling is refused at attach, before any engine call (`authority::admit_demand`).
 //! 2. **∩ grant (attenuation)** — over a store the ceiling admits, a read-only invocation grant
 //!    denies a mutating demand at session open (`resolve_authority`), even though the ceiling
 //!    would permit it.

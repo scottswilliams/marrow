@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use marrow_codes::Code;
-use marrow_image::CeilingDescriptor;
+use marrow_image::{CeilingDescriptor, ExportDemand};
 use marrow_kernel::durable::{NumberedProjection, StoreProjection};
 use marrow_verify::VerifiedImage;
 
@@ -119,6 +119,23 @@ impl<'a> ImageAdmission<'a> {
         self,
         head: &LogicalHead,
     ) -> Result<NumberedProjection, ExactRefusal> {
+        self.exact_binding(head)?;
+        let demand = self.image.demand_union();
+        self.exact_layout(head, &demand)
+    }
+
+    /// Reuse the whole demand already derived from this admission's image.
+    /// The caller must supply that same image's demand, not a subset or another image's.
+    pub(crate) fn admit_exact_with_demand(
+        self,
+        head: &LogicalHead,
+        demand: &ExportDemand,
+    ) -> Result<NumberedProjection, ExactRefusal> {
+        self.exact_binding(head)?;
+        self.exact_layout(head, demand)
+    }
+
+    fn exact_binding(&self, head: &LogicalHead) -> Result<(), ExactRefusal> {
         let stored = &head.binding;
         if self.incoming != *stored {
             return Err(if self.incoming.image_id == stored.image_id {
@@ -131,18 +148,35 @@ impl<'a> ImageAdmission<'a> {
                 })
             });
         }
-        self.admit_ceiling(head).map_err(ExactRefusal::Admission)?;
+        Ok(())
+    }
+
+    fn exact_layout(
+        self,
+        head: &LogicalHead,
+        demand: &ExportDemand,
+    ) -> Result<NumberedProjection, ExactRefusal> {
+        self.admit_ceiling_demand(head, demand)
+            .map_err(ExactRefusal::Admission)?;
         self.numbered(head)
             .map_err(|refusal| ExactRefusal::Admission(AdmissionRefusal::Pin(refusal)))
     }
 
     /// Reconstruct the accepted ceiling from the persisted head and intersect it with the
-    /// presented image's whole-program demand (see `authority::admit`). A ceiling payload
+    /// presented image's whole-program demand (see `authority::admit_demand`). A ceiling payload
     /// that does not decode is store corruption, not a demand refusal.
     fn admit_ceiling(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
+        self.admit_ceiling_demand(head, &self.image.demand_union())
+    }
+
+    fn admit_ceiling_demand(
+        &self,
+        head: &LogicalHead,
+        demand: &ExportDemand,
+    ) -> Result<(), AdmissionRefusal> {
         let accepted = CeilingDescriptor::from_payload(&head.accepted_ceiling)
             .map_err(|_| AdmissionRefusal::CeilingCorrupt)?;
-        authority::admit(self.image, &accepted).map_err(AdmissionRefusal::Exceeds)
+        authority::admit_demand(self.image, demand, &accepted).map_err(AdmissionRefusal::Exceeds)
     }
 
     /// Resolve accepted physical addresses only after semantic correspondence succeeds.
@@ -183,9 +217,8 @@ pub struct RebindReceipt {
     pub new_image_id: [u8; 32],
 }
 
-/// Which binding fact differs — the category a contract-changed refusal names. The exact
-/// changed source places are `marrow apply`'s typed change review (F03a); F02a names the
-/// category so the developer knows which kind of change to review. Authority is not a binding
+/// Which binding fact differs — the category a contract-changed refusal names.
+/// Authority is not a binding
 /// fact: a demand change that exceeds the accepted ceiling is the distinct, more actionable
 /// [`DemandExceedsCeiling`] refusal, and a demand change within it is admitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,8 +241,8 @@ impl ChangedFact {
     }
 }
 
-/// A binding-fact delta that is not a binding-only code update: a typed lifecycle refusal,
-/// never corruption. The store is intact; the prior program remains usable.
+/// A binding-fact delta refused by the attempted operation. This does not establish
+/// integrity or service readiness of the store's current binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContractChanged {
     pub changed: ChangedFact,
@@ -227,9 +260,8 @@ impl std::fmt::Display for ContractChanged {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the program image changes {} versus the store's active binding, so it is not a \
-             binding-only code update; the store is intact and the prior program remains usable. \
-             Run `marrow apply` to review and accept the change",
+            "the supplied image differs in {} from the binding required by this operation; \
+             the current binding was not changed",
             self.changed.describe(),
         )
     }
@@ -413,13 +445,13 @@ fn classify_delta(stored: &ActiveBinding, incoming: &ActiveBinding) -> ChangedFa
 
 /// The exact released toolchain version performing this write, recorded in the envelope's
 /// writer tuple (FR01 R2).
-fn current_toolchain() -> String {
+pub(crate) fn current_toolchain() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
 /// Persist Pending and its version discriminator before changing the head. Active may
 /// replace it only after the new head's directory barrier. No receipt precedes the final sync.
-fn rewrite_atomically(
+pub(crate) fn rewrite_atomically(
     dir: &store_dir::AdmittedStoreDir,
     location: &Path,
     envelope: &crate::envelope::StoreEnvelope,

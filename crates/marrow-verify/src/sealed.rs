@@ -12,9 +12,9 @@ mod demand;
 pub(crate) use demand::FunctionDemands;
 
 use marrow_image::{
-    DemandSetId, DemandView, DurableContractId, DurableIndexComponent, ExportDemand, ExportId,
-    ImageId, ImageType, LedgerIdBytes, OperationClass, Scalar, SemanticNode, SemanticPath,
-    SemanticTarget,
+    DemandSetId, DemandView, DurableContractGraph, DurableContractId, DurableContractView,
+    DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes,
+    OperationClass, Scalar, SemanticNode, SemanticPath, SemanticTarget,
 };
 
 /// A relative position in a [`VerifiedImage`]'s function table, distinct from local,
@@ -796,6 +796,9 @@ impl SealedTestEntry {
 /// The verified, sealed program image.
 #[derive(Debug, Clone)]
 pub struct VerifiedImage {
+    /// The independently decoded graph, shared across image clones and borrowed by
+    /// lifecycle compatibility. Product rows already shared with roots stay single-owned.
+    pub(crate) durable_graph: Rc<DurableContractGraph>,
     pub(crate) image_id: ImageId,
     pub(crate) types: Vec<SealedRecordType>,
     pub(crate) enums: Vec<SealedEnumType>,
@@ -806,8 +809,7 @@ pub struct VerifiedImage {
     pub(crate) durable_contract: DurableContractId,
     /// The durable graph's node set with each node's derived [`SemanticPath`], as the
     /// verifier independently derived it from the decoded tables — the same derivation
-    /// the recomputed contract id was taken over, retained rather than a descriptor
-    /// because deriving it is the only thing the descriptor was kept for.
+    /// the recomputed contract id was taken over. Consumers reuse this derivation.
     pub(crate) semantic_nodes: Vec<SemanticNode>,
     pub(crate) consts: Vec<SealedConst>,
     pub(crate) functions: Vec<SealedFunction>,
@@ -861,6 +863,12 @@ impl VerifiedImage {
     /// A later store-admission phase binds an activated store to this id.
     pub fn durable_contract(&self) -> DurableContractId {
         self.durable_contract
+    }
+
+    /// Independently verified durable identities and value shapes, borrowed for
+    /// old/new store admission without rebuilding the graph.
+    pub fn durable_graph(&self) -> DurableContractView<'_> {
+        self.durable_graph.contract_view()
     }
 
     /// Every durable graph node paired with its derived [`SemanticPath`]

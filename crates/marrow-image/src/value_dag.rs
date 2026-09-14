@@ -209,10 +209,147 @@ impl PartialEq for CanonicalValueShapeDag {
 
 impl Eq for CanonicalValueShapeDag {}
 
+/// Exact comparison of field values from two image graphs. Scratch is reused across
+/// fields; the work allowance covers one old image's fully expanded value occurrences.
+pub struct ValueShapeComparison<'a, 'b> {
+    old: &'a CanonicalValueShapeDag,
+    new: &'b CanonicalValueShapeDag,
+    frames: Vec<ValuePairFrame<'a, 'b>>,
+    remaining: usize,
+}
+
+enum ValuePairFrame<'a, 'b> {
+    Struct {
+        old: &'a [ValueShapeNodeId],
+        new: &'b [ValueShapeNodeId],
+        next: usize,
+    },
+    Enum {
+        old: &'a [ValueShapeEnumMember],
+        new: &'b [ValueShapeEnumMember],
+        member: usize,
+        next: usize,
+    },
+}
+
+impl ValuePairFrame<'_, '_> {
+    fn next(&mut self) -> Option<(ValueShapeNodeId, ValueShapeNodeId)> {
+        match self {
+            Self::Struct { old, new, next } => {
+                let pair = (*old.get(*next)?, new[*next]);
+                *next += 1;
+                Some(pair)
+            }
+            Self::Enum {
+                old,
+                new,
+                member,
+                next,
+            } => {
+                while let Some(variant) = old.get(*member) {
+                    if let Some(&value) = variant.payload.get(*next) {
+                        let pair = (value, new[*member].payload[*next]);
+                        *next += 1;
+                        return Some(pair);
+                    }
+                    *member += 1;
+                    *next = 0;
+                }
+                None
+            }
+        }
+    }
+}
+
+impl<'a, 'b> ValueShapeComparison<'a, 'b> {
+    /// Compare exact scalar, positional struct, or identified enum representation.
+    /// `None` means foreign IDs, excessive depth, or exhausted image-work allowance.
+    ///
+    /// Each preserved field occurrence must be paired once by the caller. Verified
+    /// DURABLE wire spells every nested value occurrence in full: each visited node
+    /// and enum-member header consumes at least one distinct old wire byte. Thus one
+    /// image's byte cap bounds their aggregate work, including shared DAG revisits.
+    /// The guard also refuses arbitrary constructed DAGs whose expansion cannot fit.
+    pub fn same(&mut self, old: ValueShapeNodeId, new: ValueShapeNodeId) -> Option<bool> {
+        self.frames.clear();
+        if self.old.depth(old)? > crate::bounds::MAX_DURABLE_VALUE_DEPTH
+            || self.new.depth(new)? > crate::bounds::MAX_DURABLE_VALUE_DEPTH
+        {
+            return None;
+        }
+        let mut pair = (old, new);
+        loop {
+            self.remaining = self.remaining.checked_sub(1)?;
+            match (self.old.view(pair.0)?, self.new.view(pair.1)?) {
+                (ValueShapeView::Scalar(old), ValueShapeView::Scalar(new)) => {
+                    if old != new {
+                        return Some(false);
+                    }
+                }
+                (ValueShapeView::Struct(old), ValueShapeView::Struct(new)) => {
+                    if old.len() != new.len() {
+                        return Some(false);
+                    }
+                    self.frames
+                        .push(ValuePairFrame::Struct { old, new, next: 0 });
+                }
+                (
+                    ValueShapeView::Enum {
+                        sum: old_sum,
+                        members: old,
+                    },
+                    ValueShapeView::Enum {
+                        sum: new_sum,
+                        members: new,
+                    },
+                ) => {
+                    if old_sum != new_sum || old.len() != new.len() {
+                        return Some(false);
+                    }
+                    for (old, new) in old.iter().zip(new) {
+                        self.remaining = self.remaining.checked_sub(1)?;
+                        if old.id != new.id || old.payload.len() != new.payload.len() {
+                            return Some(false);
+                        }
+                    }
+                    self.frames.push(ValuePairFrame::Enum {
+                        old,
+                        new,
+                        member: 0,
+                        next: 0,
+                    });
+                }
+                _ => return Some(false),
+            }
+            loop {
+                let Some(frame) = self.frames.last_mut() else {
+                    return Some(true);
+                };
+                if let Some(next) = frame.next() {
+                    pair = next;
+                    break;
+                }
+                self.frames.pop();
+            }
+        }
+    }
+}
+
 impl CanonicalValueShapeDag {
     /// An arena holding no shapes.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Compare this old image's field occurrences against `new`, sharing one bounded
+    /// scratch allocation. The two arenas and all node provenance remain borrowed.
+    pub fn compare_with<'a, 'b>(&'a self, new: &'b Self) -> ValueShapeComparison<'a, 'b> {
+        ValueShapeComparison {
+            old: self,
+            new,
+            frames: Vec::with_capacity(crate::bounds::MAX_DURABLE_VALUE_DEPTH),
+            remaining: crate::bounds::MAX_IMAGE_BYTES,
+        }
     }
 
     /// The number of distinct shapes minted. This is the size of the retained value
@@ -731,6 +868,70 @@ fn push_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_values_authenticate_arenas_and_compare_late_enum_payloads() {
+        let mut old = CanonicalValueShapeDag::new();
+        let mut new = CanonicalValueShapeDag::new();
+        let left = old.scalar(Scalar::Int).expect("scalar");
+        let right = new.scalar(Scalar::Int).expect("independent scalar");
+        let changed = new.scalar(Scalar::Bool).expect("changed scalar");
+        let before = old
+            .enum_shape(
+                ledger_id(1),
+                vec![(ledger_id(2), vec![]), (ledger_id(3), vec![left])],
+            )
+            .expect("enum");
+        let same = new
+            .enum_shape(
+                ledger_id(1),
+                vec![(ledger_id(2), vec![]), (ledger_id(3), vec![right])],
+            )
+            .expect("enum");
+        let after = new
+            .enum_shape(
+                ledger_id(1),
+                vec![(ledger_id(2), vec![]), (ledger_id(3), vec![changed])],
+            )
+            .expect("changed enum");
+        let mut compare = old.compare_with(&new);
+        assert_eq!(compare.same(before, same), Some(true));
+        assert_eq!(compare.same(before, after), Some(false));
+        assert_eq!(compare.same(right, left), None);
+        assert_eq!(compare.same(left, right), Some(true));
+        compare.remaining = 1;
+        assert_eq!(compare.same(left, right), Some(true));
+        assert_eq!(compare.same(left, right), None);
+    }
+
+    #[test]
+    fn paired_value_scratch_is_depth_bounded_and_reused() {
+        let mut graph = CanonicalValueShapeDag::new();
+        let mut value = graph.scalar(Scalar::Int).expect("scalar");
+        for _ in 1..crate::bounds::MAX_DURABLE_VALUE_DEPTH {
+            value = graph.struct_shape(vec![value]).expect("nested value");
+        }
+        let too_deep = graph
+            .struct_shape(vec![value])
+            .expect("caller can state excess depth");
+        let mut compare = graph.compare_with(&graph);
+        let storage = compare.frames.as_ptr();
+        assert_eq!(compare.same(value, value), Some(true));
+        assert_eq!(compare.same(value, value), Some(true));
+        assert_eq!(compare.frames.as_ptr(), storage);
+        assert_eq!(
+            compare.frames.capacity(),
+            crate::bounds::MAX_DURABLE_VALUE_DEPTH
+        );
+        assert_eq!(compare.same(too_deep, too_deep), None);
+        // Charge the actual two borrowed slices, cursors and discriminant. This
+        // is comparator scratch only, not a claim about whole-process residency.
+        assert_eq!(std::mem::size_of::<ValuePairFrame<'_, '_>>(), 48);
+        assert_eq!(
+            compare.frames.capacity() * std::mem::size_of::<ValuePairFrame<'_, '_>>(),
+            1536
+        );
+    }
 
     fn ledger_id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])

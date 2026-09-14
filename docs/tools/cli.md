@@ -11,7 +11,8 @@ marrow run <export> [--stdin] [--store <dir>] [--format text | jsonl] [-- <args>
 marrow test [--format text | jsonl] [--filter <substring>]
 marrow import --store <dir> --jsonl <path> --root <name> [--keys <key,...>]
 marrow doctor --store <dir> [--format text | jsonl]
-marrow recover --store <dir> [--format text | jsonl]
+marrow apply --store <dir> --old-image <old-image> --new-image <new-image> [--accept-ceiling <id>] [--format text | jsonl]
+marrow recover --store <dir> [--image <image>] [--format text | jsonl]
 marrow backup --store <dir> --out <backup> [--format text | jsonl]
 marrow restore --from <backup> --store <dir> [--format text | jsonl]
 marrow image --out <dir> --accept-ceiling <id>
@@ -352,10 +353,50 @@ the caller receives no receipt. Never infer absence of effects from a nonzero
 exit. [Backup and restore operations](../operations/README.md#logical-backup-and-fresh-restore)
 define the data, validation, synchronization and retained-stage behavior.
 
+## marrow apply
+
+`marrow apply` verifies explicit OLD and NEW image artifacts without capturing a
+project, compiling source or minting identities. OLD must match the store's exact
+active binding. The operation preserves every old durable representation and
+physical address and permits new sparse scalar fields beneath existing supported
+structure. Existing values remain in place; new fields start absent. Changed
+keys, old field requiredness or value representation, new roots, groups, branches
+or indexes, and required-field additions are refused as `store.apply_unsupported`.
+
+The store retains its standing authority ceiling. If NEW demands additional
+authority, apply proposes exactly the union of that demand and the standing
+ceiling. `--accept-ceiling` must name this union, which can differ from NEW's
+image ceiling. Missing required acceptance or any incorrect supplied ID returns
+`store.ceiling_unaccepted` with the old and proposed IDs and named added effects.
+Without an expansion, apply can activate immediately; it is not a preview command.
+
+Apply holds one read-only store owner through exact OLD admission, logical
+inspection and metadata publication. It writes no data cells and returns no
+service. Pending activation blocks ordinary access. Recovery uses the explicit
+image matching the Head actually present; it does not replay apply.
+
+JSONL output has `kind: "apply"`. Success has `outcome: "applied"`, `instance`,
+`old_image`, `new_image`, `old_ceiling` and `ceiling`. Failure has `code` and an
+`outcome` of `refused`, `metadata_failed` or `activation_uncertain`. Ceiling
+refusal adds `old_ceiling`, proposed `ceiling` and `added_effects` containing
+`export`, `effect` and nullable `place`. Activation uncertainty retains `instance`.
+Default text output displays these same fields. Earlier argument or image-read
+failures need not produce a lifecycle record.
+
+Success exits `0`; companion or output-delivery failure exits `1`. Arguments
+rejected by the CLI parser exit `2`; companion validation, including a malformed
+ceiling ID, exits `1` through the CLI. A metadata failure may have changed persistent metadata.
+Failed output writes or flushes attempt a diagnostic fallback with the known
+result. A missing receipt or nonzero exit does not establish rollback or permit
+automatic replay. Logical inspection does not verify physical checksums or
+discharge an inherited physical-audit obligation.
+
 ## marrow recover
 
-`marrow recover --store <dir> [--format text | jsonl]` compiles the current
-project without minting identities and delegates to the verified companion.
+`marrow recover --store <dir> [--image <image>] [--format text | jsonl]` delegates
+to the verified companion. With `--image`, it verifies the selected artifact
+without project capture. Otherwise it compiles the current project without
+minting identities.
 The program must match the exact stored image. Recovery validates physical and
 logical integrity and establishes fresh activation barriers; it runs no export
 and replays no missing head update

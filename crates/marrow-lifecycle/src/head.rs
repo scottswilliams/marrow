@@ -29,9 +29,8 @@ const MAGIC: &[u8; 4] = b"MWSH";
 const HEAD_VERSION: u8 = 0x02;
 
 /// A fixed upper bound on the accepted-ceiling payload the head carries, validated before
-/// allocation (campaign law 9). Comfortably above any real program's whole-demand atom-set
-/// encoding and far below memory exhaustion.
-const MAX_ACCEPTED_CEILING_BYTES: u32 = 4 * 1024 * 1024;
+/// allocation. Explicit ceiling expansion uses this same persisted bound before copying.
+pub(crate) const MAX_ACCEPTED_CEILING_BYTES: u32 = 4 * 1024 * 1024;
 
 /// The fixed head bytes ahead of the identity map: magic, container version, image format
 /// version, the three 32-byte binding identities, and the reserved sequencing and

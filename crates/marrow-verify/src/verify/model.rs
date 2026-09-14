@@ -2,8 +2,8 @@
 
 use crate::sealed::{RetShape, SealedCollectionType, SealedConst, SealedSite};
 use marrow_image::{
-    DurableContractId, DurableIndexShape, DurableProductGraph, ExportId, ImageId, ImageType,
-    LedgerIdBytes, Scalar, SemanticNode, SemanticPath,
+    DurableContractGraph, DurableContractId, DurableIndexShape, DurableProductGraph, ExportId,
+    ImageId, ImageType, LedgerIdBytes, Scalar, SemanticNode, SemanticPath,
 };
 use std::rc::Rc;
 
@@ -71,6 +71,7 @@ pub(super) struct DecodedFunction {
 }
 
 pub(super) struct DecodedImage {
+    pub(super) durable_graph: Rc<DurableContractGraph>,
     pub(super) image_id: ImageId,
     pub(super) strings: Vec<Rc<str>>,
     pub(super) types: Vec<DecodedRecordType>,
