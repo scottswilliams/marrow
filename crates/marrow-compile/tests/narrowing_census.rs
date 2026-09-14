@@ -488,15 +488,12 @@ const SANCTIONED_NARROWING: &[(&str, &str, &str)] = &[
         "analysis/facts.rs",
         ".map(|module| module.identity().as_str().len() as u32)",
     ),
+    // Snapshot queries reject offsets past the admitted source length before
+    // binding QuerySyntax; MAX_PARSED_FILE_BYTES is below the u32 span domain.
     (
         "marrow-compile",
         "analysis.rs",
-        "Ok(active_call::resolve(&tree, source, offset as u32))",
-    ),
-    (
-        "marrow-compile",
-        "analysis.rs",
-        "Ok(completion::resolve(&tree, offset as u32))",
+        "offset: syntax.offset() as u32,",
     ),
     ("marrow-compile", "analysis.rs", "Some(index as u16)"),
     (
