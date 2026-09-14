@@ -44,7 +44,8 @@ pub use mem::MemoryEngine;
 pub use native_owner::{
     NATIVE_ENGINE_FILE, NATIVE_ENGINE_FORMAT_VERSION, NATIVE_LOCK_FILE, NativeEngineOwner,
     NativeLockError, NativeLockOwner, NativeOpenAccess, NativeOwnerAcquireError,
-    NativeOwnerOpenError, NativeOwnerTxn, NativeOwnerView, PendingNativeEngineOwner,
+    NativeOwnerOpenError, NativeOwnerTxn, NativeOwnerView, NativePromotionRefusal,
+    PendingNativeEngineOwner,
 };
 
 /// Freezes the crate's public surface against removal and rename: every `pub`

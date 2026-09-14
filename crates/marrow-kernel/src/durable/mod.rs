@@ -49,7 +49,7 @@ pub use transfer::RestoreError;
 pub use marrow_store::{
     Cell, MAX_KEY_LEN, MAX_VALUE_LEN, NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError,
     NativeLockOwner, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError,
-    SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS, StoreError,
+    NativePromotionRefusal, SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS, StoreError,
 };
 
 /// The opaque native, redb-backed durable-store owner. Named as an alias so a

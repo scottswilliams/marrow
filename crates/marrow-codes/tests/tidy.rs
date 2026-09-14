@@ -948,6 +948,9 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         fn_body(locked, "pub(crate) fn acquire(").expect("ordinary acquisition owner exists");
     let open =
         fn_body(locked, "pub(crate) fn open<R>(").expect("admitted engine opening owner exists");
+    let compatible = fn_body(locked, "pub(crate) fn open_compatible(")
+        .expect("compatible admission owner exists");
+    let decoded = fn_body(locked, "fn open_decoded(").expect("decoded engine opening owner exists");
     let ordinary =
         fn_body(lifecycle_product, "fn open_admitted<R>(").expect("ordinary state gate exists");
     let acquire_call = "NativeStore::acquire_existing(";
@@ -979,7 +982,7 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         "there is one admitted engine opening"
     );
     assert_eq!(
-        open.matches(bind_call).count(),
+        decoded.matches(bind_call).count(),
         1,
         "the locked store consumes the pending owner when opening"
     );
@@ -997,7 +1000,7 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
 
     // These are recurrence guards over the named owners, not a Rust parser. Runtime
     // ownership and substitution fixtures exercise the corresponding boundaries.
-    let phases: [(&str, &str, &[&str]); 4] = [
+    let phases: [(&str, &str, &[&str]); 6] = [
         (
             "private construction",
             build,
@@ -1034,14 +1037,30 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
             ],
         ),
         (
-            "admitted engine opening",
+            "ordinary semantic admission",
             open,
             &[
-                bind_call,
-                "decode_head(&directory)",
+                "decode_head(&self.directory)",
                 "admit(&head, digest)",
-                "admitted_head = Some((head, digest))",
+                "self.open_decoded(",
             ],
+        ),
+        (
+            "compatible semantic admission",
+            compatible,
+            &[
+                "self.envelope.state != EnvelopeState::Active",
+                "decode_head(&self.directory)",
+                "admission.incoming() == &head.binding",
+                "admission.admit_compatible(&head)",
+                ".open_decoded(NativeOpenAccess::ReadWrite,",
+                ".open_decoded(NativeOpenAccess::ReadOnly,",
+            ],
+        ),
+        (
+            "decoded engine opening",
+            decoded,
+            &[bind_call, "Ok::<_, std::convert::Infallible>(layout)"],
         ),
     ];
     for (name, body, steps) in phases {
@@ -1153,13 +1172,24 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     }
     let marker_prepare = fn_body(&lower_owner, "fn prepare_existing(")
         .expect("the retained lock prepares the marker");
-    let marker_opened = marker_prepare
+    assert!(
+        marker_prepare
+            .find("self.inspect_marker(")
+            .expect("inspect marker")
+            < marker_prepare
+                .find("self.publish_owner(")
+                .expect("publish owner"),
+        "marker inspection must precede holder publication",
+    );
+    let marker_inspect =
+        fn_body(&lower_owner, "fn inspect_marker(").expect("the retained lock inspects the marker");
+    let marker_opened = marker_inspect
         .find("open_marker(")
         .expect("marker preparation opens the marker entry");
-    let locked = marker_prepare
+    let locked = marker_inspect
         .find("file.try_lock()")
         .expect("marker preparation takes the advisory lock");
-    let held_admission = marker_prepare
+    let held_admission = marker_inspect
         .find("admit_held_marker(")
         .expect("marker preparation admits the held marker");
     assert!(
@@ -1263,10 +1293,17 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
 
     let mutable_prepare = fn_body(marker_prepare, "if access != NativeOpenAccess::ReadOnly")
         .expect("read-only marker preparation must not publish an owner");
-    let owner_write = mutable_prepare
+    assert_eq!(
+        mutable_prepare.matches("self.publish_owner(").count(),
+        marker_prepare.matches("self.publish_owner(").count(),
+        "holder publication must remain inside mutable marker preparation",
+    );
+    let publish_owner =
+        fn_body(&lower_owner, "fn publish_owner(").expect("the retained lock publishes the holder");
+    let owner_write = publish_owner
         .find("write_owner(")
         .expect("owner descriptor write exists");
-    let directory_sync = mutable_prepare
+    let directory_sync = publish_owner
         .find("sync_dir(dir).map_err(NativeLockError::Io)?")
         .expect("owner-lock directory sync exists");
     assert!(

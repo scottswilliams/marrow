@@ -159,11 +159,16 @@ result with that binding:
 - A program whose code changed, and whose resources, store roots, indexes, and
   exported functions are unchanged, rebinds the store to the new code. Every
   stored value stays in place, and the next run uses the new code. The transition
-  records the exact old and new heads before replacing the head; activation is
-  confirmed only after the required metadata and directory barriers.
+  first checks logical contents read-only, then prepares writable service under
+  the same owner lock. An inconsistent store is refused before preparation.
+  Preparation errors stop before binding metadata changes; physical recovery
+  may already have changed engine bookkeeping. The transition records the exact
+  old and new heads before replacing the head; activation is confirmed only
+  after the metadata barriers and final Head/envelope verification.
 - A program whose durable contract or exported interface changed is
   `store.contract_changed`, decided before engine opening even if that engine
   would fail to open. The prior program remains the accepted binding.
+  The refusal preserves the owner marker as well as the binding and engine.
 - A program that touches more durable places than the store accepted at
   provisioning is `store.demand_exceeds_ceiling`. The refusal names the export,
   the place, and the access. The store is untouched.

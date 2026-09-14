@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_store::{
     ByteEngine, NativeEngineOwner, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError,
-    PendingNativeEngineOwner, StoreError,
+    NativePromotionRefusal, PendingNativeEngineOwner, StoreError,
 };
 
 use super::audit::{AuditReport, ContentDigest, ExportError, ExportSink};
@@ -48,6 +48,27 @@ pub struct NativeStoreOwner {
 }
 
 impl NativeStoreOwner {
+    /// Consume read-only access into service without replacing the accepted
+    /// layout or releasing the directory owner. Unchanged admitted bytes take
+    /// the saved allocator path; external same-inode mutation is not detected.
+    pub fn into_service(mut self) -> Result<Self, NativeOwnerOpenError<NativePromotionRefusal>> {
+        let store = self
+            .store
+            .take()
+            .expect("a live native owner retains its semantic store");
+        let (engine, layout) = store.into_parts();
+        let engine = engine.into_service(self.instance)?;
+        let ceiling = DemandCoverage {
+            read: true,
+            write: engine.require_write_access("open").is_ok(),
+        };
+        let scope = CommitRecoveryScope::persistent(self.instance, &self.directory);
+        self.store = Some(DurableStore::from_numbered_with_ceiling_and_recovery_scope(
+            engine, layout, ceiling, scope,
+        ));
+        Ok(self)
+    }
+
     /// Create and stamp the engine artifact in a newly prepared store directory,
     /// returning no open store capability.
     pub fn provision(store_dir: &Path) -> Result<(), StoreError> {

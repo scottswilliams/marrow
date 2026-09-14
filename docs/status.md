@@ -159,6 +159,13 @@ has its own platform and layout requirements
   text's length, not allocator capacity or total VM memory
   ([execution limits](language/execution-limits.md#limits)).
 - Filesystem permissions and the host process protect local store files.
+- Code-only rebinds retain one directory owner through read-only logical audit,
+  writable preparation and metadata activation. Logical-data continuity assumes
+  cooperating access throughout; same-inode external writes are not detected.
+  The full-repair callback is not a universal no-recovery barrier. An inherited
+  physical audit may repair the engine and then refuse publication while
+  preserving old binding metadata and the unclean obligation
+  ([native owner](implementation/storage.md#native-owner)).
 - Kernel operations validate supplied keys and decoded traversal/index keys
   against their declared scalar kinds and supported ranges. Mismatched stored
   keys fault before entering typed VM values; these local checks complement

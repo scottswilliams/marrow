@@ -337,6 +337,10 @@ mod tests {
     }
     impl Drop for Scratch {
         fn drop(&mut self) {
+            if std::thread::panicking() {
+                eprintln!("failed recovery fixture retained at {}", self.0.display());
+                return;
+            }
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
@@ -1227,6 +1231,141 @@ mod tests {
             };
             assert_eq!(
                 std::fs::read(scratch.store().join(name)).expect("actual changed metadata"),
+                replacement
+            );
+        }
+    }
+
+    #[test]
+    fn binding_preparation_refuses_a_replaced_engine_before_metadata_writes() {
+        use crate::actor::binding_fault::{self, Mutation, Point};
+        use marrow_kernel::durable::StoreError;
+        let scratch = Scratch::new();
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
+        let edited =
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
+        let instance = StoreInstanceId::draw().expect("instance");
+        provision(&scratch.store(), request(&image, instance)).expect("provision");
+        let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
+        let envelope = std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope");
+        let result = binding_fault::with_mutation(
+            &scratch.store(),
+            Point::Admitted,
+            Mutation::Engine(scratch.0.join("admitted-engine")),
+            || crate::attach(&scratch.store(), prepare(edited)),
+        );
+        assert!(matches!(
+            result,
+            Err(crate::LifecycleError::Open(OpenError::Store(
+                StoreError::Io {
+                    op: "service preparation",
+                    ..
+                }
+            )))
+        ));
+        assert_eq!(
+            std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head"),
+            head
+        );
+        assert_eq!(
+            std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope"),
+            envelope
+        );
+        assert!(!scratch.store().join(crate::LOCK_FILE).exists());
+        assert_eq!(
+            std::fs::read_dir(scratch.store()).expect("members").count(),
+            3
+        );
+    }
+
+    #[test]
+    fn binding_rechecks_old_metadata_and_location_after_service_preparation() {
+        use crate::actor::binding_fault::{self, Mutation, Point};
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
+        let edited =
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
+        for move_directory in [false, true] {
+            let scratch = Scratch::new();
+            let instance = StoreInstanceId::draw().expect("instance");
+            let req = request(&image, instance);
+            let old_head = req.head.encode();
+            provision(&scratch.store(), req).expect("provision");
+            let old_envelope =
+                std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope");
+            let changed_head = request(&edited, instance).head.encode();
+            let (mutation, retained, expected_head) = if move_directory {
+                let moved = scratch.0.join("moved");
+                (Mutation::Directory(moved.clone()), moved, old_head)
+            } else {
+                (
+                    Mutation::Metadata(Artifact::Head, changed_head.clone()),
+                    scratch.store(),
+                    changed_head,
+                )
+            };
+            let result =
+                binding_fault::with_mutation(&scratch.store(), Point::Prepared, mutation, || {
+                    crate::attach(&scratch.store(), prepare(edited.clone()))
+                });
+            assert!(matches!(
+                result,
+                Err(crate::LifecycleError::Audit(AuditError::Open(_)))
+            ));
+            assert_eq!(
+                std::fs::read(retained.join(crate::HEAD_FILE)).expect("retained head"),
+                expected_head
+            );
+            assert_eq!(
+                std::fs::read(retained.join(crate::ENVELOPE_FILE)).expect("retained envelope"),
+                old_envelope
+            );
+            assert!(!retained.join("head.replacing").exists());
+            assert!(!retained.join("envelope.replacing").exists());
+        }
+    }
+
+    #[test]
+    fn binding_final_verification_refuses_changed_metadata_with_instance() {
+        use crate::actor::binding_fault::{self, Mutation, Point};
+        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
+        let edited =
+            marrow_verify::verify(&compile_bytes(&SOURCE.replace("?? 0", "?? 1"))).expect("verify");
+        for artifact in [Artifact::Head, Artifact::Envelope] {
+            let scratch = Scratch::new();
+            let instance = StoreInstanceId::draw().expect("instance");
+            let req = request(&image, instance);
+            let replacement = match artifact {
+                Artifact::Head => req.head.encode(),
+                Artifact::Envelope => {
+                    let mut metadata = req.envelope.clone();
+                    metadata.writer_toolchain = "changed during activation".into();
+                    EnvelopeRecord {
+                        metadata,
+                        state: EnvelopeState::Active,
+                    }
+                    .encode()
+                    .expect("envelope")
+                }
+            };
+            provision(&scratch.store(), req).expect("provision");
+            let result = binding_fault::with_mutation(
+                &scratch.store(),
+                Point::Activated,
+                Mutation::Metadata(artifact, replacement.clone()),
+                || crate::attach(&scratch.store(), prepare(edited.clone())),
+            );
+            assert!(
+                matches!(result, Err(crate::LifecycleError::ActivationUncertain {
+                instance: found,
+                source: AuditError::Open(OpenError::Corruption { .. }),
+            }) if found == instance)
+            );
+            let name = match artifact {
+                Artifact::Head => crate::HEAD_FILE,
+                Artifact::Envelope => crate::ENVELOPE_FILE,
+            };
+            assert_eq!(
+                std::fs::read(scratch.store().join(name)).expect("retained changed metadata"),
                 replacement
             );
         }

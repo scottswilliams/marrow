@@ -57,7 +57,7 @@ fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjecti
         .expect("the base image is flat-executable")
 }
 
-/// A unique scratch store directory, removed on drop.
+/// A unique scratch store directory, retained when a test fails.
 struct Scratch {
     dir: PathBuf,
 }
@@ -82,9 +82,67 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         if let Some(parent) = self.dir.parent() {
+            if std::thread::panicking() {
+                eprintln!("retained lifecycle fixture: {}", parent.display());
+                return;
+            }
             let _ = std::fs::remove_dir_all(parent);
         }
     }
+}
+
+#[test]
+fn refused_attach_preserves_absent_owner_marker() {
+    refused_attach_preserves_marker(None);
+}
+
+#[test]
+fn refused_attach_preserves_nonempty_owner_marker() {
+    refused_attach_preserves_marker(Some(b"inherited obligation"));
+}
+
+fn refused_attach_preserves_marker(marker: Option<&[u8]>) {
+    let scratch = Scratch::new("refusal-marker");
+    let image = compile(BASE_SOURCE, BASE_IDS);
+    provision_from(scratch.dir(), &image);
+    assert!(!scratch.dir().join("lock").exists());
+    if let Some(marker) = marker {
+        std::fs::write(scratch.dir().join("lock"), marker).expect("seed marker");
+    }
+    let mut before = std::fs::read_dir(scratch.dir())
+        .expect("list provisioned store")
+        .map(|entry| {
+            let entry = entry.expect("store entry");
+            let bytes = std::fs::read(entry.path()).expect("read store artifact");
+            (entry.file_name(), bytes)
+        })
+        .collect::<Vec<_>>();
+    before.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let changed = compile(
+        &BASE_SOURCE.replace("    label: string\n", "    required label: string\n"),
+        BASE_IDS,
+    );
+    match attach(scratch.dir(), prepare(changed)) {
+        Err(LifecycleError::ContractChanged(refusal)) => {
+            assert_eq!(refusal.changed, ChangedFact::DurableContract);
+        }
+        Err(error) => panic!("expected contract refusal, got {}", error.code()),
+        Ok(_) => panic!("an incompatible image was attached"),
+    }
+    for (name, bytes) in &before {
+        assert!(
+            std::fs::read(scratch.dir().join(name)).expect("read refused store") == *bytes,
+            "admission changed {name:?}",
+        );
+    }
+    let mut after = std::fs::read_dir(scratch.dir())
+        .expect("list refused store")
+        .map(|entry| entry.expect("store entry").file_name())
+        .collect::<Vec<_>>();
+    after.sort();
+    let names = before.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+    assert_eq!(after, names, "refused admission changed store membership");
 }
 
 fn now_nonce() -> u128 {
@@ -728,14 +786,48 @@ fn attach_to_the_same_image_is_already_active() {
 
 #[test]
 fn a_body_only_edit_is_a_binding_only_rebind() {
+    use marrow_vm::{DurableRun, Value, run_export};
     let scratch = Scratch::new("rebind");
-    let image = compile(BASE_SOURCE, BASE_IDS);
+    let source = format!(
+        "{BASE_SOURCE}\npub fn setValue(n: int, v: int) {{ transaction {{ ^counters[n] = Counter(value: v) }} }}\n"
+    );
+    let image = compile(&source, BASE_IDS);
+    let export = |image: &VerifiedImage, name: &str| {
+        image
+            .exports()
+            .iter()
+            .find(|export| {
+                image
+                    .function(export.function())
+                    .expect("function")
+                    .body()
+                    .name()
+                    == name
+            })
+            .expect("export")
+            .id()
+    };
     let instance = provision_from(scratch.dir(), &image);
     let original = active_binding(&image);
+    {
+        let AttachOutcome::AlreadyActive(mut attachment) =
+            attach(scratch.dir(), prepare(image.clone())).expect("attach")
+        else {
+            panic!("provisioned binding")
+        };
+        assert!(matches!(
+            run_export(
+                &mut attachment,
+                export(&image, "setValue"),
+                vec![Value::Int(7), Value::Int(42)]
+            ),
+            Some(DurableRun::Ran(Ok(None)))
+        ));
+    }
 
     // A body-only edit: the fallback default changes, so the image bytes differ, but the
     // export signature, the durable contract, and the ceiling are all preserved.
-    let edited_source = BASE_SOURCE.replace("?? 0", "?? 1");
+    let edited_source = source.replace("?? 0", "?? 1");
     let edited = compile(&edited_source, BASE_IDS);
     let edited_binding = active_binding(&edited);
     assert_ne!(
@@ -749,9 +841,30 @@ fn a_body_only_edit_is_a_binding_only_rebind() {
 
     let receipt = match attach(scratch.dir(), prepare(edited.clone())).expect("attach") {
         AttachOutcome::Rebound {
-            attachment,
+            mut attachment,
             receipt,
         } => {
+            let read = export(&edited, "readValue");
+            assert!(matches!(
+                run_export(&mut attachment, read, vec![Value::Int(7)]),
+                Some(DurableRun::Ran(Ok(Some(Value::Int(42)))))
+            ));
+            assert!(matches!(
+                run_export(&mut attachment, read, vec![Value::Int(8)]),
+                Some(DurableRun::Ran(Ok(Some(Value::Int(1)))))
+            ));
+            assert!(matches!(
+                run_export(
+                    &mut attachment,
+                    export(&edited, "setValue"),
+                    vec![Value::Int(8), Value::Int(77)]
+                ),
+                Some(DurableRun::Ran(Ok(None)))
+            ));
+            assert!(matches!(
+                run_export(&mut attachment, read, vec![Value::Int(8)]),
+                Some(DurableRun::Ran(Ok(Some(Value::Int(77)))))
+            ));
             drop(attachment);
             receipt
         }

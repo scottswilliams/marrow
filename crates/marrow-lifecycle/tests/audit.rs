@@ -468,6 +468,49 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
 }
 
 #[test]
+fn rebind_rejects_inconsistent_indexes_without_changing_store_artifacts() {
+    let scratch = Scratch::new("rebind-invalid-index");
+    let populated = scratch.store("populated");
+    let destination = scratch.store("destination");
+    let image = compile(SOURCE, IDS);
+    let other = compile(SOURCE, OTHER_INDEX_IDS);
+    let edited = compile(EDITED_SOURCE, OTHER_INDEX_IDS);
+    assert_ne!(other.image_id(), edited.image_id());
+    assert!(active_binding(&other).facts_equal(&active_binding(&edited)));
+    provision_from(&populated, &image);
+    add_person(&populated, &image, 1, "Ada", Some("ada@example.org"));
+    provision_from(&destination, &other);
+    std::fs::copy(populated.join(ENGINE_FILE), destination.join(ENGINE_FILE))
+        .expect("copy normally populated engine under mismatched index identity");
+    std::fs::write(destination.join(marrow_lifecycle::LOCK_FILE), b"unclean").expect("marker");
+    let before = store_files(&destination);
+    let error = match attach(&destination, prepare(edited)) {
+        Err(error) => error,
+        Ok(_) => panic!("inconsistent data was rebound"),
+    };
+    let marrow_lifecycle::LifecycleError::Invalid(report) = error else {
+        panic!("expected completed logical refusal: {error:?}");
+    };
+    assert_eq!(report.findings.len(), 2);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == marrow_codes::Code::StoreAuditIndexMissing)
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == marrow_codes::Code::StoreAuditOutsideSchema)
+    );
+    assert!(
+        store_files(&destination) == before,
+        "refusal changed store bytes or membership"
+    );
+}
+
+#[test]
 fn a_same_shape_scalar_change_is_not_physical_integrity_evidence() {
     let scratch = Scratch::new("flip");
     let store = scratch.store("store");

@@ -501,6 +501,31 @@ impl SessionHost for OpenStore {
 }
 
 impl OpenStore {
+    /// Prepare service without replacing the accepted layout or releasing ownership.
+    pub(crate) fn into_service(self) -> Result<Self, OpenError> {
+        let Self {
+            owner,
+            directory,
+            envelope,
+            head,
+            head_digest,
+        } = self;
+        let owner = owner.into_service().map_err(|error| match error {
+            NativeOwnerOpenError::Lock(error) => OpenError::Lock(LockError::from(error)),
+            NativeOwnerOpenError::Store(error) => OpenError::Store(error),
+            NativeOwnerOpenError::Refused(refusal) => OpenError::Corruption {
+                message: format!("service preparation refused the owner state: {refusal:?}"),
+            },
+        })?;
+        Ok(Self {
+            owner,
+            directory,
+            envelope,
+            head,
+            head_digest,
+        })
+    }
+
     pub(crate) fn export_cells(
         &self,
         digest: &mut dyn ContentDigest,
@@ -670,6 +695,15 @@ pub(crate) struct LockedStore {
     pub(crate) envelope: EnvelopeRecord,
 }
 
+/// Exact service or a read-only binding transition awaiting logical admission.
+pub(crate) enum OpenBinding {
+    Active(OpenStore),
+    Rebind {
+        opened: OpenStore,
+        names: crate::audit::Names,
+    },
+}
+
 impl LockedStore {
     pub(crate) fn acquire(dir: &Path) -> Result<Self, OpenError> {
         decide_before_locking(dir)?;
@@ -702,33 +736,67 @@ impl LockedStore {
         access: NativeOpenAccess,
         admit: impl FnOnce(&LogicalHead, marrow_image::StoreHeadDigest) -> Result<NumberedProjection, R>,
     ) -> Result<OpenStore, AdmitError<R>> {
+        let (head, digest) = decode_head(&self.directory).map_err(AdmitError::Open)?;
+        let layout = admit(&head, digest).map_err(AdmitError::Refused)?;
+        self.open_decoded(access, head, digest, layout)
+            .map_err(AdmitError::Open)
+    }
+
+    /// Select ordinary service only for an exact binding. A transition must
+    /// complete its logical admission through read-only access first.
+    pub(crate) fn open_compatible(
+        self,
+        admission: crate::actor::ImageAdmission<'_>,
+    ) -> Result<OpenBinding, crate::actor::LifecycleError> {
+        use crate::actor::LifecycleError;
+        if self.envelope.state != EnvelopeState::Active {
+            return Err(LifecycleError::Open(OpenError::ActivationRequired {
+                instance: self.envelope.metadata.instance,
+            }));
+        }
+        let (head, digest) = decode_head(&self.directory).map_err(LifecycleError::Open)?;
+        let exact = admission.incoming() == &head.binding;
+        let names = (!exact).then(|| admission.audit_names());
+        let layout = admission.admit_compatible(&head)?;
+        match names {
+            None => self
+                .open_decoded(NativeOpenAccess::ReadWrite, head, digest, layout)
+                .map(OpenBinding::Active)
+                .map_err(LifecycleError::Open),
+            Some(names) => {
+                let opened = self
+                    .open_decoded(NativeOpenAccess::ReadOnly, head, digest, layout)
+                    .map_err(LifecycleError::Open)?;
+                Ok(OpenBinding::Rebind { opened, names })
+            }
+        }
+    }
+
+    fn open_decoded(
+        self,
+        access: NativeOpenAccess,
+        head: LogicalHead,
+        head_digest: marrow_image::StoreHeadDigest,
+        layout: NumberedProjection,
+    ) -> Result<OpenStore, OpenError> {
         let Self {
             pending,
             directory,
             envelope,
         } = self;
         let envelope = envelope.metadata;
-        let mut admitted_head = None;
         let owner = pending
             .bind_and_open_existing(access, *envelope.instance.bytes(), || {
-                let (head, digest) = decode_head(&directory).map_err(Ok)?;
-                let layout = admit(&head, digest).map_err(Err)?;
-                admitted_head = Some((head, digest));
-                Ok::<_, Result<OpenError, R>>(layout)
+                Ok::<_, std::convert::Infallible>(layout)
             })
             .map_err(|error| match error {
-                NativeOwnerOpenError::Lock(error) => {
-                    AdmitError::Open(OpenError::Lock(LockError::from(error)))
-                }
-                NativeOwnerOpenError::Refused(Ok(error)) => AdmitError::Open(error),
-                NativeOwnerOpenError::Refused(Err(refusal)) => AdmitError::Refused(refusal),
+                NativeOwnerOpenError::Lock(error) => OpenError::Lock(LockError::from(error)),
+                NativeOwnerOpenError::Refused(never) => match never {},
                 NativeOwnerOpenError::Store(StoreError::Corruption { message }) => {
-                    AdmitError::Open(OpenError::Corruption { message })
+                    OpenError::Corruption { message }
                 }
-                NativeOwnerOpenError::Store(error) => AdmitError::Open(OpenError::Store(error)),
+                NativeOwnerOpenError::Store(error) => OpenError::Store(error),
             })?;
-        let (head, head_digest) =
-            admitted_head.expect("a successful open completed head admission");
         Ok(OpenStore {
             owner,
             directory,

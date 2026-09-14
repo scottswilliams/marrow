@@ -662,6 +662,24 @@ impl NativeEngine {
         })
     }
 
+    /// Prepare service from read-only-admitted bytes under cooperative exclusion.
+    /// Unchanged bytes use the same saved allocator state. The callback aborts
+    /// full repair, but header recovery may precede it; this is not a defense
+    /// against external mutation. Neither corruption nor replacement is retried.
+    pub(crate) fn open_for_service(path: &Path) -> Result<Self, StoreError> {
+        contain_panic("open", || {
+            guard_regular_store_file(path)?;
+            let mut builder = Database::builder();
+            builder.set_repair_callback(|session| session.abort());
+            let db = open_past_lock_release(path, || builder.open(path))?;
+            verify_existing_store_shape(&db)?;
+            Ok(Self {
+                db: Some(DatabaseHandle::ReadWrite(db)),
+                contain_drop_panic: false,
+            })
+        })
+    }
+
     /// Open an existing store read-only. Unlike [`open`](Self::open) it never
     /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
     /// than stamping it; write-capability operations fail before any write
@@ -885,8 +903,6 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // See `native_owner.rs`: `Database` is absent because nothing here names it, which is
-    // tidiness rather than a constraint — `super::Database::open(...)` needs no import.
     use redb::{ReadableDatabase, TableDefinition};
 
     use super::{
@@ -933,8 +949,61 @@ mod tests {
 
     impl Drop for TempDir {
         fn drop(&mut self) {
+            if std::thread::panicking() {
+                eprintln!("failed redb fixture retained at {}", self.path.display());
+                return;
+            }
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn read_only_admission_selects_the_writable_allocator_path_without_full_repair() {
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        let dir = TempDir::new("marrow-store-admitted-allocator").expect("temp dir");
+        let path = dir.path().join("store.redb");
+        drop(NativeEngine::create_new(&path).expect("provision"));
+        drop(NativeEngine::open_read_only(&path).expect("read-only admission"));
+        let called = Arc::new(AtomicBool::new(false));
+        let callback_called = Arc::clone(&called);
+        let mut builder = redb::Database::builder();
+        builder.set_repair_callback(move |session| {
+            callback_called.store(true, Ordering::SeqCst);
+            session.abort();
+        });
+        let db = super::open_past_lock_release(&path, || builder.open(&path))
+            .expect("admitted bytes take the saved allocator path");
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "read-only success must exclude full repair"
+        );
+        drop(db);
+    }
+
+    #[test]
+    #[cfg(panic = "unwind")]
+    fn service_preparation_aborts_full_repair_of_a_panicked_store() {
+        struct UncleanClose;
+
+        let dir = TempDir::new("marrow-store-panicked-preparation").expect("temp dir");
+        let path = dir.path().join("store.redb");
+        let writer_path = path.clone();
+        let failure = std::thread::spawn(move || {
+            let _store = NativeEngine::create_new(&writer_path).expect("provision before panic");
+            std::panic::panic_any(UncleanClose);
+        })
+        .join()
+        .expect_err("writer must unwind with its database open");
+        assert!(
+            failure.is::<UncleanClose>(),
+            "the writer failed before the intended panic"
+        );
+        assert!(matches!(
+            NativeEngine::open_for_service(&path),
+            Err(StoreError::RecoveryRequired)
+        ));
+        drop(NativeEngine::open_existing(&path).expect("ordinary opening can recover"));
     }
 
     /// Every function in this crate that opens a redb database waits out a lock a dropped
@@ -965,6 +1034,7 @@ mod tests {
             "fn create_new(",
             "fn open(",
             "fn open_existing(",
+            "fn open_for_service(",
             "fn open_read_only(",
             "fn reopen_raw(",
             "fn create_raw(",
