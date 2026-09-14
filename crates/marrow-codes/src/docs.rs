@@ -197,6 +197,8 @@ code is stable.
             Code::StoreTransaction,
             Code::StoreReadOnly,
             Code::StoreContractChanged,
+            Code::StoreApplyUnsupported,
+            Code::StoreCeilingUnaccepted,
             Code::StoreDemandExceedsCeiling,
             Code::StoreImageNotActive,
             Code::StoreAuditUndecodable,

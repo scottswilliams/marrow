@@ -16,8 +16,9 @@ engine handle. Current logical backup and fresh restore are described in the
 ## Direction
 
 Every durable-format, identity, and index change must preserve the complete
-logical backup and fresh-restore round trip. Accepting a changed durable contract with stored data
-carried across belongs to [admission](admission-and-activation.md).
+logical backup and fresh-restore round trip. Current sparse additions preserve
+stored values through [explicit apply](../tools/cli.md#marrow-apply). Broader
+changed-contract data continuity belongs to [admission](admission-and-activation.md).
 
 Every such decision also keeps a bounded path from an external corpus into
 durable places. A design that requires rebuilding data outside the language is

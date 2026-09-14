@@ -41,11 +41,17 @@ use std::rc::Rc;
 /// One accepted graph is charged, not two: acceptance consumes the transient decode state
 /// into the graph rather than copying it, and a refusal returns before the section is fully
 /// decoded, so hostile refusal state is strictly under the accepted case.
+// The graph payload moves into Rc without duplication. Charge both reference
+// counts and the retained pointer in addition to the representation's fixed bytes.
+const RETAINED_GRAPH_OWNER_BYTES: u64 =
+    (2 * std::mem::size_of::<usize>() + std::mem::size_of::<Rc<DurableContractGraph>>()) as u64;
+
 const MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES: u64 = marrow_image::bounds::GROWTH_AND_COPY
     * marrow_image::bounds::DURABLE_LIVE_BYTES_PER_WIRE_BYTE
     * marrow_image::bounds::MAX_IMAGE_BYTES as u64
     + marrow_image::bounds::MAX_IMAGE_BYTES as u64
-    + marrow_image::bounds::DURABLE_GRAPH_FIXED_BYTES;
+    + marrow_image::bounds::DURABLE_GRAPH_FIXED_BYTES
+    + RETAINED_GRAPH_OWNER_BYTES;
 
 /// The declared ceiling for what one hostile image may make the verifier hold live.
 ///
@@ -82,12 +88,10 @@ const _: () = {
 /// graph-node path (parallel to the sites), the recomputed contract id, and the graph's
 /// node set.
 ///
-/// The contract graph itself is not returned. Each decoded root holds the shared owner of
-/// its Product's member rows, which is what the sealed image reads afterwards; a field's
-/// value shape is resolved against the arena while the section is decoded — the record
-/// tie, the branch tie, the index projection, and the contract id all read it there — and
-/// no retained row resolves one after that.
+/// The graph survives sealing for old/new store admission. Decoded roots and the graph
+/// share Product rows and index arrays; retaining it does not reconstruct those facts.
 pub(super) struct DecodedDurable {
+    pub(super) graph: Rc<DurableContractGraph>,
     pub(super) roots: Vec<DecodedRoot>,
     pub(super) sites: Vec<SealedSite>,
     /// Each site's resolved graph-node path, parallel to `sites` by index.
@@ -207,11 +211,8 @@ pub(super) fn decode_durable(
     let nodes = graph.contract_view().semantic_nodes();
     let (sites, site_paths) = decode_sites(&mut reader, &nodes, &roots)?;
     let contract = close_contract(&mut reader, &graph)?;
-    // The graph is the one owner while this decode runs: its two derivations — the
-    // recomputed id and the node set — and the shared member-row and index owners each
-    // root holds are the only projections of it that leave. It is dropped here; no caller
-    // retains a second one.
     Ok(DecodedDurable {
+        graph: Rc::new(graph),
         roots,
         sites,
         site_paths,
@@ -1912,7 +1913,7 @@ mod capacity_tests {
     #[test]
     fn the_verifier_side_maximum_live_graph_holds_its_accounted_figure() {
         assert_eq!(
-            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 63_439_128,
+            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 63_439_152,
             "the accounted verifier-side live graph moved; re-derive the exported term and \
              update the implementation map with this pin"
         );

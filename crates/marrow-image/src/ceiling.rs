@@ -52,6 +52,14 @@ impl CeilingDescriptor {
         Self { atoms: union }
     }
 
+    /// Preserve this standing ceiling and include `demand`, refusing before copying
+    /// a union past the persisted atom-count or `max_payload_bytes` bound.
+    pub fn expanded(&self, demand: &ExportDemand, max_payload_bytes: usize) -> Option<Self> {
+        Some(Self {
+            atoms: self.atoms.ceiling_union(demand, max_payload_bytes)?,
+        })
+    }
+
     /// The canonical atom set this ceiling admits.
     pub fn atoms(&self) -> &ExportDemand {
         &self.atoms

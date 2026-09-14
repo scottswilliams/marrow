@@ -7,7 +7,9 @@ an accepted program or data change atomic.
 
 An identical program opens its store. A code-only change rebinds it and leaves
 every value in place. A changed durable contract or exported interface is
-refused without mutation; the prior program remains usable
+refused by ordinary attachment without mutation; the prior program remains usable.
+Explicit apply adds sparse scalar fields while preserving old values and
+addresses, with exact acceptance of any standing-ceiling expansion
 ([changing the program](../operations/README.md#changing-the-program)).
 
 ## Beta direction
@@ -22,14 +24,8 @@ accepted schema state and the active-image binding together. A receipt follows
 commit. Stale, mismatched and reused witnesses cannot authorize a write.
 Body-only and binding-only changes follow the same ownership rule.
 
-The minimum populated-store update adds a sparse field to an existing resource
-and changes ordinary export code or its interface to use that field. Existing
-values remain in place; the added field starts absent. Admission classifies the
-interface and demand change separately from data compatibility. Any required
-ceiling expansion needs explicit owner acceptance.
-
 General graph evolution, required-field rewriting, enum changes, placement
-changes, renames and an index build over populated data are deferred. An index
+changes, identity migration and an index build over populated data are deferred. An index
 build enters beta scope only if the maintained update journey cannot avoid it;
 its input and stored work then need explicit bounds. Every unsupported change
 refuses without damaging the prior program or data.

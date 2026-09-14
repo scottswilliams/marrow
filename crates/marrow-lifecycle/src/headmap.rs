@@ -104,6 +104,43 @@ impl HeadMap {
         self.next_number
     }
 
+    /// Extend a proved additive graph from the next unused lifetime number. The
+    /// lifecycle caller supplies only newly admitted occurrences; this owner keeps
+    /// every old address and rejects duplicates, count overflow and exhaustion.
+    pub(crate) fn extend(&self, additions: &[LedgerIdBytes]) -> Result<Self, FormatError> {
+        let count = self
+            .entries
+            .len()
+            .checked_add(additions.len())
+            .filter(|&count| count <= MAX_HEAD_MAP_ENTRIES as usize)
+            .ok_or(FormatError::LengthOverflow {
+                field: "head map entries",
+            })?;
+        let added = u32::try_from(additions.len()).map_err(|_| FormatError::LengthOverflow {
+            field: "head map lifetime numbers",
+        })?;
+        let next_number =
+            self.next_number
+                .checked_add(added)
+                .ok_or(FormatError::LengthOverflow {
+                    field: "head map lifetime numbers",
+                })?;
+        let mut entries = Vec::with_capacity(count);
+        entries.extend_from_slice(&self.entries);
+        for (offset, &ledger_id) in additions.iter().enumerate() {
+            entries.push(HeadMapEntry {
+                ledger_id,
+                number: self.next_number + offset as u32,
+            });
+        }
+        let result = Self {
+            entries,
+            next_number,
+        };
+        result.check_bijection()?;
+        Ok(result)
+    }
+
     /// The current bindings, in encoding order.
     pub fn entries(&self) -> &[HeadMapEntry] {
         &self.entries
@@ -178,6 +215,30 @@ impl HeadMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_preserves_holes_and_allocates_from_next_unused() {
+        let old = HeadMap {
+            entries: vec![HeadMapEntry {
+                ledger_id: id(1),
+                number: 17,
+            }],
+            next_number: 90,
+        };
+        let extended = old.extend(&[id(2), id(3)]).expect("bounded extension");
+        assert_eq!(extended.entries()[0], old.entries()[0]);
+        assert_eq!(extended.number_of(&id(2)), Some(90));
+        assert_eq!(extended.number_of(&id(3)), Some(91));
+        assert_eq!(extended.next_number(), 92);
+        assert!(old.extend(&[id(1)]).is_err());
+        assert!(old.extend(&[id(2), id(2)]).is_err());
+        let exhausted = HeadMap {
+            next_number: u32::MAX,
+            ..old
+        };
+        assert!(exhausted.extend(&[id(2)]).is_err());
+        assert_eq!(exhausted.extend(&[]).expect("no allocation"), exhausted);
+    }
 
     fn id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])

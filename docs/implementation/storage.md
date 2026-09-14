@@ -95,6 +95,13 @@ A preparation failure can leave engine bookkeeping and the marker changed
 without publishing a binding transition; [operations](../operations/README.md#changing-the-program)
 states what each outcome means for the store.
 
+Explicit sparse-field apply audits the store through the old image's read-only
+owner, compares the old and new verified graphs, keeps every accepted physical
+number, allocates added fields from the next unused number, and publishes the
+new binding through the same Pending/Head/Active publisher. It writes no data
+cells and never converts the read-only owner into writable service; ordinary
+attachment admits the new image afterwards.
+
 An indeterminate commit quarantines the lock until process exit; the
 kernel classifies the outcome as known old, known new, or unknown
 ([interrupted commits](../operations/README.md#interrupted-commits)). The lock

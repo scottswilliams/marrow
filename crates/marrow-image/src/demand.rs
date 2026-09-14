@@ -163,17 +163,22 @@ impl DemandAtom {
     /// totality is a property of the argument's type, and a cast would silently outlive a
     /// widened bound.
     fn encode_body(&self) -> Vec<u8> {
-        let mut body = Vec::new();
-        body.push(self.class.tag());
+        self.body_bytes().collect()
+    }
+
+    fn body_len(&self) -> usize {
+        3 + 17 * self.path.steps().len()
+    }
+
+    fn body_bytes(&self) -> impl Iterator<Item = u8> + '_ {
         let steps = self.path.steps();
         let step_count = u16::try_from(steps.len())
             .expect("a bounded semantic path's step count fits the atom body's width");
-        body.extend_from_slice(&step_count.to_be_bytes());
-        for step in steps {
-            body.push(step.kind.ledger_kind());
-            body.extend_from_slice(step.id.bytes());
-        }
-        body
+        std::iter::once(self.class.tag())
+            .chain(step_count.to_be_bytes())
+            .chain(steps.iter().flat_map(|step| {
+                std::iter::once(step.kind.ledger_kind()).chain(step.id.bytes().iter().copied())
+            }))
     }
 }
 
@@ -251,6 +256,29 @@ impl ExportDemand {
                 .into_iter()
                 .flat_map(|demand| demand.atoms.iter().cloned()),
         )
+    }
+
+    /// Merge canonical ceilings without constructing an oversized intermediate.
+    /// The persisted decoder's atom cap and the caller's payload cap apply before
+    /// any atom clone. The second walk clones only the already-counted union.
+    pub(crate) fn ceiling_union(&self, other: &Self, max_bytes: usize) -> Option<Self> {
+        let mut bytes = 8usize
+            .checked_add(LOCAL_ROOT_LINEAGE.len())?
+            .checked_add(4)?;
+        let mut count = 0usize;
+        for atom in merged_atoms(&self.atoms, &other.atoms) {
+            count = count.checked_add(1)?;
+            bytes = bytes.checked_add(8)?.checked_add(atom.body_len())?;
+            if count > MAX_CEILING_ATOMS || bytes > max_bytes {
+                return None;
+            }
+        }
+        if bytes > max_bytes {
+            return None;
+        }
+        let mut atoms = Vec::with_capacity(count);
+        atoms.extend(merged_atoms(&self.atoms, &other.atoms).cloned());
+        Some(Self { atoms })
     }
 
     /// The canonical atom-set payload: `LP(lineage) ‖ u32_be(atom_count) ‖ atom*`
@@ -341,6 +369,27 @@ fn atom_set_payload<'a>(atoms: impl ExactSizeIterator<Item = &'a DemandAtom>) ->
         push_lp(&mut payload, &atom.encode_body());
     }
     payload
+}
+
+fn merged_atoms<'a>(
+    old: &'a [DemandAtom],
+    new: &'a [DemandAtom],
+) -> impl Iterator<Item = &'a DemandAtom> {
+    let mut old = old.iter().peekable();
+    let mut new = new.iter().peekable();
+    std::iter::from_fn(move || match (old.peek(), new.peek()) {
+        (Some(left), Some(right)) => match left.body_bytes().cmp(right.body_bytes()) {
+            std::cmp::Ordering::Less => old.next(),
+            std::cmp::Ordering::Greater => new.next(),
+            std::cmp::Ordering::Equal => {
+                new.next();
+                old.next()
+            }
+        },
+        (Some(_), None) => old.next(),
+        (None, Some(_)) => new.next(),
+        (None, None) => None,
+    })
 }
 
 /// A fixed upper bound on the number of atoms a decoded ceiling payload may carry,
@@ -548,6 +597,40 @@ mod tests {
         root_path()
             .child(SemanticStep::new(SemanticStepKind::Field, id(field)))
             .expect("a three-step chain is in bounds")
+    }
+
+    #[test]
+    fn bounded_union_matches_canonical_order_and_exact_payload_bound() {
+        let a = DemandAtom::new(root_path(), OperationClass::Write);
+        let b = DemandAtom::new(field_path(3), OperationClass::Read);
+        let c = DemandAtom::new(field_path(1), OperationClass::Write);
+        let old = ExportDemand::from_atoms([a.clone(), b.clone()]);
+        let new = ExportDemand::from_atoms([b, c]);
+        let expected = ExportDemand::union([&old, &new]);
+        let size = expected.atom_set_payload().len();
+        let actual = old.ceiling_union(&new, size).expect("exact payload bound");
+        assert_eq!(actual, expected);
+        assert_eq!(actual.atom_set_payload(), expected.atom_set_payload());
+        assert_eq!(actual.demand_set_id(), expected.demand_set_id());
+        assert!(old.ceiling_union(&new, size - 1).is_none());
+        assert_eq!(a.body_len(), a.encode_body().len());
+    }
+
+    #[test]
+    fn bounded_union_checks_the_deduplicated_atom_count() {
+        let atom = |n: usize| {
+            let mut bytes = [0; 16];
+            bytes[..8].copy_from_slice(&(n as u64).to_be_bytes());
+            DemandAtom::new(
+                SemanticPath::root(id(1), LedgerIdBytes::from_bytes(bytes)),
+                OperationClass::Read,
+            )
+        };
+        let full = ExportDemand::from_atoms((0..super::MAX_CEILING_ATOMS).map(atom));
+        let duplicate = ExportDemand::from_atoms([atom(0)]);
+        assert!(full.ceiling_union(&duplicate, usize::MAX).is_some());
+        let extra = ExportDemand::from_atoms([atom(super::MAX_CEILING_ATOMS)]);
+        assert!(full.ceiling_union(&extra, usize::MAX).is_none());
     }
 
     /// The recorded repro of the closed defect: a 65,536-step path framed an atom body

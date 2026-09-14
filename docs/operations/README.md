@@ -5,7 +5,7 @@ program. This page covers creating a store, running against it, changing the
 program, interrupted commits, auditing a store, explicit recovery, and logical backup/restore.
 
 Today, a store runs on one machine under one process at a time. Served
-execution and schema evolution are future work
+execution and schema evolution beyond explicit sparse-field apply are future work
 ([status](../status.md#not-yet-available)).
 
 ## Logical backup and fresh restore
@@ -182,8 +182,8 @@ result with that binding:
   `store.contract_changed`, decided before engine opening even if that engine
   would fail to open. The prior program remains the accepted binding.
   The refusal preserves the owner marker as well as the binding and engine.
-- A program that touches more durable places than the store accepted at
-  provisioning is `store.demand_exceeds_ceiling`. The refusal names the export,
+- A program whose durable demand exceeds the current standing ceiling is
+  `store.demand_exceeds_ceiling`. The refusal names the export,
   the place, and the access. The store is untouched.
 
 An interrupted rebind may leave either recorded head in place. Ordinary access
@@ -191,9 +191,16 @@ refuses a pending transition. Recovery requires the program matching the head
 actually present; it does not replay the missing update. A third head is refused.
 
 The durable contract is the set of resources, store roots, keys, fields, and
-indexes the program declares. No transition rewrites stored data. Accepting a
-changed contract, with stored data carried across, is future work ([data
-coexistence](../future/data-coexistence.md)).
+indexes the program declares. No current transition rewrites stored data.
+Explicit [`marrow apply`](../tools/cli.md#marrow-apply) accepts verified OLD and NEW
+artifacts, preserves all old representations and adds sparse scalar fields.
+New fields start absent; ordinary NEW exports can subsequently write them.
+The operation verifies OLD against the actual accepted Head, audits its logical
+contents read-only, and publishes NEW through the same Pending/Head/Active owner.
+It retains the existing ceiling or requires explicit acceptance of its exact
+union with NEW demand. Unsupported changes preserve the prior binding;
+publication failure may leave an interrupted or uncertain transition.
+Broader evolution remains [future work](../future/admission-and-activation.md).
 
 The accepted Head defines each durable identity's physical address. Opening,
 recovery and fresh restore retain those addresses, including valid gaps below
@@ -284,13 +291,19 @@ codes are in [marrow doctor](../tools/cli.md#marrow-doctor).
 ## Recovering a store
 
 `marrow recover --store <dir>` validates and activates the store at its current
-location without running an export. The working project's source and identity
-ledger must compile to the exact image named by the stored head:
+location without running an export. An explicit `--image` selects an immutable
+artifact without compiling a project. Otherwise, the working project's source
+and identity ledger must compile to the exact image named by the stored head:
 
 ```sh
 marrow recover --store ./store
 marrow recover --store ./store --format jsonl
+marrow recover --store ./store --image ./deployment/program.image
 ```
+
+After an interrupted apply, select the retained OLD or NEW artifact matching the
+head actually present. Recovery refuses the other artifact and does not replay
+the missing update.
 
 Recovery acquires the exclusive owner lock, checks the envelope and head before
 opening the engine, forces physical integrity checking, and inspects logical

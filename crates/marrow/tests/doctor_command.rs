@@ -81,6 +81,319 @@ pub fn lookup(): string {
 }
 "#;
 
+// Inserting before a populated field exercises accepted physical numbering through
+// the compiler, explicit image operation and ordinary companion-backed reads.
+fn populated_apply_preserves_old_values_and_leaves_new_fields_absent(toolchain: &Path) {
+    let temp = TempDir::new("apply");
+    eprintln!(
+        "apply command fixture retained on failure: {}",
+        temp.root.display()
+    );
+    let project = temp.root.join("app");
+    let source = r#"resource Counter {
+    required value: int
+    details { tag: int }
+    notes[n: int] { required note: int }
+}
+store ^counters[id: int]: Counter
+pub fn bootstrap(): int { return 0 }
+pub fn seed() {
+    transaction {
+        ^counters[0] = Counter(value: 42, details: Counter.details(tag: 7))
+        ^counters[0].notes[1] = Counter.notes(note: 9)
+    }
+}
+pub fn oldValue(): int { return ^counters[0].value ?? -1 }
+pub fn tag(): int { return ^counters[0].details.tag ?? -1 }
+pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
+"#;
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), source);
+    write(&temp.root.join("old.mw"), source);
+    let record = |name: &str, output: Output| {
+        fs::write(temp.root.join(format!("{name}.stdout")), &output.stdout).expect("stdout");
+        fs::write(temp.root.join(format!("{name}.stderr")), &output.stderr).expect("stderr");
+        fs::write(
+            temp.root.join(format!("{name}.status")),
+            format!("{:?}\n", output.status),
+        )
+        .expect("status");
+        output
+    };
+    let run = |name: &str, dir: &Path, args: &[&str]| {
+        let output = record(name, marrow(toolchain, dir, args));
+        assert!(
+            output.status.success(),
+            "{name}: status={:?}\nstdout={}\nstderr={}",
+            output.status,
+            text(&output.stdout),
+            text(&output.stderr)
+        );
+        output
+    };
+    let image = |name: &str| {
+        let output = record(
+            &format!("{name}-preview"),
+            marrow(toolchain, &project, &["image", "--out", name]),
+        );
+        assert!(!output.status.success());
+        let stderr = text(&output.stderr);
+        assert!(stderr.contains("cli.ceiling_unaccepted"), "{stderr}");
+        let ceiling = stderr
+            .split("deployment ceiling id is ")
+            .nth(1)
+            .expect("ceiling")
+            .split(';')
+            .next()
+            .expect("ceiling delimiter")
+            .to_owned();
+        run(
+            name,
+            &project,
+            &["image", "--out", name, "--accept-ceiling", &ceiling],
+        );
+        (project.join(name).join("program.image"), ceiling)
+    };
+    run("old-bootstrap", &project, &["run", "main.bootstrap"]);
+    let old_ids = fs::read_to_string(project.join(".marrow/ids")).expect("old identities");
+    write(&temp.root.join("old.ids"), &old_ids);
+    let (old_image, old_ceiling) = image("old-deployment");
+    let old_bytes = fs::read(&old_image).expect("old image");
+    let old_image_id = marrow_verify::verify(&old_bytes)
+        .expect("verified old artifact")
+        .image_id()
+        .to_hex();
+    let store = temp.root.join("store");
+    let store_arg = store.to_str().expect("store path");
+    let provision = record(
+        "provision",
+        Command::new(toolchain.join("marrow-runner"))
+            .args(["provision", "--image"])
+            .arg(&old_image)
+            .arg("--store")
+            .arg(&store)
+            .arg("--yes")
+            .output()
+            .expect("provision"),
+    );
+    assert!(provision.status.success(), "{}", text(&provision.stderr));
+    run(
+        "seed",
+        &project,
+        &["run", "main.seed", "--store", store_arg],
+    );
+    let old_value = run(
+        "old-value-before",
+        &project,
+        &["run", "main.oldValue", "--store", store_arg],
+    );
+    assert_eq!(text(&old_value.stdout).trim(), "42");
+    let before = run(
+        "before",
+        &project,
+        &["doctor", "--store", store_arg, "--format", "jsonl"],
+    );
+    let before: serde_json::Value = serde_json::from_slice(&before.stdout).expect("old binding");
+    assert_eq!(before["image"], old_image_id);
+
+    let new_source = source
+        .replace("    required value", "    extra: int\n    required value")
+        .replace("required note", "noteExtra: int\nrequired note")
+        + r#"
+pub fn extraPresent(): bool { return exists(^counters[0].extra) }
+pub fn writeExtra() {
+    transaction {
+        place counter = ^counters[0]
+        if exists(counter) { counter.extra = 77 }
+        place note = ^counters[0].notes[1]
+        if exists(note) { note.noteExtra = 99 }
+    }
+}
+pub fn extraValue(): int { return ^counters[0].extra ?? -1 }
+pub fn noteExtra(): int { return ^counters[0].notes[1].noteExtra ?? -1 }
+"#;
+    write(&project.join("src/main.mw"), &new_source);
+    write(&temp.root.join("new.mw"), &new_source);
+    run("new-bootstrap", &project, &["run", "main.bootstrap"]);
+    let new_ids = fs::read_to_string(project.join(".marrow/ids")).expect("new identities");
+    write(&temp.root.join("new.ids"), &new_ids);
+    for line in old_ids.lines().filter(|line| line.starts_with("id ")) {
+        assert!(
+            new_ids.lines().any(|new| new == line),
+            "changed identity: {line}"
+        );
+    }
+    let (new_image, new_ceiling) = image("new-deployment");
+    assert_eq!(
+        fs::read(&old_image).expect("preserved old image"),
+        old_bytes
+    );
+    let new_bytes = fs::read(&new_image).expect("new image");
+    assert_ne!(new_bytes, old_bytes);
+    let new_image_id = marrow_verify::verify(&new_bytes)
+        .expect("verified new artifact")
+        .image_id()
+        .to_hex();
+    let applied = run(
+        "apply",
+        &temp.root,
+        &[
+            "apply",
+            "--store",
+            store_arg,
+            "--old-image",
+            old_image.to_str().expect("old image path"),
+            "--new-image",
+            new_image.to_str().expect("new image path"),
+            "--accept-ceiling",
+            &new_ceiling,
+            "--format",
+            "jsonl",
+        ],
+    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&applied.stdout).expect("apply receipt");
+    assert_eq!(receipt["kind"], "apply");
+    assert_eq!(receipt["outcome"], "applied");
+    assert_eq!(receipt["instance"], before["instance"]);
+    assert_eq!(receipt["old_image"], before["image"]);
+    assert_eq!(receipt["old_ceiling"], old_ceiling);
+    assert_eq!(receipt["ceiling"], new_ceiling);
+    assert_eq!(receipt["new_image"], new_image_id);
+    for (name, export, expected) in [
+        ("old-value-after", "main.oldValue", "42"),
+        ("extra-absent", "main.extraPresent", "false"),
+        ("nested-extra-absent", "main.noteExtra", "-1"),
+    ] {
+        let result = run(name, &project, &["run", export, "--store", store_arg]);
+        assert_eq!(text(&result.stdout).trim(), expected);
+    }
+    run(
+        "write-extra",
+        &project,
+        &["run", "main.writeExtra", "--store", store_arg],
+    );
+    for (name, export, expected) in [
+        ("extra-value", "main.extraValue", "77"),
+        ("old-value-final", "main.oldValue", "42"),
+        ("old-group-final", "main.tag", "7"),
+        ("old-note-final", "main.note", "9"),
+        ("new-note-final", "main.noteExtra", "99"),
+    ] {
+        let result = run(name, &project, &["run", export, "--store", store_arg]);
+        assert_eq!(text(&result.stdout).trim(), expected);
+    }
+    let applied_head = fs::read(store.join("head")).expect("applied head");
+    let backup = temp.root.join("applied.backup");
+    let backed = run(
+        "backup-applied",
+        &project,
+        &[
+            "backup",
+            "--store",
+            store_arg,
+            "--out",
+            backup.to_str().expect("backup path"),
+            "--format",
+            "jsonl",
+        ],
+    );
+    let backed: serde_json::Value = serde_json::from_slice(&backed.stdout).expect("backup receipt");
+    assert_eq!(backed["image"], new_image_id);
+    assert_eq!(backed["instance"], receipt["instance"]);
+    assert_eq!(
+        fs::read(store.join("head")).expect("source head"),
+        applied_head
+    );
+    write(
+        &project.join("src/main.mw"),
+        "invalid source during restore and recovery",
+    );
+    let restored = temp.root.join("restored");
+    let restored_arg = restored.to_str().expect("restored path");
+    let restored_receipt = run(
+        "restore-applied",
+        &temp.root,
+        &[
+            "restore",
+            "--from",
+            backup.to_str().expect("backup path"),
+            "--store",
+            restored_arg,
+            "--format",
+            "jsonl",
+        ],
+    );
+    let restored_receipt: serde_json::Value =
+        serde_json::from_slice(&restored_receipt.stdout).expect("restore receipt");
+    for (value, digits) in [
+        (&receipt["instance"], 32),
+        (&backed["instance"], 32),
+        (&restored_receipt["instance"], 32),
+        (&backed["content_digest"], 64),
+        (&restored_receipt["content_digest"], 64),
+    ] {
+        let value = value.as_str().expect("hex identity");
+        assert_eq!(value.len(), digits);
+        assert!(
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+    }
+    assert_eq!(restored_receipt["outcome"], "complete");
+    assert_ne!(restored_receipt["instance"], receipt["instance"]);
+    assert_eq!(restored_receipt["image"], new_image_id);
+    assert_eq!(restored_receipt["content_digest"], backed["content_digest"]);
+    assert_eq!(
+        fs::read(restored.join("head")).expect("restored head"),
+        applied_head
+    );
+    fs::write(restored.join("envelope.replacing"), b"partial envelope").expect("debris");
+    let recovered = run(
+        "recover-applied-image",
+        &temp.root,
+        &[
+            "recover",
+            "--store",
+            restored_arg,
+            "--image",
+            new_image.to_str().expect("new image path"),
+            "--format",
+            "jsonl",
+        ],
+    );
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&recovered.stdout).expect("recovery record");
+    assert_eq!(recovered["kind"], "recovery");
+    assert_eq!(recovered["outcome"], "activated");
+    assert_eq!(recovered["store"], restored_arg);
+    assert_eq!(recovered["instance"], restored_receipt["instance"]);
+    assert_eq!(recovered["image"], new_image_id);
+    let preserved = recovered["preserved"].as_array().expect("preserved names");
+    assert_eq!(preserved.len(), 1);
+    assert_eq!(
+        fs::read(restored.join(preserved[0].as_str().expect("preserved filename")))
+            .expect("preserved debris"),
+        b"partial envelope"
+    );
+    assert_eq!(
+        fs::read(restored.join("head")).expect("recovered head"),
+        applied_head
+    );
+    write(&project.join("src/main.mw"), &new_source);
+    for (name, export, expected) in [
+        ("restored-old", "main.oldValue", "42"),
+        ("restored-extra", "main.extraValue", "77"),
+        ("restored-group", "main.tag", "7"),
+        ("restored-note", "main.note", "9"),
+        ("restored-note-extra", "main.noteExtra", "99"),
+    ] {
+        let result = run(name, &project, &["run", export, "--store", restored_arg]);
+        assert_eq!(text(&result.stdout).trim(), expected);
+    }
+}
+
 // This process-level control earns its cost by crossing compiler, companion,
 // native publication and restore without the original project being available.
 fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Path) {
@@ -196,6 +509,22 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     );
     let restored_receipt: serde_json::Value =
         serde_json::from_slice(&receipt.stdout).expect("restore receipt");
+    for (record, field, digits) in [
+        (&backed, "instance", 32),
+        (&restored_receipt, "instance", 32),
+        (&backed, "image", 64),
+        (&restored_receipt, "image", 64),
+        (&backed, "content_digest", 64),
+        (&restored_receipt, "content_digest", 64),
+    ] {
+        let value = record[field].as_str().expect("hex identity");
+        assert_eq!(value.len(), digits);
+        assert!(
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+    }
     assert_eq!(restored_receipt["outcome"], "complete");
     assert_ne!(backed["instance"], restored_receipt["instance"]);
     assert_eq!(backed["image"], restored_receipt["image"]);
@@ -619,6 +948,7 @@ fn an_invalid_scalar_reports_a_logical_finding(toolchain: &Path) {
 fn doctor_reports_and_refusals_share_one_owned_toolchain() {
     let staged = toolchain();
     let path = staged.root.clone();
+    populated_apply_preserves_old_values_and_leaves_new_fields_absent(&path);
     a_clean_store_audits_with_a_stable_digest_and_exit_zero(&path);
     explicit_recovery_preserves_data_and_reports_moved_files(&path);
     recovery_refuses_an_altered_engine_with_exit_one(&path);

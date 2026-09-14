@@ -25,6 +25,7 @@
 //! identity-framing owner, so this crate composes them without a hash dependency of its own.
 
 mod actor;
+mod apply;
 mod attachment;
 mod audit;
 mod authority;
@@ -52,6 +53,7 @@ mod provision_lifecycle_tests;
 pub use actor::{
     AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt, attach,
 };
+pub use apply::{ApplyError, ApplyReceipt, apply};
 pub use attachment::{
     Attachment, EphemeralOutcome, FreshTest, MemoryAttachment, MemoryEngine, NativeAttachment,
     PreparedImage, TestExecution, TestHost, fresh_test, mint_ephemeral, prepare,

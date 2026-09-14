@@ -15,6 +15,7 @@ pub(crate) enum Operation {
     Recover,
     Backup,
     Restore,
+    Apply,
 }
 
 impl Operation {
@@ -24,6 +25,7 @@ impl Operation {
             Self::Recover => "recover",
             Self::Backup => "backup",
             Self::Restore => "restore",
+            Self::Apply => "apply",
         }
     }
     fn runner_command(self) -> &'static str {
@@ -32,6 +34,7 @@ impl Operation {
             Self::Recover => "recover",
             Self::Backup => "backup",
             Self::Restore => "restore",
+            Self::Apply => "apply",
         }
     }
 }
@@ -53,6 +56,12 @@ enum Action {
     Inspect,
     Backup(PathBuf),
     Restore(PathBuf),
+    Apply {
+        old: PathBuf,
+        new: PathBuf,
+        ceiling: Option<String>,
+    },
+    RecoverImage(PathBuf),
 }
 
 pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
@@ -61,13 +70,33 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    // Restore's embedded image is authoritative; no project is captured or compiled.
-    if let Action::Restore(input) = &args.action {
+    if matches!(
+        &args.action,
+        Action::Restore(_) | Action::Apply { .. } | Action::RecoverImage(_)
+    ) {
         let mut command = match companion_command(operation, &args) {
             Ok(command) => command,
             Err(code) => return code,
         };
-        command.arg("--from").arg(input);
+        match &args.action {
+            Action::Restore(input) => {
+                command.arg("--from").arg(input);
+            }
+            Action::RecoverImage(image) => {
+                command.arg("--image").arg(image);
+            }
+            Action::Apply { old, new, ceiling } => {
+                command
+                    .arg("--old-image")
+                    .arg(old)
+                    .arg("--new-image")
+                    .arg(new);
+                if let Some(id) = ceiling {
+                    command.arg("--accept-ceiling").arg(id);
+                }
+            }
+            _ => unreachable!("explicit-artifact action checked above"),
+        }
         return run_companion(command);
     }
 
@@ -161,9 +190,33 @@ fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
     let mut format = Format::Text;
     let mut transfer = None;
     let mut seen_format = false;
+    let mut old = None;
+    let mut new = None;
+    let mut ceiling = None;
+    let mut selected_image = None;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--old-image" if matches!(operation, Operation::Apply) && old.is_none() => {
+                old = Some(PathBuf::from(next_value(
+                    operation,
+                    &mut iter,
+                    "--old-image",
+                )?));
+            }
+            "--new-image" if matches!(operation, Operation::Apply) && new.is_none() => {
+                new = Some(PathBuf::from(next_value(
+                    operation,
+                    &mut iter,
+                    "--new-image",
+                )?));
+            }
+            "--accept-ceiling" if matches!(operation, Operation::Apply) && ceiling.is_none() => {
+                ceiling = Some(next_value(operation, &mut iter, "--accept-ceiling")?);
+            }
+            "--image" if matches!(operation, Operation::Recover) && selected_image.is_none() => {
+                selected_image = Some(PathBuf::from(next_value(operation, &mut iter, "--image")?));
+            }
             "--store" if store.is_none() => {
                 store = Some(PathBuf::from(next_value(operation, &mut iter, "--store")?))
             }
@@ -188,7 +241,15 @@ fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {
         return Err(usage(operation, "`--store` must name the store directory"));
     };
     let action = match operation {
-        Operation::Doctor | Operation::Recover => Action::Inspect,
+        Operation::Doctor => Action::Inspect,
+        Operation::Recover => selected_image.map_or(Action::Inspect, Action::RecoverImage),
+        Operation::Apply => Action::Apply {
+            old: old
+                .ok_or_else(|| usage(operation, "`--old-image` must name the active artifact"))?,
+            new: new
+                .ok_or_else(|| usage(operation, "`--new-image` must name the selected artifact"))?,
+            ceiling,
+        },
         Operation::Backup => Action::Backup(
             transfer.ok_or_else(|| usage(operation, "`--out` must name the backup file"))?,
         ),
@@ -218,6 +279,8 @@ fn usage(operation: Operation, message: &str) -> ExitCode {
     let transfer = match operation {
         Operation::Backup => " --out <backup>",
         Operation::Restore => " --from <backup>",
+        Operation::Apply => " --old-image <old.mwi> --new-image <new.mwi> [--accept-ceiling <id>]",
+        Operation::Recover => " [--image <image.mwi>]",
         _ => "",
     };
     eprintln!(

@@ -15,7 +15,7 @@ the compiler keeps them apart even when they name the same logical location.
 | Concrete address | Semantic path instantiated with typed key values | Current: `^books[7]` |
 | Store identity | One actual durable store instance | Current: store UID; hostile file substitution is not authenticated |
 | Executable binding | Exact code, graph, effects, limits, and accepted ceiling for a store | Current; fine-grained invocation authority is future |
-| Evolution relation | An accepted transition between durable graph versions | Future beyond current contract-preserving rebind |
+| Evolution relation | An accepted transition between durable graph versions | Current rebind and explicit sparse additions; general evolution is future |
 | Public path | Later external representation of selected behavior or addresses | Future |
 | Physical key | Private kernel encoding consumed by the engine | Current |
 

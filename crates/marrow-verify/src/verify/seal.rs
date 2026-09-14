@@ -194,6 +194,7 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
     drop(calls);
 
     Ok(VerifiedImage {
+        durable_graph: decoded.durable_graph,
         image_id: decoded.image_id,
         types,
         enums,

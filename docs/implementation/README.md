@@ -53,7 +53,7 @@ process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 
 | Crate | Owns | Read next |
 |---|---|---|
-| `marrow` | The CLI: `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `image`, and `client typescript` | [CLI](../tools/cli.md) |
+| `marrow` | The CLI: `init`, `fmt`, `check`, `run`, `test`, `import`, `doctor`, `apply`, `recover`, `backup`, `restore`, `image`, and `client typescript` | [CLI](../tools/cli.md) |
 | `marrow-codes` | The diagnostic-code registry and the generated [error-code reference](../error-codes.md) | [Diagnostic voice](diagnostic-voice.md) |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and the diagnostic types every crate renders | [Syntax](syntax.md) |
 | `marrow-temporal` | The `date`, `instant`, and `duration` domain: calendar, range, canonical text, and arithmetic. Depends on nothing else in the workspace | [Types and values](../language/types-and-values.md) |
@@ -63,12 +63,12 @@ process; `marrow-lsp` projects compiler snapshot facts and adds no semantics.
 | `marrow-vm` | The stack VM over a sealed image: source-mapped runtime faults, execution bounds (`value.rs::collection_within_limits`, `Value::structural_bytes`, `run.rs::bounded_list`), and durable execution of an export or a source test through the attachment the lifecycle prepared | [Execution limits](../language/execution-limits.md) |
 | `marrow-kernel` | The path over which every durable read and write passes: key and value codecs, the operation algebra, the transaction commit witness, commit recovery, the shared audit/export walk, and consuming private restore construction | [Storage](storage.md) |
 | `marrow-store` | The ordered-byte engine contract, the in-memory and redb engines, and the conformance suite both must pass | [Storage](storage.md) |
-| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, explicit recovery, and logical backup/restore. The envelope gates ordinary service on Active | [Operations](../operations/README.md) |
+| `marrow-lifecycle` | The verified image's store projection and its pairing with a native or in-memory store; provision, attach, import, audit, explicit sparse-field apply, recovery, and logical backup/restore. The envelope gates ordinary service on Active | [Operations](../operations/README.md) |
 | `marrow-fs-journal` | Descriptor-rooted file publication: entry-name admission, the cooperative lock, and the pending-journal frame with replay and crash-debris classification | [Storage](storage.md) |
 | `marrow-project` | Manifest schema, module discovery, file identities, and the `.marrow/ids` ledger, all over caller-supplied bytes | [Projects](../tools/projects.md) |
 | `marrow-project-fs` | Bounded reads of the project root, manifest, source tree, and ledger, and the sole publisher of `.marrow/ids` | [Projects](../tools/projects.md) |
 | `marrow-local-wire` | The framed protocol between a runner and its client: framing, limits, one canonical JSON writer, completed bounded frames, and the closed request, response, fault, and incomplete grammar | [TypeScript client](../tools/typescript-client.md) |
-| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and the one-shot provision, import, audit, recovery, backup and restore commands over the lifecycle owners | [Operations](../operations/README.md) |
+| `marrow-runner` | The runner binary and library: the supervised Unix-domain channel, export dispatch over a verified image, and the one-shot provision, import, audit, apply, recovery, backup and restore commands over the lifecycle owners | [Operations](../operations/README.md) |
 | `marrow-lsp` | The standalone `marrow-lsp` executable: JSON-RPC over stdio, document sync, and diagnostics, formatting, hover, definition, completion, signature help, and document symbols projected from the compiler's `AnalysisSnapshot` | [Language server](../tools/lsp.md) |
 
 The language server is its own executable. The `marrow` CLI has no `lsp`
@@ -138,8 +138,16 @@ the runner streams the file to lifecycle restore, which owns embedded-image
 verification, construction and final admission. Transfer receipt delivery is
 fallible and retains known results in a best-effort diagnostic on failure.
 
-`marrow recover --store <dir>` shares project capture, compilation and companion
-dispatch with doctor through `cmd_store`. The runner calls lifecycle recovery
+`marrow apply` bypasses project capture through `cmd_store`. The runner's
+`store_apply` module loads and verifies the explicit OLD and NEW artifacts
+sequentially, then calls lifecycle apply once. Lifecycle compares the retained
+verified graphs, extends the accepted physical map and standing ceiling, audits
+OLD read-only, and publishes through the existing metadata owner. Receipt
+delivery is fallible and retains the known outcome in a best-effort diagnostic.
+
+`marrow recover --store <dir>` shares companion dispatch with doctor through
+`cmd_store`. An explicit `--image` bypasses project capture and compilation;
+otherwise it compiles the working project. The runner calls lifecycle recovery
 once and writes a fallible result retaining preservation moves even on failure.
 The lifecycle performs physical and logical validation under one owner and
 establishes fresh barriers before returning. It neither returns an application

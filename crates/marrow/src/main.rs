@@ -31,7 +31,8 @@ Usage:
   marrow run <export> [--stdin] [--store <dir>] [--format text|jsonl] [-- <args>...]
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow doctor --store <dir> [--format text|jsonl]
-  marrow recover --store <dir> [--format text|jsonl]
+  marrow apply --store <dir> --old-image <image> --new-image <image> [--accept-ceiling <id>] [--format text|jsonl]
+  marrow recover --store <dir> [--image <path>] [--format text|jsonl]
   marrow backup --store <dir> --out <backup> [--format text|jsonl]
   marrow restore --from <backup> --store <dir> [--format text|jsonl]
   marrow test [--format text|jsonl] [--filter <substring>]
@@ -61,7 +62,11 @@ module. `image` compiles and verifies the project and writes the verified
 program.image a deployment ships, requiring the owner to accept the image's
 deployment ceiling id. `backup` compiles the active project and exports its store
 with that exact image. `restore` constructs a fresh store from the backup's
-embedded image without compiling a project.
+embedded image without compiling a project. `apply` accepts explicit old and new
+images, preserving old representations while adding absent sparse scalar fields.
+An authority expansion requires acceptance of the exact proposed ceiling.
+`recover` validates and activates the actual stored head using the selected image,
+or the compiled project when no image is supplied.
 ";
 
 fn main() -> ExitCode {
@@ -111,6 +116,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "run" => cmd_run::run(rest),
         "import" => cmd_import::import(rest),
         "doctor" => cmd_store::run(cmd_store::Operation::Doctor, rest),
+        "apply" => cmd_store::run(cmd_store::Operation::Apply, rest),
         "recover" => cmd_store::run(cmd_store::Operation::Recover, rest),
         "backup" => cmd_store::run(cmd_store::Operation::Backup, rest),
         "restore" => cmd_store::run(cmd_store::Operation::Restore, rest),
