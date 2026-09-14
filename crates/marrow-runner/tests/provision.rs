@@ -7,10 +7,10 @@ mod output;
 
 use std::path::PathBuf;
 
-use output::broken_output;
 use marrow_lifecycle::ProvisionReport;
 use marrow_local_wire::{ClientMessage, ServerMessage};
 use marrow_runner::Service;
+use output::broken_output;
 
 const SOURCE: &str = r#"resource Counter {
     required value: int

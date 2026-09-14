@@ -14,10 +14,10 @@ mod output;
 
 use std::path::{Path, PathBuf};
 
-use output::broken_output;
 use marrow_runner::{CallOutcome, Json, attach_and_call};
 use marrow_verify::{RetShape, VerifiedImage};
 use marrow_vm::Value;
+use output::broken_output;
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
