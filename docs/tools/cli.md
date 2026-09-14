@@ -277,7 +277,8 @@ project at the working directory, which must be the store's active program.
 A code-only edit the store has not been rebound to is `store.image_not_active`;
 a changed durable contract is `store.contract_changed`. The companion runner
 holds the owner lock through admission and inspection, then releases it before
-printing. The engine file, head, and envelope are unchanged.
+printing. The engine file, head, envelope and ownership marker are unchanged;
+an absent marker is not created. Refusal preserves those artifacts too.
 An unsupported store format is `store.format_version`, refused before engine
 open ([compatibility](../compatibility.md#versioning)).
 

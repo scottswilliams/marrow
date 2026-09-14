@@ -71,15 +71,18 @@ therefore hold no raw key, engine handle, or transaction object.
 `native_owner.rs` derives `lock` and `store.redb` from one canonical store
 directory and keeps the advisory lock inseparable from the engine. Provisioning
 calls a create-only operation that stamps the engine format. An open of an
-existing store has two phases: acquire the lock on the directory node with no
-engine call, then bind the store instance and open the engine under the same
-lock. Lifecycle admission pairs its retained directory descriptor with that
+existing store has two phases: acquire directory exclusion without marker writes
+or engine calls, then open the engine under the same lock. Mutable access publishes
+the store instance in the marker; inspection locks an existing marker without
+changing it and leaves an absent marker absent. Lifecycle admission pairs its retained directory descriptor with that
 locked directory identity before reading the envelope and head. Ordinary access
 requires an active envelope; pending and legacy envelopes require recovery.
 `NativeOpenAccess` selects service read/write, explicit recovery or read-only
 inspection through that same opening path. Inspection cannot write or invoke
-the repairing integrity operation; it preserves any inherited unclean-shutdown
-obligation. An indeterminate commit quarantines the lock until process exit; the
+the repairing integrity operation; releasing its locks does not truncate the
+marker or discharge an inherited unclean-shutdown obligation. A contention
+diagnostic's recorded identity may describe an earlier mutable holder.
+An indeterminate commit quarantines the lock until process exit; the
 kernel classifies the outcome as known old, known new, or unknown
 ([interrupted commits](../operations/README.md#interrupted-commits)). The lock
 excludes cooperating Marrow processes and does not authenticate the engine
@@ -106,8 +109,9 @@ The lifecycle's existing logical-head generation selects the entry layout.
 Generation 2 is written by fresh provisioning; generation 1 and every other
 unsupported generation are refused with `store.format_version`. Attach,
 code-only rebind, logical audit, and import read that fence before opening the
-engine. Refusal preserves the engine file, head, and envelope; owner-marker and
-lock bookkeeping can precede it. There is no automatic rewrite or migration
+engine. Refusal preserves the engine file, head, and envelope. Directory exclusion
+precedes admission; read-only inspection also preserves marker bytes and absence.
+Mutable opening can publish its marker before a later refusal. There is no automatic rewrite or migration
 reader. Generation 2 changes branch-entry keys; root, index, and metadata
 encodings retain their generation-1 shapes. The head's sequencing and data-digest
 fields retain their reserved-zero meanings. Envelope version 1 separately records

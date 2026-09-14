@@ -45,8 +45,8 @@ pub const NATIVE_LOCK_FILE: &str = "lock";
 pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = NativeEngine::FORMAT_VERSION;
 
 const LOCK_MAGIC: &[u8; 4] = b"MWSL";
-/// The marker layout this build writes: a state tag distinguishes a lock held
-/// before its store instance is known from one bound to it.
+/// The marker layout uses a state tag. Mutable opening writes a bound instance;
+/// decoding also accepts pre-instance markers left by earlier writers.
 const LOCK_VERSION: u8 = 1;
 /// The layout this build still reads: a bound owner with no state tag, whose
 /// fields sit in the order that layout froze.
@@ -57,15 +57,14 @@ const BOUND_TAG: u8 = 0x02;
 const PENDING_BYTES: usize = 4 + 1 + 1 + 4 + 8;
 const BOUND_BYTES: usize = PENDING_BYTES + 16;
 
-/// The best-effort identity recorded for a live native-store owner.
+/// The best-effort identity recorded by a mutable native-store owner.
 ///
-/// The instance is absent while a holder has taken the lock but has not yet named
-/// the store it is opening. A contender is entitled to the exclusion verdict and
-/// to whatever identity the marker carries, never to a stronger claim than the
-/// holder has actually published.
+/// Inspection does not publish an identity, so this record can describe an earlier
+/// owner rather than the current holder. Older markers may omit the instance.
+/// Exclusion follows from the directory lock, independently of this record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeLockOwner {
-    /// The owning process id.
+    /// The recorded process id, which need not identify the current holder.
     pub pid: u32,
     /// The lifecycle store instance bytes, once the holder has bound them.
     pub instance: Option<[u8; 16]>,
@@ -146,7 +145,7 @@ impl std::fmt::Display for NativeLockError {
         match self {
             Self::StoreInUse { owner: Some(owner) } => write!(
                 formatter,
-                "the store is already open by process {}; close it, then retry",
+                "the store is already open; its marker records process {}; close the current holder, then retry",
                 owner.pid,
             ),
             Self::StoreInUse { owner: None } => write!(
@@ -219,17 +218,8 @@ struct OwnerLock {
     disposition: DropDisposition,
 }
 
-struct AcquiredLock {
-    lock: OwnerLock,
-    prior_unclean: bool,
-    acquired_unix_secs: u64,
-}
-
 impl OwnerLock {
-    /// Take the directory's owner lock without naming a store instance. A prior
-    /// nonempty marker — a crashed holder's, whether it had bound its instance or
-    /// not, or bytes this build cannot read — is the inherited unclean obligation
-    /// this acquisition carries until a full audit discharges it.
+    /// Take directory exclusion without creating or changing its marker.
     ///
     /// Exclusion is taken on the store directory node itself, before any name inside that
     /// directory is opened. A lock resting only on names inside the directory does not
@@ -241,7 +231,7 @@ impl OwnerLock {
     /// replacement of its own children changes, and acquisition pinned it by canonicalizing
     /// before asking for this lock, so exclusion rests on it and the marker's lock stands
     /// behind it.
-    fn acquire(dir: &Path) -> Result<AcquiredLock, NativeLockError> {
+    fn acquire(dir: &Path) -> Result<Self, NativeLockError> {
         let directory_node = open_directory_node(dir).map_err(NativeLockError::Io)?;
         match directory_node.try_lock() {
             Ok(()) => {}
@@ -258,13 +248,24 @@ impl OwnerLock {
             }
         }
         // Every subsequent refusal releases the acquired directory lock through its owner.
-        let mut lock = OwnerLock {
+        Ok(Self {
             directory_node: Some(directory_node),
             file: None,
             disposition: DropDisposition::PreserveUnclean,
-        };
+        })
+    }
 
-        let mut file = open_marker(dir).map_err(NativeLockError::Io)?;
+    /// Lock an existing marker for inspection, or publish the mutable holder.
+    /// A nonempty prior marker carries an unclean obligation until physical audit.
+    fn prepare_existing(
+        &mut self,
+        dir: &Path,
+        access: NativeOpenAccess,
+        instance: [u8; 16],
+    ) -> Result<bool, NativeLockError> {
+        let Some(mut file) = open_marker(dir, access).map_err(NativeLockError::Io)? else {
+            return Ok(false);
+        };
 
         match file.try_lock() {
             Ok(()) => {}
@@ -280,53 +281,29 @@ impl OwnerLock {
                 return Err(NativeLockError::Io(error));
             }
         }
-        let file = lock.file.insert(file);
+        let file = self.file.insert(file);
 
-        // Only now that exclusion is settled. A second link to the marker leaves the bytes
-        // this acquisition is about to publish rewritable under a name the owner does not
+        // Only now that exclusion is settled. A second link to the marker leaves its
+        // recorded identity rewritable under a name the owner does not
         // hold, so it is refused — but it does not divide exclusion (every opener of either
         // name locks the same node), and refusing on it ahead of the lock would hand a
         // contender an I/O verdict where the exclusion verdict applies.
         let held = file.metadata().map_err(NativeLockError::Io)?;
         admit_held_marker(&held).map_err(NativeLockError::Io)?;
         let prior_unclean = held.len() != 0;
-        let acquired_unix_secs = now_unix_secs();
-        write_owner(
-            file,
-            NativeLockOwner {
-                pid: std::process::id(),
-                instance: None,
-                acquired_unix_secs,
-            },
-        )
-        .map_err(NativeLockError::Io)?;
-        sync_dir(dir).map_err(NativeLockError::Io)?;
-
-        Ok(AcquiredLock {
-            lock,
-            prior_unclean,
-            acquired_unix_secs,
-        })
-    }
-
-    /// Publish the store instance this held lock is now open against, so a
-    /// contender and a crash forensic both name the exact store. Binding adds
-    /// the instance to the record acquisition wrote and changes nothing else,
-    /// so the acquisition time it carries is the one acquisition observed.
-    fn bind(&mut self, instance: [u8; 16], acquired_unix_secs: u64) -> Result<(), NativeLockError> {
-        let file = self
-            .file
-            .as_mut()
-            .expect("a held owner lock retains its marker");
-        write_owner(
-            file,
-            NativeLockOwner {
-                pid: std::process::id(),
-                instance: Some(instance),
-                acquired_unix_secs,
-            },
-        )
-        .map_err(NativeLockError::Io)
+        if access != NativeOpenAccess::ReadOnly {
+            write_owner(
+                file,
+                NativeLockOwner {
+                    pid: std::process::id(),
+                    instance: Some(instance),
+                    acquired_unix_secs: now_unix_secs(),
+                },
+            )
+            .map_err(NativeLockError::Io)?;
+            sync_dir(dir).map_err(NativeLockError::Io)?;
+        }
+        Ok(prior_unclean)
     }
 
     fn mark_clean(&mut self) {
@@ -406,8 +383,6 @@ pub struct NativeEngineOwner {
 /// ```
 pub struct PendingNativeEngineOwner {
     lock: OwnerLock,
-    prior_unclean: bool,
-    acquired_unix_secs: u64,
     directory: PathBuf,
 }
 
@@ -439,19 +414,20 @@ impl PendingNativeEngineOwner {
         &self.directory
     }
 
-    /// Publish `instance` in the owner marker, run the zero-capability admission
-    /// callback, then open with the requested access. Service audits an inherited
-    /// unclean engine; explicit recovery always audits; inspection preserves the
-    /// obligation. The callback runs after the marker names the store and before
-    /// any engine call, so a refusal hands the obligation on intact.
+    /// Run admission under directory exclusion before opening the engine. Mutable
+    /// access publishes `instance` in the marker before the callback; inspection
+    /// leaves the marker's bytes and absence unchanged throughout. Service audits
+    /// an inherited unclean engine, explicit recovery always audits, and inspection
+    /// preserves the obligation.
     pub fn bind_and_open_existing<R>(
         mut self,
         access: NativeOpenAccess,
         instance: [u8; 16],
         admit: impl FnOnce() -> Result<(), R>,
     ) -> Result<NativeEngineOwner, NativeOwnerOpenError<R>> {
-        self.lock
-            .bind(instance, self.acquired_unix_secs)
+        let prior_unclean = self
+            .lock
+            .prepare_existing(&self.directory, access, instance)
             .map_err(NativeOwnerOpenError::Lock)?;
         admit().map_err(NativeOwnerOpenError::Refused)?;
 
@@ -466,7 +442,7 @@ impl PendingNativeEngineOwner {
         #[cfg(all(test, unix))]
         tests::mutate_after_open_if_armed(&self.directory);
         if access == NativeOpenAccess::Recovery
-            || (self.prior_unclean && access == NativeOpenAccess::ReadWrite)
+            || (prior_unclean && access == NativeOpenAccess::ReadWrite)
         {
             engine
                 .audit_integrity()
@@ -475,15 +451,8 @@ impl PendingNativeEngineOwner {
         let Self {
             mut lock,
             directory,
-            prior_unclean,
-            ..
         } = self;
-        if !prior_unclean
-            || matches!(
-                access,
-                NativeOpenAccess::ReadWrite | NativeOpenAccess::Recovery
-            )
-        {
+        if access != NativeOpenAccess::ReadOnly {
             lock.mark_clean();
         }
         Ok(NativeEngineOwner {
@@ -515,13 +484,8 @@ impl NativeEngineOwner {
         store_dir: &Path,
     ) -> Result<PendingNativeEngineOwner, NativeOwnerAcquireError> {
         let directory = std::fs::canonicalize(store_dir).map_err(NativeOwnerAcquireError::Io)?;
-        let acquired = OwnerLock::acquire(&directory).map_err(NativeOwnerAcquireError::Lock)?;
-        Ok(PendingNativeEngineOwner {
-            lock: acquired.lock,
-            prior_unclean: acquired.prior_unclean,
-            acquired_unix_secs: acquired.acquired_unix_secs,
-            directory,
-        })
+        let lock = OwnerLock::acquire(&directory).map_err(NativeOwnerAcquireError::Lock)?;
+        Ok(PendingNativeEngineOwner { lock, directory })
     }
 
     /// Irreversibly quarantine this owner's lock, close the old engine, reopen
@@ -662,8 +626,8 @@ fn read_named_owner(dir: &Path) -> Option<NativeLockOwner> {
     read_owner(&mut file)
 }
 
-/// Open the store directory's owner marker, creating it when absent, as that directory's
-/// own regular file.
+/// Open the directory's own regular marker. Inspection leaves an absent marker
+/// absent; mutable access creates it.
 ///
 /// The entry is classified before the open, so in the ordinary case a link standing in for
 /// the marker is refused rather than created through; a link planted between that
@@ -675,19 +639,26 @@ fn read_named_owner(dir: &Path) -> Option<NativeLockOwner> {
 /// store directory, not a defence against a hostile writer inside it: that actor already
 /// holds the store's bytes.
 #[cfg(unix)]
-fn open_marker(dir: &Path) -> std::io::Result<File> {
+fn open_marker(dir: &Path, access: NativeOpenAccess) -> std::io::Result<Option<File>> {
     let path = dir.join(NATIVE_LOCK_FILE);
     match std::fs::symlink_metadata(&path) {
         Ok(named) => admit_marker_node(&named)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if access == NativeOpenAccess::ReadOnly {
+                return Ok(None);
+            }
+        }
         Err(error) => return Err(error),
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)?;
+    let file = match access {
+        NativeOpenAccess::ReadOnly => File::open(&path)?,
+        NativeOpenAccess::ReadWrite | NativeOpenAccess::Recovery => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?,
+    };
     let opened = file.metadata()?;
     admit_marker_node(&opened)?;
     if !names_same_node(&std::fs::symlink_metadata(&path)?, &opened) {
@@ -695,14 +666,14 @@ fn open_marker(dir: &Path) -> std::io::Result<File> {
             "the store lock entry does not name the opened marker",
         ));
     }
-    Ok(file)
+    Ok(Some(file))
 }
 
 /// The marker's custody rests on link counts and node identity, which this crate reads
 /// through the Unix metadata it has. A platform without them is refused rather than served
 /// by a weaker check.
 #[cfg(not(unix))]
-fn open_marker(_dir: &Path) -> std::io::Result<File> {
+fn open_marker(_dir: &Path, _access: NativeOpenAccess) -> std::io::Result<Option<File>> {
     Err(marker_refusal(
         "the store lock is admitted on Unix platforms only",
     ))
@@ -822,6 +793,13 @@ mod tests {
 
     impl Drop for Scratch {
         fn drop(&mut self) {
+            if std::thread::panicking() {
+                eprintln!(
+                    "failed native-owner fixture retained at {}",
+                    self.0.display()
+                );
+                return;
+            }
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
@@ -873,19 +851,12 @@ mod tests {
     }
 
     /// Duplicates retain the same lock descriptions as handles inherited across fork.
-    fn retain_lock_handles(lock: &OwnerLock) -> [File; 2] {
-        [
-            lock.directory_node
-                .as_ref()
-                .expect("held directory")
-                .try_clone()
-                .expect("duplicate directory handle"),
-            lock.file
-                .as_ref()
-                .expect("held marker")
-                .try_clone()
-                .expect("duplicate marker handle"),
-        ]
+    fn retain_lock_handles(lock: &OwnerLock) -> Vec<File> {
+        [&lock.directory_node, &lock.file]
+            .into_iter()
+            .flatten()
+            .map(|file| file.try_clone().expect("duplicate held lock"))
+            .collect()
     }
 
     #[test]
@@ -910,19 +881,29 @@ mod tests {
             std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean")
                 .expect("inherited audit obligation");
             let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
-            let retained = retain_lock_handles(&pending.lock);
             assert!(matches!(
                 contend(&scratch.0),
                 NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
             ));
-            match release {
-                Release::Pending => drop(pending),
-                Release::Refused => assert!(matches!(
-                    pending.bind_and_open_existing(NativeOpenAccess::ReadWrite, [0x51; 16], || {
-                        Err::<(), ()>(())
-                    }),
-                    Err(NativeOwnerOpenError::Refused(())),
-                )),
+            let retained = match release {
+                Release::Pending => {
+                    let retained = retain_lock_handles(&pending.lock);
+                    assert_eq!(retained.len(), 1);
+                    drop(pending);
+                    retained
+                }
+                Release::Refused => {
+                    let PendingNativeEngineOwner {
+                        mut lock,
+                        directory,
+                    } = pending;
+                    lock.prepare_existing(&directory, NativeOpenAccess::ReadWrite, [0x51; 16])
+                        .expect("prepare marker before admission");
+                    let retained = retain_lock_handles(&lock);
+                    assert_eq!(retained.len(), 2);
+                    drop(lock);
+                    retained
+                }
                 Release::Clean | Release::ReadOnlyUnclean => {
                     let access = match release {
                         Release::Clean => NativeOpenAccess::ReadWrite,
@@ -931,9 +912,12 @@ mod tests {
                     let owner = pending
                         .bind_and_open_existing(access, [0x51; 16], || Ok::<(), ()>(()))
                         .expect("open");
+                    let retained = retain_lock_handles(&owner.lock);
+                    assert_eq!(retained.len(), 2);
                     drop(owner);
+                    retained
                 }
-            }
+            };
             assert_eq!(
                 marker_bytes(&scratch.0).is_empty(),
                 matches!(release, Release::Clean),
@@ -964,18 +948,29 @@ mod tests {
 
     #[test]
     fn read_only_ownership_cannot_write_upgrade_or_clear_an_inherited_obligation() {
-        for inherited in [false, true] {
+        for marker in [None, Some(b"".as_slice()), Some(b"unclean".as_slice())] {
             let scratch = Scratch::new("read-only");
             NativeEngineOwner::provision(&scratch.0).expect("provision");
-            if inherited {
-                std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("stale marker");
+            let marker_path = scratch.0.join(NATIVE_LOCK_FILE);
+            if let Some(bytes) = marker {
+                std::fs::write(&marker_path, bytes).expect("initial marker");
             }
+            let assert_marker = || {
+                let observed = match std::fs::read(&marker_path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("read marker: {error}"),
+                };
+                assert_eq!(observed.as_deref(), marker);
+            };
             let path = scratch.0.join(NATIVE_ENGINE_FILE);
             let before = std::fs::read(&path).expect("engine before");
-            let mut owner = NativeEngineOwner::acquire_existing(&scratch.0)
-                .expect("acquire")
+            let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
+            assert_marker();
+            let mut owner = pending
                 .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x41; 16], || Ok::<(), ()>(()))
                 .expect("inspect");
+            assert_marker();
             assert!(
                 owner
                     .read_view()
@@ -994,7 +989,7 @@ mod tests {
                 Err(StoreError::ReadOnly { op: "recovery" })
             ));
             assert!(before == std::fs::read(&path).expect("engine after"));
-            assert_eq!(!marker_bytes(&scratch.0).is_empty(), inherited);
+            assert_marker();
         }
     }
 
@@ -1018,7 +1013,7 @@ mod tests {
             Err(NativeOwnerOpenError::Store(StoreError::RecoveryRequired))
         ));
         assert!(bytes == std::fs::read(path).expect("engine after"));
-        assert!(!marker_bytes(&scratch.0).is_empty());
+        assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
     }
 
     #[test]
@@ -1027,12 +1022,13 @@ mod tests {
         NativeEngineOwner::provision(&scratch.0).expect("provision");
         let path = scratch.0.join(NATIVE_ENGINE_FILE);
         std::fs::write(&path, b"not an engine").expect("malformed engine");
+        std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("prior marker");
         let refused = NativeEngineOwner::acquire_existing(&scratch.0)
             .expect("acquire")
             .bind_and_open_existing(NativeOpenAccess::ReadOnly, [0x42; 16], || Ok::<(), ()>(()));
         assert!(matches!(refused, Err(NativeOwnerOpenError::Store(_))));
         assert_eq!(std::fs::read(path).expect("engine after"), b"not an engine");
-        assert!(!marker_bytes(&scratch.0).is_empty());
+        assert_eq!(marker_bytes(&scratch.0), b"unclean");
     }
 
     fn contend(dir: &Path) -> NativeOwnerAcquireError {
@@ -1058,8 +1054,7 @@ mod tests {
     }
 
     /// Exclusion is decided before the store directory is read, and the marker
-    /// names the holder as precisely as the holder has published: a lock held
-    /// before its instance is known carries none, and binding publishes it. A
+    /// names the holder only after mutable opening publishes its instance. A
     /// contender is told the store is locked in both states.
     #[test]
     fn a_contender_is_locked_out_before_and_after_the_holder_binds_its_instance() {
@@ -1071,14 +1066,8 @@ mod tests {
         match contend(&scratch.0) {
             NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
                 assert_eq!(error.code(), Code::StoreLocked.as_str());
-                let NativeLockError::StoreInUse { owner: Some(owner) } = error else {
-                    panic!("a pending holder must still be named");
-                };
-                assert_eq!(owner.pid, std::process::id());
-                assert_eq!(
-                    owner.instance, None,
-                    "a holder that has not bound an instance must not claim one",
-                );
+                assert!(matches!(error, NativeLockError::StoreInUse { owner: None }));
+                assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
             }
             other => panic!("a pending holder must exclude a contender: {other}"),
         }
@@ -1268,6 +1257,7 @@ mod tests {
         for (tag, bind_before_death) in [("pending-death", false), ("bound-death", true)] {
             let scratch = Scratch::new(tag);
             NativeEngineOwner::provision(&scratch.0).expect("provision");
+            std::fs::write(scratch.0.join(NATIVE_LOCK_FILE), b"unclean").expect("prior marker");
 
             // A holder that never closes cleanly: the marker keeps its body.
             let pending =
@@ -1320,49 +1310,71 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_owner_marker_refuses_a_substituted_or_multiply_linked_entry() {
-        let scratch = Scratch::new("marker-substitution");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let elsewhere = scratch.0.join("elsewhere");
-        let marker = scratch.0.join(NATIVE_LOCK_FILE);
+        for access in [NativeOpenAccess::ReadOnly, NativeOpenAccess::ReadWrite] {
+            let scratch = Scratch::new("marker-substitution");
+            NativeEngineOwner::provision(&scratch.0).expect("provision");
+            let elsewhere = scratch.0.join("elsewhere");
+            let marker = scratch.0.join(NATIVE_LOCK_FILE);
+            let open = || {
+                NativeEngineOwner::acquire_existing(&scratch.0)
+                    .expect("directory exclusion")
+                    .bind_and_open_existing(access, [0x68; 16], || Ok::<(), ()>(()))
+            };
 
-        std::os::unix::fs::symlink(&elsewhere, &marker).expect("link the marker name away");
-        match contend(&scratch.0) {
-            NativeOwnerAcquireError::Lock(NativeLockError::Io(_)) => {}
-            other => panic!("a linked marker must be refused, not followed: {other}"),
-        }
-        assert!(
-            !elsewhere.exists(),
-            "a refused marker open must not create the node the link named",
-        );
-        std::fs::remove_file(&marker).expect("remove the link");
+            std::os::unix::fs::symlink(&elsewhere, &marker).expect("link the marker name away");
+            assert!(matches!(
+                open(),
+                Err(NativeOwnerOpenError::Lock(NativeLockError::Io(_)))
+            ));
+            assert!(
+                !elsewhere.exists(),
+                "refusal must not create the link target"
+            );
+            assert_eq!(std::fs::read_link(&marker).unwrap(), elsewhere);
+            std::fs::remove_file(&marker).expect("remove the link");
 
-        std::fs::write(&marker, b"").expect("create a real marker");
-        std::fs::hard_link(&marker, scratch.0.join("marker-alias")).expect("add a second link");
-        match contend(&scratch.0) {
-            NativeOwnerAcquireError::Lock(NativeLockError::Io(_)) => {}
-            other => panic!("a multiply-linked marker must be refused: {other}"),
+            std::fs::write(&marker, b"unclean").expect("create a real marker");
+            let alias = scratch.0.join("marker-alias");
+            std::fs::hard_link(&marker, &alias).expect("add a second link");
+            assert!(matches!(
+                open(),
+                Err(NativeOwnerOpenError::Lock(NativeLockError::Io(_)))
+            ));
+            assert_eq!(std::fs::read(&marker).unwrap(), b"unclean");
+            assert_eq!(std::fs::read(alias).unwrap(), b"unclean");
         }
     }
 
     #[test]
     fn admission_runs_under_lock_before_engine_open() {
-        let scratch = Scratch::new("admission");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let error = NativeEngineOwner::acquire_existing(&scratch.0)
-            .expect("acquire the owner")
-            .bind_and_open_existing(NativeOpenAccess::ReadWrite, [9; 16], || {
-                assert!(matches!(
-                    contend(&scratch.0),
-                    NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
-                ));
-                Err::<(), _>("refused")
-            });
-        assert!(matches!(
-            error,
-            Err(NativeOwnerOpenError::Refused("refused"))
-        ));
-        open_existing(&scratch.0, [10; 16])
-            .expect("a pre-engine refusal releases its non-quarantined lock");
+        for access in [NativeOpenAccess::ReadOnly, NativeOpenAccess::ReadWrite] {
+            let scratch = Scratch::new("admission");
+            NativeEngineOwner::provision(&scratch.0).expect("provision");
+            let engine = scratch.0.join(NATIVE_ENGINE_FILE);
+            let before = std::fs::read(&engine).expect("engine before");
+            let error = NativeEngineOwner::acquire_existing(&scratch.0)
+                .expect("acquire the owner")
+                .bind_and_open_existing(access, [9; 16], || {
+                    assert!(matches!(
+                        contend(&scratch.0),
+                        NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
+                    ));
+                    if access == NativeOpenAccess::ReadOnly {
+                        assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
+                    }
+                    Err::<(), _>("refused")
+                });
+            assert!(matches!(
+                error,
+                Err(NativeOwnerOpenError::Refused("refused"))
+            ));
+            assert_eq!(std::fs::read(engine).expect("engine after"), before);
+            if access == NativeOpenAccess::ReadOnly {
+                assert!(!scratch.0.join(NATIVE_LOCK_FILE).exists());
+            }
+            open_existing(&scratch.0, [10; 16])
+                .expect("a pre-engine refusal releases its non-quarantined lock");
+        }
     }
 
     #[test]
@@ -1811,7 +1823,10 @@ mod tests {
         seed_audit_body(&scratch.0);
         assert!(marker_bytes(&scratch.0).is_empty(), "seed closes cleanly");
         let pending = NativeEngineOwner::acquire_existing(&scratch.0).expect("acquire");
-        assert!(!pending.prior_unclean, "no inherited audit obligation");
+        assert!(
+            marker_bytes(&scratch.0).is_empty(),
+            "no inherited audit obligation"
+        );
         MUTATE_AFTER_OPEN.with(|slot| {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(pending.directory().to_path_buf());

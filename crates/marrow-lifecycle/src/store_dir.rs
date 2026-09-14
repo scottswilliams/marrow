@@ -1,17 +1,17 @@
 //! The store directory: its on-disk layout, and its custody while an owner holds it.
 //!
-//! A provisioned store is a private owner-only directory holding four files:
+//! A provisioned store is a private owner-only directory with these artifacts:
 //!
 //! ```text
 //! <dir>/store.redb   the ordered-byte engine database
 //! <dir>/envelope     the StoreEnvelope bytes (store instance + writer/engine provenance)
 //! <dir>/head         the LogicalHead bytes (active binding + reserved slots + head map)
-//! <dir>/lock         the owner lock (advisory; its body names the live owner)
+//! <dir>/lock         optional ownership marker (records the last mutable holder)
 //! ```
 //!
 //! A store is COMPLETE only when the directory holds all three of `store.redb`, `envelope`,
 //! and `head` as regular files. The lock is not one of them and says nothing about
-//! completeness: provision does not write it, the first open creates it, and from then on it
+//! completeness: provision and inspection do not write it, mutable opening creates it, and it
 //! persists — empty after a clean close, carrying the crashed holder's descriptor after an
 //! unclean one.
 //!

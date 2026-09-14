@@ -132,6 +132,8 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
         &["run", "main.seed", "--store", store.to_str().unwrap()],
     );
     let head = fs::read(store.join("head")).expect("source head");
+    fs::write(store.join("lock"), b"unclean").expect("prior marker");
+    let before = store_files(&store);
     let backup = temp.root.join("complete.backup");
     let receipt = run(
         &project,
@@ -148,6 +150,7 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     let backed: serde_json::Value =
         serde_json::from_slice(&receipt.stdout).expect("backup receipt");
     assert_eq!(backed["outcome"], "complete");
+    assert!(store_files(&store) == before, "store artifacts changed");
 
     // A code edit cannot silently change the source binding for backup.
     write(
@@ -175,6 +178,7 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
         marrow_codes::Code::StoreImageNotActive.as_str()
     );
     assert!(!refused_path.exists());
+    assert!(store_files(&store) == before, "store artifacts changed");
     assert_eq!(fs::read(store.join("head")).unwrap(), head);
     write(&project.join("src/main.mw"), "not valid Marrow");
     let restored = temp.root.join("restored");
@@ -267,8 +271,25 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("failed doctor fixture retained at {}", self.root.display());
+            return;
+        }
         fs::remove_dir_all(&self.root).ok();
     }
+}
+
+fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+    fs::read_dir(dir)
+        .expect("store entries")
+        .map(|entry| {
+            let entry = entry.expect("store entry");
+            (
+                entry.file_name(),
+                fs::read(entry.path()).expect("store file"),
+            )
+        })
+        .collect()
 }
 
 fn write(path: &Path, contents: &str) {
@@ -330,9 +351,12 @@ fn a_clean_store_audits_with_a_stable_digest_and_exit_zero(toolchain: &Path) {
     let temp = TempDir::new("clean");
     let (project, store) = project_with_store(toolchain, &temp);
     let store_arg = store.to_str().expect("store path");
+    fs::write(store.join("lock"), b"unclean").expect("prior marker");
+    let before = store_files(&store);
 
     let first = marrow(toolchain, &project, &["doctor", "--store", store_arg]);
     assert!(first.status.success(), "{}", text(&first.stderr));
+    assert!(store_files(&store) == before, "store artifacts changed");
     let out = text(&first.stdout);
     assert!(
         out.starts_with(&format!("Logical store audit: {store_arg}\n")),
@@ -357,6 +381,7 @@ fn a_clean_store_audits_with_a_stable_digest_and_exit_zero(toolchain: &Path) {
         &["doctor", "--store", store_arg, "--format", "jsonl"],
     );
     assert!(second.status.success(), "{}", text(&second.stderr));
+    assert!(store_files(&store) == before, "store artifacts changed");
     let out = text(&second.stdout);
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 1, "{out}");
@@ -426,6 +451,8 @@ fn recovery_refuses_an_altered_engine_with_exit_one(toolchain: &Path) {
 fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
     let temp = TempDir::new("stale");
     let (project, store) = project_with_store(toolchain, &temp);
+    fs::remove_file(store.join("lock")).expect("remove clean marker");
+    let before = store_files(&store);
     write(
         &project.join("src/main.mw"),
         &SOURCE.replace("?? 0", "?? 1"),
@@ -436,6 +463,7 @@ fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
         &["doctor", "--store", store.to_str().expect("store path")],
     );
     assert_eq!(output.status.code(), Some(1));
+    assert!(store_files(&store) == before, "store artifacts changed");
     assert!(
         text(&output.stderr).starts_with("store.image_not_active: "),
         "{}",
@@ -454,6 +482,7 @@ fn a_code_only_edit_must_be_rebound_before_it_audits(toolchain: &Path) {
         ],
     );
     assert_eq!(output.status.code(), Some(1));
+    assert!(store_files(&store) == before, "store artifacts changed");
     assert!(
         text(&output.stdout).starts_with(
             "{\"code\":\"store.image_not_active\",\"kind\":\"doctor\",\"outcome\":\"error\",\"store\":\""

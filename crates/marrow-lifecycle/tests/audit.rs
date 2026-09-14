@@ -163,8 +163,11 @@ fn populated_backup_restores_fresh_identity_head_index_and_executable_values() {
         DurableRun::Ran(Ok(_))
     ));
     drop(source_attachment);
+    std::fs::write(source.join(marrow_lifecycle::LOCK_FILE), b"unclean").unwrap();
+    let before = store_files(&source);
     let artifact = scratch.store("backup");
     let backed = marrow_lifecycle::backup(&source, &bytes, &artifact).unwrap();
+    assert!(store_files(&source) == before, "source artifacts changed");
     let destination = scratch.store("restored");
     let restored =
         marrow_lifecycle::restore(&mut std::fs::File::open(artifact).unwrap(), &destination)
@@ -217,8 +220,25 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("failed audit fixture retained at {}", self.base.display());
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.base);
     }
+}
+
+fn store_files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .expect("store entries")
+        .map(|entry| {
+            let entry = entry.expect("store entry");
+            (
+                entry.file_name(),
+                std::fs::read(entry.path()).expect("store file"),
+            )
+        })
+        .collect()
 }
 
 fn provision_from(dir: &Path, image: &VerifiedImage) {
@@ -301,7 +321,7 @@ fn digest_of(audit: &marrow_lifecycle::StoreAudit) -> String {
 }
 
 #[test]
-fn logical_inspection_preserves_engine_head_and_envelope_bytes() {
+fn logical_inspection_preserves_all_store_artifacts() {
     for (tag, replacement) in [
         ("clean", None),
         ("scalar", Some(b'b')),
@@ -322,22 +342,14 @@ fn logical_inspection_preserves_engine_head_and_envelope_bytes() {
             bytes[at + 2] = replacement;
             std::fs::write(engine, bytes).expect("change scalar bytes");
         }
-        let before: Vec<_> = [
-            ENGINE_FILE,
-            marrow_lifecycle::HEAD_FILE,
-            marrow_lifecycle::ENVELOPE_FILE,
-        ]
-        .into_iter()
-        .map(|name| (name, std::fs::read(store.join(name)).expect("before")))
-        .collect();
+        std::fs::write(store.join(marrow_lifecycle::LOCK_FILE), b"unclean").unwrap();
+        let before = store_files(&store);
         let outcome = audit(&store, prepare(image)).expect("logical inspection");
         assert_eq!(outcome.is_clean(), replacement != Some(0xff));
-        for (name, bytes) in before {
-            assert!(
-                bytes == std::fs::read(store.join(name)).expect("after"),
-                "{tag}: audit changed {name}"
-            );
-        }
+        assert!(
+            store_files(&store) == before,
+            "{tag}: audit changed artifacts"
+        );
     }
 }
 
@@ -423,15 +435,8 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
     // Both engines were created normally. The fresh mismatched copy exercises
     // logical audit failure after exact image admission, without raw engine APIs.
     std::fs::copy(populated.join(ENGINE_FILE), source.join(ENGINE_FILE)).unwrap();
-    let files = [
-        ENGINE_FILE,
-        marrow_lifecycle::HEAD_FILE,
-        marrow_lifecycle::ENVELOPE_FILE,
-    ];
-    let before: Vec<_> = files
-        .iter()
-        .map(|name| std::fs::read(source.join(name)).unwrap())
-        .collect();
+    std::fs::write(source.join(marrow_lifecycle::LOCK_FILE), b"unclean").unwrap();
+    let before = store_files(&source);
     let destination = scratch.store("backup");
     let error = marrow_lifecycle::backup(&source, &bytes, &destination).unwrap_err();
     let marrow_lifecycle::BackupFault::Invalid(report) = error.fault else {
@@ -453,9 +458,7 @@ fn backup_rejects_inconsistent_source_indexes_without_publishing() {
     assert!(error.unpublished.is_none());
     assert!(error.cleanup.is_none());
     assert!(!destination.exists());
-    for (name, before) in files.iter().zip(before) {
-        assert_eq!(std::fs::read(source.join(name)).unwrap(), before);
-    }
+    assert!(store_files(&source) == before, "source artifacts changed");
     let mut remaining: Vec<_> = std::fs::read_dir(&scratch.base)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -501,10 +504,13 @@ fn only_the_exact_active_binding_may_audit() {
     provision_from(&store, &image);
 
     let edited = compile(EDITED_SOURCE, IDS);
+    assert!(!store.join(marrow_lifecycle::LOCK_FILE).exists());
+    let before = store_files(&store);
     assert!(matches!(
         audit(&store, prepare(edited)),
         Err(AuditError::ImageNotActive)
     ));
+    assert!(store_files(&store) == before, "store artifacts changed");
     let widened = compile(WIDENED_SOURCE, IDS);
     match audit(&store, prepare(widened)) {
         Err(AuditError::ContractChanged(refusal)) => {
@@ -512,6 +518,7 @@ fn only_the_exact_active_binding_may_audit() {
         }
         other => panic!("expected a contract-changed refusal, got {other:?}"),
     }
+    assert!(store_files(&store) == before, "store artifacts changed");
     // Neither refusal rebound the store: the original image is still active.
     assert!(matches!(
         attach(&store, prepare(image.clone())),

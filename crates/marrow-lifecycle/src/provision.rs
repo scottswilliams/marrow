@@ -9,7 +9,7 @@
 //! Preflight is strictly
 //! non-creating, so probing a destination never leaves a file behind.
 //!
-//! Open takes the single-owner lock first (naming the live owner on contention), and only
+//! Open takes the single-owner lock first (including any recorded identity on contention), and only
 //! then reads the store directory at all: completeness, the envelope, and the head are one
 //! admission snapshot taken under that owner, each artifact admitted from the retained
 //! directory within its own byte ceiling. Deciding exclusion ahead of every read is what

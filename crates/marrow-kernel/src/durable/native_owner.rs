@@ -193,8 +193,9 @@ impl PendingNativeStoreOwner {
         self.pending.directory()
     }
 
-    /// Bind `instance` into the owner marker, run the zero-capability admission
-    /// callback, and open the engine with the requested access under the same lock. Only
+    /// Run the zero-capability admission callback and open with the requested access
+    /// under the same lock. Mutable access publishes `instance` in the marker;
+    /// read-only access preserves its bytes and absence. Only
     /// service or explicit recovery access may discharge a physical-audit obligation. The
     /// recovery scope is minted here, from the instance the caller bound and the
     /// directory the lock was taken over, so no scope can name a store this owner

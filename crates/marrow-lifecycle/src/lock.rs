@@ -9,15 +9,13 @@ use marrow_kernel::durable::{NativeLockError, NativeLockOwner};
 
 use crate::instance::StoreInstanceId;
 
-/// The live owner named by a store-lock contention diagnostic.
+/// The marker identity included in a store-lock contention diagnostic.
+/// Inspection preserves earlier marker records, so this need not be the live holder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockOwner {
-    /// The owning process id.
+    /// The recorded process id.
     pub pid: u32,
-    /// The lifecycle store instance held by that process, once that process has
-    /// bound it. A holder that has taken the lock but has not yet read the store
-    /// directory it is opening has no instance to name, and the projection reports
-    /// exactly that rather than inventing one.
+    /// The lifecycle store instance recorded by that process, if present.
     pub instance: Option<StoreInstanceId>,
     /// The acquisition time in Unix-epoch seconds. Forensic only.
     pub acquired_unix_secs: u64,
@@ -85,13 +83,13 @@ impl std::fmt::Display for LockError {
                     }),
             } => write!(
                 formatter,
-                "the store is already open by process {pid} (store instance {}); close it, then \
-                 retry",
+                "the store is already open; its marker records process {pid} (store instance {}); \
+                 close the current holder, then retry",
                 instance.to_hex(),
             ),
             Self::StoreInUse { owner: Some(owner) } => write!(
                 formatter,
-                "the store is already open by process {}; close it, then retry",
+                "the store is already open; its marker records process {}; close the current holder, then retry",
                 owner.pid,
             ),
             Self::StoreInUse { owner: None } => write!(

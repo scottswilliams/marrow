@@ -27,7 +27,8 @@ are not transferred. Restore creates a fresh store instance, retaining the
 image, logical data and accepted facts. It executes no embedded export. It
 does not merge stores, evolve a schema or replace an occupied destination.
 
-Backup performs logical audit and export in one coherent read view. A finding
+Backup leaves source artifacts unchanged, including ownership-marker bytes or
+absence. It performs logical audit and export in one coherent read view. A finding
 prevents completion. It does not verify physical source checksums. The bounded
 stream checks order, lengths, count, a completion digest and exact end of input;
 the digest detects altered bytes but does not authenticate their producer.
@@ -226,8 +227,8 @@ active program without running an export
 ([marrow doctor](../tools/cli.md#marrow-doctor)). The project at the working
 directory must match that program. The audit admits the image and inspects the
 store under its owner lock, then releases the lock before printing its findings
-and a digest over the entries. It leaves the engine file, head, and envelope
-unchanged:
+and a digest over the entries. It leaves the engine file, head, envelope and
+ownership marker unchanged, including marker absence:
 
 ```sh
 marrow doctor --store ./store
@@ -312,6 +313,8 @@ drive-cache reset is not established: the commit path issues `fsync`, not
 One process owns a store at a time. The runner takes the store's lock when it
 attaches and releases it when it exits. An audit holds it through admission and
 inspection and releases it before printing. A second process opening a held
-store is `store.locked`. The lock excludes other Marrow processes; it does not
+store is `store.locked`. Inspection does not publish an owner identity; a
+contention diagnostic's marker record may belong to an earlier mutable holder.
+The lock excludes other Marrow processes; it does not
 detect a store file replaced or rolled back underneath it by another program.
 [Status](../status.md#trust-boundaries) lists the trust boundaries.
