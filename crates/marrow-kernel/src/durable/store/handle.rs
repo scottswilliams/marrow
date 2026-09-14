@@ -7,8 +7,8 @@ use super::super::audit::{self, AuditReport, ContentDigest, ExportError, ExportS
 use super::super::physical;
 use super::super::{
     AuthorizedSite, CommitRecovery, CommitRecoveryScope, DemandCoverage, Denied,
-    DurableCommitState, IndexSchema, InvocationGrant, RootNumbering, SessionError, SiteSlot,
-    StoreProjection, number_store,
+    DurableCommitState, IndexSchema, InvocationGrant, NumberedProjection, RootNumbering,
+    SessionError, SiteSlot, StoreProjection,
 };
 use super::resolve::resolve_site;
 use super::{ReadSession, TxnSession};
@@ -22,8 +22,8 @@ pub struct DurableStore<E: ByteEngine> {
     /// against them. One engine transaction spans every root, so a cross-root write commits
     /// or rolls back as one unit.
     projection: StoreProjection,
-    /// The store-local cell-key numbering of every root's durable nodes (FR01 §3), computed
-    /// once from the projection's roots at construction and parallel to them. The site
+    /// The store-local cell-key numbering of every root's durable nodes, minted once
+    /// with the projection and parallel to its roots. The site
     /// resolver walks a root's [`RootNumbering`] in lockstep with its schema to number every
     /// addressed node, so cell keys are keyed by number, never by source spelling.
     numbering: Vec<RootNumbering>,
@@ -85,31 +85,39 @@ impl<E: ByteEngine> DurableStore<E> {
         projection: StoreProjection,
         ceiling: DemandCoverage,
     ) -> Self {
-        Self::from_projection_with_optional_recovery_scope(engine, projection, ceiling, None)
+        Self::from_numbered_with_optional_recovery_scope(
+            engine,
+            NumberedProjection::fresh(projection),
+            ceiling,
+            None,
+        )
     }
 
     /// Build a persistent store handle bound to the lifecycle-owned recovery scope.
-    pub(crate) fn from_projection_with_ceiling_and_recovery_scope(
+    pub(crate) fn from_numbered_with_ceiling_and_recovery_scope(
         engine: E,
-        projection: StoreProjection,
+        layout: NumberedProjection,
         ceiling: DemandCoverage,
         recovery_scope: CommitRecoveryScope,
     ) -> Self {
-        Self::from_projection_with_optional_recovery_scope(
+        Self::from_numbered_with_optional_recovery_scope(
             engine,
-            projection,
+            layout,
             ceiling,
             Some(recovery_scope),
         )
     }
 
-    fn from_projection_with_optional_recovery_scope(
+    fn from_numbered_with_optional_recovery_scope(
         engine: E,
-        projection: StoreProjection,
+        layout: NumberedProjection,
         ceiling: DemandCoverage,
         recovery_scope: Option<CommitRecoveryScope>,
     ) -> Self {
-        let numbering = number_store(&projection);
+        let NumberedProjection {
+            projection,
+            numbering,
+        } = layout;
         Self {
             engine,
             projection,
@@ -157,8 +165,18 @@ impl<E: ByteEngine> DurableStore<E> {
         state
     }
 
-    /// Consume this semantic handle and return its engine to the enclosing
-    /// kernel-owned native capsule. This is never public outside the kernel.
+    /// Move the exact admitted layout alongside the engine during consuming recovery.
+    pub(crate) fn into_parts(self) -> (E, NumberedProjection) {
+        (
+            self.engine,
+            NumberedProjection {
+                projection: self.projection,
+                numbering: self.numbering,
+            },
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn into_engine(self) -> E {
         self.engine
     }

@@ -146,9 +146,9 @@ pub fn audit(dir: &Path, prepared: PreparedImage) -> Result<StoreAudit, AuditErr
     let Some(projection) = projection else {
         return Err(AuditError::NotExecutable);
     };
-    let admission = ImageAdmission::derive(&image, &projection);
     let names = Names::new(&projection);
-    let opened = open_admitted(dir, projection, NativeOpenAccess::ReadOnly, |head| {
+    let admission = ImageAdmission::derive(&image, projection);
+    let opened = open_admitted(dir, NativeOpenAccess::ReadOnly, |head| {
         admission.admit_exact(head)
     })
     .map_err(open_error)?;
@@ -176,27 +176,25 @@ pub(crate) fn open_error(error: AdmitError<ExactRefusal>) -> AuditError {
 }
 
 /// Reread the metadata under the retained owner after publication/activation.
-/// Reuse the image's derived facts; this gate neither opens an engine nor audits data again.
-pub(crate) fn admit_published(
+/// `expected_head` is the head admitted before construction or recovery. Exact equality
+/// preserves that admission; this gate neither derives layout nor audits data again.
+pub(crate) fn verify_published(
     directory: &crate::store_dir::AdmittedStoreDir,
     location: &Path,
     expected: &crate::envelope::EnvelopeRecord,
     expected_head: marrow_image::StoreHeadDigest,
-    admission: &ImageAdmission<'_>,
 ) -> Result<(), AuditError> {
     directory
         .verify_location(location)
         .map_err(|error| AuditError::Open(crate::OpenError::Admission(error)))?;
     let actual = crate::provision::decode_record(directory).map_err(AuditError::Open)?;
-    let (head, digest) = crate::provision::decode_head(directory).map_err(AuditError::Open)?;
+    let (_, digest) = crate::provision::decode_head(directory).map_err(AuditError::Open)?;
     if &actual != expected || digest != expected_head {
         return Err(AuditError::Open(crate::OpenError::Corruption {
             message: "activation metadata changed before final admission".into(),
         }));
     }
-    admission
-        .admit_exact(&head)
-        .map_err(|error| open_error(AdmitError::Refused(error)))
+    Ok(())
 }
 
 pub(crate) fn inspect(

@@ -139,9 +139,9 @@ pub fn backup(
     let image = marrow_verify::verify(image_bytes).map_err(BackupFault::Image)?;
     let (image, projection) = prepare(image).into_parts();
     let projection = projection.ok_or(BackupFault::Audit(AuditError::NotExecutable))?;
-    let admission = ImageAdmission::derive(&image, &projection);
     let names = Names::new(&projection);
-    let opened = open_admitted(source, projection, NativeOpenAccess::ReadOnly, |head| {
+    let admission = ImageAdmission::derive(&image, projection);
+    let opened = open_admitted(source, NativeOpenAccess::ReadOnly, |head| {
         admission.admit_exact(head)
     })
     .map_err(|error| BackupFault::Audit(audit::open_error(error)))?;

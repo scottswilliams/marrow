@@ -1,61 +1,26 @@
-//! Persistent image attachment and binding-only updates. Shared image admission
-//! owns the binding, authority ceiling and head-map checks used by lifecycle operations.
+//! Persistent attachment and binding-only code updates.
 //!
-//! An attach consumes a [`PreparedImage`], takes the store's single-owner lock, rereads the
-//! persisted head from disk (never a cached copy), and classifies the image against the
-//! store's active binding:
-//!
-//! - **Already active** — the image is byte-identical to the active binding; the store opens
-//!   with the head and envelope byte-unchanged. Taking the lock has already rewritten its
-//!   owner marker, as it does on every attach before anything is classified.
-//! - **Demand exceeds ceiling** — the presented image demands durable authority the store's
-//!   accepted ceiling (its separately owned standing maximum, recorded at provision) does not
-//!   admit. Checked first, after the lock and before any engine call, so a broadened effect
-//!   is refused with zero engine calls, naming the exceeding export, effect, and place in
-//!   source vocabulary (`authority::admit`). Not corruption: the store is intact.
-//! - **Head-map pin disagreement** — the persisted ledger-id ↔ cell-number bijection
-//!   (FR01 §3) disagrees with the (ledger id → cell number) binding this toolchain would
-//!   actually serve the store under: the kernel's numbering of the exact projection this
-//!   open installs, paired to the image's durable identities by source name and node kind
-//!   (`crate::image::derive_head_map_pin`). Checked with the admission gate, before any
-//!   engine call: a store is never attached under a numbering that disagrees with its
-//!   persisted pin, because serving it would readdress durable cells. Fail-closed and
-//!   recovery-shaped; the head, envelope, and engine data are unchanged (acquisition has
-//!   already rewritten the lock's owner marker, so the next successful open audits).
-//! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
-//!   image's code (its byte identity) differs. The actor durably writes Pending before
-//!   changing the head, and Active only after the head's directory barrier. A receipt
-//!   follows the final Active directory barrier. The receipt
-//!   claims only that the code was updated with the durable contract unchanged — never that
-//!   program meaning is preserved. The accepted ceiling is preserved verbatim across the
-//!   rebind (a standing maximum is expanded only by conscious re-acceptance).
-//! - **Contract changed** — a binding fact differs (an evolution of the durable contract or
-//!   the interface). This is a typed refusal, *not* corruption: the store is intact and the
-//!   prior program remains usable. It names the changed fact category and points at `marrow
-//!   apply`, which owns the typed change review (F03a) that names the exact changed source
-//!   places; F02a names the category. The classification runs after the engine's physical
-//!   open, so it is what a *changed contract over a healthy engine* yields; an engine that
-//!   fails to open surfaces as its own open error instead. Either way the store is not
-//!   served.
-//!
-//! A served store is a [`NativeAttachment`]: the admitted image and the open store behind
-//! private fields, so the VM executes only that image against that store. The trusted bulk
-//! importer shares the admission gate through [`ImageAdmission`] but requires the exact
-//! active binding and never rebinds. An open store holds the store's owner lock, which is
-//! non-`Clone` and non-serializable, so no session, bytecode, or client path can enter or
-//! forge a lifecycle state, and there is no serialized form to reconstruct one from.
+//! Under the retained directory owner, admission checks the accepted ceiling,
+//! compatible binding facts and complete image/projection/Head correspondence before
+//! opening an engine. The resulting numbered projection carries the Head's addresses.
+//! An exact active image leaves Head and Envelope unchanged. A code-only rebind
+//! publishes Pending, then Head, then Active with their durability barriers before
+//! returning a receipt. Changed contracts are typed refusals; they never construct
+//! a semantic store handle. NativeAttachment keeps the admitted image and owner together.
 
 use std::path::Path;
 
 use marrow_codes::Code;
 use marrow_image::CeilingDescriptor;
-use marrow_kernel::durable::StoreProjection;
+use marrow_kernel::durable::{NumberedProjection, StoreProjection};
 use marrow_verify::VerifiedImage;
 
 use crate::attachment::{Attachment, NativeAttachment, PreparedImage};
 use crate::authority::{self, DemandExceedsCeiling};
 use crate::head::{ActiveBinding, LogicalHead};
-use crate::image::{DerivedPin, HeadMapPinMismatch, active_binding, derive_head_map_pin};
+use crate::image::{
+    HeadMapPinMismatch, PinDisagreement, ProjectedNodes, active_binding, derive_projection_nodes,
+};
 use crate::provision::{AdmitError, OpenError, open_admitted};
 use crate::store_dir;
 
@@ -98,21 +63,22 @@ pub(crate) enum ExactRefusal {
     Admission(AdmissionRefusal),
 }
 
-/// The admission facts one image carries into a locked store: its active binding and the
-/// head-map pin this toolchain would serve it under. Derived once, pure over the image and
-/// its projection, before the store is touched.
+/// One image's active binding, occurrence correspondence and owned projection.
+/// Successful admission consumes them into the exact accepted numbered layout.
 pub(crate) struct ImageAdmission<'a> {
     image: &'a VerifiedImage,
     incoming: ActiveBinding,
-    expected_pin: Result<DerivedPin, HeadMapPinMismatch>,
+    nodes: Result<ProjectedNodes, HeadMapPinMismatch>,
+    projection: StoreProjection,
 }
 
 impl<'a> ImageAdmission<'a> {
-    pub(crate) fn derive(image: &'a VerifiedImage, projection: &StoreProjection) -> Self {
+    pub(crate) fn derive(image: &'a VerifiedImage, projection: StoreProjection) -> Self {
         Self {
             image,
             incoming: active_binding(image),
-            expected_pin: derive_head_map_pin(image, projection),
+            nodes: derive_projection_nodes(image, &projection),
+            projection,
         }
     }
 
@@ -121,22 +87,33 @@ impl<'a> ImageAdmission<'a> {
         &self.incoming
     }
 
-    /// The attach gate: the accepted ceiling admits the image's whole-program demand, and
-    /// when the incoming durable contract is the store's active contract the persisted pin
-    /// is exactly the derived binding. A *changed* durable contract is a different graph
-    /// whose numbering legitimately differs; that path is classified as the typed
-    /// contract-changed refusal after the engine's physical open and never serves the store.
-    pub(crate) fn admit_compatible(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
-        self.admit_ceiling(head)?;
-        if self.incoming.durable_contract == head.binding.durable_contract {
-            self.verify_pin(head)?;
+    /// Check the ceiling before contract compatibility, then mint the accepted layout.
+    /// An incompatible graph has no mapping for this handle and never opens an engine.
+    pub(crate) fn admit_compatible(
+        self,
+        head: &LogicalHead,
+    ) -> Result<NumberedProjection, LifecycleError> {
+        self.admit_ceiling(head).map_err(|refusal| match refusal {
+            AdmissionRefusal::Exceeds(refusal) => LifecycleError::DemandExceedsCeiling(refusal),
+            AdmissionRefusal::CeilingCorrupt => {
+                LifecycleError::Open(AdmissionRefusal::ceiling_corrupt())
+            }
+            AdmissionRefusal::Pin(refusal) => LifecycleError::HeadMapPin(refusal),
+        })?;
+        if !self.incoming.facts_equal(&head.binding) {
+            return Err(LifecycleError::ContractChanged(ContractChanged {
+                changed: classify_delta(&head.binding, &self.incoming),
+            }));
         }
-        Ok(())
+        self.numbered(head).map_err(LifecycleError::HeadMapPin)
     }
 
     /// The import gate: the head binds exactly this image, the accepted ceiling admits it,
     /// and the persisted pin is exactly the derived binding — all before the engine opens.
-    pub(crate) fn admit_exact(&self, head: &LogicalHead) -> Result<(), ExactRefusal> {
+    pub(crate) fn admit_exact(
+        self,
+        head: &LogicalHead,
+    ) -> Result<NumberedProjection, ExactRefusal> {
         let stored = &head.binding;
         if self.incoming != *stored {
             return Err(if self.incoming.image_id == stored.image_id {
@@ -150,7 +127,8 @@ impl<'a> ImageAdmission<'a> {
             });
         }
         self.admit_ceiling(head).map_err(ExactRefusal::Admission)?;
-        self.verify_pin(head).map_err(ExactRefusal::Admission)
+        self.numbered(head)
+            .map_err(|refusal| ExactRefusal::Admission(AdmissionRefusal::Pin(refusal)))
     }
 
     /// Reconstruct the accepted ceiling from the persisted head and intersect it with the
@@ -162,14 +140,13 @@ impl<'a> ImageAdmission<'a> {
         authority::admit(self.image, &accepted).map_err(AdmissionRefusal::Exceeds)
     }
 
-    /// The head-map pin (FR01 §3): the persisted ledger-id ↔ cell-number bijection must be
-    /// exactly the binding the derived pin carries — a disagreement (a drifted numbering, a
-    /// permuted or foreign head) would readdress durable cells.
-    fn verify_pin(&self, head: &LogicalHead) -> Result<(), AdmissionRefusal> {
-        match &self.expected_pin {
-            Ok(pin) => pin.verify(&head.head_map).map_err(AdmissionRefusal::Pin),
-            Err(mismatch) => Err(AdmissionRefusal::Pin(mismatch.clone())),
-        }
+    /// Resolve accepted physical addresses only after semantic correspondence succeeds.
+    fn numbered(self, head: &LogicalHead) -> Result<NumberedProjection, HeadMapPinMismatch> {
+        let numbers = self.nodes?.accepted_numbers(&head.head_map)?;
+        NumberedProjection::accepted(self.projection, &numbers, head.head_map.next_number())
+            .map_err(|error| HeadMapPinMismatch {
+                disagreement: PinDisagreement::Numbering(error),
+            })
     }
 }
 
@@ -346,39 +323,23 @@ pub fn attach(dir: &Path, prepared: PreparedImage) -> Result<AttachOutcome, Life
     // is touched, so the gate below needs no borrow of the projection the open consumes. The
     // gate runs after the single-owner lock and before any engine call, so a refusal makes
     // zero engine calls.
-    let admission = ImageAdmission::derive(&image, &projection);
+    let admission = ImageAdmission::derive(&image, projection);
+    let incoming = *admission.incoming();
     let mut opened = match open_admitted(
         dir,
-        projection,
         marrow_kernel::durable::NativeOpenAccess::ReadWrite,
         |head| admission.admit_compatible(head),
     ) {
         Ok(opened) => opened,
         Err(AdmitError::Open(error)) => return Err(LifecycleError::Open(error)),
-        Err(AdmitError::Refused(AdmissionRefusal::Exceeds(refusal))) => {
-            return Err(LifecycleError::DemandExceedsCeiling(refusal));
-        }
-        Err(AdmitError::Refused(AdmissionRefusal::CeilingCorrupt)) => {
-            return Err(LifecycleError::Open(AdmissionRefusal::ceiling_corrupt()));
-        }
-        Err(AdmitError::Refused(AdmissionRefusal::Pin(refusal))) => {
-            return Err(LifecycleError::HeadMapPin(refusal));
-        }
+        Err(AdmitError::Refused(error)) => return Err(error),
     };
 
-    let incoming = *admission.incoming();
     let stored = opened.head.binding;
 
     // Byte-identical binding: already active, with no head or envelope write.
     if incoming == stored {
         return Ok(AttachOutcome::AlreadyActive(Attachment::new(image, opened)));
-    }
-
-    // A binding-fact change is a typed refusal, never corruption.
-    if !stored.facts_equal(&incoming) {
-        return Err(LifecycleError::ContractChanged(ContractChanged {
-            changed: classify_delta(&stored, &incoming),
-        }));
     }
 
     // Binding-only rebind: the durable contract, interface, and ceiling are unchanged and

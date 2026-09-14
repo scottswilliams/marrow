@@ -1206,6 +1206,7 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
 
     for forbidden in [
         "pub fn from_engine_with_recovery_scope(",
+        "pub fn from_numbered_with_ceiling_and_recovery_scope(",
         "pub fn from_projection_with_ceiling_and_recovery_scope(",
         // The former spelling of the same constructor, kept so a rename back to it is as
         // visible as reintroducing the constructor under its current name.
@@ -1229,7 +1230,8 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
 
     assert!(
         kernel_owner.contains("store: Option<DurableStore<NativeEngineOwner>>")
-            && kernel_owner.contains("store.into_engine().reopen_existing_and_audit()")
+            && kernel_owner.contains("store.into_parts()")
+            && kernel_owner.contains("engine.reopen_existing_and_audit()")
             && kernel_owner.contains("reopened.classify_recovery(recovery)"),
         "the upper owner must keep semantic recovery inside the lower locked owner",
     );

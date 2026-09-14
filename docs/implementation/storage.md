@@ -19,8 +19,17 @@ back to a value (`codec/`) and hands it to the VM. Writes follow the same path
 in reverse, staged inside one engine transaction that commits with the
 `transaction` block.
 
-`number_store` assigns globally unique store-local numbers to roots, branches,
-groups, and fields. Each root or branch declaration uses its number as a static
+`number_store` assigns fresh preorder numbers to roots, branches, groups and
+fields. Persistent opening instead resolves each verified image identity to its
+accepted Head number. Lifecycle's occurrence join checks paths, kinds and complete
+coverage; the kernel's `NumberedProjection` validates exact count, uniqueness and
+exclusive high-water through the same structural walk used for fresh numbering.
+The owned pair passes through native construction, commit-recovery reopening and
+restore without re-deriving addresses. Import completes its checked site
+reprojection before this pairing. The simultaneous node-count bound does not
+restrict the values of accepted u32 physical numbers.
+
+Each root or branch declaration uses its number as a static
 entry-family prefix. An entry marker appends the encoded full ancestor-and-own
 key tuple and a terminator; its field and group leaves extend that marker.
 The selected family's schema fixes every key component's kind and position.
@@ -298,8 +307,9 @@ never decodes those files as a missing head update or deletes them as stale work
 A legacy envelope first becomes pending upgrade with the exact current head
 digest. Recovery synchronizes artifacts, the store directory and its current
 parent, then writes Active and synchronizes the directory. It verifies the
-current location and rereads the actual envelope and head for final exact-image
-admission. It preserves the instance, selected head and logical data and records
+current location and rereads the actual envelope and head. Exact envelope and
+previously admitted Head-digest equality preserve the image admission without
+deriving another layout. It preserves the instance, selected head and logical data and records
 the recovery toolchain as envelope writer. No application attachment escapes
 this operation.
 

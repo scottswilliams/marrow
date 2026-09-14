@@ -17,7 +17,7 @@ use super::session_host::SessionHost;
 use super::store::{DurableStore, ReadSession, TxnSession};
 use super::{
     CommitRecovery, CommitRecoveryScope, DemandCoverage, DurableCommitState, InvocationGrant,
-    SessionError, StoreProjection,
+    NumberedProjection, SessionError,
 };
 
 /// A persistent native store whose semantic handle, engine, and process owner
@@ -45,7 +45,6 @@ pub struct NativeStoreOwner {
     store: Option<DurableStore<NativeEngineOwner>>,
     directory: PathBuf,
     instance: [u8; 16],
-    projection: StoreProjection,
 }
 
 impl NativeStoreOwner {
@@ -78,7 +77,8 @@ impl NativeStoreOwner {
             .store
             .take()
             .expect("a live native owner retains its semantic store");
-        let engine = match store.into_engine().reopen_existing_and_audit() {
+        let (engine, layout) = store.into_parts();
+        let engine = match engine.reopen_existing_and_audit() {
             Ok(engine) => engine,
             Err(_) => return (DurableCommitState::Unknown, None),
         };
@@ -87,11 +87,8 @@ impl NativeStoreOwner {
             write: engine.require_write_access("open").is_ok(),
         };
         let scope = CommitRecoveryScope::persistent(self.instance, &self.directory);
-        let mut reopened = DurableStore::from_projection_with_ceiling_and_recovery_scope(
-            engine,
-            self.projection.clone(),
-            ceiling,
-            scope,
+        let mut reopened = DurableStore::from_numbered_with_ceiling_and_recovery_scope(
+            engine, layout, ceiling, scope,
         );
         let state = reopened.classify_recovery(recovery);
         if state == DurableCommitState::Unknown {
@@ -167,13 +164,12 @@ impl PendingNativeStoreOwner {
     pub fn restore<A, R>(
         self,
         instance: [u8; 16],
-        projection: StoreProjection,
-        admit: impl FnOnce() -> Result<(), A>,
+        admit: impl FnOnce() -> Result<NumberedProjection, A>,
         next: impl FnMut() -> Result<Option<super::Cell>, R>,
         digest: &mut dyn ContentDigest,
     ) -> Result<(NativeStoreOwner, AuditReport), NativeRestoreError<A, R>> {
         let mut owner = self
-            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, projection, admit)
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, admit)
             .map_err(NativeRestoreError::Open)?;
         let store = owner.store.take().expect("new owner retains its store");
         let (store, report) = store
@@ -204,21 +200,22 @@ impl PendingNativeStoreOwner {
         self,
         access: NativeOpenAccess,
         instance: [u8; 16],
-        projection: StoreProjection,
-        admit: impl FnOnce() -> Result<(), R>,
+        admit: impl FnOnce() -> Result<NumberedProjection, R>,
     ) -> Result<NativeStoreOwner, NativeOwnerOpenError<R>> {
         let directory = self.pending.directory().to_path_buf();
-        let engine = self
-            .pending
-            .bind_and_open_existing(access, instance, admit)?;
+        let mut layout = None;
+        let engine = self.pending.bind_and_open_existing(access, instance, || {
+            layout = Some(admit()?);
+            Ok(())
+        })?;
         let ceiling = DemandCoverage {
             read: true,
             write: engine.require_write_access("open").is_ok(),
         };
         let scope = CommitRecoveryScope::persistent(instance, &directory);
-        let store = DurableStore::from_projection_with_ceiling_and_recovery_scope(
+        let store = DurableStore::from_numbered_with_ceiling_and_recovery_scope(
             engine,
-            projection.clone(),
+            layout.expect("successful engine open completed admission"),
             ceiling,
             scope,
         );
@@ -226,7 +223,6 @@ impl PendingNativeStoreOwner {
             store: Some(store),
             directory,
             instance,
-            projection,
         })
     }
 }
@@ -254,7 +250,12 @@ impl SessionHost for NativeStoreOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::durable::{CommitResult, Durable};
+    use crate::codec::key::KeyScalar;
+    use crate::codec::value::{RuntimeScalar, ScalarKind};
+    use crate::durable::{
+        CommitResult, Durable, EntryValue, SiteTarget, StoreProjection, StoreSchemaBuilder,
+    };
+    use crate::equality::ValueDomain;
     use marrow_store::NativeLockError;
 
     struct Scratch(PathBuf);
@@ -288,17 +289,24 @@ mod tests {
     }
 
     fn open_owner(scratch: &Scratch, instance: [u8; 16]) -> NativeStoreOwner {
+        let mut schema = StoreSchemaBuilder::root("values", vec![ScalarKind::Int]);
+        schema.scalar_field("value", ScalarKind::Int, true);
+        let mut projection = StoreProjection::builder();
+        projection.root(schema.finish().expect("bounded root"));
+        projection.site(0, SiteTarget::whole_payload());
+        projection.site(0, SiteTarget::field_leaf(0));
+        let layout = NumberedProjection::accepted(
+            projection.finish().expect("valid sites"),
+            &[7, 70_000],
+            70_001,
+        )
+        .expect("accepted sparse addresses");
         NativeStoreOwner::provision(&scratch.0).expect("provision");
         NativeStoreOwner::acquire_existing(&scratch.0)
             .expect("acquire the owner lock")
-            .bind_and_open_existing(
-                NativeOpenAccess::ReadWrite,
-                instance,
-                StoreProjection::builder()
-                    .finish()
-                    .expect("a rootless projection has no site to resolve"),
-                || Ok::<_, std::convert::Infallible>(()),
-            )
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, || {
+                Ok::<_, std::convert::Infallible>(layout)
+            })
             .expect("open native semantic owner")
     }
 
@@ -323,8 +331,11 @@ mod tests {
             .unwrap()
             .restore(
                 [0x51; 16],
-                StoreProjection::builder().finish().unwrap(),
-                || Ok::<_, ()>(()),
+                || {
+                    Ok::<_, ()>(NumberedProjection::fresh(
+                        StoreProjection::builder().finish().unwrap(),
+                    ))
+                },
                 || Ok::<_, ()>(None),
                 &mut Digest,
             );
@@ -343,8 +354,11 @@ mod tests {
             .unwrap()
             .restore(
                 [0x51; 16],
-                StoreProjection::builder().finish().unwrap(),
-                || Ok::<_, ()>(()),
+                || {
+                    Ok::<_, ()>(NumberedProjection::fresh(
+                        StoreProjection::builder().finish().unwrap(),
+                    ))
+                },
                 || Ok::<_, ()>(cell.take()),
                 &mut Digest,
             );
@@ -365,6 +379,27 @@ mod tests {
             let scratch = Scratch::new(tag);
             let instance = if seed_new { [0x42; 16] } else { [0x41; 16] };
             let mut owner = open_owner(&scratch, instance);
+            {
+                let mut txn = owner
+                    .txn_session(
+                        InvocationGrant::full_store(),
+                        DemandCoverage {
+                            read: true,
+                            write: true,
+                        },
+                    )
+                    .expect("populate before recovery");
+                txn.create_entry(
+                    &txn.site(0),
+                    &[KeyScalar::Int(7)],
+                    EntryValue {
+                        groups: Vec::new(),
+                        fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(42)))],
+                    },
+                )
+                .expect("write accepted address");
+                assert!(matches!(txn.commit(), CommitResult::Committed));
+            }
             if seed_new {
                 let mut txn = owner
                     .txn_session(
@@ -381,14 +416,14 @@ mod tests {
             let directory = std::fs::canonicalize(&scratch.0).expect("canonical scratch");
             let fact = CommitRecovery {
                 scope: Some(CommitRecoveryScope::persistent(instance, &directory)),
-                before: None,
-                after: witness(0),
+                before: Some(witness(0)),
+                after: witness(1),
             };
             let (state, owner) = owner.resolve_recovery(fact);
             assert_eq!(state, expected);
             let mut owner = owner.expect("a known classification returns the owner");
             {
-                let _read = owner
+                let mut read = owner
                     .read_session(
                         InvocationGrant::full_store(),
                         DemandCoverage {
@@ -397,6 +432,10 @@ mod tests {
                         },
                     )
                     .expect("a known recovered owner remains usable");
+                assert_eq!(
+                    read.read_field(&read.site(1), &[KeyScalar::Int(7)]),
+                    Ok(Some(ValueDomain::Scalar(RuntimeScalar::Int(42))))
+                );
             }
             assert_excluded(&scratch.0);
             drop(owner);

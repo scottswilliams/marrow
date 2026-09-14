@@ -6,7 +6,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use marrow_kernel::durable::{
-    NativeOwnerOpenError, NativeRestoreError, NativeStore, StoreProjection,
+    NativeOwnerOpenError, NativeRestoreError, NativeStore, NumberedProjection,
 };
 use marrow_verify::VerifyRejection;
 
@@ -183,11 +183,11 @@ pub fn restore(input: &mut dyn Read, destination: &Path) -> Result<RestoredStore
     let projection = projection.ok_or(RestoreFault::Admission(AuditError::NotExecutable))?;
     let (head, head_digest) = LogicalHead::decode_with_digest(&header.head)
         .map_err(|error| RestoreFault::Input(BackupReadError::Format(error)))?;
-    let admission = ImageAdmission::derive(&image, &projection);
-    admission
+    let names = Names::new(&projection);
+    let admission = ImageAdmission::derive(&image, projection);
+    let layout = admission
         .admit_exact(&head)
         .map_err(|error| RestoreFault::Admission(audit::open_error(AdmitError::Refused(error))))?;
-    let names = Names::new(&projection);
     let instance = StoreInstanceId::draw().map_err(RestoreFault::Entropy)?;
     let envelope = StoreEnvelope {
         instance,
@@ -212,7 +212,7 @@ pub fn restore(input: &mut dyn Read, destination: &Path) -> Result<RestoredStore
         &stage,
         &pending,
         instance,
-        projection,
+        layout,
         &mut decoder,
         &mut content,
     );
@@ -239,7 +239,7 @@ pub fn restore(input: &mut dyn Read, destination: &Path) -> Result<RestoredStore
         .map_err(RestoreFault::Provision)?;
     #[cfg(test)]
     tests::before_final_admission(&directory);
-    audit::admit_published(
+    audit::verify_published(
         &directory,
         destination,
         &EnvelopeRecord {
@@ -247,7 +247,6 @@ pub fn restore(input: &mut dyn Read, destination: &Path) -> Result<RestoredStore
             state: EnvelopeState::Active,
         },
         head_digest,
-        &admission,
     )
     .map_err(|source| RestoreFault::Completion { instance, source })?;
     let audit = StoreAudit {
@@ -269,7 +268,7 @@ fn build_body(
     stage: &Path,
     pending: &[u8],
     instance: StoreInstanceId,
-    projection: StoreProjection,
+    layout: NumberedProjection,
     decoder: &mut Decoder<'_>,
     content: &mut ChainDigest,
 ) -> Result<
@@ -296,8 +295,7 @@ fn build_body(
     let (owner, report) = owner
         .restore(
             *instance.bytes(),
-            projection,
-            || Ok::<_, Infallible>(()),
+            || Ok::<_, Infallible>(layout),
             || decoder.next_cell(),
             content,
         )
@@ -536,11 +534,9 @@ mod tests {
         let (image, projection) = prepare(image).into_parts();
         let projection = projection.unwrap();
         let (head, digest) = LogicalHead::decode_with_digest(&header.head).unwrap();
-        assert!(
-            ImageAdmission::derive(&image, &projection)
-                .admit_exact(&head)
-                .is_ok()
-        );
+        let layout = ImageAdmission::derive(&image, projection)
+            .admit_exact(&head)
+            .unwrap_or_else(|_| panic!("fixture head admitted"));
         let instance = StoreInstanceId::draw().unwrap();
         let envelope = StoreEnvelope {
             instance,
@@ -564,7 +560,7 @@ mod tests {
             &stage,
             &pending,
             instance,
-            projection,
+            layout,
             &mut decoder,
             &mut ChainDigest::new(),
         )

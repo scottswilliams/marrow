@@ -21,13 +21,9 @@ use marrow_image::LedgerIdBytes;
 
 use crate::codec::{FormatError, Reader, put_u32};
 
-/// The most entries one head map may carry, bounding the decode allocation (campaign law
-/// 9). It sits far above any image's total durable-node count — the image family bounds cap
-/// roots, fields, groups, branches, indexes, and enums well below this — while the number
-/// field itself stays `u32` for lifetime headroom, so the allocation guard and the number
-/// width are independent (FR01 §4). It is a hand-copy of the kernel's
-/// `MAX_STORE_NODES` — the number space projections are admitted into — held equal by a
-/// drift gate in this module's tests.
+/// Maximum entries in one Head map, bounding decode allocation. This count limit matches
+/// the kernel's `MAX_STORE_NODES`, enforced by a drift test. Physical addresses and the
+/// high-water mark use an independent `u32` lifetime space.
 pub const MAX_HEAD_MAP_ENTRIES: u32 = 1 << 16;
 
 /// One binding in the head map: a durable node's ledger id and its compact store-local

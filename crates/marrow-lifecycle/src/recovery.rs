@@ -142,13 +142,13 @@ fn recover_inner(
 ) -> Result<(StoreInstanceId, ImageId), RecoveryFault> {
     let (image, projection) = prepared.into_parts();
     let projection = projection.ok_or(RecoveryFault::Validation(AuditError::NotExecutable))?;
-    let admission = ImageAdmission::derive(&image, &projection);
     let names = Names::new(&projection);
+    let admission = ImageAdmission::derive(&image, projection);
     let locked = LockedStore::acquire(dir).map_err(validation)?;
     let location = locked.directory_path().to_path_buf();
     let state = locked.envelope.state;
     let opened = locked
-        .open(projection, NativeOpenAccess::Recovery, |head, digest| {
+        .open(NativeOpenAccess::Recovery, |head, digest| {
             if !accepts_head(state, digest) {
                 return Err(RecoveryFault::HeadMismatch);
             }
@@ -239,13 +239,7 @@ fn recover_inner(
         opened.directory.sync().map_err(metadata_error)?;
         #[cfg(test)]
         tests::replace_before_final_read(&opened.directory, &location).map_err(metadata_error)?;
-        audit::admit_published(
-            &opened.directory,
-            &location,
-            &record,
-            opened.head_digest,
-            &admission,
-        )
+        audit::verify_published(&opened.directory, &location, &record, opened.head_digest)
     };
     finish().map_err(|source| RecoveryFault::Completion { instance, source })?;
     Ok((instance, image.image_id()))

@@ -29,7 +29,7 @@ use marrow_codes::Code;
 use marrow_kernel::durable::{
     AuditReport, CommitRecovery, ContentDigest, DemandCoverage, DurableCommitState,
     InvocationGrant, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError, NativeStore,
-    ReadSession, SessionError, SessionHost, StoreError, StoreProjection, TxnSession,
+    NumberedProjection, ReadSession, SessionError, SessionHost, StoreError, TxnSession,
 };
 
 use crate::durable_fs::Publication;
@@ -650,9 +650,8 @@ pub(crate) enum AdmitError<R> {
 /// same [`LockedStore`] owner composition with a distinct state eligibility check.
 pub(crate) fn open_admitted<R>(
     dir: &Path,
-    projection: StoreProjection,
     access: NativeOpenAccess,
-    admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
+    admit: impl FnOnce(&LogicalHead) -> Result<NumberedProjection, R>,
 ) -> Result<OpenStore, AdmitError<R>> {
     let locked = LockedStore::acquire(dir).map_err(AdmitError::Open)?;
     if locked.envelope.state != EnvelopeState::Active {
@@ -660,7 +659,7 @@ pub(crate) fn open_admitted<R>(
             instance: locked.envelope.metadata.instance,
         }));
     }
-    locked.open(projection, access, |head, _| admit(head))
+    locked.open(access, |head, _| admit(head))
 }
 
 /// Owner-held directory and envelope before engine opening.
@@ -700,9 +699,8 @@ impl LockedStore {
 
     pub(crate) fn open<R>(
         self,
-        projection: StoreProjection,
         access: NativeOpenAccess,
-        admit: impl FnOnce(&LogicalHead, marrow_image::StoreHeadDigest) -> Result<(), R>,
+        admit: impl FnOnce(&LogicalHead, marrow_image::StoreHeadDigest) -> Result<NumberedProjection, R>,
     ) -> Result<OpenStore, AdmitError<R>> {
         let Self {
             pending,
@@ -712,11 +710,11 @@ impl LockedStore {
         let envelope = envelope.metadata;
         let mut admitted_head = None;
         let owner = pending
-            .bind_and_open_existing(access, *envelope.instance.bytes(), projection, || {
+            .bind_and_open_existing(access, *envelope.instance.bytes(), || {
                 let (head, digest) = decode_head(&directory).map_err(Ok)?;
-                admit(&head, digest).map_err(Err)?;
+                let layout = admit(&head, digest).map_err(Err)?;
                 admitted_head = Some((head, digest));
-                Ok::<(), Result<OpenError, R>>(())
+                Ok::<_, Result<OpenError, R>>(layout)
             })
             .map_err(|error| match error {
                 NativeOwnerOpenError::Lock(error) => {
@@ -884,28 +882,13 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new().create(dir)
 }
 
-/// An open with a no-op admission gate: the directory lifecycle under test, with no image to
-/// admit. Test-only; every production open admits an image.
-#[cfg(test)]
-pub(crate) fn open_unadmitted(
-    dir: &Path,
-    projection: StoreProjection,
-) -> Result<OpenStore, OpenError> {
-    open_admitted(dir, projection, NativeOpenAccess::ReadWrite, |_| {
-        Ok::<(), std::convert::Infallible>(())
-    })
-    .map_err(|error| match error {
-        AdmitError::Open(error) => error,
-        AdmitError::Refused(never) => match never {},
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::head::ActiveBinding;
     use crate::headmap::HeadMap;
     use marrow_image::LedgerIdBytes;
+    use marrow_kernel::durable::StoreProjection;
 
     #[test]
     fn provision_never_replaces_an_existing_empty_directory() {
@@ -1463,10 +1446,11 @@ mod tests {
 
     /// The empty store shape: no roots, so no site to resolve. These cases exercise the
     /// directory lifecycle, not the store's own shape.
-    fn rootless() -> StoreProjection {
-        StoreProjection::builder()
+    fn rootless_layout() -> NumberedProjection {
+        let projection = StoreProjection::builder()
             .finish()
-            .expect("a rootless projection has no site to resolve")
+            .expect("a rootless projection has no site to resolve");
+        NumberedProjection::accepted(projection, &[], 0).expect("empty address mapping")
     }
 
     /// The smallest complete provision request: one durable node, a two-byte accepted
@@ -1556,8 +1540,8 @@ mod tests {
     fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
         NativeStore::acquire_existing(dir)
             .expect("acquire the owner")
-            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, rootless(), || {
-                Ok::<_, std::convert::Infallible>(())
+            .bind_and_open_existing(NativeOpenAccess::ReadWrite, instance, || {
+                Ok::<_, std::convert::Infallible>(rootless_layout())
             })
             .expect("bind and open")
     }
@@ -1588,8 +1572,8 @@ mod tests {
         provision(&store, test_request(original)).expect("provision");
 
         let mut contended = None;
-        let opened = open_admitted(&store, rootless(), NativeOpenAccess::ReadWrite, |head| {
-            contended = Some(match open_unadmitted(&store, rootless()) {
+        let opened = open_admitted(&store, NativeOpenAccess::ReadWrite, |head| {
+            contended = Some(match LockedStore::acquire(&store) {
                 Err(OpenError::Lock(error)) => error.code(),
                 Ok(_) => panic!("a competing open ran inside the admission callback"),
                 Err(other) => panic!("admission ran outside its owner: {other}"),
@@ -1611,7 +1595,7 @@ mod tests {
             std::fs::write(store.join(store_dir::ENVELOPE_FILE), replacement)
                 .expect("rewrite the envelope mid-admission");
             assert_eq!(head.binding.image_id, [0x11; 32]);
-            Ok::<(), std::convert::Infallible>(())
+            Ok::<_, std::convert::Infallible>(rootless_layout())
         })
         .unwrap_or_else(|_| panic!("the open completes under its own owner"));
 

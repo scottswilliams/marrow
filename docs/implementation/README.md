@@ -350,7 +350,9 @@ fallible and retains known results in a best-effort diagnostic on failure.
 dispatch with doctor through `cmd_store`. The runner calls lifecycle recovery
 once and writes a fallible result retaining preservation moves even on failure.
 The lifecycle performs physical and logical validation under one owner, establishes
-fresh barriers and repeats exact metadata admission before returning. It neither
+fresh barriers and verifies exact envelope and already-admitted Head equality
+before returning. Native construction and consuming recovery retain the same
+validated projection/physical-number pair. It neither
 returns an application attachment nor rewrites the selected head
 ([storage](storage.md#explicit-recovery)).
 

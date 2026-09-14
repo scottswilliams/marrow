@@ -101,10 +101,9 @@ impl StoreProjectionBuilder {
     /// Resolve every site against the completed roots and publish the projection, or return
     /// the first refusal. Consuming, so no partially resolved table is observable.
     ///
-    /// The root table is also held to the store's number space here: a projection past
-    /// [`MAX_STORE_NODES`](super::MAX_STORE_NODES) durable nodes is refused at mint, which is
-    /// what lets `number_store`'s counter be total rather than checked at every step of every
-    /// store open.
+    /// A projection holds at most [`MAX_STORE_NODES`](super::MAX_STORE_NODES) durable
+    /// nodes. This count bound is independent of accepted physical addresses, which may
+    /// be sparse across the store's lifetime `u32` number space.
     pub fn finish(self) -> Result<StoreProjection, ProjectionBuildError> {
         let nodes: u64 = self.roots.iter().map(super::root_node_count).sum();
         if nodes > u64::from(super::MAX_STORE_NODES) {
@@ -270,8 +269,7 @@ pub enum ProjectionBuildError {
     EmptyBranchPath,
     /// The site table holds more slots than a `u16` image site index can name.
     TooManySites,
-    /// The root table declares more durable nodes than the store's cell-key number space
-    /// ([`MAX_STORE_NODES`](super::MAX_STORE_NODES)) can name.
+    /// The root table exceeds [`MAX_STORE_NODES`](super::MAX_STORE_NODES) durable nodes.
     TooManyNodes,
 }
 
@@ -291,10 +289,7 @@ impl std::fmt::Display for ProjectionBuildError {
                 )
             }
             Self::TooManyNodes => {
-                write!(
-                    f,
-                    "the store declares more durable nodes than its number space"
-                )
+                write!(f, "the store exceeds the durable node count limit")
             }
         }
     }
@@ -540,7 +535,7 @@ mod tests {
     /// One root with the widest field table the number space admits beside it: exactly at
     /// the bound the projection publishes, one field past it the projection refuses.
     #[test]
-    fn the_number_space_bound_refuses_at_mint_and_admits_at_the_edge() {
+    fn the_node_count_bound_refuses_at_mint_and_admits_at_the_edge() {
         let build = |fields: u32| {
             let mut builder = StoreSchemaBuilder::root("wide", vec![ScalarKind::Str]);
             for i in 0..fields {

@@ -67,7 +67,7 @@ pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
 pub use image::{
     HeadMapPinMismatch, PinDisagreement, accepted_ceiling, active_binding, head_map,
-    head_map_node_order, verify_head_map_pin,
+    head_map_node_order,
 };
 pub use import::{
     CommitFault, ImportError, ImportLimits, ImportReport, ImportTarget, RowFault, ShapeFault,

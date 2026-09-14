@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::provision::open_unadmitted as open;
+use crate::provision_lifecycle_tests::open;
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
     StoreInstanceId, provision,

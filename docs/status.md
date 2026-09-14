@@ -6,6 +6,9 @@ each behavior.
 
 [Beta scope](vision.md#beta-scope) selects useful storeless programs and a
 recoverable local application. It is a target, not the state of this revision.
+Native opening, recovery and fresh restore retain the accepted Head's physical
+addresses. This does not implement additive contract activation.
+
 Ordinary enum composition, local source reuse, additive updates and full
 application-lifetime qualification still require work. Broader future features are not
 prerequisites.

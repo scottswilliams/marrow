@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::provision::open_unadmitted as open;
 use crate::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, preflight, provision,
@@ -16,6 +15,22 @@ use crate::{
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
+
+/// Open the two-node directory fixture without image admission. These tests exercise
+/// filesystem publication and custody; their synthetic Head carries no executable image.
+pub(crate) fn open(dir: &Path, projection: StoreProjection) -> Result<crate::OpenStore, OpenError> {
+    use crate::provision::{AdmitError, open_admitted};
+    use marrow_kernel::durable::{NativeOpenAccess, NumberedProjection};
+    open_admitted(dir, NativeOpenAccess::ReadWrite, |_| {
+        Ok::<_, std::convert::Infallible>(
+            NumberedProjection::accepted(projection, &[0, 1], 2).expect("two-node fixture"),
+        )
+    })
+    .map_err(|error| match error {
+        AdmitError::Open(error) => error,
+        AdmitError::Refused(never) => match never {},
+    })
+}
 
 /// A unique temporary directory removed on drop.
 struct TempDir {

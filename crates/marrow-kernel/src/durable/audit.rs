@@ -320,9 +320,7 @@ impl<'a> Tables<'a> {
         let mut indexes = Vec::new();
         let mut roots = Vec::with_capacity(projection.roots().len());
         for (position, (schema, numbers)) in projection.roots().iter().zip(numbering).enumerate() {
-            let mut own = Vec::with_capacity(schema.indexes().len());
             for (index_pos, index) in schema.indexes().iter().enumerate() {
-                own.push(indexes.len());
                 indexes.push(index_shape(
                     position as u16,
                     index_pos as u16,
@@ -360,12 +358,21 @@ impl<'a> Tables<'a> {
                 index_family: any_index[..any_index.len() - 16].to_vec(),
                 number: numbers.root(),
                 field_numbers: numbers.fields().to_vec(),
-                indexes: own,
+                indexes: Vec::with_capacity(schema.indexes().len()),
             });
         }
-        // Root numbers increase in declaration order, so sorting permutes indexes only
-        // within each root's retained contiguous range.
+        // Physical addresses need not follow declaration order. Resolve table references
+        // after sorting while retaining declaration positions for semantic identities.
+        families.sort_by(|a, b| a.prefix.cmp(&b.prefix));
+        for (position, family) in families.iter().enumerate() {
+            if family.branch_path.is_empty() {
+                roots[family.root].family = position;
+            }
+        }
         indexes.sort_by(|a, b| a.prefix.cmp(&b.prefix));
+        for (position, index) in indexes.iter().enumerate() {
+            roots[usize::from(index.root)].indexes.push(position);
+        }
         Self {
             families,
             roots,
@@ -2279,6 +2286,17 @@ mod tests {
 
     #[test]
     fn index_sorting_preserves_multiple_root_ownership_and_declaration_positions() {
+        check_multiple_root_ownership(&[0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn accepted_addresses_preserve_audit_and_restore_ownership() {
+        check_multiple_root_ownership(&[90, 91, 5, 20, 21, 2]);
+    }
+
+    fn check_multiple_root_ownership(addresses: &[NodeNumber]) {
+        use crate::durable::{CommitRecoveryScope, NumberedProjection};
+
         let mut projection = StoreProjection::builder();
         for name in ["first", "second"] {
             let mut schema = StoreSchemaBuilder::root(name, vec![ScalarKind::Str]);
@@ -2295,26 +2313,19 @@ mod tests {
         }
         projection.site(0, SiteTarget::whole_payload());
         projection.site(1, SiteTarget::whole_payload());
+        projection.site(0, SiteTarget::branch_entry(vec![0]));
+        projection.site(1, SiteTarget::branch_entry(vec![0]));
         let projection = projection.finish().expect("projection");
-        let numbering = number_store(&projection);
-        let tables = Tables::new(&projection, &numbering);
-        assert_eq!(
-            tables
-                .roots
-                .iter()
-                .map(|root| root.family)
-                .collect::<Vec<_>>(),
-            vec![0, 2]
-        );
-        assert_eq!(
-            tables
-                .indexes
-                .iter()
-                .map(|index| (index.root, index.position))
-                .collect::<Vec<_>>(),
-            vec![(0, 1), (0, 0), (1, 1), (1, 0)]
-        );
-        let mut store = DurableStore::from_engine(MemoryEngine::new(), projection.clone());
+        let open = |engine| {
+            DurableStore::from_numbered_with_ceiling_and_recovery_scope(
+                engine,
+                NumberedProjection::accepted(projection.clone(), addresses, 92)
+                    .expect("accepted addresses"),
+                write(),
+                CommitRecoveryScope::persistent([1; 16], "/audit-memory-fixture"),
+            )
+        };
+        let mut store = open(MemoryEngine::new());
         {
             let mut txn = store
                 .txn_session(InvocationGrant::full_store(), write())
@@ -2333,52 +2344,90 @@ mod tests {
                     .expect("create"),
                     CreateOutcome::Created
                 );
+                let child = txn.site(position + 2);
+                assert_eq!(
+                    txn.create_entry(
+                        &child,
+                        &[s("id"), KeyScalar::Int(7)],
+                        EntryValue {
+                            fields: Vec::new(),
+                            groups: Vec::new()
+                        }
+                    )
+                    .expect("child"),
+                    CreateOutcome::Created
+                );
             }
             assert!(matches!(txn.commit(), CommitResult::Committed));
         }
         let (report, _) = audit(&store);
         assert!(report.is_clean(), "{:?}", report.findings);
         assert_eq!(report.summary.index_cells, 4);
+        assert_eq!(report.summary.entries, 4);
+        let mut exported = Recording::default();
+        let mut digest = Recording::default();
+        assert_eq!(
+            store
+                .export_cells(&mut digest, &mut exported)
+                .expect("export"),
+            report
+        );
+        let mut input = exported.cells.clone().into_iter();
+        let mut restored_digest = Recording::default();
+        let (restored, restored_report) = open(MemoryEngine::new())
+            .restore(|| Ok::<_, ()>(input.next()), &mut restored_digest)
+            .expect("restore accepted addresses");
+        let mut transferred_report = report.clone();
+        // The committed source witness is local metadata, excluded from transfer.
+        transferred_report.summary.cells -= 1;
+        assert_eq!(restored_report, transferred_report);
+        assert_eq!(restored_digest.cells, digest.cells);
+        let mut output = Recording::default();
+        restored
+            .export_cells(&mut Recording::default(), &mut output)
+            .expect("restored export");
+        assert_eq!(output.cells, exported.cells);
         let mut engine = store.into_engine();
         {
             let mut txn = engine.begin().expect("begin");
             txn.remove(&physical::index_cell_key(
-                numbering[0].root(),
+                addresses[0],
                 &BY_TITLE,
                 &[s("title")],
             ))
             .expect("first root's declared index zero");
             txn.remove(&physical::index_cell_key(
-                numbering[1].root(),
+                addresses[3],
                 &BY_ISBN,
                 &[s("title"), s("id")],
             ))
             .expect("second root's declared index one");
             assert_eq!(txn.commit(), CommitOutcome::Confirmed);
         }
-        let store = DurableStore::from_engine(engine, projection);
+        let store = open(engine);
         let (report, _) = audit(&store);
-        assert_eq!(
-            report.findings,
-            vec![
-                AuditFinding {
-                    fault: AuditFault::IndexMissing,
-                    site: AuditSite::IndexCell {
-                        root: 0,
-                        index: 0,
-                        values: vec![s("title")]
-                    }
+        let mut expected = vec![
+            AuditFinding {
+                fault: AuditFault::IndexMissing,
+                site: AuditSite::IndexCell {
+                    root: 0,
+                    index: 0,
+                    values: vec![s("title")],
                 },
-                AuditFinding {
-                    fault: AuditFault::IndexMissing,
-                    site: AuditSite::IndexCell {
-                        root: 1,
-                        index: 1,
-                        values: vec![s("title"), s("id")]
-                    }
+            },
+            AuditFinding {
+                fault: AuditFault::IndexMissing,
+                site: AuditSite::IndexCell {
+                    root: 1,
+                    index: 1,
+                    values: vec![s("title"), s("id")],
                 },
-            ]
-        );
+            },
+        ];
+        if addresses[0] > addresses[3] {
+            expected.reverse();
+        }
+        assert_eq!(report.findings, expected);
         assert_eq!(report.summary.index_cells, 2);
     }
 }

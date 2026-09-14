@@ -73,21 +73,17 @@ use crate::equality::ValueDomain;
 /// `u32` for lifetime headroom, independent of the image's `u16` table rings (FR01 §4).
 pub type NodeNumber = u32;
 
-/// The most durable nodes one store may declare: the size of the cell-key number space a
-/// projection is admitted into. [`StoreProjection`]'s builder refuses a larger root table at
-/// mint, so every projection [`number_store`] receives already fits — the counter cannot
-/// exhaust, and the persisted head map (whose entry bound mirrors this value, under a
-/// downstream drift gate) can always frame the full bijection.
+/// The maximum simultaneous durable-node count in one projection. The builder refuses
+/// larger root tables, bounding numbering allocation. Physical numbers retain their
+/// separate u32 lifetime space and may exceed this count bound.
 pub const MAX_STORE_NODES: u32 = 1 << 16;
 
 /// The store-local numbering of one root's durable nodes, mirroring its [`StoreSchema`]
 /// structure: the root's own number, one number per top-level field (in order), one
-/// [`GroupNumbering`] per group, and one [`BranchNumbering`] per branch. Computed once from
-/// the schema at store construction by [`number_store`], and walked in lockstep with the
-/// schema by the site resolver to number every addressed node.
-/// Opaque: [`number_store`] is its sole minter, so a numbering always mirrors a schema whose
-/// branch tree is already bounded by [`MAX_DURABLE_DEPTH`]. There is no route to a
-/// caller-built numbering tree, and therefore none to an unbounded one.
+/// [`GroupNumbering`] per group, and one [`BranchNumbering`] per branch. The shared
+/// structural walk mints it from fresh or accepted addresses. A native constructor
+/// consumes its inseparable [`NumberedProjection`]; the site resolver walks schema and
+/// numbers together. Private fields prevent caller-built or unbounded number trees.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootNumbering {
     root: NodeNumber,
@@ -163,15 +159,10 @@ impl BranchNumbering {
     }
 }
 
-/// Assign store-wide pre-order [`NodeNumber`]s to every durable node of every root, the
-/// single owner of the cell-key numbering (FR01 §3). One global counter starts at zero and
-/// walks each root in declaration order; within a node it numbers the node itself, then its
-/// fields in order, then each group (the group node, then the group's fields), then each
-/// branch (the branch node, then its fields, then its sub-branches recursively). The order
-/// is a deterministic function of the schema structure, so the ephemeral and native paths —
-/// which derive the same schema from the same image — number identically, and no second
-/// grammar exists. The result is store-wide unique, the bijection the head map (F02a
-/// provision) persists against ledger ids.
+/// Assign fresh store-wide preorder numbers for provisioning and ephemeral execution.
+/// The shared structural walk visits each node, its fields, groups and then branches.
+/// Persistent handles instead retain their accepted Head's numbers through
+/// [`NumberedProjection::accepted`].
 pub fn number_store(projection: &StoreProjection) -> Vec<RootNumbering> {
     let mut next = 0u32;
     let mut alloc = || {
@@ -181,25 +172,188 @@ pub fn number_store(projection: &StoreProjection) -> Vec<RootNumbering> {
         next = next
             .checked_add(1)
             .expect("a published projection holds at most MAX_STORE_NODES nodes");
-        n
+        Ok::<_, std::convert::Infallible>(n)
     };
+    match number_projection(projection, &mut alloc) {
+        Ok(numbering) => numbering,
+        Err(never) => match never {},
+    }
+}
+
+/// A projection paired with the physical numbers its paths will use. The fields are
+/// private so construction, restoration and recovery cannot substitute another layout.
+#[derive(Debug)]
+pub struct NumberedProjection {
+    projection: StoreProjection,
+    numbering: Vec<RootNumbering>,
+}
+
+/// An accepted number sequence does not describe a bounded bijection for its projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NumberingError {
+    Count,
+    Duplicate { number: NodeNumber },
+    HighWater { number: NodeNumber, next: u32 },
+}
+
+impl std::fmt::Display for NumberingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Count => write!(f, "the number count does not match the projection"),
+            Self::Duplicate { number } => write!(f, "number {number} occurs more than once"),
+            Self::HighWater { number, next } => {
+                write!(f, "number {number} is not below high-water {next}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NumberingError {}
+
+impl NumberedProjection {
+    /// Mint fresh preorder addresses for a new or ephemeral store.
+    pub(crate) fn fresh(projection: StoreProjection) -> Self {
+        let numbering = number_store(&projection);
+        Self {
+            projection,
+            numbering,
+        }
+    }
+
+    /// Pair an accepted sequence in the kernel's structural order with its projection.
+    /// The lifecycle caller owns the semantic identity join. This boundary checks exact
+    /// coverage, uniqueness and the exclusive lifetime high-water, without requiring
+    /// dense numbers or equating their values with the simultaneous node-count bound.
+    pub fn accepted(
+        projection: StoreProjection,
+        numbers: &[NodeNumber],
+        next_number: u32,
+    ) -> Result<Self, NumberingError> {
+        if numbers.len() > MAX_STORE_NODES as usize {
+            return Err(NumberingError::Count);
+        }
+        let mut remaining = numbers.iter();
+        let mut used = std::collections::HashSet::with_capacity(numbers.len());
+        let numbering = number_projection(&projection, &mut || {
+            let number = *remaining.next().ok_or(NumberingError::Count)?;
+            if number >= next_number {
+                return Err(NumberingError::HighWater {
+                    number,
+                    next: next_number,
+                });
+            }
+            if !used.insert(number) {
+                return Err(NumberingError::Duplicate { number });
+            }
+            Ok(number)
+        })?;
+        if remaining.next().is_some() {
+            return Err(NumberingError::Count);
+        }
+        Ok(Self {
+            projection,
+            numbering,
+        })
+    }
+}
+
+fn number_projection<E>(
+    projection: &StoreProjection,
+    alloc: &mut impl FnMut() -> Result<NodeNumber, E>,
+) -> Result<Vec<RootNumbering>, E> {
     projection
         .roots()
         .iter()
-        .map(|schema| RootNumbering {
-            root: alloc(),
-            fields: schema.fields().iter().map(|_| alloc()).collect(),
-            groups: schema
-                .groups()
-                .iter()
-                .map(|group| GroupNumbering {
-                    number: alloc(),
-                    fields: group.fields().iter().map(|_| alloc()).collect(),
-                })
-                .collect(),
-            branches: number_branches(schema.branches(), &mut alloc),
+        .map(|schema| {
+            Ok(RootNumbering {
+                root: alloc()?,
+                fields: schema
+                    .fields()
+                    .iter()
+                    .map(|_| alloc())
+                    .collect::<Result<_, _>>()?,
+                groups: schema
+                    .groups()
+                    .iter()
+                    .map(|group| {
+                        Ok(GroupNumbering {
+                            number: alloc()?,
+                            fields: group
+                                .fields()
+                                .iter()
+                                .map(|_| alloc())
+                                .collect::<Result<_, _>>()?,
+                        })
+                    })
+                    .collect::<Result<_, _>>()?,
+                branches: number_branches(schema.branches(), alloc)?,
+            })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod numbering_tests {
+    use super::*;
+
+    fn projection() -> StoreProjection {
+        let mut root = StoreSchemaBuilder::root("books", vec![ScalarKind::Int]);
+        root.scalar_field("value", ScalarKind::Int, true);
+        root.open_group("details");
+        root.scalar_field("pages", ScalarKind::Int, false);
+        root.close_group();
+        root.open_branch("notes", vec![ScalarKind::Int]);
+        root.scalar_field("text", ScalarKind::Str, false);
+        root.close_branch();
+        let mut projection = StoreProjection::builder();
+        projection.root(root.finish().expect("bounded schema"));
+        projection.finish().expect("no sites")
+    }
+
+    #[test]
+    fn accepted_addresses_follow_every_structural_kind_and_lifetime_space() {
+        let layout =
+            NumberedProjection::accepted(projection(), &[9, 12, 70_000, 100, 6, 20], 70_001)
+                .expect("distinct accepted addresses");
+        let root = &layout.numbering[0];
+        assert_eq!(root.root(), 9);
+        assert_eq!(root.fields(), &[12]);
+        assert_eq!(root.groups()[0].number(), 70_000);
+        assert_eq!(root.groups()[0].fields(), &[100]);
+        assert_eq!(root.branches()[0].number(), 6);
+        assert_eq!(root.branches()[0].fields(), &[20]);
+    }
+
+    #[test]
+    fn accepted_numbers_refuse_incomplete_repeated_and_exhausted_addresses() {
+        for (numbers, next, expected) in [
+            (vec![0, 1, 2, 3, 4], 6, NumberingError::Count),
+            (vec![0, 1, 2, 3, 4, 5, 6], 7, NumberingError::Count),
+            (
+                vec![0, 1, 2, 3, 4, 4],
+                6,
+                NumberingError::Duplicate { number: 4 },
+            ),
+            (
+                vec![0, 1, 2, 3, 4, 6],
+                6,
+                NumberingError::HighWater { number: 6, next: 6 },
+            ),
+            (
+                vec![0, 1, 2, 3, 4, u32::MAX],
+                u32::MAX,
+                NumberingError::HighWater {
+                    number: u32::MAX,
+                    next: u32::MAX,
+                },
+            ),
+        ] {
+            assert_eq!(
+                NumberedProjection::accepted(projection(), &numbers, next).unwrap_err(),
+                expected
+            );
+        }
+    }
 }
 
 /// The count of durable nodes [`number_store`] would number under one root: the root
@@ -228,16 +382,22 @@ fn branch_node_count(branches: &[BranchSchema]) -> u64 {
 
 /// Number a level of branches in pre-order, recursing into sub-branches, through the shared
 /// counter so the whole forest shares one store-wide number space.
-fn number_branches(
+fn number_branches<E>(
     branches: &[BranchSchema],
-    alloc: &mut impl FnMut() -> NodeNumber,
-) -> Vec<BranchNumbering> {
+    alloc: &mut impl FnMut() -> Result<NodeNumber, E>,
+) -> Result<Vec<BranchNumbering>, E> {
     branches
         .iter()
-        .map(|branch| BranchNumbering {
-            number: alloc(),
-            fields: branch.fields().iter().map(|_| alloc()).collect(),
-            branches: number_branches(branch.branches(), alloc),
+        .map(|branch| {
+            Ok(BranchNumbering {
+                number: alloc()?,
+                fields: branch
+                    .fields()
+                    .iter()
+                    .map(|_| alloc())
+                    .collect::<Result<_, _>>()?,
+                branches: number_branches(branch.branches(), alloc)?,
+            })
         })
         .collect()
 }

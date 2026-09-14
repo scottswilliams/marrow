@@ -472,10 +472,9 @@ pub fn import_jsonl(
     // a stale, foreign, over-demanding, or mis-numbered image opens no engine and no session
     // and writes nothing. The pin is derived over the reprojection the engine actually opens
     // under; its numbering is the roots', which the reprojection keeps.
-    let admission = ImageAdmission::derive(&image, &projection);
+    let admission = ImageAdmission::derive(&image, projection);
     let mut opened = open_admitted(
         dir,
-        projection,
         marrow_kernel::durable::NativeOpenAccess::ReadWrite,
         |head| admission.admit_exact(head),
     )

@@ -162,8 +162,8 @@ result with that binding:
   records the exact old and new heads before replacing the head; activation is
   confirmed only after the required metadata and directory barriers.
 - A program whose durable contract or exported interface changed is
-  `store.contract_changed`. The store is untouched, and the prior program still
-  runs against it.
+  `store.contract_changed`, decided before engine opening even if that engine
+  would fail to open. The prior program remains the accepted binding.
 - A program that touches more durable places than the store accepted at
   provisioning is `store.demand_exceeds_ceiling`. The refusal names the export,
   the place, and the access. The store is untouched.
@@ -176,6 +176,18 @@ The durable contract is the set of resources, store roots, keys, fields, and
 indexes the program declares. No transition rewrites stored data. Accepting a
 changed contract, with stored data carried across, is future work ([data
 coexistence](../future/data-coexistence.md)).
+
+The accepted Head defines each durable identity's physical address. Opening,
+recovery and fresh restore retain those addresses, including valid gaps below
+the lifetime allocation high-water. Identity coverage, node kinds, unique
+numbers and bounds are checked against the presented image and its projection.
+Tools that require fresh preorder numbering refuse a different accepted map;
+an equivalent preorder map does not require a format fence.
+
+Head digests detect damaged bytes but do not authenticate deliberately rewritten
+and resealed metadata. Logical audit cannot detect every same-type field swap
+in such a map. Accepted address metadata is part of the trusted local store;
+these checks do not establish its historical authorship.
 
 `marrow import` into an existing store never rebinds. It fills the store only
 when the compiled program is exactly the active binding; a code-only change is
