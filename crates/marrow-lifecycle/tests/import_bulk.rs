@@ -1,7 +1,7 @@
 //! The trusted bulk importer end to end: a realistic JSONL corpus populates a provisioned
 //! store through the path kernel, kernel mediation is observed on read-back, authority is
 //! enforced, the exact-binding admission gate refuses every stale, foreign, over-demanding,
-//! or mis-numbered image with zero engine work, bounded-batch behavior is measured on a large
+//! or incompletely mapped image with zero engine work, bounded-batch behavior is measured on a large
 //! corpus, and the closed lifecycle boundary is proven — the importer is reachable only
 //! through the privileged host, is not re-exported by the VM, and writes only through
 //! `create_entry`, never a raw cell/engine/transaction handle.
@@ -296,7 +296,7 @@ fn whole_entry_site(image: &VerifiedImage) -> u16 {
         .expect("the fixture reads a whole entry")
 }
 
-/// A unique scratch store directory, removed on drop.
+/// A unique scratch store directory, retained on panic for failure inspection.
 struct Scratch {
     dir: PathBuf,
 }
@@ -323,6 +323,10 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("retained import fixture: {}", self.dir.display());
+            return;
+        }
         if let Some(parent) = self.dir.parent() {
             let _ = std::fs::remove_dir_all(parent);
         }
@@ -689,6 +693,81 @@ fn a_large_corpus_commits_in_bounded_batches() {
     );
 }
 
+#[test]
+fn import_retains_existing_values_with_an_inserted_sparse_field() {
+    let scratch = Scratch::new("accepted-numbering");
+    let old = compile(SOURCE, IDS);
+    provision_from(scratch.dir(), &old);
+    let import = |image: &VerifiedImage, input: &[u8]| {
+        import_jsonl(
+            scratch.dir(),
+            prepare(image.clone()),
+            counter_target(),
+            Cursor::new(input),
+            InvocationGrant::full_store(),
+            ImportLimits::DEFAULT,
+        )
+        .expect("import under the exact active image")
+    };
+    assert_eq!(import(&old, b"{\"id\":7,\"value\":42}\n").rows_imported, 1);
+    assert_eq!(
+        read_entry(scratch.dir(), &old, 7)
+            .expect("old entry")
+            .fields[0],
+        Some(ValueDomain::Scalar(RuntimeScalar::Int(42)))
+    );
+
+    let inserted = compile(
+        &SOURCE.replace("required value: int", "extra: int\n    required value: int"),
+        EVOLVED_IDS,
+    );
+    let old_map = head_map(&old).expect("old mapping");
+    let mut ids: Vec<_> = old_map
+        .entries()
+        .iter()
+        .map(|entry| entry.ledger_id)
+        .collect();
+    ids.push(marrow_image::LedgerIdBytes::from_bytes([0x2e; 16]));
+    let accepted = HeadMap::assign(&ids).expect("preserved old addresses");
+    for entry in old_map.entries() {
+        assert_eq!(accepted.number_of(&entry.ledger_id), Some(entry.number));
+    }
+    assert_ne!(accepted, head_map(&inserted).expect("fresh mapping"));
+    // Prospective Head assembly tests import admission, not update publication.
+    let head = LogicalHead::provision(
+        active_binding(&inserted),
+        marrow_lifecycle::accepted_ceiling(&inserted),
+        accepted,
+    )
+    .encode();
+    std::fs::write(scratch.dir().join(marrow_lifecycle::HEAD_FILE), &head).expect("accepted Head");
+    assert_eq!(
+        import(&inserted, b"{\"id\":8,\"value\":84,\"extra\":77}\n").rows_imported,
+        1
+    );
+    for (id, extra, value) in [(7, None, 42), (8, Some(77), 84)] {
+        assert_eq!(
+            read_entry(scratch.dir(), &inserted, id)
+                .expect("entry")
+                .fields,
+            vec![
+                extra.map(|v| ValueDomain::Scalar(RuntimeScalar::Int(v))),
+                Some(ValueDomain::Scalar(RuntimeScalar::Int(value))),
+                None
+            ]
+        );
+    }
+    assert_eq!(
+        std::fs::read(scratch.dir().join(marrow_lifecycle::HEAD_FILE)).expect("Head"),
+        head
+    );
+    assert!(
+        marrow_lifecycle::audit(scratch.dir(), prepare(inserted))
+            .expect("audit")
+            .is_clean()
+    );
+}
+
 /// A `Read` source that generates JSONL rows lazily, one at a time, so the corpus is never held
 /// in memory. Proves the importer streams: it drives the large-corpus test without a
 /// materialized buffer.
@@ -747,12 +826,11 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
     let binding = active_binding(&image);
     let ceiling = marrow_lifecycle::accepted_ceiling(&image);
     let map = head_map(&image).expect("head map");
-    let permuted = {
+    let foreign = {
         let mut ids: Vec<marrow_image::LedgerIdBytes> =
             map.entries().iter().map(|entry| entry.ledger_id).collect();
-        let last = ids.len() - 1;
-        ids.swap(0, last);
-        HeadMap::assign(&ids).expect("a permuted bijection assigns")
+        ids[0] = marrow_image::LedgerIdBytes::from_bytes([0xff; 16]);
+        HeadMap::assign(&ids).expect("a foreign identity still forms a bijection")
     };
 
     let cases: [AdmissionCase; 5] = [
@@ -798,10 +876,13 @@ fn import_refuses_every_non_active_image_before_the_engine_opens() {
             |error| matches!(error, ImportError::DemandExceedsCeiling(_)),
         ),
         (
-            "a permuted head-map pin",
-            LogicalHead::provision(binding, ceiling.clone(), permuted),
+            "a head map missing an image identity",
+            LogicalHead::provision(binding, ceiling.clone(), foreign),
             image.clone(),
-            |error| matches!(error, ImportError::HeadMapPin(_)),
+            |error| {
+                matches!(error, ImportError::HeadMapPin(refusal)
+                if matches!(refusal.disagreement, marrow_lifecycle::PinDisagreement::Missing { .. }))
+            },
         ),
     ];
 

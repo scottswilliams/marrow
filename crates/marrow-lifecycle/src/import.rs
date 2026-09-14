@@ -469,7 +469,7 @@ pub fn import_jsonl(
         .expect("the row plan refused a target root the projection does not declare");
 
     // The exact-binding gate runs under the single-owner lock and before any engine call, so
-    // a stale, foreign, over-demanding, or mis-numbered image opens no engine and no session
+    // a stale, foreign, over-demanding, or incompletely mapped image opens no engine or session
     // and writes nothing. The pin is derived over the reprojection the engine actually opens
     // under; its numbering is the roots', which the reprojection keeps.
     let admission = ImageAdmission::derive(&image, projection);
