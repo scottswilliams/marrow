@@ -42,6 +42,12 @@ pub(crate) struct DeclParser<'a, 'c> {
     /// descent at [`crate::NESTING_DEPTH_LIMIT`] so a deep group/category nest skips
     /// its body rather than overflowing the native stack.
     pub(super) depth: usize,
+    bodies: BodySelection,
+}
+
+enum BodySelection {
+    Full,
+    QueryAt(usize),
 }
 
 impl<'a, 'c> DeclParser<'a, 'c> {
@@ -53,7 +59,13 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             declarations: Vec::with_capacity(outer_count(tokens)),
             sink,
             depth: 0,
+            bodies: BodySelection::Full,
         }
+    }
+
+    pub(crate) fn for_query(mut self, offset: usize) -> Self {
+        self.bodies = BodySelection::QueryAt(offset);
+        self
     }
 
     pub(crate) fn parse(mut self) -> SourceFile {
@@ -1007,6 +1019,17 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             line: open.span.line,
             column: open.span.column,
         };
+        if let BodySelection::QueryAt(offset) = self.bodies
+            && !(span.start_byte..=span.end_byte).contains(&offset)
+        {
+            return Block {
+                statements: Box::new([]),
+                comments: Vec::new(),
+                span,
+            };
+        }
+        #[cfg(test)]
+        crate::query::MATERIALIZED_BODIES.with(|count| count.set(count.get() + 1));
         let (statements, comments) =
             StmtParser::new(self.source, body_tokens, &mut self.sink).parse_block();
         Block {

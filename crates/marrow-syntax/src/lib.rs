@@ -14,7 +14,10 @@ mod lexer;
 mod literal;
 mod parse_decl;
 mod parse_expr;
+mod query;
 mod token;
+
+pub use query::QuerySyntax;
 
 pub use ast::{
     AliasDecl, Argument, ArmBinding, BinaryOp, BinaryOperands, Block, CheckedBind, Comment,

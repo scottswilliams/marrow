@@ -781,8 +781,10 @@ fn query_local_outcomes_match_the_frozen_corpus() {
 #[test]
 fn repeating_a_query_is_stable() {
     let snapshot = snapshot(corpus_files());
+    let diagnostics = snapshot.diagnostics().to_vec();
     assert_eq!(corpus_outcomes(&snapshot), corpus_outcomes(&snapshot));
     assert_eq!(corpus_outcomes(&snapshot), corpus_outcomes(&snapshot));
+    assert_eq!(snapshot.diagnostics(), diagnostics);
 }
 
 /// A recovered-broken file classifies positions, but parseability is never inferred

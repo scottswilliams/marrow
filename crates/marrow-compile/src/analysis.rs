@@ -538,14 +538,14 @@ impl AnalysisSnapshot {
         if offset > source.len() {
             return Err(QueryError::OffsetOutOfRange);
         }
-        let Some(tree) = query_local_parse(source) else {
+        let Some(tree) = query_local_parse(source, offset) else {
             // A validated input file that cannot be decoded never produced a tree. The
             // honest verdict is syntax-unavailable, never a fabricated empty set.
             return Ok(CompletionOutcome::Ready(Fact::Unavailable(
                 Unavailability::Syntax,
             )));
         };
-        Ok(completion::resolve(&tree, offset as u32))
+        Ok(completion::resolve(&QueryFile::new(&tree)))
     }
 
     /// The active-call fact at a byte offset: the innermost enclosing call's callee
@@ -575,14 +575,14 @@ impl AnalysisSnapshot {
         if offset > source.len() {
             return Err(QueryError::OffsetOutOfRange);
         }
-        let Some(tree) = query_local_parse(source) else {
+        let Some(tree) = query_local_parse(source, offset) else {
             // A validated input file that cannot be decoded never produced a tree. The
             // honest verdict is syntax-unavailable, never a fabricated absence.
             return Ok(ActiveCallOutcome::Ready(Fact::Unavailable(
                 Unavailability::Syntax,
             )));
         };
-        Ok(active_call::resolve(&tree, source, offset as u32))
+        Ok(active_call::resolve(&QueryFile::new(&tree), source))
     }
 }
 
@@ -591,9 +591,10 @@ impl AnalysisSnapshot {
 /// The tree is transient: it is never retained, never enters a collector, and
 /// contributes no diagnostic. `broken_files` stays the independent record of
 /// parseability — no query infers parseability from this parse, and a recovered
-/// broken file still classifies positions over its recovered forms, exactly as it did
-/// when the tree was retained. Parsing is a pure function of the source bytes, so a
-/// query's outcome does not depend on when the parse ran.
+/// broken file still classifies positions over its recovered forms. Syntax retains
+/// every declaration header but materializes statements only in the containing
+/// function/test body. The bound position travels with that partial syntax; no
+/// consumer can select a different body from it.
 ///
 /// Its peak is charged before it is incurred, and by an owner that runs before any file
 /// is parsed: [`crate::MAX_PARSED_FILE_BYTES`] is the longest file drive admission
@@ -602,9 +603,29 @@ impl AnalysisSnapshot {
 /// snapshot holds therefore has an accounted parse charge under that ceiling, and this
 /// needs no refusal arm of its own — an arm here would be unreachable, and an
 /// unreachable refusal is a claim no test can keep honest.
-fn query_local_parse(source: &[u8]) -> Option<marrow_syntax::SourceFile> {
+fn query_local_parse(source: &[u8], offset: usize) -> Option<marrow_syntax::QuerySyntax> {
     let source = std::str::from_utf8(source).ok()?;
-    Some(marrow_syntax::parse_source(source).file)
+    Some(marrow_syntax::QuerySyntax::parse(source, offset))
+}
+
+struct QueryFile<'a> {
+    declarations: &'a [marrow_syntax::Declaration],
+    uses: &'a [marrow_syntax::UseDecl],
+    offset: u32,
+}
+
+#[cfg(test)]
+#[path = "analysis/query_tests.rs"]
+mod query_tests;
+
+impl<'a> QueryFile<'a> {
+    fn new(syntax: &'a marrow_syntax::QuerySyntax) -> Self {
+        Self {
+            declarations: syntax.declarations(),
+            uses: syntax.uses(),
+            offset: syntax.offset() as u32,
+        }
+    }
 }
 
 /// The outcome of a checked whole-document format query.
@@ -1303,7 +1324,7 @@ pub enum ActiveCallOutcome {
 mod completion {
     use marrow_syntax::{
         Block, Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, NameSegment, Recovery,
-        ResourceMember, SourceFile, SourceSpan, Statement, TypeExpr,
+        ResourceMember, SourceSpan, Statement, TypeExpr,
     };
 
     use crate::lower::builtin_value_names;
@@ -1311,7 +1332,7 @@ mod completion {
 
     use super::{
         AnalysisResourceLimit, Candidate, CandidateKind, CompletionOutcome, Completions, Fact,
-        MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, PositionClass,
+        MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, PositionClass, QueryFile,
     };
 
     /// One in-scope binding: its spelling and, when annotated, its declared type node
@@ -1344,7 +1365,8 @@ mod completion {
     }
 
     /// Classify the offset over the queried file's tree and enumerate the class namespace.
-    pub(super) fn resolve(file: &SourceFile, offset: u32) -> CompletionOutcome {
+    pub(super) fn resolve(file: &QueryFile<'_>) -> CompletionOutcome {
+        let offset = file.offset;
         let mut scope = Scope::default();
         let Some(located) = locate_file(file, offset, &mut scope) else {
             return CompletionOutcome::Ready(Fact::Absent);
@@ -1414,7 +1436,7 @@ mod completion {
     }
 
     fn locate_file<'a>(
-        file: &'a SourceFile,
+        file: &'a QueryFile<'_>,
         offset: u32,
         scope: &mut Scope<'a>,
     ) -> Option<Located<'a>> {
@@ -1921,7 +1943,7 @@ mod completion {
         None
     }
 
-    fn expression_name_candidates(file: &SourceFile, scope: &Scope<'_>) -> Vec<Candidate> {
+    fn expression_name_candidates(file: &QueryFile<'_>, scope: &Scope<'_>) -> Vec<Candidate> {
         let mut candidates = Vec::new();
         for local in &scope.locals {
             candidates.push(Candidate {
@@ -1937,7 +1959,7 @@ mod completion {
                 detail: param.ty.map(TypeExpr::to_string).unwrap_or_default(),
             });
         }
-        for declaration in &file.declarations {
+        for declaration in file.declarations {
             match declaration {
                 Declaration::Function(function) => candidates.push(Candidate {
                     label: function.name.clone(),
@@ -1968,7 +1990,7 @@ mod completion {
                 detail: String::new(),
             });
         }
-        for use_decl in &file.uses {
+        for use_decl in file.uses {
             let Some(segment) = use_decl.segments.last() else {
                 continue;
             };
@@ -1982,7 +2004,7 @@ mod completion {
     }
 
     fn member_candidates(
-        file: &SourceFile,
+        file: &QueryFile<'_>,
         scope: &Scope<'_>,
         base: &Expression,
     ) -> Vec<Candidate> {
@@ -2041,7 +2063,7 @@ mod completion {
         }
     }
 
-    fn enum_path_candidates(file: &SourceFile, base: &Expression) -> Vec<Candidate> {
+    fn enum_path_candidates(file: &QueryFile<'_>, base: &Expression) -> Vec<Candidate> {
         let Expression::Name { segments, .. } = base else {
             return Vec::new();
         };
@@ -2089,9 +2111,9 @@ mod completion {
         Some(members)
     }
 
-    fn type_annotation_candidates(file: &SourceFile, scope: &Scope<'_>) -> Vec<Candidate> {
+    fn type_annotation_candidates(file: &QueryFile<'_>, scope: &Scope<'_>) -> Vec<Candidate> {
         let mut candidates = Vec::new();
-        for declaration in &file.declarations {
+        for declaration in file.declarations {
             let name = match declaration {
                 Declaration::Alias(item) => &item.name,
                 Declaration::Nominal(item) => &item.name,
@@ -2176,14 +2198,14 @@ mod completion {
 /// an unknown name resolves to no local declaration and is a legitimate absence.
 mod active_call {
     use marrow_syntax::{
-        Argument, Block, Declaration, Expression, FunctionDecl, InterpolationPart, SourceFile,
-        SourceSpan, Statement,
+        Argument, Block, Declaration, Expression, FunctionDecl, InterpolationPart, SourceSpan,
+        Statement,
     };
 
     use super::completion::{contains, declaration_contains};
     use super::{
         ActiveCall, ActiveCallOutcome, AnalysisResourceLimit, Fact, MAX_ACTIVE_CALL_RENDER_BYTES,
-        ParamPiece,
+        ParamPiece, QueryFile,
     };
 
     /// One call node reached during collection: its callee expression, its arguments
@@ -2195,7 +2217,8 @@ mod active_call {
         span: SourceSpan,
     }
 
-    pub(super) fn resolve(file: &SourceFile, source: &[u8], offset: u32) -> ActiveCallOutcome {
+    pub(super) fn resolve(file: &QueryFile<'_>, source: &[u8]) -> ActiveCallOutcome {
+        let offset = file.offset;
         let Some(declaration) = file
             .declarations
             .iter()
@@ -2295,7 +2318,10 @@ mod active_call {
     /// Resolve a callee expression to a same-module function or generic template in this
     /// file's parse. A qualified (cross-module) name, a built-in, or an unknown name
     /// resolves to no local declaration on this floor.
-    fn resolve_callee<'a>(file: &'a SourceFile, callee: &Expression) -> Option<&'a FunctionDecl> {
+    fn resolve_callee<'a>(
+        file: &'a QueryFile<'_>,
+        callee: &Expression,
+    ) -> Option<&'a FunctionDecl> {
         let Expression::Name { segments, .. } = callee else {
             return None;
         };

@@ -29,6 +29,12 @@ preconditions. `marrow-vm` executes the selected instruction tape. Durable reads
 writes leave the VM through `marrow-kernel`, which encodes keys and values and
 drives a transaction against an engine in `marrow-store`.
 
+Completion and active-call requests use syntax-owned, position-bound
+[query syntax](syntax.md). The compiler reads declaration headers and the
+containing body through this transient partial product. Snapshot facts and
+diagnostics still come from full analysis; the language server consumes the
+existing compiler query APIs.
+
 `marrow-vm::render` owns canonical value text for VM string conversion and CLI
 output. One recursive append traversal shares a private destination with an
 explicit caller byte limit. Nested aggregate values append into that destination;

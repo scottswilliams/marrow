@@ -10,6 +10,7 @@ recovery nodes, and syntax diagnostics. It does not resolve names or types.
 |---|---|
 | Tokenization and literals | `lexer.rs`, `token.rs`, `literal.rs` |
 | Declaration parsing | `parse_decl/` |
+| Position-query syntax | `query.rs` |
 | Expression and statement parsing | `parse_expr.rs` |
 | AST | `ast.rs` |
 | Syntax diagnostics | `diagnostic.rs` |
@@ -23,6 +24,17 @@ A missing brace is reported once, at the brace that opened the block:
 ```text
 src/main.mw:3:24: parse.syntax: expected `}` to close this block
 ```
+
+`QuerySyntax::parse` builds transient syntax for completion and active-call
+queries. It binds the byte position to a partial tree, retaining all declaration
+headers, uses, and body spans. It lexes the whole file and uses the declaration
+parser's existing block framing and recovery. Only a closed function/test body
+containing the position has its statements constructed; other closed bodies
+have empty statement lists. Body spans include both endpoints for position
+selection. Const expressions and structural declarations remain fully parsed.
+The partial type exposes no complete `SourceFile` and supplies no diagnostics.
+Compilation, formatting and snapshot diagnostics continue to use full parsing.
+The existing conservative full-parse charge also covers this query product.
 
 ## Parse cost
 
