@@ -15,7 +15,7 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{
     CommitResult, Durable, DurableStore, EntryValue, InvocationGrant, KernelFault, NativeStore,
-    SessionError,
+    NumberedProjection, SessionError,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -50,8 +50,7 @@ fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
             .bind_and_open_existing(
                 marrow_kernel::durable::NativeOpenAccess::ReadWrite,
                 [0x61; 16],
-                project(&schema(), sites()),
-                || Ok::<_, std::convert::Infallible>(())
+                || NumberedProjection::accepted(project(&schema(), sites()), &[0, 1], 2)
             )
             .is_err(),
         "a scoped lifecycle reopen must refuse a missing engine",
