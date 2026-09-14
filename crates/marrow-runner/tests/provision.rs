@@ -2,8 +2,12 @@
 //! the launched image's store, gated by the accepted-report token. The server (runner) is one
 //! caller of the wire `Provision` DTO; the encoder here is the other. No socket is bound.
 
+#[path = "common/output.rs"]
+mod output;
+
 use std::path::PathBuf;
 
+use output::broken_output;
 use marrow_lifecycle::ProvisionReport;
 use marrow_local_wire::{ClientMessage, ServerMessage};
 use marrow_runner::Service;
@@ -148,8 +152,7 @@ fn provision_receipt_failure_preserves_the_published_store() {
     let image_path = base.join("program.image");
     std::fs::write(&image_path, &bytes).expect("write image");
     let store = base.join("store");
-    let (reader, writer) = std::io::pipe().expect("output pipe");
-    drop(reader);
+    let writer = broken_output();
     let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
         .arg("provision")
         .arg("--image")
@@ -162,6 +165,7 @@ fn provision_receipt_failure_preserves_the_published_store() {
         .stderr(Stdio::piped())
         .output()
         .expect("provision child completes");
+    eprintln!("fixture: {}; child: {output:?}", base.display());
     std::fs::write(base.join("stderr"), &output.stderr).expect("retain child stderr");
 
     let image = marrow_verify::verify(&bytes).expect("verify image");
@@ -207,8 +211,7 @@ fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
             marrow_lifecycle::provision_image(&store, &prepared, &approval).expect("provision");
         let head = std::fs::read(store.join(marrow_lifecycle::HEAD_FILE)).expect("head");
         std::fs::write(store.join("envelope.replacing"), b"interrupted metadata").expect("debris");
-        let (reader, writer) = std::io::pipe().expect("output pipe");
-        drop(reader);
+        let writer = broken_output();
         let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
             .arg("recover")
             .arg("--image")
@@ -221,6 +224,7 @@ fn recovery_output_failure_keeps_completed_activation_and_preserved_bytes() {
             .stderr(Stdio::piped())
             .output()
             .expect("recovery child completes");
+        eprintln!("fixture: {}; child: {output:?}", base.display());
         std::fs::write(base.join("stderr"), &output.stderr).expect("retain child diagnostic");
         assert_eq!(output.status.code(), Some(1), "fixture: {}", base.display());
         assert!(
@@ -304,20 +308,19 @@ fn logical_transfer_keeps_completed_effects_when_receipt_delivery_fails() {
                     .arg("--out")
                     .arg(&destination);
             }
-            let (reader, writer) = std::io::pipe().expect("stdout pipe");
-            drop(reader);
+            let writer = broken_output();
             command
                 .args(["--format", "jsonl"])
                 .stdin(Stdio::null())
                 .stdout(writer);
             if close_diagnostic {
-                let (reader, writer) = std::io::pipe().expect("stderr pipe");
-                drop(reader);
+                let writer = broken_output();
                 command.stderr(writer);
             } else {
                 command.stderr(Stdio::piped());
             }
             let output = command.output().expect("transfer exits");
+            eprintln!("fixture: {}; child: {output:?}", base.display());
             assert_eq!(output.status.code(), Some(1));
             if restore {
                 assert_eq!(
@@ -460,8 +463,7 @@ fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
         let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
         marrow_lifecycle::provision_image(&store, &prepared, &approval).expect("provision");
     }
-    let (reader, writer) = std::io::pipe().expect("output pipe");
-    drop(reader);
+    let writer = broken_output();
     let mut command = Command::new(env!("CARGO_BIN_EXE_marrow-runner"));
     command
         .args(["import", "--image"])
@@ -483,6 +485,7 @@ fn import_with_closed_stream(destination: ImportStore, closed: ClosedStream) {
         }
     }
     let output = command.output().expect("import child completes");
+    eprintln!("fixture: {}; child: {output:?}", base.display());
     std::fs::write(base.join("stdout"), &output.stdout).expect("retain stdout");
     std::fs::write(base.join("stderr"), &output.stderr).expect("retain stderr");
     eprintln!("import fixture: {}", base.display());
@@ -547,8 +550,7 @@ fn import_notice_failure_does_not_interrupt_import() {
 fn runner_usage_stderr_failure_keeps_usage_status() {
     use std::process::{Command, Stdio};
     for command in ["provision", "import"] {
-        let (reader, writer) = std::io::pipe().expect("diagnostic pipe");
-        drop(reader);
+        let writer = broken_output();
         let status = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
             .arg(command)
             .stdin(Stdio::null())
@@ -556,7 +558,7 @@ fn runner_usage_stderr_failure_keeps_usage_status() {
             .stderr(writer)
             .status()
             .expect("usage child completes");
-        assert_eq!(status.code(), Some(2));
+        assert_eq!(status.code(), Some(2), "{command}: {status:?}");
     }
 }
 
@@ -568,8 +570,8 @@ fn provision_report_failure_precedes_publication() {
     let image = base.join("program.image");
     std::fs::write(&image, image_bytes()).expect("image");
     let store = base.join("store");
-    let (reader, writer) = std::io::pipe().expect("report pipe");
-    drop(reader);
+    assert!(!store.exists(), "fresh destination: {}", store.display());
+    let writer = broken_output();
     let output = Command::new(env!("CARGO_BIN_EXE_marrow-runner"))
         .args(["provision", "--image"])
         .arg(&image)
@@ -581,6 +583,7 @@ fn provision_report_failure_precedes_publication() {
         .stderr(writer)
         .output()
         .expect("provision child completes");
+    eprintln!("fixture: {}; child: {output:?}", base.display());
     assert!(!store.exists());
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
@@ -595,10 +598,10 @@ fn invalid_image_with_closed_stderr_leaves_store_absent() {
     let invalid = base.join("invalid.image");
     std::fs::write(&invalid, b"not an image").expect("invalid image");
     let store = base.join("store");
+    assert!(!store.exists(), "fresh destination: {}", store.display());
     for image in [invalid, base.join("missing.image")] {
         for name in ["provision", "import"] {
-            let (reader, writer) = std::io::pipe().expect("diagnostic pipe");
-            drop(reader);
+            let writer = broken_output();
             let mut command = Command::new(env!("CARGO_BIN_EXE_marrow-runner"));
             command
                 .arg(name)
@@ -620,6 +623,7 @@ fn invalid_image_with_closed_stderr_leaves_store_absent() {
                 .stderr(writer)
                 .output()
                 .expect("refusal child completes");
+            eprintln!("fixture: {}; child: {output:?}", base.display());
             assert!(!store.exists());
             assert_eq!(output.status.code(), Some(1));
             assert!(output.stdout.is_empty());

@@ -9,8 +9,12 @@
 //! step. The terminal-side wire client under test is `attach_and_call`; companion discovery
 //! and release verification are covered by the terminal's own unit tests.
 
+#[path = "common/output.rs"]
+mod output;
+
 use std::path::{Path, PathBuf};
 
+use output::broken_output;
 use marrow_runner::{CallOutcome, Json, attach_and_call};
 use marrow_verify::{RetShape, VerifiedImage};
 use marrow_vm::Value;
@@ -135,14 +139,11 @@ fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
             .expect("old active store");
         let image = base.join("program.image");
         std::fs::write(&image, &bytes).expect("image");
-        let (reader, writer) = std::io::pipe().expect("descriptor pipe");
-        drop(reader);
+        let writer = broken_output();
         let diagnostic = if capture_diagnostic {
             Stdio::piped()
         } else {
-            let (reader, writer) = std::io::pipe().expect("diagnostic pipe");
-            drop(reader);
-            Stdio::from(writer)
+            broken_output()
         };
         let output = Command::new(runner_exe())
             .args(["attach", "--image"])
@@ -154,6 +155,7 @@ fn closed_launch_descriptor_does_not_undo_a_completed_rebind() {
             .stderr(diagnostic)
             .output()
             .expect("attach child");
+        eprintln!("fixture: {}; child: {output:?}", base.display());
         std::fs::write(base.join("stderr"), &output.stderr).expect("retain diagnostic");
         assert_eq!(output.status.code(), Some(1), "{}", base.display());
         if capture_diagnostic {
