@@ -1094,6 +1094,13 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     let admitted = lower_bind
         .find("admit()")
         .expect("binding admits the stored image");
+    assert!(
+        lower_bind
+            .find(".prepare_existing(")
+            .expect("binding prepares the marker under retained directory exclusion")
+            < admitted,
+        "marker preparation must precede admission",
+    );
     for engine_open in [
         "NativeEngine::open_existing(",
         "NativeEngine::open_read_only(",
@@ -1107,7 +1114,7 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         );
     }
     assert!(
-        lower_owner.contains("fn acquire(dir: &Path) -> Result<AcquiredLock, NativeLockError>"),
+        lower_owner.contains("fn acquire(dir: &Path) -> Result<Self, NativeLockError>"),
         "lock acquisition must require no store instance",
     );
     assert!(
@@ -1128,16 +1135,13 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     // own children changes. Every name inside the directory — the marker and the engine file
     // both — can be unlinked and recreated, so a lock taken only on those names is divided by
     // replacing them, and replacing both at once divides it entirely.
-    let directory_locked = lock_acquire
-        .find("directory_node.try_lock()")
-        .expect("lock acquisition takes the store directory node's lock");
-    let marker_opened = lock_acquire
-        .find("open_marker(")
-        .expect("lock acquisition opens the marker entry");
     assert!(
-        directory_locked < marker_opened,
-        "exclusion must be taken on the store directory node before any name inside it is \
-         opened",
+        lock_acquire.contains("directory_node.try_lock()")
+            && !lock_acquire.contains("open_marker(")
+            && !lock_acquire.contains("write_owner(")
+            && !lock_acquire.contains("NativeEngine::"),
+        "acquisition must take directory exclusion without opening or publishing a marker \
+         or opening an engine",
     );
     let quarantined =
         fn_body(&lower_owner, "fn drop(&mut self)").expect("the owner lock decides its own drop");
@@ -1147,17 +1151,22 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
             "quarantine must retain every handle exclusion rests on, including {handle}",
         );
     }
-    let locked = lock_acquire
+    let marker_prepare = fn_body(&lower_owner, "fn prepare_existing(")
+        .expect("the retained lock prepares the marker");
+    let marker_opened = marker_prepare
+        .find("open_marker(")
+        .expect("marker preparation opens the marker entry");
+    let locked = marker_prepare
         .find("file.try_lock()")
-        .expect("lock acquisition takes the advisory lock");
-    let held_admission = lock_acquire
+        .expect("marker preparation takes the advisory lock");
+    let held_admission = marker_prepare
         .find("admit_held_marker(")
-        .expect("the held-marker admission runs inside lock acquisition");
+        .expect("marker preparation admits the held marker");
     assert!(
-        locked < held_admission,
+        marker_opened < locked && locked < held_admission,
         "the marker's link admission must run after exclusion is decided, not before it",
     );
-    let open_marker = fn_body(&lower_owner, "fn open_marker(dir: &Path)")
+    let open_marker = fn_body(&lower_owner, "fn open_marker(dir: &Path,")
         .expect("the lower owner opens the marker entry");
     assert!(
         !open_marker.contains("admit_held_marker("),
@@ -1250,17 +1259,22 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         "the lower owner exposes a detach or quarantine re-arm seam",
     );
 
-    let acquire_lock = fn_body(&lower_owner, "fn acquire(dir: &Path)")
-        .expect("owner-lock acquisition owner exists");
-    let owner_write = acquire_lock
+    let mutable_prepare = fn_body(marker_prepare, "if access != NativeOpenAccess::ReadOnly")
+        .expect("read-only marker preparation must not publish an owner");
+    let owner_write = mutable_prepare
         .find("write_owner(")
         .expect("owner descriptor write exists");
-    let directory_sync = acquire_lock
+    let directory_sync = mutable_prepare
         .find("sync_dir(dir).map_err(NativeLockError::Io)?")
         .expect("owner-lock directory sync exists");
     assert!(
         owner_write < directory_sync,
-        "owner-lock acquisition must durably publish the lock-file directory entry before returning",
+        "mutable marker preparation must durably publish the directory entry before returning",
+    );
+    assert!(
+        fn_body(lower_bind, "if access != NativeOpenAccess::ReadOnly")
+            .is_some_and(|body| body.contains("lock.mark_clean()")),
+        "read-only binding must not clear the marker on drop",
     );
     assert!(
         fn_body(&lower_owner, "fn write_owner(")

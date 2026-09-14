@@ -1134,8 +1134,7 @@ mod tests {
                     .take()
                     .expect("actual stage observed")
             });
-            let mut expected: Vec<std::ffi::OsString> =
-                vec![store_dir::ENVELOPE_FILE.into(), store_dir::LOCK_FILE.into()];
+            let mut expected: Vec<std::ffi::OsString> = vec![store_dir::ENVELOPE_FILE.into()];
             if point != Point::NewBody(Artifact::Envelope) {
                 expected.push(store_dir::HEAD_FILE.into());
             }

@@ -763,10 +763,7 @@ fn relative_provision_reports_success_after_publication() {
                     .expect("published directory")
                     .is_dir()
             );
-            assert_eq!(
-                list(&destination),
-                ["envelope", "head", "lock", "store.redb"]
-            );
+            assert_eq!(list(&destination), ["envelope", "head", "store.redb"]);
             for name in ["envelope", "head", "store.redb"] {
                 let metadata =
                     std::fs::symlink_metadata(destination.join(name)).expect("published artifact");
