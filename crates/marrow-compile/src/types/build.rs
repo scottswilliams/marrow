@@ -119,25 +119,10 @@ pub(super) fn register_type_templates(
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), DeclareError> {
-    let type_param_names =
-        |params: &[marrow_syntax::TypeParamDecl]| -> Vec<(String, Option<TypeConstraint>)> {
-            params
-                .iter()
-                .map(|param| {
-                    (
-                        param.name.clone(),
-                        param.constraint.map(TypeConstraint::from_syntax),
-                    )
-                })
-                .collect()
-        };
-    // Templates yield to the concrete declarations of the same name; the generic
-    // rows of these lists are this pass's own, held by the ledger as it declares
-    // them.
-    let name_taken = |registry: &TypeRegistry,
-                      name: &str|
-     -> Result<Option<NameHolder>, DeclarationIndexDrift> {
-        Ok(registry.name_conflict(name)?.or_else(|| {
+    // Templates yield to the concrete declarations of the same name; the generic rows
+    // of these lists are this pass's own, held by the ledger as it declares them.
+    let taken = |registry: &TypeRegistry, name: &str| {
+        Ok::<_, DeclarationIndexDrift>(registry.name_conflict(name)?.or_else(|| {
             pending_name(
                 name,
                 resources.iter().map(|(_, _, r)| r.name.as_str()),
@@ -162,19 +147,12 @@ pub(super) fn register_type_templates(
             at: *at,
             span: decl.name_span,
         };
-        if is_reserved_type_name(&decl.name) {
-            let refusal = refuse_row(
-                diagnostics,
-                declared,
-                reserved_name(file, decl.name_span, &decl.name),
-            );
-            registry
-                .named
-                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
-            continue;
-        }
-        if let Some(holder) = name_taken(registry, &decl.name)? {
-            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
+        if !claim_template_name(
+            registry,
+            declared,
+            taken(registry, &decl.name)?,
+            diagnostics,
+        )? {
             continue;
         }
         let mut refusal = None;
@@ -202,31 +180,8 @@ pub(super) fn register_type_templates(
                 }
             }
         }
-        let fields = match (fields, refusal) {
-            (Some(fields), None) => fields,
-            // Every arm that drops the members, and every member type that names
-            // nothing declared, reported through the accumulator, so a refused
-            // template always carries the cause a use is steered to.
-            (_, Some(refusal)) => {
-                registry
-                    .named
-                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
-                continue;
-            }
-            (None, None) => continue,
-        };
-        registry.named.declare(
-            decl.name.clone(),
-            DeclarationOccurrence::Accepted(NamedTypeKind::Template),
-        )?;
-        registry.type_templates.push(TypeTemplate {
-            name: decl.name.clone(),
-            file: Some(file.clone()),
-            name_span: decl.name_span,
-            reserved: None,
-            type_params: type_param_names(&decl.type_params),
-            body: TemplateBody::Struct(fields.into()),
-        });
+        let body = fields.map(|fields| TemplateBody::Struct(fields.into()));
+        settle_template(registry, declared, &decl.type_params, refusal, body)?;
     }
     for (at, file, decl) in enums {
         if decl.type_params.is_empty() {
@@ -238,19 +193,12 @@ pub(super) fn register_type_templates(
             at: *at,
             span: decl.name_span,
         };
-        if is_reserved_type_name(&decl.name) {
-            let refusal = refuse_row(
-                diagnostics,
-                declared,
-                reserved_name(file, decl.name_span, &decl.name),
-            );
-            registry
-                .named
-                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
-            continue;
-        }
-        if let Some(holder) = name_taken(registry, &decl.name)? {
-            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
+        if !claim_template_name(
+            registry,
+            declared,
+            taken(registry, &decl.name)?,
+            diagnostics,
+        )? {
             continue;
         }
         let mut refusal = None;
@@ -280,32 +228,87 @@ pub(super) fn register_type_templates(
                 }
             }
         }
-        let variants = match (variants, refusal) {
-            (Some(variants), None) => variants,
-            // Every arm that drops the members, and every member type that names
-            // nothing declared, reported through the accumulator, so a refused
-            // template always carries the cause a use is steered to.
-            (_, Some(refusal)) => {
-                registry
-                    .named
-                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
-                continue;
-            }
-            (None, None) => continue,
-        };
-        registry.named.declare(
-            decl.name.clone(),
-            DeclarationOccurrence::Accepted(NamedTypeKind::Template),
-        )?;
-        registry.type_templates.push(TypeTemplate {
-            name: decl.name.clone(),
-            file: Some(file.clone()),
-            name_span: decl.name_span,
-            reserved: None,
-            type_params: type_param_names(&decl.type_params),
-            body: TemplateBody::Enum(variants.into()),
-        });
+        let body = variants.map(|variants| TemplateBody::Enum(variants.into()));
+        settle_template(registry, declared, &decl.type_params, refusal, body)?;
     }
+    Ok(())
+}
+
+/// Whether this template may take its declared name, refusing a reserved one and
+/// reporting a conflict against `taken`.
+fn claim_template_name(
+    registry: &mut TypeRegistry,
+    declared: DeclarationSite<'_>,
+    taken: Option<NameHolder>,
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<bool, DeclareError> {
+    if is_reserved_type_name(declared.name) {
+        let refusal = refuse_row(
+            diagnostics,
+            declared,
+            reserved_name(declared.file, declared.span, declared.name),
+        );
+        registry.named.declare(
+            declared.name.to_string(),
+            DeclarationOccurrence::Refused(refusal),
+        )?;
+        return Ok(false);
+    }
+    if let Some(holder) = taken {
+        name_conflict(
+            diagnostics,
+            declared.file,
+            declared.span,
+            declared.name,
+            holder,
+        );
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Record this template's verdict: its refusal, or the accepted body.
+///
+/// Every arm that drops the members, and every member type that names nothing
+/// declared, reports through the refusal accumulator, so a refused template always
+/// carries the cause a use is steered to.
+fn settle_template(
+    registry: &mut TypeRegistry,
+    declared: DeclarationSite<'_>,
+    type_params: &[marrow_syntax::TypeParamDecl],
+    refusal: Option<DeclarationRefusalSummary>,
+    body: Option<TemplateBody>,
+) -> Result<(), DeclareError> {
+    let body = match (body, refusal) {
+        (Some(body), None) => body,
+        (_, Some(refusal)) => {
+            return registry.named.declare(
+                declared.name.to_string(),
+                DeclarationOccurrence::Refused(refusal),
+            );
+        }
+        (None, None) => return Ok(()),
+    };
+    registry.named.declare(
+        declared.name.to_string(),
+        DeclarationOccurrence::Accepted(NamedTypeKind::Template),
+    )?;
+    registry.type_templates.push(TypeTemplate {
+        name: declared.name.to_string(),
+        file: Some(declared.file.clone()),
+        name_span: declared.span,
+        reserved: None,
+        type_params: type_params
+            .iter()
+            .map(|param| {
+                (
+                    param.name.clone(),
+                    param.constraint.map(TypeConstraint::from_syntax),
+                )
+            })
+            .collect(),
+        body,
+    });
     Ok(())
 }
 
@@ -1511,7 +1514,6 @@ fn fill_record(
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
     let file = declared.file;
-    let type_id = registry.records[index].type_id;
     let mut groups = Vec::new();
     let mut group_slot_defs = Vec::new();
     // Fields, groups, and branches share the resource's one member layer: a group
@@ -1556,11 +1558,7 @@ fn fill_record(
                     .declare(MemberKey::field(&resource.name, &field.name), occurrence)?;
             }
             ResourceMember::Group(group) if group.keys.is_empty() => {
-                // An unkeyed `group` is a nested sub-record value: its scalar/enum
-                // leaves become a group record type, and the containing value gains one
-                // required slot holding that record. Its durable identity is owned
-                // separately by `durable.rs`; this is the materialized-value side only.
-                let (leaf_fields, leaf_defs) = build_group_leaves(
+                let (info, slot) = admit_unkeyed_group(
                     draft,
                     registry,
                     &resource.name,
@@ -1568,25 +1566,8 @@ fn fill_record(
                     declared,
                     diagnostics,
                 )?;
-                let anchor = format!("{}.{}", resource.name, group.name);
-                let group_name_id = draft.intern_string(&anchor)?;
-                let group_type_id = draft.add_record_type(RecordTypeDef {
-                    name: group_name_id,
-                    fields: leaf_defs,
-                })?;
-                group_slot_defs.push(FieldDef {
-                    name: draft.intern_string(&group.name)?,
-                    ty: ImageType::Record {
-                        idx: group_type_id,
-                        optional: false,
-                    },
-                    required: true,
-                });
-                groups.push(GroupInfo {
-                    name: group.name.clone(),
-                    type_id: group_type_id,
-                    fields: leaf_fields,
-                });
+                groups.push(info);
+                group_slot_defs.push(slot);
             }
             ResourceMember::Group(branch) => {
                 // A keyed `branch` (a `group` with key parameters) is a durable-graph
@@ -1611,10 +1592,72 @@ fn fill_record(
             }
         }
     }
-    // The ledger is the authority for which members survived and in what order, so
-    // the record's fields and the image slots are read out of it rather than
-    // accumulated beside it.
-    let fields = registry.accepted_members(&resource.name);
+    seal_record_slots(
+        draft,
+        registry,
+        index,
+        &resource.name,
+        groups,
+        group_slot_defs,
+    )
+}
+
+/// Build one unkeyed `group` as a nested sub-record value: its scalar and enum leaves
+/// become a group record type, and the containing record gains one required slot
+/// holding that record. The group's durable identity is owned separately by
+/// `durable.rs`; this is the materialized-value side only.
+fn admit_unkeyed_group(
+    draft: &mut DraftTxn<'_>,
+    registry: &mut TypeRegistry,
+    owner: &str,
+    group: &GroupDecl,
+    declared: DeclarationSite<'_>,
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<(GroupInfo, FieldDef), BuildError> {
+    let (leaf_fields, leaf_defs) =
+        build_group_leaves(draft, registry, owner, group, declared, diagnostics)?;
+    let group_name_id = draft.intern_string(&format!("{owner}.{}", group.name))?;
+    let group_type_id = draft.add_record_type(RecordTypeDef {
+        name: group_name_id,
+        fields: leaf_defs,
+    })?;
+    let slot = FieldDef {
+        name: draft.intern_string(&group.name)?,
+        ty: ImageType::Record {
+            idx: group_type_id,
+            optional: false,
+        },
+        required: true,
+    };
+    Ok((
+        GroupInfo {
+            name: group.name.clone(),
+            type_id: group_type_id,
+            fields: leaf_fields,
+        },
+        slot,
+    ))
+}
+
+/// Fill the reserved record from the member ledger.
+///
+/// The ledger is the authority for which members survived and in what order, so the
+/// record's fields and the image slots are read out of it rather than accumulated
+/// beside it. The record is group-inclusive: its top-level field slots followed by one
+/// group-record slot per unkeyed group, in declaration order. The verifier ties the
+/// field slots to the durable member tree's fields and each trailing group slot to a
+/// `Group` member, so this one record type serves both the durable graph and the
+/// storeless value model.
+fn seal_record_slots(
+    draft: &mut DraftTxn<'_>,
+    registry: &mut TypeRegistry,
+    index: usize,
+    owner: &str,
+    groups: Vec<GroupInfo>,
+    group_slot_defs: Vec<FieldDef>,
+) -> Result<(), BuildError> {
+    let type_id = registry.records[index].type_id;
+    let fields = registry.accepted_members(owner);
     let mut field_defs: Vec<FieldDef> = fields
         .iter()
         .map(|field| {
@@ -1625,11 +1668,6 @@ fn fill_record(
             })
         })
         .collect::<Result<_, BuildError>>()?;
-    // The record is group-inclusive: its top-level field slots followed by one
-    // group-record slot per unkeyed group, in declaration order. The verifier ties the
-    // field slots to the durable member tree's fields and each trailing group slot to a
-    // `Group` member, so this one record type serves both the durable graph and the
-    // storeless value model.
     field_defs.extend(group_slot_defs);
     #[expect(
         clippy::expect_used,
