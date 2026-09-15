@@ -1,0 +1,535 @@
+//! Generated strict TypeScript performs a real storeless call against the stock
+//! runner, end to end.
+//!
+//! Node spawns the runner per the channel law (through the pinned supervision
+//! module), calls generated methods, and receives typed results; the child-death
+//! boundaries are re-proven through the generated client, with the queued
+//! `interrupted` class exercised for real (one call in flight, one queued, then a
+//! fail-closed terminate in the same synchronous turn — the reply cannot have
+//! been processed, so the classification is deterministic). A native durable
+//! fault after a confirmed commit also proves the incomplete reply reaches
+//! `MarrowIncomplete` and retires the Node session without dispatching its queue.
+//!
+//! Each test spawns Node and Unix-socket traffic, which the command sandbox
+//! denies, so each is `#[ignore]`d and run explicitly with the sandbox disabled:
+//!
+//! ```text
+//! cargo test -p marrow --test client_e2e -- --ignored --test-threads=1
+//! ```
+//!
+//! Requires `node` (v23.6+ for default type stripping of `.mts`) on PATH and the
+//! workspace binaries built (`--all-targets` builds `marrow-runner`).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use crate::common::{MARROW_BIN, TempDir, write};
+
+/// The stock runner binary: built into the same deps/../ directory as the CLI
+/// test binary by a workspace `--all-targets` build.
+fn runner_path() -> PathBuf {
+    let path = Path::new(MARROW_BIN)
+        .parent()
+        .expect("binary dir")
+        .join("marrow-runner");
+    assert!(
+        path.is_file(),
+        "stock runner not built at {}; run a workspace --all-targets build first",
+        path.display()
+    );
+    path
+}
+
+const FIXTURE: &str = r#"struct Point {
+    x: int
+    y: int
+}
+
+enum Shape {
+    dot
+    circle(radius: int)
+}
+
+pub fn add(a: int, b: int): int {
+    return a + b
+}
+
+pub fn shift(p: Point, dx: int): Point {
+    return Point(x: p.x + dx, y: p.y)
+}
+
+pub fn grow(s: Shape): Shape {
+    match s {
+        dot => return Shape::dot
+        circle(r) => return Shape::circle(radius: r + 1)
+    }
+}
+
+pub fn ping() {
+    return
+}
+
+pub fn echoText(s: string): string {
+    return s
+}
+
+pub fn echoBytes(b: bytes): bytes {
+    return b
+}
+
+pub fn echoDate(d: date): date {
+    return d
+}
+
+pub fn echoInstant(i: instant): instant {
+    return i
+}
+
+pub fn echoDuration(u: duration): duration {
+    return u
+}
+"#;
+
+const DURABLE_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+const DURABLE_FIXTURE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn writeThenFault(): int {
+    transaction {
+        ^counters[1] = Counter(value: 7)
+    }
+    return 1 / 0
+}
+
+pub fn value(): int? {
+    return ^counters[1].value
+}
+
+pub fn two(): int {
+    return 2
+}
+"#;
+
+/// Build the project, generate the client, compile the image to a file, and
+/// return the project directory.
+fn prepare(temp: &TempDir) -> PathBuf {
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), FIXTURE);
+
+    let generated = Command::new(MARROW_BIN)
+        .args(["client", "typescript", "--out", "gen"])
+        .current_dir(&project)
+        .output()
+        .expect("run marrow");
+    assert!(
+        generated.status.success(),
+        "generation failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    // Compile the same source in process and write the canonical image bytes the
+    // runner serves.
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        FIXTURE.as_bytes().to_vec(),
+    )];
+    let captured = marrow_project::capture(
+        &manifest,
+        files,
+        None,
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&captured).expect("compile");
+    fs::write(project.join("program.image"), &compiled.image.bytes).expect("write image");
+    project
+}
+
+/// Generate and provision the native fixture whose complete entries collide in
+/// a runtime fault after a confirmed commit.
+fn prepare_durable(temp: &TempDir) -> PathBuf {
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), DURABLE_FIXTURE);
+    write(&project.join(".marrow/ids"), DURABLE_IDS);
+
+    let generated = Command::new(MARROW_BIN)
+        .args(["client", "typescript", "--out", "gen"])
+        .current_dir(&project)
+        .output()
+        .expect("run marrow");
+    assert!(
+        generated.status.success(),
+        "generation failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        DURABLE_FIXTURE.as_bytes().to_vec(),
+    )];
+    let captured = marrow_project::capture(
+        &manifest,
+        files,
+        Some(DURABLE_IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&captured).expect("compile");
+    fs::write(project.join("program.image"), &compiled.image.bytes).expect("write image");
+
+    let provisioned = Command::new(runner_path())
+        .args([
+            "provision",
+            "--image",
+            project.join("program.image").to_str().expect("image path"),
+            "--store",
+            project.join("store").to_str().expect("store path"),
+            "--yes",
+        ])
+        .output()
+        .expect("run provision companion");
+    assert!(
+        provisioned.status.success(),
+        "provision failed: {}",
+        String::from_utf8_lossy(&provisioned.stderr)
+    );
+    project
+}
+
+/// Run a driver script with Node and return its output.
+fn node(project: &Path, driver: &str) -> Output {
+    Command::new("node")
+        .arg(driver)
+        .env("MARROW_RUNNER", runner_path())
+        .env("MARROW_IMAGE", project.join("program.image"))
+        .env("MARROW_STORE", project.join("store"))
+        .current_dir(project)
+        .output()
+        .expect("node not found: the e2e exit gate needs Node v23.6+ on PATH")
+}
+
+fn assert_driver_passed(output: &Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.lines().any(|line| line == "DRIVER: all passed"),
+        "driver failed\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("FAIL"),
+        "driver reported a failing assertion:\n{stdout}"
+    );
+}
+
+/// Shared driver prelude: a tiny assertion harness over the generated client.
+const PRELUDE: &str = r#"
+import { Client } from "./gen/client.mts";
+import * as M from "./gen/marrow-supervisor.mjs";
+
+const RUNNER = process.env.MARROW_RUNNER!;
+const IMAGE = process.env.MARROW_IMAGE!;
+const STORE = process.env.MARROW_STORE!;
+
+let failures = 0;
+function ok(label: string, cond: boolean, detail?: string) {
+  if (cond) {
+    console.log(`OK ${label}`);
+  } else {
+    failures += 1;
+    console.log(`FAIL ${label}${detail === undefined ? "" : `: ${detail}`}`);
+  }
+}
+function finish() {
+  if (failures === 0) console.log("DRIVER: all passed");
+  process.exit(failures === 0 ? 0 : 1);
+}
+"#;
+
+/// The generated Node mirror consumes the authoritative incomplete wire arm,
+/// preserves its durable-state classification, and conservatively retires the
+/// session without dispatching an already queued call.
+#[test]
+#[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
+fn durable_incomplete_is_typed_and_retires_the_node_session() {
+    let temp = TempDir::new("incomplete");
+    let project = prepare_durable(&temp);
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+const client = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
+
+const incomplete = client.writeThenFault();
+const queued = client.two();
+
+try {
+  await incomplete;
+  ok("incomplete", false, "division by zero returned");
+} catch (error) {
+  ok(
+    "incomplete",
+    error instanceof M.MarrowIncomplete &&
+      error.code === "run.divide_by_zero" &&
+      error.durable === M.DURABLE_STATE.KNOWN_NEW &&
+      error.line > 0n &&
+      error.column > 0n,
+    String(error),
+  );
+}
+
+try {
+  await queued;
+  ok("queued-after-incomplete", false, "queued call was dispatched");
+} catch (error) {
+  ok(
+    "queued-after-incomplete",
+    error instanceof M.MarrowLossError && error.loss === M.LOSS.INTERRUPTED,
+    String(error),
+  );
+}
+
+try {
+  await client.two();
+  ok("later-after-incomplete", false, "retired session accepted a call");
+} catch (error) {
+  ok(
+    "later-after-incomplete",
+    error instanceof M.MarrowLossError && error.loss === M.LOSS.NOT_STARTED,
+    String(error),
+  );
+}
+
+await client.close();
+const readback = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
+ok("confirmed-commit-readback", (await readback.value()) === 7n);
+await readback.close();
+
+finish();
+"#
+    );
+    write(&project.join("driver_incomplete.mts"), &driver);
+    assert_driver_passed(&node(&project, "driver_incomplete.mts"));
+}
+
+/// The happy path: launch per the channel law, every export shape round-trips,
+/// a runtime fault arrives typed and source-mapped, and close is clean.
+#[test]
+#[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
+fn generated_client_performs_real_storeless_calls() {
+    let temp = TempDir::new("happy");
+    let project = prepare(&temp);
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+const client = await Client.launch({ runner: RUNNER, image: IMAGE });
+
+const sum = await client.add(2n, 3n);
+ok("add", sum === 5n, String(sum));
+
+const moved = await client.shift({ x: 1n, y: 2n }, 10n);
+ok("shift", moved.x === 11n && moved.y === 2n, `${moved.x},${moved.y}`);
+
+const grown = await client.grow({ member: "circle", payload: [4n] });
+ok("grow", grown.member === "circle" && grown.payload[0] === 5n);
+
+const dot = await client.grow({ member: "dot", payload: [] });
+ok("grow-dot", dot.member === "dot" && dot.payload.length === 0);
+
+const nothing = await client.ping();
+ok("ping", nothing === undefined);
+
+try {
+  await client.add(9223372036854775807n, 1n);
+  ok("fault", false, "overflow did not fault");
+} catch (error) {
+  ok(
+    "fault",
+    error instanceof M.MarrowFault && error.code === "run.overflow",
+    String(error),
+  );
+}
+
+// The session survives a fault: the next call still works.
+const again = await client.add(20n, 1n);
+ok("add-after-fault", again === 21n);
+
+// Client-side validation mirrors the wire grammar: a lossy number is refused
+// before any byte is sent.
+try {
+  // @ts-expect-error deliberately wrong argument type
+  await client.add(1, 2n);
+  ok("validate", false, "a number was accepted for an int");
+} catch (error) {
+  ok("validate", error instanceof TypeError, String(error));
+}
+
+await client.close();
+ok("close", true);
+finish();
+"#
+    );
+    write(&project.join("driver_happy.mts"), &driver);
+    assert_driver_passed(&node(&project, "driver_happy.mts"));
+}
+
+/// The child-death boundaries through the generated client. A dispatched call
+/// classifies `outcome_unknown`, a queued call `interrupted` (exercised for
+/// real: terminate runs in the same synchronous turn, before any reply I/O
+/// callback can settle the in-flight call), and a call after death
+/// `not_started`.
+#[test]
+#[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
+fn death_boundaries_classify_through_the_generated_client() {
+    let temp = TempDir::new("death");
+    let project = prepare(&temp);
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+const client = await Client.launch({ runner: RUNNER, image: IMAGE });
+
+// Issue two calls in one synchronous turn: the first is dispatched to the
+// serial worker, the second waits in the bounded queue. Then kill the runner
+// fail-closed in the same turn — no reply event can have been processed yet.
+const dispatched = client.add(1n, 2n);
+const queued = client.add(3n, 4n);
+client.terminate();
+
+try {
+  await dispatched;
+  ok("dispatched", false, "a reply arrived after terminate");
+} catch (error) {
+  ok(
+    "dispatched",
+    error instanceof M.MarrowLossError && error.loss === "outcome_unknown",
+    String(error),
+  );
+}
+
+try {
+  await queued;
+  ok("queued", false, "a queued call resolved after terminate");
+} catch (error) {
+  ok(
+    "queued",
+    error instanceof M.MarrowLossError && error.loss === "interrupted",
+    String(error),
+  );
+}
+
+try {
+  await client.add(5n, 6n);
+  ok("after-death", false, "a dead session accepted a call");
+} catch (error) {
+  ok(
+    "after-death",
+    error instanceof M.MarrowLossError && error.loss === "not_started",
+    String(error),
+  );
+}
+
+finish();
+"#
+    );
+    write(&project.join("driver_death.mts"), &driver);
+    assert_driver_passed(&node(&project, "driver_death.mts"));
+}
+
+/// Death before the handshake: a runner that exits before serving (a missing
+/// image) fails the launch itself — the `not_started` boundary, since no call
+/// was ever admitted.
+#[test]
+#[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
+fn a_failed_launch_is_not_started() {
+    let temp = TempDir::new("badlaunch");
+    let project = prepare(&temp);
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+try {
+  await Client.launch({ runner: RUNNER, image: IMAGE + ".missing" });
+  ok("launch", false, "a missing image launched");
+} catch (error) {
+  ok(
+    "launch",
+    error instanceof M.LaunchError && error.loss === "not_started",
+    String(error),
+  );
+}
+finish();
+"#
+    );
+    write(&project.join("driver_badlaunch.mts"), &driver);
+    assert_driver_passed(&node(&project, "driver_badlaunch.mts"));
+}
+
+/// Divergence-prone transfer shapes round-trip through the full stack: text with
+/// a quote, a backslash, a C0 control, and an astral char; bytes with a high and
+/// a zero byte, plus the empty slice; and each temporal scalar in its canonical
+/// text spelling. These cross both the generated encoder and the runner and back.
+#[test]
+#[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
+fn hard_transfer_shapes_round_trip_through_the_generated_client() {
+    let temp = TempDir::new("hard");
+    let project = prepare(&temp);
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+const client = await Client.launch({ runner: RUNNER, image: IMAGE });
+
+// Text carrying a quote, a backslash, a C0 control, and an astral char.
+const hardText = "a\"b\\c\u0001\u{1F600}z";
+const gotText = await client.echoText(hardText);
+ok("echoText", gotText === hardText, JSON.stringify(gotText));
+
+// Bytes with a zero byte and a high byte, then the empty slice.
+const blob = new Uint8Array([0x00, 0xff, 0x10]);
+const gotBlob = await client.echoBytes(blob);
+ok(
+  "echoBytes",
+  gotBlob instanceof Uint8Array &&
+    gotBlob.length === 3 &&
+    gotBlob[0] === 0 &&
+    gotBlob[1] === 255 &&
+    gotBlob[2] === 16,
+  String(gotBlob),
+);
+const emptyBlob = await client.echoBytes(new Uint8Array([]));
+ok("echoBytes-empty", emptyBlob instanceof Uint8Array && emptyBlob.length === 0);
+
+// Each temporal scalar round-trips in its canonical text spelling (the fraction
+// is trimmed of trailing zeros, so these forms are already canonical).
+const date = "2026-07-15";
+ok("echoDate", (await client.echoDate(date)) === date, String(date));
+
+const instant = "2026-07-15T17:00:00.123456789Z";
+ok("echoInstant", (await client.echoInstant(instant)) === instant, String(instant));
+
+const duration = "-PT1.5S";
+ok("echoDuration", (await client.echoDuration(duration)) === duration, String(duration));
+
+await client.close();
+ok("close", true);
+finish();
+"#
+    );
+    write(&project.join("driver_hard.mts"), &driver);
+    assert_driver_passed(&node(&project, "driver_hard.mts"));
+}

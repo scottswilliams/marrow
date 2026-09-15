@@ -1,0 +1,639 @@
+//! End-to-end `List[T]`/`Map[K, V]` tests: finite collection values travel the real
+//! production path (capture -> compile -> encode -> verify -> VM) through the built
+//! binary, via the `collections` conformance fixture and inline invalid-source
+//! projects asserting typed diagnostics.
+
+use crate::common::{Project, conformance_dir, marrow_in};
+use marrow_vm::{Value, run};
+
+/// The collection conformance fixture passes end to end: list construction, append,
+/// iteration, length/isEmpty, map insert/get/replace/remove, key-ordered iteration, nested
+/// collections, struct/enum element values, and the collection-returning text floor
+/// (`split`/`lines`/`join`) all report `passed` through the production path.
+#[test]
+fn collection_conformance_fixture_passes_on_the_production_path() {
+    let output = marrow_in(
+        &conformance_dir("collections"),
+        &["test", "--format", "jsonl"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "collection fixture must pass: {output:?}\n{stdout}"
+    );
+    let summary = stdout
+        .lines()
+        .find(|line| line.contains(r#""kind":"summary""#))
+        .unwrap_or_else(|| panic!("no summary record: {stdout}"));
+    assert!(summary.contains(r#""failed":0"#), "{summary}");
+    assert!(summary.contains(r#""total":30"#), "{summary}");
+}
+
+/// A returned list renders as a JSON array (insertion order) under `--format jsonl`
+/// and as `[a, b, ...]` in text.
+#[test]
+fn a_returned_list_renders_through_the_run_path() {
+    let workspace = Project::single(
+        r#"module main
+
+pub fn nums(): List<int> {
+    var xs: List<int> = List()
+    xs = append(xs, 1)
+    xs = append(xs, 2)
+    return xs
+}
+"#,
+    )
+    .materialize("list-return");
+    let jsonl = workspace.marrow(&["run", "nums", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&jsonl.stdout);
+    assert!(jsonl.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":[1,2]"#), "{stdout}");
+
+    let text = workspace.marrow(&["run", "nums"]);
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(stdout.contains("[1, 2]"), "{stdout}");
+}
+
+#[test]
+fn nested_list_json_refusal_preserves_the_command_outcome() {
+    let workspace = Project::single(
+        r#"pub fn nested(width: int): List<List<string>> {
+    var inner: List<string> = List()
+    var position: int = 0
+    while position < width {
+        inner = append(inner, "")
+        position += 1
+    }
+    var outer: List<List<string>> = List()
+    position = 0
+    while position < width {
+        outer = append(outer, inner)
+        position += 1
+    }
+    return outer
+}
+"#,
+    )
+    .materialize("nested-list-json-limit");
+
+    let accepted = workspace.marrow(&["run", "nested", "--format", "jsonl", "--", "2"]);
+    assert_eq!(accepted.code(), Some(0), "{accepted:?}");
+    assert_eq!(
+        accepted.stdout.as_slice(),
+        b"{\"data\":[[\"\",\"\"],[\"\",\"\"]],\"kind\":\"run\",\"outcome\":\"value\"}\n",
+    );
+    assert!(accepted.stderr.is_empty(), "{accepted:?}");
+
+    let excess = workspace.marrow(&["run", "nested", "--format", "jsonl", "--", "256"]);
+    assert_eq!(excess.code(), Some(1), "{excess:?}");
+    assert_eq!(
+        excess.stdout.as_slice(),
+        b"{\"code\":\"io.write\",\"kind\":\"run\",\"outcome\":\"error\"}\n",
+    );
+    assert!(excess.stderr.is_empty(), "{excess:?}");
+}
+
+#[test]
+fn nested_json_preserves_record_order_enum_payloads_and_escaped_keys() {
+    let workspace = Project::single(
+        r#"enum Choice {
+    item(text: string, n: int)
+}
+
+struct Packet {
+    z: string
+    a: Choice
+}
+
+pub fn shaped(): Packet {
+    return Packet(z: "tail", a: Choice::item(text: "é\n", n: 7))
+}
+
+pub fn named(): Map<string, string> {
+    var values: Map<string, string> = Map()
+    values["z"] = "last"
+    values["a\"\\\n"] = "é\t"
+    return values
+}
+"#,
+    )
+    .materialize("nested-json-shapes");
+
+    for (export, expected) in [
+        (
+            "shaped",
+            r#"{"data":{"a":{"enum":"Choice","member":"item","payload":["é\n",7]},"z":"tail"},"kind":"run","outcome":"value"}"#,
+        ),
+        (
+            "named",
+            r#"{"data":{"a\"\\\n":"é\t","z":"last"},"kind":"run","outcome":"value"}"#,
+        ),
+    ] {
+        let result = workspace.marrow(&["run", export, "--format", "jsonl"]);
+        assert_eq!(result.code(), Some(0), "{result:?}");
+        assert_eq!(result.stdout.as_slice(), format!("{expected}\n").as_bytes());
+        assert!(result.stderr.is_empty(), "{result:?}");
+    }
+}
+
+/// A returned map renders as a JSON object with keys in ascending order under
+/// `--format jsonl` and as `[k: v, ...]` in text.
+#[test]
+fn a_returned_map_renders_in_ascending_key_order() {
+    let workspace = Project::single(
+        r#"module main
+
+pub fn scores(): Map<string, int> {
+    var m: Map<string, int> = Map()
+    m["grace"] = 12
+    m["ada"] = 10
+    return m
+}
+"#,
+    )
+    .materialize("map-return");
+    let jsonl = workspace.marrow(&["run", "scores", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&jsonl.stdout);
+    assert!(jsonl.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(r#""data":{"ada":10,"grace":12}"#),
+        "{stdout}"
+    );
+
+    let text = workspace.marrow(&["run", "scores"]);
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(stdout.contains("[ada: 10, grace: 12]"), "{stdout}");
+}
+
+/// The current local Map key domain stays aligned across the compiler, verifier,
+/// VM, and both claims in the language reference.
+#[test]
+fn map_key_domain_and_reference_agree() {
+    let accepted = Project::single(
+        r#"module main
+
+type Rank: int in 1..=8
+
+pub fn values(): string {
+    var ints: Map<int, int> = Map()
+    ints[1] = 1
+    var bools: Map<bool, int> = Map()
+    bools[true] = 2
+    var strings: Map<string, int> = Map()
+    strings["key"] = 3
+    var byteStrings: Map<bytes, int> = Map()
+    byteStrings[bytes("key")] = 4
+    var dates: Map<date, int> = Map()
+    dates[date("2026-07-18")] = 5
+    var instants: Map<instant, int> = Map()
+    instants[instant("2026-07-18T12:00:00Z")] = 6
+    var durations: Map<duration, int> = Map()
+    durations[duration("PT1S")] = 7
+    const rankLow = Rank(1)
+    const rankHigh = Rank(8)
+    var ranks: Map<Rank, int> = Map()
+    ranks[rankHigh] = 8
+    ranks[rankLow] = 1
+    var rankOrder: int = 0
+    for key, value in ranks {
+        rankOrder = rankOrder * 10 + value
+    }
+    if rankOrder != 18 {
+        return "rank-order"
+    }
+    var result: string = ""
+    result = result + string(ints[1] ?? 0)
+    result = result + string(bools[true] ?? 0)
+    result = result + string(strings["key"] ?? 0)
+    result = result + string(byteStrings[bytes("key")] ?? 0)
+    result = result + string(dates[date("2026-07-18")] ?? 0)
+    result = result + string(instants[instant("2026-07-18T12:00:00Z")] ?? 0)
+    result = result + string(durations[duration("PT1S")] ?? 0)
+    result = result + string(ranks[rankHigh] ?? 0)
+    return result
+}
+"#,
+    )
+    .materialize("map-key-domain");
+    let output = accepted.marrow(&["run", "values"]);
+    assert!(
+        output.status.success(),
+        "all admitted Map keys must compile, verify, and run: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(output.stdout, b"12345678\n");
+
+    let rejected = [
+        (
+            "decimal",
+            r#"module main
+
+pub fn value(): int {
+    const values: Map<decimal, int> = Map()
+    return 0
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "ErrorCode",
+            r#"module main
+
+pub fn value(): int {
+    const values: Map<ErrorCode, int> = Map()
+    return 0
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "generic parameter",
+            r#"module main
+
+fn f<K supports order>(key: K): int {
+    const values: Map<K, int> = Map()
+    return 0
+}
+
+pub fn value(): int {
+    return f(1)
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "plain int for nominal key",
+            r#"module main
+
+type Rank: int in 1..=8
+
+pub fn value(): int {
+    var values: Map<Rank, int> = Map()
+    values[1] = 1
+    return 0
+}
+"#,
+            "check.type",
+        ),
+    ];
+    for (name, source, expected_code) in rejected {
+        let workspace = Project::single(source).materialize("map-key-rejection");
+        let output = workspace.marrow(&["run", "value", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.status.success(),
+            "{name} must be rejected: {stdout}"
+        );
+        let codes: Vec<&str> = stdout
+            .lines()
+            .filter_map(|line| {
+                let (_, rest) = line.split_once(r#""code":""#)?;
+                rest.split_once('"').map(|(code, _)| code)
+            })
+            .collect();
+        assert_eq!(codes, [expected_code], "{name}: {stdout}");
+    }
+
+    let reference = include_str!("../../../../docs/language/types-and-values.md");
+    let (_, lists_and_maps) = reference
+        .split_once("## Lists and maps")
+        .expect("Lists And Maps section");
+    let (lists_and_maps, key_types) = lists_and_maps
+        .split_once("## Key types")
+        .expect("Key Types section");
+    let (key_types, _) = key_types
+        .split_once("## Entry identity")
+        .expect("Entry Identity section");
+    let lists_and_maps = lists_and_maps
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let key_types = key_types.split_whitespace().collect::<Vec<_>>().join(" ");
+    let local_domain = "`int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration`";
+    let nominal_rule = "A nominal Map key retains its source type and uses its base scalar for representation and ordering.";
+    for (name, section) in [
+        ("Lists And Maps", lists_and_maps.as_str()),
+        ("Key Types", key_types.as_str()),
+    ] {
+        assert!(section.contains(local_domain), "{name}: {section}");
+        assert!(section.contains("nominal int type"), "{name}: {section}");
+        assert!(section.contains(nominal_rule), "{name}: {section}");
+        assert!(
+            section.contains("`ErrorCode` is not a local Map key"),
+            "{name}: {section}"
+        );
+    }
+    assert!(
+        key_types.contains(
+            "Durable key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`"
+        ),
+        "{key_types}"
+    );
+    assert!(
+        key_types.contains(
+            "Managed-index key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`"
+        ),
+        "{key_types}"
+    );
+    assert!(
+        key_types.contains("`duration` and nominal source types are not durable keys."),
+        "{key_types}"
+    );
+    assert!(
+        !key_types.contains("A nominal stored field projects through its base scalar."),
+        "{key_types}"
+    );
+    let normalized_reference = reference.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        !normalized_reference.contains(concat!("Store identity col", "umns")),
+        "the reference must not use the stale identity-key shape analogy"
+    );
+    assert!(
+        !normalized_reference.contains(concat!("ordered lexicographically by col", "umn")),
+        "the reference must describe tuple order by key position"
+    );
+}
+
+/// Appending past the aggregate-byte bound faults with `run.collection_limit`, the
+/// law-9 typed runtime fault, rather than allocating unboundedly.
+#[test]
+fn exceeding_the_aggregate_bound_faults() {
+    let output = marrow_in(
+        &conformance_dir("collections"),
+        &["run", "overflowAggregate", "--format", "jsonl"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(r#""code":"run.collection_limit""#),
+        "{stdout}"
+    );
+}
+
+/// Joining a list whose concatenation exceeds the text ceiling faults with
+/// `run.text_limit`, the bounded-allocation guard on `join`, rather than
+/// materializing an unbounded string.
+#[test]
+fn exceeding_the_join_text_ceiling_faults() {
+    let output = marrow_in(
+        &conformance_dir("collections"),
+        &["run", "overflowJoin", "--format", "jsonl"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""code":"run.text_limit""#), "{stdout}");
+}
+
+#[test]
+fn conversion_respects_the_text_result_boundary() {
+    let source = r#"pub fn convert(extra: string): string {
+    var s: string = ""
+    var doublings: int = 0
+    while doublings < 15 {
+        s = s + s + "x"
+        doublings += 1
+    }
+    s += extra
+    return string(bytes(s))
+}
+"#;
+    let image = Project::single(source).image();
+    let [export] = image.exports() else {
+        panic!("the conversion fixture has one export");
+    };
+    let function = image
+        .function(export.function())
+        .expect("verified export function");
+    assert_eq!(function.body().name(), "convert");
+    assert!(function.demand().is_empty());
+
+    // All source concatenations fit: 32,767 ASCII bytes become exactly 65,536
+    // bytes of canonical hex. Check the entire control before the excess case.
+    let Some(Value::Text(text)) =
+        run(function, vec![Value::Text("".into())]).expect("the exact-limit conversion runs")
+    else {
+        panic!("the conversion must return text");
+    };
+    assert_eq!(text.len(), 65_536);
+    assert_eq!(&text[..2], "0x");
+    assert!(
+        text.as_bytes()[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|pair| pair == b"78"),
+        "each ASCII x must render as 78"
+    );
+
+    // One more input byte still fits every concatenation but would produce
+    // 65,538 hex bytes. Refusal belongs to the conversion, before CLI output.
+    let fault = match run(function, vec![Value::Text("x".into())]) {
+        Err(fault) => fault,
+        Ok(_) => panic!("the over-limit conversion must fault before returning text"),
+    };
+    assert_eq!(fault.code(), "run.text_limit");
+    assert_eq!((fault.line(), fault.column()), (9, 12));
+}
+
+#[test]
+fn conversion_and_interpolation_share_canonical_enum_payloads() {
+    let source = r#"enum E {
+    x(s: string)
+}
+
+pub fn show(): string {
+    const value = E::x(s: "é")
+    return string(value) + "/" + $"{value}"
+}
+"#;
+    assert_eq!(
+        Project::single(source).session().call("show", vec![]),
+        Some(Value::Text("E::x(é)/E::x(é)".into()))
+    );
+}
+
+/// A bare `List()`/`Map()` with no expected type cannot infer its instantiation and
+/// is a typed `check.type`.
+#[test]
+fn a_bare_constructor_without_expected_type_is_a_check_type() {
+    for body in ["const xs = List()", "const m = Map()"] {
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"
+        ))
+        .materialize("bare-ctor");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{body} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.type""#),
+            "{body}: {stdout}"
+        );
+    }
+}
+
+/// A non-key map key type (a struct), an `append` on a map, and a wrong-typed
+/// element are typed diagnostics, not silent acceptance.
+#[test]
+fn misused_collection_operations_are_typed_diagnostics() {
+    // A struct key type is not admitted: `check.unsupported` at the annotation.
+    let cases: [(&str, &str); 3] = [
+        (
+            r#"struct P {
+    x: int
+}
+
+pub fn f(): int {
+    const m: Map<P, int> = Map()
+    return 0
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            r#"pub fn f(): int {
+    var m: Map<string, int> = Map()
+    m = append(m, 1)
+    return 0
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            r#"pub fn f(): int {
+    var xs: List<int> = List()
+    xs = append(xs, "s")
+    return 0
+}
+"#,
+            "check.type",
+        ),
+    ];
+    for (source, code) in cases {
+        let full = format!("module main\n\n{source}");
+        let workspace = Project::single(&full).materialize("misuse");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{source:?} must fail: {stdout}");
+        assert!(
+            stdout.contains(&format!(r#""code":"{code}""#)),
+            "{source:?} expected {code}: {stdout}"
+        );
+    }
+}
+
+/// Variadic `List(...)` is the literal-contents form; a `Map(...)` literal is
+/// deferred, mixed element types do not unify, and a named element argument is not a
+/// list element. Each is a typed `check.type`.
+#[test]
+fn variadic_construction_rejections_are_typed() {
+    let cases: [&str; 3] = [
+        "const m = Map(1, 2)",
+        "const xs = List(1, \"two\")",
+        "const xs = List(a: 1)",
+    ];
+    for body in cases {
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"
+        ))
+        .materialize("variadic-reject");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{body} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.type""#),
+            "{body}: {stdout}"
+        );
+    }
+}
+
+/// `List` and `Map` are reserved type names; redeclaring one is a
+/// `check.name_conflict`.
+#[test]
+fn redeclaring_a_reserved_collection_name_is_a_conflict() {
+    for name in ["List", "Map"] {
+        let workspace = Project::single(&format!(
+                "module main\n\nstruct {name} {{\n\x20   x: int\n}}\n\npub fn f(): int {{\n\x20   return 0\n}}\n"
+            )).materialize("reserved");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{name} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.name_conflict""#),
+            "{name}: {stdout}"
+        );
+    }
+}
+
+/// The collection-returning text floor built-ins `split`/`lines`/`join` are reserved
+/// value-level names, so a colliding value declaration is a `check.name_conflict`
+/// (the same closed-floor discipline as `isEmpty`/`contains`/`trim`).
+#[test]
+fn redeclaring_a_text_floor_builtin_is_a_conflict() {
+    for name in ["split", "lines", "join"] {
+        let workspace = Project::single(&format!(
+                "module main\n\nfn {name}(): int {{\n\x20   return 0\n}}\n\npub fn f(): int {{\n\x20   return 0\n}}\n"
+            )).materialize("reserved-floor");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{name} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.name_conflict""#),
+            "{name}: {stdout}"
+        );
+    }
+}
+
+/// The language admits no top-level `collection == collection` operator: equality
+/// over two lists (or two maps) is a typed `check.type`, not silent acceptance. A
+/// collection reached inside a compared struct or enum payload still participates in
+/// that aggregate's equality; only the bare collection comparison is rejected. This
+/// pins the recorded decision that collection `==` stays a typed check error rather
+/// than a language operator.
+#[test]
+fn a_top_level_collection_equality_is_a_check_type() {
+    let cases = [
+        r#"pub fn f(): bool {
+    var a: List<int> = List()
+    var b: List<int> = List()
+    return a == b
+}
+"#,
+        r#"pub fn f(): bool {
+    var a: Map<int, int> = Map()
+    var b: Map<int, int> = Map()
+    return a == b
+}
+"#,
+    ];
+    for source in cases {
+        let workspace = Project::single(&format!("module main\n\n{source}")).materialize("coll-eq");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{source:?} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.type""#),
+            "{source:?}: {stdout}"
+        );
+    }
+}
+
+/// `join` on a list whose element type is not `string` is a typed `check.unsupported`
+/// — the text floor joins only a list of string.
+#[test]
+fn join_on_a_non_string_list_is_unsupported() {
+    let workspace = Project::single(
+        r#"module main
+
+pub fn f(): string {
+    var xs: List<int> = List()
+    return join(xs, ",")
+}
+"#,
+    )
+    .materialize("join-misuse");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
+}
