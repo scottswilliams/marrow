@@ -428,6 +428,7 @@ pub(crate) struct FnLowerer<'a, 'd> {
 }
 
 mod builtins;
+mod collections;
 mod diagnostics;
 mod durable;
 mod exprs;

@@ -338,6 +338,456 @@ pub(super) fn branch_ctor_display(resource: &str, path: &[&str]) -> String {
         .join(".")
 }
 
+impl<'a, 'd> FnLowerer<'a, 'd> {
+    /// Lower a call in the closed pure text floor: `isEmpty(string): bool`,
+    /// `contains(string, string): bool`, `trim(string): string`. One owner for the
+    /// whole floor; there is no general string library.
+    pub(super) fn lower_text_builtin(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let text = LTy::bare_scalar(ScalarType::Text);
+        let bool_ty = LTy::bare_scalar(ScalarType::Bool);
+        let (arity, instr, result): (usize, Instr, LTy) = match name {
+            "isEmpty" => (1, Instr::TextIsEmpty, bool_ty),
+            "contains" => (2, Instr::TextContains, bool_ty),
+            "trim" => (1, Instr::TextTrim, text),
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller dispatched on this exact set of text-floor builtin names before entering this match"
+            )]
+            _ => unreachable!("caller matched the text-floor names"),
+        };
+        if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{name}` takes {arity} positional string argument(s)"),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        for arg in args {
+            self.lower_as(&arg.value, text)?;
+        }
+        self.push(instr, span)?;
+        Ok(result)
+    }
+
+    /// Lower a collection-returning text-floor call: `split(text, sep): List[string]`
+    /// or `lines(text): List[string]`. Both mint (and reuse) the one `List[string]`
+    /// COLLTYPES instantiation and emit the split/lines opcode carrying it; the VM
+    /// bounds the result by the same law-9 collection limits `append` observes.
+    pub(super) fn lower_text_split(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let text = LTy::bare_scalar(ScalarType::Text);
+        let arity = if name == "split" { 2 } else { 1 };
+        if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{name}` takes {arity} positional string argument(s)"),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        for arg in args {
+            self.lower_as(&arg.value, text)?;
+        }
+        let result = self
+            .records
+            .instantiate_list(self.draft, GArg::Scalar(ScalarType::Text));
+        let idx = self
+            .accept_resolution(result, span, "this text collection result")
+            .ok_or(LoweringFailure::Recoverable)?;
+        let instr = if name == "split" {
+            Instr::TextSplit(idx)
+        } else {
+            Instr::TextLines(idx)
+        };
+        self.push(instr, span)?;
+        Ok(LTy::Collection {
+            idx,
+            optional: false,
+        })
+    }
+
+    /// Lower `join(parts: List[string], sep: string): string`: concatenate the list's
+    /// text elements with a separator. A first argument that is not a `List[string]`
+    /// is a typed diagnostic; the VM bounds the result by the `run.text_limit`
+    /// concatenation ceiling.
+    pub(super) fn lower_text_join(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let text = LTy::bare_scalar(ScalarType::Text);
+        if args.len() != 2 || args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`join` takes 2 positional argument(s): a list of string and a separator"
+                    .to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        let idx = self.collection_arg(&args[0].value)?;
+        match self.records.collection_spec(idx) {
+            CollSpec::List {
+                elem: GArg::Scalar(ScalarType::Text),
+            } => {}
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    args[0].value.span(),
+                    "`join` on this type (it joins a list of string)",
+                ));
+                return Err(LoweringFailure::Recoverable);
+            }
+        }
+        self.lower_as(&args[1].value, text)?;
+        self.push(Instr::TextJoin, span)?;
+        Ok(text)
+    }
+
+    /// Lower a temporal constructor `date("…")` / `instant("…")` / `duration("…")`.
+    /// Construction is from exactly one static string literal, validated and folded
+    /// at compile time: a malformed or out-of-range canonical form is a typed
+    /// `check.type` diagnostic here, so no ordinary program produces an out-of-range
+    /// temporal value at runtime. The folded raw scalar is interned as a temporal
+    /// constant. `marrow-temporal` owns the canonical text grammar.
+    pub(super) fn lower_temporal_construct(
+        &mut self,
+        scalar: ScalarType,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let spelling = scalar.spelling();
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{spelling}` takes one string-literal argument"),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                format!("the `{spelling}` argument is positional"),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        // A temporal value is constructed only from a static string literal, so its
+        // canonical form is validated once at compile time rather than parsed at
+        // runtime (there is no ambient clock or runtime temporal parse in the floor).
+        let Expression::Literal {
+            kind: LiteralKind::String,
+            text,
+            span: arg_span,
+        } = &arg.value
+        else {
+            self.fail(unsupported(
+                self.file,
+                arg.value.span(),
+                &format!("constructing a `{spelling}` from a non-literal value"),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        let Ok(decoded) = decode_string_literal(text) else {
+            self.fail(unsupported(self.file, *arg_span, "this string literal"));
+            return Err(LoweringFailure::Recoverable);
+        };
+        let bytes = decoded.as_bytes();
+        let minted = match scalar {
+            ScalarType::Date => match marrow_temporal::parse_date(bytes) {
+                Some(days) => self.draft.intern_date(days),
+                None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
+            },
+            ScalarType::Instant => match marrow_temporal::parse_instant(bytes) {
+                Some(nanos) => self.draft.intern_instant(nanos),
+                None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
+            },
+            ScalarType::Duration => match marrow_temporal::parse_duration(bytes) {
+                Some(nanos) => self.draft.intern_duration(nanos),
+                None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
+            },
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller restricts this dispatch to the temporal scalar types matched above"
+            )]
+            _ => unreachable!("caller passes only a temporal scalar"),
+        };
+        let const_id = self
+            .checked_mint(|_| minted)
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::ConstLoad(const_id), span)?;
+        Ok(LTy::bare_scalar(scalar))
+    }
+
+    /// Report a malformed or out-of-range temporal literal.
+    fn fail_temporal_literal(
+        &mut self,
+        scalar: ScalarType,
+        value: &str,
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let form = match scalar {
+            ScalarType::Date => "a canonical date `YYYY-MM-DD` in years 0001-9999",
+            ScalarType::Instant => {
+                "a canonical UTC instant `YYYY-MM-DDTHH:MM:SS[.fraction]Z` in years 0001-9999"
+            }
+            ScalarType::Duration => "a canonical duration `[-]PT<seconds>[.fraction]S`",
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller restricts this dispatch to the temporal scalar types matched above"
+            )]
+            _ => unreachable!("caller passes only a temporal scalar"),
+        };
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            span,
+            format!(
+                "`{value}` is not {form}, so it is not a `{}` literal",
+                scalar.spelling()
+            ),
+        ));
+        Err(LoweringFailure::Recoverable)
+    }
+
+    /// Lower `addDays(date, int): date` or `daysBetween(date, date): int`,
+    /// emitting the checked temporal instruction after type-checking the operands.
+    pub(super) fn lower_date_arith(
+        &mut self,
+        builtin: Builtin,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let (name, second, instr, result) = match builtin {
+            Builtin::DateAddDays => (
+                "addDays",
+                ScalarType::Int,
+                Instr::DateAddDays,
+                ScalarType::Date,
+            ),
+            Builtin::DateDaysBetween => (
+                "daysBetween",
+                ScalarType::Date,
+                Instr::DateDaysBetween,
+                ScalarType::Int,
+            ),
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller restricts this dispatch to the date-arithmetic builtins matched above"
+            )]
+            _ => unreachable!("caller passes only a date-arithmetic builtin"),
+        };
+        let [first_arg, second_arg] = args else {
+            self.fail(builtin_arity(self.file, span, name, 2));
+            return Err(LoweringFailure::Recoverable);
+        };
+        if first_arg.name.is_some() || second_arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{name}` arguments are positional"),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        self.expect_bare_scalar(&first_arg.value, ScalarType::Date, name)?;
+        self.expect_bare_scalar(&second_arg.value, second, name)?;
+        self.push(instr, span)?;
+        Ok(LTy::bare_scalar(result))
+    }
+
+    /// Lower `expr` and require it to be exactly the bare scalar `expected`, failing
+    /// with a `check.type` diagnostic (naming `builtin`) otherwise.
+    fn expect_bare_scalar(
+        &mut self,
+        expr: &Expression,
+        expected: ScalarType,
+        builtin: &str,
+    ) -> ConstructResult<()> {
+        let ty = self.lower_expr(expr)?;
+        if ty == LTy::bare_scalar(expected) {
+            return Ok(());
+        }
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            expr.span(),
+            format!(
+                "`{builtin}` expects a `{}` argument, found `{}`",
+                expected.spelling(),
+                ty.spelling(self.records)
+            ),
+        ));
+        Err(LoweringFailure::Recoverable)
+    }
+
+    pub(super) fn lower_conversion(
+        &mut self,
+        target: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<LTy> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{target}` conversion takes one value"),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "a conversion argument is positional".to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        let source = self.lower_expr(&arg.value)?;
+        // `string(value)` renders any interpolable value — a scalar, an enum, or an
+        // entry identity — to its canonical text, the same rendering interpolation and
+        // program output use.
+        if target == "string" && is_interpolable(source) {
+            self.push(Instr::ConvString, span)?;
+            return Ok(LTy::bare_scalar(ScalarType::Text));
+        }
+        use ScalarType::{Bytes, Text};
+        let (instr, result) = match (target, source.bare_scalar_type()) {
+            ("bytes", Some(Text)) => (Instr::ConvBytesText, Bytes),
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    span,
+                    &format!("converting {} to {target}", source.spelling(self.records)),
+                ));
+                return Err(LoweringFailure::Recoverable);
+            }
+        };
+        self.push(instr, span)?;
+        Ok(LTy::bare_scalar(result))
+    }
+
+    /// Lower `unreachable("static text")`: the sole application-invariant fault. It
+    /// takes exactly one static string literal, emits a fault instruction carrying
+    /// that text, and diverges (control never continues past it).
+    pub(super) fn lower_unreachable(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<CallResult> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`unreachable` takes one static string literal".to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`unreachable` takes one positional static string literal".to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        let Expression::Literal {
+            kind: LiteralKind::String,
+            text,
+            span: lit_span,
+        } = &arg.value
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`unreachable` requires a static string literal, not a computed value".to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        let Ok(decoded) = decode_string_literal(text) else {
+            self.fail(unsupported(self.file, *lit_span, "this string literal"));
+            return Err(LoweringFailure::Recoverable);
+        };
+        let const_id = self
+            .checked_mint(|draft| draft.intern_text(&decoded))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::Unreachable(const_id), span)?;
+        Ok(CallResult::Diverges)
+    }
+
+    /// Lower `todo("static text")`: a deferred path the author has not implemented. It
+    /// mirrors `unreachable` exactly — one static string literal, a fault instruction
+    /// carrying that text, and divergence — but raises `run.todo` when reached.
+    pub(super) fn lower_todo(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> ConstructResult<CallResult> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`todo` takes one static string literal".to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`todo` takes one positional static string literal".to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        }
+        let Expression::Literal {
+            kind: LiteralKind::String,
+            text,
+            span: lit_span,
+        } = &arg.value
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`todo` requires a static string literal, not a computed value".to_string(),
+            ));
+            return Err(LoweringFailure::Recoverable);
+        };
+        let Ok(decoded) = decode_string_literal(text) else {
+            self.fail(unsupported(self.file, *lit_span, "this string literal"));
+            return Err(LoweringFailure::Recoverable);
+        };
+        let const_id = self
+            .checked_mint(|draft| draft.intern_text(&decoded))
+            .ok_or(LoweringFailure::Recoverable)?;
+        self.push(Instr::Todo(const_id), span)?;
+        Ok(CallResult::Diverges)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Builtin, builtin_const_int, builtin_value_names};
