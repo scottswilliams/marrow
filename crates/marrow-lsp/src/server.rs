@@ -334,6 +334,32 @@ impl RequestLedger {
 
 // ---- held queries ----
 
+/// The six semantic requests the server answers from analysis facts. The method names
+/// are spelled once here, so the admission guard and the request parser cannot drift.
+#[derive(Clone, Copy)]
+enum SemanticMethod {
+    Hover,
+    Definition,
+    Formatting,
+    Completion,
+    SignatureHelp,
+    DocumentSymbol,
+}
+
+impl SemanticMethod {
+    fn from_method(method: &str) -> Option<Self> {
+        Some(match method {
+            "textDocument/hover" => Self::Hover,
+            "textDocument/definition" => Self::Definition,
+            "textDocument/formatting" => Self::Formatting,
+            "textDocument/completion" => Self::Completion,
+            "textDocument/signatureHelp" => Self::SignatureHelp,
+            "textDocument/documentSymbol" => Self::DocumentSymbol,
+            _ => return None,
+        })
+    }
+}
+
 /// The kind of a held semantic query, parsed to fixed-size fields at admission so a held
 /// query never retains unbounded raw parameters.
 enum HeldKind {
@@ -528,20 +554,19 @@ impl Coordinator {
         match method {
             "initialize" => self.on_initialize(id, params),
             "shutdown" => self.on_shutdown(id),
-            "textDocument/hover"
-            | "textDocument/definition"
-            | "textDocument/formatting"
-            | "textDocument/completion"
-            | "textDocument/signatureHelp"
-            | "textDocument/documentSymbol" => self.on_semantic_request(id, method, params),
-            _ => match self.lifecycle.gate_request() {
-                RequestGate::NotInitialized => {
-                    self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized")
-                }
-                RequestGate::InvalidInPhase => {
-                    self.answer_error(&id, INVALID_REQUEST, "invalid request in current state")
-                }
-                RequestGate::Route => self.answer_error(&id, METHOD_NOT_FOUND, "method not found"),
+            _ => match SemanticMethod::from_method(method) {
+                Some(semantic) => self.on_semantic_request(id, semantic, params),
+                None => match self.lifecycle.gate_request() {
+                    RequestGate::NotInitialized => {
+                        self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized")
+                    }
+                    RequestGate::InvalidInPhase => {
+                        self.answer_error(&id, INVALID_REQUEST, "invalid request in current state")
+                    }
+                    RequestGate::Route => {
+                        self.answer_error(&id, METHOD_NOT_FOUND, "method not found")
+                    }
+                },
             },
         }
     }
@@ -601,7 +626,7 @@ impl Coordinator {
     fn on_semantic_request(
         &mut self,
         id: RequestId,
-        method: &str,
+        method: SemanticMethod,
         params: Option<Box<serde_json::value::RawValue>>,
     ) {
         if self.lifecycle.gate_request() != RequestGate::Route {
@@ -663,7 +688,7 @@ impl Coordinator {
         };
         let answer = match &self.analysis {
             CurrentAnalysis::Ready(snapshot) => {
-                self.answer_kind(snapshot, &root, &held.kind, &held.key)
+                self.answer_kind(snapshot, &root, &held.kind, &held.key, held.id.clone())
             }
             CurrentAnalysis::ResourceLimited(_) => SemanticAnswer::ResourceLimit,
             CurrentAnalysis::Pending => {
@@ -672,10 +697,7 @@ impl Coordinator {
             }
         };
         match answer {
-            SemanticAnswer::Reply(body) => {
-                let outbound = body.into_outbound(held.id.clone());
-                self.respond(held.id, outbound);
-            }
+            SemanticAnswer::Reply(outbound) => self.respond(held.id, outbound),
             SemanticAnswer::ContentModified => {
                 self.answer_error(&held.id, CONTENT_MODIFIED, "content modified")
             }
@@ -697,14 +719,16 @@ impl Coordinator {
         root: &SelectedRoot,
         kind: &HeldKind,
         key: &DocumentKey,
+        id: RequestId,
     ) -> SemanticAnswer {
         let Some((identity, source)) = self.resolve_by_key(key) else {
             return SemanticAnswer::ContentModified;
         };
         match kind {
-            HeldKind::Hover(position) => SemanticAnswer::Reply(OutboundBody::Hover(facts::hover(
-                snapshot, &identity, &source, *position,
-            ))),
+            HeldKind::Hover(position) => SemanticAnswer::Reply(Outbound::Hover {
+                id,
+                result: facts::hover(snapshot, &identity, &source, *position),
+            }),
             HeldKind::Definition(position) => {
                 let source_lookup = |file: &marrow_project_fs::FileIdentity| self.file_source(file);
                 match facts::definition(
@@ -715,28 +739,30 @@ impl Coordinator {
                     source_lookup,
                     *position,
                 ) {
-                    Ok(location) => SemanticAnswer::Reply(OutboundBody::Definition(location)),
+                    Ok(result) => SemanticAnswer::Reply(Outbound::Definition { id, result }),
                     Err(_) => SemanticAnswer::Internal,
                 }
             }
-            HeldKind::Formatting => SemanticAnswer::Reply(OutboundBody::Formatting(
-                facts::formatting(snapshot, &identity, &source),
-            )),
+            HeldKind::Formatting => SemanticAnswer::Reply(Outbound::Formatting {
+                id,
+                result: facts::formatting(snapshot, &identity, &source),
+            }),
             HeldKind::Completion(position) => {
                 match facts::completion(snapshot, &identity, &source, *position) {
-                    Ok(result) => SemanticAnswer::Reply(OutboundBody::Completion(result)),
+                    Ok(result) => SemanticAnswer::Reply(Outbound::Completion { id, result }),
                     Err(facts::ResourceLimited) => SemanticAnswer::ResourceLimit,
                 }
             }
             HeldKind::SignatureHelp(position) => {
                 match facts::signature_help(snapshot, &identity, &source, *position) {
-                    Ok(result) => SemanticAnswer::Reply(OutboundBody::SignatureHelp(result)),
+                    Ok(result) => SemanticAnswer::Reply(Outbound::SignatureHelp { id, result }),
                     Err(facts::ResourceLimited) => SemanticAnswer::ResourceLimit,
                 }
             }
-            HeldKind::DocumentSymbol => SemanticAnswer::Reply(OutboundBody::DocumentSymbol(
-                facts::document_symbols(snapshot, &identity, &source),
-            )),
+            HeldKind::DocumentSymbol => SemanticAnswer::Reply(Outbound::DocumentSymbol {
+                id,
+                result: facts::document_symbols(snapshot, &identity, &source),
+            }),
         }
     }
 
@@ -1415,30 +1441,8 @@ impl Coordinator {
 }
 
 /// The body of a semantic reply before it is bound to an id.
-enum OutboundBody {
-    Hover(Option<lsp_types::Hover>),
-    Definition(Option<lsp_types::Location>),
-    Formatting(Option<Vec<lsp_types::TextEdit>>),
-    Completion(Option<lsp_types::CompletionResponse>),
-    SignatureHelp(Option<lsp_types::SignatureHelp>),
-    DocumentSymbol(Option<lsp_types::DocumentSymbolResponse>),
-}
-
-impl OutboundBody {
-    fn into_outbound(self, id: RequestId) -> Outbound {
-        match self {
-            OutboundBody::Hover(result) => Outbound::Hover { id, result },
-            OutboundBody::Definition(result) => Outbound::Definition { id, result },
-            OutboundBody::Formatting(result) => Outbound::Formatting { id, result },
-            OutboundBody::Completion(result) => Outbound::Completion { id, result },
-            OutboundBody::SignatureHelp(result) => Outbound::SignatureHelp { id, result },
-            OutboundBody::DocumentSymbol(result) => Outbound::DocumentSymbol { id, result },
-        }
-    }
-}
-
 enum SemanticAnswer {
-    Reply(OutboundBody),
+    Reply(Outbound),
     ContentModified,
     /// A whole-analysis stop or a query-local resource refusal, mapped to the
     /// recoverable `-32803` law — never a truncated result.
@@ -1450,44 +1454,43 @@ enum SemanticAnswer {
 /// `None` for a malformed request, an unknown method, or a URI outside the selected root.
 fn parse_semantic(
     root: &SelectedRoot,
-    method: &str,
+    method: SemanticMethod,
     params: Option<&serde_json::value::RawValue>,
 ) -> Option<(HeldKind, DocumentKey)> {
     let (kind, uri) = match method {
-        "textDocument/hover" => {
+        SemanticMethod::Hover => {
             let params = parse::<HoverParams>(params?)?.text_document_position_params;
             (HeldKind::Hover(params.position), params.text_document.uri)
         }
-        "textDocument/definition" => {
+        SemanticMethod::Definition => {
             let params = parse::<GotoDefinitionParams>(params?)?.text_document_position_params;
             (
                 HeldKind::Definition(params.position),
                 params.text_document.uri,
             )
         }
-        "textDocument/formatting" => {
+        SemanticMethod::Formatting => {
             let params = parse::<DocumentFormattingParams>(params?)?;
             (HeldKind::Formatting, params.text_document.uri)
         }
-        "textDocument/completion" => {
+        SemanticMethod::Completion => {
             let params = parse::<CompletionParams>(params?)?.text_document_position;
             (
                 HeldKind::Completion(params.position),
                 params.text_document.uri,
             )
         }
-        "textDocument/signatureHelp" => {
+        SemanticMethod::SignatureHelp => {
             let params = parse::<SignatureHelpParams>(params?)?.text_document_position_params;
             (
                 HeldKind::SignatureHelp(params.position),
                 params.text_document.uri,
             )
         }
-        "textDocument/documentSymbol" => {
+        SemanticMethod::DocumentSymbol => {
             let params = parse::<DocumentSymbolParams>(params?)?;
             (HeldKind::DocumentSymbol, params.text_document.uri)
         }
-        _ => return None,
     };
     let key = DocumentKey::from_uri(uri.as_str(), root).ok()?;
     Some((kind, key))
