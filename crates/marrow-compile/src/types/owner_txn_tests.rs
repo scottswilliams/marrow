@@ -16,7 +16,7 @@ use marrow_image::ImageDraft;
 #[test]
 fn a_rolled_back_generic_batch_leaves_the_registry_in_step_with_its_draft() {
     let mut owner = ImageDraft::new();
-    let mut records = registry(vec![template("Box", vec![("item", name("T"))])]);
+    let mut records = test_registry(vec![template("Box", vec![("item", name("T"))])]);
 
     {
         let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
@@ -57,7 +57,7 @@ fn a_rolled_back_generic_batch_leaves_the_registry_in_step_with_its_draft() {
 #[test]
 fn a_committed_generic_batch_retains_both_owners() {
     let mut owner = ImageDraft::new();
-    let mut records = registry(vec![template("Box", vec![("item", name("T"))])]);
+    let mut records = test_registry(vec![template("Box", vec![("item", name("T"))])]);
 
     let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
         .expect("a settled registry admits an ordinary batch");
@@ -82,7 +82,7 @@ fn a_committed_generic_batch_retains_both_owners() {
 #[test]
 fn an_unwind_through_an_armed_generic_batch_restores_both_owners() {
     let mut owner = ImageDraft::new();
-    let mut records = registry(vec![template("Box", vec![("item", name("T"))])]);
+    let mut records = test_registry(vec![template("Box", vec![("item", name("T"))])]);
 
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut batch = GenericOwnerTxn::begin(&mut records, &mut owner)
@@ -124,7 +124,7 @@ fn a_template_proof_preserves_prepopulated_function_owners_on_exit_error_and_unw
     }
 
     for exit in [ProofExit::Ordinary, ProofExit::Error, ProofExit::Unwind] {
-        let mut records = registry(vec![
+        let mut records = test_registry(vec![
             template("Leaf", vec![("value", name("T"))]),
             enum_template("Choice", apply("Leaf", vec![name("T")])),
         ]);
@@ -321,7 +321,7 @@ fn each_enumerated_generic_owner_failure_point_restores_every_owner() {
     ];
 
     for failure in failures {
-        let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+        let mut records = test_registry(vec![template("Leaf", vec![("value", name("T"))])]);
         let mut owner = ImageDraft::new();
         let scalar = GArg::Scalar(ScalarType::Int);
         {
@@ -383,7 +383,7 @@ fn an_abandoned_batch_restores_the_metadata_cache_and_the_queue_front() {
     // an extant directory is not the inverse of building the first one, so a batch that
     // opens the first session must leave the registry holding none.
     {
-        let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+        let mut records = test_registry(vec![template("Leaf", vec![("value", name("T"))])]);
         let mut owner = ImageDraft::new();
         assert!(
             records.row_directory.borrow().is_none(),
@@ -411,7 +411,7 @@ fn an_abandoned_batch_restores_the_metadata_cache_and_the_queue_front() {
     // is working on is still at the front, because the driver reads it rather than
     // removing it.
     {
-        let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+        let mut records = test_registry(vec![template("Leaf", vec![("value", name("T"))])]);
         let mut owner = ImageDraft::new();
         {
             let mut seed = admitted(&mut owner);
@@ -472,7 +472,7 @@ fn an_abandoned_batch_restores_the_metadata_cache_and_the_queue_front() {
 /// guard produces, not a registry rollback.
 #[test]
 fn an_abandoned_batch_leaves_the_diagnostic_owners_to_their_own_custody() {
-    let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
+    let mut records = test_registry(vec![template("Leaf", vec![("value", name("T"))])]);
     let mut owner = ImageDraft::new();
     assert!(matches!(records.generics.borrow().limit, LimitState::Open));
     {
@@ -532,12 +532,12 @@ fn pending_function_snapshot(
         txn.fill_function(inst.func, def)
             .expect("each retained reservation fills exactly once");
     }
-    (count, draft_snapshot(&txn))
+    (count, draft_fingerprint(&txn))
 }
 
 #[test]
 fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
-    let mut registry = registry(vec![
+    let mut registry = test_registry(vec![
         template("Leaf", vec![("value", name("T"))]),
         enum_template("Choice", apply("Leaf", vec![name("T")])),
         template(

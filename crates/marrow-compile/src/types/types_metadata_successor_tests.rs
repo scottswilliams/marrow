@@ -1,4 +1,5 @@
 use super::instantiation_state_tests::{as_option, as_result};
+use super::test_fixtures::*;
 use super::*;
 
 use marrow_image::ImageDraft;
@@ -11,14 +12,6 @@ use marrow_image::{
     CollectionTypeDef, DraftTxn, EnumTypeDef, FieldDef, ImageType, RecordTypeDef, Scalar,
 };
 use marrow_project::IdentityLedger;
-
-fn name(text: &str) -> TypeExpr {
-    TypeExpr::Name {
-        text: text.to_string(),
-        segment_spans: Vec::new(),
-        span: SourceSpan::default(),
-    }
-}
 
 fn struct_template(template_name: &str, params: &[&str]) -> TypeTemplate {
     TypeTemplate {
@@ -56,41 +49,6 @@ fn enum_template(template_name: &str, param: &str) -> TypeTemplate {
             }]
             .into(),
         ),
-    }
-}
-
-fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
-    TypeRegistry {
-        named: DeclarationLedger::new(
-            DeclarationNamespace::NamedType,
-            DeclarationBudget::default(),
-        ),
-        members: DeclarationLedger::new(
-            DeclarationNamespace::ResourceMember,
-            DeclarationBudget::default(),
-        ),
-        aliases: AliasTable::default(),
-        nominals: Vec::new(),
-        structs: Vec::new(),
-        enums: Vec::new(),
-        records: AdmittedRecords::default(),
-        type_templates: templates,
-        generics: RefCell::default(),
-        collections: RefCell::default(),
-        collection_index: RefCell::default(),
-        row_directory: RefCell::default(),
-        coordinates: DeclarationCoordinates::default(),
-    }
-}
-
-fn site() -> MintSite<'static> {
-    MintSite {
-        file: crate::test_main_file_identity(),
-        span: SourceSpan {
-            line: 3,
-            column: 9,
-            ..SourceSpan::default()
-        },
     }
 }
 
@@ -140,12 +98,6 @@ struct OwnerSnapshot {
     fill_failures: Vec<(usize, ResolveRefusal)>,
     limit: u8,
     payload_count: usize,
-}
-
-/// A fresh draft transaction over a leaked owner, for value-position fixtures.
-fn fresh_txn() -> DraftTxn<'static> {
-    let owner: &'static mut ImageDraft = Box::leak(Box::new(ImageDraft::new()));
-    admitted(owner)
 }
 
 fn owner_snapshot(registry: &TypeRegistry) -> OwnerSnapshot {
@@ -199,18 +151,13 @@ fn owner_snapshot(registry: &TypeRegistry) -> OwnerSnapshot {
     }
 }
 
-fn draft_fingerprint(draft: &ImageDraft) -> (Vec<u8>, marrow_image::ImageId) {
-    let encoded = draft.encode().expect("test draft encodes");
-    (encoded.bytes, encoded.image_id)
-}
-
 fn mint_ready(
     registry: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
     template: usize,
 ) -> TypeInstId {
     registry
-        .mint_type_instance(draft, template, &[GArg::Scalar(ScalarType::Int)], site())
+        .mint_type_instance(draft, template, &[GArg::Scalar(ScalarType::Int)], site(3))
         .expect("control instantiation is Ready")
 }
 
@@ -233,14 +180,14 @@ fn nominal_boundary_witness_does_not_mask_a_later_malformed_ready_body() {
         NominalBoundaryRoot {
             value: NominalBoundaryValue::Value(GArg::Nominal(NominalId(0))),
             kind: NominalBoundaryKind::Durable,
-            file: site().file,
-            span: site().span,
+            file: site(3).file,
+            span: site(3).span,
         },
         NominalBoundaryRoot {
             value: NominalBoundaryValue::Value(GArg::Struct(record_id)),
             kind: NominalBoundaryKind::Input,
-            file: site().file,
-            span: site().span,
+            file: site(3).file,
+            span: site(3).span,
         },
     ];
     assert!(matches!(
@@ -278,7 +225,7 @@ fn missing_template_index_is_rejected_before_minting_owner_state() {
     let draft_before = draft_fingerprint(&draft);
 
     let result =
-        registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site());
+        registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(3));
 
     assert!(result.is_err());
     assert_eq!(owner_snapshot(&registry), owner_before);
@@ -301,7 +248,7 @@ fn wrong_argument_counts_are_rejected_before_minting_owner_state() {
         let mut draft = admitted(&mut draft_owner);
         let owner_before = owner_snapshot(&registry);
         let draft_before = draft_fingerprint(&draft);
-        let result = registry.mint_type_instance(&mut draft, 0, &args, site());
+        let result = registry.mint_type_instance(&mut draft, 0, &args, site(3));
         observations.push(
             result.is_err()
                 && owner_snapshot(&registry) == owner_before
@@ -430,7 +377,7 @@ fn missing_template_ready_metadata_is_rejected_by_value_graph() {
 fn malformed_reserved_option_ready_metadata_is_hidden_from_all_readers() {
     let (mut registry, mut draft) = reserved_registry();
     let option = registry
-        .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
+        .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(3))
         .expect("control Option is Ready");
     let orphan_name = draft
         .intern_string("OrphanStruct")
@@ -824,7 +771,7 @@ fn reserved_option_and_result_require_exact_argument_slices() {
     ] {
         let (mut registry, mut draft) = reserved_registry();
         let option = registry
-            .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
+            .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(3))
             .expect("control Option is Ready");
         registry.generics.borrow_mut().type_insts[0].args = args;
         observations.push(as_option(&registry, option).is_err());
@@ -848,7 +795,7 @@ fn reserved_option_and_result_require_exact_argument_slices() {
                     GArg::Scalar(ScalarType::Int),
                     GArg::Scalar(ScalarType::Bool),
                 ],
-                site(),
+                site(3),
             )
             .ok()
             .and_then(|id| match id {
@@ -878,7 +825,7 @@ fn reserved_result_valid_length_checks_both_argument_targets() {
                     GArg::Scalar(ScalarType::Int),
                     GArg::Scalar(ScalarType::Bool),
                 ],
-                site(),
+                site(3),
             )
             .ok()
             .and_then(|id| match id {
@@ -928,7 +875,7 @@ fn target_case_with_registry(
 ) -> bool {
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
-    let result = registry.mint_type_instance(&mut draft, 0, &[target], site());
+    let result = registry.mint_type_instance(&mut draft, 0, &[target], site(3));
     result.is_err()
         && owner_snapshot(&registry) == owner_before
         && draft_fingerprint(&draft) == draft_before
@@ -985,7 +932,7 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
     let (struct_draft, record) = orphan_record_draft();
     let (group_draft, _) = orphan_record_draft();
 
-    let mut enum_draft = fresh_txn();
+    let mut enum_draft = fresh_draft();
     let enum_name = enum_draft
         .intern_string("OrphanEnum")
         .expect("a within-domain mint");
@@ -997,11 +944,11 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
         .expect("a within-domain mint");
 
     let observations = vec![
-        target_case(fresh_txn(), GArg::Nominal(NominalId(0))),
+        target_case(fresh_draft(), GArg::Nominal(NominalId(0))),
         target_case(struct_draft, GArg::Struct(record)),
         target_case(group_draft, GArg::Group(record)),
         target_case(enum_draft, GArg::Enum(enum_id)),
-        target_case(fresh_txn(), GArg::Param(TypeParamIndex::from_position(0))),
+        target_case(fresh_draft(), GArg::Param(TypeParamIndex::from_position(0))),
     ];
 
     assert_eq!(observations, vec![true; 5]);
@@ -1018,7 +965,7 @@ fn missing_collection_target_is_rejected_before_table_indexing() {
         &mut draft,
         0,
         &[GArg::Collection(CollTypeId::from_index(0))],
-        site(),
+        site(3),
     );
 
     assert!(result.is_err());
@@ -1070,7 +1017,7 @@ fn wrong_family_record_targets_are_rejected_before_ready_publication() {
     let (root_struct_registry, root_struct_draft, root_struct_id, _) = resource_target_fixture();
     let (root_group_registry, root_group_draft, root_group_id, _) = resource_target_fixture();
 
-    let mut struct_draft = fresh_txn();
+    let mut struct_draft = fresh_draft();
     let struct_name = struct_draft
         .intern_string("Point")
         .expect("a within-domain mint");
@@ -1092,7 +1039,7 @@ fn wrong_family_record_targets_are_rejected_before_ready_publication() {
         struct_template("Box", &["T"]),
         struct_template("Inner", &["T"]),
     ]);
-    let mut generic_draft = fresh_txn();
+    let mut generic_draft = fresh_draft();
     let generic = mint_ready(&mut generic_registry, &mut generic_draft, 1);
     let TypeInstId::Record(generic_id) = generic else {
         panic!("Inner is a struct template")
@@ -1130,7 +1077,7 @@ fn in_range_collections_recursively_validate_every_nested_target() {
     let mut observations = Vec::new();
 
     let list_registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut list_draft = fresh_txn();
+    let mut list_draft = fresh_draft();
     let orphan_name = list_draft
         .intern_string("OrphanStruct")
         .expect("a within-domain mint");
@@ -1154,7 +1101,7 @@ fn in_range_collections_recursively_validate_every_nested_target() {
     ));
 
     let map_registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut map_draft = fresh_txn();
+    let mut map_draft = fresh_draft();
     let map = seed_collection(
         &map_registry,
         &mut map_draft,
@@ -1170,7 +1117,7 @@ fn in_range_collections_recursively_validate_every_nested_target() {
     ));
 
     let nested_registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let mut nested_draft = fresh_txn();
+    let mut nested_draft = fresh_draft();
     let orphan_name = nested_draft
         .intern_string("OrphanEnum")
         .expect("a within-domain mint");
@@ -1228,7 +1175,7 @@ fn nested_non_ready_generic_targets_are_rejected_without_outer_publication() {
         };
         let owner_before = owner_snapshot(&registry);
         let draft_before = draft_fingerprint(&draft);
-        let result = registry.mint_type_instance(&mut draft, 1, &[inner_arg], site());
+        let result = registry.mint_type_instance(&mut draft, 1, &[inner_arg], site(3));
         observations.push(
             result.is_err()
                 && owner_snapshot(&registry) == owner_before
@@ -1261,7 +1208,7 @@ fn template_proof_parameter_stays_local_to_the_guard() {
             proof_draft,
             0,
             &[GArg::Param(TypeParamIndex::from_position(0))],
-            site(),
+            site(3),
         )
         .expect("proof-only parameter is legal");
     let (args, body) = {
@@ -1327,11 +1274,11 @@ fn unknown_value_target_is_not_an_ordinary_zero_edge_node() {
         })
         .expect("a within-domain mint");
 
-    let rejected = match registry.mint_type_instance(&mut draft, 0, &[GArg::Struct(orphan)], site())
-    {
-        Err(_) => true,
-        Ok(_) => ValueGraph::build(&registry).ok().is_none(),
-    };
+    let rejected =
+        match registry.mint_type_instance(&mut draft, 0, &[GArg::Struct(orphan)], site(3)) {
+            Err(_) => true,
+            Ok(_) => ValueGraph::build(&registry).ok().is_none(),
+        };
 
     assert!(rejected);
 }
@@ -1373,11 +1320,9 @@ fn valid_group_adds_no_value_containment_edge() {
         0,
     );
     let outer = registry
-        .mint_type_instance(&mut draft, 0, &[GArg::Group(group)], site())
+        .mint_type_instance(&mut draft, 0, &[GArg::Group(group)], site(3))
         .expect("a real group is a valid non-containing argument");
-    let graph = ValueGraph::build(&registry)
-        .ok()
-        .expect("valid graph builds");
+    let graph = ValueGraph::build(&registry).expect("valid graph builds");
     let node = match outer {
         TypeInstId::Record(id) => ValueNode::Record(id),
         TypeInstId::Enum(id) => ValueNode::Enum(id),
@@ -1398,10 +1343,9 @@ fn valid_collection_target_remains_accepted() {
     let mut draft = admitted(&mut draft_owner);
     let collection = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
-        .ok()
         .expect("aligned collection owners mint");
     let id = registry
-        .mint_type_instance(&mut draft, 0, &[GArg::Collection(collection)], site())
+        .mint_type_instance(&mut draft, 0, &[GArg::Collection(collection)], site(3))
         .expect("valid collection target is accepted");
 
     let mut expected_owner = ImageDraft::new();
@@ -1436,7 +1380,7 @@ fn valid_collection_target_remains_accepted() {
 fn valid_generic_anchor_bytes_remain_stable() {
     let (mut registry, mut draft) = reserved_registry();
     let option = registry
-        .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
+        .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(3))
         .expect("valid Option is Ready");
 
     assert_eq!(
@@ -1447,23 +1391,6 @@ fn valid_generic_anchor_bytes_remain_stable() {
             .as_deref(),
         Some("Option[int]")
     );
-}
-
-fn take_resolve_invariant<T>(result: Result<T, ResolveError>) -> GenericInvariant {
-    match result {
-        Err(ResolveError::Invariant(invariant)) => invariant,
-        Err(ResolveError::Refusal(_)) => {
-            panic!("compiler metadata corruption must not become a semantic refusal")
-        }
-        Ok(_) => panic!("compiler metadata corruption must fail closed"),
-    }
-}
-
-fn take_reader_invariant<T>(result: Result<T, GenericInvariant>) -> GenericInvariant {
-    match result {
-        Err(invariant) => invariant,
-        Ok(_) => panic!("malformed Ready metadata must not reach a semantic reader"),
-    }
 }
 
 #[test]
@@ -1541,7 +1468,7 @@ fn assert_exact_target_invariant(
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
     let invariant =
-        take_resolve_invariant(registry.mint_type_instance(&mut draft, 0, &[target], site()));
+        take_resolve_invariant(registry.mint_type_instance(&mut draft, 0, &[target], site(3)));
 
     assert_eq!(
         invariant,
@@ -1555,7 +1482,7 @@ fn assert_exact_target_invariant(
 fn argument_targets_report_exact_private_causes_without_publication() {
     let (struct_draft, record) = orphan_record_draft();
     let (group_draft, _) = orphan_record_draft();
-    let mut enum_draft = fresh_txn();
+    let mut enum_draft = fresh_draft();
     let enum_name = enum_draft
         .intern_string("OrphanEnum")
         .expect("a within-domain mint");
@@ -1568,7 +1495,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
 
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
-        fresh_txn(),
+        fresh_draft(),
         GArg::Nominal(NominalId(0)),
     );
     assert_exact_target_invariant(
@@ -1588,7 +1515,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     );
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
-        fresh_txn(),
+        fresh_draft(),
         GArg::Collection(CollTypeId::from_index(0)),
     );
 
@@ -1599,7 +1526,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     let (root_registry, root_draft, root_id, _) = resource_target_fixture();
     assert_exact_target_invariant(root_registry, root_draft, GArg::Group(root_id));
 
-    let mut struct_draft = fresh_txn();
+    let mut struct_draft = fresh_draft();
     let struct_name = struct_draft
         .intern_string("Point")
         .expect("a within-domain mint");
@@ -1627,7 +1554,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
         &mut draft,
         0,
         &[GArg::Param(TypeParamIndex::from_position(7))],
-        site(),
+        site(3),
     ));
     assert_eq!(
         invariant,
@@ -1661,7 +1588,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
         &mut draft,
         0,
         &[GArg::Collection(collection)],
-        site(),
+        site(3),
     ));
     assert_eq!(
         invariant,
@@ -1700,7 +1627,7 @@ fn nested_non_ready_targets_report_the_exact_missing_body() {
             TypeInstId::Enum(id) => GArg::Enum(id),
         };
         let invariant =
-            take_resolve_invariant(registry.mint_type_instance(&mut draft, 0, &[target], site()));
+            take_resolve_invariant(registry.mint_type_instance(&mut draft, 0, &[target], site(3)));
 
         assert_eq!(invariant, GenericInvariant::ReadyBodyMissing(inner));
         assert_eq!(owner_snapshot(&registry), owner_before);
@@ -1712,7 +1639,7 @@ fn nested_non_ready_targets_report_the_exact_missing_body() {
 fn ready_readers_preserve_the_exact_argument_invariant() {
     let (mut registry, mut draft) = reserved_registry();
     let option = registry
-        .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
+        .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(3))
         .expect("control Option is Ready");
     let orphan_name = draft
         .intern_string("ReaderOrphan")
@@ -1775,7 +1702,7 @@ fn ready_readers_preserve_the_exact_argument_invariant() {
                     GArg::Scalar(ScalarType::Int),
                     GArg::Scalar(ScalarType::Bool),
                 ],
-                site(),
+                site(3),
             )
             .ok()
             .and_then(|id| match id {
@@ -1831,7 +1758,7 @@ fn reserved_readers_report_exact_argument_counts() {
             .application_template("Option")
             .expect("reserved Option template exists");
         let option = registry
-            .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
+            .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(3))
             .expect("control Option is Ready");
         registry
             .generics
@@ -1881,7 +1808,7 @@ fn reserved_readers_report_exact_argument_counts() {
                     GArg::Scalar(ScalarType::Int),
                     GArg::Scalar(ScalarType::Bool),
                 ],
-                site(),
+                site(3),
             )
             .ok()
             .and_then(|id| match id {
@@ -1916,7 +1843,7 @@ fn typed_struct_instance_owner_returns_only_a_ready_record() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let record = registry
-        .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site())
+        .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(3))
         .expect("valid struct instance is proven Ready");
     assert_eq!(record.index(), 0);
 
@@ -1929,7 +1856,7 @@ fn typed_struct_instance_owner_returns_only_a_ready_record() {
         &mut draft,
         0,
         &[GArg::Scalar(ScalarType::Int)],
-        site(),
+        site(3),
     ));
     assert_eq!(
         invariant,
@@ -1946,7 +1873,7 @@ fn typed_struct_instance_owner_returns_only_a_ready_record() {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let record = registry
-        .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site())
+        .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(3))
         .expect("control struct instance is Ready");
     registry
         .generics
@@ -1962,7 +1889,7 @@ fn typed_struct_instance_owner_returns_only_a_ready_record() {
         &mut draft,
         0,
         &[GArg::Scalar(ScalarType::Int)],
-        site(),
+        site(3),
     ));
     assert_eq!(
         invariant,
@@ -1989,7 +1916,7 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
                 index: 0,
                 name: "item",
             },
-            site(),
+            site(3),
         )
         .expect("valid enum member is proven Ready");
     assert_eq!(witness.variant, 0);
@@ -2008,7 +1935,7 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
             index: 0,
             name: "item",
         },
-        site(),
+        site(3),
     ));
     assert_eq!(
         invariant,
@@ -2034,7 +1961,7 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
                     index: 0,
                     name: "item",
                 },
-                site(),
+                site(3),
             )
             .expect("control enum member is Ready");
         let variants = if renamed {
@@ -2063,7 +1990,7 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
                 index: 0,
                 name: "item",
             },
-            site(),
+            site(3),
         ));
         assert_eq!(
             invariant,
@@ -2089,7 +2016,7 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
                 index: 0,
                 name: "item",
             },
-            site(),
+            site(3),
         )
         .expect("control enum member is Ready");
     registry
@@ -2110,7 +2037,7 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
             index: 0,
             name: "item",
         },
-        site(),
+        site(3),
     ));
     assert_eq!(
         invariant,

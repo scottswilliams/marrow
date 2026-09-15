@@ -4154,6 +4154,9 @@ fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDi
 }
 
 #[cfg(test)]
+mod test_fixtures;
+
+#[cfg(test)]
 mod types_metadata_successor_tests;
 
 #[cfg(test)]

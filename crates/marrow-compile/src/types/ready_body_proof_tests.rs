@@ -6,7 +6,7 @@ use super::*;
 
 #[test]
 fn ready_body_proof_is_exact_selective_and_allows_ready_back_edges() {
-    let make_registry = registry;
+    let make_registry = test_registry;
     let mut registry = make_registry(vec![
         template(
             "Outer",
@@ -60,7 +60,7 @@ fn ready_body_proof_is_exact_selective_and_allows_ready_back_edges() {
     };
     let expected = GenericInvariant::ReadyBodyMissing(inner);
     let owner_before = stable_snapshot(&registry);
-    let draft_before = draft_snapshot(&draft);
+    let draft_before = draft_fingerprint(&draft);
     assert_eq!(
         registry.struct_field_projection(outer_id, "safe"),
         Ok(StructFieldProjection::Field {
@@ -86,7 +86,7 @@ fn ready_body_proof_is_exact_selective_and_allows_ready_back_edges() {
         Err(found) if found == expected
     ));
     assert_eq!(stable_snapshot(&registry), owner_before);
-    assert_eq!(draft_snapshot(&draft), draft_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
     registry.generics.borrow_mut().type_insts[inner_row].state = inner_ready;
 
     let original_outer = registry.generics.borrow().type_insts[outer_row]
@@ -108,7 +108,7 @@ fn ready_body_proof_is_exact_selective_and_allows_ready_back_edges() {
         registry.generics.borrow_mut().type_insts[outer_row].state = TypeInstState::Ready(body);
         let expected = GenericInvariant::ReadyBodyShapeMismatch(outer);
         let owner_before = stable_snapshot(&registry);
-        let draft_before = draft_snapshot(&draft);
+        let draft_before = draft_fingerprint(&draft);
         assert!(matches!(
             registry.type_inst_body(outer),
             Err(found) if found == expected
@@ -118,7 +118,7 @@ fn ready_body_proof_is_exact_selective_and_allows_ready_back_edges() {
             Err(expected)
         );
         assert_eq!(stable_snapshot(&registry), owner_before);
-        assert_eq!(draft_snapshot(&draft), draft_before);
+        assert_eq!(draft_fingerprint(&draft), draft_before);
     }
     registry.generics.borrow_mut().type_insts[outer_row].state = original_outer;
 
@@ -156,7 +156,7 @@ fn ready_body_nested_template_contract_fails_every_selected_boundary_exactly() {
     }
 
     for fault in [Fault::TemplateKind, Fault::ArgumentCount] {
-        let mut registry = registry(vec![
+        let mut registry = test_registry(vec![
             template(
                 "Outer",
                 vec![
@@ -206,7 +206,7 @@ fn ready_body_nested_template_contract_fails_every_selected_boundary_exactly() {
         // classified directory must be discarded before a probe reclassifies it.
         registry.invalidate_row_directory();
         let owner_before = stable_snapshot(&registry);
-        let draft_before = draft_snapshot(&draft);
+        let draft_before = draft_fingerprint(&draft);
 
         let selected = registry.struct_field_projection(outer_id, "safe");
         assert_eq!(selected, Err(expected));
@@ -229,7 +229,7 @@ fn ready_body_nested_template_contract_fails_every_selected_boundary_exactly() {
         let graph = ValueGraph::build(&registry);
         assert!(matches!(graph, Err(found) if found == expected));
         assert_eq!(stable_snapshot(&registry), owner_before);
-        assert_eq!(draft_snapshot(&draft), draft_before);
+        assert_eq!(draft_fingerprint(&draft), draft_before);
     }
 }
 
@@ -237,7 +237,7 @@ fn ready_body_nested_template_contract_fails_every_selected_boundary_exactly() {
 /// a recursive one overflows the stack on this fixture instead of answering.
 #[test]
 fn ready_body_matcher_matches_a_deep_borrowed_template_without_recursing() {
-    let mut registry = registry(vec![template("Deep", vec![("value", name("T"))])]);
+    let mut registry = test_registry(vec![template("Deep", vec![("value", name("T"))])]);
     let mut draft = fresh_draft();
     let id = registry
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(22))
@@ -259,12 +259,12 @@ fn ready_body_matcher_matches_a_deep_borrowed_template_without_recursing() {
     registry.generics.borrow_mut().type_insts[0].state =
         TypeInstState::Ready(InstBody::Struct(vec![("value".to_string(), actual)]));
     let owner_before = stable_snapshot(&registry);
-    let draft_before = draft_snapshot(&draft);
+    let draft_before = draft_fingerprint(&draft);
 
     let body = registry.type_inst_body(id).map(|body| body.is_some());
     assert_eq!(body, Ok(true));
     assert_eq!(stable_snapshot(&registry), owner_before);
-    assert_eq!(draft_snapshot(&draft), draft_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
 
     // Remove the hostile deep template iteratively so the test also avoids a
     // recursive destructor after proving the production matcher is iterative.
@@ -304,7 +304,7 @@ fn ready_body_matcher_preserves_parameter_precedence_over_aliases() {
     };
     let mut alias_template = template("AliasBox", vec![("value", name("Alias"))]);
     alias_template.type_params = vec![("Alias".to_string(), None)];
-    let mut registry = registry(vec![alias_template]);
+    let mut registry = test_registry(vec![alias_template]);
     registry.aliases = build_alias_table(
         &mut registry.named,
         &[(
@@ -323,7 +323,7 @@ fn ready_body_matcher_preserves_parameter_precedence_over_aliases() {
         .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Text)], site(23))
         .expect("the written parameter wins over the global alias");
     let owner_before = stable_snapshot(&registry);
-    let draft_before = draft_snapshot(&draft);
+    let draft_before = draft_fingerprint(&draft);
 
     let body = registry.type_inst_body(id);
     assert!(matches!(
@@ -333,12 +333,12 @@ fn ready_body_matcher_preserves_parameter_precedence_over_aliases() {
                 == &vec![("value".to_string(), GArg::Scalar(ScalarType::Text))]
     ));
     assert_eq!(stable_snapshot(&registry), owner_before);
-    assert_eq!(draft_snapshot(&draft), draft_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
 }
 
 #[test]
 fn ready_enum_payload_targets_are_checked_before_shape_or_durable_projection() {
-    let mut registry = registry(vec![
+    let mut registry = test_registry(vec![
         enum_template("Outer", apply("Inner", vec![name("T")])),
         template("Inner", vec![("value", name("T"))]),
     ]);
@@ -362,7 +362,7 @@ fn ready_enum_payload_targets_are_checked_before_shape_or_durable_projection() {
         TypeInstState::Rejected(ResolveRefusal::Unsupported);
     let expected = GenericInvariant::ReadyBodyMissing(inner);
     let owner_before = stable_snapshot(&registry);
-    let draft_before = draft_snapshot(&draft);
+    let draft_before = draft_fingerprint(&draft);
 
     assert_eq!(registry.enum_variants(outer_id), Err(expected));
     assert!(matches!(
@@ -380,12 +380,12 @@ fn ready_enum_payload_targets_are_checked_before_shape_or_durable_projection() {
         Err(found) if found == expected
     ));
     assert_eq!(stable_snapshot(&registry), owner_before);
-    assert_eq!(draft_snapshot(&draft), draft_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
 }
 
 #[test]
 fn ready_template_id_mismatch_is_typed_after_body_id_validation() {
-    let mut registry = registry(reserved_templates());
+    let mut registry = test_registry(reserved_templates());
     let mut draft = fresh_draft();
     let enum_id = registry
         .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
