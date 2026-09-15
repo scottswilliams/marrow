@@ -25,26 +25,21 @@ use admitted_plan::admitted_plan;
 mod admitted_helper;
 use admitted_helper::admitted;
 
-const APPLICATION_ID: [u8; 16] = [0x0a; 16];
-const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
-const KEY_ID: [u8; 16] = [0x0c; 16];
-const PRODUCT_ID: [u8; 16] = [0x0d; 16];
-const FIELD_ID: [u8; 16] = [0x0e; 16];
-const INDEX_ID: [u8; 16] = [0x3b; 16];
+#[path = "common/ledger_ids.rs"]
+mod ledger_ids;
+use ledger_ids::{APPLICATION_ID, FIELD_ID, INDEX_ID, KEY_ID, PLACEMENT_ID, PRODUCT_ID, seeded_id};
 
-/// A distinct 16-byte ledger id seeded by `n` (its low byte), for the many-component
-/// index projections below. Kept below the reserved fixed ids above.
+#[path = "common/fixture_graph.rs"]
+mod fixture_graph;
+use fixture_graph::{admit_root, declare_product, empty_record};
+
+/// The seeded-id tag for the index components the projection-width tests name, and for
+/// the second Product a budget test declares.
+const COMPONENT: u8 = 0x41;
+
+/// A distinct index component id seeded by `n`.
 fn component_id(n: usize) -> LedgerIdBytes {
-    // Two seed bytes carry the distinctness this helper promises. Past them the ids
-    // silently repeat and a bound test would pass over a smaller set than it named.
-    assert!(
-        n <= u16::MAX as usize,
-        "component seed exceeds its two bytes"
-    );
-    let mut bytes = [0x40u8; 16];
-    bytes[0] = n as u8;
-    bytes[1] = (n >> 8) as u8;
-    LedgerIdBytes::from_bytes(bytes)
+    seeded_id(COMPONENT, n)
 }
 
 /// A minimal encodable draft carrying a `main` returning `0`, one record type, and one
@@ -58,38 +53,27 @@ fn encode_root(
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let members = members(&mut draft);
-    let type_name = draft.intern_string("R").expect("a within-domain mint");
-    let record = draft
-        .add_record_type(RecordTypeDef {
-            name: type_name,
-            fields: Vec::new(),
-        })
-        .expect("a within-domain mint");
+    let record = empty_record(&mut draft, "R");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let root_name = draft.intern_string("r").expect("a within-domain mint");
-    draft
-        .declare_product(
-            &admitted_plan(),
-            LedgerIdBytes::from_bytes(PRODUCT_ID),
-            record,
-            members,
-        )
-        .expect("a well-formed declaration");
-    draft
-        .add_root_occurrence(
-            &admitted_plan(),
-            LedgerIdBytes::from_bytes(PRODUCT_ID),
-            RootOccurrenceDef {
-                name: root_name,
-                keys: vec![KeyColumn {
-                    scalar: Scalar::Int,
-                    id: LedgerIdBytes::from_bytes(KEY_ID),
-                }],
-                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: indexes.into(),
-            },
-        )
-        .expect("the Product is declared");
+    declare_product(
+        &mut draft,
+        &admitted_plan(),
+        LedgerIdBytes::from_bytes(PRODUCT_ID),
+        record,
+        members,
+    );
+    admit_root(
+        &mut draft,
+        &admitted_plan(),
+        LedgerIdBytes::from_bytes(PRODUCT_ID),
+        "r",
+        LedgerIdBytes::from_bytes(PLACEMENT_ID),
+        vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes(KEY_ID),
+        }],
+        indexes,
+    );
     let src = draft
         .intern_string("src/main.mw")
         .expect("a within-domain mint");
@@ -160,13 +144,9 @@ fn a_dense_struct_at_the_leaf_limit_encodes() {
     );
 }
 
-/// **The value-shape appenders became checked at the transaction surface, so the
-/// over-wide arena state this test previously staged is now unrepresentable. Prior
-/// pin:**
-/// (`a_dense_struct_one_leaf_over_the_limit_is_refused`, fence
-/// `TooManyStructLeaves`): one leaf past the dense-composite limit is the typed
-/// carrier-domain refusal at the append surface, mutating nothing, and the fence's
-/// whole-arena walk keeps the same bound as defense in depth.
+/// One leaf past the dense-composite limit is the typed carrier-domain refusal at the
+/// append surface, mutating nothing. The fence's whole-arena walk keeps the same bound
+/// as defense in depth, so the over-wide arena state is unrepresentable either way.
 #[test]
 fn a_dense_struct_one_leaf_over_the_limit_is_refused_at_the_surface() {
     let mut owner = ImageDraft::new();

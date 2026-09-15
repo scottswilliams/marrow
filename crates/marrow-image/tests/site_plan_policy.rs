@@ -6,10 +6,9 @@
 //! `MAX_SITES + 1` and records one earliest policy receipt, while an already-retained
 //! demand still reuses the id it was given.
 //!
-//! Before this, `add_site` was a bare push whose id was `self.sites.len() as u16`, with
-//! the bound seen only at `encode()`. A producer could push past `u16::MAX`, receive a
-//! wrapped id, and embed the aliased id in emitted instruction operands — two distinct
-//! durable nodes silently sharing one site operand, discovered nowhere.
+//! Checking capacity before minting is what keeps an id from wrapping: an unchecked push
+//! past `u16::MAX` would hand back a wrapped id and embed it in emitted instruction
+//! operands, leaving two distinct durable nodes sharing one site operand.
 //!
 //! Every demand here is built through the checked construction seam: a Product is
 //! declared once, root occurrences are appended over it, and a site is named by binding
@@ -41,81 +40,70 @@ use admitted_plan::admitted_plan;
 mod admitted_helper;
 use admitted_helper::admitted;
 
-const APPLICATION_ID: [u8; 16] = [0x0a; 16];
-const PRODUCT_ID: [u8; 16] = [0x0d; 16];
+#[path = "common/ledger_ids.rs"]
+mod ledger_ids;
+use ledger_ids::{APPLICATION_ID, FIELD_ID, PRODUCT_ID, seeded_id};
+
+#[path = "common/fixture_graph.rs"]
+mod fixture_graph;
+use fixture_graph::{admit_root, declare_product, empty_record};
+
 /// A field-member seed past every seed a wide declaration uses, so a divergent
 /// redeclaration names a node the bound declaration does not hold.
 const DIVERGENT_FIELD: usize = MAX_SITES + 1;
+
+/// The seeded-id tag for the wide declaration's field members.
+const WIDE_FIELD: u8 = 0x50;
 
 fn product() -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(PRODUCT_ID)
 }
 
-/// A distinct 16-byte ledger id seeded by `n`, so every field member below is a distinct
+/// A distinct field-member id seeded by `n`, so every field member below is a distinct
 /// declaration node and every demand over it a distinct `(occurrence, node, target)`.
 fn field_id(n: usize) -> LedgerIdBytes {
-    // Three seed bytes carry the distinctness this helper promises. Past them the ids
-    // silently repeat and a demand-width test would measure a smaller set than it named.
-    assert!(n <= 0x00ff_ffff, "field seed exceeds its three bytes");
-    let mut bytes = [0x50u8; 16];
-    bytes[0] = (n & 0xff) as u8;
-    bytes[1] = ((n >> 8) & 0xff) as u8;
-    bytes[2] = ((n >> 16) & 0xff) as u8;
-    LedgerIdBytes::from_bytes(bytes)
+    seeded_id(WIDE_FIELD, n)
 }
 
 /// Declare one Product of `fields` required int fields — the cheapest way to reach a
 /// wide distinct demand set, since a demand is named by a declaration node and every
 /// field is its own node.
 fn declare_wide_product(draft: &mut DraftTxn<'_>, fields: usize) {
-    let type_name = draft.intern_string("R").expect("a within-domain mint");
-    let record = draft
-        .add_record_type(RecordTypeDef {
-            name: type_name,
-            fields: Vec::new(),
-        })
-        .expect("a within-domain mint");
+    let record = empty_record(draft, "R");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let value = draft
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
-    draft
-        .declare_product(
-            &admitted_plan(),
-            product(),
-            record,
-            (0..fields)
-                .map(|n| DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Field {
-                        id: field_id(n),
-                        required: true,
-                        value,
-                    },
-                })
-                .collect(),
-        )
-        .expect("a well-formed declaration");
+    declare_product(
+        draft,
+        &admitted_plan(),
+        product(),
+        record,
+        (0..fields)
+            .map(|n| DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: field_id(n),
+                    required: true,
+                    value,
+                },
+            })
+            .collect(),
+    );
 }
 
 /// Append one singleton root occurrence over the declared Product, seeded by `n` so each
 /// root has its own spelling and placement.
-fn admit_root(draft: &mut DraftTxn<'_>, n: u8) -> AdmittedRoot {
-    let name = draft
-        .intern_string(&format!("r{n}"))
-        .expect("a within-domain mint");
-    draft
-        .add_root_occurrence(
-            &admitted_plan(),
-            product(),
-            RootOccurrenceDef {
-                name,
-                keys: Vec::new(),
-                placement: LedgerIdBytes::from_bytes([n; 16]),
-                indexes: Vec::new().into(),
-            },
-        )
-        .expect("the Product is declared")
+fn wide_root(draft: &mut DraftTxn<'_>, n: u8) -> AdmittedRoot {
+    admit_root(
+        draft,
+        &admitted_plan(),
+        product(),
+        &format!("r{n}"),
+        LedgerIdBytes::from_bytes([n; 16]),
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 /// A draft holding one wide Product declaration, one root over it, and that Product's
@@ -124,7 +112,7 @@ fn wide_draft(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     declare_wide_product(&mut draft, fields);
-    let root = admit_root(&mut draft, 0x21);
+    let root = wide_root(&mut draft, 0x21);
     let members = draft.product_members(product()).expect("declared");
     draft.commit();
     (draft_owner, root, members)
@@ -136,7 +124,7 @@ fn wide_owner(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember
     let mut owner = ImageDraft::new();
     let mut draft = admitted(&mut owner);
     declare_wide_product(&mut draft, fields);
-    let root = admit_root(&mut draft, 0x21);
+    let root = wide_root(&mut draft, 0x21);
     let members = draft.product_members(product()).expect("declared");
     draft.commit();
     (owner, root, members)
@@ -177,7 +165,7 @@ fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
 
     // A second occurrence over the same declaration: every one of its leaf demands is a
     // fresh `(occurrence, node, target)` key, so these are the demands past the cap.
-    let excess = admit_root(&mut draft, 0x22);
+    let excess = wide_root(&mut draft, 0x22);
     for member in members.iter().take(64) {
         let _ = site(
             &mut draft,
@@ -205,7 +193,7 @@ fn a_retained_demand_still_reuses_its_operand_after_the_cap_is_crossed() {
     );
     demand_every_leaf(&mut draft, &root, &members);
 
-    let over = admit_root(&mut draft, 0x22);
+    let over = wide_root(&mut draft, 0x22);
     let refused = site(
         &mut draft,
         over.occurrence(),
@@ -229,7 +217,6 @@ fn a_retained_demand_still_reuses_its_operand_after_the_cap_is_crossed() {
     );
 }
 
-const FIELD_ID: [u8; 16] = [0x31; 16];
 const GROUP_ID: [u8; 16] = [0x32; 16];
 const BRANCH_ID: [u8; 16] = [0x33; 16];
 const BRANCH_KEY_ID: [u8; 16] = [0x34; 16];
@@ -244,82 +231,70 @@ const COMPONENT_ID: [u8; 16] = [0x37; 16];
 fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
-    let type_name = draft.intern_string("R").expect("a within-domain mint");
-    let record = draft
-        .add_record_type(RecordTypeDef {
-            name: type_name,
-            fields: Vec::new(),
-        })
-        .expect("a within-domain mint");
+    let record = empty_record(&mut draft, "R");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let branch_name = draft.intern_string("b").expect("a within-domain mint");
     let value = draft
         .value_scalar(Scalar::Int)
         .expect("the test arena mints");
-    draft
-        .declare_product(
-            &admitted_plan(),
-            product(),
-            record,
-            vec![
-                DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Field {
-                        id: LedgerIdBytes::from_bytes(FIELD_ID),
-                        required: true,
-                        value,
-                    },
+    declare_product(
+        &mut draft,
+        &admitted_plan(),
+        product(),
+        record,
+        vec![
+            DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: LedgerIdBytes::from_bytes(FIELD_ID),
+                    required: true,
+                    value,
                 },
-                DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Group {
-                        id: LedgerIdBytes::from_bytes(GROUP_ID),
-                    },
-                },
-                DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Branch {
-                        placement: LedgerIdBytes::from_bytes(BRANCH_ID),
-                        name: branch_name,
-                        record,
-                        keys: vec![KeyColumn {
-                            scalar: Scalar::Int,
-                            id: LedgerIdBytes::from_bytes(BRANCH_KEY_ID),
-                        }],
-                    },
-                },
-            ],
-        )
-        .expect("a well-formed declaration");
-    let root_name = draft.intern_string("r").expect("a within-domain mint");
-    let root = draft
-        .add_root_occurrence(
-            &admitted_plan(),
-            product(),
-            RootOccurrenceDef {
-                name: root_name,
-                keys: Vec::new(),
-                placement: LedgerIdBytes::from_bytes([0x21; 16]),
-                indexes: vec![
-                    DurableIndexShape {
-                        id: LedgerIdBytes::from_bytes(SCAN_INDEX_ID),
-                        unique: false,
-                        components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
-                            COMPONENT_ID,
-                        ))],
-                    },
-                    DurableIndexShape {
-                        id: LedgerIdBytes::from_bytes(LOOKUP_INDEX_ID),
-                        unique: true,
-                        components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
-                            COMPONENT_ID,
-                        ))],
-                    },
-                ]
-                .into(),
             },
-        )
-        .expect("the Product is declared");
+            DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Group {
+                    id: LedgerIdBytes::from_bytes(GROUP_ID),
+                },
+            },
+            DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Branch {
+                    placement: LedgerIdBytes::from_bytes(BRANCH_ID),
+                    name: branch_name,
+                    record,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: LedgerIdBytes::from_bytes(BRANCH_KEY_ID),
+                    }],
+                },
+            },
+        ],
+    );
+    let root = admit_root(
+        &mut draft,
+        &admitted_plan(),
+        product(),
+        "r",
+        LedgerIdBytes::from_bytes([0x21; 16]),
+        Vec::new(),
+        vec![
+            DurableIndexShape {
+                id: LedgerIdBytes::from_bytes(SCAN_INDEX_ID),
+                unique: false,
+                components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                    COMPONENT_ID,
+                ))],
+            },
+            DurableIndexShape {
+                id: LedgerIdBytes::from_bytes(LOOKUP_INDEX_ID),
+                unique: true,
+                components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                    COMPONENT_ID,
+                ))],
+            },
+        ],
+    );
     let members = draft.product_members(product()).expect("declared");
     draft.commit();
     (draft_owner, root, members)
@@ -411,13 +386,13 @@ fn each_admitted_target_is_its_own_row() {
 /// collapse into a single row.
 ///
 /// A node admits exactly one operation target under the checked seam, so the occurrence —
-/// not the target — is now the way two demands can share one declaration path, and it is
-/// the remaining way two distinct durable nodes could be aliased onto one site operand.
+/// not the target — is the only way two demands share one declaration path, and the only
+/// remaining way two distinct durable nodes could be aliased onto one site operand.
 #[test]
 fn one_declaration_path_under_two_occurrences_is_two_rows() {
     let (mut draft_owner, first_root, members) = wide_draft(2);
     let mut draft = admitted(&mut draft_owner);
-    let second_root = admit_root(&mut draft, 0x22);
+    let second_root = wide_root(&mut draft, 0x22);
 
     let first = site(
         &mut draft,
@@ -472,7 +447,7 @@ fn every_over_policy_operand_renders_one_fixed_redacted_marker() {
     let mut draft = admitted(&mut draft_owner);
     demand_every_leaf(&mut draft, &root, &members);
 
-    let over = admit_root(&mut draft, 0x22);
+    let over = wide_root(&mut draft, 0x22);
     let first = site(
         &mut draft,
         over.occurrence(),
@@ -588,7 +563,7 @@ fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
     {
         let mut proof = admitted(&mut owner);
         demand_every_leaf(&mut proof, &root, &members);
-        let excess = admit_root(&mut proof, 0x22);
+        let excess = wide_root(&mut proof, 0x22);
         let over = site(
             &mut proof,
             excess.occurrence(),
@@ -617,7 +592,7 @@ fn a_crossing_before_a_proof_survives_the_proof() {
     let (mut owner, root, members) = wide_owner(MAX_SITES);
     let mut draft = admitted(&mut owner);
     demand_every_leaf(&mut draft, &root, &members);
-    let excess = admit_root(&mut draft, 0x22);
+    let excess = wide_root(&mut draft, 0x22);
     let _ = site(
         &mut draft,
         excess.occurrence(),
@@ -737,7 +712,7 @@ fn a_discarded_proof_leaves_the_draft_byte_identical() {
         let _ = proof
             .intern_string("throwaway")
             .expect("a within-domain mint");
-        let extra = admit_root(&mut proof, 0x33);
+        let extra = wide_root(&mut proof, 0x33);
         demand_every_leaf(&mut proof, &extra, &members);
     }
     let after = owner.encode().expect("a fitting draft").bytes;
@@ -760,7 +735,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     // and both occurrence rows predate every rollback below.
     let mut draft = admitted(&mut owner);
     demand_every_leaf(&mut draft, &root, &members);
-    let excess = admit_root(&mut draft, 0x22);
+    let excess = wide_root(&mut draft, 0x22);
     let control = site(
         &mut draft,
         excess.occurrence(),
@@ -774,7 +749,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     // transaction; the receipt it stands on predates that transaction and survives.
     let escaped = {
         let mut txn = admitted(&mut owner);
-        let fresh = admit_root(&mut txn, 0x23);
+        let fresh = wide_root(&mut txn, 0x23);
         site(
             &mut txn,
             fresh.occurrence(),
@@ -809,7 +784,7 @@ fn a_rolled_back_roots_over_policy_ref_cannot_authenticate_after_ordinal_reuse()
     let mut txn = admitted(&mut owner);
     // Deterministic ordinal reuse: the byte-identical root re-appends at the ordinal the
     // rolled-back root held, with a fresh stamp.
-    let _reused = admit_root(&mut txn, 0x23);
+    let _reused = wide_root(&mut txn, 0x23);
     let name = txn.intern_string("f").expect("a within-domain mint");
     let source = txn
         .intern_string("src/main.mw")
@@ -862,7 +837,7 @@ fn a_sites_crossing_beside_a_consts_crossing_yields_the_canonical_minimum() {
             );
         };
         demand_every_leaf(&mut draft, &root, &members);
-        let excess = admit_root(&mut draft, 0x22);
+        let excess = wide_root(&mut draft, 0x22);
         if consts_first {
             cross_consts(&mut draft);
             cross_sites(&mut draft, &excess);
@@ -1162,7 +1137,7 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
     // The occurrence half of the key, observed the same way: the same declaration path
     // under a second root occurrence is a different demand and gets a different operand,
     // so the plan is keying on more than the path it was handed.
-    let second_root = admit_root(&mut draft, 0x23);
+    let second_root = wide_root(&mut draft, 0x23);
     let under_second: BTreeSet<String> = members
         .iter()
         .map(|member| operand_for(&mut draft, &second_root, member))
@@ -1238,7 +1213,7 @@ fn a_reversed_demand_sweep_yields_the_same_artifact() {
         let (mut owner, root, members) = wide_draft(MAX_SITES);
         let mut draft = admitted(&mut owner);
         demand_every_leaf(&mut draft, &root, &members);
-        let excess = admit_root(&mut draft, 0x22);
+        let excess = wide_root(&mut draft, 0x22);
         let excess_members: Vec<_> = if reverse {
             members.iter().take(64).rev().collect()
         } else {
@@ -1289,7 +1264,7 @@ fn a_durable_batch_abandoned_after_zero_one_or_many_staged_sites_restores_all() 
             let mut wrap = 0u8;
             while requested < staged {
                 // A fresh occurrence per wrap, so every demand key below is distinct.
-                let occurrence = admit_root(&mut draft, 0x33 + wrap);
+                let occurrence = wide_root(&mut draft, 0x33 + wrap);
                 for member in &members {
                     if requested == staged {
                         break;

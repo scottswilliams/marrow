@@ -9,8 +9,7 @@ use std::process::Command;
 
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DraftTxn, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, LedgerIdBytes, RootOccurrenceDef, Scalar,
-    SemanticTarget, VariantDef,
+    FunctionDef, ImageDraft, ImageType, Instr, LedgerIdBytes, Scalar, SemanticTarget, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -21,8 +20,16 @@ use admitted_plan::admitted_plan;
 mod admitted_helper;
 use admitted_helper::admitted;
 
-const APPLICATION_ID: [u8; 16] = [0x0a; 16];
-const PRODUCT_ID: [u8; 16] = [0x0d; 16];
+#[path = "common/ledger_ids.rs"]
+mod ledger_ids;
+use ledger_ids::{APPLICATION_ID, PRODUCT_ID, seeded_id};
+
+#[path = "common/fixture_graph.rs"]
+mod fixture_graph;
+use fixture_graph::{admit_root, declare_product};
+
+/// The seeded-id tag for the field member each pass declares.
+const FIELD: u8 = 0x50;
 
 /// Mutate every owner the transaction covers: both interned pools and their indexes, a
 /// reserved-then-filled record and enum, a collection, the value-shape arena, a Product
@@ -69,34 +76,30 @@ fn mutate_every_owner(txn: &mut DraftTxn<'_>, seed: u8) {
     let value = txn.value_scalar(Scalar::Int).expect("the test arena mints");
     let mut product = PRODUCT_ID;
     product[1] = seed;
-    let mut field = [0x50u8; 16];
-    field[0] = seed;
-    txn.declare_product(
+    let product = LedgerIdBytes::from_bytes(product);
+    declare_product(
+        txn,
         &admitted_plan(),
-        LedgerIdBytes::from_bytes(product),
+        product,
         record,
         vec![DeclarationMemberDef {
             parent: None,
             shape: DeclarationMemberShape::Field {
-                id: LedgerIdBytes::from_bytes(field),
+                id: seeded_id(FIELD, usize::from(seed)),
                 required: true,
                 value,
             },
         }],
-    )
-    .expect("a well-formed declaration");
-    let root = txn
-        .add_root_occurrence(
-            &admitted_plan(),
-            LedgerIdBytes::from_bytes(product),
-            RootOccurrenceDef {
-                name,
-                keys: Vec::new(),
-                placement: LedgerIdBytes::from_bytes([seed; 16]),
-                indexes: Vec::new().into(),
-            },
-        )
-        .expect("the Product is declared");
+    );
+    let root = admit_root(
+        txn,
+        &admitted_plan(),
+        product,
+        &format!("n{seed}"),
+        LedgerIdBytes::from_bytes([seed; 16]),
+        Vec::new(),
+        Vec::new(),
+    );
     let handle = txn
         .bind_occurrence_site(
             root.occurrence(),
