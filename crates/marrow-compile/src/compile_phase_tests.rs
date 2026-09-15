@@ -14,10 +14,7 @@ use super::{
 use crate::compile::Declaration;
 use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
 use crate::lower::FunctionRegistry;
-use crate::types::{
-    CollectionKind, GenericCacheInvariant, GenericInvariant, Reserved, TemplateProofError,
-    TypeInstKind,
-};
+use crate::types::{GenericInvariant, TemplateProofError};
 use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 use std::collections::BTreeMap;
@@ -139,82 +136,6 @@ fn stage_label(stage: CompileStage) -> &'static str {
         CompileStage::BodyLowering => "body lowering",
         CompileStage::PostLoweringValidation => "post-lowering validation",
     }
-}
-
-fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
-    match cause {
-        GenericInvariant::TemplateProof(cause) => match cause {
-            TemplateProofError::UnstableFillState => "unstable template proof",
-            TemplateProofError::LimitOwnerNotOpen => "closed limit owner",
-        },
-        GenericInvariant::CacheState(cause) => match cause {
-            GenericCacheInvariant::ActiveBatchMissing => "active batch missing",
-            GenericCacheInvariant::ActiveBatchRange => "active batch range",
-            GenericCacheInvariant::ActiveRowCardinality => "active row cardinality",
-            GenericCacheInvariant::ActiveRowKeyMismatch => "active row key mismatch",
-            GenericCacheInvariant::ActiveFillStackNotEmpty => "active stack not empty",
-            GenericCacheInvariant::FailureIndexOutOfRange => "failure index range",
-            GenericCacheInvariant::DependentIndexOutOfRange => "dependent index range",
-            GenericCacheInvariant::StableRowInActiveBatch => "stable active row",
-            GenericCacheInvariant::IncompleteRowWithoutRefusal => "incomplete row",
-            GenericCacheInvariant::FillingReuseOutsideBatch => "orphan Filling reuse",
-            GenericCacheInvariant::SettledRowMissing => "settled row missing",
-            GenericCacheInvariant::SettledRowStillFilling => "settled row Filling",
-            GenericCacheInvariant::FillStackMismatch => "fill stack mismatch",
-            GenericCacheInvariant::MintIndexDrift => "mint index drift",
-            GenericCacheInvariant::MintKeyAlreadyPresent => "mint key already present",
-        },
-        GenericInvariant::ReservedTemplateMissing(reserved) => match reserved {
-            Reserved::Option => "Option template missing",
-            Reserved::Result => "Result template missing",
-        },
-        GenericInvariant::TypeTemplateMissing(_) => "type template missing",
-        GenericInvariant::TypeArgumentCountMismatch { .. } => "type argument count mismatch",
-        GenericInvariant::TemplateKindMismatch {
-            expected, actual, ..
-        } => match (expected, actual) {
-            (TypeInstKind::Struct, TypeInstKind::Struct) => "struct is struct",
-            (TypeInstKind::Struct, TypeInstKind::Enum) => "enum where struct expected",
-            (TypeInstKind::Enum, TypeInstKind::Struct) => "struct where enum expected",
-            (TypeInstKind::Enum, TypeInstKind::Enum) => "enum is enum",
-        },
-        GenericInvariant::TypeBodyKindMismatch { body, .. } => match body {
-            TypeInstKind::Struct => "Ready struct body mismatch",
-            TypeInstKind::Enum => "Ready enum body mismatch",
-        },
-        GenericInvariant::ReadyBodyShapeMismatch(_) => "Ready body shape mismatch",
-        GenericInvariant::ReadyBodyMissing(_) => "Ready body missing",
-        GenericInvariant::ReadyEnumVariantMissing { .. } => "Ready enum variant missing",
-        GenericInvariant::TypeIdentityCollision(_) => "type identity collision",
-        GenericInvariant::TypeInstantiationKeyCollision { .. } => {
-            "type instantiation key collision"
-        }
-        GenericInvariant::TypeArgumentOrderViolation { .. } => "type argument order violation",
-        GenericInvariant::TypeArgumentTargetMissing(_) => "type argument target missing",
-        GenericInvariant::TypeArgumentParameter(_) => "concrete type argument is a parameter",
-        GenericInvariant::BuilderDomain(_) => "value shape outside the builder domain",
-        GenericInvariant::CollectionIndexMismatch { kind, .. } => match kind {
-            CollectionKind::List => "List owner mismatch",
-            CollectionKind::Map => "Map owner mismatch",
-        },
-        GenericInvariant::DeclarationIndexDrift => "declaration index drift",
-        GenericInvariant::DurableConstructionRefused => "durable construction refused",
-        GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
-        GenericInvariant::DurableBranchKeyUnresolved => "durable branch key unresolved",
-        GenericInvariant::DurableBranchFieldUnresolved => "durable branch field unresolved",
-        GenericInvariant::ScalarResolutionLimit => "scalar resolution limit",
-        GenericInvariant::DeclarationCoordinateMissing(_) => "declaration coordinate missing",
-    }
-}
-
-#[test]
-fn private_generic_cause_classification_has_no_wildcard() {
-    assert_eq!(
-        private_generic_cause_label(GenericInvariant::TemplateProof(
-            TemplateProofError::UnstableFillState
-        )),
-        "unstable template proof"
-    );
 }
 
 /// A driven pass whose stage terminals are exactly `parse`, `structural`,

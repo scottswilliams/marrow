@@ -473,34 +473,15 @@ pub(crate) enum TemplateProofError {
     LimitOwnerNotOpen,
 }
 
-/// A closed classification of malformed generic-cache bookkeeping. These cases are
-/// compiler coherence failures and cannot be contextualized as source Unsupported.
+/// The generic instantiation cache disagreed with itself, tagged with the site that
+/// observed it.
+///
+/// Every one of these is a compiler coherence failure, never a fact about the
+/// source, and every one is redacted behind the opaque `CompileInvariant` before a
+/// user sees it. The tag names the check that failed so a bug report and a test can
+/// say which; it is not a stable code and nothing dispatches on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GenericCacheInvariant {
-    ActiveBatchMissing,
-    ActiveBatchRange,
-    ActiveRowCardinality,
-    ActiveRowKeyMismatch,
-    ActiveFillStackNotEmpty,
-    FailureIndexOutOfRange,
-    DependentIndexOutOfRange,
-    StableRowInActiveBatch,
-    IncompleteRowWithoutRefusal,
-    FillingReuseOutsideBatch,
-    SettledRowMissing,
-    SettledRowStillFilling,
-    FillStackMismatch,
-    /// A lookup-only mint-dedup index (`type_index`/`fn_index`) resolved a
-    /// `(template, args)` key to a row that does not carry that key: the secondary
-    /// index diverged from its append-order authority vector.
-    MintIndexDrift,
-    /// A mint or reserve appended a `(template, args)` key that `type_index` or
-    /// `fn_index` already held. It reaches the append only on a dedup miss, so a
-    /// displaced key means the dedup probe and the index disagree — the same divergence
-    /// `MintIndexDrift` names, observed at the write. Rejected so a duplicate
-    /// instantiation row can never be admitted.
-    MintKeyAlreadyPresent,
-}
+pub(crate) struct GenericCacheInvariant(pub(crate) &'static str);
 
 /// Detailed compiler-private causes that cross the build boundary only through the
 /// redacted public `CompileInvariant` wrapper.
@@ -2093,9 +2074,9 @@ impl TypeRegistry {
                         .get(index)
                         .is_none_or(|inst| inst.template != template || inst.args != args);
                     if drifted {
-                        return Err(GenericInvariant::CacheState(
-                            GenericCacheInvariant::MintIndexDrift,
-                        )
+                        return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                            "mint index drift",
+                        ))
                         .into());
                     }
                     Some(index)
@@ -2129,15 +2110,15 @@ impl TypeRegistry {
 
         let mut generics = self.generics.borrow_mut();
         let Some(start) = generics.fill_batch_start else {
-            return Err(GenericInvariant::CacheState(
-                GenericCacheInvariant::FillingReuseOutsideBatch,
-            )
+            return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                "Filling reuse outside batch",
+            ))
             .into());
         };
         let Some(&dependent) = generics.fill_stack.last() else {
-            return Err(GenericInvariant::CacheState(
-                GenericCacheInvariant::FillingReuseOutsideBatch,
-            )
+            return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                "Filling reuse outside batch",
+            ))
             .into());
         };
         let valid = index >= start
@@ -2154,9 +2135,9 @@ impl TypeRegistry {
                 .get(&TypeInstKey::from(generics.type_insts[dependent].id))
                 == Some(&dependent);
         if !valid {
-            return Err(GenericInvariant::CacheState(
-                GenericCacheInvariant::FillingReuseOutsideBatch,
-            )
+            return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                "Filling reuse outside batch",
+            ))
             .into());
         }
         if dependent != index {
@@ -2245,9 +2226,9 @@ impl TypeRegistry {
             // admitted here.
             let displaced = generics.type_index.insert((template, args.to_vec()), index);
             if displaced.is_some() {
-                return Err(GenericInvariant::CacheState(
-                    GenericCacheInvariant::MintKeyAlreadyPresent,
-                )
+                return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                    "mint key already present",
+                ))
                 .into());
             }
             generics.fill_rows.insert(id.into(), index);
@@ -2386,7 +2367,7 @@ impl TypeRegistry {
         let mut generics = self.generics.borrow_mut();
         if generics.fill_stack.last() != Some(&inst_index) {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::FillStackMismatch,
+                GenericCacheInvariant("fill stack mismatch"),
             )));
         }
         generics.fill_stack.pop();
@@ -2649,29 +2630,29 @@ impl TypeRegistry {
     /// cannot silently leave a row provisional or publish an incoherent body.
     fn commit_ready_state(&self, inst: &mut TypeInst) -> Result<(), ResolveError> {
         let TypeInstState::Filling { staged } = &inst.state else {
-            return Err(GenericInvariant::CacheState(
-                GenericCacheInvariant::StableRowInActiveBatch,
-            )
+            return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                "stable row in active batch",
+            ))
             .into());
         };
         let Some(body) = staged.as_ref() else {
-            return Err(GenericInvariant::CacheState(
-                GenericCacheInvariant::IncompleteRowWithoutRefusal,
-            )
+            return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                "incomplete row without refusal",
+            ))
             .into());
         };
         self.validate_inst_body_metadata(inst.template, &inst.args, inst.id, body)?;
 
         let body = match &mut inst.state {
             TypeInstState::Filling { staged } => staged.take().ok_or({
-                ResolveError::Invariant(GenericInvariant::CacheState(
-                    GenericCacheInvariant::IncompleteRowWithoutRefusal,
-                ))
+                ResolveError::Invariant(GenericInvariant::CacheState(GenericCacheInvariant(
+                    "incomplete row without refusal",
+                )))
             })?,
             TypeInstState::Ready(_) | TypeInstState::Rejected(_) => {
-                return Err(GenericInvariant::CacheState(
-                    GenericCacheInvariant::StableRowInActiveBatch,
-                )
+                return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                    "stable row in active batch",
+                ))
                 .into());
             }
         };
@@ -2683,23 +2664,23 @@ impl TypeRegistry {
         let mut generics = self.generics.borrow_mut();
         let Some(start) = generics.fill_batch_start else {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::ActiveBatchMissing,
+                GenericCacheInvariant("active batch missing"),
             )));
         };
         let end = generics.type_insts.len();
         let Some(active_len) = end.checked_sub(start) else {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::ActiveBatchRange,
+                GenericCacheInvariant("active batch range"),
             )));
         };
         if !generics.fill_stack.is_empty() {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::ActiveFillStackNotEmpty,
+                GenericCacheInvariant("active fill stack not empty"),
             )));
         }
         if generics.fill_rows.len() != active_len {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::ActiveRowCardinality,
+                GenericCacheInvariant("active row cardinality"),
             )));
         }
         if !generics.fill_rows.iter().all(|(key, index)| {
@@ -2711,7 +2692,7 @@ impl TypeRegistry {
                     .is_some_and(|inst| TypeInstKey::from(inst.id) == *key)
         }) {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::ActiveRowKeyMismatch,
+                GenericCacheInvariant("active row key mismatch"),
             )));
         }
         if generics
@@ -2720,7 +2701,7 @@ impl TypeRegistry {
             .any(|(index, _)| *index < start || *index >= end)
         {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::FailureIndexOutOfRange,
+                GenericCacheInvariant("failure index out of range"),
             )));
         }
 
@@ -2735,7 +2716,7 @@ impl TypeRegistry {
         for (offset, inst) in generics.type_insts[start..].iter().enumerate() {
             let TypeInstState::Filling { staged } = &inst.state else {
                 return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                    GenericCacheInvariant::StableRowInActiveBatch,
+                    GenericCacheInvariant("stable row in active batch"),
                 )));
             };
             if inst
@@ -2744,12 +2725,12 @@ impl TypeRegistry {
                 .any(|dependent| *dependent < start || *dependent >= end)
             {
                 return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                    GenericCacheInvariant::DependentIndexOutOfRange,
+                    GenericCacheInvariant("dependent index out of range"),
                 )));
             }
             if staged.is_none() && refusals[offset].is_none() {
                 return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                    GenericCacheInvariant::IncompleteRowWithoutRefusal,
+                    GenericCacheInvariant("incomplete row without refusal"),
                 )));
             }
         }
@@ -2773,13 +2754,13 @@ impl TypeRegistry {
         for (offset, inst) in generics.type_insts[start..].iter().enumerate() {
             let TypeInstState::Filling { staged } = &inst.state else {
                 return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                    GenericCacheInvariant::StableRowInActiveBatch,
+                    GenericCacheInvariant("stable row in active batch"),
                 )));
             };
             if refusals[offset].is_none() {
                 let Some(body) = staged.as_ref() else {
                     return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                        GenericCacheInvariant::IncompleteRowWithoutRefusal,
+                        GenericCacheInvariant("incomplete row without refusal"),
                     )));
                 };
                 self.validate_inst_body_metadata(inst.template, &inst.args, inst.id, body)?;
@@ -2813,7 +2794,7 @@ impl TypeRegistry {
         let generics = self.generics.borrow();
         let Some(inst) = generics.type_insts.get(index) else {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::SettledRowMissing,
+                GenericCacheInvariant("settled row missing"),
             )));
         };
         match &inst.state {
@@ -2823,7 +2804,7 @@ impl TypeRegistry {
             }
             TypeInstState::Filling { .. } => {
                 return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                    GenericCacheInvariant::SettledRowStillFilling,
+                    GenericCacheInvariant("settled row still Filling"),
                 )));
             }
         }
@@ -2831,7 +2812,7 @@ impl TypeRegistry {
         let view = self.metadata_view();
         let Some(inst) = view.generics.type_insts.get(index) else {
             return Err(ResolveError::Invariant(GenericInvariant::CacheState(
-                GenericCacheInvariant::SettledRowMissing,
+                GenericCacheInvariant("settled row missing"),
             )));
         };
         let mut metadata = view.registry.row_directory(&view)?;
@@ -3195,9 +3176,10 @@ impl TypeRegistry {
         // does not carry the looked-up spec is drift.
         if let Some(&index) = self.collection_index.borrow().get(&spec) {
             if collections.get(index.index() as usize) != Some(&spec) {
-                return Err(
-                    GenericInvariant::CacheState(GenericCacheInvariant::MintIndexDrift).into(),
-                );
+                return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                    "mint index drift",
+                ))
+                .into());
             }
             return Ok(index);
         }

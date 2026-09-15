@@ -29,9 +29,10 @@ impl TypeRegistry {
                 .get(row)
                 .filter(|inst| inst.template == template && inst.args == args);
             let Some(inst) = reused else {
-                return Err(
-                    GenericInvariant::CacheState(GenericCacheInvariant::MintIndexDrift).into(),
-                );
+                return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                    "mint index drift",
+                ))
+                .into());
             };
             return Ok(inst.func);
         }
@@ -57,9 +58,10 @@ impl TypeRegistry {
             .fn_index
             .insert((inst.template, inst.args.clone()), row);
         if displaced.is_some() {
-            return Err(
-                GenericInvariant::CacheState(GenericCacheInvariant::MintKeyAlreadyPresent).into(),
-            );
+            return Err(GenericInvariant::CacheState(GenericCacheInvariant(
+                "mint key already present",
+            ))
+            .into());
         }
         generics.fn_insts.push(inst.clone());
         generics.fn_queue.push_back(inst);

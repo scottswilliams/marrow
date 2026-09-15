@@ -424,26 +424,6 @@ fn active_registry() -> TypeRegistry {
     registry
 }
 
-fn cache_invariant_name(cause: GenericCacheInvariant) -> &'static str {
-    match cause {
-        GenericCacheInvariant::ActiveBatchMissing => "active batch missing",
-        GenericCacheInvariant::ActiveBatchRange => "active batch range",
-        GenericCacheInvariant::ActiveRowCardinality => "active row cardinality",
-        GenericCacheInvariant::ActiveRowKeyMismatch => "active row key mismatch",
-        GenericCacheInvariant::ActiveFillStackNotEmpty => "active fill stack not empty",
-        GenericCacheInvariant::FailureIndexOutOfRange => "failure index out of range",
-        GenericCacheInvariant::DependentIndexOutOfRange => "dependent index out of range",
-        GenericCacheInvariant::StableRowInActiveBatch => "stable row in active batch",
-        GenericCacheInvariant::IncompleteRowWithoutRefusal => "incomplete row without refusal",
-        GenericCacheInvariant::FillingReuseOutsideBatch => "Filling reuse outside batch",
-        GenericCacheInvariant::SettledRowMissing => "settled row missing",
-        GenericCacheInvariant::SettledRowStillFilling => "settled row still Filling",
-        GenericCacheInvariant::FillStackMismatch => "fill stack mismatch",
-        GenericCacheInvariant::MintIndexDrift => "mint index drift",
-        GenericCacheInvariant::MintKeyAlreadyPresent => "mint key already present",
-    }
-}
-
 #[test]
 fn settlement_precommit_faults_are_exact_and_read_only() {
     #[derive(Clone, Copy)]
@@ -462,33 +442,39 @@ fn settlement_precommit_faults_are_exact_and_read_only() {
     let cases = [
         (
             Fault::MissingBatch,
-            GenericCacheInvariant::ActiveBatchMissing,
+            GenericCacheInvariant("active batch missing"),
         ),
-        (Fault::BatchRange, GenericCacheInvariant::ActiveBatchRange),
+        (
+            Fault::BatchRange,
+            GenericCacheInvariant("active batch range"),
+        ),
         (
             Fault::NonemptyStack,
-            GenericCacheInvariant::ActiveFillStackNotEmpty,
+            GenericCacheInvariant("active fill stack not empty"),
         ),
         (
             Fault::RowCardinality,
-            GenericCacheInvariant::ActiveRowCardinality,
+            GenericCacheInvariant("active row cardinality"),
         ),
-        (Fault::RowKey, GenericCacheInvariant::ActiveRowKeyMismatch),
+        (
+            Fault::RowKey,
+            GenericCacheInvariant("active row key mismatch"),
+        ),
         (
             Fault::FailureRange,
-            GenericCacheInvariant::FailureIndexOutOfRange,
+            GenericCacheInvariant("failure index out of range"),
         ),
         (
             Fault::StableRow,
-            GenericCacheInvariant::StableRowInActiveBatch,
+            GenericCacheInvariant("stable row in active batch"),
         ),
         (
             Fault::DependentRange,
-            GenericCacheInvariant::DependentIndexOutOfRange,
+            GenericCacheInvariant("dependent index out of range"),
         ),
         (
             Fault::IncompleteRow,
-            GenericCacheInvariant::IncompleteRowWithoutRefusal,
+            GenericCacheInvariant("incomplete row without refusal"),
         ),
     ];
 
@@ -531,7 +517,7 @@ fn settlement_precommit_faults_are_exact_and_read_only() {
                 expected
             ))),
             "{}",
-            cache_invariant_name(expected)
+            expected.0
         );
         assert_eq!(stable_snapshot(&registry), before);
     }
@@ -548,7 +534,7 @@ fn nonsettlement_cache_faults_are_exact_and_read_only() {
     assert_eq!(
         registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2),),
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
-            GenericCacheInvariant::FillingReuseOutsideBatch,
+            GenericCacheInvariant("Filling reuse outside batch"),
         )))
     );
     assert_eq!(stable_snapshot(&registry), before);
@@ -557,7 +543,7 @@ fn nonsettlement_cache_faults_are_exact_and_read_only() {
     assert_eq!(
         registry.settled_type_result(1, id, ReadyRequirement::Any),
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
-            GenericCacheInvariant::SettledRowMissing,
+            GenericCacheInvariant("settled row missing"),
         )))
     );
     assert_eq!(stable_snapshot(&registry), missing_before);
@@ -566,7 +552,7 @@ fn nonsettlement_cache_faults_are_exact_and_read_only() {
     assert_eq!(
         registry.settled_type_result(0, id, ReadyRequirement::Any),
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
-            GenericCacheInvariant::SettledRowStillFilling,
+            GenericCacheInvariant("settled row still Filling"),
         )))
     );
     assert_eq!(stable_snapshot(&registry), filling_before);
@@ -576,7 +562,7 @@ fn nonsettlement_cache_faults_are_exact_and_read_only() {
     assert_eq!(
         registry.finish_fill_stack(0),
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
-            GenericCacheInvariant::FillStackMismatch,
+            GenericCacheInvariant("fill stack mismatch"),
         )))
     );
     assert_eq!(stable_snapshot(&registry), stack_before);
@@ -2915,7 +2901,7 @@ fn commit_ready_state_hostile_branches_are_exact_and_read_only() {
     assert_eq!(
         result,
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
-            GenericCacheInvariant::StableRowInActiveBatch,
+            GenericCacheInvariant("stable row in active batch"),
         )))
     );
     assert_eq!(stable_snapshot(&stable), before);
@@ -2930,7 +2916,7 @@ fn commit_ready_state_hostile_branches_are_exact_and_read_only() {
     assert_eq!(
         result,
         Err(ResolveError::Invariant(GenericInvariant::CacheState(
-            GenericCacheInvariant::IncompleteRowWithoutRefusal,
+            GenericCacheInvariant("incomplete row without refusal"),
         )))
     );
     assert_eq!(stable_snapshot(&missing), before);
