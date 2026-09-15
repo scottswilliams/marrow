@@ -1,6 +1,6 @@
 //! `marrow client typescript [--out <dir>]`.
 //!
-//! The refound client generator: capture the project at the working directory,
+//! The client generator: capture the project at the working directory,
 //! compile it to canonical image bytes, verify them, reconstruct the wire
 //! interface from the verified image, and emit the deterministic strict
 //! TypeScript client (`client.mts`) beside the pinned Node supervision module

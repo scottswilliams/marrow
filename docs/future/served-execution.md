@@ -6,9 +6,9 @@ It is deferred beyond the [local beta](../vision.md#beta-scope).
 ## Today
 
 Marrow has no served runtime. The existing transport is a supervised local
-channel ([TypeScript client](../tools/typescript-client.md)); `marrow serve`
-reports `cli.command_unsupported`. [Status](../status.md#trust-boundaries)
-records the local profile's trust assumptions.
+channel ([TypeScript client](../tools/typescript-client.md)); there is no
+`marrow serve` command. [Status](../status.md#trust-boundaries) records the
+local profile's trust assumptions.
 
 ## Direction
 

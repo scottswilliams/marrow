@@ -80,7 +80,6 @@ Refusals raised by the `marrow` command itself.
 |---|---|"#
             .to_string(),
         rows(&[
-            Code::CliCommandUnsupported,
             Code::CliInterfaceUnbuildable,
             Code::CliDurableUnsupported,
             Code::CliInstallationDamaged,

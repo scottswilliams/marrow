@@ -399,9 +399,5 @@ transfer type, so a project that verifies also generates.
 | Code | Meaning |
 |---:|---|
 | `0` | The command completed. |
-| `1` | A diagnostic, fault, or operational error was reported, `doctor` found something wrong with the store, or the command has no implementation today. |
+| `1` | A diagnostic, fault, or operational error was reported, or `doctor` found something wrong with the store. |
 | `2` | The command line was wrong: a bare `marrow`, an unknown command or export, a bad flag or argument, or a filter that matches nothing. |
-
-`data`, `evolve`, and `serve` are recognized names with
-no implementation today; each reports `cli.command_unsupported` and exits `1`
-([status](../status.md)).

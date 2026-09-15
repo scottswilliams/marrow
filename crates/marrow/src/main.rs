@@ -61,9 +61,7 @@ module. `image` compiles and verifies the project and writes the verified
 program.image a deployment ships, requiring the owner to accept the image's
 deployment ceiling id. `backup` compiles the active project and exports its store
 with that exact image. `restore` constructs a fresh store from the backup's
-embedded image without compiling a project. The data, evolve, and serve commands are
-being refounded and return through their later lanes; invoking one reports
-cli.command_unsupported.
+embedded image without compiling a project.
 ";
 
 fn main() -> ExitCode {
@@ -105,11 +103,6 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
         .collect()
 }
 
-/// The command names whose owning capability is being refounded and returns
-/// through a later lane. Recognizing them keeps the not-yet-supported response
-/// distinct from an unknown-command usage error.
-const REFOUNDING_COMMANDS: &[&str] = &["data", "evolve", "serve"];
-
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
     match command {
         "check" => cmd_check::check(rest),
@@ -136,27 +129,12 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        other if REFOUNDING_COMMANDS.contains(&other) => not_yet_supported(other),
         other => {
             eprintln!("unknown command: {other}");
             eprintln!("run `marrow --help` for available commands");
             ExitCode::from(2)
         }
     }
-}
-
-/// Report a recognized-but-refounding command as not yet available on this beta
-/// line. A typed `cli.command_unsupported` response — not a silent success and
-/// not a usage error — so a script that runs a not-yet-refounded command sees a
-/// stable code rather than mistaking absence for success.
-fn not_yet_supported(command: &str) -> ExitCode {
-    report_simple_error(
-        Code::CliCommandUnsupported.as_str(),
-        &format!(
-            "`marrow {command}` is not available on this beta line yet; it returns through a later lane"
-        ),
-    );
-    ExitCode::FAILURE
 }
 
 /// The stack the parse/format pipeline runs on. 256 MiB comfortably holds the
@@ -202,9 +180,8 @@ pub(crate) fn report_simple_error(code: &str, message: &str) {
 
 /// The one stderr sentence naming an exhausted fixed compiler bound, in the exhausted
 /// bound's own words. `check`, `image`, and `client` all report a resource limit with
-/// this sentence, so it is written once: three copies of the template agreed by hand,
-/// and nothing made them keep agreeing. `run` and `test` report the same bound as an
-/// operational record whose text projection is the description alone.
+/// this sentence. `run` and `test` report the same bound as an operational record whose
+/// text projection is the description alone.
 pub(crate) fn resource_limit_message(description: &str) -> String {
     format!("the compiler reached a fixed resource limit: {description}")
 }

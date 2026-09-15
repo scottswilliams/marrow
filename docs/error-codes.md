@@ -42,7 +42,6 @@ Refusals raised by the `marrow` command itself.
 
 | Code | Meaning |
 |---|---|
-| `cli.command_unsupported` | The command name is reserved and not implemented: `data`, `evolve`, `serve`, `backup`, and `restore`. `marrow --help` lists the implemented commands. |
 | `cli.interface_unbuildable` | An export's signature cannot be projected onto the wire: it expands past the fixed interface budget, or it names a type the image does not declare. `marrow client typescript` and the runner refuse the whole program; the message names the export. |
 | `cli.durable_unsupported` | `marrow run` resolved an export that reads or writes durable data, and no store was given. `marrow` itself opens no store; the companion runner does. Run the export against a provisioned store: `marrow run <export> --store <dir>`. A storeless export is unaffected. `marrow import` and `marrow doctor` report it for a program that declares no durable place the store executes. |
 | `cli.installation_damaged` | `marrow run --store` could not use the companion runner: the release manifest beside the toolchain is missing or malformed, names another release, or the runner binary is absent or does not match its recorded identity. The store is untouched. Reinstall the toolchain. |

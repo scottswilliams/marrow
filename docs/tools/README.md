@@ -12,6 +12,3 @@ serves editors.
 - [Language server](lsp.md): `marrow-lsp`, the editor server.
 - [Machine-readable language facts](ai-legibility.md): the reserved words,
   token kinds, and structured outputs a tool consumes.
-
-`data`, `evolve`, and `serve` are recognized command names with no
-implementation today ([status](../status.md)).

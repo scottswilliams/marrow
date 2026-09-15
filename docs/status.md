@@ -29,9 +29,6 @@ prerequisites.
 | Store lifecycle | `marrow import` provisions or populates a store under its active program; `marrow run --store` runs through the admitted companion. Pending activation blocks ordinary access. `marrow recover --store` validates the exact stored image, physical integrity and logical contents, then establishes fresh activation barriers without replaying a missing head update. `marrow doctor --store` remains read-only logical inspection without physical verification. Doctor and backup preserve source artifacts, including ownership-marker bytes and absence. Logical backup carries the exact image, head and complete entry/index families; restore validates a fresh store without compiling current source. | [Operations](operations/README.md) |
 | TypeScript client | A generated strict client and a Node supervision module over a private local channel. The runner checks List/Map length and aggregate structural size before execution, normalizes unique Map argument pairs to ascending typed key order, and bounds outbound frame construction before appending. Provision records retain publication/activation uncertainty or primary failure plus failed cleanup. Authenticated native startup distinguishes activation uncertainty from invocation outcomes. Missing delivery remains uncertain. | [TypeScript client](tools/typescript-client.md) |
 
-The command names `data`, `evolve`, and `serve` are
-recognized; each reports `cli.command_unsupported`.
-
 Native terminal calls keep invocation outcomes separate from companion cleanup.
 Bounded cleanup waits for the companion to exit on its own and never terminates a
 live native owner. Unconfirmed cleanup retains the child handle and the staging

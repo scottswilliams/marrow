@@ -182,19 +182,6 @@ fn check_rejects_a_duplicate_demand_flag() {
     assert_eq!(output.code(), Some(2), "{}", output.stderr_text());
 }
 
-/// `check` is a live command, not a refounding stub: it never reports
-/// `cli.command_unsupported`.
-#[test]
-fn check_is_not_a_refounding_command() {
-    let output =
-        Project::single("pub fn answer(): int {\n    return 1\n}\n").run_cli("live", &["check"]);
-    let combined = format!("{}{}", output.stdout_text(), output.stderr_text());
-    assert!(
-        !combined.contains("cli.command_unsupported"),
-        "check must be live: {combined}"
-    );
-}
-
 /// The default summary rolls each demand up to its roots, so no line is a wall of
 /// atoms. The `demand_wall` fixture has one export that reads and writes every field
 /// of three roots: its `--demand` sentence runs past 600 columns, and the summary that
