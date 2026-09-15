@@ -14,14 +14,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use marrow_codes::Code;
-use marrow_compile::{CompileFailure, DurableNaming, ExportEntry, SourceDiagnostic};
+use marrow_compile::{DurableNaming, ExportEntry};
 use marrow_verify::VerifiedImage;
 
 use crate::demand::{demand_lines, demand_summary_lines};
-use crate::project::capture_project;
-use crate::term_style::{Stream, Style};
-use crate::{report_simple_error, resource_limit_message};
+use crate::project::compile_project;
+use crate::report_simple_error;
 
 const HELP: &str = "\
 Usage:
@@ -68,20 +66,12 @@ pub(crate) fn check(rest: &[String]) -> ExitCode {
     }
     let root = PathBuf::from(target.as_deref().unwrap_or("."));
 
-    let project = match capture_project(&root) {
-        Ok(project) => project,
-        Err(failure) => {
-            report_simple_error(failure.code, &failure.message);
-            return ExitCode::FAILURE;
-        }
-    };
-
     // One drive, tests included: the complete diagnostic set, then the test-inclusive
     // image it checked. The image is verified so each export's demand is the verifier's
     // reconstruction, not a compiler claim.
-    let compiled = match marrow_compile::check(&project) {
+    let compiled = match compile_project(&root, marrow_compile::check, None) {
         Ok(compiled) => compiled,
-        Err(failure) => return report_check_failure(&failure),
+        Err(code) => return code,
     };
     let image = match marrow_verify::verify(&compiled.image.bytes) {
         Ok(image) => image,
@@ -122,43 +112,4 @@ fn describe_exports(
             ExitCode::FAILURE
         }
     }
-}
-
-/// One diagnostic rendered as `file:line:column: code: message`, painted for a terminal.
-fn diagnostic_line(diagnostic: &SourceDiagnostic) -> String {
-    format!(
-        "{}:{}:{}: {}: {}",
-        term_paint(Style::Muted, diagnostic.file().as_str()),
-        diagnostic.line(),
-        diagnostic.column(),
-        term_paint(Style::Code, diagnostic.code().as_str()),
-        diagnostic.message(),
-    )
-}
-
-fn term_paint(style: Style, text: &str) -> String {
-    crate::term_style::paint(Stream::Stderr, style, text)
-}
-
-/// A check failure: diagnostics are printed with spans, and a fixed bound or an
-/// invariant becomes its fixed code line with no location. An exhausted bound names
-/// itself in the bound owner's own words, as `image` and `client` report it; an opaque
-/// invariant has nothing to name.
-fn report_check_failure(failure: &CompileFailure) -> ExitCode {
-    match failure {
-        CompileFailure::Diagnostics(diagnostics) => {
-            for diagnostic in diagnostics {
-                eprintln!("{}", diagnostic_line(diagnostic));
-            }
-        }
-        CompileFailure::ResourceLimit(limit) => report_simple_error(
-            Code::CliCompilerResourceLimit.as_str(),
-            &resource_limit_message(limit.kind().description()),
-        ),
-        CompileFailure::Invariant(_) => report_simple_error(
-            Code::CliCompilerInvariant.as_str(),
-            "the project could not be checked",
-        ),
-    }
-    ExitCode::FAILURE
 }

@@ -8,12 +8,13 @@
 //! the store. Every imported row is created through the path kernel; no raw key, engine handle,
 //! or transaction is ever exposed to the terminal.
 
-use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-use marrow_compile::{CompileFailure, compile};
+use marrow_compile::compile;
 
-use crate::project::capture_project;
+use crate::companion::{companion_command, run_companion, stage_image};
+use crate::project::compile_project;
 
 struct Args {
     store: PathBuf,
@@ -28,57 +29,27 @@ pub(crate) fn import(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let project = match capture_project(&PathBuf::from(".")) {
-        Ok(project) => project,
-        Err(failure) => {
-            crate::report_simple_error(failure.code, &failure.message);
-            return ExitCode::FAILURE;
-        }
-    };
-
     // Compile without opening a store. A durable project must already carry its committed
     // `.marrow/ids`; import is not a mint path, so an identity or type error points the developer
     // at `marrow check` rather than auto-minting here.
-    let compiled = match compile(&project) {
+    let compiled = match compile_project(
+        Path::new("."),
+        compile,
+        Some("the project does not compile; run `marrow check` before importing"),
+    ) {
         Ok(compiled) => compiled,
-        Err(CompileFailure::Diagnostics(diagnostics)) => {
-            for diagnostic in diagnostics.iter() {
-                eprintln!("{}: {}", diagnostic.code().as_str(), diagnostic.message());
-            }
-            eprintln!("the project does not compile; run `marrow check` before importing");
-            return ExitCode::FAILURE;
-        }
-        Err(_) => {
-            crate::report_simple_error(
-                marrow_codes::Code::ConfigInvalid.as_str(),
-                "the project could not be compiled; run `marrow check` before importing",
-            );
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
 
-    let runner = match crate::companion::discover_companion() {
-        Ok(runner) => runner,
-        Err(damage) => {
-            crate::report_simple_error(
-                marrow_codes::Code::CliInstallationDamaged.as_str(),
-                damage.message(),
-            );
-            return ExitCode::FAILURE;
-        }
+    let mut command = match companion_command("import") {
+        Ok(command) => command,
+        Err(code) => return code,
     };
-
-    let image = match crate::companion::stage_image("import", &compiled.image.bytes) {
+    let image = match stage_image(&compiled.image.bytes) {
         Ok(image) => image,
-        Err(err) => {
-            crate::report_simple_error(marrow_codes::Code::IoWrite.as_str(), &err.to_string());
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
-
-    let mut command = Command::new(&runner);
     command
-        .arg("import")
         .arg("--image")
         .arg(image.path())
         .arg("--store")
@@ -90,18 +61,7 @@ pub(crate) fn import(rest: &[String]) -> ExitCode {
     if let Some(keys) = &args.keys {
         command.arg("--keys").arg(keys);
     }
-
-    match command.status() {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
-        Err(err) => {
-            crate::report_simple_error(
-                marrow_codes::Code::RunnerHandshake.as_str(),
-                &err.to_string(),
-            );
-            ExitCode::FAILURE
-        }
-    }
+    run_companion(command)
 }
 
 fn parse_args(rest: &[String]) -> Result<Args, ExitCode> {

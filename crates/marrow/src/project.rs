@@ -15,12 +15,16 @@
 //! itself.
 
 use std::path::Path;
+use std::process::ExitCode;
 
+use marrow_codes::Code;
 use marrow_project::{LedgerPublicationPlan, ProjectInput};
 use marrow_project_fs::{
     CaptureFailure as PhysicalCaptureFailure, IdsPublication, IdsPublicationError,
     IdsPublishOutcome, OverlaySnapshot, ProjectMetadataWriteGuard,
 };
+
+use crate::term_style::{Stream, Style};
 
 /// The manifest file at a project root. Retained for `cmd_init`.
 pub(crate) const MANIFEST_FILE: &str = "marrow.toml";
@@ -127,4 +131,62 @@ fn terminal_projection(root: &Path, failure: &PhysicalCaptureFailure) -> Capture
         message,
         location,
     }
+}
+
+/// Capture the project at `root` and compile it with `compile`, reporting a capture
+/// failure or a compile failure on standard error. `hint` is one extra line printed
+/// after source diagnostics, naming what the operator should do first.
+pub(crate) fn compile_project<T>(
+    root: &Path,
+    compile: impl FnOnce(&ProjectInput) -> Result<T, marrow_compile::CompileFailure>,
+    hint: Option<&str>,
+) -> Result<T, ExitCode> {
+    let project = capture_project(root).map_err(|failure| {
+        crate::report_simple_error(failure.code, &failure.message);
+        ExitCode::FAILURE
+    })?;
+    compile(&project).map_err(|failure| report_compile_failure(&failure, hint))
+}
+
+/// Report a compile failure on standard error: every source diagnostic with its span,
+/// or the one fixed code line an exhausted bound or a failed internal check earns.
+pub(crate) fn report_compile_failure(
+    failure: &marrow_compile::CompileFailure,
+    hint: Option<&str>,
+) -> ExitCode {
+    match failure {
+        marrow_compile::CompileFailure::Diagnostics(diagnostics) => {
+            for diagnostic in diagnostics {
+                eprintln!("{}", diagnostic_line(diagnostic));
+            }
+            if let Some(hint) = hint {
+                eprintln!("{hint}");
+            }
+        }
+        marrow_compile::CompileFailure::ResourceLimit(limit) => crate::report_simple_error(
+            Code::CliCompilerResourceLimit.as_str(),
+            &crate::resource_limit_message(limit.kind().description()),
+        ),
+        marrow_compile::CompileFailure::Invariant(_) => crate::report_simple_error(
+            Code::CliCompilerInvariant.as_str(),
+            "the compiler failed an internal consistency check",
+        ),
+    }
+    ExitCode::FAILURE
+}
+
+/// One diagnostic rendered as `file:line:column: code: message`, painted for a terminal.
+fn diagnostic_line(diagnostic: &marrow_compile::SourceDiagnostic) -> String {
+    format!(
+        "{}:{}:{}: {}: {}",
+        paint(Style::Muted, diagnostic.file().as_str()),
+        diagnostic.line(),
+        diagnostic.column(),
+        paint(Style::Code, diagnostic.code().as_str()),
+        diagnostic.message(),
+    )
+}
+
+fn paint(style: Style, text: &str) -> String {
+    crate::term_style::paint(Stream::Stderr, style, text)
 }

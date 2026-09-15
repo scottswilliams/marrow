@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_compile::{CompileFailure, compile_with_tests};
+use marrow_compile::compile_with_tests;
 
 use crate::outcome::{Record, TestOutcome, TestRecord, TestSummary};
 use crate::project::capture_project;
@@ -41,14 +41,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
     let project = match capture_project(&PathBuf::from(".")) {
         Ok(project) => project,
         Err(failure) => {
-            return emit_records(
-                args.format,
-                &[Record::OperationalError {
-                    code: failure.code,
-                    detail: Some(failure.message),
-                }],
-                ExitCode::FAILURE,
-            );
+            return emit_records(args.format, &[Record::capture(failure)], ExitCode::FAILURE);
         }
     };
 
@@ -56,28 +49,10 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
     // test) surfaces here, before any image is produced.
     let compiled = match compile_with_tests(&project) {
         Ok(compiled) => compiled,
-        Err(CompileFailure::Diagnostics(diagnostics)) => {
-            let records: Vec<Record> = diagnostics
-                .iter()
-                .map(|diagnostic| Record::Diagnostic {
-                    code: diagnostic.code().as_str(),
-                    line: diagnostic.line(),
-                    column: diagnostic.column(),
-                })
-                .collect();
-            return emit_records(args.format, &records, ExitCode::FAILURE);
-        }
-        Err(CompileFailure::ResourceLimit(limit)) => {
+        Err(failure) => {
             return emit_records(
                 args.format,
-                &[compiler_resource_limit_record(limit)],
-                ExitCode::FAILURE,
-            );
-        }
-        Err(CompileFailure::Invariant(_)) => {
-            return emit_records(
-                args.format,
-                &[compiler_invariant_record()],
+                &Record::compile_failure(&failure),
                 ExitCode::FAILURE,
             );
         }
@@ -144,7 +119,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
     // A `--filter` that selects nothing is a usage failure, so a mistyped filter is
     // not silently reported as an all-clear.
     if args.filter.is_some() && records.is_empty() {
-        return usage("no test matches the filter");
+        return crate::command_output::usage("no test matches the filter");
     }
 
     let summary = TestSummary {
@@ -159,20 +134,6 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     };
     emit_tests(args.format, &records, &summary, exit)
-}
-
-fn compiler_invariant_record() -> Record {
-    Record::OperationalError {
-        code: Code::CliCompilerInvariant.as_str(),
-        detail: None,
-    }
-}
-
-/// The operational record for a compiler resource-limit outcome. It carries the typed
-/// kind — which fixed aggregate bound was exhausted — so an operator can bisect the
-/// limit; the numeric bound, any source location, and the image stay absent.
-fn compiler_resource_limit_record(limit: marrow_compile::CompileResourceLimit) -> Record {
-    Record::CompilerResourceLimit { kind: limit.kind() }
 }
 
 /// Map a durable VM run into a test outcome. A run classifies by its result; a
@@ -246,24 +207,24 @@ fn parse_args(rest: &[String]) -> Result<TestArgs, ExitCode> {
             "--format" => match iter.next().map(String::as_str) {
                 Some("jsonl") => format = Format::Jsonl,
                 Some("text") => format = Format::Text,
-                _ => return Err(usage("`--format` must be `text` or `jsonl`")),
+                _ => {
+                    return Err(crate::command_output::usage(
+                        "`--format` must be `text` or `jsonl`",
+                    ));
+                }
             },
             "--filter" => match iter.next() {
                 Some(value) => filter = Some(value.clone()),
-                None => return Err(usage("`--filter` needs a substring")),
+                None => return Err(crate::command_output::usage("`--filter` needs a substring")),
             },
-            other => return Err(usage(&format!("unknown test option: {other}"))),
+            other => {
+                return Err(crate::command_output::usage(&format!(
+                    "unknown test option: {other}"
+                )));
+            }
         }
     }
     Ok(TestArgs { format, filter })
-}
-
-fn usage(message: &str) -> ExitCode {
-    let _ = writeln!(
-        io::stderr().lock(),
-        "{message}; run marrow --help for usage"
-    );
-    ExitCode::from(2)
 }
 
 /// Emit typed failure records (capture/compile/verify) and return `exit`.
@@ -417,24 +378,14 @@ mod output_tests {
 
     #[test]
     fn run_and_test_have_no_panicking_print_macros() {
-        for source in [include_str!("cmd_run.rs"), include_str!("cmd_test.rs")] {
+        for source in [
+            include_str!("cmd_run.rs"),
+            include_str!("cmd_test.rs"),
+            include_str!("command_output.rs"),
+        ] {
             for name in ["print", "println", "eprint", "eprintln"] {
                 assert!(!source.contains(&format!("{name}!(")), "{name}");
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod compiler_invariant_tests {
-    #[test]
-    fn invariant_mapper_is_one_payload_free_operational_record() {
-        assert_eq!(
-            super::compiler_invariant_record(),
-            super::Record::OperationalError {
-                code: marrow_codes::Code::CliCompilerInvariant.as_str(),
-                detail: None,
-            }
-        );
     }
 }

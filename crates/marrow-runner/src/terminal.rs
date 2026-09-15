@@ -28,6 +28,7 @@ use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
 
 use crate::channel::mint_id;
+use crate::staging::{StagedImage, stage_image};
 use crate::transfer;
 
 #[cfg(test)]
@@ -38,8 +39,8 @@ mod startup_tests {
     #[ignore = "spawns clean-exit companion controls"]
     fn confirmed_reap_distinguishes_removed_stage_from_removal_failure() {
         for replacement in [false, true] {
-            let dir = stage_dir();
-            create_private_dir(&dir).expect("stage");
+            let staging = stage_image(b"fixture image").expect("stage");
+            let dir = staging.dir().to_path_buf();
             let mut child = Command::new("/bin/sh")
                 .args(["-c", "exit 0"])
                 .stdin(Stdio::null())
@@ -60,12 +61,12 @@ mod startup_tests {
                     .success()
             );
             if replacement {
-                std::fs::remove_dir(&dir).expect("remove empty fixture stage");
+                std::fs::remove_dir_all(&dir).expect("remove fixture stage");
                 std::fs::write(&dir, b"retained replacement").expect("replacement file");
             }
             let companion = Companion {
                 child: Some(child),
-                dir: dir.clone(),
+                staging,
                 kind: CompanionKind::Native,
             };
             let result = companion.settle();
@@ -88,8 +89,8 @@ mod startup_tests {
     #[test]
     #[ignore = "spawns a parent-controlled companion"]
     fn companion_settlement_does_not_wait_for_parent_release() {
-        let dir = stage_dir();
-        create_private_dir(&dir).expect("private stage");
+        let staging = stage_image(b"fixture image").expect("private stage");
+        let observed_dir = staging.dir().to_path_buf();
         let mut child = Command::new("/bin/sh")
             .args(["-c", "read gate"])
             .stdin(Stdio::piped())
@@ -99,11 +100,10 @@ mod startup_tests {
             .expect("controlled child");
         let gate = child.stdin.take().expect("parent release gate");
         let (send, receive) = std::sync::mpsc::channel();
-        let observed_dir = dir.clone();
         let owner = std::thread::spawn(move || {
             let mut companion = Companion {
                 child: Some(child),
-                dir,
+                staging,
                 kind: CompanionKind::Ephemeral,
             };
             let result =
@@ -125,8 +125,8 @@ mod startup_tests {
     fn native_startup_refusal_and_drop_allow_natural_exit() {
         use std::os::unix::fs::PermissionsExt;
         for explicit in [true, false] {
-            let root = stage_dir();
-            create_private_dir(&root).expect("fixture root");
+            let mut fixture = stage_image(b"fixture root").expect("fixture root");
+            let root = fixture.dir().to_path_buf();
             let script = root.join("runner");
             let marker = root.join("natural-exit");
             let quoted = marker
@@ -145,7 +145,7 @@ mod startup_tests {
                 Id32::from_bytes([1; 32]),
             )
             .expect("spawn fixture");
-            let stage = companion.dir.clone();
+            let stage = companion.staging.dir().to_path_buf();
             let descriptor_refused = descriptor.is_err();
             let cleanup = if explicit {
                 Some(companion.settle())
@@ -159,7 +159,7 @@ mod startup_tests {
             assert!(matches!(cleanup, None | Some(Ok(()))));
             assert_eq!(marker_bytes.expect("natural exit reached"), b"closed");
             assert!(!stage.exists());
-            std::fs::remove_dir_all(root).expect("remove successful control");
+            fixture.remove().expect("remove successful control");
         }
     }
 
@@ -546,18 +546,18 @@ impl From<ClientError> for CompanionStartupError {
     }
 }
 
-fn remove_stage(dir: &Path) -> Result<(), CompanionCleanupError> {
-    std::fs::remove_dir_all(dir).map_err(|cause| CompanionCleanupError::Staging {
-        path: dir.to_path_buf(),
-        cause,
-    })
+fn remove_stage(staging: &mut StagedImage) -> Result<(), CompanionCleanupError> {
+    let path = staging.dir().to_path_buf();
+    staging
+        .remove()
+        .map_err(|cause| CompanionCleanupError::Staging { path, cause })
 }
 
 /// A spawned direct child and its staging directory. Explicit settlement reports failure and
 /// hands back an unreaped child; Drop applies the same policy but can only discard it.
 pub(crate) struct Companion {
     child: Option<Child>,
-    dir: PathBuf,
+    staging: StagedImage,
     kind: CompanionKind,
 }
 
@@ -589,7 +589,7 @@ impl Companion {
         };
         let initial = observe_exit(&mut child, natural);
         if matches!(initial, Ok(Some(_))) {
-            return remove_stage(&self.dir);
+            return remove_stage(&mut self.staging);
         }
         let mut cause = initial
             .err()
@@ -599,7 +599,7 @@ impl Companion {
             CompanionKind::Ephemeral => {
                 let kill_error = child.kill().err();
                 match observe_exit(&mut child, reap) {
-                    Ok(Some(_)) => return remove_stage(&self.dir),
+                    Ok(Some(_)) => return remove_stage(&mut self.staging),
                     Err(error) => cause = error,
                     Ok(None) => {}
                 }
@@ -608,7 +608,7 @@ impl Companion {
         };
         Err(CompanionCleanupError::Unreaped {
             child,
-            staging: self.dir.clone(),
+            staging: self.staging.retain(),
             cause,
             kill_error,
         })
@@ -654,13 +654,7 @@ pub(crate) fn spawn_companion(
         CompanionKind::Ephemeral
     };
     let (mut stdout, child_stdout) = UnixStream::pair().map_err(ClientError::Io)?;
-    let dir = stage_dir();
-    create_private_dir(&dir).map_err(ClientError::ImageStage)?;
-    let image_path = dir.join("image.mwi");
-    write_private(&image_path, image_bytes).map_err(|error| CompanionStartupError {
-        error: ClientError::ImageStage(error),
-        cleanup: remove_stage(&dir),
-    })?;
+    let mut staging = stage_image(image_bytes).map_err(ClientError::ImageStage)?;
 
     let mut command = Command::new(runner_exe);
     command
@@ -669,7 +663,7 @@ pub(crate) fn spawn_companion(
             CompanionKind::Ephemeral => "attach-ephemeral",
         })
         .arg("--image")
-        .arg(&image_path);
+        .arg(staging.path());
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
@@ -681,13 +675,13 @@ pub(crate) fn spawn_companion(
         .spawn()
         .map_err(|error| CompanionStartupError {
             error: ClientError::Spawn(error),
-            cleanup: remove_stage(&dir),
+            cleanup: remove_stage(&mut staging),
         })?;
     // Command retains its stdout endpoint for another spawn; release that parent copy.
     drop(command);
     let companion = Companion {
         child: Some(child),
-        dir,
+        staging,
         kind,
     };
     let descriptor = read_descriptor(&mut stdout, CALL_DEADLINE).map_err(|error| {
@@ -941,37 +935,4 @@ fn poll_or_fail(error: &io::Error, deadline: Instant) -> Result<(), ClientError>
             error.to_string(),
         ))),
     }
-}
-
-/// A private staging directory for the temporary image, named from OS entropy so two terminals
-/// never collide.
-fn stage_dir() -> PathBuf {
-    let suffix = mint_id().map(|id| id.to_hex()).unwrap_or_else(|_| {
-        format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        )
-    });
-    std::env::temp_dir().join(format!("marrow-run-{suffix}"))
-}
-
-#[cfg(unix)]
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new().mode(0o700).create(dir)
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)
 }

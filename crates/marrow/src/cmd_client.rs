@@ -7,12 +7,13 @@
 //! (`marrow-supervisor.mjs` + its `.d.mts` declarations) into the output
 //! directory (default `client`). Stable inputs yield byte-identical output.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_image::InterfaceError;
 use marrow_verify::interface_of;
 
+use crate::project::compile_project;
 use crate::tsgen::{self, ExportName};
 
 struct ClientArgs {
@@ -21,10 +22,10 @@ struct ClientArgs {
 
 pub(crate) fn client(rest: &[String]) -> ExitCode {
     let Some((target, options)) = rest.split_first() else {
-        return usage("marrow client takes a target: typescript");
+        return crate::command_output::usage("marrow client takes a target: typescript");
     };
     if target != "typescript" {
-        return usage(&format!(
+        return crate::command_output::usage(&format!(
             "unknown client target `{target}`; the supported target is typescript"
         ));
     }
@@ -33,41 +34,11 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let project = match crate::project::capture_project(&PathBuf::from(".")) {
-        Ok(project) => project,
-        Err(failure) => {
-            crate::report_simple_error(failure.code, &failure.message);
-            return ExitCode::FAILURE;
-        }
-    };
-
     // Family 1: source diagnostics. Unlike `run`, the generator never mints
     // identities — a project with unminted durable declarations fails precisely.
-    let compiled = match marrow_compile::compile(&project) {
+    let compiled = match compile_project(Path::new("."), marrow_compile::compile, None) {
         Ok(compiled) => compiled,
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            for diagnostic in &diagnostics {
-                eprintln!(
-                    "{}:{}:{}: {}: {}",
-                    diagnostic.file().as_str(),
-                    diagnostic.line(),
-                    diagnostic.column(),
-                    diagnostic.code().as_str(),
-                    diagnostic.message()
-                );
-            }
-            return ExitCode::FAILURE;
-        }
-        Err(marrow_compile::CompileFailure::ResourceLimit(limit)) => {
-            let (code, message) = compiler_resource_limit_report(limit);
-            crate::report_simple_error(code, &message);
-            return ExitCode::FAILURE;
-        }
-        Err(marrow_compile::CompileFailure::Invariant(_)) => {
-            let (code, message) = compiler_invariant_report();
-            crate::report_simple_error(code, message);
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
 
     // Family 2: artifact rejection (the compiler cannot mint a verified image).
@@ -152,10 +123,12 @@ fn parse_options(options: &[String]) -> Result<ClientArgs, ExitCode> {
             "--out" => match iter.next() {
                 Some(dir) => {
                     if out.replace(PathBuf::from(dir)).is_some() {
-                        return Err(usage("marrow client typescript takes one --out directory"));
+                        return Err(crate::command_output::usage(
+                            "marrow client typescript takes one --out directory",
+                        ));
                     }
                 }
-                None => return Err(usage("`--out` needs a directory")),
+                None => return Err(crate::command_output::usage("`--out` needs a directory")),
             },
             other => return Err(crate::unknown_option("client", other)),
         }
@@ -163,43 +136,4 @@ fn parse_options(options: &[String]) -> Result<ClientArgs, ExitCode> {
     Ok(ClientArgs {
         out: out.unwrap_or_else(|| PathBuf::from("client")),
     })
-}
-
-fn usage(message: &str) -> ExitCode {
-    eprintln!("{message}; run marrow --help for usage");
-    ExitCode::from(2)
-}
-
-fn compiler_invariant_report() -> (&'static str, &'static str) {
-    (
-        marrow_codes::Code::CliCompilerInvariant.as_str(),
-        "the compiler failed an internal consistency check",
-    )
-}
-
-/// The fixed code and bounded message a compiler resource-limit outcome emits on
-/// stderr. The generator writes no client and no stdout: it fails the whole program
-/// closed with one line naming which aggregate bound was exhausted, in the kind's own
-/// words, and carrying no source location or numeric limit payload.
-fn compiler_resource_limit_report(
-    limit: marrow_compile::CompileResourceLimit,
-) -> (&'static str, String) {
-    (
-        marrow_codes::Code::CliCompilerResourceLimit.as_str(),
-        crate::resource_limit_message(limit.kind().description()),
-    )
-}
-
-#[cfg(test)]
-mod compiler_invariant_tests {
-    #[test]
-    fn invariant_mapper_is_fixed_and_payload_free() {
-        assert_eq!(
-            super::compiler_invariant_report(),
-            (
-                marrow_codes::Code::CliCompilerInvariant.as_str(),
-                "the compiler failed an internal consistency check",
-            )
-        );
-    }
 }

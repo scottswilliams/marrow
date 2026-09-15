@@ -21,8 +21,11 @@
 //! resolved against the terminal's own directory.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
 
+use marrow_codes::Code;
 use marrow_image::{CompanionReleaseId, companion_release_id};
+use marrow_runner::StagedImage;
 
 /// The fixed manifest filename beside the terminal binary.
 const MANIFEST_NAME: &str = "marrow-companions";
@@ -81,41 +84,6 @@ impl CompanionError {
             }
         }
     }
-}
-
-/// A compiled image staged in a private temporary file for the companion to read and
-/// independently verify. The name carries the command, the process id, and a nanosecond
-/// timestamp so concurrent commands do not collide; dropping it removes the file on every
-/// exit path.
-pub(crate) struct StagedImage {
-    path: PathBuf,
-}
-
-impl StagedImage {
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for StagedImage {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// Write `image` to a private temporary file named for `verb` (the command staging it).
-pub(crate) fn stage_image(verb: &str, image: &[u8]) -> std::io::Result<StagedImage> {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!(
-        "marrow-{verb}-{}-{nonce}.image",
-        std::process::id()
-    ));
-    let staged = StagedImage { path };
-    std::fs::write(&staged.path, image)?;
-    Ok(staged)
 }
 
 /// Discover and verify the companion runner beside this terminal binary. Returns the
@@ -360,5 +328,38 @@ mod tests {
             Err(CompanionError::ManifestMalformed),
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Build a spawn-ready invocation of the verified companion's `subcommand`.
+/// Installation damage is reported here and the command never spawns.
+pub(crate) fn companion_command(subcommand: &str) -> Result<Command, ExitCode> {
+    let runner = discover_companion().map_err(|damage| {
+        crate::report_simple_error(Code::CliInstallationDamaged.as_str(), damage.message());
+        ExitCode::FAILURE
+    })?;
+    let mut command = Command::new(runner);
+    command.arg(subcommand);
+    Ok(command)
+}
+
+/// Stage the compiled image where the companion can read and verify it independently.
+pub(crate) fn stage_image(image: &[u8]) -> Result<StagedImage, ExitCode> {
+    marrow_runner::stage_image(image).map_err(|error| {
+        crate::report_simple_error(Code::IoWrite.as_str(), &error.to_string());
+        ExitCode::FAILURE
+    })
+}
+
+/// Run the companion to completion and adopt its verdict. A failure to start it is
+/// `runner.spawn`; every other outcome the companion reports itself.
+pub(crate) fn run_companion(mut command: Command) -> ExitCode {
+    match command.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
+        Err(error) => {
+            crate::report_simple_error(Code::RunnerSpawn.as_str(), &error.to_string());
+            ExitCode::FAILURE
+        }
     }
 }

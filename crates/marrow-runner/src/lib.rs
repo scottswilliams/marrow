@@ -27,6 +27,7 @@ mod dispatch;
 mod ephemeral_client;
 mod execute;
 mod refusal;
+mod staging;
 mod terminal;
 mod transfer;
 
@@ -38,6 +39,7 @@ pub use descriptor::Service;
 pub use ephemeral_client::{EphemeralCall, EphemeralSession};
 pub use marrow_local_wire::{DurableState, Id32, Json, LossClass};
 pub use refusal::RefusalService;
+pub use staging::{StagedImage, stage_image};
 pub use terminal::{
     CallOutcome, ClientError, CompanionCleanupError, CompanionStartupError, OutcomeUnknownCause,
 };

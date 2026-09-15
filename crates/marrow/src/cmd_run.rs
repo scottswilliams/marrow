@@ -60,191 +60,89 @@ enum ArgumentError {
     Input(io::Error),
 }
 
+/// What one `run` produced: the records to emit and the exit they imply. A refusal
+/// already written to standard error carries no record, so the emit writes nothing.
+struct Outcome {
+    records: Vec<Record>,
+    exit: ExitCode,
+}
+
+impl Outcome {
+    fn failed(records: Vec<Record>) -> Outcome {
+        Outcome {
+            records,
+            exit: ExitCode::FAILURE,
+        }
+    }
+
+    fn operational(code: &'static str, detail: Option<String>) -> Outcome {
+        Outcome::failed(vec![Record::OperationalError { code, detail }])
+    }
+
+    /// A refusal already reported on standard error; there is nothing to emit.
+    fn reported(exit: ExitCode) -> Outcome {
+        Outcome {
+            records: Vec::new(),
+            exit,
+        }
+    }
+}
+
 pub(crate) fn run(rest: &[String]) -> ExitCode {
     let args = match parse_args(rest) {
         Ok(args) => args,
         Err(code) => return code,
     };
+    // The verified image outlives the records, so a returned value renders against
+    // that image's own record and enum tables at the single emit below.
+    let mut image = None;
+    let outcome = run_inner(&args, &mut image).unwrap_or_else(|outcome| outcome);
+    let (types, enums) = match &image {
+        Some(image) => (image.record_types(), image.enums()),
+        None => ([].as_slice(), [].as_slice()),
+    };
+    emit(args.format, &outcome.records, types, enums, outcome.exit)
+}
 
+fn run_inner(args: &RunArgs, image_slot: &mut Option<VerifiedImage>) -> Result<Outcome, Outcome> {
     // A live `.marrow/ids` publication marker makes the committed ledger
     // indeterminate, so the one command that writes the ledger settles any
     // interrupted publication before it reads the project. Every other front
     // door reports the marker instead.
-    if let Err(failure) = crate::project::recover_identity_publication(Path::new(".")) {
-        return emit(
-            args.format,
-            &[Record::OperationalError {
-                code: failure.code,
-                detail: Some(failure.message),
-            }],
-            &[],
-            &[],
-            ExitCode::FAILURE,
-        );
-    }
+    crate::project::recover_identity_publication(Path::new("."))
+        .map_err(|failure| Outcome::failed(vec![Record::capture(failure)]))?;
 
-    let project = match capture_project(&PathBuf::from(".")) {
-        Ok(project) => project,
-        Err(failure) => {
-            return emit(
-                args.format,
-                &[Record::OperationalError {
-                    code: failure.code,
-                    detail: Some(failure.message),
-                }],
-                &[],
-                &[],
-                ExitCode::FAILURE,
-            );
-        }
-    };
+    let project = capture_project(Path::new("."))
+        .map_err(|failure| Outcome::failed(vec![Record::capture(failure)]))?;
 
-    // Family 1: source diagnostics. When compilation fails *only* because fresh
-    // durable declarations lack ledger identities, storeless `run` — and only storeless
-    // `run` — mints them into `.marrow/ids` and compiles again; any other failure reports
-    // as-is. The run-mint window is closed for a persistent store (`--store`): once a store
-    // is bindable, a fresh anchor is a precise `check.durable_identity` failure the developer
-    // resolves deliberately, never an additive auto-mint that could readopt an orphaned id or
-    // diverge from the store's committed ledger. Storeless minting publishes through
-    // the project adapter, then recaptures the project with its committed identities.
-    let compiled = match compile(&project) {
-        Ok(compiled) => compiled,
-        Err(CompileFailure::Diagnostics(diagnostics)) if args.store.is_some() => {
-            return emit(
-                args.format,
-                &diagnostic_records(diagnostics.as_slice()),
-                &[],
-                &[],
-                ExitCode::FAILURE,
-            );
-        }
-        Err(CompileFailure::Diagnostics(diagnostics)) => {
-            match mint_missing_identities(&project, diagnostics.as_slice()) {
-                MintOutcome::Minted => {
-                    let recaptured = match capture_project(&PathBuf::from(".")) {
-                        Ok(project) => project,
-                        Err(failure) => {
-                            return emit(
-                                args.format,
-                                &[Record::OperationalError {
-                                    code: failure.code,
-                                    detail: Some(failure.message),
-                                }],
-                                &[],
-                                &[],
-                                ExitCode::FAILURE,
-                            );
-                        }
-                    };
-                    match compile(&recaptured) {
-                        Ok(compiled) => compiled,
-                        Err(CompileFailure::Diagnostics(diagnostics)) => {
-                            return emit(
-                                args.format,
-                                &diagnostic_records(diagnostics.as_slice()),
-                                &[],
-                                &[],
-                                ExitCode::FAILURE,
-                            );
-                        }
-                        Err(CompileFailure::ResourceLimit(limit)) => {
-                            return emit(
-                                args.format,
-                                &[compiler_resource_limit_record(limit)],
-                                &[],
-                                &[],
-                                ExitCode::FAILURE,
-                            );
-                        }
-                        Err(CompileFailure::Invariant(_)) => {
-                            return emit(
-                                args.format,
-                                &[compiler_invariant_record()],
-                                &[],
-                                &[],
-                                ExitCode::FAILURE,
-                            );
-                        }
-                    }
-                }
-                MintOutcome::NotApplicable => {
-                    return emit(
-                        args.format,
-                        &diagnostic_records(diagnostics.as_slice()),
-                        &[],
-                        &[],
-                        ExitCode::FAILURE,
-                    );
-                }
-                MintOutcome::Failed(code) => {
-                    return emit(
-                        args.format,
-                        &[Record::OperationalError { code, detail: None }],
-                        &[],
-                        &[],
-                        ExitCode::FAILURE,
-                    );
-                }
-            }
-        }
-        Err(CompileFailure::ResourceLimit(limit)) => {
-            return emit(
-                args.format,
-                &[compiler_resource_limit_record(limit)],
-                &[],
-                &[],
-                ExitCode::FAILURE,
-            );
-        }
-        Err(CompileFailure::Invariant(_)) => {
-            return emit(
-                args.format,
-                &[compiler_invariant_record()],
-                &[],
-                &[],
-                ExitCode::FAILURE,
-            );
-        }
-    };
+    let compiled = compile_or_mint(&project, args.store.is_some())?;
 
     // Resolve the caller-supplied name to a stable id through the compiler's export
     // directory, before verification, so no source string reaches the image. The VM
     // dispatches only on this verified id.
-    let export_id = match resolve_export(&compiled.exports, &args.export) {
-        Ok(id) => id,
-        Err(message) => return usage(&message),
-    };
+    let export_id = resolve_export(&compiled.exports, &args.export)
+        .map_err(|message| Outcome::reported(crate::command_output::usage(&message)))?;
 
     // Family 2: artifact decode/verify rejection. The compiler cannot mint a
     // verified image — only `marrow_verify::verify` can.
-    let image = match marrow_verify::verify(&compiled.image.bytes) {
-        Ok(image) => image,
-        Err(rejection) => {
-            return emit(
-                args.format,
-                &[Record::ArtifactRejected {
-                    code: rejection.code(),
-                }],
-                &[],
-                &[],
-                ExitCode::FAILURE,
-            );
-        }
-    };
+    let verified = marrow_verify::verify(&compiled.image.bytes).map_err(|rejection| {
+        Outcome::failed(vec![Record::ArtifactRejected {
+            code: rejection.code(),
+        }])
+    })?;
+    let image: &VerifiedImage = image_slot.insert(verified);
 
     let Some(export) = image.export_by_id(export_id) else {
         // The directory named an id the verified image does not carry: a compiler
         // bug, since the same draft produced both.
-        let _ = writeln!(
-            io::stderr().lock(),
-            "internal error: export directory and image disagree"
-        );
-        return ExitCode::FAILURE;
+        return Err(Outcome::operational(
+            marrow_codes::Code::CliCompilerInvariant.as_str(),
+            Some("the export directory and the verified image disagree".to_string()),
+        ));
     };
     let function = image
         .function(export.function())
         .expect("verified export function");
-    let demand = function.demand();
 
     // Persistent path: `marrow run … --store <dir>` runs the export against a provisioned
     // store. The CLI never opens the store — it verifies the companion runner against the
@@ -252,8 +150,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     // one call, and renders the result. The spawn is invisible in ordinary output.
     if let Some(store_dir) = &args.store {
         return run_persistent(
-            args.format,
-            &image,
+            image,
             &compiled.image.bytes,
             *export_id.bytes(),
             store_dir,
@@ -262,68 +159,59 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         );
     }
 
-    // Durable execution needs a store: without `--store`, T01's in-process store open died
-    // at D00, so a durable export (nonempty demand) is reported with the typed trough
-    // outcome rather than run. Durable source tests already run through `marrow test`.
-    if !demand.is_empty() {
-        return emit(
-            args.format,
-            &[Record::OperationalError {
-                code: marrow_codes::Code::CliDurableUnsupported.as_str(),
-                detail: None,
-            }],
-            &[],
-            &[],
-            ExitCode::FAILURE,
-        );
+    // Durable execution needs a store: the terminal opens none, so a durable export
+    // (nonempty demand) reports the typed trough outcome rather than running. Durable
+    // source tests already run through `marrow test`.
+    if !function.demand().is_empty() {
+        return Err(Outcome::operational(
+            marrow_codes::Code::CliDurableUnsupported.as_str(),
+            None,
+        ));
     }
 
-    let call_args = match decode_call_args(function.body().params(), &args.call_args, args.format) {
-        Ok(values) => values,
-        Err(exit) => return exit,
-    };
+    let call_args = decode_call_args(function.body().params(), &args.call_args)?;
 
     // Family 3: source-mapped runtime fault, or the value.
     let record = run_storeless(function, call_args);
-
     let exit = match &record {
         Record::Value(_) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     };
-    emit(
-        args.format,
-        &[record],
-        image.record_types(),
-        image.enums(),
+    Ok(Outcome {
+        records: vec![record],
         exit,
-    )
+    })
 }
 
-/// The typed diagnostic records for a compile failure.
-fn diagnostic_records(diagnostics: &[SourceDiagnostic]) -> Vec<Record> {
-    diagnostics
-        .iter()
-        .map(|diagnostic| Record::Diagnostic {
-            code: diagnostic.code().as_str(),
-            line: diagnostic.line(),
-            column: diagnostic.column(),
-        })
-        .collect()
-}
-
-fn compiler_invariant_record() -> Record {
-    Record::OperationalError {
-        code: marrow_codes::Code::CliCompilerInvariant.as_str(),
-        detail: None,
+/// Compile the captured project. Family 1 is source diagnostics; when compilation
+/// fails *only* because fresh durable declarations lack ledger identities, storeless
+/// `run` — and only storeless `run` — mints them into `.marrow/ids` and compiles
+/// again. The run-mint window is closed for a persistent store (`--store`): once a
+/// store is bindable, a fresh anchor is a precise `check.durable_identity` failure the
+/// developer resolves deliberately, never an additive auto-mint that could readopt an
+/// orphaned id or diverge from the store's committed ledger.
+fn compile_or_mint(
+    project: &ProjectInput,
+    has_store: bool,
+) -> Result<marrow_compile::Compiled, Outcome> {
+    match compile(project) {
+        Ok(compiled) => Ok(compiled),
+        Err(CompileFailure::Diagnostics(diagnostics)) if !has_store => {
+            match mint_missing_identities(project, diagnostics.as_slice()) {
+                MintOutcome::Minted => {
+                    let recaptured = capture_project(Path::new("."))
+                        .map_err(|failure| Outcome::failed(vec![Record::capture(failure)]))?;
+                    compile(&recaptured)
+                        .map_err(|failure| Outcome::failed(Record::compile_failure(&failure)))
+                }
+                MintOutcome::NotApplicable => {
+                    Err(Outcome::failed(Record::diagnostics(diagnostics.as_slice())))
+                }
+                MintOutcome::Failed(code) => Err(Outcome::operational(code, None)),
+            }
+        }
+        Err(failure) => Err(Outcome::failed(Record::compile_failure(&failure))),
     }
-}
-
-/// The operational record for a compiler resource-limit outcome. It carries the typed
-/// kind — which fixed aggregate bound was exhausted — so an operator can bisect the
-/// limit; the numeric bound and any source location stay internal, and no image is
-/// produced.
-fn compiler_resource_limit_record(limit: marrow_compile::CompileResourceLimit) -> Record {
-    Record::CompilerResourceLimit { kind: limit.kind() }
 }
 
 /// What the `run` mint pre-pass did with a compile failure.
@@ -458,43 +346,42 @@ fn run_storeless(function: VerifiedFunction<'_>, call_args: Vec<Value>) -> Recor
 /// vocabulary reaches the output. Locates and verifies the companion against the release
 /// manifest first; installation damage yields an actionable repair message.
 fn run_persistent(
-    format: Format,
     image: &VerifiedImage,
     image_bytes: &[u8],
     export_id: [u8; 32],
     store: &Path,
     params: &[ImageType],
     call_args: &CallArgs,
-) -> ExitCode {
-    let runner = match crate::companion::discover_companion() {
-        Ok(runner) => runner,
-        Err(damage) => {
-            let _ = writeln!(
-                io::stderr().lock(),
-                "{}: {}",
-                marrow_codes::Code::CliInstallationDamaged.as_str(),
-                damage.message(),
-            );
-            return ExitCode::FAILURE;
-        }
-    };
+) -> Result<Outcome, Outcome> {
+    let runner = crate::companion::discover_companion().map_err(|damage| {
+        let _ = writeln!(
+            io::stderr().lock(),
+            "{}: {}",
+            marrow_codes::Code::CliInstallationDamaged.as_str(),
+            damage.message(),
+        );
+        Outcome::reported(ExitCode::FAILURE)
+    })?;
 
     // Installation discovery precedes argument consumption on the persistent path.
-    let values = match decode_call_args(params, call_args, format) {
-        Ok(values) => values,
-        Err(exit) => return exit,
-    };
+    let values = decode_call_args(params, call_args)?;
     let Some(args) = values.iter().map(value_to_wire).collect::<Option<Vec<_>>>() else {
-        return usage("this export cannot be called from the terminal");
+        return Err(Outcome::reported(crate::command_output::usage(
+            "this export cannot be called from the terminal",
+        )));
     };
 
-    let completion =
-        marrow_runner::attach_and_call(&runner, image, image_bytes, store, export_id, args);
-    let (records, exit) = attached_records(completion);
-    emit(format, &records, image.record_types(), image.enums(), exit)
+    Ok(attached_records(marrow_runner::attach_and_call(
+        &runner,
+        image,
+        image_bytes,
+        store,
+        export_id,
+        args,
+    )))
 }
 
-fn attached_records(completion: marrow_runner::AttachCompletion) -> (Vec<Record>, ExitCode) {
+fn attached_records(completion: marrow_runner::AttachCompletion) -> Outcome {
     let record = match completion.outcome {
         Ok(outcome) => call_outcome_to_record(outcome),
         Err(marrow_runner::ClientError::ActivationUncertain { instance }) => {
@@ -519,7 +406,7 @@ fn attached_records(completion: marrow_runner::AttachCompletion) -> (Vec<Record>
     if let Err(error) = completion.cleanup {
         records.push(cleanup_record(error));
     }
-    (records, exit)
+    Outcome { records, exit }
 }
 
 fn cleanup_record(error: marrow_runner::CompanionCleanupError) -> Record {
@@ -624,23 +511,12 @@ fn render_hex_bytes(bytes: &[u8]) -> String {
     out
 }
 
-fn decode_call_args(
-    params: &[ImageType],
-    args: &CallArgs,
-    format: Format,
-) -> Result<Vec<Value>, ExitCode> {
+fn decode_call_args(params: &[ImageType], args: &CallArgs) -> Result<Vec<Value>, Outcome> {
     materialize_args(params, args, &mut io::stdin().lock()).map_err(|error| match error {
-        ArgumentError::Usage(message) => usage(&message),
-        ArgumentError::Input(error) => emit(
-            format,
-            &[Record::OperationalError {
-                code: marrow_codes::Code::IoRead.as_str(),
-                detail: Some(error.to_string()),
-            }],
-            &[],
-            &[],
-            ExitCode::FAILURE,
-        ),
+        ArgumentError::Usage(message) => Outcome::reported(crate::command_output::usage(&message)),
+        ArgumentError::Input(error) => {
+            Outcome::operational(marrow_codes::Code::IoRead.as_str(), Some(error.to_string()))
+        }
     })
 }
 
@@ -767,7 +643,7 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
                 match &mut call_args {
                     CallArgs::Positional(args) => args.extend(iter.by_ref().cloned()),
                     CallArgs::Stdin if iter.next().is_some() => {
-                        return Err(usage(
+                        return Err(crate::command_output::usage(
                             "`--stdin` cannot be combined with positional arguments",
                         ));
                     }
@@ -778,25 +654,39 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
             "--stdin" => call_args = CallArgs::Stdin,
             "--store" => match iter.next() {
                 Some(dir) => store = Some(PathBuf::from(dir)),
-                None => return Err(usage("`--store` needs a store directory")),
+                None => {
+                    return Err(crate::command_output::usage(
+                        "`--store` needs a store directory",
+                    ));
+                }
             },
             "--format" => match iter.next().map(String::as_str) {
                 Some("jsonl") => format = Format::Jsonl,
                 Some("text") => format = Format::Text,
-                _ => return Err(usage("`--format` must be `text` or `jsonl`")),
+                _ => {
+                    return Err(crate::command_output::usage(
+                        "`--format` must be `text` or `jsonl`",
+                    ));
+                }
             },
             other if other.starts_with('-') => {
-                return Err(usage(&format!("unknown run option: {other}")));
+                return Err(crate::command_output::usage(&format!(
+                    "unknown run option: {other}"
+                )));
             }
             other => {
                 if export.replace(other.to_string()).is_some() {
-                    return Err(usage("marrow run takes one export name"));
+                    return Err(crate::command_output::usage(
+                        "marrow run takes one export name",
+                    ));
                 }
             }
         }
     }
     let Some(export) = export else {
-        return Err(usage("marrow run needs an export name"));
+        return Err(crate::command_output::usage(
+            "marrow run needs an export name",
+        ));
     };
     Ok(RunArgs {
         export,
@@ -804,14 +694,6 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
         call_args,
         store,
     })
-}
-
-fn usage(message: &str) -> ExitCode {
-    let _ = writeln!(
-        io::stderr().lock(),
-        "{message}; run marrow --help for usage"
-    );
-    ExitCode::from(2)
 }
 
 /// Report a sink failure on stderr if that channel remains writable. The call
@@ -868,20 +750,6 @@ fn emit_to(
 }
 
 #[cfg(test)]
-mod compiler_invariant_tests {
-    #[test]
-    fn invariant_mapper_is_one_payload_free_operational_record() {
-        assert_eq!(
-            super::compiler_invariant_record(),
-            super::Record::OperationalError {
-                code: marrow_codes::Code::CliCompilerInvariant.as_str(),
-                detail: None,
-            }
-        );
-    }
-}
-
-#[cfg(test)]
 mod terminal_tests {
     use super::*;
 
@@ -910,7 +778,7 @@ mod terminal_tests {
                 },
             ),
         ] {
-            let (records, exit) = attached_records(marrow_runner::AttachCompletion {
+            let Outcome { records, exit } = attached_records(marrow_runner::AttachCompletion {
                 outcome,
                 cleanup: Err(marrow_runner::CompanionCleanupError::Staging {
                     path: PathBuf::from("/tmp/retained"),

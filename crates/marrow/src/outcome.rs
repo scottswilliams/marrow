@@ -90,6 +90,46 @@ pub(crate) enum Record {
 }
 
 impl Record {
+    /// The records a compile failure earns: one per source diagnostic, or the single
+    /// typed record an exhausted fixed bound or a failed internal check earns. The
+    /// resource-limit record carries the typed kind — which aggregate bound was
+    /// exhausted — so an operator can bisect it; the numeric bound, any source
+    /// location, and the image stay absent.
+    pub(crate) fn compile_failure(failure: &marrow_compile::CompileFailure) -> Vec<Record> {
+        match failure {
+            marrow_compile::CompileFailure::Diagnostics(diagnostics) => {
+                Record::diagnostics(diagnostics.as_slice())
+            }
+            marrow_compile::CompileFailure::ResourceLimit(limit) => {
+                vec![Record::CompilerResourceLimit { kind: limit.kind() }]
+            }
+            marrow_compile::CompileFailure::Invariant(_) => vec![Record::OperationalError {
+                code: marrow_codes::Code::CliCompilerInvariant.as_str(),
+                detail: None,
+            }],
+        }
+    }
+
+    /// The typed record per source diagnostic.
+    pub(crate) fn diagnostics(diagnostics: &[marrow_compile::SourceDiagnostic]) -> Vec<Record> {
+        diagnostics
+            .iter()
+            .map(|diagnostic| Record::Diagnostic {
+                code: diagnostic.code().as_str(),
+                line: diagnostic.line(),
+                column: diagnostic.column(),
+            })
+            .collect()
+    }
+
+    /// The operational record a capture failure earns.
+    pub(crate) fn capture(failure: crate::project::CaptureFailure) -> Record {
+        Record::OperationalError {
+            code: failure.code,
+            detail: Some(failure.message),
+        }
+    }
+
     /// The plain-text rendering for the default (non-JSONL) format. `types` supplies
     /// the field names of a returned record value; it is empty for the non-value
     /// families, which never render a record.

@@ -3,12 +3,13 @@
 //! Restore uses its backup's image and needs no project capture or compilation.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use marrow_compile::{CompileFailure, compile};
+use marrow_compile::compile;
 
-use crate::project::capture_project;
+use crate::companion::{companion_command, run_companion, stage_image};
+use crate::project::compile_project;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -97,7 +98,7 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
     };
 
     if let Some(artifacts) = args.action.explicit_artifacts() {
-        let mut command = match companion_command(operation, &args) {
+        let mut command = match store_command(operation, &args) {
             Ok(command) => command,
             Err(code) => return code,
         };
@@ -105,49 +106,22 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         return run_companion(command);
     }
 
-    let project = match capture_project(&PathBuf::from(".")) {
-        Ok(project) => project,
-        Err(failure) => {
-            crate::report_simple_error(failure.code, &failure.message);
-            return ExitCode::FAILURE;
-        }
-    };
-
     // Image-based operations require the stored program's committed identities.
-    let compiled = match compile(&project) {
+    let compiled = match compile_project(
+        Path::new("."),
+        compile,
+        Some("the project does not compile; run `marrow check` before accessing a store"),
+    ) {
         Ok(compiled) => compiled,
-        Err(CompileFailure::Diagnostics(diagnostics)) => {
-            for diagnostic in diagnostics.iter() {
-                eprintln!("{}: {}", diagnostic.code().as_str(), diagnostic.message());
-            }
-            eprintln!("the project does not compile; run `marrow check` before accessing a store");
-            return ExitCode::FAILURE;
-        }
-        Err(CompileFailure::ResourceLimit(limit)) => {
-            crate::report_simple_error(
-                marrow_codes::Code::CliCompilerResourceLimit.as_str(),
-                &crate::resource_limit_message(limit.kind().description()),
-            );
-            return ExitCode::FAILURE;
-        }
-        Err(CompileFailure::Invariant(_)) => {
-            crate::report_simple_error(
-                marrow_codes::Code::CliCompilerInvariant.as_str(),
-                "the compiler failed an internal consistency check",
-            );
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
 
-    let image = match crate::companion::stage_image(operation.name(), &compiled.image.bytes) {
+    let image = match stage_image(&compiled.image.bytes) {
         Ok(image) => image,
-        Err(err) => {
-            crate::report_simple_error(marrow_codes::Code::IoWrite.as_str(), &err.to_string());
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
 
-    let mut command = match companion_command(operation, &args) {
+    let mut command = match store_command(operation, &args) {
         Ok(command) => command,
         Err(code) => return code,
     };
@@ -158,17 +132,9 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
     run_companion(command)
 }
 
-fn companion_command(operation: Operation, args: &Args) -> Result<Command, ExitCode> {
-    let runner = crate::companion::discover_companion().map_err(|damage| {
-        crate::report_simple_error(
-            marrow_codes::Code::CliInstallationDamaged.as_str(),
-            damage.message(),
-        );
-        ExitCode::FAILURE
-    })?;
-    let mut command = Command::new(runner);
+fn store_command(operation: Operation, args: &Args) -> Result<Command, ExitCode> {
+    let mut command = companion_command(operation.runner_command())?;
     command
-        .arg(operation.runner_command())
         .arg("--store")
         .arg(&args.store)
         .arg("--format")
@@ -177,17 +143,6 @@ fn companion_command(operation: Operation, args: &Args) -> Result<Command, ExitC
             Format::Jsonl => "jsonl",
         });
     Ok(command)
-}
-
-fn run_companion(mut command: Command) -> ExitCode {
-    match command.status() {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
-        Err(err) => {
-            crate::report_simple_error(marrow_codes::Code::RunnerSpawn.as_str(), &err.to_string());
-            ExitCode::FAILURE
-        }
-    }
 }
 
 fn parse_args(operation: Operation, rest: &[String]) -> Result<Args, ExitCode> {

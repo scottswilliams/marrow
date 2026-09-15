@@ -22,7 +22,7 @@
 //! `marrow client typescript` uses; this command does not link the runner (the
 //! CLI→runner Rust edge is a lane absence target) and opens no store.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_verify::{CeilingDescriptor, VerifiedImage};
@@ -40,47 +40,14 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let project = match crate::project::capture_project(&PathBuf::from(".")) {
-        Ok(project) => project,
-        Err(failure) => {
-            crate::report_simple_error(failure.code, &failure.message);
-            return ExitCode::FAILURE;
-        }
-    };
-
     // Family 1: source diagnostics. Like the client generator, the image command
     // never mints identities — a project with unminted durable declarations fails
     // precisely rather than composing an image the store could not admit.
-    let compiled = match marrow_compile::compile(&project) {
-        Ok(compiled) => compiled,
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            for diagnostic in &diagnostics {
-                eprintln!(
-                    "{}:{}:{}: {}: {}",
-                    diagnostic.file().as_str(),
-                    diagnostic.line(),
-                    diagnostic.column(),
-                    diagnostic.code().as_str(),
-                    diagnostic.message()
-                );
-            }
-            return ExitCode::FAILURE;
-        }
-        Err(marrow_compile::CompileFailure::ResourceLimit(limit)) => {
-            crate::report_simple_error(
-                marrow_codes::Code::CliCompilerResourceLimit.as_str(),
-                &crate::resource_limit_message(limit.kind().description()),
-            );
-            return ExitCode::FAILURE;
-        }
-        Err(marrow_compile::CompileFailure::Invariant(_)) => {
-            crate::report_simple_error(
-                marrow_codes::Code::CliCompilerInvariant.as_str(),
-                "the compiler failed an internal consistency check",
-            );
-            return ExitCode::FAILURE;
-        }
-    };
+    let compiled =
+        match crate::project::compile_project(Path::new("."), marrow_compile::compile, None) {
+            Ok(compiled) => compiled,
+            Err(code) => return code,
+        };
 
     // Family 2: artifact rejection (the compiler cannot mint a verified image).
     let image = match marrow_verify::verify(&compiled.image.bytes) {
