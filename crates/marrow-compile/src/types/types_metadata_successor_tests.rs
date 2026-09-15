@@ -204,92 +204,6 @@ fn draft_fingerprint(draft: &ImageDraft) -> (Vec<u8>, marrow_image::ImageId) {
     (encoded.bytes, encoded.image_id)
 }
 
-trait HiddenOutcome {
-    fn hidden(self) -> bool;
-}
-
-impl<T> HiddenOutcome for Option<T> {
-    fn hidden(self) -> bool {
-        self.is_none()
-    }
-}
-
-impl<T, E> HiddenOutcome for Result<T, E> {
-    fn hidden(self) -> bool {
-        self.is_err()
-    }
-}
-
-trait CollectionIndexOutcome {
-    fn into_index(self) -> Option<CollTypeId>;
-}
-
-impl CollectionIndexOutcome for CollTypeId {
-    fn into_index(self) -> Option<CollTypeId> {
-        Some(self)
-    }
-}
-
-impl<E> CollectionIndexOutcome for Result<CollTypeId, E> {
-    fn into_index(self) -> Option<CollTypeId> {
-        self.ok()
-    }
-}
-
-trait TemplateIndexOutcome {
-    fn into_template(self) -> Option<usize>;
-}
-
-impl TemplateIndexOutcome for usize {
-    fn into_template(self) -> Option<usize> {
-        Some(self)
-    }
-}
-
-impl<E> TemplateIndexOutcome for Result<usize, E> {
-    fn into_template(self) -> Option<usize> {
-        self.ok()
-    }
-}
-
-trait AnchorOutcome {
-    fn into_anchor(self) -> Option<String>;
-}
-
-impl AnchorOutcome for Option<String> {
-    fn into_anchor(self) -> Option<String> {
-        self
-    }
-}
-
-impl<E> AnchorOutcome for Result<String, E> {
-    fn into_anchor(self) -> Option<String> {
-        self.ok()
-    }
-}
-
-impl<E> AnchorOutcome for Result<Option<String>, E> {
-    fn into_anchor(self) -> Option<String> {
-        self.ok().flatten()
-    }
-}
-
-trait GraphOutcome {
-    fn into_graph(self) -> Option<ValueGraph>;
-}
-
-impl GraphOutcome for ValueGraph {
-    fn into_graph(self) -> Option<ValueGraph> {
-        Some(self)
-    }
-}
-
-impl<E> GraphOutcome for Result<ValueGraph, E> {
-    fn into_graph(self) -> Option<ValueGraph> {
-        self.ok()
-    }
-}
-
 fn mint_ready(
     registry: &mut TypeRegistry,
     draft: &mut DraftTxn<'_>,
@@ -409,8 +323,8 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
     registry.generics.borrow_mut().type_insts[0].template = usize::MAX;
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
-    let instantiation_hidden = registry.instantiation_of(missing_template).hidden();
-    let body_hidden = registry.type_inst_body(missing_template).hidden();
+    let instantiation_hidden = registry.instantiation_of(missing_template).is_err();
+    let body_hidden = registry.type_inst_body(missing_template).is_err();
     observations.push(
         instantiation_hidden
             && body_hidden
@@ -432,10 +346,10 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
         registry.generics.borrow_mut().type_insts[0].args = args;
         let owner_before = owner_snapshot(&registry);
         let draft_before = draft_fingerprint(&draft);
-        let instantiation_hidden = registry.instantiation_of(id).hidden();
-        let body_hidden = registry.type_inst_body(id).hidden();
-        let anchor_hidden = registry.inst_anchor_spelling(id).hidden();
-        let graph_hidden = ValueGraph::build(&registry).into_graph().is_none();
+        let instantiation_hidden = registry.instantiation_of(id).is_err();
+        let body_hidden = registry.type_inst_body(id).is_err();
+        let anchor_hidden = registry.inst_anchor_spelling(id).is_err();
+        let graph_hidden = ValueGraph::build(&registry).ok().is_none();
         observations.push(
             instantiation_hidden
                 && body_hidden
@@ -462,10 +376,10 @@ fn malformed_ready_metadata_is_hidden_from_semantic_readers() {
     registry.generics.borrow_mut().type_insts[0].args = vec![GArg::Struct(orphan)];
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
-    let instantiation_hidden = registry.instantiation_of(id).hidden();
-    let body_hidden = registry.type_inst_body(id).hidden();
-    let anchor_hidden = registry.inst_anchor_spelling(id).hidden();
-    let graph_hidden = ValueGraph::build(&registry).into_graph().is_none();
+    let instantiation_hidden = registry.instantiation_of(id).is_err();
+    let body_hidden = registry.type_inst_body(id).is_err();
+    let anchor_hidden = registry.inst_anchor_spelling(id).is_err();
+    let graph_hidden = ValueGraph::build(&registry).ok().is_none();
     observations.push(
         instantiation_hidden
             && body_hidden
@@ -488,7 +402,7 @@ fn missing_template_ready_metadata_is_hidden_from_anchor_spelling() {
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
 
-    let hidden = registry.inst_anchor_spelling(id).hidden();
+    let hidden = registry.inst_anchor_spelling(id).is_err();
 
     assert!(hidden);
     assert_eq!(owner_snapshot(&registry), owner_before);
@@ -505,7 +419,7 @@ fn missing_template_ready_metadata_is_rejected_by_value_graph() {
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
 
-    let hidden = ValueGraph::build(&registry).into_graph().is_none();
+    let hidden = ValueGraph::build(&registry).ok().is_none();
 
     assert!(hidden);
     assert_eq!(owner_snapshot(&registry), owner_before);
@@ -532,12 +446,12 @@ fn malformed_reserved_option_ready_metadata_is_hidden_from_all_readers() {
     let owner_before = owner_snapshot(&registry);
     let draft_before = draft_fingerprint(&draft);
 
-    let instantiation_hidden = registry.instantiation_of(id).hidden();
-    let body_hidden = registry.type_inst_body(id).hidden();
-    let option_hidden = as_option(&registry, option).hidden();
-    let variants_hidden = registry.enum_variants(option).hidden();
-    let anchor_hidden = registry.enum_anchor_spelling(option).hidden();
-    let graph_hidden = ValueGraph::build(&registry).into_graph().is_none();
+    let instantiation_hidden = registry.instantiation_of(id).is_err();
+    let body_hidden = registry.type_inst_body(id).is_err();
+    let option_hidden = as_option(&registry, option).is_err();
+    let variants_hidden = registry.enum_variants(option).is_err();
+    let anchor_hidden = registry.enum_anchor_spelling(option).is_err();
+    let graph_hidden = ValueGraph::build(&registry).ok().is_none();
 
     assert!(instantiation_hidden);
     assert!(body_hidden);
@@ -913,7 +827,7 @@ fn reserved_option_and_result_require_exact_argument_slices() {
             .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
             .expect("control Option is Ready");
         registry.generics.borrow_mut().type_insts[0].args = args;
-        observations.push(as_option(&registry, option).hidden());
+        observations.push(as_option(&registry, option).is_err());
     }
 
     for args in [
@@ -925,10 +839,7 @@ fn reserved_option_and_result_require_exact_argument_slices() {
         ],
     ] {
         let (mut registry, mut draft) = reserved_registry();
-        let result_template = registry
-            .reserved_template(Reserved::Result)
-            .into_template()
-            .expect("reserved Result template exists");
+        let result_template = registry.reserved_template(Reserved::Result);
         let result_id = registry
             .mint_type_instance(
                 &mut draft,
@@ -946,7 +857,7 @@ fn reserved_option_and_result_require_exact_argument_slices() {
             })
             .expect("control Result is Ready");
         registry.generics.borrow_mut().type_insts[0].args = args;
-        observations.push(as_result(&registry, result_id).hidden());
+        observations.push(as_result(&registry, result_id).is_err());
     }
 
     assert_eq!(observations, vec![true, true, true, true]);
@@ -958,10 +869,7 @@ fn reserved_result_valid_length_checks_both_argument_targets() {
 
     for invalid_ok in [true, false] {
         let (mut registry, mut draft) = reserved_registry();
-        let result_template = registry
-            .reserved_template(Reserved::Result)
-            .into_template()
-            .expect("reserved Result template exists");
+        let result_template = registry.reserved_template(Reserved::Result);
         let result = registry
             .mint_type_instance(
                 &mut draft,
@@ -1004,7 +912,7 @@ fn reserved_result_valid_length_checks_both_argument_targets() {
         let draft_before = draft_fingerprint(&draft);
 
         observations.push(
-            as_result(&registry, result).hidden()
+            as_result(&registry, result).is_err()
                 && owner_snapshot(&registry) == owner_before
                 && draft_fingerprint(&draft) == draft_before,
         );
@@ -1422,7 +1330,7 @@ fn unknown_value_target_is_not_an_ordinary_zero_edge_node() {
     let rejected = match registry.mint_type_instance(&mut draft, 0, &[GArg::Struct(orphan)], site())
     {
         Err(_) => true,
-        Ok(_) => ValueGraph::build(&registry).into_graph().is_none(),
+        Ok(_) => ValueGraph::build(&registry).ok().is_none(),
     };
 
     assert!(rejected);
@@ -1468,7 +1376,7 @@ fn valid_group_adds_no_value_containment_edge() {
         .mint_type_instance(&mut draft, 0, &[GArg::Group(group)], site())
         .expect("a real group is a valid non-containing argument");
     let graph = ValueGraph::build(&registry)
-        .into_graph()
+        .ok()
         .expect("valid graph builds");
     let node = match outer {
         TypeInstId::Record(id) => ValueNode::Record(id),
@@ -1490,7 +1398,7 @@ fn valid_collection_target_remains_accepted() {
     let mut draft = admitted(&mut draft_owner);
     let collection = registry
         .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
-        .into_index()
+        .ok()
         .expect("aligned collection owners mint");
     let id = registry
         .mint_type_instance(&mut draft, 0, &[GArg::Collection(collection)], site())
@@ -1534,7 +1442,8 @@ fn valid_generic_anchor_bytes_remain_stable() {
     assert_eq!(
         registry
             .enum_anchor_spelling(option)
-            .into_anchor()
+            .ok()
+            .flatten()
             .as_deref(),
         Some("Option[int]")
     );
