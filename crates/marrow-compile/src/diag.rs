@@ -15,6 +15,7 @@
 //! totals keep accumulating, an OwnedBytes limit may strengthen to Count, and
 //! a discarded payload never re-materializes.
 
+use crate::bounded::{Bounded, Ceiling};
 use crate::decl::{DeclarationNamespace, RefusalReport};
 use marrow_codes::Code;
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind};
@@ -401,27 +402,39 @@ pub(crate) enum CompileDiagnosticLimit {
 /// whole-owner swap/replace where the generic lifecycle requires them).
 #[derive(Debug)]
 pub(crate) struct DiagnosticCollector {
-    state: CollectorState,
+    state: Bounded<DiagnosticCeiling>,
 }
 
-#[derive(Debug)]
-enum CollectorState {
-    /// The retained count is `rows.len()`; it is never carried beside them.
-    Retaining {
-        owned_bytes: usize,
-        rows: Vec<SourceDiagnostic>,
-    },
-    Limited {
-        count: usize,
-        owned_bytes: usize,
-        limit: CompileDiagnosticLimit,
-    },
+/// The diagnostic ceilings, as the shared bounded owner reads them.
+struct DiagnosticCeiling;
+
+impl Ceiling for DiagnosticCeiling {
+    type Payload = Vec<SourceDiagnostic>;
+    type Limit = CompileDiagnosticLimit;
+
+    const MAX_COUNT: u64 = MAX_DIAGNOSTIC_COUNT as u64;
+    const MAX_BYTES: u64 = MAX_DIAGNOSTIC_BYTES as u64;
+
+    fn count_limit() -> Self::Limit {
+        CompileDiagnosticLimit::Count {
+            limit: MAX_DIAGNOSTIC_COUNT,
+        }
+    }
+
+    fn bytes_limit() -> Self::Limit {
+        CompileDiagnosticLimit::OwnedBytes {
+            limit: MAX_DIAGNOSTIC_BYTES,
+        }
+    }
+
+    fn is_bytes(limit: Self::Limit) -> bool {
+        matches!(limit, CompileDiagnosticLimit::OwnedBytes { .. })
+    }
 }
 
 /// The finished terminal of one collector: the complete ordered payload with
 /// its exact byte total, or the typed limit with saturated totals and no
-/// payload. A Complete terminal's count is `rows.len()`; a Limited one has no
-/// vector to count, so it carries its saturated total.
+/// payload.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BoundedDiagnostics {
     Complete {
@@ -467,55 +480,10 @@ pub(crate) struct CollectorProbe {
     pub(crate) rows: Vec<SourceDiagnostic>,
 }
 
-/// The saturated Limited state: totals cap at ceiling plus one, so later
-/// input keeps composing without unbounded growth.
-fn limited_state(
-    count: usize,
-    owned_bytes: usize,
-    limit: CompileDiagnosticLimit,
-) -> CollectorState {
-    CollectorState::Limited {
-        count: count.min(MAX_DIAGNOSTIC_COUNT + 1),
-        owned_bytes: owned_bytes.min(MAX_DIAGNOSTIC_BYTES + 1),
-        limit,
-    }
-}
-
-/// Update a Limited owner's saturated totals and strengthen an OwnedBytes
-/// limit to Count when the composed count crosses. Count never weakens.
-fn accumulate_limited(
-    count: &mut usize,
-    owned_bytes: &mut usize,
-    limit: &mut CompileDiagnosticLimit,
-    added_count: usize,
-    added_bytes: usize,
-) {
-    *count = count
-        .saturating_add(added_count)
-        .min(MAX_DIAGNOSTIC_COUNT + 1);
-    *owned_bytes = owned_bytes
-        .saturating_add(added_bytes)
-        .min(MAX_DIAGNOSTIC_BYTES + 1);
-    if matches!(limit, CompileDiagnosticLimit::OwnedBytes { .. }) && *count > MAX_DIAGNOSTIC_COUNT {
-        *limit = CompileDiagnosticLimit::Count {
-            limit: MAX_DIAGNOSTIC_COUNT,
-        };
-    }
-}
-
-/// The rows one admission carries: a single pushed row or a complete batch.
-enum RowSource {
-    One(SourceDiagnostic),
-    Many(Vec<SourceDiagnostic>),
-}
-
 impl DiagnosticCollector {
     pub(crate) fn new() -> Self {
         Self {
-            state: CollectorState::Retaining {
-                owned_bytes: 0,
-                rows: Vec::new(),
-            },
+            state: Bounded::new(),
         }
     }
 
@@ -526,16 +494,14 @@ impl DiagnosticCollector {
     /// [`BoundedDiagnostics`] terminal, never from a live collector.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        match &self.state {
-            CollectorState::Retaining { rows, .. } => rows.is_empty(),
-            CollectorState::Limited { .. } => false,
-        }
+        self.state.is_empty()
     }
 
     /// Retain one finalized row, charging its exact retained owned bytes.
     pub(crate) fn push(&mut self, row: SourceDiagnostic) {
-        let bytes = row.retained_owned_bytes();
-        self.admit(1, bytes, RowSource::One(row));
+        let bytes = row.retained_owned_bytes() as u64;
+        self.state
+            .admit((0, 0), 1, bytes, move |rows| rows.push(row));
     }
 
     /// Merge a finished terminal into this live owner. A Complete terminal's
@@ -544,14 +510,22 @@ impl DiagnosticCollector {
     /// re-materializes.
     pub(crate) fn absorb(&mut self, finished: BoundedDiagnostics) {
         match finished {
-            BoundedDiagnostics::Complete { owned_bytes, rows } => {
-                self.admit(rows.len(), owned_bytes, RowSource::Many(rows))
-            }
+            BoundedDiagnostics::Complete {
+                owned_bytes,
+                mut rows,
+            } => self.state.admit(
+                (0, 0),
+                rows.len() as u64,
+                owned_bytes as u64,
+                move |retained| retained.append(&mut rows),
+            ),
             BoundedDiagnostics::Limited {
                 count,
                 owned_bytes,
                 limit,
-            } => self.absorb_limited(count, owned_bytes, limit),
+            } => self
+                .state
+                .absorb_limited(count as u64, owned_bytes as u64, limit),
         }
     }
 
@@ -562,18 +536,18 @@ impl DiagnosticCollector {
     /// spelling per row, which is exactly the per-row
     /// [`SourceDiagnostic::retained_owned_bytes`] sum. A Limited terminal
     /// composes the same charge from its saturated summary and leaves this
-    /// owner Limited unconditionally (A2), selecting Count when both composed
-    /// kinds have crossed.
+    /// owner Limited unconditionally, selecting Count when both composed kinds
+    /// have crossed.
     pub(crate) fn absorb_syntax(&mut self, file: &FileIdentity, diagnostics: SyntaxDiagnostics) {
         let summary = diagnostics.summary();
         let charge = |count: usize| {
             summary
                 .owned_bytes()
-                .saturating_add(count.saturating_mul(file.as_str().len()))
+                .saturating_add(count.saturating_mul(file.as_str().len())) as u64
         };
         match diagnostics.into_complete() {
             Ok(payload) => {
-                let rows: Vec<SourceDiagnostic> = payload
+                let mut rows: Vec<SourceDiagnostic> = payload
                     .into_boxed_slice()
                     .into_iter()
                     .map(|diagnostic| SourceDiagnostic::syntax(file, diagnostic))
@@ -581,23 +555,21 @@ impl DiagnosticCollector {
                 // The retained rows are the count, exactly as in `absorb`: the
                 // materialized vector is the one quantity both charges derive from.
                 let count = rows.len();
-                self.admit(count, charge(count), RowSource::Many(rows));
+                self.state
+                    .admit((0, 0), count as u64, charge(count), move |retained| {
+                        retained.append(&mut rows);
+                    });
             }
             Err(limit) => {
                 let inherited = match limit {
-                    SyntaxDiagnosticLimit::Count { .. } => CompileDiagnosticLimit::Count {
-                        limit: MAX_DIAGNOSTIC_COUNT,
-                    },
-                    SyntaxDiagnosticLimit::OwnedBytes { .. } => {
-                        CompileDiagnosticLimit::OwnedBytes {
-                            limit: MAX_DIAGNOSTIC_BYTES,
-                        }
-                    }
+                    SyntaxDiagnosticLimit::Count { .. } => DiagnosticCeiling::count_limit(),
+                    SyntaxDiagnosticLimit::OwnedBytes { .. } => DiagnosticCeiling::bytes_limit(),
                 };
                 // A Limited terminal destroyed its payload, so its saturated summary
                 // count is the only quantity left to charge.
                 let count = summary.count();
-                self.absorb_limited(count, charge(count), inherited);
+                self.state
+                    .absorb_limited(count as u64, charge(count), inherited);
             }
         }
     }
@@ -605,117 +577,31 @@ impl DiagnosticCollector {
     /// Seal this owner into its terminal. Total: every state has a terminal.
     pub(crate) fn finish(self) -> BoundedDiagnostics {
         match self.state {
-            CollectorState::Retaining { owned_bytes, rows } => {
-                BoundedDiagnostics::Complete { owned_bytes, rows }
-            }
-            CollectorState::Limited {
+            Bounded::Retaining { bytes, payload, .. } => BoundedDiagnostics::Complete {
+                owned_bytes: bytes as usize,
+                rows: payload,
+            },
+            Bounded::Limited {
                 count,
-                owned_bytes,
+                bytes,
                 limit,
             } => BoundedDiagnostics::Limited {
-                count,
-                owned_bytes,
+                count: count as usize,
+                owned_bytes: bytes as usize,
                 limit,
             },
-        }
-    }
-
-    /// Admit materialized rows with their exact totals. Crossing a ceiling
-    /// discards the whole retained payload — the incoming rows and every
-    /// already-retained prefix row — and Count wins a simultaneous crossing.
-    fn admit(&mut self, added_count: usize, added_bytes: usize, incoming: RowSource) {
-        match &mut self.state {
-            CollectorState::Retaining { owned_bytes, rows } => {
-                let new_count = rows.len().saturating_add(added_count);
-                let new_bytes = owned_bytes.saturating_add(added_bytes);
-                if new_count > MAX_DIAGNOSTIC_COUNT {
-                    self.state = limited_state(
-                        new_count,
-                        new_bytes,
-                        CompileDiagnosticLimit::Count {
-                            limit: MAX_DIAGNOSTIC_COUNT,
-                        },
-                    );
-                } else if new_bytes > MAX_DIAGNOSTIC_BYTES {
-                    self.state = limited_state(
-                        new_count,
-                        new_bytes,
-                        CompileDiagnosticLimit::OwnedBytes {
-                            limit: MAX_DIAGNOSTIC_BYTES,
-                        },
-                    );
-                } else {
-                    *owned_bytes = new_bytes;
-                    match incoming {
-                        RowSource::One(row) => rows.push(row),
-                        RowSource::Many(mut batch) => rows.append(&mut batch),
-                    }
-                }
-            }
-            CollectorState::Limited {
-                count,
-                owned_bytes,
-                limit,
-            } => accumulate_limited(count, owned_bytes, limit, added_count, added_bytes),
-        }
-    }
-
-    /// Compose an absorbed Limited terminal: this owner becomes (or stays)
-    /// Limited unconditionally, even when the composed totals sit under both
-    /// ceilings — the absorbed payload was destroyed and never
-    /// re-materializes. A composed crossing selects its own kind, Count first;
-    /// otherwise the absorbed limit kind is inherited.
-    fn absorb_limited(
-        &mut self,
-        added_count: usize,
-        added_bytes: usize,
-        inherited: CompileDiagnosticLimit,
-    ) {
-        match &mut self.state {
-            CollectorState::Retaining { owned_bytes, rows } => {
-                let new_count = rows.len().saturating_add(added_count);
-                let new_bytes = owned_bytes.saturating_add(added_bytes);
-                let limit = if new_count > MAX_DIAGNOSTIC_COUNT {
-                    CompileDiagnosticLimit::Count {
-                        limit: MAX_DIAGNOSTIC_COUNT,
-                    }
-                } else if new_bytes > MAX_DIAGNOSTIC_BYTES {
-                    CompileDiagnosticLimit::OwnedBytes {
-                        limit: MAX_DIAGNOSTIC_BYTES,
-                    }
-                } else {
-                    inherited
-                };
-                self.state = limited_state(new_count, new_bytes, limit);
-            }
-            CollectorState::Limited {
-                count,
-                owned_bytes,
-                limit,
-            } => accumulate_limited(count, owned_bytes, limit, added_count, added_bytes),
         }
     }
 
     /// Test view of the exact owner state.
     #[cfg(test)]
     pub(crate) fn probe(&self) -> CollectorProbe {
-        match &self.state {
-            CollectorState::Retaining { owned_bytes, rows } => CollectorProbe {
-                count: rows.len(),
-                owned_bytes: *owned_bytes,
-                limit: None,
-                rows: rows.clone(),
-            },
-            CollectorState::Limited {
-                count,
-                owned_bytes,
-                limit,
-            } => CollectorProbe {
-                count: *count,
-                owned_bytes: *owned_bytes,
-                limit: Some(*limit),
-                rows: Vec::new(),
-            },
+        let (count, owned_bytes) = self.state.totals();
+        CollectorProbe {
+            count: count as usize,
+            owned_bytes: owned_bytes as usize,
+            limit: self.state.limit(),
+            rows: self.probe_rows().to_vec(),
         }
     }
 
@@ -723,8 +609,8 @@ impl DiagnosticCollector {
     #[cfg(test)]
     pub(crate) fn probe_rows(&self) -> &[SourceDiagnostic] {
         match &self.state {
-            CollectorState::Retaining { rows, .. } => rows,
-            CollectorState::Limited { .. } => &[],
+            Bounded::Retaining { payload, .. } => payload,
+            Bounded::Limited { .. } => &[],
         }
     }
 }

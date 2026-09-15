@@ -29,6 +29,7 @@
 )]
 
 mod analysis;
+mod bounded;
 mod call_graph;
 #[cfg(test)]
 mod call_graph_tests;

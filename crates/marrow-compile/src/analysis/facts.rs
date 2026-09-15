@@ -15,6 +15,7 @@ use super::{
 };
 use marrow_project::ProjectInput;
 
+use crate::bounded::{Bounded, Ceiling};
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector};
 
 mod staging;
@@ -36,28 +37,39 @@ pub(crate) struct AnalysisFactCollector {
     /// the logical byte charges, which are stated over file *spellings* and stay
     /// exact even though the compact representation no longer stores one per fact.
     file_bytes: Vec<u32>,
-    state: FactState,
+    state: Bounded<FactCeiling>,
 }
 
-enum FactState {
-    Retaining {
-        /// The running admitted count. Unlike the diagnostic owner's `rows.len()`,
-        /// this total spans three fact families and counts every nested
-        /// document-symbol node, so recomputing it per admission would be quadratic.
-        count: u64,
-        bytes: u64,
-        facts: RetainingFacts,
-    },
-    Limited {
-        count: u64,
-        bytes: u64,
-        limit: AnalysisFactLimit,
-    },
+/// The snapshot fact ceilings, as the shared bounded owner reads them.
+pub(crate) struct FactCeiling;
+
+impl Ceiling for FactCeiling {
+    type Payload = RetainingFacts;
+    type Limit = AnalysisFactLimit;
+
+    const MAX_COUNT: u64 = MAX_SNAPSHOT_FACT_COUNT;
+    const MAX_BYTES: u64 = MAX_SNAPSHOT_FACT_BYTES;
+
+    fn count_limit() -> Self::Limit {
+        AnalysisFactLimit::Count {
+            limit: MAX_SNAPSHOT_FACT_COUNT,
+        }
+    }
+
+    fn bytes_limit() -> Self::Limit {
+        AnalysisFactLimit::Bytes {
+            limit: MAX_SNAPSHOT_FACT_BYTES,
+        }
+    }
+
+    fn is_bytes(limit: Self::Limit) -> bool {
+        matches!(limit, AnalysisFactLimit::Bytes { .. })
+    }
 }
 
 /// The growable form of the retained set, before `finish` seals it.
 #[derive(Default)]
-struct RetainingFacts {
+pub(crate) struct RetainingFacts {
     hover_facts: Vec<HoverFact>,
     broken_files: Vec<FileRef>,
     dependency_gaps: Vec<(FileRef, FactSpan)>,
@@ -101,11 +113,7 @@ impl AnalysisFactCollector {
                 .iter()
                 .map(|module| module.identity().as_str().len() as u32)
                 .collect(),
-            state: FactState::Retaining {
-                count: 0,
-                bytes: 0,
-                facts: RetainingFacts::default(),
-            },
+            state: Bounded::new(),
         }
     }
 
@@ -113,7 +121,7 @@ impl AnalysisFactCollector {
     /// displays once this is true: the whole snapshot is already refused, so every
     /// further render is waste. This is an allocation bound, not a protocol.
     pub(crate) fn is_limited(&self) -> bool {
-        matches!(self.state, FactState::Limited { .. })
+        self.state.is_limited()
     }
 
     /// Release one settled body's staged facts into this ledger.
@@ -128,7 +136,8 @@ impl AnalysisFactCollector {
             bytes,
             facts,
         } = released;
-        self.admit(count, bytes, move |retained| retained.absorb(facts));
+        self.state
+            .admit((0, 0), count, bytes, move |retained| retained.absorb(facts));
     }
 
     /// The logical byte charge of one file's spelling. Every coordinate the drive mints
@@ -151,7 +160,7 @@ impl AnalysisFactCollector {
     pub(crate) fn admit_symbols(&mut self, file: FileRef, symbols: Box<[DeclSymbol]>) {
         let count = symbol_count(&symbols);
         let bytes = self.spelling_bytes(file) + symbol_bytes(&symbols);
-        self.admit(count, bytes, |facts| {
+        self.state.admit((0, 0), count, bytes, |facts| {
             facts.document_symbols.push((file, symbols));
         });
     }
@@ -160,108 +169,17 @@ impl AnalysisFactCollector {
     /// row: it is one coordinate per module, bounded by the same 4096-file admission
     /// limit that bounds the coordinate domain, so it charges neither ceiling.
     pub(crate) fn admit_broken(&mut self, file: FileRef) {
-        if let FactState::Retaining { facts, .. } = &mut self.state {
-            facts.broken_files.push(file);
+        if let Bounded::Retaining { payload, .. } = &mut self.state {
+            payload.broken_files.push(file);
         }
     }
 
     /// Seal this ledger into its terminal. Total: every state has a terminal.
     pub(crate) fn finish(self) -> BoundedAnalysisFacts {
         match self.state {
-            FactState::Retaining { facts, .. } => BoundedAnalysisFacts::Complete(facts.seal()),
-            FactState::Limited { limit, .. } => BoundedAnalysisFacts::Limited { limit },
+            Bounded::Retaining { payload, .. } => BoundedAnalysisFacts::Complete(payload.seal()),
+            Bounded::Limited { limit, .. } => BoundedAnalysisFacts::Limited { limit },
         }
-    }
-
-    /// The running totals, in either state. A staged body composes its own contribution
-    /// over these to reach the same ceiling verdict the ledger would have reached for
-    /// the same fact.
-    fn totals(&self) -> (u64, u64) {
-        match self.state {
-            FactState::Retaining { count, bytes, .. } => (count, bytes),
-            FactState::Limited { count, bytes, .. } => (count, bytes),
-        }
-    }
-
-    /// Admit one contribution against both ceilings before `retain` may allocate for
-    /// it. Crossing discards the whole payload, including the admitted prefix, and
-    /// Count wins a simultaneous crossing.
-    fn admit(
-        &mut self,
-        added_count: u64,
-        added_bytes: u64,
-        retain: impl FnOnce(&mut RetainingFacts),
-    ) {
-        match &mut self.state {
-            FactState::Retaining {
-                count,
-                bytes,
-                facts,
-            } => {
-                let new_count = count.saturating_add(added_count);
-                let new_bytes = bytes.saturating_add(added_bytes);
-                match crossed_ceiling(new_count, new_bytes) {
-                    Some(limit) => {
-                        self.state = limited_facts(new_count, new_bytes, limit);
-                    }
-                    None => {
-                        *count = new_count;
-                        *bytes = new_bytes;
-                        retain(facts);
-                    }
-                }
-            }
-            FactState::Limited {
-                count,
-                bytes,
-                limit,
-            } => {
-                *count = count
-                    .saturating_add(added_count)
-                    .min(MAX_SNAPSHOT_FACT_COUNT + 1);
-                *bytes = bytes
-                    .saturating_add(added_bytes)
-                    .min(MAX_SNAPSHOT_FACT_BYTES + 1);
-                if matches!(limit, AnalysisFactLimit::Bytes { .. })
-                    && *count > MAX_SNAPSHOT_FACT_COUNT
-                {
-                    *limit = AnalysisFactLimit::Count {
-                        limit: MAX_SNAPSHOT_FACT_COUNT,
-                    };
-                }
-            }
-        }
-    }
-}
-
-/// Classify one composed total against both ceilings, Count taking precedence over
-/// Bytes at a simultaneous crossing.
-///
-/// The sole owner of the ceiling comparison. The ledger's own admissions and a staged
-/// body's live charge both classify through here, so a body cannot reach a different
-/// verdict for a fact than the ledger reaches when that fact settles.
-fn crossed_ceiling(count: u64, bytes: u64) -> Option<AnalysisFactLimit> {
-    if count > MAX_SNAPSHOT_FACT_COUNT {
-        Some(AnalysisFactLimit::Count {
-            limit: MAX_SNAPSHOT_FACT_COUNT,
-        })
-    } else if bytes > MAX_SNAPSHOT_FACT_BYTES {
-        Some(AnalysisFactLimit::Bytes {
-            limit: MAX_SNAPSHOT_FACT_BYTES,
-        })
-    } else {
-        None
-    }
-}
-
-/// The saturated Limited state: totals cap at ceiling plus one, so later input keeps
-/// composing without unbounded growth. The whole retained payload is dropped here — it
-/// never re-materializes.
-fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState {
-    FactState::Limited {
-        count: count.min(MAX_SNAPSHOT_FACT_COUNT + 1),
-        bytes: bytes.min(MAX_SNAPSHOT_FACT_BYTES + 1),
-        limit,
     }
 }
 
@@ -271,8 +189,8 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
 /// The split this carries is three-part, and each part is load-bearing.
 ///
 /// The **charge** is live. Every fact composes over the ledger's settled totals at the
-/// push that produced it and classifies through [`crossed_ceiling`], the ledger's own
-/// comparison, so a body whose facts cross the snapshot ceiling stops rendering displays
+/// push that produced it and classifies through the ledger's own ceiling comparison,
+/// so a body whose facts cross the snapshot ceiling stops rendering displays
 /// *inside itself* rather than after it, and no fact population larger than a snapshot
 /// admits is ever materialized. The ledger cannot move underneath a running body: this
 /// value borrows it shared for the body's whole extent, so the totals a push composes
@@ -288,16 +206,11 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
 /// snapshot that body's facts never entered. Subtracting a charge back out could not be
 /// total — a crossing discards the ledger's whole retained payload, and no subtraction
 /// re-materializes it.
-struct StagedFacts {
-    /// This body's own contribution, over and above the ledger's settled totals.
-    count: u64,
-    bytes: u64,
-    /// The ceiling this body's own facts crossed, if any. A crossing discards this body's
-    /// staged rows at once — the same whole-payload discard the ledger performs — and
-    /// stops further rendering, while latching nothing on the ledger until release.
-    limit: Option<AnalysisFactLimit>,
-    facts: RetainingFacts,
-}
+/// This body's own contribution is what the owner holds, over and above the ledger's
+/// settled totals. A crossing discards this body's staged rows at once — the same
+/// whole-payload discard the ledger performs — and stops further rendering, while
+/// latching nothing on the ledger until release.
+struct StagedFacts(Bounded<FactCeiling>);
 
 /// One settled body's facts on their way into the ledger. Produced only by the private
 /// [`StagedFacts::finish`] after the producer-owning aggregate consumes its guard.
@@ -328,12 +241,7 @@ impl ReleasedBody {
 
 impl StagedFacts {
     fn new() -> Self {
-        Self {
-            count: 0,
-            bytes: 0,
-            limit: None,
-            facts: RetainingFacts::default(),
-        }
+        Self(Bounded::new())
     }
 
     /// Where this body's lowering writes its editor facts, in place of any ledger the
@@ -352,12 +260,11 @@ impl StagedFacts {
     /// Finish this body's facts after its producer has settled. Private so the
     /// producer-owning aggregate below is the only caller that can release them.
     fn finish(self) -> ReleasedFacts {
-        let Self {
-            count,
-            bytes,
-            limit: _,
-            facts,
-        } = self;
+        let (count, bytes) = self.0.totals();
+        let facts = match self.0 {
+            Bounded::Retaining { payload, .. } => payload,
+            Bounded::Limited { .. } => RetainingFacts::default(),
+        };
         ReleasedFacts {
             count,
             bytes,
@@ -367,7 +274,7 @@ impl StagedFacts {
 
     /// Whether a fact staged here would still be retained at settlement.
     fn retains(&self, ledger: &AnalysisFactCollector) -> bool {
-        !ledger.is_limited() && self.limit.is_none()
+        !ledger.is_limited() && !self.0.is_limited()
     }
 
     /// Charge one contribution live against the composed total, then stage its payload.
@@ -382,21 +289,8 @@ impl StagedFacts {
         added_bytes: u64,
         retain: impl FnOnce(&mut RetainingFacts),
     ) {
-        let (settled_count, settled_bytes) = ledger.totals();
-        self.count = self.count.saturating_add(added_count);
-        self.bytes = self.bytes.saturating_add(added_bytes);
-        if self.limit.is_some() {
-            return;
-        }
-        let composed_count = settled_count.saturating_add(self.count);
-        let composed_bytes = settled_bytes.saturating_add(self.bytes);
-        match crossed_ceiling(composed_count, composed_bytes) {
-            Some(limit) => {
-                self.limit = Some(limit);
-                self.facts = RetainingFacts::default();
-            }
-            None => retain(&mut self.facts),
-        }
+        self.0
+            .admit(ledger.state.totals(), added_count, added_bytes, retain);
     }
 
     /// Stage one editor hover fact in `file`, charged at the push that produced it.
@@ -1156,8 +1050,9 @@ mod fact_ledger_tests {
 
     fn charged(facts: &AnalysisFactCollector) -> (u64, u64) {
         match &facts.state {
-            FactState::Retaining { count, bytes, .. } => (*count, *bytes),
-            FactState::Limited { count, bytes, .. } => (*count, *bytes),
+            Bounded::Retaining { count, bytes, .. } | Bounded::Limited { count, bytes, .. } => {
+                (*count, *bytes)
+            }
         }
     }
 
