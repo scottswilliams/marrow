@@ -1,4 +1,4 @@
-//! MSY01 — comment ownership over the brace grammar. A comment trailing a
+//! Comment ownership over the brace grammar. A comment trailing a
 //! body-bearing header, whether it cuddles the `{`, sits before a next-line `{`, or
 //! opens the block on its own line, attaches to one deterministic owner: the block.
 //! So `format(format(x)) == format(x)` and `parse(format(x))` preserves every

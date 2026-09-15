@@ -94,7 +94,7 @@ pub fn assert_total_invariants(source: &str) {
 /// output is itself valid Marrow. A malformed parse carries error nodes whose
 /// rendering is not a contract, so the formatter is only exercised over a clean parse.
 ///
-/// Idempotence is asserted unconditionally over comments (MSY01): a comment trailing a
+/// Idempotence is asserted unconditionally over comments: a comment trailing a
 /// body-bearing header attaches to one deterministic owner — the block — so every
 /// admitted spelling formats to one fixed point. A regression that re-introduced a
 /// byte-span-attributed comment with no stable home, or the earlier blank-line and

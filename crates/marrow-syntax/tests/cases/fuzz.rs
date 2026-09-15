@@ -20,6 +20,10 @@ use crate::common::CompletePayload;
 use crate::common::oracle::{
     OVER_DEEP, assert_formatter_faithful, assert_total_invariants, has_error_diagnostic,
 };
+use marrow_syntax::{
+    Block, Declaration, Expression, InterpolationPart, ParsedSource, Severity, SourceFile,
+    Statement, parse_source,
+};
 
 /// The tracer-subset constructs, each a small complete or near-complete program.
 /// These are valid programs, so they also feed the faithful-formatter lens.
@@ -369,7 +373,7 @@ fn brace_grammar_corpus() -> Vec<String> {
         "module app\nconst S = \"a\\u{1F600}b\"\n",
         "module app\nfn run() {\n    ^books[1].title = \"x\"\n}\n",
         "module app\nfn run() {\n    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return\n    }\n}\n",
-        // Comment-bearing seeds (MSY01): a header-trailing comment before the `{`, a
+        // Comment-bearing seeds: a header-trailing comment before the `{`, a
         // cuddled one, an own-line body comment, inter-arm and arm-trailing match
         // comments, doc comments on members, and a declaration header comment — every
         // spelling must format to one fixed point that preserves the comment.
@@ -401,7 +405,7 @@ fn brace_grammar_corpus() -> Vec<String> {
 /// failure, not a hang), is deterministic, tiles the source losslessly, recovers with
 /// a bounded number of well-spanned diagnostics, and — for a clean parse — is a
 /// formatter fixed point that re-parses cleanly. The formatter leg now asserts
-/// idempotence unconditionally over comments (MSY01), so a comment-bearing clean
+/// idempotence unconditionally over comments, so a comment-bearing clean
 /// parse is held to the same fixed-point contract as a comment-free one. The parse
 /// runs on a large stack so a deep mutated input fails closed at the nesting limit
 /// rather than overflowing.
@@ -438,7 +442,7 @@ fn assert_bounded_recovery(source: &str) {
 /// invariants under a per-iteration wall-clock bound, so a member loop that fails to
 /// terminate on a missing `}` is a test failure rather than a hung suite. Each
 /// cleanly-parsing corpus entry additionally holds the faithful lens (comment- and
-/// structure-preserving), pinning the MSY01 comment-ownership fix.
+/// structure-preserving), pinning the comment-ownership contract.
 #[test]
 fn brace_grammar_corpus_holds_the_oracle_invariants_without_hanging() {
     for source in brace_grammar_corpus() {
@@ -553,3 +557,234 @@ impl SplitMix64 {
         self.next_u64() % bound
     }
 }
+
+/// Whether any node in the tree is the parser's error placeholder. Every parse
+/// yields a node: a failure is an `Expression::Error`/`Statement::Error` carrying
+/// its span, so the two properties below can ask whether a placeholder appeared.
+fn expr_has_error(expr: &Expression) -> bool {
+    match expr {
+        Expression::Error { .. } => true,
+        Expression::Call { callee, args, .. } => {
+            expr_has_error(callee) || args.iter().any(|arg| expr_has_error(&arg.value))
+        }
+        Expression::Keyed { base, keys, .. } => {
+            expr_has_error(base) || keys.iter().any(expr_has_error)
+        }
+        Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
+            expr_has_error(base)
+        }
+        Expression::Unary { operand, .. } => expr_has_error(operand),
+        Expression::Try { inner, .. } => expr_has_error(inner),
+        Expression::Binary { operands, .. } => {
+            expr_has_error(&operands.left) || expr_has_error(&operands.right)
+        }
+        Expression::Range {
+            start, end, step, ..
+        } => [start, end, step]
+            .into_iter()
+            .flatten()
+            .any(|part| expr_has_error(part)),
+        Expression::Membership { value, range, .. } => {
+            expr_has_error(value) || expr_has_error(range)
+        }
+        Expression::Interpolation { parts, .. } => parts.iter().any(|part| match part {
+            InterpolationPart::Expr(inner) => expr_has_error(inner),
+            InterpolationPart::Text { .. } => false,
+        }),
+        Expression::Literal { .. }
+        | Expression::Name { .. }
+        | Expression::SavedRoot { .. }
+        | Expression::Absent { .. } => false,
+    }
+}
+
+fn block_has_error(block: &Block) -> bool {
+    block.statements.iter().any(stmt_has_error)
+}
+
+fn stmt_has_error(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Error { .. } => true,
+        Statement::Const { value, .. }
+        | Statement::Assert { value, .. }
+        | Statement::Expr { value, .. } => expr_has_error(value),
+        Statement::Var { value, .. } | Statement::Return { value, .. } => {
+            value.as_ref().is_some_and(expr_has_error)
+        }
+        Statement::Assign { target, value, .. }
+        | Statement::CompoundAssign { target, value, .. } => {
+            expr_has_error(target) || expr_has_error(value)
+        }
+        Statement::Delete { path, .. } => expr_has_error(path),
+        Statement::PlaceBinding { place, .. } => expr_has_error(place),
+        Statement::Unset { place, .. } => expr_has_error(place),
+        Statement::If {
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            expr_has_error(condition)
+                || block_has_error(then_block)
+                || else_ifs.iter().any(|else_if| {
+                    expr_has_error(&else_if.condition) || block_has_error(&else_if.block)
+                })
+                || else_block.as_ref().is_some_and(block_has_error)
+        }
+        Statement::IfConst {
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            expr_has_error(value)
+                || block_has_error(then_block)
+                || else_ifs.iter().any(|else_if| {
+                    expr_has_error(&else_if.condition) || block_has_error(&else_if.block)
+                })
+                || else_block.as_ref().is_some_and(block_has_error)
+        }
+        Statement::While {
+            condition, body, ..
+        } => expr_has_error(condition) || block_has_error(body),
+        Statement::For {
+            iterable,
+            step,
+            bound,
+            body,
+            ..
+        } => {
+            expr_has_error(iterable)
+                || step.as_ref().is_some_and(expr_has_error)
+                || bound.as_ref().is_some_and(|bound| {
+                    expr_has_error(&bound.limit)
+                        || bound.from.as_ref().is_some_and(expr_has_error)
+                        || bound.on_more.as_ref().is_some_and(block_has_error)
+                })
+                || block_has_error(body)
+        }
+        Statement::Transaction { body, .. } => block_has_error(body),
+        Statement::Match {
+            scrutinee, arms, ..
+        } => expr_has_error(scrutinee) || arms.iter().any(|arm| block_has_error(&arm.block)),
+        Statement::Checked {
+            op,
+            out_of_range,
+            zero_divisor,
+            ..
+        } => {
+            expr_has_error(op)
+                || [out_of_range, zero_divisor]
+                    .into_iter()
+                    .flatten()
+                    .any(block_has_error)
+        }
+        Statement::IfConstChain {
+            bindings,
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            bindings
+                .iter()
+                .any(|binding| expr_has_error(&binding.value))
+                || condition.as_ref().is_some_and(expr_has_error)
+                || block_has_error(then_block)
+                || else_ifs.iter().any(|else_if| {
+                    expr_has_error(&else_if.condition) || block_has_error(&else_if.block)
+                })
+                || else_block.as_ref().is_some_and(block_has_error)
+        }
+        Statement::LetElse {
+            value, else_block, ..
+        } => expr_has_error(value) || block_has_error(else_block),
+        Statement::Require {
+            condition, value, ..
+        } => expr_has_error(condition) || expr_has_error(value),
+        Statement::Break { .. } | Statement::Continue { .. } => false,
+    }
+}
+
+fn file_has_error(file: &SourceFile) -> bool {
+    file.declarations
+        .iter()
+        .any(|declaration| match declaration {
+            Declaration::Function(function) => block_has_error(&function.body),
+            Declaration::Const(decl) => decl.value.as_ref().is_some_and(expr_has_error),
+            _ => false,
+        })
+}
+
+/// A well-formed program never yields the error placeholder: the documented
+/// library parses to a tree with no error nodes and no diagnostics.
+#[test]
+fn valid_programs_yield_no_error_nodes() {
+    for block in common::documented_source_blocks() {
+        let parsed = parse_source(&block.source);
+        assert!(
+            !parsed.has_errors(),
+            "documented block {} should parse cleanly: {:#?}",
+            block.path,
+            parsed.diagnostics
+        );
+        assert!(
+            !file_has_error(&parsed.file),
+            "documented block {} should hold no error nodes",
+            block.path
+        );
+    }
+}
+
+/// Every prefix of every documented library parses without panicking, and any
+/// error node it produces travels with a diagnostic. This is the soundness
+/// foundation of the `has_errors` gate: an error node can never reach a downstream
+/// crate that trusts a clean `has_errors` to mean a fully structured tree.
+#[test]
+fn every_error_node_travels_with_a_diagnostic() {
+    let mut malformed_seen = false;
+    let mut check = |source: &str, label: &str| {
+        let ParsedSource { file, diagnostics } = parse_source(source);
+        if file_has_error(&file) {
+            malformed_seen = true;
+            assert!(
+                diagnostics
+                    .complete()
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == Severity::Error),
+                "an error node appeared with no diagnostic for {label}: {source:?}",
+            );
+        }
+    };
+    for block in common::documented_source_blocks() {
+        // Every byte-boundary truncation is a distinct partially-written program. A
+        // truncation ending inside a block leaves it unclosed, which the parser reports
+        // at the open delimiter with an empty body rather than an error node; the error
+        // nodes this property guards come from malformed-but-balanced statement bodies.
+        for end in char_boundaries(&block.source) {
+            check(&block.source[..end], &block.path);
+        }
+    }
+    // Balanced bodies with a malformed interior statement keep the error-node property
+    // non-vacuous: each yields a `Statement::Error`/`Expression::Error` with a diagnostic.
+    for program in MALFORMED_BALANCED_PROGRAMS {
+        check(program, "malformed-balanced program");
+    }
+    // A property that never exercised a single error node would be vacuous.
+    assert!(
+        malformed_seen,
+        "expected a malformed program to produce an error node"
+    );
+}
+
+/// Syntactically balanced programs whose interior does not structure: each parses to a
+/// tree carrying an error node beside its diagnostic, exercising the soundness invariant
+/// that a truncated (and now cleanly reported) body no longer does.
+const MALFORMED_BALANCED_PROGRAMS: &[&str] = &[
+    "pub fn f(): int {\n    const x = \n}\n",
+    "pub fn f() {\n    @ \n}\n",
+    "pub fn f() {\n    return 1 +\n}\n",
+];

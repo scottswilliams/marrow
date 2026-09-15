@@ -6,8 +6,6 @@ mod brace_grammar;
 mod comment_ownership;
 #[path = "cases/diagnostic_bounds.rs"]
 mod diagnostic_bounds;
-#[path = "cases/diagnostic_bounds_absence.rs"]
-mod diagnostic_bounds_absence;
 #[path = "cases/flip2_bracket_angle.rs"]
 mod flip2_bracket_angle;
 #[path = "cases/format.rs"]
@@ -46,9 +44,5 @@ mod parse_types_params;
 mod roundtrip;
 #[path = "cases/semantic_spans.rs"]
 mod semantic_spans;
-#[path = "cases/total_parser_architecture.rs"]
-mod total_parser_architecture;
-#[path = "cases/type_expr_architecture.rs"]
-mod type_expr_architecture;
 #[path = "cases/vscode_grammar.rs"]
 mod vscode_grammar;

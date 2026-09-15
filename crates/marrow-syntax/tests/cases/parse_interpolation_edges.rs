@@ -47,6 +47,45 @@ fn deeply_nested_interpolation_parses_and_nests() {
     );
 }
 
+/// The depth limit is an exact edge: a nest exactly `NESTING_DEPTH_LIMIT` deep is
+/// admitted, and the first nest past it reports the nesting limit once.
+#[test]
+fn interpolation_nesting_admits_the_limit_and_refuses_one_past_it() {
+    fn nest(depth: usize) -> String {
+        let mut source = String::with_capacity(depth * 5 + 1);
+        for _ in 0..depth {
+            source.push_str("$\"{");
+        }
+        source.push('x');
+        for _ in 0..depth {
+            source.push_str("}\"");
+        }
+        source
+    }
+
+    let admitted = lex_source(&nest(NESTING_DEPTH_LIMIT));
+    assert!(
+        admitted.diagnostics.complete().is_empty(),
+        "the exact nesting boundary must remain admitted: {:#?}",
+        admitted.diagnostics
+    );
+
+    let refused = lex_source(&nest(NESTING_DEPTH_LIMIT + 1));
+    assert_eq!(
+        refused
+            .diagnostics
+            .complete()
+            .iter()
+            .filter(
+                |diagnostic| diagnostic.reason == parse_reason(ParseDiagnosticReason::NestingLimit)
+            )
+            .count(),
+        1,
+        "one nest past the limit must report the nesting limit exactly once: {:#?}",
+        refused.diagnostics
+    );
+}
+
 /// Interpolation nesting is bounded by the documented depth limit, and a nest
 /// past it reports the same `check.nesting_limit` finding every other over-deep
 /// construct reports — not a misleading "unterminated interpolation expression".

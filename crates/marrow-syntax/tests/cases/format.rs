@@ -4,7 +4,7 @@
 //! angle generics, `//`/`///` comments, and the empty-body rule. Every braced
 //! statement block renders multiline — the header on its own line, one statement per
 //! indented line, the closing `}` on its own line — and only an empty body renders
-//! `{}` inline. The comment-ownership invariants (MSY01) are pinned in
+//! `{}` inline. The comment-ownership invariants are pinned in
 //! `comment_ownership.rs`; here the rendered text is the contract.
 
 use crate::common;
@@ -1028,7 +1028,7 @@ fn rejects_indented_top_level_doc_comment_without_target() {
     );
 }
 
-// ---- header-trailing comments (MSY01 behavior) ----
+// ---- header-trailing comments ----
 
 /// A comment trailing a bodyless top-level header stays at the header's end; a comment
 /// trailing a body-bearing header is owned by the block and renders as its first line.

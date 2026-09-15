@@ -2,7 +2,7 @@
 //! live collector per entry point, typed Count/OwnedBytes ceilings with exact
 //! edges, Count precedence and Bytes-to-Count strengthening, destructive
 //! discard, stable lexer-first tie order, discarding-probe isolation,
-//! finalize-before-submit help (A8), the nonempty wrapper (A6), and the
+//! finalize-before-submit help, the nonempty wrapper, and the
 //! formatting refusals over the bounded result.
 
 use crate::common::{lexer_reason, parse_reason};
@@ -85,7 +85,7 @@ fn owned_bytes_charge_is_the_finalized_message_and_help() {
     );
 }
 
-/// A8: the loop-label recovery finalizes its help before submission, and the
+/// The loop-label recovery finalizes its help before submission, and the
 /// byte charge covers message plus help exactly.
 #[test]
 fn help_is_finalized_before_submission_and_charged() {
@@ -341,7 +341,7 @@ fn summaries_are_copyable_facts() {
     assert_eq!(summary.owned_bytes(), copy.owned_bytes());
 }
 
-/// A6: only `into_non_empty` constructs the nonempty wrapper; an empty payload
+/// Only `into_non_empty` constructs the nonempty wrapper; an empty payload
 /// yields `None`, and the wrapper exposes the same rows through `as_slice`.
 #[test]
 fn nonempty_wrapper_construction_and_consumption() {

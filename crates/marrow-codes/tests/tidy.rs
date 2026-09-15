@@ -348,7 +348,7 @@ const FORBIDDEN_FAMILIES: &[&str] = &[
     "Value::Absent",
     // The tree-walking interpreter's owning type.
     "Interpreter",
-    // Store-owned language vocabulary relocated to the path kernel at K.5: the
+    // Store-owned language vocabulary that moved to the path kernel: the
     // key/value scalar types and the deleted tree-cell/catalog-id key substrate.
     // The kernel now owns `KeyScalar`/`RuntimeScalar`; these old spellings must
     // not reappear in the store or anywhere else.
@@ -485,6 +485,19 @@ const ABSENCE_SCANS: &[AbsenceScan] = &[
         subject: "a filesystem edge reached a pure owner",
         roots: &["crates/marrow-project/src/", "crates/marrow-compile/src/"],
         needles: &["std::fs", "std::io::Read", "File::open", "File::create"],
+    },
+    // Severity is owned by the diagnostic payload (`marrow_syntax::Severity`, fixed at
+    // construction) and catchability is not a language axis at all. A per-code table
+    // for either would be a second owner consumers could classify codes against.
+    AbsenceScan {
+        subject: "a deleted registry classification axis returned",
+        roots: &["crates/marrow-codes/src/"],
+        needles: &[
+            "pub enum Catchability",
+            "fn catchability(",
+            "pub enum SeverityClass",
+            "fn severity_class(",
+        ],
     },
     // No current envelope claims power-loss durability, so the full-flush fcntl and
     // the std sync wrappers — whose Darwin implementation issues that fcntl — stay
