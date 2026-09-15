@@ -539,9 +539,7 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         // first root, and every later root references it.
         | ImageBuildError::ProductGraphConflict
         | ImageBuildError::ProductEntryRecordConflict
-        | ImageBuildError::InvalidReference(_)
-        // A section drifting from its measured plan is a producer defect, never policy.
-        | ImageBuildError::EncodeDrift(_) => {
+        | ImageBuildError::InvalidReference(_) => {
             ImagePolicyOutcome::Invariant(InvariantCause::ImageBuild(error))
         }
     }

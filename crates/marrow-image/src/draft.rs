@@ -592,23 +592,11 @@ pub enum ImageBuildError {
     /// divergence is latched as a sticky coherence fact the fence reports.
     ApplicationIdentityConflict,
     InvalidReference(&'static str),
-    /// An emitted section's byte length disagrees with the length the measure core
-    /// counted for it through the same writer. Unreachable from any input by
-    /// construction — the counted==emitted KATs pin per-section length invariance — so
-    /// an occurrence is a producer defect, named by the section that drifted.
-    EncodeDrift(crate::measure::EncodeDriftSection),
 }
 
 impl std::fmt::Display for ImageBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            // The drifted region renders by name, so the one invariant that names a
-            // section reads as one.
-            ImageBuildError::EncodeDrift(section) => {
-                write!(f, "image build error: encode drift in {section}")
-            }
-            other => write!(f, "image build error: {other:?}"),
-        }
+        write!(f, "image build error: {self:?}")
     }
 }
 

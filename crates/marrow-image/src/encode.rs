@@ -44,7 +44,7 @@ use crate::digest::ImageId;
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
 use crate::durable_id::{DurableGraphTooLarge, DurableIndexComponent, DurableIndexShape};
 use crate::instr::Instr;
-use crate::measure::{EncodeDriftSection, LegacyV0MeasureCore, wire_len, wire_ordinal};
+use crate::measure::{CoherentDraft, wire_len, wire_ordinal};
 use crate::product::{DeclarationMemberShape, DeclarationNode, ProductDeclarationGraph};
 use crate::remap::{ConstRemap, SectionSink, StringRemap};
 use crate::ty::ImageType;
@@ -74,12 +74,12 @@ impl ImageDraft {
     /// [`ImageBuildError`] when a reference is incoherent, a §E bound is exceeded, or
     /// the measured image cannot fit.
     ///
-    /// The thin driver over the measure core's four affine steps: coherence, the
-    /// policy walk, capped measurement, and planned emission (`crate::measure`).
+    /// The thin driver over the measure core's three steps: coherence, the policy
+    /// walk, and the one capped emission pass (`crate::measure`).
     pub fn encode(&self) -> Result<EncodedImage, ImageBuildError> {
-        let coherent = LegacyV0MeasureCore::coherence(self)?;
-        let plan = coherent.policy()?.measure()?;
-        plan.emit_image()
+        let coherent = CoherentDraft::of(self)?;
+        coherent.check_policy()?;
+        coherent.emit_image()
     }
 
     /// The canonical string permutation (row law): the base-row indices in emitted
@@ -307,7 +307,7 @@ impl ImageDraft {
     }
 }
 
-impl crate::measure::CoherentDraft<'_> {
+impl CoherentDraft<'_> {
     pub(crate) fn encode_functions<S: ImageByteSink>(
         &self,
         sink: &mut SectionSink<'_, S>,
@@ -318,6 +318,9 @@ impl crate::measure::CoherentDraft<'_> {
         push_u16(sink, self.functions().len() as u16);
         let mut per_fn = Vec::with_capacity(self.functions().len());
         for function in self.functions() {
+            if sink.is_full() {
+                return Ok(per_fn);
+            }
             let layout = code_layout(&function.code)?;
             if layout.total_len as usize > bounds::MAX_CODE_BYTES {
                 return Err(ImageBuildError::CodeTooLong);
@@ -382,7 +385,7 @@ impl ImageDraft {
     }
 }
 
-impl crate::measure::CoherentDraft<'_> {
+impl CoherentDraft<'_> {
     /// Encode the SPANS section: per function in table order, a `u16` span count then
     /// that many `u32(offset) ‖ u32(line) ‖ u32(column)` rows.
     ///
@@ -407,6 +410,9 @@ impl crate::measure::CoherentDraft<'_> {
         );
 
         for (function, layout) in self.functions().zip(per_fn) {
+            if sink.is_full() {
+                return;
+            }
             push_u16(sink, function.spans.len() as u16);
             for span in &function.spans {
                 let offset = layout.offsets[span.instr_index as usize];
@@ -604,22 +610,6 @@ pub(crate) fn push_frame(sink: &mut impl ImageByteSink, id: u8, body_len: u32) {
     push_u32(sink, body_len);
 }
 
-/// Append one section: its frame, then its body.
-///
-/// The body length fits the frame's `u32` prefix. Every section but two is built from
-/// rows the §E bounds cap, and the widest such body — `MAX_FUNCTIONS` ×
-/// `MAX_CODE_BYTES` of code — is a few hundred mebibytes. The DURABLE body's size does
-/// not follow from a row count, because a value shape expands geometrically in its
-/// depth; the measure core's capped counting decides it against the whole-image
-/// ceiling before it is ever built. SPANS is the remaining one: its rows are
-/// producer-supplied and no bound caps their number (see `encode_spans`), so this
-/// length rests on the producer, which would have to hold four gibibytes of spans in
-/// memory to reach the prefix width.
-pub(crate) fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
-    push_frame(out, id, body.len() as u32);
-    out.extend_from_slice(&body);
-}
-
 /// Encode a placement key tuple into the DURABLE section: `u16(count) ‖
 /// [scalar_tag ‖ id(16)]*`. Shared by roots and branches; column order is
 /// load-bearing.
@@ -663,20 +653,11 @@ fn encode_declaration_members(
                 body.push(0x00);
                 body.extend_bytes(id.bytes());
                 body.push(u8::from(*required));
-                // This runs behind a minted plan, and the plan is the witness that the
-                // whole image fits. A ceiling verdict issued here would be a policy
-                // decision made after the policy decision closed, so an arity the
-                // section's `u16` cannot spell is reported as what it actually is at this
-                // point: the emission disagreeing with the measurement that admitted it —
-                // encode drift in the DURABLE section, which is invariant-classed. The
-                // draft's arena fan-out recheck bounds every arity far below this width
-                // before the plan is minted, which is why the arm is unreachable rather
-                // than merely reclassified.
-                expand(values, *value, ValueShapeWireForm::DurableSection, body).map_err(
-                    |DurableGraphTooLarge| {
-                        ImageBuildError::EncodeDrift(EncodeDriftSection::of(0x03))
-                    },
-                )?;
+                // Coherence's arena fan-out recheck bounds every arity far below the
+                // width this section's `u16` spells, so the arm is unreachable; a
+                // value that wide is an image no ceiling admits.
+                expand(values, *value, ValueShapeWireForm::DurableSection, body)
+                    .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
             }
             DeclarationMemberShape::Group { id } => {
                 body.push(0x01);
@@ -742,7 +723,7 @@ fn push_u32(out: &mut impl ImageByteSink, value: u32) {
 /// remapped operands, spans, exports, and test entries.
 #[cfg(test)]
 mod counted_equals_emitted {
-    use super::{CodeLayout, checked_code_offset, remap_of};
+    use super::checked_code_offset;
     use crate::draft::{
         AdmittedGraphInputPlan, CollectionTypeDef, FieldDef, FunctionDef, ImageDraft,
         RecordTypeDef, RootOccurrenceDef, SpanEntry, VariantDef,
@@ -750,10 +731,8 @@ mod counted_equals_emitted {
     use crate::durable_id::{DurableIndexComponent, DurableIndexShape, LedgerIdBytes};
     use crate::instr::Instr;
     use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
-    use crate::remap::{ConstRemap, SectionSink, StringRemap};
     use crate::semantic::SemanticTarget;
     use crate::ty::{ImageType, Scalar};
-    use crate::value_dag::ImageByteSink;
 
     #[test]
     fn code_offset_overflow_is_the_typed_code_length_refusal() {
@@ -770,20 +749,6 @@ mod counted_equals_emitted {
             17,
             "the old sixteen-byte instruction proof is false",
         );
-    }
-
-    /// A sink that keeps nothing: the counting instantiation of each writer.
-    #[derive(Default)]
-    struct CountingSink(usize);
-
-    impl ImageByteSink for CountingSink {
-        fn push(&mut self, _byte: u8) {
-            self.0 += 1;
-        }
-
-        fn extend_bytes(&mut self, bytes: &[u8]) {
-            self.0 += bytes.len();
-        }
     }
 
     fn id(byte: u8) -> LedgerIdBytes {
@@ -1160,39 +1125,10 @@ mod counted_equals_emitted {
         draft
     }
 
-    fn fixtures() -> [ImageDraft; 2] {
-        [storeless(), durable()]
-    }
-
-    /// The measured wire plan over one fitting fixture — the only mint of the site
-    /// projection the function writer takes, exactly as `encode` reaches it.
-    fn measured_plan(draft: &ImageDraft) -> crate::measure::LegacyV0WirePlan<'_> {
-        crate::measure::LegacyV0MeasureCore::coherence(draft)
-            .expect("the fixture is coherent")
-            .policy()
-            .expect("the fixture is policy clean")
-            .measure()
-            .expect("the fixture fits")
-    }
-
-    fn coherent(draft: &ImageDraft) -> crate::measure::CoherentDraft<'_> {
-        crate::measure::LegacyV0MeasureCore::coherence(draft).expect("the fixture is coherent")
-    }
-
-    /// The canonical permutations and their inverse maps, exactly as `encode` builds
-    /// them.
-    fn canonical(draft: &ImageDraft) -> (Vec<usize>, Vec<u16>, Vec<usize>, Vec<u16>) {
-        let string_order = draft.string_permutation();
-        let str_map = remap_of(&string_order);
-        let const_order = draft.const_permutation(&str_map);
-        let const_map = remap_of(&const_order);
-        (string_order, str_map, const_order, const_map)
-    }
-
-    /// The KATs prove nothing over empty row sets, so the fixtures must be populated
-    /// and must encode.
+    /// Both fixtures must be populated, so the encoder is exercised over every
+    /// section rather than over empty row sets.
     #[test]
-    fn the_kat_fixtures_are_populated_and_encode() {
+    fn the_fixtures_are_populated_and_encode() {
         let storeless = storeless();
         storeless.encode().expect("the storeless fixture encodes");
         assert!(!storeless.strings().is_empty());
@@ -1208,189 +1144,5 @@ mod counted_equals_emitted {
         durable.encode().expect("the durable fixture encodes");
         assert_eq!(durable.root_occurrences().len(), 2);
         assert!(durable.site_row_count() > 0);
-    }
-
-    #[test]
-    fn counted_strings_equal_emitted_strings() {
-        for draft in fixtures() {
-            let (string_order, ..) = canonical(&draft);
-            let mut emitted = Vec::new();
-            draft.encode_strings(
-                &mut SectionSink::over(&mut emitted),
-                string_order.iter().copied(),
-            );
-            let mut counted = CountingSink::default();
-            draft.encode_strings(
-                &mut SectionSink::over(&mut counted),
-                0..draft.strings().len(),
-            );
-            assert_eq!(counted.0, emitted.len());
-        }
-    }
-
-    #[test]
-    fn counted_types_equal_emitted_types() {
-        for draft in fixtures() {
-            let (_, str_map, ..) = canonical(&draft);
-            let mut emitted = Vec::new();
-            draft.encode_types(
-                &mut SectionSink::over(&mut emitted),
-                &StringRemap::new(&str_map),
-            );
-            let mut counted = CountingSink::default();
-            draft.encode_types(
-                &mut SectionSink::over(&mut counted),
-                &StringRemap::counting(),
-            );
-            assert_eq!(counted.0, emitted.len());
-        }
-    }
-
-    #[test]
-    fn counted_durable_body_equals_emitted_durable_body() {
-        for draft in fixtures() {
-            let (_, str_map, ..) = canonical(&draft);
-            let mut emitted = Vec::new();
-            draft
-                .write_durable_body(&mut emitted, &StringRemap::new(&str_map))
-                .expect("the fixture's durable body is coherent");
-            let mut counted = CountingSink::default();
-            draft
-                .write_durable_body(&mut counted, &StringRemap::counting())
-                .expect("the count walks the same rows");
-            assert_eq!(counted.0, emitted.len());
-        }
-    }
-
-    #[test]
-    fn counted_consts_equal_emitted_consts() {
-        for draft in fixtures() {
-            let (_, str_map, const_order, _) = canonical(&draft);
-            let mut emitted = Vec::new();
-            draft.encode_consts(
-                &mut SectionSink::over(&mut emitted),
-                &StringRemap::new(&str_map),
-                const_order.iter().copied(),
-            );
-            let mut counted = CountingSink::default();
-            draft.encode_consts(
-                &mut SectionSink::over(&mut counted),
-                &StringRemap::counting(),
-                0..draft.consts().len(),
-            );
-            assert_eq!(counted.0, emitted.len());
-        }
-    }
-
-    /// The measure core's offset-free FUNCTIONS arithmetic against the writer: the
-    /// two consume one per-item width owner, so the counted body equals the emitted
-    /// body on every fixture.
-    #[test]
-    fn counted_functions_equal_emitted_functions() {
-        for draft in fixtures() {
-            let (_, str_map, _, const_map) = canonical(&draft);
-            let plan = measured_plan(&draft);
-            let mut emitted = Vec::new();
-            coherent(&draft)
-                .encode_functions(
-                    &mut SectionSink::over(&mut emitted),
-                    &StringRemap::new(&str_map),
-                    &ConstRemap::new(&const_map),
-                    &plan.site_projection(),
-                )
-                .expect("the fixture's code encodes");
-            let mut counted = crate::measure::CappedImageCount::default();
-            crate::measure::count_functions(&coherent(&draft), &mut counted);
-            assert_eq!(counted.total(), emitted.len());
-        }
-    }
-
-    #[test]
-    fn counted_exports_equal_emitted_exports() {
-        for draft in fixtures() {
-            let mut emitted = Vec::new();
-            draft.encode_exports(
-                &mut SectionSink::over(&mut emitted),
-                draft.export_permutation().iter().copied(),
-            );
-            let mut counted = CountingSink::default();
-            draft.encode_exports(
-                &mut SectionSink::over(&mut counted),
-                0..draft.export_count(),
-            );
-            assert_eq!(counted.0, emitted.len());
-        }
-    }
-
-    /// The measure core's offset-free SPANS arithmetic against the writer.
-    #[test]
-    fn counted_spans_equal_emitted_spans() {
-        for draft in fixtures() {
-            let (_, str_map, _, const_map) = canonical(&draft);
-            let plan = measured_plan(&draft);
-            let per_fn: Vec<CodeLayout> = coherent(&draft)
-                .encode_functions(
-                    &mut SectionSink::over(&mut CountingSink::default()),
-                    &StringRemap::new(&str_map),
-                    &ConstRemap::new(&const_map),
-                    &plan.site_projection(),
-                )
-                .expect("the fixture's code lays out");
-            let mut emitted = Vec::new();
-            coherent(&draft).encode_spans(&mut SectionSink::over(&mut emitted), &per_fn);
-            let mut counted = crate::measure::CappedImageCount::default();
-            crate::measure::count_spans(&coherent(&draft), &mut counted);
-            assert_eq!(counted.total(), emitted.len());
-        }
-    }
-
-    #[test]
-    fn counted_test_entries_equal_emitted_test_entries() {
-        for draft in fixtures() {
-            let (_, str_map, ..) = canonical(&draft);
-            let order = draft.test_entry_permutation(&str_map);
-            let mut emitted = Vec::new();
-            draft.encode_test_entries(
-                &mut SectionSink::over(&mut emitted),
-                &StringRemap::new(&str_map),
-                order.iter().copied(),
-            );
-            let mut counted = CountingSink::default();
-            draft.encode_test_entries(
-                &mut SectionSink::over(&mut counted),
-                &StringRemap::counting(),
-                0..draft.test_entry_count(),
-            );
-            assert_eq!(counted.0, emitted.len());
-        }
-    }
-
-    #[test]
-    fn counted_enums_equal_emitted_enums() {
-        for draft in fixtures() {
-            let (_, str_map, ..) = canonical(&draft);
-            let mut emitted = Vec::new();
-            draft.encode_enums(
-                &mut SectionSink::over(&mut emitted),
-                &StringRemap::new(&str_map),
-            );
-            let mut counted = CountingSink::default();
-            draft.encode_enums(
-                &mut SectionSink::over(&mut counted),
-                &StringRemap::counting(),
-            );
-            assert_eq!(counted.0, emitted.len());
-        }
-    }
-
-    #[test]
-    fn counted_collections_equal_emitted_collections() {
-        for draft in fixtures() {
-            let mut emitted = Vec::new();
-            draft.encode_collections(&mut SectionSink::over(&mut emitted));
-            let mut counted = CountingSink::default();
-            draft.encode_collections(&mut SectionSink::over(&mut counted));
-            assert_eq!(counted.0, emitted.len());
-        }
     }
 }

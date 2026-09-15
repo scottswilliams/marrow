@@ -1,10 +1,10 @@
-//! Opaque canonical-order remap tokens (design §C token law).
+//! Opaque canonical-order remap tokens.
 //!
 //! The encoder sorts the string and constant pools into canonical order and rewrites
 //! every reference through a sort map. The section writers must not be able to *read*
 //! those maps: a writer that can inspect a remapped index can branch on it, and a
-//! branch on a remap value is exactly how a counted section and an emitted section
-//! drift apart. This module therefore hands writers tokens instead of indices.
+//! section whose bytes depend on the sort order cannot be reasoned about from its
+//! rows. This module therefore hands writers tokens instead of indices.
 //!
 //! A token is minted only by its remap provider, carries its value privately, and has
 //! exactly one operation: a consuming [`StringToken::emit`]/[`ConstToken::emit`] that
@@ -111,39 +111,22 @@ impl ConstToken {
 /// The string remap: the one owner of reads from the string sort map. Writers receive
 /// this provider and obtain per-reference [`StringToken`]s; the map's values never
 /// leave it in readable form.
-///
-/// The counting instantiation carries no map and yields the constant token: a token is
-/// two bytes whatever its value, so a counted section's length cannot depend on the
-/// sort — which is what lets the measure core count every section before sorting
-/// anything, with the counted==emitted KATs as the executable proof.
-pub(crate) struct StringRemap<'a>(Option<&'a [u16]>);
+pub(crate) struct StringRemap<'a>(&'a [u16]);
 
 impl<'a> StringRemap<'a> {
     pub(crate) fn new(map: &'a [u16]) -> Self {
-        Self(Some(map))
+        Self(map)
     }
 
-    /// The allocation-free counting instantiation: every token is the constant token.
-    /// Its callers run strictly after the coherence walk has proved every reference in
-    /// range, so no lookup is skipped that could have refused one.
-    pub(crate) fn counting() -> Self {
-        Self(None)
-    }
-
-    /// The token for one drafted string reference. Under a sorted map, an id outside
-    /// the pool panics exactly as the raw map indexing it replaces did.
+    /// The token for one drafted string reference. An id outside the pool panics
+    /// exactly as the raw map indexing it replaces did.
     pub(crate) fn token(&self, id: StrId) -> StringToken {
-        StringToken(match self.0 {
-            Some(map) => map[id.raw() as usize],
-            None => 0,
-        })
+        StringToken(self.0[id.raw() as usize])
     }
 }
 
 /// The constant remap: the one owner of reads from the constant sort map, looked up
-/// by the typed wide [`ConstId`] an instruction operand carries. It has no counting
-/// instantiation: the measure core counts the FUNCTIONS section arithmetically from
-/// the shared per-item widths, so only emission resolves constant references.
+/// by the typed wide [`ConstId`] an instruction operand carries.
 pub(crate) struct ConstRemap<'a>(&'a [u16]);
 
 impl<'a> ConstRemap<'a> {

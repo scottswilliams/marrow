@@ -565,8 +565,6 @@ fn image_build_errors_classify_without_a_fabricated_location() {
         matches!(contradiction, super::ImagePolicyOutcome::Invariant(_)),
         "a producer-state contradiction is an opaque invariant, not a diagnostic"
     );
-    // `EncodeDrift` classifies through the same invariant arm; its payload has no
-    // constructor outside the emitter, so the wildcard-free match carries it.
 }
 
 #[test]
