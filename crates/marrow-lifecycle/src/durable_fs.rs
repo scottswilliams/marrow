@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, FsIdentity, OpenedFile};
+use marrow_fs_journal::{AdmittedDir, CustodyError, CustodyOp, EntryName, FsIdentity, OpenedFile};
 
 pub(crate) fn custody_io(error: CustodyError) -> std::io::Error {
     let kind = match &error {
@@ -78,7 +78,7 @@ impl Publication {
             .is_none_or(|entry| entry.identity() != identity)
         {
             return Err(CustodyError::IdentityDrift {
-                op: "publish staged entry",
+                op: CustodyOp::RenameNoreplace,
             });
         }
         self.parent.rename_noreplace(&self.stage, &self.destination)
@@ -97,7 +97,7 @@ impl Publication {
             None => Ok(()),
             Some(entry) if entry.identity() == identity => self.parent.unlink(&self.stage),
             Some(_) => Err(CustodyError::IdentityDrift {
-                op: "remove unpublished file",
+                op: CustodyOp::Unlink,
             }),
         }
     }
@@ -111,7 +111,7 @@ impl Publication {
                 .is_none_or(|entry| entry.identity() != identity)
         {
             return Err(CustodyError::IdentityDrift {
-                op: "verify published location",
+                op: CustodyOp::Stat,
             });
         }
         Ok(())

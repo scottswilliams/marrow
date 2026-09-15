@@ -17,8 +17,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use marrow_codes::Code;
 use marrow_fs_journal::{
-    AdmittedDir, CustodyError, EntryName, FsIdentity, JournalKind, PendingName, encode_header,
-    encode_record,
+    AdmittedDir, CustodyError, CustodyOp, EntryName, FsIdentity, JournalKind, PendingName,
+    encode_header, encode_record,
 };
 use marrow_project::{IdentityAnchor, IdentityKind, LedgerPublicationPlan};
 
@@ -2033,7 +2033,7 @@ fn a_non_regular_ignore_entry_is_still_refused() {
         );
         assert_eq!(
             refused_operation(&refusal),
-            "open file",
+            Some(CustodyOp::OpenFile),
             "a {kind} at the ignore entry's name was refused by another operation"
         );
     }
@@ -2215,13 +2215,13 @@ impl Drop for RefusingMeta {
 /// from its rendered message. A fault kat that asserted only the refusal class
 /// would be satisfied by a refusal from any earlier operation in the same call,
 /// including the guard's own lock and the marker claim.
-fn refused_operation(error: &IdsPublicationError) -> &'static str {
+fn refused_operation(error: &IdsPublicationError) -> Option<CustodyOp> {
     let source = std::error::Error::source(error).expect("a custody refusal carries its source");
     let custody = source
         .downcast_ref::<CustodyError>()
         .expect("a custody refusal's source is the custody error");
     match custody {
-        CustodyError::UnqualifiedPlatform { .. } => "platform",
+        CustodyError::UnqualifiedPlatform { .. } => None,
         CustodyError::Unsupported { op }
         | CustodyError::AlreadyExists { op }
         | CustodyError::NotFound { op }
@@ -2230,7 +2230,7 @@ fn refused_operation(error: &IdsPublicationError) -> &'static str {
         | CustodyError::WrongNodeKind { op, .. }
         | CustodyError::IdentityDrift { op }
         | CustodyError::ModeDenied { op, .. }
-        | CustodyError::Io { op, .. } => op,
+        | CustodyError::Io { op, .. } => Some(*op),
     }
 }
 
@@ -2263,7 +2263,7 @@ fn a_refused_stage_creation_stages_and_claims_nothing() {
     assert_eq!(refusal.code(), Code::IoWrite);
     assert_eq!(
         refused_operation(&refusal),
-        "create file",
+        Some(CustodyOp::CreateFile),
         "the stage creation is the operation that refused: {refusal}"
     );
     assert!(!project.exists("ids"), "no artifact was written");
@@ -2293,7 +2293,7 @@ fn a_refused_link_retains_the_claimed_publication() {
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
-        "link",
+        Some(CustodyOp::Link),
         "the absent arm's link is the operation that refused: {refusal}"
     );
     assert!(!project.exists("ids"), "no artifact was written");
@@ -2328,7 +2328,7 @@ fn a_refused_exchange_retains_the_bound_generation() {
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
-        "exchange",
+        Some(CustodyOp::Exchange),
         "the replace arm's exchange is the operation that refused: {refusal}"
     );
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"base"[..]));
@@ -2368,7 +2368,7 @@ fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
     assert_eq!(
         refused_operation(&refusal),
-        "rename-noreplace",
+        Some(CustodyOp::RenameNoreplace),
         "the stage cleanup's first act is the move to the quarantine name, and it is \
          the operation that refused: {refusal}"
     );

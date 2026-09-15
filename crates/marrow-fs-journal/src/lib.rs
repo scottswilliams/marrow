@@ -70,12 +70,13 @@ mod lock;
 mod sys;
 
 pub use custody::{
-    AdmittedDir, CustodyError, EntryStat, FsIdentity, NodeKind, OpenedFile, qualified_platform,
+    AdmittedDir, CustodyError, CustodyOp, EntryStat, FsIdentity, LockAcquisition, NodeKind,
+    OpenedFile, qualified_platform,
 };
 pub use entry::{EntryName, EntryNameError};
 pub use frame::{
     DecodedFrame, FrameCorruption, FrameLawError, JournalCommon, JournalKind, PhaseRecord,
-    TailState, decode_frame, encode_header, encode_record,
+    RecordLaw, TailState, decode_frame, encode_header, encode_record,
 };
 pub use journal::{
     BuiltHeader, ClaimRefusal, ClaimedJournal, CorruptionReason, JournalError, JournalWitness,

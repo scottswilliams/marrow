@@ -16,7 +16,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use common::Scratch;
-use marrow_fs_journal::{AdmittedDir, CacheLock, CustodyError, EntryName, LockError, NodeKind};
+use marrow_fs_journal::{
+    AdmittedDir, CacheLock, CustodyError, CustodyOp, EntryName, LockError, NodeKind,
+};
 
 /// A planted non-regular lock entry is refused as the wrong node kind, with
 /// its mode untouched. The classification is asserted as its exact typed
@@ -44,7 +46,7 @@ fn a_non_regular_lock_entry_is_refused_as_the_wrong_node_kind_with_its_mode_unto
         matches!(
             CacheLock::acquire(&dir, &name),
             Err(LockError::Custody(CustodyError::WrongNodeKind {
-                op: "lock",
+                op: CustodyOp::OpenLock,
                 found: NodeKind::Other,
             }))
         ),
@@ -124,7 +126,7 @@ fn every_entry_open_refuses_a_fifo_rather_than_blocking_on_it() {
             matches!(
                 outcome,
                 Err(CustodyError::WrongNodeKind {
-                    op: "open file",
+                    op: CustodyOp::OpenFile,
                     found: NodeKind::Other,
                 })
             ),

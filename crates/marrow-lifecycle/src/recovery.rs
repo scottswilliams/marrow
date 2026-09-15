@@ -698,7 +698,7 @@ mod tests {
             error.fault,
             RecoveryFault::Metadata(AdmissionError {
                 fault: crate::AdmissionFault::Custody(crate::CustodyError::Io {
-                    op: "preservation directory sync",
+                    op: marrow_fs_journal::CustodyOp::Sync,
                     ..
                 }),
                 ..

@@ -12,7 +12,7 @@ use crate::entry::EntryName;
 use crate::sys;
 
 /// The owner bits a read-write open requires of the entry it opens.
-pub(crate) const REQUIRED_RW: u32 = 0o600;
+const REQUIRED_RW: u32 = 0o600;
 /// The owner bits the read-only debris open requires.
 const REQUIRED_READ: u32 = 0o400;
 /// The owner bits a directory this owner works in requires: read to list it,
@@ -179,6 +179,72 @@ impl EntryStat {
     }
 }
 
+/// The descriptor-relative operation a refusal names.
+///
+/// This crate owns the set: a consumer names one of these rather than minting
+/// prose, and a test asserts the variant. A consumer whose own step is wider
+/// than one call — a publication, a recheck — names the custody call the step
+/// turns on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustodyOp {
+    /// Admitting a directory, by trusted path or as a child.
+    AdmitDirectory,
+    /// Creating a child directory.
+    CreateDirectory,
+    /// Creating a regular file `CREATE | EXCL`.
+    CreateFile,
+    /// Opening an existing regular file.
+    OpenFile,
+    /// Opening or creating the lock entry.
+    OpenLock,
+    /// Taking the advisory lock itself.
+    Lock,
+    /// Hard-linking an entry.
+    Link,
+    /// Unlinking an entry.
+    Unlink,
+    /// Statting an entry, a path, or an open handle.
+    Stat,
+    /// `fsync` of a directory or a file.
+    Sync,
+    /// Truncating a file.
+    Truncate,
+    /// Atomically exchanging two entries.
+    Exchange,
+    /// Renaming an entry, refusing an existing destination.
+    RenameNoreplace,
+    /// Renaming an entry over its destination.
+    RenameReplace,
+    /// Appending to a file.
+    Append,
+    /// Reading a bounded prefix of a file.
+    Read,
+}
+
+impl fmt::Display for CustodyOp {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::AdmitDirectory => "admitting a directory",
+            Self::CreateDirectory => "creating a directory",
+            Self::CreateFile => "creating a file",
+            Self::OpenFile => "opening a file",
+            Self::OpenLock => "opening the lock entry",
+            Self::Lock => "locking",
+            Self::Link => "linking",
+            Self::Unlink => "unlinking",
+            Self::Stat => "statting",
+            Self::Sync => "syncing",
+            Self::Truncate => "truncating",
+            Self::Exchange => "exchanging entries",
+            Self::RenameNoreplace => "renaming without replacement",
+            Self::RenameReplace => "renaming over a destination",
+            Self::Append => "appending",
+            Self::Read => "reading",
+        };
+        formatter.write_str(name)
+    }
+}
+
 /// A typed custody refusal. `ENOSYS`, `ENOTSUP`, `EOPNOTSUPP`, unsupported
 /// `EINVAL`, `EXDEV`, identity drift, and an unqualified platform all fail
 /// closed here rather than degrading into a generic I/O error.
@@ -194,20 +260,20 @@ pub enum CustodyError {
     },
     /// The platform or filesystem does not support the operation's required
     /// semantics.
-    Unsupported { op: &'static str },
+    Unsupported { op: CustodyOp },
     /// The destination entry already exists and the operation refuses to
     /// replace it.
-    AlreadyExists { op: &'static str },
+    AlreadyExists { op: CustodyOp },
     /// The named entry does not exist.
-    NotFound { op: &'static str },
+    NotFound { op: CustodyOp },
     /// The named entry is a symbolic link, which custody never follows.
-    SymlinkRefused { op: &'static str },
+    SymlinkRefused { op: CustodyOp },
     /// The named entry is not a directory where one is required.
-    NotADirectory { op: &'static str },
+    NotADirectory { op: CustodyOp },
     /// The named entry has the wrong node kind.
-    WrongNodeKind { op: &'static str, found: NodeKind },
+    WrongNodeKind { op: CustodyOp, found: NodeKind },
     /// The entry's identity changed between admission and use.
-    IdentityDrift { op: &'static str },
+    IdentityDrift { op: CustodyOp },
     /// The entry exists as a regular file whose owner bits do not carry the
     /// access the operation requires, so no process those bits bind can open
     /// it. A crash inside the create-then-`fchmod` window under an
@@ -219,7 +285,7 @@ pub enum CustodyError {
     /// entry — to whoever owns it.
     ModeDenied {
         /// The refused operation.
-        op: &'static str,
+        op: CustodyOp,
         /// The entry's observed permission bits.
         found: u32,
         /// The owner bits the refused open required.
@@ -227,7 +293,7 @@ pub enum CustodyError {
     },
     /// An unclassified I/O failure.
     Io {
-        op: &'static str,
+        op: CustodyOp,
         source: std::io::Error,
     },
 }
@@ -284,8 +350,8 @@ impl std::error::Error for CustodyError {
 /// A retained admitted directory: the descriptor root every operation is
 /// relative to. The descriptor is private and cannot be detached.
 pub struct AdmittedDir {
-    pub(crate) handle: sys::DirHandle,
-    pub(crate) identity: FsIdentity,
+    handle: sys::DirHandle,
+    identity: FsIdentity,
 }
 
 /// Whether this build's adapter qualifies the running platform at all, as the same typed
@@ -312,7 +378,7 @@ impl AdmittedDir {
             }
         };
         let stat = sys::fstat_dir(&handle)?;
-        require_dir_mode("admit directory", &stat)?;
+        require_dir_mode(CustodyOp::AdmitDirectory, &stat)?;
         Ok(Self {
             handle,
             identity: stat.identity,
@@ -322,7 +388,7 @@ impl AdmittedDir {
     /// Admit one child directory of this directory.
     pub fn admit_child(&self, name: &EntryName) -> Result<Self, CustodyError> {
         let child = self.open_child(name)?;
-        require_dir_mode("admit directory", &sys::fstat_dir(&child.handle)?)?;
+        require_dir_mode(CustodyOp::AdmitDirectory, &sys::fstat_dir(&child.handle)?)?;
         Ok(child)
     }
 
@@ -380,7 +446,7 @@ impl AdmittedDir {
     pub fn open_file(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
         let handle = sys::open_file(&self.handle, name.as_str())
             .map_err(|refusal| refine_open_refusal(refusal, self.observe(name), REQUIRED_RW))?;
-        witness_regular(handle)
+        witness_regular(handle, CustodyOp::OpenFile)
     }
 
     /// Open one existing regular file read-only `NOFOLLOW`, witnessing its
@@ -397,13 +463,71 @@ impl AdmittedDir {
     pub fn open_file_readonly(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
         let handle = sys::open_file_readonly(&self.handle, name.as_str())
             .map_err(|refusal| refine_open_refusal(refusal, self.observe(name), REQUIRED_READ))?;
-        witness_regular(handle)
+        witness_regular(handle, CustodyOp::OpenFile)
     }
 
     /// A no-follow stat of `name` taken to name a refusal that has already
     /// been issued. A stat that itself fails leaves the refusal unrefined.
-    pub(crate) fn observe(&self, name: &EntryName) -> Option<EntryStat> {
+    fn observe(&self, name: &EntryName) -> Option<EntryStat> {
         self.stat_entry(name).ok().flatten()
+    }
+
+    /// Re-assert that `name` still maps to `identity`.
+    ///
+    /// Every mutation this crate performs through a retained handle is guarded
+    /// by this one check: a name that has been unlinked and recreated maps to a
+    /// different inode, and acting on the retained handle afterwards would act
+    /// on an object no name holds. `op` names the operation the assertion
+    /// guards, so a drift refusal says what it refused.
+    pub fn reassert(
+        &self,
+        name: &EntryName,
+        identity: FsIdentity,
+        op: CustodyOp,
+    ) -> Result<(), CustodyError> {
+        match self.stat_entry(name)? {
+            Some(entry) if entry.identity == identity => Ok(()),
+            _ => Err(CustodyError::IdentityDrift { op }),
+        }
+    }
+
+    /// Open this directory's lock entry `name`, creating it when absent, and
+    /// witness that it is a regular file.
+    ///
+    /// A create-if-absent open that reports absence is reporting a concurrent
+    /// creation of the same name rather than an absent entry: Darwin returns
+    /// `ENOENT` from `openat` while another thread or process is creating the
+    /// entry, and the name is already present by the time the refusal is read.
+    /// The first publication of a fresh clone is exactly that race — no
+    /// checkout carries the lock — so absence is retried a bounded number of
+    /// times, and each pass ends in the entry opening or in the refusal being
+    /// reported. Each pass is one `openat`, so `CREATION_RENDEZVOUS_PASSES` is
+    /// the whole cost of the rendezvous.
+    ///
+    /// The node kind is witnessed on the opened handle before any lock is
+    /// attempted, because `flock` classifies no node kind: on Darwin it refuses
+    /// the one non-regular node this open accepts — a FIFO — with the
+    /// unsupported-semantics errno this crate reads as
+    /// [`CustodyError::Unsupported`], so an acquisition that locked first would
+    /// report the platform's lock semantics rather than name the planted node.
+    pub fn open_or_create_lock_entry(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
+        let mut passes = 0;
+        let handle = loop {
+            match sys::open_lock_file(&self.handle, name.as_str()) {
+                Ok(handle) => break handle,
+                Err(CustodyError::NotFound { .. }) if passes < CREATION_RENDEZVOUS_PASSES => {
+                    passes += 1;
+                }
+                Err(refusal) => {
+                    return Err(refine_open_refusal(
+                        refusal,
+                        self.observe(name),
+                        REQUIRED_RW,
+                    ));
+                }
+            }
+        };
+        witness_regular(handle, CustodyOp::OpenLock)
     }
 
     /// Hard-link `existing` to `new_name`, refusing an existing destination.
@@ -449,12 +573,16 @@ impl AdmittedDir {
     }
 }
 
+/// How many times a create-if-absent open may report absence before the
+/// refusal is taken at face value.
+const CREATION_RENDEZVOUS_PASSES: u32 = 8;
+
 /// Require an opened handle to be a regular file and witness its inode.
-fn witness_regular(handle: sys::FileHandle) -> Result<OpenedFile, CustodyError> {
+fn witness_regular(handle: sys::FileHandle, op: CustodyOp) -> Result<OpenedFile, CustodyError> {
     let stat = sys::fstat_file(&handle)?;
     if stat.kind != NodeKind::Regular {
         return Err(CustodyError::WrongNodeKind {
-            op: "open file",
+            op,
             found: stat.kind,
         });
     }
@@ -474,7 +602,7 @@ fn witness_regular(handle: sys::FileHandle) -> Result<OpenedFile, CustodyError> 
 /// mode-override capability (`root`, or `CAP_DAC_OVERRIDE` on Linux) is not
 /// refused by those bits at all: its open succeeds and reaches no reading here.
 /// Nothing was opened either way; the stat only names the refusal.
-pub(crate) fn refine_open_refusal(
+fn refine_open_refusal(
     refusal: CustodyError,
     observed: Option<EntryStat>,
     required: u32,
@@ -486,7 +614,7 @@ pub(crate) fn refine_open_refusal(
                 && stat.mode & required != required =>
         {
             Some(CustodyError::ModeDenied {
-                op,
+                op: *op,
                 found: stat.mode,
                 required,
             })
@@ -500,7 +628,7 @@ pub(crate) fn refine_open_refusal(
 /// it needs. An open succeeds on read and execute alone, so this is what turns
 /// a missing owner write into the same typed repair instruction rather than a
 /// generic permission error from the first entry someone tries to create.
-fn require_dir_mode(op: &'static str, stat: &EntryStat) -> Result<(), CustodyError> {
+fn require_dir_mode(op: CustodyOp, stat: &EntryStat) -> Result<(), CustodyError> {
     if stat.mode & REQUIRED_DIR == REQUIRED_DIR {
         return Ok(());
     }
@@ -544,7 +672,7 @@ fn refine_dir_refusal(refusal: CustodyError, observed: Option<EntryStat>) -> Cus
         && stat.mode & REQUIRED_DIR != REQUIRED_DIR
     {
         return CustodyError::ModeDenied {
-            op,
+            op: *op,
             found: stat.mode,
             required: REQUIRED_DIR,
         };
@@ -572,8 +700,17 @@ impl fmt::Debug for AdmittedDir {
 /// One opened regular file witnessing its inode identity. The descriptor is
 /// private; writes append, reads are bounded, and sync is a plain `fsync`.
 pub struct OpenedFile {
-    pub(crate) handle: sys::FileHandle,
-    pub(crate) identity: FsIdentity,
+    handle: sys::FileHandle,
+    identity: FsIdentity,
+}
+
+/// Whether a non-blocking exclusive lock attempt took the lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockAcquisition {
+    /// This handle now holds the lock.
+    Taken,
+    /// Another open file description holds it.
+    Held,
 }
 
 impl OpenedFile {
@@ -605,6 +742,20 @@ impl OpenedFile {
     pub(crate) fn truncate(&self, len: u64) -> Result<(), CustodyError> {
         sys::truncate_file(&self.handle, len)
     }
+
+    /// Attempt the non-blocking exclusive advisory lock on this handle.
+    pub fn try_lock_exclusive(&self) -> Result<LockAcquisition, CustodyError> {
+        if sys::try_lock_exclusive(&self.handle)? {
+            Ok(LockAcquisition::Taken)
+        } else {
+            Ok(LockAcquisition::Held)
+        }
+    }
+
+    /// Restore the fixed `0600` mode a umask may have masked at creation.
+    pub(crate) fn restore_lock_mode(&self) -> Result<(), CustodyError> {
+        sys::restore_lock_mode(&self.handle)
+    }
 }
 
 impl fmt::Debug for OpenedFile {
@@ -620,7 +771,7 @@ impl fmt::Debug for OpenedFile {
 mod tests {
     use super::*;
 
-    fn permission_denied(op: &'static str) -> CustodyError {
+    fn permission_denied(op: CustodyOp) -> CustodyError {
         CustodyError::Io {
             op,
             source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
@@ -654,12 +805,12 @@ mod tests {
             (0o200, 0o400),
         ] {
             let refined = refine_open_refusal(
-                permission_denied("open lock"),
+                permission_denied(CustodyOp::OpenLock),
                 observed(NodeKind::Regular, found),
                 required,
             );
             assert!(
-                matches!(refined, CustodyError::ModeDenied { op: "open lock", found: seen, required: needed }
+                matches!(refined, CustodyError::ModeDenied { op: CustodyOp::OpenLock, found: seen, required: needed }
                     if seen == found && needed == required),
                 "mode {found:o} against {required:o} was read as {refined:?}"
             );
@@ -674,23 +825,25 @@ mod tests {
     fn only_a_permission_denied_regular_entry_short_of_the_bits_is_reread() {
         let unrefined = [
             refine_open_refusal(
-                permission_denied("open lock"),
+                permission_denied(CustodyOp::OpenLock),
                 observed(NodeKind::Regular, 0o600),
                 0o600,
             ),
             refine_open_refusal(
-                permission_denied("open lock"),
+                permission_denied(CustodyOp::OpenLock),
                 observed(NodeKind::Regular, 0o644),
                 0o600,
             ),
             refine_open_refusal(
-                permission_denied("open lock"),
+                permission_denied(CustodyOp::OpenLock),
                 observed(NodeKind::Other, 0o000),
                 0o600,
             ),
-            refine_open_refusal(permission_denied("open lock"), None, 0o600),
+            refine_open_refusal(permission_denied(CustodyOp::OpenLock), None, 0o600),
             refine_open_refusal(
-                CustodyError::NotFound { op: "open lock" },
+                CustodyError::NotFound {
+                    op: CustodyOp::OpenLock,
+                },
                 observed(NodeKind::Regular, 0o000),
                 0o600,
             ),

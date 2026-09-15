@@ -44,7 +44,9 @@
 use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
-use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, EntryStat, NodeKind, OpenedFile};
+use marrow_fs_journal::{
+    AdmittedDir, CustodyError, CustodyOp, EntryName, EntryStat, NodeKind, OpenedFile,
+};
 
 use crate::codec::{ARTIFACT_PREFIX_BYTES, FormatError};
 
@@ -448,7 +450,7 @@ impl AdmittedStoreDir {
             file.sync().map_err(AdmissionFault::Custody)?;
             let nonce = draw().map_err(|source| {
                 AdmissionFault::Custody(CustodyError::Io {
-                    op: "draw preservation nonce",
+                    op: CustodyOp::Read,
                     source,
                 })
             })?;
@@ -505,7 +507,7 @@ impl AdmittedStoreDir {
             return Err(AdmissionError {
                 entry: StoreEntry::Directory,
                 fault: AdmissionFault::Custody(CustodyError::IdentityDrift {
-                    op: "verify store location",
+                    op: CustodyOp::Stat,
                 }),
             });
         }
@@ -524,7 +526,7 @@ impl AdmittedStoreDir {
             .map_err(|source| AdmissionError {
                 entry: StoreEntry::Directory,
                 fault: AdmissionFault::Custody(CustodyError::Io {
-                    op: "read locked directory identity",
+                    op: CustodyOp::Stat,
                     source,
                 }),
             })?;
@@ -536,7 +538,7 @@ impl AdmittedStoreDir {
                 return Err(AdmissionError {
                     entry: StoreEntry::Directory,
                     fault: AdmissionFault::Custody(CustodyError::IdentityDrift {
-                        op: "admit locked store directory",
+                        op: CustodyOp::AdmitDirectory,
                     }),
                 });
             }
@@ -548,7 +550,7 @@ impl AdmittedStoreDir {
             Err(AdmissionError {
                 entry: StoreEntry::Directory,
                 fault: AdmissionFault::Custody(CustodyError::Unsupported {
-                    op: "read locked directory identity",
+                    op: CustodyOp::Stat,
                 }),
             })
         }
@@ -760,18 +762,8 @@ pub(crate) mod barrier_fault {
                 },
                 fault: AdmissionFault::Custody(CustodyError::Io {
                     op: match point {
-                        Point::ReplacementPartial(_) => "replacement partial append",
-                        Point::ReplacementRename(_) => "replacement pre-rename",
-                        Point::NewBody(_) => "new metadata body sync",
-                        Point::ConstructionStage => "construction stage sync",
-                        Point::ReplacementBody(_) => "replacement body sync",
-                        Point::Preservation => "preservation directory sync",
-                        Point::RebindPending => "rebind pending directory sync",
-                        Point::RebindHead => "rebind head directory sync",
-                        Point::RebindActive => "rebind active directory sync",
-                        Point::RecoveryArtifacts => "recovery artifact directory sync",
-                        Point::RecoveryParent => "recovery parent directory sync",
-                        Point::RecoveryActive => "recovery active directory sync",
+                        Point::ReplacementPartial(_) => CustodyOp::Append,
+                        _ => CustodyOp::Sync,
                     },
                     source: std::io::Error::from(std::io::ErrorKind::Other),
                 }),
@@ -877,7 +869,7 @@ mod tests {
         assert!(matches!(
             entropy.fault,
             AdmissionFault::Custody(CustodyError::Io {
-                op: "draw preservation nonce",
+                op: CustodyOp::Read,
                 ..
             })
         ));
@@ -916,23 +908,27 @@ mod tests {
         };
         for (fault, code) in [
             (
-                CustodyError::SymlinkRefused { op: "open file" },
+                CustodyError::SymlinkRefused {
+                    op: CustodyOp::OpenFile,
+                },
                 Code::StoreCorruption.as_str(),
             ),
             (
                 CustodyError::WrongNodeKind {
-                    op: "open file",
+                    op: CustodyOp::OpenFile,
                     found: marrow_fs_journal::NodeKind::Directory,
                 },
                 Code::StoreCorruption.as_str(),
             ),
             (
-                CustodyError::NotFound { op: "open file" },
+                CustodyError::NotFound {
+                    op: CustodyOp::OpenFile,
+                },
                 Code::StoreCorruption.as_str(),
             ),
             (
                 CustodyError::ModeDenied {
-                    op: "open file",
+                    op: CustodyOp::OpenFile,
                     found: 0o400,
                     required: 0o600,
                 },

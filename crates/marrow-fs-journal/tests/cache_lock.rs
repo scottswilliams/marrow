@@ -8,7 +8,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use common::Scratch;
-use marrow_fs_journal::{AdmittedDir, CacheLock, CustodyError, EntryName, LockError, NodeKind};
+use marrow_fs_journal::{
+    AdmittedDir, CacheLock, CustodyError, CustodyOp, EntryName, LockError, NodeKind,
+};
 
 fn name(spelling: &str) -> EntryName {
     EntryName::admit(spelling).expect("test names are admissible")
@@ -149,7 +151,7 @@ fn a_mode_stripped_lock_entry_names_the_operator_action() {
                 required,
             })) => assert_eq!(
                 (op, found, required),
-                ("open lock", stripped, 0o600),
+                (CustodyOp::OpenLock, stripped, 0o600),
                 "the refusal names the observed mode and the mode to restore",
             ),
             other => panic!("mode {stripped:o}: expected the mode refusal, found {other:?}"),
@@ -177,7 +179,7 @@ fn a_symlink_lock_entry_is_refused_as_a_symlink() {
     assert!(matches!(
         CacheLock::acquire(&dir, &name("lock")),
         Err(LockError::Custody(CustodyError::SymlinkRefused {
-            op: "open lock"
+            op: CustodyOp::OpenLock
         }))
     ));
 }

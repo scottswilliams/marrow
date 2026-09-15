@@ -24,7 +24,7 @@ mod imp {
     use rustix::fs::{AtFlags, FlockOperation, Mode, OFlags, RenameFlags, Stat};
     use rustix::io::Errno;
 
-    use crate::custody::{CustodyError, EntryStat, FsIdentity, NodeKind};
+    use crate::custody::{CustodyError, CustodyOp, EntryStat, FsIdentity, NodeKind};
 
     pub(crate) type DirHandle = OwnedFd;
     pub(crate) type FileHandle = File;
@@ -33,7 +33,7 @@ mod imp {
     /// component was opened `NOFOLLOW` (so `ELOOP` means a refused symlink)
     /// and whether `EINVAL` means the flag semantics are unsupported (the
     /// flagged rename operations).
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     enum Reading {
         Plain,
         Nofollow,
@@ -44,7 +44,7 @@ mod imp {
     /// unsupported `EINVAL`, and `EXDEV` fail closed as typed refusals; the
     /// comparisons are an `if` chain because two of the constants coincide on
     /// Linux.
-    fn map(op: &'static str, reading: Reading, errno: Errno) -> CustodyError {
+    fn map(op: CustodyOp, reading: Reading, errno: Errno) -> CustodyError {
         if errno == Errno::NOSYS
             || errno == Errno::NOTSUP
             || errno == Errno::OPNOTSUPP
@@ -133,24 +133,24 @@ mod imp {
 
     pub(crate) fn open_dir_root(path: &Path) -> Result<DirHandle, CustodyError> {
         rustix::fs::open(path, dir_flags(), Mode::empty())
-            .map_err(|errno| map("admit directory", Reading::Nofollow, errno))
+            .map_err(|errno| map(CustodyOp::AdmitDirectory, Reading::Nofollow, errno))
     }
 
     pub(crate) fn open_dir_child(dir: &DirHandle, name: &str) -> Result<DirHandle, CustodyError> {
         rustix::fs::openat(dir, name, dir_flags(), Mode::empty())
-            .map_err(|errno| map("admit directory", Reading::Nofollow, errno))
+            .map_err(|errno| map(CustodyOp::AdmitDirectory, Reading::Nofollow, errno))
     }
 
     pub(crate) fn mkdir_child(dir: &DirHandle, name: &str) -> Result<(), CustodyError> {
         rustix::fs::mkdirat(dir, name, dir_mode())
-            .map_err(|errno| map("create directory", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::CreateDirectory, Reading::Plain, errno))
     }
 
     /// `mkdirat`'s requested mode is masked by the process umask; the
     /// documented exact 0700 is restored on the admitted descriptor.
     pub(crate) fn restore_dir_mode(dir: &DirHandle) -> Result<(), CustodyError> {
         rustix::fs::fchmod(dir, dir_mode())
-            .map_err(|errno| map("create directory", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::CreateDirectory, Reading::Plain, errno))
     }
 
     pub(crate) fn create_file_excl(
@@ -165,7 +165,7 @@ mod imp {
             | OFlags::APPEND;
         let file = rustix::fs::openat(dir, name, flags, file_mode())
             .map(File::from)
-            .map_err(|errno| map("create file", Reading::Nofollow, errno))?;
+            .map_err(|errno| map(CustodyOp::CreateFile, Reading::Nofollow, errno))?;
         // The open-time mode is masked by the process umask; the exact 0600
         // the claim law rechecks is restored on the creating descriptor
         // before any use, so no umask can manufacture a wrong-mode claim.
@@ -182,7 +182,7 @@ mod imp {
         // debris costs a retained manual state; removing the wrong object costs
         // a file that was never ours.
         if let Err(errno) = rustix::fs::fchmod(&file, file_mode()) {
-            return Err(map("create file", Reading::Plain, errno));
+            return Err(map(CustodyOp::CreateFile, Reading::Plain, errno));
         }
         Ok(file)
     }
@@ -191,7 +191,7 @@ mod imp {
         let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::APPEND;
         rustix::fs::openat(dir, name, flags, Mode::empty())
             .map(File::from)
-            .map_err(|errno| map("open file", Reading::Nofollow, errno))
+            .map_err(|errno| map(CustodyOp::OpenFile, Reading::Nofollow, errno))
     }
 
     /// Open a file for reading alone: witness-and-inspect custody over debris
@@ -212,14 +212,14 @@ mod imp {
         let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         rustix::fs::openat(dir, name, flags, Mode::empty())
             .map(File::from)
-            .map_err(|errno| map("open file", Reading::Nofollow, errno))
+            .map_err(|errno| map(CustodyOp::OpenFile, Reading::Nofollow, errno))
     }
 
     pub(crate) fn open_lock_file(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
         let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         rustix::fs::openat(dir, name, flags, file_mode())
             .map(File::from)
-            .map_err(|errno| map("open lock", Reading::Nofollow, errno))
+            .map_err(|errno| map(CustodyOp::OpenLock, Reading::Nofollow, errno))
     }
 
     /// Restore the lock entry's exact `0600`. The creating open is granted
@@ -237,7 +237,7 @@ mod imp {
     /// the mode they carried.
     pub(crate) fn restore_lock_mode(file: &FileHandle) -> Result<(), CustodyError> {
         rustix::fs::fchmod(file, file_mode())
-            .map_err(|errno| map("open lock", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::OpenLock, Reading::Plain, errno))
     }
 
     /// `flock(LOCK_EX | LOCK_NB)`. `Ok(false)` reports a held lock.
@@ -245,18 +245,18 @@ mod imp {
         match rustix::fs::flock(file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => Ok(true),
             Err(errno) if errno == Errno::WOULDBLOCK || errno == Errno::AGAIN => Ok(false),
-            Err(errno) => Err(map("lock", Reading::Plain, errno)),
+            Err(errno) => Err(map(CustodyOp::Lock, Reading::Plain, errno)),
         }
     }
 
     pub(crate) fn link(dir: &DirHandle, existing: &str, new: &str) -> Result<(), CustodyError> {
         rustix::fs::linkat(dir, existing, dir, new, AtFlags::empty())
-            .map_err(|errno| map("link", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::Link, Reading::Plain, errno))
     }
 
     pub(crate) fn unlink(dir: &DirHandle, name: &str) -> Result<(), CustodyError> {
         rustix::fs::unlinkat(dir, name, AtFlags::empty())
-            .map_err(|errno| map("unlink", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::Unlink, Reading::Plain, errno))
     }
 
     pub(crate) fn stat_entry(
@@ -266,7 +266,7 @@ mod imp {
         match rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => Ok(Some(project(&stat))),
             Err(errno) if errno == Errno::NOENT => Ok(None),
-            Err(errno) => Err(map("stat entry", Reading::Plain, errno)),
+            Err(errno) => Err(map(CustodyOp::Stat, Reading::Plain, errno)),
         }
     }
 
@@ -276,34 +276,35 @@ mod imp {
         match rustix::fs::lstat(path) {
             Ok(stat) => Ok(Some(project(&stat))),
             Err(errno) if errno == Errno::NOENT => Ok(None),
-            Err(errno) => Err(map("stat path", Reading::Plain, errno)),
+            Err(errno) => Err(map(CustodyOp::Stat, Reading::Plain, errno)),
         }
     }
 
     pub(crate) fn fstat_dir(dir: &DirHandle) -> Result<EntryStat, CustodyError> {
         rustix::fs::fstat(dir)
             .map(|stat| project(&stat))
-            .map_err(|errno| map("stat directory", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::Stat, Reading::Plain, errno))
     }
 
     pub(crate) fn fstat_file(file: &FileHandle) -> Result<EntryStat, CustodyError> {
         rustix::fs::fstat(file)
             .map(|stat| project(&stat))
-            .map_err(|errno| map("stat file", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::Stat, Reading::Plain, errno))
     }
 
     /// Plain `fsync` on the directory: the documented durability envelope.
     pub(crate) fn sync_dir(dir: &DirHandle) -> Result<(), CustodyError> {
-        rustix::fs::fsync(dir).map_err(|errno| map("sync directory", Reading::Plain, errno))
+        rustix::fs::fsync(dir).map_err(|errno| map(CustodyOp::Sync, Reading::Plain, errno))
     }
 
     /// Plain `fsync` on the file: the documented durability envelope.
     pub(crate) fn sync_file(file: &FileHandle) -> Result<(), CustodyError> {
-        rustix::fs::fsync(file).map_err(|errno| map("sync file", Reading::Plain, errno))
+        rustix::fs::fsync(file).map_err(|errno| map(CustodyOp::Sync, Reading::Plain, errno))
     }
 
     pub(crate) fn truncate_file(file: &FileHandle, len: u64) -> Result<(), CustodyError> {
-        rustix::fs::ftruncate(file, len).map_err(|errno| map("truncate", Reading::Plain, errno))
+        rustix::fs::ftruncate(file, len)
+            .map_err(|errno| map(CustodyOp::Truncate, Reading::Plain, errno))
     }
 
     /// `renameat` with `EXCHANGE` (`renameatx_np(RENAME_SWAP)` on Darwin,
@@ -311,7 +312,7 @@ mod imp {
     /// `EINVAL` are typed unsupported-platform refusals, never a fallback.
     pub(crate) fn exchange(dir: &DirHandle, first: &str, second: &str) -> Result<(), CustodyError> {
         rustix::fs::renameat_with(dir, first, dir, second, RenameFlags::EXCHANGE)
-            .map_err(|errno| map("exchange", Reading::RenameFlagged, errno))
+            .map_err(|errno| map(CustodyOp::Exchange, Reading::RenameFlagged, errno))
     }
 
     /// `renameat` with `NOREPLACE` (`renameatx_np(RENAME_EXCL)` on Darwin,
@@ -322,7 +323,7 @@ mod imp {
         to: &str,
     ) -> Result<(), CustodyError> {
         rustix::fs::renameat_with(dir, from, dir, to, RenameFlags::NOREPLACE)
-            .map_err(|errno| map("rename-noreplace", Reading::RenameFlagged, errno))
+            .map_err(|errno| map(CustodyOp::RenameNoreplace, Reading::RenameFlagged, errno))
     }
 
     pub(crate) fn rename_replace(
@@ -331,12 +332,12 @@ mod imp {
         to: &str,
     ) -> Result<(), CustodyError> {
         rustix::fs::renameat(dir, from, dir, to)
-            .map_err(|errno| map("rename-replace", Reading::Plain, errno))
+            .map_err(|errno| map(CustodyOp::RenameReplace, Reading::Plain, errno))
     }
 
     pub(crate) fn append(file: &mut FileHandle, bytes: &[u8]) -> Result<(), CustodyError> {
         file.write_all(bytes).map_err(|source| CustodyError::Io {
-            op: "append",
+            op: CustodyOp::Append,
             source,
         })
     }
@@ -360,7 +361,12 @@ mod imp {
                 Ok(0) => break,
                 Ok(read) => filled += read,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(source) => return Err(CustodyError::Io { op: "read", source }),
+                Err(source) => {
+                    return Err(CustodyError::Io {
+                        op: CustodyOp::Read,
+                        source,
+                    });
+                }
             }
         }
         buffer.truncate(filled);
@@ -417,61 +423,43 @@ mod imp {
         /// The typed refusal classification, pinned per errno.
         #[test]
         fn errno_reading_fails_closed() {
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::NOSYS),
-                CustodyError::Unsupported { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::NOTSUP),
-                CustodyError::Unsupported { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::OPNOTSUPP),
-                CustodyError::Unsupported { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::XDEV),
-                CustodyError::Unsupported { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::RenameFlagged, Errno::INVAL),
-                CustodyError::Unsupported { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::RenameFlagged, Errno::NOSYS),
-                CustodyError::Unsupported { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::INVAL),
-                CustodyError::Io { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Nofollow, Errno::LOOP),
-                CustodyError::SymlinkRefused { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::LOOP),
-                CustodyError::Io { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::EXIST),
-                CustodyError::AlreadyExists { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::NOENT),
-                CustodyError::NotFound { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::NOTDIR),
-                CustodyError::NotADirectory { .. }
-            ));
-            assert!(matches!(
-                map("op", Reading::Plain, Errno::ISDIR),
-                CustodyError::WrongNodeKind {
-                    found: NodeKind::Directory,
-                    ..
-                }
-            ));
+            type Admits = fn(&CustodyError) -> bool;
+            let unsupported: Admits = |e| matches!(e, CustodyError::Unsupported { .. });
+            let unclassified: Admits = |e| matches!(e, CustodyError::Io { .. });
+            let symlink: Admits = |e| matches!(e, CustodyError::SymlinkRefused { .. });
+            let exists: Admits = |e| matches!(e, CustodyError::AlreadyExists { .. });
+            let absent: Admits = |e| matches!(e, CustodyError::NotFound { .. });
+            let not_a_dir: Admits = |e| matches!(e, CustodyError::NotADirectory { .. });
+            let a_dir: Admits = |e| {
+                matches!(
+                    e,
+                    CustodyError::WrongNodeKind {
+                        found: NodeKind::Directory,
+                        ..
+                    }
+                )
+            };
+            for (reading, errno, admits) in [
+                (Reading::Plain, Errno::NOSYS, unsupported),
+                (Reading::Plain, Errno::NOTSUP, unsupported),
+                (Reading::Plain, Errno::OPNOTSUPP, unsupported),
+                (Reading::Plain, Errno::XDEV, unsupported),
+                (Reading::RenameFlagged, Errno::INVAL, unsupported),
+                (Reading::RenameFlagged, Errno::NOSYS, unsupported),
+                (Reading::Plain, Errno::INVAL, unclassified),
+                (Reading::Nofollow, Errno::LOOP, symlink),
+                (Reading::Plain, Errno::LOOP, unclassified),
+                (Reading::Plain, Errno::EXIST, exists),
+                (Reading::Plain, Errno::NOENT, absent),
+                (Reading::Plain, Errno::NOTDIR, not_a_dir),
+                (Reading::Plain, Errno::ISDIR, a_dir),
+            ] {
+                let refusal = map(CustodyOp::Stat, reading, errno);
+                assert!(
+                    admits(&refusal),
+                    "{errno:?} under {reading:?} was read as {refusal:?}"
+                );
+            }
         }
     }
 }

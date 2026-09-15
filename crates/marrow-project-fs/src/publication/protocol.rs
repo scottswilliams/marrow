@@ -9,9 +9,9 @@
 use std::fmt;
 
 use marrow_fs_journal::{
-    AdmittedDir, BuiltHeader, ClaimRefusal, CustodyError, EntryName, EntryStat, FsIdentity,
-    JournalKind, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord, TailState, claim,
-    classify, encode_record,
+    AdmittedDir, BuiltHeader, ClaimRefusal, CustodyError, CustodyOp, EntryName, EntryStat,
+    FsIdentity, JournalKind, LiveJournal, MarkerStats, OpenedFile, PendingState, PhaseRecord,
+    TailState, claim, classify, encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
 
@@ -528,7 +528,7 @@ fn discard_stage(
     guard: &ProjectMetadataWriteGuard,
     created: &OpenedFile,
 ) -> Result<(), IdsPublicationError> {
-    remove_validated(guard, guard.stage_name(), "stage discard", |held| {
+    remove_validated(guard, guard.stage_name(), CustodyOp::Unlink, |held| {
         Ok(held.identity() == created.identity())
     })
 }
@@ -557,7 +557,7 @@ fn discard_stage(
 fn remove_validated(
     guard: &ProjectMetadataWriteGuard,
     name: &EntryName,
-    op: &'static str,
+    op: CustodyOp,
     accepts: impl Fn(&OpenedFile) -> Result<bool, IdsPublicationError>,
 ) -> Result<(), IdsPublicationError> {
     let meta = guard.meta();
@@ -942,7 +942,7 @@ impl<'a> Session<'a> {
         remove_validated(
             self.guard,
             self.guard.stage_name(),
-            "stage cleanup",
+            CustodyOp::Unlink,
             |held| Ok(self.role_of_open(held)? == expected),
         )
     }
@@ -1269,7 +1269,10 @@ fn read_entry(
     };
     let file = dir.open_file(name)?;
     if file.identity() != stat.identity() {
-        return Err(CustodyError::IdentityDrift { op: "ledger read" }.into());
+        return Err(CustodyError::IdentityDrift {
+            op: CustodyOp::OpenFile,
+        }
+        .into());
     }
     let bytes = file.read_prefix(LEDGER_BYTE_CEILING + 1)?;
     if bytes.len() > LEDGER_BYTE_CEILING {
@@ -1297,7 +1300,7 @@ fn require_entry(
                 && stat.size() == len as u64 => {}
         _ => {
             return Err(CustodyError::IdentityDrift {
-                op: "publication recheck",
+                op: CustodyOp::Stat,
             }
             .into());
         }

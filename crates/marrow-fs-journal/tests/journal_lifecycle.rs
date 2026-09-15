@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use common::Scratch;
 use marrow_fs_journal::MarkerStats;
 use marrow_fs_journal::{
-    AdmittedDir, CacheLock, CorruptionReason, CustodyError, EntryName, EntryNameError,
+    AdmittedDir, CacheLock, CorruptionReason, CustodyError, CustodyOp, EntryName, EntryNameError,
     FrameCorruption, FsIdentity, JournalCommon, JournalError, JournalKind, NodeKind, PendingName,
     PendingState, TailState, claim, classify, encode_header, encode_record,
 };
@@ -564,7 +564,7 @@ fn write_only_preclaim_debris_names_the_operator_action() {
             op,
             found,
             required,
-        })) => assert_eq!((op, found, required), ("open file", 0o200, 0o400)),
+        })) => assert_eq!((op, found, required), (CustodyOp::OpenFile, 0o200, 0o400)),
         other => panic!("expected the typed mode refusal, found {other:?}"),
     }
     assert_eq!(

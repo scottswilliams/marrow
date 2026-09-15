@@ -18,7 +18,9 @@
 
 use std::fmt;
 
-use crate::custody::{AdmittedDir, CustodyError, EntryStat, FsIdentity, NodeKind, OpenedFile};
+use crate::custody::{
+    AdmittedDir, CustodyError, CustodyOp, EntryStat, FsIdentity, NodeKind, OpenedFile,
+};
 use crate::entry::{EntryName, EntryNameError};
 use crate::frame::{
     DecodedFrame, FrameCorruption, FrameLawError, JOURNAL_COMMON_LEN, JournalCommon, JournalKind,
@@ -306,11 +308,29 @@ impl<'d> ClaimedJournal<'d> {
     pub fn adopt(self) -> Result<LiveJournal<'d>, JournalError> {
         let total = frame_total_len(&self.frame);
         self.dir.sync()?;
-        recheck(self.dir, self.name.pending(), &self.file, 2, total)?;
-        recheck(self.dir, self.name.claim(), &self.file, 2, total)?;
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            LinkExpectation::ClaimAndPending,
+            total,
+        )?;
+        recheck(
+            self.dir,
+            self.name.claim(),
+            &self.file,
+            LinkExpectation::ClaimAndPending,
+            total,
+        )?;
         self.dir.unlink(self.name.claim())?;
         self.dir.sync()?;
-        recheck(self.dir, self.name.pending(), &self.file, 1, total)?;
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            LinkExpectation::Single,
+            total,
+        )?;
         Ok(LiveJournal {
             dir: self.dir,
             kind: self.frame.kind(),
@@ -378,7 +398,7 @@ impl<'d> PendingJournal<'d> {
             self.dir,
             self.name.pending(),
             &self.file,
-            1,
+            LinkExpectation::Single,
             valid_len + tail.len(),
         )?;
         self.file.truncate(valid_len as u64)?;
@@ -387,7 +407,13 @@ impl<'d> PendingJournal<'d> {
         if reread != valid_bytes {
             return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
         }
-        recheck(self.dir, self.name.pending(), &self.file, 1, valid_len)?;
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            LinkExpectation::Single,
+            valid_len,
+        )?;
         self.frame = decode_frame(self.frame.kind(), &valid_bytes)
             .map_err(|corruption| JournalError::Corrupt(CorruptionReason::Frame(corruption)))?;
         Ok(())
@@ -399,7 +425,13 @@ impl<'d> PendingJournal<'d> {
             return Err(JournalError::IncompleteTail);
         }
         let total = frame_total_len(&self.frame);
-        recheck(self.dir, self.name.pending(), &self.file, 1, total)?;
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            LinkExpectation::Single,
+            total,
+        )?;
         let last = self
             .frame
             .records()
@@ -462,7 +494,7 @@ impl LiveJournal<'_> {
 
     /// Whether the terminal registry phase is recorded.
     pub fn is_complete(&self) -> bool {
-        self.last_tag == self.kind.phase_count()
+        self.kind.is_terminal(self.last_tag)
     }
 
     /// Append one record: validate the kind's law, recheck the mapping and
@@ -485,10 +517,22 @@ impl LiveJournal<'_> {
                 limit: self.kind.ceiling(),
             });
         }
-        recheck(self.dir, self.name.pending(), &self.file, 1, self.total_len)?;
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            LinkExpectation::Single,
+            self.total_len,
+        )?;
         self.file.append(&record)?;
         self.file.sync()?;
-        recheck(self.dir, self.name.pending(), &self.file, 1, total)?;
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            LinkExpectation::Single,
+            total,
+        )?;
         self.total_len = total;
         self.next_sequence += 1;
         self.last_tag = phase_tag;
@@ -504,10 +548,16 @@ impl LiveJournal<'_> {
                 last_tag: self.last_tag,
             });
         }
-        recheck(self.dir, self.name.pending(), &self.file, 1, self.total_len)?;
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            LinkExpectation::Single,
+            self.total_len,
+        )?;
         if self.dir.stat_entry(self.name.claim())?.is_some() {
             return Err(JournalError::Custody(CustodyError::IdentityDrift {
-                op: "finish",
+                op: CustodyOp::Unlink,
             }));
         }
         self.dir.unlink(self.name.pending())?;
@@ -521,7 +571,7 @@ impl LiveJournal<'_> {
             || self.dir.stat_entry(self.name.claim())?.is_some()
         {
             return Err(JournalError::Custody(CustodyError::IdentityDrift {
-                op: "finish",
+                op: CustodyOp::Unlink,
             }));
         }
         self.dir.sync()?;
@@ -673,7 +723,7 @@ fn claim_preflight(
 ) -> Result<PreparedClaim, JournalError> {
     if dir.stat_entry(name.claim())?.is_some() || dir.stat_entry(name.pending())?.is_some() {
         return Err(JournalError::Custody(CustodyError::AlreadyExists {
-            op: "claim",
+            op: CustodyOp::Link,
         }));
     }
     let mut file = dir.create_file_excl(name.claim())?;
@@ -724,14 +774,32 @@ fn claim_commit(
     // This parent sync is what makes the claim durable in the ordinary case;
     // it is not what makes a refusal above or below it possibly-durable.
     dir.sync()?;
-    recheck(dir, name.pending(), file, 2, total_len)?;
-    recheck(dir, name.claim(), file, 2, total_len)?;
+    recheck(
+        dir,
+        name.pending(),
+        file,
+        LinkExpectation::ClaimAndPending,
+        total_len,
+    )?;
+    recheck(
+        dir,
+        name.claim(),
+        file,
+        LinkExpectation::ClaimAndPending,
+        total_len,
+    )?;
     dir.unlink(name.claim())?;
     dir.sync()?;
-    recheck(dir, name.pending(), file, 1, total_len)?;
+    recheck(
+        dir,
+        name.pending(),
+        file,
+        LinkExpectation::Single,
+        total_len,
+    )?;
     if dir.stat_entry(name.claim())?.is_some() {
         return Err(JournalError::Custody(CustodyError::IdentityDrift {
-            op: "claim",
+            op: CustodyOp::Link,
         }));
     }
     Ok(())
@@ -980,7 +1048,7 @@ fn classify_pending<'d>(
 fn witnessed(file: OpenedFile, observed: FsIdentity) -> Result<OpenedFile, JournalError> {
     if file.identity() != observed {
         return Err(JournalError::Custody(CustodyError::IdentityDrift {
-            op: "classify",
+            op: CustodyOp::OpenFile,
         }));
     }
     Ok(file)
@@ -1030,7 +1098,13 @@ fn write_claim_file(
     if reread != bytes {
         return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
     }
-    recheck(dir, name.claim(), file, 1, bytes.len())?;
+    recheck(
+        dir,
+        name.claim(),
+        file,
+        LinkExpectation::Single,
+        bytes.len(),
+    )?;
     Ok(bytes)
 }
 
@@ -1070,6 +1144,24 @@ fn corrupt_state<'d>(reason: CorruptionReason) -> Result<PendingState<'d>, Journ
     Ok(PendingState::Corrupt(reason))
 }
 
+/// How many names the journal inode is expected to be held by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkExpectation {
+    /// One name: the ordinary claimed, live, or preclaim state.
+    Single,
+    /// Both the claim and pending names, during the claim's two-link window.
+    ClaimAndPending,
+}
+
+impl LinkExpectation {
+    const fn count(self) -> u64 {
+        match self {
+            Self::Single => 1,
+            Self::ClaimAndPending => 2,
+        }
+    }
+}
+
 /// Recheck the retained handle and its path mapping before and after every
 /// mutation: node kind, the exact `0600` mode, link count, exact byte length,
 /// and name-to-inode mapping. Any mismatch fails closed.
@@ -1077,19 +1169,12 @@ fn recheck(
     dir: &AdmittedDir,
     name: &EntryName,
     file: &OpenedFile,
-    nlink: u64,
+    links: LinkExpectation,
     len: usize,
 ) -> Result<(), JournalError> {
     // Path mapping first: a stolen or vanished name is identity drift, not a
     // link-count artifact of the retained handle.
-    match dir.stat_entry(name)? {
-        Some(entry) if entry.identity() == file.identity() => {}
-        _ => {
-            return Err(JournalError::Custody(CustodyError::IdentityDrift {
-                op: "journal recheck",
-            }));
-        }
-    }
+    dir.reassert(name, file.identity(), CustodyOp::Stat)?;
     let stat = file.stat()?;
     if stat.kind() != NodeKind::Regular {
         return Err(JournalError::Corrupt(CorruptionReason::WrongNodeKind {
@@ -1101,7 +1186,7 @@ fn recheck(
             found: stat.mode(),
         }));
     }
-    if stat.nlink() != nlink {
+    if stat.nlink() != links.count() {
         return Err(JournalError::Corrupt(CorruptionReason::ExtraLinks {
             found: stat.nlink(),
         }));
@@ -1127,14 +1212,8 @@ fn discard_witnessed(
     name: &EntryName,
     file: &OpenedFile,
 ) -> Result<(), JournalError> {
-    match dir.stat_entry(name)? {
-        Some(entry) if entry.identity() == file.identity() => {
-            dir.unlink(name)?;
-            dir.sync()?;
-            Ok(())
-        }
-        _ => Err(JournalError::Custody(CustodyError::IdentityDrift {
-            op: "discard",
-        })),
-    }
+    dir.reassert(name, file.identity(), CustodyOp::Unlink)?;
+    dir.unlink(name)?;
+    dir.sync()?;
+    Ok(())
 }

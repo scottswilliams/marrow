@@ -326,7 +326,7 @@ pub(crate) fn complete_publication(
             source: AdmissionError {
                 entry: StoreEntry::Directory,
                 fault: store_dir::AdmissionFault::Custody(marrow_fs_journal::CustodyError::Io {
-                    op: "activation directory sync",
+                    op: marrow_fs_journal::CustodyOp::Sync,
                     source,
                 }),
             },
