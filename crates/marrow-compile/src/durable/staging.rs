@@ -7,8 +7,8 @@
 use marrow_image::{AdmittedGraphInputPlan, DraftTxn, ImageDraft};
 
 use super::{
-    AdmittedDraft, DeclarationSite, DurableTypeMetadata, GenericInvariant, IdentityBuildState,
-    ResourceDirectory, StoreBuild, StoreOccurrence, build_one,
+    DurableTypeMetadata, GenericInvariant, IdentityBuildState, ResourceDirectory, StoreBuild,
+    StoreOccurrence, build_one,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector};
 
@@ -27,13 +27,11 @@ impl<'d> StagedStoreTxn<'d> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn build_one(
         self,
         plan: &AdmittedGraphInputPlan,
         type_metadata: &mut DurableTypeMetadata<'_, '_>,
         directory: &ResourceDirectory<'_>,
-        declared: DeclarationSite<'_>,
         store: StoreOccurrence<'_>,
         identity_build: &mut IdentityBuildState<'_, '_>,
     ) -> Result<(StoreBuild, BoundedDiagnostics), GenericInvariant> {
@@ -42,13 +40,10 @@ impl<'d> StagedStoreTxn<'d> {
             mut staged_diagnostics,
         } = self;
         let built = build_one(
-            AdmittedDraft {
-                draft: &mut owner,
-                plan,
-            },
+            &mut owner,
+            plan,
             type_metadata,
             directory,
-            declared,
             store,
             identity_build,
             &mut staged_diagnostics,

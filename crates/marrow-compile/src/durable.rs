@@ -36,15 +36,15 @@ use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{
     BuildError, GArg, GenericInvariant, NominalBoundaryKind, NominalBoundaryRoot,
-    NominalBoundaryValue, ResolveError, TypeMetadataSession, TypeRegistry,
+    NominalBoundaryValue, RecordInfo, ResolveError, TypeMetadataSession, TypeRegistry,
 };
 
 mod rows;
 mod staging;
 
 use rows::{
-    GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyColumns, KeyTable, ProductKey,
-    ResourceDirectory, ResourceRow, StoreResourceBinding, StoreRow,
+    AdmittedKeyColumn, GroupRow, IndexArgReach, IndexArgRow, IndexRow, IndexTable, KeyColumns,
+    KeyTable, ProductKey, ResourceDirectory, ResourceRow, StoreResourceBinding, StoreRow,
 };
 use staging::StagedStoreTxn;
 
@@ -102,9 +102,26 @@ pub(crate) struct DurableIndex {
     pub(crate) projection: Vec<ScalarType>,
 }
 
-/// The compiler scalar carried by an orderable durable-key stored shape. This stored
-/// shape is the sole index-eligibility classifier: a nominal has already erased to
-/// `int`, while a dense struct, closed enum, duration, or other non-key value returns
+/// The closed orderable durable-key scalar set: int, string, bool, bytes, date, and
+/// instant. `duration` is a span, not an identity, so it is not a durable key.
+///
+/// The sole owner of key eligibility. A written key annotation reaches it through the
+/// key-tuple resolver and a stored value shape through [`orderable_key_scalar`], so the
+/// two readings cannot disagree about what a durable key is.
+pub(super) fn orderable_durable_key(scalar: ScalarType) -> bool {
+    match scalar {
+        ScalarType::Int
+        | ScalarType::Text
+        | ScalarType::Bool
+        | ScalarType::Bytes
+        | ScalarType::Date
+        | ScalarType::Instant => true,
+        ScalarType::Duration => false,
+    }
+}
+
+/// The compiler scalar carried by an orderable durable-key stored shape. A nominal has
+/// already erased to `int`, while a dense struct, closed enum, or non-key scalar returns
 /// `None`. A shape naming no node of `values` is not orderable either, so an id read
 /// against an arena that did not mint it narrows eligibility rather than aborting.
 fn orderable_key_scalar(
@@ -112,18 +129,22 @@ fn orderable_key_scalar(
     value: ValueShapeNodeId,
 ) -> Option<ScalarType> {
     match values.view(value)? {
-        ValueShapeView::Scalar(Scalar::Duration)
-        | ValueShapeView::Struct(_)
-        | ValueShapeView::Enum { .. } => None,
-        ValueShapeView::Scalar(scalar) => Some(ScalarType::from_image(scalar)),
+        ValueShapeView::Struct(_) | ValueShapeView::Enum { .. } => None,
+        ValueShapeView::Scalar(scalar) => {
+            let scalar = ScalarType::from_image(scalar);
+            orderable_durable_key(scalar).then_some(scalar)
+        }
     }
 }
 
-/// One resolved durable field. The field-leaf operation site is not pre-minted: the
-/// field carries its canonical declaration path, and the lowerer binds it against the
-/// owning root occurrence and allocates (and deduplicates) a field-leaf site through the
-/// draft the first time an instruction addresses it, so the image carries a leaf site per
-/// *referenced* field rather than one per declared field.
+/// One resolved durable field of a root entry or of a keyed branch entry. The field-leaf
+/// operation site is not pre-minted: the field carries its canonical declaration path,
+/// and the lowerer binds it against the owning root occurrence and allocates (and
+/// deduplicates) a field-leaf site through the draft the first time an instruction
+/// addresses it, so the image carries a leaf site per *referenced* field rather than one
+/// per declared field. A branch entry's whole-payload create/replace flows through the
+/// branch's materialized record; `path` names the field-exact leaf a
+/// `^root(k).branch(bk).field` read or write addresses directly.
 pub(crate) struct DurableField {
     pub(crate) name: String,
     pub(crate) path: CanonicalDeclarationPathSelector,
@@ -132,18 +153,6 @@ pub(crate) struct DurableField {
     /// result and written-value type from it.
     pub(crate) ty: GArg,
     pub(crate) required: bool,
-}
-
-/// One resolved scalar field of an executable branch entry: its source name, value
-/// scalar, required flag, and canonical declaration path. The whole-payload
-/// create/replace flows through the branch's materialized record; `path` names the
-/// field-exact leaf a `^root(k).branch(bk).field` read or write addresses directly, one
-/// level below the root, whose site the lowerer binds and allocates on first reference.
-pub(crate) struct DurableBranchField {
-    pub(crate) name: String,
-    pub(crate) scalar: ScalarType,
-    pub(crate) required: bool,
-    pub(crate) path: CanonicalDeclarationPathSelector,
 }
 
 /// One scalar/widened leaf of an executable root-level `group`: its source name, value
@@ -208,12 +217,12 @@ pub(crate) struct DurableBranch {
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
     pub(crate) path: CanonicalDeclarationPathSelector,
-    pub(crate) fields: Vec<DurableBranchField>,
+    pub(crate) fields: Vec<DurableField>,
     pub(crate) branches: Vec<DurableBranch>,
 }
 
 impl DurableBranch {
-    pub(crate) fn field(&self, name: &str) -> Option<&DurableBranchField> {
+    pub(crate) fn field(&self, name: &str) -> Option<&DurableField> {
         self.fields.iter().find(|field| field.name == name)
     }
 
@@ -644,7 +653,14 @@ impl DurableRegistry {
                         .iter()
                         .map(|field| BranchRecordField {
                             name: field.name.clone(),
-                            scalar: field.scalar,
+                            scalar: match field.ty {
+                                GArg::Scalar(scalar) => scalar,
+                                #[expect(
+                                    clippy::unreachable,
+                                    reason = "representation invariant: a branch member whose stored value shape is not a scalar is refused as `DurableBranchFieldUnresolved` while the branch sites are emitted, so every field of an executable branch carries a scalar"
+                                )]
+                                _ => unreachable!("a branch field is scalar-only"),
+                            },
                             required: field.required,
                         })
                         .collect(),
@@ -773,11 +789,11 @@ impl DurableRegistry {
                     &plan,
                     &mut type_metadata,
                     &directory,
-                    declared,
                     StoreOccurrence {
                         decl: store,
                         row,
                         multiplicity: census.multiplicity(row.product_key()),
+                        declared,
                     },
                     &mut identity_build,
                 )?;
@@ -1121,17 +1137,167 @@ struct StoreOccurrence<'store> {
     /// This declaration's resolved resource binding, decided before any store is built.
     row: &'store StoreRow<'store>,
     multiplicity: ProductOccurrenceMultiplicity,
+    /// Where this occurrence is written, as the refusal ledger names it.
+    declared: DeclarationSite<'store>,
 }
 
-/// The draft under construction and the budget its construction is admitted under.
+/// One root's resolved key tuple: the admitted columns and the ledger identity each
+/// column anchored, in the order the root declares them.
+struct RootTuple<'a> {
+    columns: &'a [AdmittedKeyColumn<'a>],
+    ids: &'a [LedgerIdBytes],
+}
+
+/// Resolve the root's managed indexes, naming each top-level stored field's path step on
+/// the way.
 ///
-/// They travel as one because neither is usable alone: no durable-graph entry point takes
-/// the draft without the plan, so a signature that could carry one and not the other would
-/// state a shape the API does not have. Passing them separately is also not available:
-/// [`build_one`] is at its argument bound, and unwrapping this pair puts it over.
-struct AdmittedDraft<'draft, 'txn, 'plan> {
-    draft: &'draft mut DraftTxn<'txn>,
-    plan: &'plan AdmittedGraphInputPlan,
+/// This runs before the group/branch members are appended: an index projects only the
+/// root's identity keys and top-level fields, so it resolves against exactly those
+/// leaves. The Product declaration's leading run is the top-level field member set, in
+/// record order, whichever form the declaration is in, so each field's ledger id and
+/// value shape is read from it. An index admission violation is a precise `check.type`
+/// diagnostic that also marks the graph incomplete, so a rejected index discards the
+/// whole durable graph rather than emitting a partial one.
+fn resolve_root_indexes(
+    resolver: &mut IdentityResolver<'_>,
+    draft: &DraftTxn<'_>,
+    record: &RecordInfo,
+    source: &ProductDeclarationSource,
+    tuple: RootTuple<'_>,
+    store: &StoreDecl,
+    row: &StoreRow<'_>,
+) -> Vec<BuiltIndex> {
+    let key_entries: Vec<(String, LedgerIdBytes, ScalarType)> = tuple
+        .columns
+        .iter()
+        .zip(tuple.ids)
+        .map(|(column, id)| (column.spelling.to_string(), *id, column.scalar))
+        .collect();
+    let declared_shapes: Vec<&DeclarationMemberShape> = source.declared_shapes();
+    let field_entries: Vec<IndexFieldLeaf> = record
+        .fields
+        .iter()
+        .zip(&declared_shapes)
+        .map(|(field, shape)| {
+            let (id, value) = match shape {
+                DeclarationMemberShape::Field { id, value, .. } => (*id, value),
+                #[expect(
+                    clippy::unreachable,
+                    reason = "match-arm narrowing: this map zips the leading top-level-field members of the Product declaration, which the command vector places before its groups and branches, so every zipped member is a `Field`"
+                )]
+                _ => unreachable!("the first members are the record's top-level fields"),
+            };
+            IndexFieldLeaf {
+                name: field.name.clone(),
+                id,
+                scalar: orderable_key_scalar(draft.value_shapes(), *value),
+            }
+        })
+        .collect();
+    // Each top-level stored field is a path-step node named `^root.field`; record its
+    // spelling under its ledger id for the demand-sentence join.
+    for leaf in &field_entries {
+        resolver.name_step(leaf.id, PathSigil::Child, &leaf.name);
+    }
+    resolver.build_indexes(&store.root.root, &key_entries, &field_entries, &row.indexes)
+}
+
+/// One read site per managed index: a nonunique index is a progressive-prefix scan, a
+/// unique index a complete-key exact lookup. There is deliberately no index-write site —
+/// maintenance is compiler-owned. Every index site seals as parked (an index node is
+/// never a flat-executable node).
+fn request_index_sites(
+    draft: &mut DraftTxn<'_>,
+    admitted: &marrow_image::AdmittedRoot,
+    built_indexes: &[BuiltIndex],
+) -> Result<Vec<DurableIndex>, GenericInvariant> {
+    let mut lowered: Vec<DurableIndex> = Vec::with_capacity(built_indexes.len());
+    for (built, path) in built_indexes.iter().zip(admitted.index_paths()) {
+        let target = if built.shape.unique {
+            SemanticTarget::IndexLookup
+        } else {
+            SemanticTarget::IndexScan
+        };
+        request_eager_site(draft, admitted.occurrence(), path, target)?;
+        lowered.push(DurableIndex {
+            name: built.name.clone(),
+            unique: built.shape.unique,
+            path: path.clone(),
+            projection: built.projection.clone(),
+        });
+    }
+    Ok(lowered)
+}
+
+/// Whether the kernel can serve this root's operations directly.
+///
+/// A keyed root of executable fields with root-level scalar/widened-field groups and only
+/// field-only branches is executable within the key-column bound; a singleton root (no
+/// key columns) parks. `member_flat_at_root` admits a root-level group of storable-value
+/// fields while `member_keeps_root_flat` (the branch-member predicate) keeps a group
+/// parked below the root, so a group in a branch or another group never makes the root
+/// flat — mirroring the verifier's `member_flat_at_root`.
+///
+/// `record.fields` (the registry record) carries only the top-level value fields; its
+/// unkeyed groups live in `record.groups`, so a group value never appears here.
+fn root_is_executable(
+    draft: &DraftTxn<'_>,
+    record: &RecordInfo,
+    key_scalars: &[ScalarType],
+    members: &[DeclarationMember],
+) -> Result<bool, GenericInvariant> {
+    if key_scalars.is_empty() {
+        return Ok(false);
+    }
+    if !record
+        .fields
+        .iter()
+        .all(|f| matches!(f.ty, GArg::Scalar(_) | GArg::Struct(_) | GArg::Enum(_)))
+    {
+        return Ok(false);
+    }
+    let mut flat = true;
+    for member in members {
+        flat &= member_flat_at_root(draft, member)?;
+    }
+    Ok(flat)
+}
+
+/// Resolve one store declaration's root tuple and the resource it binds.
+///
+/// The root tuple was taken and resolved once, when the store's row was taken; a refusal
+/// is rendered here, at the same position it always held, width cap first. A singleton
+/// root has no columns.
+///
+/// The record and its projected member rows are read from one row the directory join
+/// built, so a store cannot reach a record the join paired with no declaration. The
+/// refused and absent arms report the same row at the same span: a name that is written
+/// but binds no admitted resource is not a resource of this project either way.
+fn resolve_root_tuple<'a>(
+    row: &'a StoreRow<'a>,
+    directory: &'a ResourceDirectory<'a>,
+    file: &FileIdentity,
+    span: SourceSpan,
+) -> Result<(Vec<AdmittedKeyColumn<'a>>, &'a ResourceRow<'a>), Box<SourceDiagnostic>> {
+    let key_columns = match row.keys.columns() {
+        KeyColumns::OverWide { span, message } => {
+            return Err(Box::new(resource_limit(file, span, message)));
+        }
+        KeyColumns::Unresolved(refused_row) => return Err(Box::new(refused_row.clone())),
+        KeyColumns::Admitted(columns) => columns,
+    };
+    let resource = match row.binding {
+        StoreResourceBinding::Accepted(bound) => directory.row(bound),
+        StoreResourceBinding::Unbound => {
+            return Err(Box::new(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                file,
+                span,
+                format!("`{}` is not a resource in this project", row.resource),
+            )));
+        }
+    };
+    Ok((key_columns, resource))
 }
 
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
@@ -1144,19 +1310,19 @@ struct AdmittedDraft<'draft, 'txn, 'plan> {
 /// gate below precedes every root/site/identity commit, so the draft is touched only once
 /// the store is known admissible.
 fn build_one(
-    admitted: AdmittedDraft<'_, '_, '_>,
+    draft: &mut DraftTxn<'_>,
+    plan: &AdmittedGraphInputPlan,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
     directory: &ResourceDirectory<'_>,
-    declared: DeclarationSite<'_>,
     store: StoreOccurrence<'_>,
     identity_build: &mut IdentityBuildState<'_, '_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<StoreBuild, GenericInvariant> {
-    let AdmittedDraft { draft, plan } = admitted;
     let StoreOccurrence {
         decl: store,
         row,
         multiplicity,
+        declared,
     } = store;
     let file = declared.file;
     let records = type_metadata.records;
@@ -1168,36 +1334,11 @@ fn build_one(
             DurableRefusal::Admission { row },
         )))
     };
-    // The root tuple was taken and resolved once, when the store's row was taken; a
-    // refusal is rendered here, at the same position it always held, width cap first.
-    // A singleton root has no columns.
-    let key_columns = match row.keys.columns() {
-        KeyColumns::OverWide { span, message } => {
-            return refuse(diagnostics, resource_limit(file, span, message));
-        }
-        KeyColumns::Unresolved(refused_row) => return refuse(diagnostics, refused_row.clone()),
-        KeyColumns::Admitted(columns) => columns,
+    let (key_columns, resource) = match resolve_root_tuple(row, directory, file, store.span) {
+        Ok(resolved) => resolved,
+        Err(refused) => return refuse(diagnostics, *refused),
     };
     let key_scalars: Vec<ScalarType> = key_columns.iter().map(|column| column.scalar).collect();
-    // The record and its projected member rows are read from one row the directory join
-    // built, so a store cannot reach a record the join paired with no declaration.
-    // The refused and absent arms report the same row at the same span: a name that is
-    // written but binds no admitted resource is not a resource of this project either
-    // way, and steering the refused case to its own cause is a separate change.
-    let resource = match row.binding {
-        StoreResourceBinding::Accepted(bound) => directory.row(bound),
-        StoreResourceBinding::Unbound => {
-            return refuse(
-                diagnostics,
-                SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    file,
-                    store.span,
-                    format!("`{}` is not a resource in this project", row.resource),
-                ),
-            );
-        }
-    };
     let record = resource.record;
     let group_rows = resource.groups.as_slice();
 
@@ -1272,50 +1413,18 @@ fn build_one(
         ));
     };
 
-    // Resolve the root's managed indexes before appending the group/branch members
-    // (an index projects only the root's identity keys and top-level fields, so it
-    // resolves against exactly those leaves). `members[0..record.fields.len()]` is
-    // the top-level field member set, in record order, so each field's ledger id
-    // and value shape is read from it. An index admission violation is a precise
-    // `check.type` diagnostic that also marks the graph incomplete, so a rejected
-    // index discards the whole durable graph rather than emitting a partial one.
-    let key_entries: Vec<(String, LedgerIdBytes, ScalarType)> = key_columns
-        .iter()
-        .zip(&key_ids)
-        .map(|(column, id)| (column.spelling.to_string(), *id, column.scalar))
-        .collect();
-    // The Product's members, however they were reached: the command vector this store
-    // just built, or the declaration the draft already holds. Both place the resource's
-    // top-level fields first, in record order, so the leading run reads the same either
-    // way.
-    let declared_shapes: Vec<&DeclarationMemberShape> = source.declared_shapes();
-    let field_entries: Vec<IndexFieldLeaf> = record
-        .fields
-        .iter()
-        .zip(&declared_shapes)
-        .map(|(field, shape)| {
-            let (id, value) = match shape {
-                DeclarationMemberShape::Field { id, value, .. } => (*id, value),
-                #[expect(
-                    clippy::unreachable,
-                    reason = "match-arm narrowing: this map zips the leading top-level-field members of the Product declaration, which the command vector places before its groups and branches, so every zipped member is a `Field`"
-                )]
-                _ => unreachable!("the first members are the record's top-level fields"),
-            };
-            IndexFieldLeaf {
-                name: field.name.clone(),
-                id,
-                scalar: orderable_key_scalar(draft.value_shapes(), *value),
-            }
-        })
-        .collect();
-    // Each top-level stored field is a path-step node named `^root.field`; record its
-    // spelling under its ledger id for the demand-sentence join.
-    for leaf in &field_entries {
-        resolver.name_step(leaf.id, PathSigil::Child, &leaf.name);
-    }
-    let built_indexes =
-        resolver.build_indexes(&store.root.root, &key_entries, &field_entries, &row.indexes);
+    let built_indexes = resolve_root_indexes(
+        &mut resolver,
+        draft,
+        record,
+        &source,
+        RootTuple {
+            columns: &key_columns,
+            ids: &key_ids,
+        },
+        store,
+        row,
+    );
 
     // Every identity must resolve before the graph enters the image; a single
     // gap already reported precisely leaves the durable graph absent, so an
@@ -1397,21 +1506,7 @@ fn build_one(
     // index-write site — maintenance is compiler-owned. Every index site seals as
     // parked (an index node is never a flat-executable node); runtime traversal and
     // lookup land at E05.
-    let mut lowered_indexes: Vec<DurableIndex> = Vec::with_capacity(built_indexes.len());
-    for (built, path) in built_indexes.iter().zip(admitted.index_paths()) {
-        let target = if built.shape.unique {
-            SemanticTarget::IndexLookup
-        } else {
-            SemanticTarget::IndexScan
-        };
-        request_eager_site(draft, admitted.occurrence(), path, target)?;
-        lowered_indexes.push(DurableIndex {
-            name: built.name.clone(),
-            unique: built.shape.unique,
-            path: path.clone(),
-            projection: built.projection.clone(),
-        });
-    }
+    let lowered_indexes = request_index_sites(draft, &admitted, &built_indexes)?;
 
     // Decide executability and capture the executable branch descriptors from the Product
     // declaration the draft now holds.
@@ -1430,22 +1525,7 @@ fn build_one(
     // `member_flat_at_root`.
     // `record.fields` (the registry record) carries only the top-level value fields;
     // its unkeyed groups live in `record.groups`, so a group value never appears here.
-    let all_fields_executable = record
-        .fields
-        .iter()
-        .all(|f| matches!(f.ty, GArg::Scalar(_) | GArg::Struct(_) | GArg::Enum(_)));
-    // A keyed root of executable fields with root-level scalar/widened-field groups and
-    // only field-only branches is executable within the key-column bound; a
-    // singleton root (no key columns) parks. `member_flat_at_root` admits a root-level
-    // group of storable-value fields while `member_keeps_root_flat` (the branch-member
-    // predicate) keeps a group parked below the root, so a group in a branch or another
-    // group never makes the root flat — mirroring the verifier's `member_flat_at_root`.
-    let keyed = !key_scalars.is_empty();
-    let mut members_flat = true;
-    for member in &members {
-        members_flat &= member_flat_at_root(draft, member)?;
-    }
-    let executable = keyed && all_fields_executable && members_flat;
+    let executable = root_is_executable(draft, record, &key_scalars, &members)?;
     let (branches, groups) = if executable {
         (
             build_executable_branches(group_rows, &captured.branches, root_id)?,
@@ -2762,11 +2842,11 @@ fn build_branches(
                 .fields
                 .iter()
                 .zip(&sites.fields)
-                .map(|(field, (path, scalar))| DurableBranchField {
+                .map(|(field, (path, scalar))| DurableField {
                     name: field.name.clone(),
-                    scalar: ScalarType::from_image(*scalar),
-                    required: field.required,
                     path: path.clone(),
+                    ty: GArg::Scalar(ScalarType::from_image(*scalar)),
+                    required: field.required,
                 })
                 .collect();
             let branches = build_branches(&row.groups, &sites.branches, root_id, &branch_path)?;

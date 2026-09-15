@@ -184,19 +184,6 @@ pub(super) enum DurNode<'a> {
     },
 }
 
-/// The pieces of one resolved durable field a [`DurTarget::Field`] needs, projected from a
-/// root field or a branch field uniformly.
-struct DurFieldRef {
-    /// The field's canonical declaration path. The caller binds it against the addressed
-    /// occurrence and allocates (and deduplicates) its operation site through the draft
-    /// when it builds the field target, so an untouched field mints no site.
-    path: CanonicalDeclarationPathSelector,
-    /// The field's value type: a root field's widened value set, or a branch field's
-    /// scalar (branch fields are currently scalar-only) lifted to `GArg::Scalar`.
-    ty: GArg,
-    required: bool,
-}
-
 impl<'a> DurNode<'a> {
     /// The root occurrence this node was reached through. Every site over the node is
     /// bound against it: two roots projecting one Product declaration each get their own.
@@ -253,18 +240,14 @@ impl<'a> DurNode<'a> {
         }
     }
 
-    fn field(&self, name: &str) -> Option<DurFieldRef> {
+    /// This node's field `name`, whether the node is the root entry or a keyed branch
+    /// entry. The caller binds the field's canonical declaration path against the
+    /// addressed occurrence and allocates (and deduplicates) its operation site when it
+    /// builds the field target, so an untouched field mints no site.
+    fn field(&self, name: &str) -> Option<&'a crate::durable::DurableField> {
         match self {
-            DurNode::Root(root) => root.field(name).map(|field| DurFieldRef {
-                path: field.path.clone(),
-                ty: field.ty,
-                required: field.required,
-            }),
-            DurNode::Branch { branch, .. } => branch.field(name).map(|field| DurFieldRef {
-                path: field.path.clone(),
-                ty: GArg::Scalar(field.scalar),
-                required: field.required,
-            }),
+            DurNode::Root(root) => root.field(name),
+            DurNode::Branch { branch, .. } => branch.field(name),
         }
     }
 

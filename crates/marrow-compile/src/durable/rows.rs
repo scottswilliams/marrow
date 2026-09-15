@@ -636,18 +636,7 @@ fn resolve_key_columns<'a>(
             }
             Err(ResolveError::Invariant(invariant)) => return Err(invariant),
         };
-        // The closed orderable durable-key scalar set (frozen at C04): int, string,
-        // bool, bytes, date, and instant. `duration` is a span, not an identity, so
-        // it is not a durable key.
-        if !matches!(
-            key,
-            ScalarType::Int
-                | ScalarType::Text
-                | ScalarType::Bool
-                | ScalarType::Bytes
-                | ScalarType::Date
-                | ScalarType::Instant
-        ) {
+        if !super::orderable_durable_key(key) {
             return Ok(Err(Box::new(SourceDiagnostic::at(
                 marrow_codes::Code::CheckType.as_str(),
                 file,
