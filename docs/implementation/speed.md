@@ -69,7 +69,8 @@ rather than the history:
 #[ignore = "burns the whole instruction budget (private VM const, no override) — ~1.3s debug; run with --ignored"]
 ```
 
-The same treatment covers the measurement harnesses, whose output is a
-recorded number and never an assertion, and the tests a sandboxed command
-environment cannot run because they spawn a process or bind a socket. Adding
-a slow test to the default battery is a design review item.
+The same treatment covers the tests a sandboxed command environment cannot run
+because they spawn a process or bind a socket, and the halves a test re-invokes
+as its own subprocess. A test that only prints a number is not an `#[ignore]`d
+test; it belongs in a benchmark or nowhere. Adding a slow test to the default
+battery is a design review item.
