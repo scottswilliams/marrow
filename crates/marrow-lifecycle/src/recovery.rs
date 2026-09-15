@@ -1266,7 +1266,16 @@ mod tests {
                 Some(ceiling),
             );
             if high_water == u32::MAX {
-                assert!(matches!(result, Err(crate::ApplyError::Limit)));
+                assert!(matches!(
+                    result,
+                    Err(crate::ApplyError::HeadMap(
+                        crate::FormatError::LengthOverflow { .. }
+                    ))
+                ));
+                assert_eq!(
+                    result.unwrap_err().code(),
+                    marrow_codes::Code::StoreLimit.as_str()
+                );
                 assert_eq!(store_bytes(&scratch.store()), bytes);
                 continue;
             }
