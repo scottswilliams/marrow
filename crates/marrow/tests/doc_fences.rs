@@ -298,7 +298,7 @@ fn check_in_process(fence: &DocFence) -> InProcess {
             let records: Vec<_> = diagnostics
                 .as_slice()
                 .iter()
-                .map(|diagnostic| record("diagnostic", Some(diagnostic.code())))
+                .map(|diagnostic| record("diagnostic", Some(diagnostic.code().as_str())))
                 .collect();
             return if records
                 .iter()

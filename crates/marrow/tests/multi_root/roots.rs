@@ -395,7 +395,8 @@ store ^assets[key: int]: Asset
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code() == "check.type" && d.message().contains("more than once")),
+            .any(|d| d.code() == marrow_codes::Code::CheckType
+                && d.message().contains("more than once")),
         "expected a duplicate-root-name check.type rejection, got {diagnostics:#?}"
     );
 }
@@ -472,7 +473,9 @@ pub fn confuse(id: int): int? {
 "#;
     let diagnostics = compile(source, IDS).expect_err("a cross-root identity is rejected");
     assert!(
-        diagnostics.iter().any(|d| d.code() == "check.type"),
+        diagnostics
+            .iter()
+            .any(|d| d.code() == marrow_codes::Code::CheckType),
         "expected a check.type rejection, got {diagnostics:#?}"
     );
 }
@@ -1434,7 +1437,7 @@ fn a_product_whose_second_store_is_refused_produces_no_image() {
     assert!(
         refused
             .iter()
-            .any(|row| row.code() == "check.durable_identity"),
+            .any(|row| row.code() == marrow_codes::Code::CheckDurableIdentity),
         "the second store reports its identity gap: {refused:?}"
     );
 }

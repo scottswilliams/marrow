@@ -142,7 +142,8 @@ fn pipeline(ops: &str) -> Stage {
                 .as_slice()
                 .first()
                 .expect("a rejection carries at least one diagnostic")
-                .code(),
+                .code()
+                .as_str(),
         ),
         Err(
             marrow_compile::CompileFailure::Invariant(_)
@@ -717,7 +718,7 @@ fn nominal_field_index_binding_is_refused_before_image_publication() {
     };
     assert_eq!(diagnostics.as_ref().len(), 1);
     let diagnostic = &diagnostics.as_ref()[0];
-    assert_eq!(diagnostic.code(), "check.unsupported");
+    assert_eq!(diagnostic.code(), marrow_codes::Code::CheckUnsupported);
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (8, 1));
 }
