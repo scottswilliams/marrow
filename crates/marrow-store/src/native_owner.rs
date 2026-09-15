@@ -45,13 +45,9 @@ pub const NATIVE_LOCK_FILE: &str = "lock";
 pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = NativeEngine::FORMAT_VERSION;
 
 const LOCK_MAGIC: &[u8; 4] = b"MWSL";
-/// The marker layout uses a state tag. Mutable opening writes a bound instance;
-/// decoding also accepts pre-instance markers left by earlier writers.
+/// The marker layout uses a state tag: a mutable holder writes a pending marker on
+/// acquisition and a bound marker once it has the store instance.
 const LOCK_VERSION: u8 = 1;
-/// The layout this build still reads: a bound owner with no state tag, whose
-/// fields sit in the order that layout froze.
-const LEGACY_BOUND_VERSION: u8 = 0;
-const LEGACY_BOUND_BYTES: usize = 4 + 1 + 4 + 16 + 8;
 const PENDING_TAG: u8 = 0x01;
 const BOUND_TAG: u8 = 0x02;
 const PENDING_BYTES: usize = 4 + 1 + 1 + 4 + 8;
@@ -60,7 +56,7 @@ const BOUND_BYTES: usize = PENDING_BYTES + 16;
 /// The best-effort identity recorded by a mutable native-store owner.
 ///
 /// Inspection does not publish an identity, so this record can describe an earlier
-/// owner rather than the current holder. Older markers may omit the instance.
+/// owner rather than the current holder. A pending marker omits the instance.
 /// Exclusion follows from the directory lock, independently of this record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeLockOwner {
@@ -99,11 +95,6 @@ impl NativeLockOwner {
             return None;
         }
         match byte(4)? {
-            LEGACY_BOUND_VERSION if bytes.len() == LEGACY_BOUND_BYTES => Some(Self {
-                pid: u32::from_be_bytes(field(5, 9)?.try_into().ok()?),
-                instance: Some(field(9, 25)?.try_into().ok()?),
-                acquired_unix_secs: u64::from_be_bytes(field(25, 33)?.try_into().ok()?),
-            }),
             LOCK_VERSION => {
                 let instance = match (byte(5)?, bytes.len()) {
                     (PENDING_TAG, PENDING_BYTES) => None,
@@ -864,7 +855,7 @@ fn verify_named_node(path: &Path, held: &Metadata) -> std::io::Result<()> {
 /// to a contention verdict, never the verdict itself.
 fn read_owner(file: &mut File) -> Option<NativeLockOwner> {
     let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
-    if len == 0 || len > BOUND_BYTES.max(LEGACY_BOUND_BYTES) {
+    if len == 0 || len > BOUND_BYTES {
         return None;
     }
     file.seek(SeekFrom::Start(0)).ok()?;
@@ -1426,12 +1417,12 @@ mod tests {
 
     /// The decoder admits before it indexes. A contender reads a marker it did not
     /// write, so a byte pattern that aborts the decode would replace the exclusion
-    /// verdict with a process abort. Every prefix length of both layouts, at every
+    /// verdict with a process abort. Every prefix length of the layout, at every
     /// version and state tag, either decodes to a whole layout or reports no identity.
     #[test]
     fn no_marker_byte_pattern_can_abort_the_decoder() {
-        let widest = BOUND_BYTES.max(LEGACY_BOUND_BYTES);
-        for version in [LEGACY_BOUND_VERSION, LOCK_VERSION, 0x02, 0xFF] {
+        let widest = BOUND_BYTES;
+        for version in [0x00, LOCK_VERSION, 0x02, 0xFF] {
             for tag in [0x00, PENDING_TAG, BOUND_TAG, 0xFF] {
                 let mut bytes = Vec::with_capacity(widest);
                 bytes.extend_from_slice(LOCK_MAGIC);
@@ -1441,7 +1432,7 @@ mod tests {
                 for len in 0..=widest {
                     assert!(
                         NativeLockOwner::decode(&bytes[..len]).is_none()
-                            || matches!(len, PENDING_BYTES | BOUND_BYTES | LEGACY_BOUND_BYTES),
+                            || matches!(len, PENDING_BYTES | BOUND_BYTES),
                         "a {len}-byte marker at version {version:#04x} tag {tag:#04x} decoded \
                          outside a whole layout",
                     );
@@ -1512,11 +1503,9 @@ mod tests {
         drop(held);
     }
 
-    /// The marker layout this build writes round-trips, and the layout it replaced
-    /// still reads as the bound owner it recorded. A stored marker outlives the
-    /// process that wrote it, so an older holder's bytes must stay legible.
+    /// The marker layout round-trips in both states.
     #[test]
-    fn the_marker_round_trips_and_still_reads_the_layout_it_replaced() {
+    fn the_marker_round_trips_in_both_states() {
         for instance in [None, Some([0x6A; 16])] {
             let owner = NativeLockOwner {
                 pid: 4321,
@@ -1533,22 +1522,6 @@ mod tests {
             );
             assert_eq!(NativeLockOwner::decode(&encoded), Some(owner));
         }
-
-        let mut legacy = [0u8; LEGACY_BOUND_BYTES];
-        legacy[0..4].copy_from_slice(LOCK_MAGIC);
-        legacy[4] = LEGACY_BOUND_VERSION;
-        legacy[5..9].copy_from_slice(&7u32.to_be_bytes());
-        legacy[9..25].copy_from_slice(&[0x6B; 16]);
-        legacy[25..33].copy_from_slice(&99u64.to_be_bytes());
-        assert_eq!(
-            NativeLockOwner::decode(&legacy),
-            Some(NativeLockOwner {
-                pid: 7,
-                instance: Some([0x6B; 16]),
-                acquired_unix_secs: 99,
-            }),
-            "a marker written by the layout this build replaced must still name its owner",
-        );
     }
 
     /// The unclean obligation a crashed holder leaves is inherited by the next

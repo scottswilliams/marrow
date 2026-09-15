@@ -352,27 +352,22 @@ fn resolve_authority(
     }
 }
 
-/// The new witness domain is one byte longer than every legacy 16-byte token. The tag
-/// selects the checked big-endian generation encoding; no legacy bytes are interpreted as
-/// an integer.
+/// The tag selects the checked big-endian generation encoding, so an untagged cell is
+/// never interpreted as an integer.
 const WITNESS_VERSION: u8 = 0x01;
 const WITNESS_V1_BYTES: usize = 1 + std::mem::size_of::<u128>();
 
-/// Whether `bytes` are a witness encoding this build reads: a legacy 16-byte token or a
-/// tagged generation. The read-only audit reports a witness cell of any other shape, the
-/// same shape [`next_witness`] refuses at the next transaction.
+/// Whether `bytes` are the tagged witness encoding. A cell of any other shape is
+/// corruption: the read-only audit reports it, and [`next_witness`] refuses it at the next
+/// transaction.
 pub(crate) fn witness_well_formed(bytes: &[u8]) -> bool {
-    bytes.len() == std::mem::size_of::<u128>()
-        || (bytes.len() == WITNESS_V1_BYTES && bytes[0] == WITNESS_VERSION)
+    bytes.len() == WITNESS_V1_BYTES && bytes[0] == WITNESS_VERSION
 }
 
 fn next_witness(before: &Option<Vec<u8>>) -> Result<Vec<u8>, StoreError> {
     let generation = match before.as_deref() {
         None => 0,
-        // Every exact 16-byte value belongs to the legacy opaque domain. Migration starts
-        // the tagged domain at zero while retaining those exact bytes as the before-state.
-        Some(bytes) if bytes.len() == std::mem::size_of::<u128>() => 0,
-        Some(bytes) if bytes.len() == WITNESS_V1_BYTES && bytes[0] == WITNESS_VERSION => {
+        Some(bytes) if witness_well_formed(bytes) => {
             let current = u128::from_be_bytes(
                 bytes[1..]
                     .try_into()
@@ -536,18 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn every_legacy_token_migrates_to_the_disjoint_zero_generation() {
-        for legacy in [[0x00; 16], [u8::MAX; 16], [0x01; 16]] {
-            let mut store = scoped_store("/test/legacy");
-            seed_witness(&mut store, legacy.to_vec());
-
-            assert!(matches!(commit_empty(&mut store), CommitResult::Committed));
-            assert_eq!(current_witness(&store), Some(witness(0)));
-            assert_eq!(current_witness(&store).expect("witness").len(), 17);
-        }
-    }
-
-    #[test]
     fn generations_advance_exactly_and_exhaust_before_opening_a_transaction() {
         let mut store = scoped_store("/test/exhaustion");
         seed_witness(&mut store, witness(u128::MAX - 1));
@@ -576,12 +559,12 @@ mod tests {
 
     #[test]
     fn malformed_or_unknown_witness_encodings_refuse_without_rewriting_them() {
-        let malformed = [vec![0x01; 15], vec![0x01; 18], {
+        let malformed = [vec![0x01; 15], vec![0x01; 18], vec![0x00; 16], {
             let mut bytes = witness(7);
             bytes[0] = 0x02;
             bytes
         }];
-        assert!(witness_well_formed(&witness(7)) && witness_well_formed(&[0x00; 16]));
+        assert!(witness_well_formed(&witness(7)));
         for bytes in malformed {
             assert!(
                 !witness_well_formed(&bytes),

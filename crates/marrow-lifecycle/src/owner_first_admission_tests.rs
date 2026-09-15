@@ -175,39 +175,38 @@ fn envelope_path(store: &Path) -> PathBuf {
 }
 
 #[test]
-fn pending_and_legacy_records_refuse_before_engine_open() {
-    use crate::envelope::{EnvelopeRecord, EnvelopeState, LEGACY_FIXTURE};
-    let legacy = EnvelopeRecord::decode(&LEGACY_FIXTURE).expect("legacy metadata");
+fn pending_records_refuse_before_engine_open() {
+    use crate::envelope::{EnvelopeRecord, EnvelopeState};
     let digest = marrow_image::StoreHeadDigest::from_bytes([0x31; 32]);
+    let metadata = crate::StoreEnvelope {
+        instance: crate::StoreInstanceId::from_bytes([0x5c; 16]),
+        writer_toolchain: "0.1.0".into(),
+        engine_kind: crate::EngineKind::Redb,
+        engine_format_version: 1,
+    };
     for state in [
-        EnvelopeState::Legacy,
         EnvelopeState::Provision { head: digest },
         EnvelopeState::Rebind {
             old: digest,
             new: digest,
         },
-        EnvelopeState::Upgrade { head: digest },
     ] {
         let dir = TempDir::new("pending-refusal");
         let store = dir.store();
-        let id = legacy.metadata.instance;
+        let id = metadata.instance;
         provision(
             &store,
             ProvisionRequest {
-                envelope: legacy.metadata.clone(),
+                envelope: metadata.clone(),
                 head: head(1, vec![0x44]),
             },
         )
         .expect("provision");
         let record = EnvelopeRecord {
-            metadata: legacy.metadata.clone(),
+            metadata: metadata.clone(),
             state,
         };
-        let bytes = if state == EnvelopeState::Legacy {
-            LEGACY_FIXTURE.to_vec()
-        } else {
-            record.encode().expect("pending record")
-        };
+        let bytes = record.encode().expect("pending record");
         std::fs::write(envelope_path(&store), &bytes).expect("write record");
         std::fs::write(store.join(crate::ENGINE_FILE), b"invalid engine")
             .expect("invalid engine control");

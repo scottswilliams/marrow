@@ -1,8 +1,8 @@
 //! Store identity, writer provenance and persistent publication state.
 //!
 //! Only the complete versioned record can be encoded or decoded. Metadata alone
-//! cannot imply Active. Legacy records are readable for explicit upgrade, never
-//! writable. Lengths, discriminants, digest and trailing bytes are checked strictly.
+//! cannot imply Active. Lengths, discriminants, digest and trailing bytes are checked
+//! strictly.
 
 use marrow_image::{StoreEnvelopeDigest, StoreHeadDigest};
 
@@ -14,24 +14,21 @@ const MAGIC: &[u8; 4] = b"MWSE";
 
 /// The envelope container format version this build writes and reads.
 const ENVELOPE_VERSION: u8 = 0x01;
-const LEGACY_VERSION: u8 = 0x00;
 
 /// The largest writer-toolchain-version string the envelope records, bounding the decode
 /// allocation. A released toolchain version is a short semantic-version string well within
 /// this.
 const MAX_TOOLCHAIN_BYTES: u32 = 64;
 
-const LEGACY_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES as u64 + 32;
+/// The maximum envelope: magic, version, instance, the bounded toolchain string, engine
+/// kind and format, one state byte, at most two head digests and the sealing digest.
+/// Admission enforces it before allocation.
+pub const MAX_ENVELOPE_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES as u64 + 32 + 1 + 2 * 32;
 
-/// The maximum current envelope: bounded metadata, one state byte, at most two
-/// head digests and the sealing digest. Admission enforces it before allocation.
-pub const MAX_ENVELOPE_FILE_BYTES: u64 = LEGACY_FILE_BYTES + 1 + 2 * 32;
-
-/// Select the current or legacy record ceiling before allocating its body.
+/// The record ceiling for a recognized version, before allocating its body.
 pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError> {
     match artifact_version(prefix, MAGIC)? {
         ENVELOPE_VERSION => Ok(MAX_ENVELOPE_FILE_BYTES),
-        LEGACY_VERSION => Ok(LEGACY_FILE_BYTES),
         found => Err(FormatError::UnknownVersion { found }),
     }
 }
@@ -78,7 +75,6 @@ pub struct StoreEnvelope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EnvelopeState {
-    Legacy,
     Active,
     Provision {
         head: StoreHeadDigest,
@@ -86,9 +82,6 @@ pub(crate) enum EnvelopeState {
     Rebind {
         old: StoreHeadDigest,
         new: StoreHeadDigest,
-    },
-    Upgrade {
-        head: StoreHeadDigest,
     },
 }
 
@@ -117,11 +110,6 @@ impl EnvelopeRecord {
         out.push(metadata.engine_kind.tag());
         put_u32(&mut out, metadata.engine_format_version);
         match self.state {
-            EnvelopeState::Legacy => {
-                return Err(FormatError::UnknownVersion {
-                    found: LEGACY_VERSION,
-                });
-            }
             EnvelopeState::Active => out.push(0),
             EnvelopeState::Provision { head } => {
                 out.push(1);
@@ -131,10 +119,6 @@ impl EnvelopeRecord {
                 out.push(2);
                 out.extend_from_slice(old.bytes());
                 out.extend_from_slice(new.bytes());
-            }
-            EnvelopeState::Upgrade { head } => {
-                out.push(3);
-                out.extend_from_slice(head.bytes());
             }
         }
         Ok(out)
@@ -158,7 +142,7 @@ impl EnvelopeRecord {
         let mut reader = Reader::new(bytes);
         reader.magic(MAGIC)?;
         let version = reader.u8()?;
-        if version != ENVELOPE_VERSION && version != LEGACY_VERSION {
+        if version != ENVELOPE_VERSION {
             return Err(FormatError::UnknownVersion { found: version });
         }
         let instance = StoreInstanceId::from_bytes(reader.array::<16>()?);
@@ -175,26 +159,19 @@ impl EnvelopeRecord {
             })?;
         let engine_kind = EngineKind::from_tag(reader.u8()?)?;
         let engine_format_version = reader.u32()?;
-        let state = if version == LEGACY_VERSION {
-            EnvelopeState::Legacy
-        } else {
-            match reader.u8()? {
-                0 => EnvelopeState::Active,
-                1 => EnvelopeState::Provision {
-                    head: StoreHeadDigest::from_bytes(reader.array::<32>()?),
-                },
-                2 => EnvelopeState::Rebind {
-                    old: StoreHeadDigest::from_bytes(reader.array::<32>()?),
-                    new: StoreHeadDigest::from_bytes(reader.array::<32>()?),
-                },
-                3 => EnvelopeState::Upgrade {
-                    head: StoreHeadDigest::from_bytes(reader.array::<32>()?),
-                },
-                _ => {
-                    return Err(FormatError::UnknownDiscriminant {
-                        field: "publication state",
-                    });
-                }
+        let state = match reader.u8()? {
+            0 => EnvelopeState::Active,
+            1 => EnvelopeState::Provision {
+                head: StoreHeadDigest::from_bytes(reader.array::<32>()?),
+            },
+            2 => EnvelopeState::Rebind {
+                old: StoreHeadDigest::from_bytes(reader.array::<32>()?),
+                new: StoreHeadDigest::from_bytes(reader.array::<32>()?),
+            },
+            _ => {
+                return Err(FormatError::UnknownDiscriminant {
+                    field: "publication state",
+                });
             }
         };
         let sealed = reader.array::<32>()?;
@@ -214,16 +191,6 @@ impl EnvelopeRecord {
         Ok(Self { metadata, state })
     }
 }
-
-// Version 0 record with writer 0.1.0 and redb generation 1.
-#[cfg(test)]
-pub(crate) const LEGACY_FIXTURE: [u8; 67] = [
-    0x4d, 0x57, 0x53, 0x45, 0x00, 0xfd, 0xdd, 0x82, 0x62, 0xb4, 0xf5, 0x17, 0x9b, 0x89, 0x10, 0x8d,
-    0xb0, 0xde, 0x19, 0xad, 0xc0, 0x00, 0x00, 0x00, 0x05, 0x30, 0x2e, 0x31, 0x2e, 0x30, 0x01, 0x00,
-    0x00, 0x00, 0x01, 0xb5, 0xb7, 0x19, 0x1d, 0x55, 0x49, 0x84, 0x0e, 0x6e, 0xbf, 0x3e, 0x48, 0x3e,
-    0x4f, 0x48, 0x77, 0x2d, 0xa3, 0x53, 0x65, 0xd2, 0xc9, 0xcd, 0x8c, 0xe8, 0x55, 0xce, 0x19, 0x92,
-    0xb7, 0xb7, 0xe1,
-];
 
 #[cfg(test)]
 mod tests {
@@ -253,21 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_records_remain_distinct_and_cannot_be_written() {
-        let record = EnvelopeRecord::decode(&LEGACY_FIXTURE).expect("legacy record");
-        assert_eq!(record.state, EnvelopeState::Legacy);
-        assert_eq!(record.metadata.writer_toolchain, "0.1.0");
-        assert_eq!(
-            record.encode(),
-            Err(FormatError::UnknownVersion { found: 0 })
-        );
-        assert_eq!(
-            file_ceiling(LEGACY_FIXTURE[..5].try_into().expect("prefix")),
-            Ok(126)
-        );
-    }
-
-    #[test]
     fn every_current_state_is_preserved_and_the_maximum_is_exact() {
         let head = StoreHeadDigest::from_bytes([0x31; 32]);
         let new = StoreHeadDigest::from_bytes([0x32; 32]);
@@ -275,7 +227,6 @@ mod tests {
             EnvelopeState::Active,
             EnvelopeState::Provision { head },
             EnvelopeState::Rebind { old: head, new },
-            EnvelopeState::Upgrade { head },
         ] {
             let mut record = sample();
             record.state = state;

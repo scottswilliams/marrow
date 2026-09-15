@@ -115,8 +115,8 @@ fn validation(error: OpenError) -> RecoveryFault {
 
 fn accepts_head(state: EnvelopeState, digest: StoreHeadDigest) -> bool {
     match state {
-        EnvelopeState::Active | EnvelopeState::Legacy => true,
-        EnvelopeState::Provision { head } | EnvelopeState::Upgrade { head } => head == digest,
+        EnvelopeState::Active => true,
+        EnvelopeState::Provision { head } => head == digest,
         EnvelopeState::Rebind { old, new } => digest == old || digest == new,
     }
 }
@@ -172,31 +172,13 @@ fn recover_inner(
             .map_err(RecoveryFault::Metadata)?;
     }
     let instance = opened.envelope.instance;
-    let mut record = EnvelopeRecord {
+    let record = EnvelopeRecord {
         metadata: crate::StoreEnvelope {
             writer_toolchain: env!("CARGO_PKG_VERSION").to_owned(),
             ..opened.envelope.clone()
         },
-        state: EnvelopeState::Upgrade {
-            head: opened.head_digest,
-        },
+        state: EnvelopeState::Active,
     };
-    if state == EnvelopeState::Legacy {
-        let bytes = record.encode().map_err(|error| {
-            RecoveryFault::Metadata(AdmissionError::format(StoreEntry::Envelope, error))
-        })?;
-        opened
-            .directory
-            .replace(Artifact::Envelope, &bytes)
-            .map_err(RecoveryFault::Metadata)?;
-        #[cfg(test)]
-        crate::store_dir::barrier_fault::check(
-            &opened.directory,
-            crate::store_dir::barrier_fault::Point::RecoveryUpgrade,
-        )
-        .map_err(RecoveryFault::Metadata)?;
-        opened.directory.sync().map_err(RecoveryFault::Metadata)?;
-    }
     opened
         .directory
         .sync_artifacts()
@@ -220,7 +202,6 @@ fn recover_inner(
         .verify_location(&location)
         .map_err(RecoveryFault::Metadata)?;
 
-    record.state = EnvelopeState::Active;
     let finish = || -> Result<(), AuditError> {
         let metadata_error = |error| AuditError::Open(OpenError::Admission(error));
         let bytes = record
@@ -612,33 +593,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_upgrade_keeps_the_instance_and_current_head() {
-        let scratch = Scratch::new();
-        let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
-        let legacy =
-            EnvelopeRecord::decode(&crate::envelope::LEGACY_FIXTURE).expect("legacy fixture");
-        provision(&scratch.store(), request(&image, legacy.metadata.instance)).expect("provision");
-        std::fs::write(
-            scratch.store().join(crate::ENVELOPE_FILE),
-            crate::envelope::LEGACY_FIXTURE,
-        )
-        .expect("legacy envelope");
-        let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
-        let receipt = recover(&scratch.store(), prepare(image)).expect("upgrade");
-        assert_eq!(receipt.instance, legacy.metadata.instance);
-        assert_eq!(
-            std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head unchanged"),
-            head
-        );
-        let record = EnvelopeRecord::decode(
-            &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE)).expect("envelope"),
-        )
-        .expect("record");
-        assert_eq!(record.state, EnvelopeState::Active);
-        assert_eq!(record.metadata.writer_toolchain, env!("CARGO_PKG_VERSION"));
-    }
-
-    #[test]
     fn recovery_preserves_occupied_replacements_before_activation() {
         let scratch = Scratch::new();
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
@@ -1025,116 +979,98 @@ mod tests {
         use crate::store_dir::barrier_fault::{self, Point};
 
         let image = marrow_verify::verify(&compile_bytes(SOURCE)).expect("verify");
-        let legacy_record =
-            EnvelopeRecord::decode(&crate::envelope::LEGACY_FIXTURE).expect("legacy fixture");
-        for legacy in [false, true] {
-            for point in [
-                Point::RecoveryUpgrade,
-                Point::RecoveryArtifacts,
-                Point::RecoveryParent,
-                Point::RecoveryActive,
-            ] {
-                if !legacy && point == Point::RecoveryUpgrade {
-                    continue;
-                }
-                let scratch = Scratch::new();
-                let instance = legacy_record.metadata.instance;
-                assert!(matches!(
-                    publication_sync_fault::with_failure(
-                        &scratch.store(),
-                        publication_sync_fault::Point::Publication,
-                        || provision(&scratch.store(), request(&image, instance))
-                    ),
-                    Err(crate::ProvisionError {
-                        fault: crate::ProvisionFault::PublicationUncertain { .. },
-                        ..
-                    })
-                ));
-                if legacy {
-                    std::fs::write(
-                        scratch.store().join(crate::ENVELOPE_FILE),
-                        crate::envelope::LEGACY_FIXTURE,
-                    )
-                    .expect("legacy envelope");
-                }
-                let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
-                std::fs::write(
-                    scratch.store().join("envelope.replacing"),
-                    b"first interrupted bytes",
-                )
-                .expect("first debris");
-                let error = barrier_fault::with_failure(&scratch.store(), point, || {
-                    recover(&scratch.store(), prepare(image.clone()))
+        for point in [
+            Point::RecoveryArtifacts,
+            Point::RecoveryParent,
+            Point::RecoveryActive,
+        ] {
+            let scratch = Scratch::new();
+            let instance = StoreInstanceId::draw().expect("instance");
+            assert!(matches!(
+                publication_sync_fault::with_failure(
+                    &scratch.store(),
+                    publication_sync_fault::Point::Publication,
+                    || provision(&scratch.store(), request(&image, instance))
+                ),
+                Err(crate::ProvisionError {
+                    fault: crate::ProvisionFault::PublicationUncertain { .. },
+                    ..
                 })
-                .expect_err("barrier failure cannot return recovery success");
-                if point == Point::RecoveryActive {
-                    assert!(
-                        matches!(error.fault, RecoveryFault::Completion { instance: found, .. } if found == instance)
-                    );
-                    assert_eq!(error.code(), Code::StoreActivationUncertain.as_str());
-                } else if point == Point::RecoveryParent {
-                    assert!(matches!(error.fault, RecoveryFault::Io(_)));
-                    assert_eq!(error.code(), Code::StoreIo.as_str());
-                } else {
-                    assert!(matches!(error.fault, RecoveryFault::Metadata(_)));
-                    assert_eq!(error.code(), Code::StoreIo.as_str());
-                }
-                assert_eq!(error.preserved.len(), 1);
-                let first = scratch.store().join(&error.preserved[0]);
-                assert_eq!(
-                    std::fs::read(&first).expect("known first move"),
-                    b"first interrupted bytes"
+            ));
+            let head = std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head");
+            std::fs::write(
+                scratch.store().join("envelope.replacing"),
+                b"first interrupted bytes",
+            )
+            .expect("first debris");
+            let error = barrier_fault::with_failure(&scratch.store(), point, || {
+                recover(&scratch.store(), prepare(image.clone()))
+            })
+            .expect_err("barrier failure cannot return recovery success");
+            if point == Point::RecoveryActive {
+                assert!(
+                    matches!(error.fault, RecoveryFault::Completion { instance: found, .. } if found == instance)
                 );
-                let record = EnvelopeRecord::decode(
-                    &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE))
-                        .expect("actual envelope"),
-                )
-                .expect("record");
-                let digest = LogicalHead::decode_with_digest(&head).expect("head").1;
-                assert_eq!(
-                    record.state,
-                    if point == Point::RecoveryActive {
-                        EnvelopeState::Active
-                    } else if legacy {
-                        EnvelopeState::Upgrade { head: digest }
-                    } else {
-                        EnvelopeState::Provision { head: digest }
-                    }
-                );
-                if point != Point::RecoveryActive {
-                    assert!(matches!(
-                        crate::attach(&scratch.store(), prepare(image.clone())),
-                        Err(crate::LifecycleError::Open(
-                            OpenError::ActivationRequired { .. }
-                        ))
-                    ));
-                }
-                std::fs::write(
-                    scratch.store().join("envelope.replacing"),
-                    b"second interrupted bytes",
-                )
-                .expect("new debris before fresh attempt");
-                let receipt =
-                    recover(&scratch.store(), prepare(image.clone())).expect("fresh recovery");
-                assert_eq!(receipt.instance, instance);
-                assert_eq!(receipt.image_id, image.image_id());
-                assert_eq!(receipt.preserved.len(), 1);
-                assert_ne!(receipt.preserved, error.preserved);
-                assert_eq!(
-                    std::fs::read(&first).expect("first preserved bytes retained"),
-                    b"first interrupted bytes"
-                );
-                assert_eq!(
-                    std::fs::read(scratch.store().join(&receipt.preserved[0]))
-                        .expect("second preserved bytes"),
-                    b"second interrupted bytes"
-                );
-                assert_eq!(
-                    std::fs::read(scratch.store().join(crate::HEAD_FILE))
-                        .expect("head never replayed"),
-                    head
-                );
+                assert_eq!(error.code(), Code::StoreActivationUncertain.as_str());
+            } else if point == Point::RecoveryParent {
+                assert!(matches!(error.fault, RecoveryFault::Io(_)));
+                assert_eq!(error.code(), Code::StoreIo.as_str());
+            } else {
+                assert!(matches!(error.fault, RecoveryFault::Metadata(_)));
+                assert_eq!(error.code(), Code::StoreIo.as_str());
             }
+            assert_eq!(error.preserved.len(), 1);
+            let first = scratch.store().join(&error.preserved[0]);
+            assert_eq!(
+                std::fs::read(&first).expect("known first move"),
+                b"first interrupted bytes"
+            );
+            let record = EnvelopeRecord::decode(
+                &std::fs::read(scratch.store().join(crate::ENVELOPE_FILE))
+                    .expect("actual envelope"),
+            )
+            .expect("record");
+            let digest = LogicalHead::decode_with_digest(&head).expect("head").1;
+            assert_eq!(
+                record.state,
+                if point == Point::RecoveryActive {
+                    EnvelopeState::Active
+                } else {
+                    EnvelopeState::Provision { head: digest }
+                }
+            );
+            if point != Point::RecoveryActive {
+                assert!(matches!(
+                    crate::attach(&scratch.store(), prepare(image.clone())),
+                    Err(crate::LifecycleError::Open(
+                        OpenError::ActivationRequired { .. }
+                    ))
+                ));
+            }
+            std::fs::write(
+                scratch.store().join("envelope.replacing"),
+                b"second interrupted bytes",
+            )
+            .expect("new debris before fresh attempt");
+            let receipt =
+                recover(&scratch.store(), prepare(image.clone())).expect("fresh recovery");
+            assert_eq!(receipt.instance, instance);
+            assert_eq!(receipt.image_id, image.image_id());
+            assert_eq!(receipt.preserved.len(), 1);
+            assert_ne!(receipt.preserved, error.preserved);
+            assert_eq!(
+                std::fs::read(&first).expect("first preserved bytes retained"),
+                b"first interrupted bytes"
+            );
+            assert_eq!(
+                std::fs::read(scratch.store().join(&receipt.preserved[0]))
+                    .expect("second preserved bytes"),
+                b"second interrupted bytes"
+            );
+            assert_eq!(
+                std::fs::read(scratch.store().join(crate::HEAD_FILE)).expect("head never replayed"),
+                head
+            );
         }
     }
 
