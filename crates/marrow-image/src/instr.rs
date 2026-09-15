@@ -169,25 +169,89 @@ pub const OP_DUR_INDEX_SCAN: u8 = 0xB6;
 pub const OP_DUR_INDEX_LOOKUP: u8 = 0xB7;
 pub const OP_DUR_INDEX_EXISTS: u8 = 0xB8;
 
-/// A draft instruction. Jump targets are instruction indices into the function's
-/// own instruction list; the encoder rewrites them to container byte offsets.
+/// The compiler's draft instruction.
+pub type Instr = Instruction<Draft>;
+
+/// A verified instruction with bounds-checked operands, as the VM receives it.
+pub type SealedInstr = Instruction<Sealed>;
+
+/// How one instruction spells its table references.
+///
+/// The opcode set, the operand widths, the durable partition and every variant's
+/// meaning are one owner; only the spelling of a reference differs between the two
+/// sides of the trust boundary. The draft form carries the compiler's typed
+/// pre-encode ids and its unforgeable site capability; the sealed form carries the
+/// ordinals and tape indices the verifier bounds-checked out of received bytes.
+pub trait Operands {
+    /// A constant-pool reference.
+    type Const: std::fmt::Debug + Clone + PartialEq + Eq;
+    /// A transfer target within the function's own instruction list.
+    type Jump: std::fmt::Debug + Clone + PartialEq + Eq;
+    /// A TYPES-table reference.
+    type Type: std::fmt::Debug + Clone + PartialEq + Eq;
+    /// An ENUMS-table reference.
+    type Enum: std::fmt::Debug + Clone + PartialEq + Eq;
+    /// A COLLTYPES-table reference.
+    type Coll: std::fmt::Debug + Clone + PartialEq + Eq;
+    /// A ROOTS-table reference.
+    type Root: std::fmt::Debug + Clone + PartialEq + Eq;
+    /// A durable operation site.
+    type Site: std::fmt::Debug + Clone + PartialEq + Eq;
+}
+
+/// The compiler's spelling: typed draft ids the encoder resolves, and site
+/// capabilities only the draft can mint. Jump targets are instruction indices into
+/// the function's own list; the encoder rewrites them to container byte offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Draft;
+
+impl Operands for Draft {
+    type Const = ConstId;
+    type Jump = u32;
+    type Type = TypeId;
+    type Enum = EnumId;
+    type Coll = CollTypeId;
+    type Root = RootId;
+    type Site = PlannedSiteRef;
+}
+
+/// The verifier's spelling: wire ordinals it bounds-checked against the image's own
+/// tables, and jump targets resolved back from container byte offsets to indices
+/// into the owning function's tape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sealed;
+
+impl Operands for Sealed {
+    type Const = u16;
+    type Jump = usize;
+    type Type = u16;
+    type Enum = u16;
+    type Coll = u16;
+    type Root = u16;
+    type Site = u16;
+}
+
+/// One instruction of the v0 tape, in the operand spelling `R` states.
+///
+/// The set grows one slice at a time; an opcode whose vertical has not landed is a
+/// verify rejection rather than a silent pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Instr {
-    ConstLoad(ConstId),
+pub enum Instruction<R: Operands> {
+    ConstLoad(R::Const),
     LocalGet(u16),
     LocalSet(u16),
     Pop,
     Return,
     Call(u16),
-    Jump(u32),
-    JumpIfFalse(u32),
-    BranchPresent(u32),
+    Jump(R::Jump),
+    JumpIfFalse(R::Jump),
+    BranchPresent(R::Jump),
     /// Fault with `run.unreachable`, carrying the static text at const index `_0`.
     /// The sole application-invariant fault; it never falls through.
-    Unreachable(ConstId),
+    Unreachable(R::Const),
     /// Fault with `run.todo`, carrying the static text at const index `_0`. A deferred
     /// path the author has not implemented; like `Unreachable` it never falls through.
-    Todo(ConstId),
+    Todo(R::Const),
     /// Pop a bool; on false fault with `run.assert` at this instruction's span, else
     /// fall through. Legal only in a test-entry function (the verifier enforces it).
     Assert,
@@ -232,8 +296,8 @@ pub enum Instr {
     /// honoring the `run.collection_limit` bounds; `join` concatenates a
     /// `List[string]` with a separator into a string, honoring the `run.text_limit`
     /// ceiling.
-    TextSplit(CollTypeId),
-    TextLines(CollTypeId),
+    TextSplit(R::Coll),
+    TextLines(R::Coll),
     TextJoin,
     /// Temporal equality and order over two bare temporals of the same type,
     /// producing a bool. The order agrees with the kernel key-codec byte order.
@@ -269,12 +333,12 @@ pub enum Instr {
     /// Checked arithmetic: `_0` is the fault-handler target (instruction index in
     /// the draft, rewritten to a byte offset by the encoder). On overflow the op
     /// jumps to the target instead of faulting; otherwise it pushes the result.
-    IntAddChecked(u32),
-    IntSubChecked(u32),
-    IntMulChecked(u32),
-    IntNegChecked(u32),
-    IntDivChecked(u32),
-    IntRemChecked(u32),
+    IntAddChecked(R::Jump),
+    IntSubChecked(R::Jump),
+    IntMulChecked(R::Jump),
+    IntNegChecked(R::Jump),
+    IntDivChecked(R::Jump),
+    IntRemChecked(R::Jump),
     /// Peek the int on top of the stack; fault `run.range` when it lies outside
     /// the inclusive `[lo, hi]` immediate, else fall through with no stack
     /// effect. The compiler emits one after every operation that produces a
@@ -283,7 +347,7 @@ pub enum Instr {
         lo: i64,
         hi: i64,
     },
-    RecordNew(TypeId),
+    RecordNew(R::Type),
     FieldGet(u16),
     /// Pop a value and a bare record, store the value into the record's field
     /// `_0` slot (present), and push the updated record. Local product mutation:
@@ -300,7 +364,7 @@ pub enum Instr {
     /// Construct enum `enum_idx`'s variant `variant` from its dense scalar payload
     /// popped in reverse (p0 pushed first). Operands: `u16 enum_idx ‖ u16 variant`.
     EnumConstruct {
-        enum_idx: EnumId,
+        enum_idx: R::Enum,
         variant: u16,
     },
     /// Pop an enum value and push its variant index as a bare int. The one match
@@ -327,7 +391,7 @@ pub enum Instr {
     /// declaration order). The `Id(^root, keys…)` constructor. Operands:
     /// `u16 root ‖ u16 cols`.
     MakeIdentity {
-        root: RootId,
+        root: R::Root,
         cols: u16,
     },
     /// `Id → [k0, …, k(cols-1)]`: spread an entry identity into its `cols` key scalars,
@@ -337,22 +401,22 @@ pub enum Instr {
     /// count; the VM faults `run.corruption` (defense in depth) if the identity's tuple
     /// length disagrees.
     IdentityKeyPath(u16),
-    DurExists(PlannedSiteRef),
+    DurExists(R::Site),
     /// `[ancestor-keys] → bool`: whether the family the whole-entry `site` names (the
     /// root's entry family, or a keyed branch family beneath the parent entry the
     /// ancestor key-path locates) has at least one payload-bearing immediate child. Pops
     /// the ancestor key-path (a root site pops none; a single-level branch site pops
     /// `[root_key]`) and pushes the family-populated bool. Unlike [`DurExists`] it names
     /// no immediate child key: it is the family-populated probe, not a keyed presence.
-    DurFamilyExists(PlannedSiteRef),
-    DurReadField(PlannedSiteRef),
+    DurFamilyExists(R::Site),
+    DurReadField(R::Site),
     /// `→ T`: read a required field through captured place slots. The verifier
     /// proves its containing entry present; a missing value faults as corruption.
     DurReadFieldPresent {
-        site: PlannedSiteRef,
+        site: R::Site,
         key_slots: Vec<u16>,
     },
-    DurReadEntry(PlannedSiteRef),
+    DurReadEntry(R::Site),
     /// `T →`: set the field `site` (required or sparse) to a definite value, reading
     /// the containing entry's key-path from local slots `key_slots` (root-first, one
     /// slot per key column of every node from the root down to the field's containing
@@ -363,36 +427,36 @@ pub enum Instr {
     /// (defense in depth over the trust boundary). A field is cleared only by
     /// [`Instr::DurEraseField`].
     DurSetField {
-        site: PlannedSiteRef,
+        site: R::Site,
         key_slots: Vec<u16>,
     },
-    DurCreateEntry(PlannedSiteRef),
-    DurReplaceEntry(PlannedSiteRef),
-    DurEraseField(PlannedSiteRef),
-    DurEraseEntry(PlannedSiteRef),
+    DurCreateEntry(R::Site),
+    DurReplaceEntry(R::Site),
+    DurEraseField(R::Site),
+    DurEraseEntry(R::Site),
     /// `K → Rec?`: read the whole materialized value of the unkeyed `group` the
     /// `GroupEntry` site `_0` names, as one record, or absent when the containing entry
     /// is absent.
-    DurReadGroup(PlannedSiteRef),
+    DurReadGroup(R::Site),
     /// `→ Rec`: read the whole materialized value of the unkeyed `group` the
     /// `GroupEntry` site names, as a bare record, reading the containing entry's
     /// key-path from local slots `key_slots` (root-first) and asserting that entry is
     /// present. The read half of a group-leaf rewrite through a proven place; the
     /// runtime faults `run.corruption` if the marker is absent.
     DurReadGroupPresent {
-        site: PlannedSiteRef,
+        site: R::Site,
         key_slots: Vec<u16>,
     },
     /// `Rec →`: replace the group at `site`, reading the containing entry's key path
     /// from `key_slots` (root-first). The presence lattice proves the entry present;
     /// only this group's fields change, preserving sibling groups and branches.
     DurReplaceGroup {
-        site: PlannedSiteRef,
+        site: R::Site,
         key_slots: Vec<u16>,
     },
     /// `K →`: erase the group the `GroupEntry` site `_0` names — clears only that
     /// group's leaves (no-op on an absent entry).
-    DurEraseGroup(PlannedSiteRef),
+    DurEraseGroup(R::Site),
     /// The bounded nested traversal `for … at most N … on more`. Freeze the first
     /// `limit` immediate keys of the layer the whole-entry `site` belongs to — the
     /// root's entry family (a root site) or a keyed branch family under a fixed parent
@@ -409,10 +473,10 @@ pub enum Instr {
     /// body runs, so a body's writes cannot change the set; no cursor, page, or
     /// continuation is threaded — the frozen list is the whole result.
     DurIterateBounded {
-        site: PlannedSiteRef,
+        site: R::Site,
         limit: u32,
         from: bool,
-        list_ty: CollTypeId,
+        list_ty: R::Coll,
     },
     TxnBegin,
     TxnCommit,
@@ -429,23 +493,23 @@ pub enum Instr {
     /// `List[K]` COLLTYPES index. The frozen list holds the scanned component's raw key
     /// scalars; the compiler wraps each into the source `Id(^root)` at the loop binding.
     DurIndexScan {
-        site: PlannedSiteRef,
+        site: R::Site,
         limit: u32,
         from: bool,
-        list_ty: CollTypeId,
+        list_ty: R::Coll,
     },
     /// The exact complete-key lookup of a unique managed index. Pop the index's whole
     /// projection (one key per component, in projection order) and push the matching source
     /// identity as an optional `Id(^root)` — present with the source key tuple, or vacant.
     /// `site` names the index lookup site. Stack effect `[projection-keys] → Id(^root)?`.
-    DurIndexLookup(PlannedSiteRef),
+    DurIndexLookup(R::Site),
     /// The presence half of [`DurIndexLookup`] — the unique-index arm of `exists`. Pop the
     /// index's whole projection (one key per component, projection order) and push whether a
     /// matching entry exists, without materializing its identity. `site` names the same
     /// unique-index lookup site the lookup uses. Stack effect `[projection-keys] → bool`.
-    DurIndexExists(PlannedSiteRef),
+    DurIndexExists(R::Site),
     /// Push an empty `List` of the COLLTYPES index `_0`.
-    ListNew(CollTypeId),
+    ListNew(R::Coll),
     /// `[list, value] → [list']`: append the bare value after the last element,
     /// faulting `run.collection_limit` when the length or aggregate-byte bound is
     /// exceeded. Collections are values, so this yields a new list.
@@ -462,7 +526,7 @@ pub enum Instr {
     /// read never faults.
     ListIndex,
     /// Push an empty `Map` of the COLLTYPES index `_0`.
-    MapNew(CollTypeId),
+    MapNew(R::Coll),
     /// `[map, key, value] → [map']`: insert or replace the value at `key`, keeping
     /// keys in `CollectionKeyOrder`. Faults `run.collection_limit` on bound excess.
     MapInsert,
@@ -500,319 +564,319 @@ pub enum OpClass {
     Pure,
 }
 
-impl Instr {
+impl<R: Operands> Instruction<R> {
     /// This instruction's place in the durable opcode partition.
     pub fn op_class(&self) -> OpClass {
         match self {
-            Instr::DurSetField { .. }
-            | Instr::DurCreateEntry(_)
-            | Instr::DurReplaceEntry(_)
-            | Instr::DurReplaceGroup { .. }
-            | Instr::DurEraseField(_)
-            | Instr::DurEraseEntry(_)
-            | Instr::DurEraseGroup(_) => OpClass::DurableMutation,
-            Instr::DurExists(_)
-            | Instr::DurFamilyExists(_)
-            | Instr::DurReadField(_)
-            | Instr::DurReadFieldPresent { .. }
-            | Instr::DurReadEntry(_)
-            | Instr::DurReadGroup(_)
-            | Instr::DurReadGroupPresent { .. }
-            | Instr::DurIterateBounded { .. }
-            | Instr::DurIndexScan { .. }
-            | Instr::DurIndexLookup(_)
-            | Instr::DurIndexExists(_) => OpClass::DurableRead,
-            Instr::ConstLoad(_)
-            | Instr::LocalGet(_)
-            | Instr::LocalSet(_)
-            | Instr::Pop
-            | Instr::Return
-            | Instr::Call(_)
-            | Instr::Jump(_)
-            | Instr::JumpIfFalse(_)
-            | Instr::BranchPresent(_)
-            | Instr::Unreachable(_)
-            | Instr::Todo(_)
-            | Instr::Assert
-            | Instr::IntAdd
-            | Instr::IntSub
-            | Instr::IntMul
-            | Instr::IntRem
-            | Instr::IntDiv
-            | Instr::IntNeg
-            | Instr::BoolNot
-            | Instr::IntLt
-            | Instr::IntLe
-            | Instr::IntGt
-            | Instr::IntGe
-            | Instr::EqInt
-            | Instr::EqBool
-            | Instr::EqText
-            | Instr::TextConcat
-            | Instr::TextLt
-            | Instr::TextLe
-            | Instr::TextGt
-            | Instr::TextGe
-            | Instr::EqBytes
-            | Instr::BytesLt
-            | Instr::BytesLe
-            | Instr::BytesGt
-            | Instr::BytesGe
-            | Instr::ConvString
-            | Instr::ConvBytesText
-            | Instr::TextIsEmpty
-            | Instr::TextContains
-            | Instr::TextTrim
-            | Instr::TextSplit(_)
-            | Instr::TextLines(_)
-            | Instr::TextJoin
-            | Instr::EqDate
-            | Instr::DateLt
-            | Instr::DateLe
-            | Instr::DateGt
-            | Instr::DateGe
-            | Instr::EqInstant
-            | Instr::InstantLt
-            | Instr::InstantLe
-            | Instr::InstantGt
-            | Instr::InstantGe
-            | Instr::EqDuration
-            | Instr::DurationLt
-            | Instr::DurationLe
-            | Instr::DurationGt
-            | Instr::DurationGe
-            | Instr::DateAddDays
-            | Instr::DateDaysBetween
-            | Instr::DurationAdd
-            | Instr::DurationSub
-            | Instr::InstantAddDuration
-            | Instr::InstantSubDuration
-            | Instr::IntAddChecked(_)
-            | Instr::IntSubChecked(_)
-            | Instr::IntMulChecked(_)
-            | Instr::IntNegChecked(_)
-            | Instr::IntDivChecked(_)
-            | Instr::IntRemChecked(_)
-            | Instr::RangeGuard { .. }
-            | Instr::RecordNew(_)
-            | Instr::FieldGet(_)
-            | Instr::FieldSet(_)
-            | Instr::FieldUnset(_)
-            | Instr::SomeWrap
-            | Instr::VacantLoad(_)
-            | Instr::EnumConstruct { .. }
-            | Instr::EnumTag
-            | Instr::EnumPayloadGet { .. }
-            | Instr::EqEnum
-            | Instr::EqId
-            | Instr::MakeIdentity { .. }
-            | Instr::IdentityKeyPath(_)
-            | Instr::TxnBegin
-            | Instr::TxnCommit
-            | Instr::ListNew(_)
-            | Instr::ListAppend
-            | Instr::ListLen
-            | Instr::ListGet
-            | Instr::ListIndex
-            | Instr::MapNew(_)
-            | Instr::MapInsert
-            | Instr::MapRemove
-            | Instr::MapGet
-            | Instr::MapLen
-            | Instr::MapKeyAt
-            | Instr::MapValueAt => OpClass::Pure,
+            Self::DurSetField { .. }
+            | Self::DurCreateEntry(_)
+            | Self::DurReplaceEntry(_)
+            | Self::DurReplaceGroup { .. }
+            | Self::DurEraseField(_)
+            | Self::DurEraseEntry(_)
+            | Self::DurEraseGroup(_) => OpClass::DurableMutation,
+            Self::DurExists(_)
+            | Self::DurFamilyExists(_)
+            | Self::DurReadField(_)
+            | Self::DurReadFieldPresent { .. }
+            | Self::DurReadEntry(_)
+            | Self::DurReadGroup(_)
+            | Self::DurReadGroupPresent { .. }
+            | Self::DurIterateBounded { .. }
+            | Self::DurIndexScan { .. }
+            | Self::DurIndexLookup(_)
+            | Self::DurIndexExists(_) => OpClass::DurableRead,
+            Self::ConstLoad(_)
+            | Self::LocalGet(_)
+            | Self::LocalSet(_)
+            | Self::Pop
+            | Self::Return
+            | Self::Call(_)
+            | Self::Jump(_)
+            | Self::JumpIfFalse(_)
+            | Self::BranchPresent(_)
+            | Self::Unreachable(_)
+            | Self::Todo(_)
+            | Self::Assert
+            | Self::IntAdd
+            | Self::IntSub
+            | Self::IntMul
+            | Self::IntRem
+            | Self::IntDiv
+            | Self::IntNeg
+            | Self::BoolNot
+            | Self::IntLt
+            | Self::IntLe
+            | Self::IntGt
+            | Self::IntGe
+            | Self::EqInt
+            | Self::EqBool
+            | Self::EqText
+            | Self::TextConcat
+            | Self::TextLt
+            | Self::TextLe
+            | Self::TextGt
+            | Self::TextGe
+            | Self::EqBytes
+            | Self::BytesLt
+            | Self::BytesLe
+            | Self::BytesGt
+            | Self::BytesGe
+            | Self::ConvString
+            | Self::ConvBytesText
+            | Self::TextIsEmpty
+            | Self::TextContains
+            | Self::TextTrim
+            | Self::TextSplit(_)
+            | Self::TextLines(_)
+            | Self::TextJoin
+            | Self::EqDate
+            | Self::DateLt
+            | Self::DateLe
+            | Self::DateGt
+            | Self::DateGe
+            | Self::EqInstant
+            | Self::InstantLt
+            | Self::InstantLe
+            | Self::InstantGt
+            | Self::InstantGe
+            | Self::EqDuration
+            | Self::DurationLt
+            | Self::DurationLe
+            | Self::DurationGt
+            | Self::DurationGe
+            | Self::DateAddDays
+            | Self::DateDaysBetween
+            | Self::DurationAdd
+            | Self::DurationSub
+            | Self::InstantAddDuration
+            | Self::InstantSubDuration
+            | Self::IntAddChecked(_)
+            | Self::IntSubChecked(_)
+            | Self::IntMulChecked(_)
+            | Self::IntNegChecked(_)
+            | Self::IntDivChecked(_)
+            | Self::IntRemChecked(_)
+            | Self::RangeGuard { .. }
+            | Self::RecordNew(_)
+            | Self::FieldGet(_)
+            | Self::FieldSet(_)
+            | Self::FieldUnset(_)
+            | Self::SomeWrap
+            | Self::VacantLoad(_)
+            | Self::EnumConstruct { .. }
+            | Self::EnumTag
+            | Self::EnumPayloadGet { .. }
+            | Self::EqEnum
+            | Self::EqId
+            | Self::MakeIdentity { .. }
+            | Self::IdentityKeyPath(_)
+            | Self::TxnBegin
+            | Self::TxnCommit
+            | Self::ListNew(_)
+            | Self::ListAppend
+            | Self::ListLen
+            | Self::ListGet
+            | Self::ListIndex
+            | Self::MapNew(_)
+            | Self::MapInsert
+            | Self::MapRemove
+            | Self::MapGet
+            | Self::MapLen
+            | Self::MapKeyAt
+            | Self::MapValueAt => OpClass::Pure,
         }
     }
 }
 
-impl Instr {
+impl<R: Operands> Instruction<R> {
     /// The opcode byte for this instruction.
-    pub(crate) fn opcode(&self) -> u8 {
+    pub fn opcode(&self) -> u8 {
         match self {
-            Instr::ConstLoad(_) => OP_CONST_LOAD,
-            Instr::LocalGet(_) => OP_LOCAL_GET,
-            Instr::LocalSet(_) => OP_LOCAL_SET,
-            Instr::Pop => OP_POP,
-            Instr::Return => OP_RETURN,
-            Instr::Call(_) => OP_CALL,
-            Instr::Jump(_) => OP_JUMP,
-            Instr::JumpIfFalse(_) => OP_JUMP_IF_FALSE,
-            Instr::BranchPresent(_) => OP_BRANCH_PRESENT,
-            Instr::Unreachable(_) => OP_UNREACHABLE,
-            Instr::Todo(_) => OP_TODO,
-            Instr::Assert => OP_ASSERT,
-            Instr::IntAdd => OP_INT_ADD,
-            Instr::IntSub => OP_INT_SUB,
-            Instr::IntMul => OP_INT_MUL,
-            Instr::IntRem => OP_INT_REM,
-            Instr::IntDiv => OP_INT_DIV,
-            Instr::IntNeg => OP_INT_NEG,
-            Instr::BoolNot => OP_BOOL_NOT,
-            Instr::IntLt => OP_INT_LT,
-            Instr::IntLe => OP_INT_LE,
-            Instr::IntGt => OP_INT_GT,
-            Instr::IntGe => OP_INT_GE,
-            Instr::EqInt => OP_EQ_INT,
-            Instr::EqBool => OP_EQ_BOOL,
-            Instr::EqText => OP_EQ_TEXT,
-            Instr::TextConcat => OP_TEXT_CONCAT,
-            Instr::TextLt => OP_TEXT_LT,
-            Instr::TextLe => OP_TEXT_LE,
-            Instr::TextGt => OP_TEXT_GT,
-            Instr::TextGe => OP_TEXT_GE,
-            Instr::EqBytes => OP_EQ_BYTES,
-            Instr::BytesLt => OP_BYTES_LT,
-            Instr::BytesLe => OP_BYTES_LE,
-            Instr::BytesGt => OP_BYTES_GT,
-            Instr::BytesGe => OP_BYTES_GE,
-            Instr::ConvString => OP_CONV_STRING,
-            Instr::ConvBytesText => OP_CONV_BYTES_TEXT,
-            Instr::TextIsEmpty => OP_TEXT_IS_EMPTY,
-            Instr::TextContains => OP_TEXT_CONTAINS,
-            Instr::TextTrim => OP_TEXT_TRIM,
-            Instr::TextSplit(_) => OP_TEXT_SPLIT,
-            Instr::TextLines(_) => OP_TEXT_LINES,
-            Instr::TextJoin => OP_TEXT_JOIN,
-            Instr::EqDate => OP_EQ_DATE,
-            Instr::DateLt => OP_DATE_LT,
-            Instr::DateLe => OP_DATE_LE,
-            Instr::DateGt => OP_DATE_GT,
-            Instr::DateGe => OP_DATE_GE,
-            Instr::EqInstant => OP_EQ_INSTANT,
-            Instr::InstantLt => OP_INSTANT_LT,
-            Instr::InstantLe => OP_INSTANT_LE,
-            Instr::InstantGt => OP_INSTANT_GT,
-            Instr::InstantGe => OP_INSTANT_GE,
-            Instr::EqDuration => OP_EQ_DURATION,
-            Instr::DurationLt => OP_DURATION_LT,
-            Instr::DurationLe => OP_DURATION_LE,
-            Instr::DurationGt => OP_DURATION_GT,
-            Instr::DurationGe => OP_DURATION_GE,
-            Instr::DateAddDays => OP_DATE_ADD_DAYS,
-            Instr::DateDaysBetween => OP_DATE_DAYS_BETWEEN,
-            Instr::DurationAdd => OP_DURATION_ADD,
-            Instr::DurationSub => OP_DURATION_SUB,
-            Instr::InstantAddDuration => OP_INSTANT_ADD_DURATION,
-            Instr::InstantSubDuration => OP_INSTANT_SUB_DURATION,
-            Instr::IntAddChecked(_) => OP_INT_ADD_CHECKED,
-            Instr::IntSubChecked(_) => OP_INT_SUB_CHECKED,
-            Instr::IntMulChecked(_) => OP_INT_MUL_CHECKED,
-            Instr::IntNegChecked(_) => OP_INT_NEG_CHECKED,
-            Instr::IntDivChecked(_) => OP_INT_DIV_CHECKED,
-            Instr::IntRemChecked(_) => OP_INT_REM_CHECKED,
-            Instr::RangeGuard { .. } => OP_RANGE_GUARD,
-            Instr::RecordNew(_) => OP_RECORD_NEW,
-            Instr::FieldGet(_) => OP_FIELD_GET,
-            Instr::FieldSet(_) => OP_FIELD_SET,
-            Instr::FieldUnset(_) => OP_FIELD_UNSET,
-            Instr::SomeWrap => OP_SOME_WRAP,
-            Instr::VacantLoad(_) => OP_VACANT_LOAD,
-            Instr::EnumConstruct { .. } => OP_ENUM_CONSTRUCT,
-            Instr::EnumTag => OP_ENUM_TAG,
-            Instr::EnumPayloadGet { .. } => OP_ENUM_PAYLOAD_GET,
-            Instr::EqEnum => OP_EQ_ENUM,
-            Instr::EqId => OP_EQ_ID,
-            Instr::MakeIdentity { .. } => OP_MAKE_IDENTITY,
-            Instr::IdentityKeyPath(_) => OP_IDENTITY_KEY_PATH,
-            Instr::DurExists(_) => OP_DUR_EXISTS,
-            Instr::DurFamilyExists(_) => OP_DUR_FAMILY_EXISTS,
-            Instr::DurReadField(_) => OP_DUR_READ_FIELD,
-            Instr::DurReadFieldPresent { .. } => OP_DUR_READ_FIELD_PRESENT,
-            Instr::DurReadEntry(_) => OP_DUR_READ_ENTRY,
-            Instr::DurSetField { .. } => OP_DUR_SET_FIELD,
-            Instr::DurCreateEntry(_) => OP_DUR_CREATE_ENTRY,
-            Instr::DurReplaceEntry(_) => OP_DUR_REPLACE_ENTRY,
-            Instr::DurEraseField(_) => OP_DUR_ERASE_FIELD,
-            Instr::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
-            Instr::DurReadGroup(_) => OP_DUR_READ_GROUP,
-            Instr::DurReadGroupPresent { .. } => OP_DUR_READ_GROUP_PRESENT,
-            Instr::DurReplaceGroup { .. } => OP_DUR_REPLACE_GROUP,
-            Instr::DurEraseGroup(_) => OP_DUR_ERASE_GROUP,
-            Instr::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
-            Instr::TxnBegin => OP_TXN_BEGIN,
-            Instr::TxnCommit => OP_TXN_COMMIT,
-            Instr::DurIndexScan { .. } => OP_DUR_INDEX_SCAN,
-            Instr::DurIndexLookup(_) => OP_DUR_INDEX_LOOKUP,
-            Instr::DurIndexExists(_) => OP_DUR_INDEX_EXISTS,
-            Instr::ListNew(_) => OP_LIST_NEW,
-            Instr::ListAppend => OP_LIST_APPEND,
-            Instr::ListLen => OP_LIST_LEN,
-            Instr::ListGet => OP_LIST_GET,
-            Instr::ListIndex => OP_LIST_INDEX,
-            Instr::MapNew(_) => OP_MAP_NEW,
-            Instr::MapInsert => OP_MAP_INSERT,
-            Instr::MapRemove => OP_MAP_REMOVE,
-            Instr::MapGet => OP_MAP_GET,
-            Instr::MapLen => OP_MAP_LEN,
-            Instr::MapKeyAt => OP_MAP_KEY_AT,
-            Instr::MapValueAt => OP_MAP_VALUE_AT,
+            Self::ConstLoad(_) => OP_CONST_LOAD,
+            Self::LocalGet(_) => OP_LOCAL_GET,
+            Self::LocalSet(_) => OP_LOCAL_SET,
+            Self::Pop => OP_POP,
+            Self::Return => OP_RETURN,
+            Self::Call(_) => OP_CALL,
+            Self::Jump(_) => OP_JUMP,
+            Self::JumpIfFalse(_) => OP_JUMP_IF_FALSE,
+            Self::BranchPresent(_) => OP_BRANCH_PRESENT,
+            Self::Unreachable(_) => OP_UNREACHABLE,
+            Self::Todo(_) => OP_TODO,
+            Self::Assert => OP_ASSERT,
+            Self::IntAdd => OP_INT_ADD,
+            Self::IntSub => OP_INT_SUB,
+            Self::IntMul => OP_INT_MUL,
+            Self::IntRem => OP_INT_REM,
+            Self::IntDiv => OP_INT_DIV,
+            Self::IntNeg => OP_INT_NEG,
+            Self::BoolNot => OP_BOOL_NOT,
+            Self::IntLt => OP_INT_LT,
+            Self::IntLe => OP_INT_LE,
+            Self::IntGt => OP_INT_GT,
+            Self::IntGe => OP_INT_GE,
+            Self::EqInt => OP_EQ_INT,
+            Self::EqBool => OP_EQ_BOOL,
+            Self::EqText => OP_EQ_TEXT,
+            Self::TextConcat => OP_TEXT_CONCAT,
+            Self::TextLt => OP_TEXT_LT,
+            Self::TextLe => OP_TEXT_LE,
+            Self::TextGt => OP_TEXT_GT,
+            Self::TextGe => OP_TEXT_GE,
+            Self::EqBytes => OP_EQ_BYTES,
+            Self::BytesLt => OP_BYTES_LT,
+            Self::BytesLe => OP_BYTES_LE,
+            Self::BytesGt => OP_BYTES_GT,
+            Self::BytesGe => OP_BYTES_GE,
+            Self::ConvString => OP_CONV_STRING,
+            Self::ConvBytesText => OP_CONV_BYTES_TEXT,
+            Self::TextIsEmpty => OP_TEXT_IS_EMPTY,
+            Self::TextContains => OP_TEXT_CONTAINS,
+            Self::TextTrim => OP_TEXT_TRIM,
+            Self::TextSplit(_) => OP_TEXT_SPLIT,
+            Self::TextLines(_) => OP_TEXT_LINES,
+            Self::TextJoin => OP_TEXT_JOIN,
+            Self::EqDate => OP_EQ_DATE,
+            Self::DateLt => OP_DATE_LT,
+            Self::DateLe => OP_DATE_LE,
+            Self::DateGt => OP_DATE_GT,
+            Self::DateGe => OP_DATE_GE,
+            Self::EqInstant => OP_EQ_INSTANT,
+            Self::InstantLt => OP_INSTANT_LT,
+            Self::InstantLe => OP_INSTANT_LE,
+            Self::InstantGt => OP_INSTANT_GT,
+            Self::InstantGe => OP_INSTANT_GE,
+            Self::EqDuration => OP_EQ_DURATION,
+            Self::DurationLt => OP_DURATION_LT,
+            Self::DurationLe => OP_DURATION_LE,
+            Self::DurationGt => OP_DURATION_GT,
+            Self::DurationGe => OP_DURATION_GE,
+            Self::DateAddDays => OP_DATE_ADD_DAYS,
+            Self::DateDaysBetween => OP_DATE_DAYS_BETWEEN,
+            Self::DurationAdd => OP_DURATION_ADD,
+            Self::DurationSub => OP_DURATION_SUB,
+            Self::InstantAddDuration => OP_INSTANT_ADD_DURATION,
+            Self::InstantSubDuration => OP_INSTANT_SUB_DURATION,
+            Self::IntAddChecked(_) => OP_INT_ADD_CHECKED,
+            Self::IntSubChecked(_) => OP_INT_SUB_CHECKED,
+            Self::IntMulChecked(_) => OP_INT_MUL_CHECKED,
+            Self::IntNegChecked(_) => OP_INT_NEG_CHECKED,
+            Self::IntDivChecked(_) => OP_INT_DIV_CHECKED,
+            Self::IntRemChecked(_) => OP_INT_REM_CHECKED,
+            Self::RangeGuard { .. } => OP_RANGE_GUARD,
+            Self::RecordNew(_) => OP_RECORD_NEW,
+            Self::FieldGet(_) => OP_FIELD_GET,
+            Self::FieldSet(_) => OP_FIELD_SET,
+            Self::FieldUnset(_) => OP_FIELD_UNSET,
+            Self::SomeWrap => OP_SOME_WRAP,
+            Self::VacantLoad(_) => OP_VACANT_LOAD,
+            Self::EnumConstruct { .. } => OP_ENUM_CONSTRUCT,
+            Self::EnumTag => OP_ENUM_TAG,
+            Self::EnumPayloadGet { .. } => OP_ENUM_PAYLOAD_GET,
+            Self::EqEnum => OP_EQ_ENUM,
+            Self::EqId => OP_EQ_ID,
+            Self::MakeIdentity { .. } => OP_MAKE_IDENTITY,
+            Self::IdentityKeyPath(_) => OP_IDENTITY_KEY_PATH,
+            Self::DurExists(_) => OP_DUR_EXISTS,
+            Self::DurFamilyExists(_) => OP_DUR_FAMILY_EXISTS,
+            Self::DurReadField(_) => OP_DUR_READ_FIELD,
+            Self::DurReadFieldPresent { .. } => OP_DUR_READ_FIELD_PRESENT,
+            Self::DurReadEntry(_) => OP_DUR_READ_ENTRY,
+            Self::DurSetField { .. } => OP_DUR_SET_FIELD,
+            Self::DurCreateEntry(_) => OP_DUR_CREATE_ENTRY,
+            Self::DurReplaceEntry(_) => OP_DUR_REPLACE_ENTRY,
+            Self::DurEraseField(_) => OP_DUR_ERASE_FIELD,
+            Self::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
+            Self::DurReadGroup(_) => OP_DUR_READ_GROUP,
+            Self::DurReadGroupPresent { .. } => OP_DUR_READ_GROUP_PRESENT,
+            Self::DurReplaceGroup { .. } => OP_DUR_REPLACE_GROUP,
+            Self::DurEraseGroup(_) => OP_DUR_ERASE_GROUP,
+            Self::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
+            Self::TxnBegin => OP_TXN_BEGIN,
+            Self::TxnCommit => OP_TXN_COMMIT,
+            Self::DurIndexScan { .. } => OP_DUR_INDEX_SCAN,
+            Self::DurIndexLookup(_) => OP_DUR_INDEX_LOOKUP,
+            Self::DurIndexExists(_) => OP_DUR_INDEX_EXISTS,
+            Self::ListNew(_) => OP_LIST_NEW,
+            Self::ListAppend => OP_LIST_APPEND,
+            Self::ListLen => OP_LIST_LEN,
+            Self::ListGet => OP_LIST_GET,
+            Self::ListIndex => OP_LIST_INDEX,
+            Self::MapNew(_) => OP_MAP_NEW,
+            Self::MapInsert => OP_MAP_INSERT,
+            Self::MapRemove => OP_MAP_REMOVE,
+            Self::MapGet => OP_MAP_GET,
+            Self::MapLen => OP_MAP_LEN,
+            Self::MapKeyAt => OP_MAP_KEY_AT,
+            Self::MapValueAt => OP_MAP_VALUE_AT,
         }
     }
 
     /// The number of immediate-operand bytes after the opcode.
     fn operand_len(&self) -> usize {
         match self {
-            Instr::ConstLoad(_)
-            | Instr::LocalGet(_)
-            | Instr::LocalSet(_)
-            | Instr::Unreachable(_)
-            | Instr::Todo(_)
-            | Instr::Call(_)
-            | Instr::RecordNew(_)
-            | Instr::FieldGet(_)
-            | Instr::FieldSet(_)
-            | Instr::FieldUnset(_)
-            | Instr::DurExists(_)
-            | Instr::DurFamilyExists(_)
-            | Instr::DurReadField(_)
-            | Instr::DurReadEntry(_)
-            | Instr::DurCreateEntry(_)
-            | Instr::DurReplaceEntry(_)
-            | Instr::DurEraseField(_)
-            | Instr::DurEraseEntry(_)
-            | Instr::DurReadGroup(_)
-            | Instr::DurEraseGroup(_)
-            | Instr::ListNew(_)
-            | Instr::MapNew(_)
-            | Instr::TextSplit(_)
-            | Instr::TextLines(_)
+            Self::ConstLoad(_)
+            | Self::LocalGet(_)
+            | Self::LocalSet(_)
+            | Self::Unreachable(_)
+            | Self::Todo(_)
+            | Self::Call(_)
+            | Self::RecordNew(_)
+            | Self::FieldGet(_)
+            | Self::FieldSet(_)
+            | Self::FieldUnset(_)
+            | Self::DurExists(_)
+            | Self::DurFamilyExists(_)
+            | Self::DurReadField(_)
+            | Self::DurReadEntry(_)
+            | Self::DurCreateEntry(_)
+            | Self::DurReplaceEntry(_)
+            | Self::DurEraseField(_)
+            | Self::DurEraseEntry(_)
+            | Self::DurReadGroup(_)
+            | Self::DurEraseGroup(_)
+            | Self::ListNew(_)
+            | Self::MapNew(_)
+            | Self::TextSplit(_)
+            | Self::TextLines(_)
             // A big-endian `u16` root key-column count.
-            | Instr::IdentityKeyPath(_)
+            | Self::IdentityKeyPath(_)
             // A big-endian `u16` index lookup site.
-            | Instr::DurIndexLookup(_)
+            | Self::DurIndexLookup(_)
             // A big-endian `u16` unique-index presence-probe site.
-            | Instr::DurIndexExists(_) => 2,
+            | Self::DurIndexExists(_) => 2,
             // Two big-endian `u16` operands: the store-root index and the key-column count.
-            Instr::MakeIdentity { .. } => 4,
-            Instr::Jump(_)
-            | Instr::JumpIfFalse(_)
-            | Instr::BranchPresent(_)
-            | Instr::IntAddChecked(_)
-            | Instr::IntSubChecked(_)
-            | Instr::IntMulChecked(_)
-            | Instr::IntNegChecked(_)
-            | Instr::IntDivChecked(_)
-            | Instr::IntRemChecked(_) => 4,
+            Self::MakeIdentity { .. } => 4,
+            Self::Jump(_)
+            | Self::JumpIfFalse(_)
+            | Self::BranchPresent(_)
+            | Self::IntAddChecked(_)
+            | Self::IntSubChecked(_)
+            | Self::IntMulChecked(_)
+            | Self::IntNegChecked(_)
+            | Self::IntDivChecked(_)
+            | Self::IntRemChecked(_) => 4,
             // A `VacantLoad` operand is a full optional `ImageType`: one tag byte
             // for an optional scalar, or a tag plus a big-endian `u16` index for an
             // optional enum (a defaulted sparse enum field).
-            Instr::VacantLoad(ty) => ty.encoded_len(),
+            Self::VacantLoad(ty) => ty.encoded_len(),
             // Two big-endian `i64` interval bounds.
-            Instr::RangeGuard { .. } => 16,
+            Self::RangeGuard { .. } => 16,
             // Two big-endian `u16` operands.
-            Instr::EnumConstruct { .. } | Instr::EnumPayloadGet { .. } => 4,
+            Self::EnumConstruct { .. } | Self::EnumPayloadGet { .. } => 4,
             // A big-endian `u16` site, a big-endian `u16` key-path length, then one
             // big-endian `u16` per key-path slot.
-            Instr::DurSetField { key_slots, .. }
-            | Instr::DurReadFieldPresent { key_slots, .. }
-            | Instr::DurReadGroupPresent { key_slots, .. }
-            | Instr::DurReplaceGroup { key_slots, .. } => {
+            Self::DurSetField { key_slots, .. }
+            | Self::DurReadFieldPresent { key_slots, .. }
+            | Self::DurReadGroupPresent { key_slots, .. }
+            | Self::DurReplaceGroup { key_slots, .. } => {
                 4 + 2 * key_slots.len()
             }
             // A big-endian `u16` site, a big-endian `u32` bound, a one-byte
             // `from`-present flag, and a big-endian `u16` frozen-`List[K]` COLLTYPES
             // index.
-            Instr::DurIterateBounded { .. } | Instr::DurIndexScan { .. } => 9,
+            Self::DurIterateBounded { .. } | Self::DurIndexScan { .. } => 9,
             _ => 0,
         }
     }
@@ -827,7 +891,9 @@ impl Instr {
     pub fn encoded_len(&self) -> usize {
         1 + self.operand_len()
     }
+}
 
+impl Instr {
     /// The operation site this instruction names, if it names one.
     ///
     /// This is the one place that answers "which instructions carry a site", so the
@@ -835,24 +901,24 @@ impl Instr {
     /// keeping its own list of site-bearing opcodes.
     pub(crate) fn site_operand(&self) -> Option<&PlannedSiteRef> {
         match self {
-            Instr::DurExists(site)
-            | Instr::DurFamilyExists(site)
-            | Instr::DurReadField(site)
-            | Instr::DurReadFieldPresent { site, .. }
-            | Instr::DurReadEntry(site)
-            | Instr::DurSetField { site, .. }
-            | Instr::DurCreateEntry(site)
-            | Instr::DurReplaceEntry(site)
-            | Instr::DurEraseField(site)
-            | Instr::DurEraseEntry(site)
-            | Instr::DurReadGroup(site)
-            | Instr::DurReadGroupPresent { site, .. }
-            | Instr::DurReplaceGroup { site, .. }
-            | Instr::DurEraseGroup(site)
-            | Instr::DurIterateBounded { site, .. }
-            | Instr::DurIndexScan { site, .. }
-            | Instr::DurIndexLookup(site)
-            | Instr::DurIndexExists(site) => Some(site),
+            Self::DurExists(site)
+            | Self::DurFamilyExists(site)
+            | Self::DurReadField(site)
+            | Self::DurReadFieldPresent { site, .. }
+            | Self::DurReadEntry(site)
+            | Self::DurSetField { site, .. }
+            | Self::DurCreateEntry(site)
+            | Self::DurReplaceEntry(site)
+            | Self::DurEraseField(site)
+            | Self::DurEraseEntry(site)
+            | Self::DurReadGroup(site)
+            | Self::DurReadGroupPresent { site, .. }
+            | Self::DurReplaceGroup { site, .. }
+            | Self::DurEraseGroup(site)
+            | Self::DurIterateBounded { site, .. }
+            | Self::DurIndexScan { site, .. }
+            | Self::DurIndexLookup(site)
+            | Self::DurIndexExists(site) => Some(site),
             _ => None,
         }
     }

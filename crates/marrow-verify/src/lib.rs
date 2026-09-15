@@ -19,15 +19,15 @@ pub use interface::interface_of;
 pub use marrow_image::{
     CeilingDescriptor, CeilingId, DemandAtom, DemandSetId, DemandView, DurableContractId,
     DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes,
-    OperationClass, Scalar, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
-    SemanticStepKind, SemanticTarget,
+    OperationClass, Scalar, SealedInstr, SemanticNode, SemanticNodeKind, SemanticPath,
+    SemanticStep, SemanticStepKind, SemanticTarget,
 };
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{
     AtomIncidence, FunctionIndex, NodeIncidence, RetShape, SealedBranch, SealedCollectionType,
     SealedConst, SealedEnumType, SealedExport, SealedField, SealedFunction, SealedGroup,
-    SealedIndex, SealedIndexComponent, SealedInstr, SealedRecordType, SealedRoot, SealedSite,
-    SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedFunction, VerifiedImage,
+    SealedIndex, SealedIndexComponent, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget,
+    SealedTestEntry, SealedVariant, SpanRow, VerifiedFunction, VerifiedImage,
     VerifiedRootOccurrence,
 };
 pub use verify::verify;
