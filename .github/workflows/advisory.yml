@@ -1,0 +1,88 @@
+name: Advisory
+
+# Non-gating checks. None of these may red a push: an upstream advisory, a
+# stable-toolchain lint change, or an extension dependency update is a finding
+# to triage, not an integration stop.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stable-toolchain:
+    name: Rust (stable)
+    runs-on: ubuntu-latest
+    # Overrides rust-toolchain.toml on purpose: this job's subject is the
+    # toolchain the repository is not pinned to.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: advisory-stable
+
+      - name: Clippy (stable)
+        run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- \
+            -D warnings -F unsafe-code \
+            --force-warn clippy::too_many_lines --force-warn clippy::cognitive_complexity
+
+  supply-chain:
+    name: Supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Prebuilt release binaries; neither tool is a workspace dependency and
+      # neither touches Cargo.lock.
+      - name: Install advisory tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-cyclonedx
+
+      - name: Audit dependencies
+        run: cargo audit
+
+      - name: Generate SBOM
+        run: cargo cyclonedx --all --format json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: "**/*.cdx.json"
+          if-no-files-found: error
+
+  vscode-extension:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # editors/vscode/.npmrc enforces ignore-scripts, so no dependency
+      # lifecycle script runs during install.
+      - name: Install extension dependencies
+        run: npm ci
+
+      - name: Typecheck (no emit)
+        run: npx tsc --noEmit -p ./
