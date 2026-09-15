@@ -1,4 +1,4 @@
-//! Conformance KAT (C04): the language comparison order of each temporal value type
+//! Conformance KAT: the language comparison order of each temporal value type
 //! agrees with the kernel key-codec byte order.
 //!
 //! A temporal value is a key scalar (`Map[date, V]` and durable temporal keys are

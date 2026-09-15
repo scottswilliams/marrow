@@ -1,4 +1,4 @@
-//! Exit-gate evidence for bounded nested traversal (E04): the VM drives the
+//! Bounded nested traversal: the VM drives the
 //! freeze-then-run `DurIterateBounded` opcode over a real ephemeral store, built with
 //! `ImageDraft → encode → verify` and no compiler dependency. Each test seeds a store,
 //! runs a read-only iterate export, and inspects the frozen `List[K]` and the on-more

@@ -1,4 +1,4 @@
-//! Slice K.3 evidence: records and optionals through the sealed tape.
+//! Records and optionals through the sealed tape.
 //!
 //! Images are minted with `ImageDraft`, sealed by the independent verifier, and run
 //! on the VM. The presence-typing rejection (a `T?` reaching a bare consumer) is the
@@ -180,7 +180,7 @@ fn optional_into_a_bare_consumer_rejects() {
     assert_eq!(result, Err("image.function".to_string()));
 }
 
-// --- Local product mutation: FieldSet / FieldUnset (C02 V5). ---
+// --- Local product mutation: FieldSet / FieldUnset. ---
 
 #[test]
 fn field_set_stores_a_value_present() {

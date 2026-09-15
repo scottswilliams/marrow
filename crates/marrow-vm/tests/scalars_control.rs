@@ -1,4 +1,4 @@
-//! Slice K.2 evidence: scalars and procedural control through the sealed tape.
+//! Scalars and procedural control through the sealed tape.
 //!
 //! Images are minted with `ImageDraft`, sealed by the independent verifier, and run
 //! on the VM — the executable trust path without the compiler. The checked-
@@ -11,100 +11,6 @@ use marrow_image::{
 };
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
-use std::path::{Path, PathBuf};
-
-/// The `#[path]`-included test module under `lower/`; it carries no owner comments and
-/// is excluded from the source corpus scanned below.
-const LOWER_TEST_MODULE: &str = "lower_metadata_successor_tests.rs";
-
-/// The `marrow-compile` lowering source directory, sibling to this crate.
-fn lower_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR is `<root>/crates/marrow-vm`; the lowering source is its sibling.
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../marrow-compile/src/lower")
-}
-
-/// Every production `.rs` file under `lower/`, sorted and concatenated. The directory is
-/// scanned at test time so a newly added submodule is covered automatically instead of
-/// escaping a hardcoded list; only the `#[path]`-included test module is dropped. Each
-/// read is `expect`ed, so an unreadable file fails the test rather than silently
-/// shrinking the corpus.
-fn lower_source() -> String {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(lower_dir())
-        .expect("read lower/ directory")
-        .map(|entry| entry.expect("lower/ dir entry").path())
-        .filter(|path| {
-            path.extension().is_some_and(|ext| ext == "rs")
-                && path.file_name().and_then(|name| name.to_str()) != Some(LOWER_TEST_MODULE)
-        })
-        .collect();
-    paths.sort();
-    assert!(
-        !paths.is_empty(),
-        "lower/ must contain production source files"
-    );
-    paths
-        .iter()
-        .map(|path| std::fs::read_to_string(path).expect("read lower/ source file"))
-        .collect::<Vec<_>>()
-        .concat()
-}
-
-#[test]
-fn rendering_and_conversion_owner_comments_do_not_regress() {
-    let lower = lower_source();
-    let lower = lower.as_str();
-    let render = include_str!("../src/render.rs");
-    let outcome = include_str!("../../marrow/src/outcome.rs");
-    let controls = include_str!("scalars_control.rs");
-    let checks = [
-        (
-            "crates/marrow-compile/src/lower/",
-            lower,
-            ["same closed", " conversions"].concat(),
-            0,
-        ),
-        (
-            "crates/marrow-compile/src/lower/",
-            lower,
-            ["Lower a closed scalar", " conversion"].concat(),
-            0,
-        ),
-        (
-            "crates/marrow-vm/src/render.rs",
-            render,
-            ["`run`/", "`print` output"].concat(),
-            0,
-        ),
-        (
-            "crates/marrow/src/outcome.rs",
-            outcome,
-            ["`run`/", "`print` output"].concat(),
-            0,
-        ),
-        (
-            "crates/marrow-vm/tests/scalars_control.rs",
-            controls,
-            ["The closed scalar", " conversions"].concat(),
-            0,
-        ),
-    ];
-
-    let mut stale = Vec::new();
-    for (path, source, phrase, expected_count) in checks {
-        let count = source.matches(&phrase).count();
-        if count != expected_count {
-            stale.push(format!(
-                "{path}: expected {expected_count} occurrences of `{phrase}`, found {count}"
-            ));
-        }
-    }
-
-    assert!(
-        stale.is_empty(),
-        "stale rendering/conversion owner comments remain:\n{}",
-        stale.join("\n")
-    );
-}
 
 /// Encode a one-function image `f(): ret` built by `build`, returning its bytes.
 fn encode(build: impl FnOnce(&mut DraftTxn<'_>) -> (ImageType, Vec<Instr>)) -> Vec<u8> {

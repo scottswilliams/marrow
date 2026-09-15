@@ -1,12 +1,12 @@
 //! Conformance: the VM's runtime `Value` equality agrees with the kernel's
-//! `value_equality`, the one owner of the relation (C02 V6).
+//! `value_equality`, the one owner of the relation.
 //!
 //! The VM's `Eq*` opcodes compute equality as `Value == Value` (a structural
 //! comparison over contents; a collection's cached size never participates). The
 //! kernel `value_equality` over [`ValueDomain`] is the specification. Rather than
 //! convert on every comparison (the crate DAG allows delegation, but it would only
 //! add cost to a structural comparison), this test pins that the two agree
-//! over the C02 value domain: for every pair of representative values, the kernel
+//! over the value domain: for every pair of representative values, the kernel
 //! relation and the runtime `==` return the same verdict.
 
 use std::rc::Rc;
@@ -17,7 +17,7 @@ use marrow_kernel::equality::{RootId, ValueDomain, value_equality};
 use marrow_vm::Value;
 
 /// Project a runtime value into the kernel equality domain. A nominal value is an
-/// `Int`, so it projects as a scalar. A top-level optional is not part of the C02
+/// `Int`, so it projects as a scalar. A top-level optional is not part of the
 /// equality domain (no `==` consumes a `T?`); it never reaches this projection.
 fn to_domain(value: &Value) -> ValueDomain {
     match value {
@@ -68,7 +68,7 @@ fn to_domain(value: &Value) -> ValueDomain {
     }
 }
 
-/// Representative values across every admitted C02 shape: scalars (int carries the
+/// Representative values across every admitted shape: scalars (int carries the
 /// nominal case), products with present and vacant sparse fields, and sums with
 /// payloadless, payload-bearing, and nested-sum variants.
 fn corpus() -> Vec<Value> {
