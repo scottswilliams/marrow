@@ -49,6 +49,8 @@ mod store_dir;
 mod owner_first_admission_tests;
 #[cfg(test)]
 mod provision_lifecycle_tests;
+#[cfg(test)]
+mod test_support;
 
 pub use actor::{
     AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt, attach,

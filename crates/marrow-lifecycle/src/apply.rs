@@ -349,3 +349,7 @@ fn members<'a, 'b>(
                 && matches!(graph.value_shapes().view(field.value()), Some(ValueShapeView::Scalar(_)))
     )))
 }
+
+#[cfg(test)]
+#[path = "apply_tests.rs"]
+mod tests;
