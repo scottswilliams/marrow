@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(
             reply,
             marrow_local_wire::ServerMessage::ProvisionFailed {
-                code: marrow_codes::Code::StoreLocked.as_str().into(),
+                code: marrow_codes::Code::StoreLocked.as_str(),
                 stage: ".marrow-provisioning.123.0".into(),
                 os_error: Some(13),
             }

@@ -617,15 +617,13 @@ impl fmt::Write for JsonData {
     }
 }
 
-#[expect(clippy::expect_used, reason = "appending to a String is infallible")]
 /// One record field's value as a canonical JSON string, through the wire's one escaper.
 fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
-    marrow_runner::write_json_string(text, |piece| {
+    let Ok(()) = marrow_runner::write_json_string(text, |piece| {
         out.push_str(piece);
         Ok::<(), std::convert::Infallible>(())
-    })
-    .expect("appending to a String cannot fail");
+    });
     out
 }
 
