@@ -56,8 +56,8 @@ pub use analysis::{
     Candidate, CandidateKind, CompletionOutcome, Completions, DeclKind, DeclSymbol, Definition,
     Fact, FormatOutcome, Hover, InputRevision, MAX_ACTIVE_CALL_RENDER_BYTES,
     MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, MAX_DOCUMENT_SYMBOLS_PER_FILE,
-    MAX_FORMAT_OUTPUT_BYTES, MAX_SNAPSHOT_FACT_BYTES, MAX_SNAPSHOT_FACT_COUNT, MAX_SYMBOL_DEPTH,
-    ParamPiece, PositionClass, QueryError, Unavailability, analyze,
+    MAX_SNAPSHOT_FACT_BYTES, MAX_SNAPSHOT_FACT_COUNT, MAX_SYMBOL_DEPTH, ParamPiece, PositionClass,
+    QueryError, Unavailability, analyze,
 };
 pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,

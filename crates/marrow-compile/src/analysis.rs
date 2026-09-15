@@ -83,7 +83,7 @@ pub const MAX_ACTIVE_CALL_RENDER_BYTES: u64 = 64 * 1024;
 /// refused as a query-local outcome (never retained). The formatter's input is already
 /// bounded by the pure owner's per-file admission, so this is an expansion guard, not a
 /// second input bound.
-pub const MAX_FORMAT_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_FORMAT_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The largest number of declaration-hierarchy symbols one module file admits before that
 /// file's outline becomes [`Unavailability::Bounded`]. Every projected node — each
