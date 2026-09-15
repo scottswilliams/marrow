@@ -497,6 +497,107 @@ pub enum BinaryOp {
     Or,
 }
 
+/// How equal-precedence operands of one binary operator group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Associativity {
+    Left,
+    /// `??` groups right: `a ?? b ?? c` is `a ?? (b ?? c)`.
+    Right,
+    /// Equality, `is`, comparison, and range do not chain; each side of an
+    /// equal-precedence neighbour needs parentheses.
+    None,
+}
+
+impl BinaryOp {
+    /// How tightly this operator binds, tighter last.
+    ///
+    /// The one owner of the binding order. The expression parser encodes the same
+    /// order structurally, as one function per level, and the formatter reads this
+    /// table to decide where parentheses are required; `operator_precedence_matches_the_parser`
+    /// in `tests/cases` is what keeps the two from drifting.
+    pub const fn precedence(self) -> u8 {
+        match self {
+            Self::Or => 1,
+            Self::And => 2,
+            Self::Is => 3,
+            Self::Equal | Self::NotEqual => 4,
+            Self::Less | Self::LessEqual | Self::Greater | Self::GreaterEqual => 5,
+            Self::RangeExclusive | Self::RangeInclusive => 6,
+            Self::Coalesce => 7,
+            Self::Add | Self::Subtract => 9,
+            Self::Multiply | Self::Divide | Self::Remainder => 10,
+        }
+    }
+
+    /// How equal-precedence operands of this operator group.
+    pub const fn associativity(self) -> Associativity {
+        match self {
+            Self::Coalesce => Associativity::Right,
+            Self::Is
+            | Self::Equal
+            | Self::NotEqual
+            | Self::Less
+            | Self::LessEqual
+            | Self::Greater
+            | Self::GreaterEqual
+            | Self::RangeExclusive
+            | Self::RangeInclusive => Associativity::None,
+            Self::Or
+            | Self::And
+            | Self::Add
+            | Self::Subtract
+            | Self::Multiply
+            | Self::Divide
+            | Self::Remainder => Associativity::Left,
+        }
+    }
+
+    /// The source spelling of this operator. Ranges are emitted unspaced, so the
+    /// formatter does not use theirs.
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Multiply => "*",
+            Self::Divide => "/",
+            Self::Remainder => "%",
+            Self::Add => "+",
+            Self::Subtract => "-",
+            Self::Less => "<",
+            Self::LessEqual => "<=",
+            Self::Greater => ">",
+            Self::GreaterEqual => ">=",
+            Self::Equal => "==",
+            Self::NotEqual => "!=",
+            Self::Coalesce => "??",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Is => "is",
+            Self::RangeExclusive => "..",
+            Self::RangeInclusive => "..=",
+        }
+    }
+
+    /// Every binary operator, in no significant order.
+    pub const ALL: [Self; 17] = [
+        Self::Multiply,
+        Self::Divide,
+        Self::Remainder,
+        Self::Add,
+        Self::Subtract,
+        Self::RangeExclusive,
+        Self::RangeInclusive,
+        Self::Less,
+        Self::LessEqual,
+        Self::Greater,
+        Self::GreaterEqual,
+        Self::Equal,
+        Self::NotEqual,
+        Self::Coalesce,
+        Self::Is,
+        Self::And,
+        Self::Or,
+    ];
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompoundAssignOp {
     Add,

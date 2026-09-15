@@ -683,3 +683,59 @@ fn a_three_segment_member_path_parses_as_one_name() {
         ["Cat", "tiger", "bengal"]
     );
 }
+
+/// The parser encodes binding order structurally, one function per level; the
+/// formatter reads [`BinaryOp::precedence`] to decide where parentheses are
+/// required. Nothing else ties them, so a new operator placed at one level in the
+/// tower and another in the table would silently move where the formatter
+/// parenthesizes.
+///
+/// For every ordered pair of operators the grammar admits together, this parses
+/// `x <a> y <b> z` and asserts the tighter operator is the inner node. A pair the
+/// parser rejects — a non-associative level, or an operand shape one of the two
+/// restricts — reports diagnostics and proves nothing about binding, so it is
+/// skipped rather than asserted.
+#[test]
+fn operator_precedence_matches_the_parser() {
+    let mut compared = 0usize;
+    for outer in BinaryOp::ALL {
+        for inner in BinaryOp::ALL {
+            if outer.precedence() == inner.precedence() {
+                continue;
+            }
+            let source = format!(
+                "fn f(): int {{\n    return x {} y {} z\n}}\n",
+                outer.spelling(),
+                inner.spelling()
+            );
+            let parsed = parse_source(&source);
+            if !parsed.diagnostics.complete().is_empty() {
+                continue;
+            }
+            let Statement::Return {
+                value: Some(value), ..
+            } = &parsed.file.function("f").expect("f").body.statements[0]
+            else {
+                panic!("expected a return expression in {source:?}");
+            };
+            let Expression::Binary { op: root, .. } = value else {
+                panic!("expected a binary root in {source:?}, got {value:#?}");
+            };
+            let looser = if outer.precedence() < inner.precedence() {
+                outer
+            } else {
+                inner
+            };
+            assert_eq!(
+                *root, looser,
+                "{source:?}: the looser operator must be the root, \
+                 so the parser tower and BinaryOp::precedence agree",
+            );
+            compared += 1;
+        }
+    }
+    assert!(
+        compared > 40,
+        "the pair corpus collapsed to {compared} comparisons; it proves nothing",
+    );
+}

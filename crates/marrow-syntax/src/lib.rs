@@ -20,14 +20,15 @@ mod token;
 pub use query::QuerySyntax;
 
 pub use ast::{
-    AliasDecl, Argument, ArmBinding, BinaryOp, BinaryOperands, Block, CheckedBind, Comment,
-    CommentMarker, CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl,
-    EnumMember, EnumPayloadField, Expression, FieldDecl, ForBinding, ForName, FunctionDecl,
-    GroupDecl, IdentityTypeExpr, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam,
-    LiteralKind, LoopOrder, MatchArm, ModuleDecl, NameSegment, NominalDecl, ParamDecl,
-    ParsedSource, RangeExpr, Recovery, ResourceDecl, ResourceMember, SavedRoot, SourceFile,
-    Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl, TraversalBound, TypeConstraint,
-    TypeExpr, TypeParamDecl, UnaryOp, UseDecl, field_path_spelling, name_path_spelling, range_expr,
+    AliasDecl, Argument, ArmBinding, Associativity, BinaryOp, BinaryOperands, Block, CheckedBind,
+    Comment, CommentMarker, CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf,
+    EnumDecl, EnumMember, EnumPayloadField, Expression, FieldDecl, ForBinding, ForName,
+    FunctionDecl, GroupDecl, IdentityTypeExpr, IfConstBinding, IndexArg, IndexDecl,
+    InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm, ModuleDecl, NameSegment,
+    NominalDecl, ParamDecl, ParsedSource, RangeExpr, Recovery, ResourceDecl, ResourceMember,
+    SavedRoot, SourceFile, Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl,
+    TraversalBound, TypeConstraint, TypeExpr, TypeParamDecl, UnaryOp, UseDecl, field_path_spelling,
+    name_path_spelling, range_expr,
 };
 pub use diagnostic::{
     CompleteSyntaxDiagnostics, Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax,

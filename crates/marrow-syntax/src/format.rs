@@ -8,12 +8,13 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    CompoundAssignOp, ConstDecl, ContextualKeyword, Declaration, ElseIf, EnumDecl, EnumMember,
-    Expression, ForBinding, FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind,
-    LoopOrder, MatchArm, NominalDecl, NonEmptyCompleteSyntaxDiagnostics, ParamDecl, ResourceDecl,
-    ResourceMember, Statement, StoreDecl, StructDecl, SyntaxDiagnosticLimit, TokenKind,
-    TraversalBound, TypeExpr, UnaryOp, duration_unit_forms, encode_string_literal,
+    AliasDecl, Argument, Associativity, BinaryOp, Block, CheckedBind, Comment, CommentMarker,
+    CommentPlacement, CompoundAssignOp, ConstDecl, ContextualKeyword, Declaration, ElseIf,
+    EnumDecl, EnumMember, Expression, ForBinding, FunctionDecl, IfConstBinding, InterpolationPart,
+    KeyParam, LiteralKind, LoopOrder, MatchArm, NominalDecl, NonEmptyCompleteSyntaxDiagnostics,
+    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl,
+    SyntaxDiagnosticLimit, TokenKind, TraversalBound, TypeExpr, UnaryOp, duration_unit_forms,
+    encode_string_literal,
 };
 
 /// Why checked whole-document formatting was refused. This is the one syntax-owned
@@ -1912,10 +1913,10 @@ fn format_binary_at(
     level: usize,
     layout: Layout,
 ) -> String {
-    let precedence = binary_precedence(op);
+    let precedence = op.precedence();
     // The associative side keeps an equal-precedence operand bare; the other side
     // parenthesizes one. A non-associative operator parenthesizes either equal side.
-    let (left_min, right_min) = match associativity(op) {
+    let (left_min, right_min) = match op.associativity() {
         Associativity::Left => (precedence, precedence + 1),
         Associativity::Right => (precedence + 1, precedence),
         Associativity::None => (precedence + 1, precedence + 1),
@@ -1925,7 +1926,7 @@ fn format_binary_at(
     match op {
         BinaryOp::RangeExclusive => format!("{left}..{right}"),
         BinaryOp::RangeInclusive => format!("{left}..={right}"),
-        _ => format!("{left} {} {right}", binary_symbol(op)),
+        _ => format!("{left} {} {right}", op.spelling()),
     }
 }
 
@@ -1977,72 +1978,10 @@ fn format_interpolation_at(parts: &[InterpolationPart], level: usize) -> String 
 
 fn precedence(expression: &Expression) -> u8 {
     match expression {
-        Expression::Binary { op, .. } => binary_precedence(*op),
+        Expression::Binary { op, .. } => op.precedence(),
         Expression::Membership { .. } => PREC_MEMBERSHIP,
         Expression::Unary { .. } => PREC_UNARY,
         _ => PREC_ATOM,
-    }
-}
-
-fn binary_precedence(op: BinaryOp) -> u8 {
-    match op {
-        BinaryOp::Or => 1,
-        BinaryOp::And => 2,
-        BinaryOp::Is => 3,
-        BinaryOp::Equal | BinaryOp::NotEqual => 4,
-        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 5,
-        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => 6,
-        BinaryOp::Coalesce => 7,
-        BinaryOp::Add | BinaryOp::Subtract => 9,
-        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => 10,
-    }
-}
-
-enum Associativity {
-    Left,
-    Right,
-    None,
-}
-
-/// `??` is right-associative (`a ?? b ?? c` is `a ?? (b ?? c)`). Equality, `is`,
-/// comparison, and range are non-associative per the grammar and need parentheses
-/// on either equal-precedence side; every other binary operator is left-associative.
-fn associativity(op: BinaryOp) -> Associativity {
-    match op {
-        BinaryOp::Coalesce => Associativity::Right,
-        BinaryOp::Is
-        | BinaryOp::Equal
-        | BinaryOp::NotEqual
-        | BinaryOp::Less
-        | BinaryOp::LessEqual
-        | BinaryOp::Greater
-        | BinaryOp::GreaterEqual
-        | BinaryOp::RangeExclusive
-        | BinaryOp::RangeInclusive => Associativity::None,
-        _ => Associativity::Left,
-    }
-}
-
-fn binary_symbol(op: BinaryOp) -> &'static str {
-    match op {
-        BinaryOp::Multiply => "*",
-        BinaryOp::Divide => "/",
-        BinaryOp::Remainder => "%",
-        BinaryOp::Add => "+",
-        BinaryOp::Subtract => "-",
-        BinaryOp::Less => "<",
-        BinaryOp::LessEqual => "<=",
-        BinaryOp::Greater => ">",
-        BinaryOp::GreaterEqual => ">=",
-        BinaryOp::Equal => "==",
-        BinaryOp::NotEqual => "!=",
-        BinaryOp::Coalesce => "??",
-        BinaryOp::And => "and",
-        BinaryOp::Or => "or",
-        BinaryOp::Is => "is",
-        // Ranges are emitted unspaced, so these symbols are only for exhaustiveness.
-        BinaryOp::RangeExclusive => "..",
-        BinaryOp::RangeInclusive => "..=",
     }
 }
 
