@@ -354,7 +354,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             "isEmpty" => (1, Instr::TextIsEmpty, bool_ty),
             "contains" => (2, Instr::TextContains, bool_ty),
             "trim" => (1, Instr::TextTrim, text),
-            #[allow(
+            #[expect(
                 clippy::unreachable,
                 reason = "match-arm narrowing: the caller dispatched on this exact set of text-floor builtin names before entering this match"
             )]
@@ -522,7 +522,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Some(nanos) => self.draft.intern_duration(nanos),
                 None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
             },
-            #[allow(
+            #[expect(
                 clippy::unreachable,
                 reason = "match-arm narrowing: the caller restricts this dispatch to the temporal scalar types matched above"
             )]
@@ -548,7 +548,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 "a canonical UTC instant `YYYY-MM-DDTHH:MM:SS[.fraction]Z` in years 0001-9999"
             }
             ScalarType::Duration => "a canonical duration `[-]PT<seconds>[.fraction]S`",
-            #[allow(
+            #[expect(
                 clippy::unreachable,
                 reason = "match-arm narrowing: the caller restricts this dispatch to the temporal scalar types matched above"
             )]
@@ -587,7 +587,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Instr::DateDaysBetween,
                 ScalarType::Int,
             ),
-            #[allow(
+            #[expect(
                 clippy::unreachable,
                 reason = "match-arm narrowing: the caller restricts this dispatch to the date-arithmetic builtins matched above"
             )]

@@ -804,7 +804,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let slots = self.capture_identity_key_slots(expr, root, cols, span)?;
         // The RootId was resolved from a root in this registry when the identity column was
         // built, so it is present here.
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "lowering invariant: an identity operand's RootId names a root in this registry"
         )]
@@ -1762,7 +1762,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     .ok_or(LoweringFailure::Recoverable)?;
                 self.push(Instr::DurEraseGroup(site), place.span)?;
             }
-            #[allow(
+            #[expect(
                 clippy::unreachable,
                 reason = "lowering bookkeeping: a group-leaf delete is dispatched on a dedicated path before this shared key-path emit, so it never reaches this arm"
             )]

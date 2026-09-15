@@ -108,7 +108,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         args: &[Argument],
         span: SourceSpan,
     ) -> ConstructResult<LTy> {
-        #[allow(
+        #[expect(
             clippy::unreachable,
             reason = "match-arm narrowing: the caller dispatches here only for a builtin whose non-empty argument list it already established"
         )]
