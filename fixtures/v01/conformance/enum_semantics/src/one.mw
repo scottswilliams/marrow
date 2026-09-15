@@ -1,6 +1,0 @@
-module one
-
-pub enum Status {
-    active
-    archived
-}

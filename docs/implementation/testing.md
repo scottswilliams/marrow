@@ -1,6 +1,6 @@
 # Testing implementation
 
-Marrow tests at six layers. Each proves its own scope.
+Marrow tests at five layers. Each proves its own scope.
 
 | Layer | Purpose |
 |---|---|
@@ -8,7 +8,6 @@ Marrow tests at six layers. Each proves its own scope.
 | Source-driven parser tests | `.mw` source through the lexer, parser, and formatter. |
 | Source tests (`marrow test`) | `test` and `assert` declarations run through the whole pipeline (compile, verify, VM); a durable test runs against its own fresh in-memory store, a storeless test with no session. |
 | Engine conformance laws | Identical byte-level traces over the memory and redb engines. |
-| Differential oracle | The current stack and the archived prototype binary each run `marrow test --format jsonl` over the tracer fixtures, and the harness compares them test by test; the tests that invoke the binary are `#[ignore]`d. |
 | Architecture and absence tests | Workspace membership, forbidden legacy families, and generated drift. |
 
 A test asserts codes, spans, values, and facts, never message text. A CLI test
@@ -39,8 +38,10 @@ triaged as a measurement finding. To reproduce it locally, run the job's
 ## Fixtures
 
 `fixtures/v01/` is the preserved-semantics corpus: complete fixture projects
-and `.mw` sources with their expected outcomes, replayed through the pipeline
-by the source tests and the differential oracle.
+and `.mw` sources replayed through the pipeline by the source tests, and the
+parse corpus every `marrow-syntax` total-invariant sweep covers.
+[`fixtures/README.md`](../../fixtures/README.md) owns the layout rule and the
+reason `.marrow/ids` is committed.
 
 ## Documentation
 

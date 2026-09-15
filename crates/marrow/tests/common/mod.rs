@@ -3,10 +3,9 @@
 //!
 //! One harness scaffolds a Marrow project, drives it through the production paths,
 //! and captures typed outcomes, so a fixture suite is a thin file of assertions
-//! rather than a fresh copy of the capture → compile → verify → run plumbing. The
-//! five M1 fixture-authoring lanes and the existing embedded-`.mw` suites share this
-//! one module (`mod common;`); it recompiles into each including test binary but is
-//! authored, reviewed, and fixed in one place.
+//! rather than a fresh copy of the capture → compile → verify → run plumbing. Every
+//! suite shares this one module (`mod common;`); it recompiles into each including
+//! test binary but is authored and fixed in one place.
 //!
 //! # Scaffolding a project
 //!
@@ -30,10 +29,13 @@
 //!
 //! A fixture lives under `crates/marrow/tests/fixtures/v01/<name>/` as ordinary
 //! source files, so new language behavior is authored as `.mw`, not as a Rust
-//! string constant. The layout is a real project directory:
+//! string constant. This corpus is private to the `marrow` crate and is distinct
+//! from the repository-root `fixtures/v01/`, whose every `.mw` file is swept into
+//! the shared parse corpus; see `fixtures/README.md`. The layout is a real project
+//! directory:
 //!
 //! ```text
-//! fixtures/v01/<name>/
+//! crates/marrow/tests/fixtures/v01/<name>/
 //!     marrow.toml        (required — the manifest)
 //!     .marrow/ids         (optional — the frozen identity ledger; see the trap below)
 //!     src/<module>.mw    (one or more source files, any subtree depth)
@@ -73,8 +75,8 @@
 //! - each unkeyed `group` namespace.
 //!
 //! Copy the shape of an existing ledger and extend it row by row. The two shipped
-//! fixtures cover the common rows: `fixtures/v01/counter_allocation/.marrow/ids`
-//! (`application`/`product`/`field`/`root`/`key`) and `fixtures/v01/bookstore/.marrow/ids`
+//! fixtures cover the common rows: `counter_allocation/.marrow/ids`
+//! (`application`/`product`/`field`/`root`/`key`) and `bookstore/.marrow/ids`
 //! (the same plus an `index` row). For the row kinds neither fixture demonstrates,
 //! copy the exact spelling from a sibling suite in this directory: keyed `branch`
 //! placements and their nested `id root`/`id key`/`id field` rows in

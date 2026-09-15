@@ -1,6 +1,0 @@
-resource Book {
-    required title: string
-    shelf: string
-}
-
-store ^books[id: int]: Book
