@@ -25,7 +25,7 @@ moves together in the feature's lane; a feature is not done while any is missing
    guard; new decoders declare a bound before allocating.
 3. **Recovery**: a new construct reports one diagnostic at its failure token with a
    typed `DiagnosticReason`; it does not resurrect a second cascading diagnostic
-   (`total_parser_architecture` guards this). Spans stay in bounds and 1-based.
+   (`common::oracle::diagnostic_cap` bounds this). Spans stay in bounds and 1-based.
 4. **Formatter**: render the construct canonically and idempotently. A body-bearing
    header joins its body through `append_braced_body`; a mandatory block renders `{}`
    when empty (a `fn`, `test`, `resource`, `struct`, a group, and the compound

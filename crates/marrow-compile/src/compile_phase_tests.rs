@@ -1046,8 +1046,8 @@ pub fn readWeight(id: int, noteId: int, tagId: int): int? {
 // ---- Image capacity: the semantic drive stops once retained bodies cannot fit.
 
 /// One ordinary body, one generic instance shared by production and a test, and one
-/// test body: three settled bodies, so a check that skipped one would show here as
-/// well as a check that visited one twice.
+/// test body: the smallest shape where a check that skipped a settled population, or
+/// visited one twice, encodes a different image than `compile_with_tests`.
 const SHARED_GENERIC_WITH_TEST: &str = "module main\n\n\
     fn identity<T>(x: T): T {\n    return x\n}\n\n\
     pub fn f(): int {\n    return identity(1)\n}\n\n\
@@ -1160,11 +1160,10 @@ fn an_accepted_shape_retains_every_body_and_keeps_its_image_identity() {
     );
 }
 
-/// The 32x512 shape cannot fit. Both production entries stop the drive at the first
-/// settled body whose charge proves it — the twentieth — and report the image-bytes
-/// limit; the remaining twelve bodies are never lowered.
+/// The 32x512 shape cannot fit: every production entry stops the drive at the first
+/// settled body whose charge proves it and reports the image-bytes limit.
 #[test]
-fn a_refused_shape_stops_the_drive_within_the_retention_bound() {
+fn a_refused_shape_reports_the_image_bytes_limit_from_every_entry() {
     let input = capacity_project(&[("src/main.mw", wide_module(32, 512))]);
     image_bytes_limit(crate::compile(&input));
     image_bytes_limit(crate::check(&input));
