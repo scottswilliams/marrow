@@ -60,8 +60,7 @@ impl ApplyError {
             Self::Unsupported => Code::StoreApplyUnsupported.as_str(),
             Self::ComparisonExhausted | Self::CeilingTooLarge => Code::StoreLimit.as_str(),
             Self::CeilingUnaccepted { .. } => Code::StoreCeilingUnaccepted.as_str(),
-            Self::HeadMap(FormatError::LengthOverflow { .. }) => Code::StoreLimit.as_str(),
-            Self::HeadMap(_) => Code::StoreCorruption.as_str(),
+            Self::HeadMap(error) => error.code(),
             Self::Lifecycle(error) => error.code(),
         }
     }
