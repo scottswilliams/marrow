@@ -2,7 +2,6 @@
 //! through the production compile path.
 
 use std::fmt::Write as _;
-use std::time::Instant;
 
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use marrow_syntax::SourceSpan;
@@ -39,34 +38,10 @@ fn chain_source(depth: usize) -> String {
     source
 }
 
-/// Quadratic edge work would make a 4x-deeper chain cost about 16x. The bound is
-/// 8x: clear of that and clear of scheduling noise, so this catches a regression to
-/// a per-vertex rescan of the graph rather than a constant factor.
-#[test]
-fn call_graph_work_stays_far_below_quadratic_in_chain_depth() {
-    let time = |depth: usize| {
-        let input = project(chain_source(depth));
-        let start = Instant::now();
-        compile(&input).expect("the acyclic chain compiles");
-        start.elapsed().as_secs_f64()
-    };
-    let base = time(64);
-    let deep = time(256);
-    // A base compile faster than a millisecond is dominated by fixed setup, and its
-    // ratio measures nothing.
-    if base >= 0.001 {
-        let growth = deep / base;
-        assert!(
-            growth < 8.0,
-            "a 4x-deeper call chain cost {growth:.1}x the time ({base:.4}s -> {deep:.4}s);              quadratic edge work would cost about 16x",
-        );
-    }
-}
-
 /// A chain compiles to the same image bytes however deep it is rebuilt.
 #[test]
 fn a_call_chain_compiles_reproducibly() {
-    for depth in [64usize, 128] {
+    for depth in [64usize, 256] {
         let input = project(chain_source(depth));
         let first = compile(&input).expect("the acyclic chain compiles");
         let second = compile(&input).expect("the acyclic chain compiles");

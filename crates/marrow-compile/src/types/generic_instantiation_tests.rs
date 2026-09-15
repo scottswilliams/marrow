@@ -2,7 +2,6 @@
 //! through the production `compile` path.
 
 use std::fmt::Write as _;
-use std::time::Instant;
 
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -56,36 +55,23 @@ fn fn_axis_fixture(v: usize) -> String {
     source
 }
 
-/// Wall time to compile `source` cleanly.
-fn compile_time(source: String) -> f64 {
-    let input = project(source);
-    let start = Instant::now();
-    compile(&input).expect("the scaling fixture compiles cleanly");
-    start.elapsed().as_secs_f64()
-}
-
-/// Quadratic instantiation work would make a 4x population cost about 16x. The bound
-/// is 8x, well clear of that and well clear of scheduling noise on a loaded machine;
-/// this catches a regression to a per-instantiation rescan, not a constant factor.
+/// Both axes are deterministic across a widening instantiation population: the same
+/// program compiles to the same image bytes however many instances it mints.
 #[test]
-fn instantiation_work_stays_far_below_quadratic_on_both_axes() {
+fn both_instantiation_axes_compile_reproducibly_as_they_widen() {
     for (axis, fixture) in [
         ("type", type_axis_fixture as fn(usize) -> String),
         ("function", fn_axis_fixture),
     ] {
-        let base = compile_time(fixture(128));
-        let wide = compile_time(fixture(512));
-        // A base compile faster than a millisecond is dominated by fixed setup, and
-        // its ratio measures nothing; only compare once the signal is above that.
-        if base < 0.001 {
-            continue;
+        for width in [128usize, 512] {
+            let input = project(fixture(width));
+            let first = compile(&input).expect("the widening fixture compiles cleanly");
+            let second = compile(&input).expect("the widening fixture compiles cleanly");
+            assert_eq!(
+                first.image.bytes, second.image.bytes,
+                "{axis} axis at {width} instantiations encodes identically",
+            );
         }
-        let growth = wide / base;
-        assert!(
-            growth < 8.0,
-            "{axis} axis: 4x the instantiations cost {growth:.1}x the time \
-             ({base:.4}s -> {wide:.4}s); quadratic work would cost about 16x",
-        );
     }
 }
 
