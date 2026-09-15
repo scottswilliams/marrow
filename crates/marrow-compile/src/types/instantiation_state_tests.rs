@@ -188,8 +188,8 @@ struct StableSnapshot {
     // must observe a missed index purge or a stuck `TemplateProof` domain, not only the
     // primary append-only owners. `HashMap` equality is content-based, so these compare
     // regardless of iteration order.
-    type_index: HashMap<(usize, Vec<GArg>), usize>,
-    fn_index: HashMap<(usize, Vec<GArg>), usize>,
+    type_index: HashMap<usize, HashMap<Vec<GArg>, usize>>,
+    fn_index: HashMap<usize, HashMap<Vec<GArg>, usize>>,
     collection_index: HashMap<CollSpec, CollTypeId>,
     argument_domain: ArgumentDomain,
 }

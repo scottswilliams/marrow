@@ -1,117 +1,7 @@
-//! Rendering type spellings for display: the record/enum display-owner claims and
-//! the bounded best-effort and validated renderers that turn an instantiation row
-//! back into source-shaped text.
+//! Rendering type spellings for display: the bounded best-effort and validated
+//! renderers that turn an instantiation row back into source-shaped text.
 
 use super::*;
-
-fn claim_record_display_owner(
-    owner: &mut Option<RecordMetadataOwner>,
-    candidate: RecordMetadataOwner,
-    id: TypeId,
-) -> Result<(), GenericInvariant> {
-    if owner.replace(candidate).is_some() {
-        Err(GenericInvariant::TypeIdentityCollision(TypeInstId::Record(
-            id,
-        )))
-    } else {
-        Ok(())
-    }
-}
-
-fn record_display_owner(
-    registry: &TypeRegistry,
-    view: &TypeMetadataView<'_>,
-    id: TypeId,
-) -> Result<Option<RecordMetadataOwner>, GenericInvariant> {
-    let mut owner = None;
-    for (record_row, record) in registry.records.iter().enumerate() {
-        if record.type_id == id {
-            claim_record_display_owner(
-                &mut owner,
-                RecordMetadataOwner::ResourceRecord(record_row),
-                id,
-            )?;
-        }
-        for (group_row, group) in record.groups.iter().enumerate() {
-            if group.type_id == id {
-                claim_record_display_owner(
-                    &mut owner,
-                    RecordMetadataOwner::Group(record_row, group_row),
-                    id,
-                )?;
-            }
-        }
-    }
-    for (row, info) in registry.structs.iter().enumerate() {
-        if info.type_id == id {
-            claim_record_display_owner(&mut owner, RecordMetadataOwner::DeclaredStruct(row), id)?;
-        }
-    }
-    for (row, inst) in view.generics.type_insts.iter().enumerate() {
-        if inst.id == TypeInstId::Record(id) {
-            claim_record_display_owner(&mut owner, RecordMetadataOwner::GenericRow(row), id)?;
-        }
-    }
-    Ok(owner)
-}
-
-fn claim_enum_display_owner(
-    owner: &mut Option<EnumMetadataOwner>,
-    candidate: EnumMetadataOwner,
-    id: EnumId,
-) -> Result<(), GenericInvariant> {
-    if owner.replace(candidate).is_some() {
-        Err(GenericInvariant::TypeIdentityCollision(TypeInstId::Enum(
-            id,
-        )))
-    } else {
-        Ok(())
-    }
-}
-
-fn enum_display_owner(
-    registry: &TypeRegistry,
-    view: &TypeMetadataView<'_>,
-    id: EnumId,
-) -> Result<Option<EnumMetadataOwner>, GenericInvariant> {
-    let mut owner = None;
-    for (row, info) in registry.enums.iter().enumerate() {
-        if info.enum_id == id {
-            claim_enum_display_owner(&mut owner, EnumMetadataOwner::DeclaredEnum(row), id)?;
-        }
-    }
-    for (row, inst) in view.generics.type_insts.iter().enumerate() {
-        if inst.id == TypeInstId::Enum(id) {
-            claim_enum_display_owner(&mut owner, EnumMetadataOwner::GenericRow(row), id)?;
-        }
-    }
-    Ok(owner)
-}
-
-fn validate_display_semantic_key(
-    view: &TypeMetadataView<'_>,
-    row: usize,
-    id: TypeInstId,
-) -> Result<(), GenericInvariant> {
-    let inst = view
-        .generics
-        .type_insts
-        .get(row)
-        .ok_or(GenericInvariant::ReadyBodyMissing(id))?;
-    let mut first = None;
-    for candidate in &view.generics.type_insts {
-        if candidate.template == inst.template && candidate.args == inst.args {
-            if let Some(first) = first {
-                return Err(GenericInvariant::TypeInstantiationKeyCollision {
-                    first,
-                    duplicate: candidate.id,
-                });
-            }
-            first = Some(candidate.id);
-        }
-    }
-    Ok(())
-}
 
 #[derive(Clone, Copy)]
 enum BestEffortDisplayRoot {
@@ -143,31 +33,10 @@ enum BestEffortDisplayFrame {
     LeaveCollection(CollTypeId),
 }
 
-fn best_effort_display_inst_row(
-    registry: &TypeRegistry,
-    view: &TypeMetadataView<'_>,
-    id: TypeInstId,
-) -> Result<Option<usize>, GenericInvariant> {
-    Ok(match id {
-        TypeInstId::Record(id) => match record_display_owner(registry, view, id)? {
-            Some(RecordMetadataOwner::GenericRow(row)) => Some(row),
-            Some(
-                RecordMetadataOwner::ResourceRecord(_)
-                | RecordMetadataOwner::DeclaredStruct(_)
-                | RecordMetadataOwner::Group(_, _),
-            )
-            | None => None,
-        },
-        TypeInstId::Enum(id) => match enum_display_owner(registry, view, id)? {
-            Some(EnumMetadataOwner::GenericRow(row)) => Some(row),
-            Some(EnumMetadataOwner::DeclaredEnum(_)) | None => None,
-        },
-    })
-}
-
 fn render_best_effort_display(
     registry: &TypeRegistry,
     view: &TypeMetadataView<'_>,
+    metadata: &MetadataScratch,
     root: BestEffortDisplayRoot,
     display: &mut DisplayScratch,
 ) -> Result<Option<String>, GenericInvariant> {
@@ -215,7 +84,7 @@ fn render_best_effort_display(
                     generic_parent,
                     root,
                 } => {
-                    let Some(row) = best_effort_display_inst_row(registry, view, id)? else {
+                    let Some(row) = metadata.row(id) else {
                         if root {
                             return Ok(None);
                         }
@@ -233,7 +102,6 @@ fn render_best_effort_display(
                             target: id,
                         });
                     }
-                    validate_display_semantic_key(view, row, id)?;
                     let inst = &view.generics.type_insts[row];
                     if matches!(inst.state, TypeInstState::Filling { .. })
                         || !display.enter_row(row)
@@ -285,7 +153,7 @@ fn render_best_effort_display(
                             .ok_or(GenericInvariant::TypeArgumentTargetMissing(arg))?
                             .name,
                     ),
-                    GArg::Struct(id) => match record_display_owner(registry, view, id)? {
+                    GArg::Struct(id) => match metadata.record_owner(id) {
                         Some(RecordMetadataOwner::GenericRow(_)) => {
                             frames.push(BestEffortDisplayFrame::Inst {
                                 id: TypeInstId::Record(id),
@@ -306,7 +174,7 @@ fn render_best_effort_display(
                         )
                         | None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
                     },
-                    GArg::Group(id) => match record_display_owner(registry, view, id)? {
+                    GArg::Group(id) => match metadata.record_owner(id) {
                         Some(RecordMetadataOwner::Group(record, group)) => output.push_str(
                             &registry
                                 .records
@@ -322,7 +190,7 @@ fn render_best_effort_display(
                         )
                         | None => return Err(GenericInvariant::TypeArgumentTargetMissing(arg)),
                     },
-                    GArg::Enum(id) => match enum_display_owner(registry, view, id)? {
+                    GArg::Enum(id) => match metadata.enum_owner(id) {
                         Some(EnumMetadataOwner::GenericRow(_)) => {
                             frames.push(BestEffortDisplayFrame::Inst {
                                 id: TypeInstId::Enum(id),
@@ -395,6 +263,7 @@ fn render_best_effort_display(
 pub(super) fn inst_spelling_for_display(
     registry: &TypeRegistry,
     view: &TypeMetadataView<'_>,
+    metadata: &MetadataScratch,
     id: TypeInstId,
     generic_parent: Option<usize>,
     display: &mut DisplayScratch,
@@ -402,6 +271,7 @@ pub(super) fn inst_spelling_for_display(
     render_best_effort_display(
         registry,
         view,
+        metadata,
         BestEffortDisplayRoot::Inst { id, generic_parent },
         display,
     )
@@ -410,6 +280,7 @@ pub(super) fn inst_spelling_for_display(
 pub(super) fn collection_spelling_for_display(
     registry: &TypeRegistry,
     view: &TypeMetadataView<'_>,
+    metadata: &MetadataScratch,
     index: CollTypeId,
     generic_parent: Option<usize>,
     collection_parent: Option<CollTypeId>,
@@ -418,6 +289,7 @@ pub(super) fn collection_spelling_for_display(
     render_best_effort_display(
         registry,
         view,
+        metadata,
         BestEffortDisplayRoot::Collection {
             index,
             generic_parent,

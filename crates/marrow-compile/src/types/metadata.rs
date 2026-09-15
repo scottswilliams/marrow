@@ -387,6 +387,15 @@ impl MetadataScratch {
         }
     }
 
+    /// What the directory classified `id` as, if anything.
+    pub(super) fn record_owner(&self, id: TypeId) -> Option<RecordMetadataOwner> {
+        self.records.get(id.index() as usize).copied().flatten()
+    }
+
+    pub(super) fn enum_owner(&self, id: EnumId) -> Option<EnumMetadataOwner> {
+        self.enums.get(id.index() as usize).copied().flatten()
+    }
+
     pub(super) fn declared_struct(&self, id: TypeId) -> Option<usize> {
         self.records
             .get(id.index() as usize)
@@ -1509,21 +1518,7 @@ impl TypeMetadataSession<'_> {
         self.ensure_healthy()?;
         let result = (|| {
             if let Some(info) = self.view.registry.enum_by_id(id) {
-                let variants = info
-                    .variants
-                    .iter()
-                    .map(|variant| {
-                        (
-                            variant.name.clone(),
-                            variant
-                                .payload
-                                .iter()
-                                .map(|field| GArg::Scalar(field.scalar))
-                                .collect(),
-                        )
-                    })
-                    .collect();
-                return Ok(Some((variants, info.name.clone())));
+                return Ok(Some((info.resolved_variants(), info.name.clone())));
             }
             let inst_id = TypeInstId::Enum(id);
             let Some((_, body)) = self.view.ready_inst_by_id(inst_id, &mut self.metadata)? else {
@@ -1535,15 +1530,7 @@ impl TypeMetadataSession<'_> {
                     body: TypeInstKind::Struct,
                 });
             };
-            let variants = variants
-                .iter()
-                .map(|variant| {
-                    (
-                        variant.name.clone(),
-                        variant.payload.iter().map(|(_, arg)| *arg).collect(),
-                    )
-                })
-                .collect();
+            let variants = ready_enum_variants(variants);
             let spelling = self
                 .view
                 .registry

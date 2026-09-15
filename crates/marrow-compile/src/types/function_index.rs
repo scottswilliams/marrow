@@ -23,7 +23,11 @@ impl TypeRegistry {
         // Reservation-dedup reuse probe: a keyed lookup into the append-only secondary
         // index. The reserved image function index is read from the named row (the
         // authority), and a row that does not carry the looked-up key is drift.
-        if let Some(&row) = generics.fn_index.get(&(template, args.clone())) {
+        if let Some(&row) = generics
+            .fn_index
+            .get(&template)
+            .and_then(|rows| rows.get(args.as_slice()))
+        {
             let reused = generics
                 .fn_insts
                 .get(row)
@@ -56,7 +60,9 @@ impl TypeRegistry {
         // and a second lowering for one instantiation.
         let displaced = generics
             .fn_index
-            .insert((inst.template, inst.args.clone()), row);
+            .entry(inst.template)
+            .or_default()
+            .insert(inst.args.clone(), row);
         if displaced.is_some() {
             return Err(GenericInvariant::CacheState(GenericCacheInvariant(
                 "mint key already present",

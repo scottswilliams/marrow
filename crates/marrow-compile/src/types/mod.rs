@@ -19,7 +19,7 @@
 use std::cell::Cell;
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::rc::Rc;
 
 use marrow_codes::Code;
@@ -593,6 +593,22 @@ impl From<marrow_image::SitePlanStateError> for GenericInvariant {
     }
 }
 
+/// Drop one `(template, args)` key from a nested mint-dedup index, and the template's
+/// bucket with it when that was its last key, so a rolled-back proof leaves the index
+/// exactly as it found it.
+fn remove_index_key(
+    index: &mut HashMap<usize, HashMap<Vec<GArg>, usize>>,
+    template: usize,
+    args: &[GArg],
+) {
+    if let Some(rows) = index.get_mut(&template) {
+        rows.remove(args);
+        if rows.is_empty() {
+            index.remove(&template);
+        }
+    }
+}
+
 /// A row position already proven to be relative to the active fill batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FillOffset(usize);
@@ -747,6 +763,20 @@ pub(crate) enum InstBody {
     Enum(Vec<InstVariant>),
 }
 
+/// A Ready enum body's members as resolved variants, dropping the payload leaf names
+/// a variant reader does not address.
+pub(crate) fn ready_enum_variants(variants: &[InstVariant]) -> ResolvedEnumVariants {
+    variants
+        .iter()
+        .map(|variant| {
+            (
+                variant.name.clone(),
+                variant.payload.iter().map(|(_, arg)| *arg).collect(),
+            )
+        })
+        .collect()
+}
+
 impl InstBody {
     fn kind(&self) -> TypeInstKind {
         match self {
@@ -845,49 +875,10 @@ enum TypeInstKey {
     Enum(u32),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TypeInstSemanticKey<'a> {
     template: usize,
     args: &'a [GArg],
-}
-
-impl Hash for TypeInstSemanticKey<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.template.hash(state);
-        self.args.len().hash(state);
-        for arg in self.args {
-            match arg {
-                GArg::Scalar(scalar) => {
-                    0_u8.hash(state);
-                    (*scalar as u8).hash(state);
-                }
-                GArg::Nominal(id) => {
-                    1_u8.hash(state);
-                    id.0.hash(state);
-                }
-                GArg::Struct(id) => {
-                    2_u8.hash(state);
-                    id.index().hash(state);
-                }
-                GArg::Group(id) => {
-                    3_u8.hash(state);
-                    id.index().hash(state);
-                }
-                GArg::Enum(id) => {
-                    4_u8.hash(state);
-                    id.index().hash(state);
-                }
-                GArg::Collection(index) => {
-                    5_u8.hash(state);
-                    index.hash(state);
-                }
-                GArg::Param(index) => {
-                    6_u8.hash(state);
-                    index.hash(state);
-                }
-            }
-        }
-    }
 }
 
 impl From<TypeInstId> for TypeInstKey {
@@ -1013,15 +1004,18 @@ struct Monomorph {
     /// assign an id, select a diagnostic, drain work, or emit bytes — it only
     /// accelerates the mint-dedup reuse probe from a linear key scan to a keyed
     /// lookup. It is append-only in lockstep with `type_insts`, so a lookup whose row
-    /// does not carry the looked-up key is index/authority drift, reported as the
-    /// typed coherence failure `MintIndexDrift` rather than silently trusted.
-    type_index: HashMap<(usize, Vec<GArg>), usize>,
+    /// does not carry the looked-up key is index/authority drift, reported as a typed
+    /// coherence failure rather than silently trusted.
+    ///
+    /// Nested by template so the probe borrows the caller's argument slice: a flat
+    /// tuple key would allocate a `Vec` on every dedup probe, including the misses.
+    type_index: HashMap<usize, HashMap<Vec<GArg>, usize>>,
     fn_insts: Vec<FnInst>,
     /// Lookup-only secondary index `(template, args) -> row in fn_insts`, with the
     /// same authority discipline and drift detection as `type_index`. `fn_insts`
     /// stays the sole reservation-order authority; the reserved image function index
     /// is always read from the row, never from this index.
-    fn_index: HashMap<(usize, Vec<GArg>), usize>,
+    fn_index: HashMap<usize, HashMap<Vec<GArg>, usize>>,
     fn_queue: VecDeque<FnInst>,
     /// The first row appended by the active outermost fill. Settlement
     /// touches only this contiguous suffix, never the stable prefix.
@@ -1220,6 +1214,24 @@ pub(crate) struct EnumInfo {
 }
 
 impl EnumInfo {
+    /// This declared enum's members as resolved variants. Every payload leaf of a
+    /// concrete `enum` is a scalar, so no instantiation cache is consulted.
+    pub(crate) fn resolved_variants(&self) -> ResolvedEnumVariants {
+        self.variants
+            .iter()
+            .map(|variant| {
+                (
+                    variant.name.clone(),
+                    variant
+                        .payload
+                        .iter()
+                        .map(|field| GArg::Scalar(field.scalar))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
     /// The index and info of the variant named `name` in declaration order.
     pub(crate) fn variant(&self, name: &str) -> Option<(u16, &VariantInfo)> {
         self.variants
@@ -2066,7 +2078,12 @@ impl TypeRegistry {
             // index, not a linear scan of the authority vector. The row it names is
             // re-checked against the looked-up key so index/authority drift surfaces
             // as a typed coherence failure rather than a wrong reuse.
-            let existing = match view.generics.type_index.get(&(template, args.to_vec())) {
+            let existing = match view
+                .generics
+                .type_index
+                .get(&template)
+                .and_then(|rows| rows.get(args))
+            {
                 Some(&index) => {
                     let drifted = view
                         .generics
@@ -2224,7 +2241,11 @@ impl TypeRegistry {
             // trusting the append: the batch-directory extension classifies an appended
             // row without rescanning `(template, args)`, so a duplicate key must never be
             // admitted here.
-            let displaced = generics.type_index.insert((template, args.to_vec()), index);
+            let displaced = generics
+                .type_index
+                .entry(template)
+                .or_default()
+                .insert(args.to_vec(), index);
             if displaced.is_some() {
                 return Err(GenericInvariant::CacheState(GenericCacheInvariant(
                     "mint key already present",
@@ -2919,36 +2940,12 @@ impl TypeRegistry {
         id: EnumId,
     ) -> Result<Option<ResolvedEnumVariants>, GenericInvariant> {
         match self.type_inst_body(TypeInstId::Enum(id))? {
-            Some(InstBody::Enum(variants)) => Ok(Some(
-                variants
-                    .into_iter()
-                    .map(|variant| {
-                        (
-                            variant.name,
-                            variant.payload.into_iter().map(|(_, arg)| arg).collect(),
-                        )
-                    })
-                    .collect(),
-            )),
+            Some(InstBody::Enum(variants)) => Ok(Some(ready_enum_variants(&variants))),
             Some(InstBody::Struct(_)) => Err(GenericInvariant::TypeBodyKindMismatch {
                 id: TypeInstId::Enum(id),
                 body: TypeInstKind::Struct,
             }),
-            None => Ok(self.enum_by_id(id).map(|info| {
-                info.variants
-                    .iter()
-                    .map(|variant| {
-                        (
-                            variant.name.clone(),
-                            variant
-                                .payload
-                                .iter()
-                                .map(|field| GArg::Scalar(field.scalar))
-                                .collect(),
-                        )
-                    })
-                    .collect()
-            })),
+            None => Ok(self.enum_by_id(id).map(EnumInfo::resolved_variants)),
         }
     }
 
@@ -3023,8 +3020,9 @@ impl TypeRegistry {
     /// cycle labels; durable identity uses [`enum_anchor_spelling`](Self::enum_anchor_spelling).
     pub(crate) fn inst_spelling(&self, id: TypeInstId) -> Option<String> {
         let view = self.metadata_view();
+        let metadata = MetadataScratch::try_new(&view).ok()?;
         let mut display = DisplayScratch::for_view(&view);
-        inst_spelling_for_display(self, &view, id, None, &mut display)
+        inst_spelling_for_display(self, &view, &metadata, id, None, &mut display)
             .ok()
             .flatten()
     }
@@ -3207,9 +3205,13 @@ impl TypeRegistry {
     /// used in diagnostics and cycle labels. The canonical angle-form display owner.
     pub(crate) fn collection_spelling(&self, idx: CollTypeId) -> String {
         let view = self.metadata_view();
+        let fallback = || "collection".to_string();
+        let Ok(metadata) = MetadataScratch::try_new(&view) else {
+            return fallback();
+        };
         let mut display = DisplayScratch::for_view(&view);
-        collection_spelling_for_display(self, &view, idx, None, None, &mut display)
-            .unwrap_or_else(|_| "collection".to_string())
+        collection_spelling_for_display(self, &view, &metadata, idx, None, None, &mut display)
+            .unwrap_or_else(|_| fallback())
     }
 
     /// Every admitted `resource` record, in declaration-admission order. The durable
@@ -3762,12 +3764,12 @@ impl TypeRegistry {
             let generics = self.generics.get_mut();
             while generics.type_insts.len() > type_insts {
                 if let Some(inst) = generics.type_insts.pop() {
-                    generics.type_index.remove(&(inst.template, inst.args));
+                    remove_index_key(&mut generics.type_index, inst.template, &inst.args);
                 }
             }
             while generics.fn_insts.len() > fn_insts {
                 if let Some(inst) = generics.fn_insts.pop() {
-                    generics.fn_index.remove(&(inst.template, inst.args));
+                    remove_index_key(&mut generics.fn_index, inst.template, &inst.args);
                 }
             }
             generics.fn_queue.truncate(fn_queue);
