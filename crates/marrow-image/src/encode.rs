@@ -1026,7 +1026,7 @@ mod encoder_fixtures {
             )
             .expect("the test arena mints");
 
-        let plan = AdmittedGraphInputPlan::admit(1, 2, 8).expect("a small census is admitted");
+        let plan = AdmittedGraphInputPlan::admit(1, 2, 8);
         let product = id(0x10);
         draft
             .declare_product(

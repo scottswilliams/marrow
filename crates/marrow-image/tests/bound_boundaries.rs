@@ -216,8 +216,8 @@ fn an_index_one_component_over_the_limit_is_refused() {
 
 // ---- The admitted graph input plan's own ceilings.
 
-/// The construction budget refuses a term beyond what may be handed to the durable graph,
-/// and admits every term at its ceiling.
+/// The construction budget never carries a term beyond what may be handed to the durable
+/// graph: every term saturates at its ceiling.
 ///
 /// This is the plan's teeth: the entry points check a caller's input against the plan's
 /// counts, so a plan carrying unadmitted counts would make every one of those checks
@@ -226,17 +226,12 @@ fn an_index_one_component_over_the_limit_is_refused() {
 /// `TooManyDurableMembers` over an over-wide declaration — so an admitted N+1 still
 /// reaches the owner that reports it, while N+2 is never handed over at all.
 #[test]
-fn a_construction_budget_beyond_the_admitted_intake_is_refused() {
-    assert!(
-        AdmittedGraphInputPlan::admit(
-            MAX_ADMITTED_PRODUCT_DECLARATIONS,
-            MAX_ADMITTED_ROOT_OCCURRENCES,
-            MAX_ADMITTED_DECLARATION_COMMANDS,
-        )
-        .is_some(),
-        "every term at its ceiling is an admitted budget",
+fn a_construction_budget_saturates_at_the_admitted_intake() {
+    let ceilings = AdmittedGraphInputPlan::admit(
+        MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        MAX_ADMITTED_ROOT_OCCURRENCES,
+        MAX_ADMITTED_DECLARATION_COMMANDS,
     );
-
     for (products, roots, commands, term) in [
         (
             MAX_ADMITTED_PRODUCT_DECLARATIONS + 1,
@@ -256,17 +251,14 @@ fn a_construction_budget_beyond_the_admitted_intake_is_refused() {
             MAX_ADMITTED_DECLARATION_COMMANDS + 1,
             "declaration commands",
         ),
+        (usize::MAX, usize::MAX, usize::MAX, "every term at once"),
     ] {
-        assert!(
-            AdmittedGraphInputPlan::admit(products, roots, commands).is_none(),
-            "one past the admitted {term} ceiling is not a budget any image could carry",
+        assert_eq!(
+            AdmittedGraphInputPlan::admit(products, roots, commands),
+            ceilings,
+            "one past the admitted {term} ceiling is clamped, never carried",
         );
     }
-
-    assert!(
-        AdmittedGraphInputPlan::admit(usize::MAX, usize::MAX, usize::MAX).is_none(),
-        "an unbounded wish is refused rather than saturated into a budget",
-    );
 }
 
 /// A budget the plan admits cannot be spent past its own counts: the entry point refuses a
@@ -276,7 +268,7 @@ fn a_construction_budget_beyond_the_admitted_intake_is_refused() {
 /// member bound does — and it leaves the draft holding no declaration at all.
 #[test]
 fn a_command_vector_wider_than_its_budget_appends_no_row() {
-    let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 1);
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     let name = draft.intern_string("R").expect("a within-domain mint");
@@ -329,7 +321,7 @@ fn a_command_vector_wider_than_its_budget_appends_no_row() {
 /// asserted here so a refusal that fired on the repeat would be caught too.
 #[test]
 fn a_second_distinct_product_past_its_plan_budget_is_refused_and_appends_no_row() {
-    let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-Product budget");
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 1);
     let second_product = component_id(0x51);
 
     let mut draft_owner = ImageDraft::new();
@@ -415,7 +407,7 @@ fn a_second_distinct_product_past_its_plan_budget_is_refused_and_appends_no_row(
 /// only the occurrence count can refuse this.
 #[test]
 fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
-    let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-occurrence budget");
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 1);
     let product = LedgerIdBytes::from_bytes(PRODUCT_ID);
     let second_placement = component_id(0x53);
 

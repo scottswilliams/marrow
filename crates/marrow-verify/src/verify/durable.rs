@@ -71,7 +71,7 @@ struct DecodedTables<'a> {
 /// The mint is total, and nothing saturates in it: an admitted `root_count` is already
 /// within `MAX_ROOTS`, which sits below every admitted-intake ceiling.
 fn structural_plan(root_count: usize) -> AdmittedGraphInputPlan {
-    AdmittedGraphInputPlan::admit_saturating(
+    AdmittedGraphInputPlan::admit(
         root_count,
         root_count,
         marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,

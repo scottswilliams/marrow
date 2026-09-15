@@ -89,7 +89,7 @@ fn admit_fixture_root(
 #[test]
 fn a_refused_occurrence_leaves_no_live_row_and_spends_no_budget() {
     let over_ordinal_indexes = usize::from(u16::MAX) + 2;
-    let plan = AdmittedGraphInputPlan::admit(1, 1, 8).expect("a one-root budget");
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 8);
     let mut draft_owner = ImageDraft::new();
     let mut draft = admitted(&mut draft_owner);
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));

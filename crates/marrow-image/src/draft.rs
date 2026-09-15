@@ -96,65 +96,29 @@ pub struct AdmittedGraphInputPlan {
 
 impl AdmittedGraphInputPlan {
     /// The plan a storeless compile carries: no durable construction is admitted at all.
-    ///
-    /// A storeless image declares no Product, occurs no root, and states no member, so its
-    /// budget is zero rather than absent. The construction entry points refuse under it
-    /// because they are over budget, and the reading ones answer nothing because a draft
-    /// built under it holds nothing — neither needs a second, planless spelling.
+    /// A storeless image declares no Product, occurs no root, and states no member, so
+    /// its budget is zero rather than absent.
     pub const EMPTY: Self = Self {
         products: 0,
         roots: 0,
         commands: 0,
     };
 
-    /// Admit a construction budget of `products` Product declarations, `roots` root
+    /// The construction budget for `products` Product declarations, `roots` root
     /// occurrences, and `commands` member commands in any one declaration.
     ///
-    /// **Exactly what this enforces.** Each term is checked against the public ceiling of
-    /// the same name, and nothing else: a term beyond what may be handed to the durable
-    /// graph at all is not a budget, and admitting one would leave the unbounded,
-    /// uncounted command stream this type exists to close. Each ceiling follows the
-    /// admitted-intake rule stated on [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`] — one past
-    /// the bound whose refusal owner keeps its refusal — so an over-wide declaration still
-    /// reaches [`ImageBuildError::TooManyDurableMembers`] and an over-count graph still
-    /// reaches [`ImageBuildError::TooManyRoots`] over a complete graph. It does **not**
-    /// check a caller's numbers against a census, an identity ledger, or any other owner's
-    /// state: no such input reaches here.
+    /// Each term saturates at the public ceiling of the same name — one past the bound
+    /// whose refusal owner keeps its refusal (see
+    /// [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`]) — so a census that overruns still
+    /// reaches [`ImageBuildError::TooManyRoots`] or
+    /// [`ImageBuildError::TooManyDurableMembers`] over a *complete* graph instead of
+    /// being truncated at the entry point. A plan therefore never carries a count the
+    /// durable graph could not be handed.
     ///
-    /// What makes an admitted budget bind is the other half, spent where it is presented:
-    /// the construction entry points check each arrival *cumulatively* against the graph
-    /// already receiving it — declarations against the rows the table holds, occurrences
-    /// against the rows the occurrence table holds, one command vector against the admitted
-    /// width — and there is no third route into those tables. A plan is therefore a
-    /// count-frozen budget, publicly minted and publicly bounded, rather than a claim about
-    /// what its holder counted.
-    pub fn admit(products: usize, roots: usize, commands: usize) -> Option<Self> {
-        if products > bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS
-            || roots > bounds::MAX_ADMITTED_ROOT_OCCURRENCES
-            || commands > bounds::MAX_ADMITTED_DECLARATION_COMMANDS
-        {
-            return None;
-        }
-        Some(Self {
-            products,
-            roots,
-            commands,
-        })
-    }
-
-    /// The budget for a census whose counts may exceed what any image could carry: each
-    /// term is admitted at its own ceiling instead of refusing the whole census.
-    ///
-    /// It states the same counts [`Self::admit`] would and grants nothing more for any
-    /// number either accepts. It exists because an admission owner that reports source
-    /// problems as typed diagnostics has no abort to take when its census overruns, and
-    /// the overrun already has an owner — the encoder, reporting it over a *complete*
-    /// graph. Saturating is what leaves that graph complete; refusing would truncate the
-    /// graph the overrun is reported over.
-    ///
-    /// Every budget still comes from stated counts. There is deliberately no ceiling
-    /// constant to name instead of counting.
-    pub fn admit_saturating(products: usize, roots: usize, commands: usize) -> Self {
+    /// The budget binds where it is spent: the construction entry points check each
+    /// arrival cumulatively against the graph already receiving it, and there is no
+    /// third route into those tables.
+    pub fn admit(products: usize, roots: usize, commands: usize) -> Self {
         Self {
             products: products.min(bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS),
             roots: roots.min(bounds::MAX_ADMITTED_ROOT_OCCURRENCES),
@@ -2347,7 +2311,6 @@ mod site_binding_tests {
     /// ceiling.
     fn plan() -> AdmittedGraphInputPlan {
         AdmittedGraphInputPlan::admit(1, 2, crate::bounds::MAX_ADMITTED_DECLARATION_COMMANDS)
-            .expect("a one-Product fixture census is within what an image can hold")
     }
 
     fn product() -> LedgerIdBytes {

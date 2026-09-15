@@ -826,13 +826,14 @@ impl RootOccurrenceTable {
 /// A completed root-occurrence row's published selector.
 ///
 /// It names one occurrence without spelling an ordinal a caller could write: it carries
-/// the draft it was published by and the exact live row it was published for, and exposes
-/// no field, constructor, accessor, `Default`, or `From`. It is `Clone` but deliberately
-/// not `Copy` — a selector is a published capability to name an occurrence, and copying
-/// one implicitly is how a carrier ends up naming an occurrence it was never given.
+/// the draft it was published by and the exact live row it was published for, and has no
+/// public field, constructor, accessor, `Default`, or `From`. It is `Clone` but
+/// deliberately not `Copy` — a selector is a published capability to name an occurrence,
+/// and copying one implicitly is how a carrier ends up naming an occurrence it was never
+/// given.
 ///
 /// A staged row publishes none; only a completed canonical publication does.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct RootOccurrenceSelector {
     draft: DraftIdentity,
     ordinal: RootOccurrenceOrdinal,
@@ -848,14 +849,6 @@ impl RootOccurrenceSelector {
     /// selector's ordinal back out.
     pub(crate) fn wire_root_id(&self) -> crate::draft::RootId {
         crate::draft::RootId(self.ordinal.0)
-    }
-}
-
-impl std::fmt::Debug for RootOccurrenceSelector {
-    /// One fixed marker. A selector's ordinal and stamp are the authority it carries, so
-    /// rendering them would publish in a log what the type exists to keep unforgeable.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("root-occurrence selector")
     }
 }
 
@@ -875,7 +868,7 @@ pub(crate) enum CanonicalDeclarationPathOrdinal {
 
 /// The row that published one canonical path selector: the occurrence row for the
 /// root-scoped cases, or the Product declaration row for a member case.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum PathPublisher {
     Occurrence {
         ordinal: RootOccurrenceOrdinal,
@@ -892,20 +885,13 @@ enum PathPublisher {
 ///
 /// Product member, group, and branch cases live once in the shared Product declaration
 /// rows; the root-whole and root-scoped-index cases live only in their flat occurrence
-/// row. Like [`RootOccurrenceSelector`] it is opaque, `Clone` but not `Copy`, carries the
-/// exact live row it was published by, and exposes no ordinal.
-#[derive(Clone)]
+/// row. Like [`RootOccurrenceSelector`] it is `Clone` but not `Copy`, carries the exact
+/// live row it was published by, and has no public accessor.
+#[derive(Debug, Clone)]
 pub struct CanonicalDeclarationPathSelector {
     draft: DraftIdentity,
     publisher: PathPublisher,
     ordinal: CanonicalDeclarationPathOrdinal,
-}
-
-impl std::fmt::Debug for CanonicalDeclarationPathSelector {
-    /// One fixed marker, for the same reason [`RootOccurrenceSelector`]'s renders one.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("canonical declaration path selector")
-    }
 }
 
 /// One Product declaration member as the compiler reads it back: the selector that names

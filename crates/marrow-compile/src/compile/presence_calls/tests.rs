@@ -11,7 +11,7 @@ use std::ops::Range;
 fn family() -> Family {
     let mut owner = ImageDraft::new();
     let mut draft = crate::compile::admitted(&mut owner);
-    let plan = AdmittedGraphInputPlan::admit(1, 1, 0).expect("empty product census");
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 0);
     let name = draft.intern_string("R").expect("small name");
     let record = draft
         .add_record_type(RecordTypeDef {

@@ -1122,7 +1122,7 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
     /// [`marrow_image::ImageBuildError::TooManyRoots`], reported over a complete graph.
     /// Saturating the counted terms is what leaves that graph complete.
     fn plan(&self) -> AdmittedGraphInputPlan {
-        AdmittedGraphInputPlan::admit_saturating(
+        AdmittedGraphInputPlan::admit(
             self.products,
             self.roots,
             bounds::MAX_ADMITTED_DECLARATION_COMMANDS,

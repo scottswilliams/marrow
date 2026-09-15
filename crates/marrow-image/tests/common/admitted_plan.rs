@@ -19,5 +19,4 @@ pub fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
         marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
         marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
     )
-    .expect("the image's own ceilings are admitted counts")
 }

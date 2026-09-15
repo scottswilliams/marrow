@@ -294,7 +294,7 @@ fn journey() {
 
     // 10. Early return: an intake wider than its plan is refused before a row is appended,
     //    and the rejected input is dropped on the way out.
-    let narrow = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
+    let narrow = AdmittedGraphInputPlan::admit(1, 1, 1);
     let mut refused_owner = ImageDraft::new();
     let savepoint = refused_owner.savepoint();
     let mut refused = refused_owner

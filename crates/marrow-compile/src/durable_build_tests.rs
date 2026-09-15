@@ -368,7 +368,6 @@ mod declaration_command_bound_tests {
         /// is admitted into the draft and refused where that refusal lives — at the encoder.
         fn admitted_plan() -> AdmittedGraphInputPlan {
             AdmittedGraphInputPlan::admit(1, 1, bounds::MAX_ADMITTED_DECLARATION_COMMANDS)
-                .expect("one Product, one root, and the image's own command ceiling")
         }
 
         let mut draft = fresh_draft();

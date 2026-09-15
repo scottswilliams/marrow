@@ -1036,7 +1036,6 @@ mod tests {
             bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
             bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
         )
-        .expect("the image's own ceilings are admitted counts")
     }
 
     /// The contract identity of a graph these tests state. Every one of them is a handful

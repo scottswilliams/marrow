@@ -1058,8 +1058,7 @@ mod decisive_saturation {
                 fields: Vec::new(),
             })
             .expect("a within-domain mint");
-        let plan = crate::draft::AdmittedGraphInputPlan::admit(1, 1, 4)
-            .expect("a small census is admitted");
+        let plan = crate::draft::AdmittedGraphInputPlan::admit(1, 1, 4);
         let product = crate::durable_id::LedgerIdBytes::from_bytes([0x0d; 16]);
         draft
             .declare_product(
