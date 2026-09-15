@@ -9,7 +9,7 @@
 
 use marrow_verify::VerifiedImage;
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, Value, fresh_test, mint_ephemeral, prepare, run_export, run_test,
+    DurableRun, MintOutcome, Value, fresh_test, mint_ephemeral, prepare, run_export, run_test,
 };
 
 /// The shared durable graph every composition is written against: a flat keyed
@@ -742,7 +742,8 @@ fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
         panic!("the rollback-journey program must verify");
     };
 
-    let EphemeralOutcome::Ready(mut attachment) = mint_ephemeral(prepare((*image).clone())) else {
+    let MintOutcome::Ready(mut attachment) = mint_ephemeral(prepare((*image).clone())).into_mint()
+    else {
         panic!("the books root must mint an executable attachment");
     };
 

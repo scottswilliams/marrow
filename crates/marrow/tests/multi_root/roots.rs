@@ -15,7 +15,7 @@
 use marrow_compile::SourceDiagnostic;
 use marrow_verify::{SealedExport, SealedSite, SealedSiteTarget, VerifiedImage};
 use marrow_vm::{
-    DurableRun, EphemeralOutcome, MemoryAttachment, Value, fresh_test, mint_ephemeral, prepare,
+    DurableRun, MemoryAttachment, MintOutcome, Value, fresh_test, mint_ephemeral, prepare,
     run_export, run_test,
 };
 
@@ -142,10 +142,12 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 
 /// A minted two-root attachment; the kernel must execute over it, not park it.
 fn attach(image: &VerifiedImage) -> MemoryAttachment {
-    match mint_ephemeral(prepare(image.clone())) {
-        EphemeralOutcome::Ready(attachment) => attachment,
-        EphemeralOutcome::Parked(_) => panic!("a two-root image must be executable, not parked"),
-        EphemeralOutcome::Failed { cause, .. } => panic!("minting the attachment failed: {cause}"),
+    match mint_ephemeral(prepare(image.clone())).into_mint() {
+        MintOutcome::Ready(attachment) => attachment,
+        MintOutcome::Storeless | MintOutcome::Parked => {
+            panic!("a two-root image must be executable, not parked")
+        }
+        MintOutcome::Failed(cause) => panic!("minting the attachment failed: {cause}"),
     }
 }
 
