@@ -176,7 +176,7 @@ fn sparse_apply_rejects_incompatible_graphs_without_store_changes() {
     );
     for (label, fields, key, suffix) in [
         ("changed value", "required value: bool", "int", ""),
-        ("removed field", "extra: int", "int", ""),
+        ("removed field", "", "int", ""),
         ("changed requiredness", "value: int", "int", ""),
         (
             "new required field",

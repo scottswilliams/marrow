@@ -550,6 +550,17 @@ impl CliOutcome {
     }
 }
 
+/// The deployment ceiling id that `marrow image` names on standard error when the owner has
+/// not accepted it. That refusal is the only place the id is published, so every suite that
+/// needs one reads it here instead of restating the marker.
+pub fn unaccepted_ceiling_id(stderr: &str) -> String {
+    let marker = "deployment ceiling id is ";
+    let start = stderr.find(marker).expect("stderr names the ceiling id") + marker.len();
+    let rest = &stderr[start..];
+    let end = rest.find(';').expect("ceiling id is delimited");
+    rest[..end].trim().to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Support
 // ---------------------------------------------------------------------------

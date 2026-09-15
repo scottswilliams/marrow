@@ -12,6 +12,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
+use common::unaccepted_ceiling_id;
+
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
 
 const SOURCE: &str = r#"resource Counter {
@@ -139,14 +143,7 @@ pub fn note(): int { return ^counters[0].notes[1].note ?? -1 }
         assert!(!output.status.success());
         let stderr = text(&output.stderr);
         assert!(stderr.contains("cli.ceiling_unaccepted"), "{stderr}");
-        let ceiling = stderr
-            .split("deployment ceiling id is ")
-            .nth(1)
-            .expect("ceiling")
-            .split(';')
-            .next()
-            .expect("ceiling delimiter")
-            .to_owned();
+        let ceiling = unaccepted_ceiling_id(&stderr);
         run(
             name,
             &project,
@@ -418,13 +415,7 @@ fn backup_restores_absent_ancestor_descendants_without_a_project(toolchain: &Pat
     let refused = marrow(toolchain, &project, &["image", "--out", "deployment"]);
     assert!(!refused.status.success());
     let stderr = text(&refused.stderr);
-    let ceiling = stderr
-        .split("deployment ceiling id is ")
-        .nth(1)
-        .expect("ceiling")
-        .split(';')
-        .next()
-        .expect("ceiling delimiter");
+    let ceiling = &unaccepted_ceiling_id(&stderr);
     run(
         &project,
         &["image", "--out", "deployment", "--accept-ceiling", ceiling],

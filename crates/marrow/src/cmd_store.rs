@@ -2,6 +2,7 @@
 //! Image-based operations compile without opening the store or minting identities.
 //! Restore uses its backup's image and needs no project capture or compilation.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
@@ -64,39 +65,43 @@ enum Action {
     RecoverImage(PathBuf),
 }
 
+impl Action {
+    /// The companion flags naming artifacts the command line supplied, when it supplied any.
+    /// `Some` means the operation runs entirely from those artifacts: the terminal captures
+    /// and compiles no project and mints no identities.
+    fn explicit_artifacts(&self) -> Option<Vec<&OsStr>> {
+        match self {
+            Self::Inspect | Self::Backup(_) => None,
+            Self::Restore(input) => Some(vec![OsStr::new("--from"), input.as_os_str()]),
+            Self::RecoverImage(image) => Some(vec![OsStr::new("--image"), image.as_os_str()]),
+            Self::Apply { old, new, ceiling } => {
+                let mut flags = vec![
+                    OsStr::new("--old-image"),
+                    old.as_os_str(),
+                    OsStr::new("--new-image"),
+                    new.as_os_str(),
+                ];
+                if let Some(id) = ceiling {
+                    flags.extend([OsStr::new("--accept-ceiling"), OsStr::new(id)]);
+                }
+                Some(flags)
+            }
+        }
+    }
+}
+
 pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
     let args = match parse_args(operation, rest) {
         Ok(args) => args,
         Err(code) => return code,
     };
 
-    if matches!(
-        &args.action,
-        Action::Restore(_) | Action::Apply { .. } | Action::RecoverImage(_)
-    ) {
+    if let Some(artifacts) = args.action.explicit_artifacts() {
         let mut command = match companion_command(operation, &args) {
             Ok(command) => command,
             Err(code) => return code,
         };
-        match &args.action {
-            Action::Restore(input) => {
-                command.arg("--from").arg(input);
-            }
-            Action::RecoverImage(image) => {
-                command.arg("--image").arg(image);
-            }
-            Action::Apply { old, new, ceiling } => {
-                command
-                    .arg("--old-image")
-                    .arg(old)
-                    .arg("--new-image")
-                    .arg(new);
-                if let Some(id) = ceiling {
-                    command.arg("--accept-ceiling").arg(id);
-                }
-            }
-            _ => unreachable!("explicit-artifact action checked above"),
-        }
+        command.args(artifacts);
         return run_companion(command);
     }
 

@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::Project;
+use common::{Project, unaccepted_ceiling_id};
 
 /// The Workshop-shaped two-root fixture inline: one read, one cross-root write, so the
 /// image's demand union is nonempty and its ceiling id is stable.
@@ -48,16 +48,6 @@ fn project() -> Project {
     Project::single(SOURCE).ids(IDS)
 }
 
-/// Parse the `ceiling <id>` line the command prints on standard error when the
-/// acceptance argument is absent.
-fn ceiling_id_from_unaccepted(stderr: &str) -> String {
-    let marker = "deployment ceiling id is ";
-    let start = stderr.find(marker).expect("stderr names the ceiling id") + marker.len();
-    let rest = &stderr[start..];
-    let end = rest.find(';').expect("ceiling id is delimited");
-    rest[..end].trim().to_string()
-}
-
 /// Without `--accept-ceiling` the command writes no image, exits nonzero with
 /// `cli.ceiling_unaccepted`, and prints the image's ceiling id and its per-export
 /// demand for the owner to review.
@@ -88,8 +78,7 @@ fn image_requires_the_owner_to_accept_the_ceiling() {
 #[test]
 fn image_writes_the_verified_image_on_accepting_the_ceiling() {
     let workspace = project().materialize("image-accepted");
-    let ceiling =
-        ceiling_id_from_unaccepted(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
+    let ceiling = unaccepted_ceiling_id(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
 
     let outcome = workspace.marrow(&["image", "--out", "deploy", "--accept-ceiling", &ceiling]);
     assert!(
@@ -142,8 +131,7 @@ fn a_wrong_ceiling_id_writes_no_image() {
 #[test]
 fn image_emission_is_byte_deterministic() {
     let workspace = project().materialize("image-deterministic");
-    let ceiling =
-        ceiling_id_from_unaccepted(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
+    let ceiling = unaccepted_ceiling_id(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
 
     assert!(
         workspace

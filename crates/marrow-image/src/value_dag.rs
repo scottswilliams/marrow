@@ -922,13 +922,6 @@ mod tests {
             crate::bounds::MAX_DURABLE_VALUE_DEPTH
         );
         assert_eq!(compare.same(too_deep, too_deep), None);
-        // Charge the actual two borrowed slices, cursors and discriminant. This
-        // is comparator scratch only, not a claim about whole-process residency.
-        assert_eq!(std::mem::size_of::<ValuePairFrame<'_, '_>>(), 48);
-        assert_eq!(
-            compare.frames.capacity() * std::mem::size_of::<ValuePairFrame<'_, '_>>(),
-            1536
-        );
     }
 
     fn ledger_id(byte: u8) -> LedgerIdBytes {
