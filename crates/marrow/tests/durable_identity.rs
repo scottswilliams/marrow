@@ -763,25 +763,6 @@ fn a_ledger_at_the_retired_root_path_is_refused_with_a_move_steer() {
     assert!(text.contains("exactly one ledger"), "{text}");
 }
 
-/// A mint inside a Git repository whose index lacks the ledger prints the
-/// one-line commit steer on stderr; the published artifact and records are
-/// unaffected. (Outside a repository — every other test here — it is silent.)
-#[test]
-fn a_mint_inside_a_git_repository_steers_toward_committing_the_ledger() {
-    let temp = TempDir::new("mint-steer");
-    project(&temp, COUNTER_SOURCE);
-    fs::create_dir_all(temp.join(".git")).expect("fake repository");
-
-    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
-    let stderr = String::from_utf8_lossy(&set.stderr).to_string();
-    assert!(stderr.contains(".marrow/ids"), "{stderr}");
-    assert!(stderr.contains("not tracked by Git"), "{stderr}");
-    assert!(
-        temp.join(".marrow/ids").exists(),
-        "the steer never blocks the publish"
-    );
-}
-
 /// No broad temporary sweep exists. The publication owner names its own four
 /// entries and enumerates the metadata directory nowhere, so an unrelated
 /// sibling — whatever left it there — survives a publication untouched. A

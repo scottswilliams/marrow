@@ -337,21 +337,17 @@ enum MintOutcome {
     Failed(&'static str),
 }
 
-/// The `marrow run` convenience mint: when a compile failed *only* because
-/// fresh durable declarations have no ledger row, draw one id per missing
-/// anchor from OS entropy and hand the admitted successor to the adapter's
-/// publication owner, which compares it against the filesystem and installs it
-/// or refuses. The artifact is untouched on any refusal.
+/// The `marrow run` mint: when a compile failed *only* because fresh durable
+/// declarations have no ledger row, draw one id per missing anchor from OS entropy
+/// and hand the admitted successor to the adapter's publication owner, which compares
+/// it against the filesystem and installs it or refuses. The artifact is untouched on
+/// any refusal.
 ///
-/// This is a live bridge. Caller: `cmd_run` (this file), and nothing else —
-/// `marrow test` and every other path fail precisely, so CI never mutates the
-/// tree. Isolation: CLI orchestration only; the compiler stays a read-only
-/// ledger consumer (its typed `IdentityGap` payloads are the sole input here —
-/// the CLI never classifies durable declarations itself). Absence test:
-/// `durable_identity.rs` asserts the CI path writes nothing. Deletion
-/// condition: F03's accepted apply action becomes the one mint owner (with
-/// D04 sending durable `run` into the trough), and this pre-pass is deleted
-/// with the in-process store seam.
+/// `run` is the only path that mints: `marrow check`, `marrow test` and every other
+/// command report `check.durable_identity` precisely, so a build never mutates the
+/// tree. The compiler stays a read-only ledger consumer — its typed `IdentityGap`
+/// payloads are the sole input here, and the CLI never classifies durable
+/// declarations itself.
 fn mint_missing_identities(
     project: &ProjectInput,
     diagnostics: &[SourceDiagnostic],
@@ -392,10 +388,7 @@ fn mint_missing_identities(
         Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
     };
     match crate::project::publish_identity_ledger(Path::new("."), publication) {
-        Ok(IdsPublication::Published) => {
-            emit_commit_steer(Path::new("."));
-            MintOutcome::Minted
-        }
+        Ok(IdsPublication::Published) => MintOutcome::Minted,
         // The ledger was replaced between admission and publication, so the
         // successor was never installed and the artifact is the other writer's.
         Ok(IdsPublication::ConcurrentChange) => {
@@ -403,68 +396,6 @@ fn mint_missing_identities(
         }
         Err(failure) => MintOutcome::Failed(failure.code),
     }
-}
-
-/// After a mint publishes the ledger, steer the developer to commit it: when the
-/// project sits inside a Git repository whose index lacks `.marrow/ids` (the file
-/// is untracked or ignored), print a one-line stderr notice. Informational only —
-/// it never affects records, exit codes, or the published artifact.
-fn emit_commit_steer(root: &Path) {
-    if ledger_absent_from_git_index(root) == Some(true) {
-        let _ = writeln!(
-            io::stderr().lock(),
-            "note: {} is not tracked by Git; commit it — durable identity travels with the source",
-            marrow_project::IDS_FILE
-        );
-    }
-}
-
-/// Whether a surrounding Git repository's index lacks the ledger path.
-/// `None` means no repository was found or the probe was not cheap (no notice
-/// either way). The probe is dependency-free: walk up to the nearest `.git`,
-/// resolve a worktree's `gitdir:` file, and scan the binary index once for the
-/// ledger's path bytes. Index entries store paths literally in versions 2 and 3
-/// (Git's defaults); a prefix-compressed v4 index may miss the path and repeat
-/// the notice, which is acceptable for a one-line steer.
-fn ledger_absent_from_git_index(root: &Path) -> Option<bool> {
-    /// Directory levels searched above the project root before giving up.
-    const MAX_ASCENT: usize = 64;
-    /// Largest index read for the probe; a bigger index skips the notice.
-    const MAX_INDEX_BYTES: u64 = 64 << 20;
-    let mut dir = root.canonicalize().ok()?;
-    for _ in 0..MAX_ASCENT {
-        let dot_git = dir.join(".git");
-        let git_dir = if dot_git.is_dir() {
-            Some(dot_git.clone())
-        } else if dot_git.is_file() {
-            // A linked worktree: `.git` is a file `gitdir: <path>`.
-            let text = std::fs::read_to_string(&dot_git).ok()?;
-            let target = text.strip_prefix("gitdir:")?.trim();
-            let target = Path::new(target);
-            Some(if target.is_absolute() {
-                target.to_path_buf()
-            } else {
-                dir.join(target)
-            })
-        } else {
-            None
-        };
-        if let Some(git_dir) = git_dir {
-            let index = git_dir.join("index");
-            let Ok(metadata) = std::fs::metadata(&index) else {
-                // A repository with no index tracks nothing yet.
-                return Some(true);
-            };
-            if metadata.len() > MAX_INDEX_BYTES {
-                return None;
-            }
-            let bytes = std::fs::read(&index).ok()?;
-            let needle = marrow_project::IDS_FILE.as_bytes();
-            return Some(!bytes.windows(needle.len()).any(|window| window == needle));
-        }
-        dir = dir.parent()?.to_path_buf();
-    }
-    None
 }
 
 /// One 128-bit id drawn from the OS entropy source. No clock, hash, provider,
