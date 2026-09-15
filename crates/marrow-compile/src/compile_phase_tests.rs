@@ -323,10 +323,15 @@ fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionReg
         &mut draft,
         &durable,
         functions,
-        crate::lower::ModuleLedger::new(crate::decl::DeclarationNamespace::Module, budget.clone()),
-        BTreeMap::new(),
+        crate::lower::ModuleScope {
+            modules: crate::lower::ModuleLedger::new(
+                crate::decl::DeclarationNamespace::Module,
+                budget.clone(),
+            ),
+            imports: BTreeMap::new(),
+            budget,
+        },
         &mut diagnostics,
-        budget,
         &mut Vec::new(),
     )
     .expect("the signature ledger stays within its budget")

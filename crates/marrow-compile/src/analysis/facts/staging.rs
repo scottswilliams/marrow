@@ -15,10 +15,17 @@ use super::{
 };
 use crate::compile::valid_export_path;
 use crate::diag::SourceDiagnostic;
-use crate::durable::DurableRegistry;
-use crate::konst::ConstRegistry;
-use crate::lower::{BodyOutcome, FnLowerer, FunctionRegistry, GenericRegistry, GenericTemplate};
+use crate::lower::{BodyOutcome, FnLowerer, GenericTemplate, LowerCtx, Resolution};
 use crate::types::{GArg, GenericDiagnostics, GenericInvariant, GenericOwnerTxn, TypeRegistry};
+
+/// Where one declared body was written: the retained coordinate, the owned identity a
+/// diagnostic renders, and the dotted module its export path is built from.
+#[derive(Clone, Copy)]
+pub(crate) struct BodySite<'a> {
+    pub(crate) at: FileRef,
+    pub(crate) file: &'a FileIdentity,
+    pub(crate) module: &'a str,
+}
 
 /// One generic-owner producer and both payloads it may publish.
 ///
@@ -53,17 +60,11 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_function<'a>(
         self,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
+        resolution: Resolution<'a, 'a>,
         settled_facts: &'a AnalysisFactCollector,
-        at: FileRef,
-        file: &'a FileIdentity,
-        module: &'a str,
+        site: BodySite<'a>,
         function: &'a FunctionDecl,
         func: marrow_image::FuncId,
     ) -> Result<(ReleasedBody, BodyOutcome, Option<ExportId>), GenericInvariant> {
@@ -72,17 +73,17 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
             mut staged_diagnostics,
             mut staged_facts,
         } = self;
+        let BodySite { at, file, module } = site;
         let outcome = {
             let (registry, draft) = owner.parts();
             FnLowerer::lower(
-                draft,
-                registry,
-                durable,
-                functions,
-                generics,
-                consts,
-                &mut staged_diagnostics,
-                staged_facts.sink(settled_facts, at),
+                LowerCtx {
+                    draft,
+                    records: registry,
+                    resolution,
+                    diagnostics: &mut staged_diagnostics,
+                    facts: staged_facts.sink(settled_facts, at),
+                },
                 file,
                 module,
                 function,
@@ -119,13 +120,9 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_instance<'a>(
         self,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
+        resolution: Resolution<'a, 'a>,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
         func: marrow_image::FuncId,
@@ -138,14 +135,13 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         let outcome = {
             let (registry, draft) = owner.parts();
             FnLowerer::lower_instance(
-                draft,
-                registry,
-                durable,
-                functions,
-                generics,
-                consts,
-                &mut staged_diagnostics,
-                FactSink::discarding(),
+                LowerCtx {
+                    draft,
+                    records: registry,
+                    resolution,
+                    diagnostics: &mut staged_diagnostics,
+                    facts: FactSink::discarding(),
+                },
                 template,
                 args,
                 func,
@@ -155,17 +151,11 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         Ok((Self::release(staged_diagnostics, staged_facts), outcome))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_test<'a>(
         self,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
+        resolution: Resolution<'a, 'a>,
         settled_facts: &'a AnalysisFactCollector,
-        at: FileRef,
-        file: &'a FileIdentity,
-        module: &'a str,
+        site: BodySite<'a>,
         name: &'a str,
         body: &'a Block,
         func: marrow_image::FuncId,
@@ -175,17 +165,17 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
             mut staged_diagnostics,
             mut staged_facts,
         } = self;
+        let BodySite { at, file, module } = site;
         let outcome = {
             let (registry, draft) = owner.parts();
             FnLowerer::lower_test(
-                draft,
-                registry,
-                durable,
-                functions,
-                generics,
-                consts,
-                &mut staged_diagnostics,
-                staged_facts.sink(settled_facts, at),
+                LowerCtx {
+                    draft,
+                    records: registry,
+                    resolution,
+                    diagnostics: &mut staged_diagnostics,
+                    facts: staged_facts.sink(settled_facts, at),
+                },
                 file,
                 module,
                 name,
@@ -204,13 +194,9 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         Ok((Self::release(staged_diagnostics, staged_facts), outcome))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prove_template<'a>(
         self,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
+        resolution: Resolution<'a, 'a>,
         settled_facts: &'a AnalysisFactCollector,
         template: &'a GenericTemplate<'a>,
     ) -> Result<(GenericDiagnostics, ReleasedBody), GenericInvariant> {
@@ -222,14 +208,13 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
         {
             let (registry, draft) = owner.parts();
             FnLowerer::lower_template(
-                draft,
-                registry,
-                durable,
-                functions,
-                generics,
-                consts,
-                &mut staged_diagnostics,
-                staged_facts.sink(settled_facts, template.at()),
+                LowerCtx {
+                    draft,
+                    records: registry,
+                    resolution,
+                    diagnostics: &mut staged_diagnostics,
+                    facts: staged_facts.sink(settled_facts, template.at()),
+                },
                 template,
             )?;
         }

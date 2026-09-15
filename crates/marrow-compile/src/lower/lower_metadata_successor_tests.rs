@@ -48,26 +48,9 @@ fn expected_ints(values: &[i64]) -> (Vec<u8>, marrow_image::ImageId) {
     draft_fingerprint(&draft)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lowerer<'a, 'd>(
-    draft: &'a mut DraftTxn<'d>,
-    records: &'a mut TypeRegistry,
-    durable: &'a DurableRegistry,
-    functions: &'a FunctionRegistry,
-    generics: &'a GenericRegistry<'a>,
-    consts: &'a ConstRegistry,
-    diagnostics: &'a mut DiagnosticCollector,
-    facts: FactSink<'a>,
-) -> FnLowerer<'a, 'd> {
+fn lowerer<'a, 'd>(ctx: LowerCtx<'a, 'd>) -> FnLowerer<'a, 'd> {
     FnLowerer::new(
-        draft,
-        records,
-        durable,
-        functions,
-        generics,
-        consts,
-        diagnostics,
-        facts,
+        ctx,
         crate::test_main_file_identity(),
         "main",
         RetType::Unit,
@@ -98,16 +81,18 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let func = draft
         .reserve_function()
         .expect("the probe reserves its body slot");
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     let result = lowerer.lower_interpolation(parts, *span);
     let code = lowerer.code.clone();
@@ -150,16 +135,18 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let func = draft
         .reserve_function()
         .expect("the probe reserves its body slot");
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     let flow = lowerer.lower_statement(statement);
     let code = lowerer.code.clone();
@@ -212,16 +199,18 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     let func = draft
         .reserve_function()
         .expect("the probe reserves its body slot");
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     lowerer.locals.push(Local {
         name: "maybe".to_string(),
         ty: LTy::Scalar {
@@ -285,16 +274,18 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let func = draft
         .reserve_function()
         .expect("the probe reserves its body slot");
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     let flow = lowerer.lower_block(&function.body);
     let code = lowerer.code.clone();
@@ -401,16 +392,18 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
     let func = draft
         .reserve_function()
         .expect("the probe reserves its body slot");
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     assert!(
         lowerer.lower_generic_struct_literal(template, &[], SourceSpan::default())
@@ -447,16 +440,18 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
     let func = draft
         .reserve_function()
         .expect("the probe reserves its body slot");
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     assert!(
         lowerer.lower_generic_enum_construct(template, "item", &[], SourceSpan::default())

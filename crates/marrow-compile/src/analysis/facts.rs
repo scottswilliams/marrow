@@ -19,7 +19,7 @@ use crate::bounded::{Bounded, Ceiling};
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector};
 
 mod staging;
-pub(crate) use staging::StagedBodyTxn;
+pub(crate) use staging::{BodySite, StagedBodyTxn};
 
 /// The one live private analysis-fact owner.
 ///

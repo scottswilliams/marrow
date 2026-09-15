@@ -313,26 +313,9 @@ fn lower_map_resolution_rejects_a_missing_nominal_before_value_mint() {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lowerer<'a, 'd>(
-    draft: &'a mut DraftTxn<'d>,
-    records: &'a mut TypeRegistry,
-    durable: &'a DurableRegistry,
-    functions: &'a FunctionRegistry,
-    generics: &'a GenericRegistry<'a>,
-    consts: &'a ConstRegistry,
-    diagnostics: &'a mut DiagnosticCollector,
-    facts: FactSink<'a>,
-) -> FnLowerer<'a, 'd> {
+fn lowerer<'a, 'd>(ctx: LowerCtx<'a, 'd>) -> FnLowerer<'a, 'd> {
     FnLowerer::new(
-        draft,
-        records,
-        durable,
-        functions,
-        generics,
-        consts,
-        diagnostics,
-        facts,
+        ctx,
         crate::test_main_file_identity(),
         "main",
         RetType::Unit,
@@ -365,16 +348,18 @@ fn local_slot_limit_rejection_is_atomic_and_reported_once() {
         line: 3,
         column: 15,
     };
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     for expected in 0..marrow_image::bounds::MAX_LOCALS {
         assert_eq!(
@@ -437,16 +422,18 @@ fn code_byte_limit_rejection_precedes_tape_mutation_and_reports_once() {
         line: 3,
         column: 5,
     };
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     assert_eq!(Instr::Pop.encoded_len(), 1);
     for _ in 0..marrow_image::bounds::MAX_CODE_BYTES {
@@ -528,16 +515,18 @@ fn assert_typed_invariant_rejects_consumer(invariant: GenericInvariant) {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     assert!(
         lowerer
@@ -602,16 +591,18 @@ fn bare_enum_without_ready_variants_fails_without_unwinding() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     lowerer.locals.push(Local {
         name: "value".to_string(),
         ty: LTy::Enum {
@@ -668,16 +659,18 @@ fn enum_template_at_struct_constructor_fails_without_unwinding() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     assert!(
         lowerer.lower_generic_struct_literal(0, &[], span()) == Err(LoweringFailure::Recoverable)
@@ -738,16 +731,18 @@ fn bare_struct_without_ready_body_fails_without_unwinding() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
 
     assert!(
         lowerer
@@ -823,16 +818,18 @@ fn generic_struct_minted_as_enum_is_an_exact_invariant() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     lowerer.reject_unification(
         UnifyError::Invariant(expected),
         span(),
@@ -901,16 +898,18 @@ fn generic_enum_minted_as_record_is_an_exact_invariant() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     lowerer.reject_unification(
         UnifyError::Invariant(expected),
         span(),
@@ -975,16 +974,18 @@ fn ready_enum_id_with_struct_body_rejects_lowering_exactly() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     assert!(
         lowerer
             .accept_resolution::<()>(
@@ -1056,16 +1057,18 @@ fn template_confirmed_generic_enum_missing_ready_variant_is_invariant() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     assert!(
         lowerer
             .accept_resolution::<()>(
@@ -1138,16 +1141,18 @@ fn interpolation_invariant_stops_before_later_literal_emission() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     assert!(
         lowerer
             .accept_resolution::<()>(
@@ -1234,16 +1239,18 @@ fn reserved_constructor_and_try_stop_before_effects_after_typed_reader_failure()
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     assert!(
         lowerer
             .accept_resolution::<()>(
@@ -1305,16 +1312,18 @@ fn checked_result_invariant_stops_before_handler_and_patch_work() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     assert!(
         lowerer
             .accept_resolution::<()>(
@@ -1406,16 +1415,18 @@ fn nested_else_if_terminal_invariant_never_falls_through_or_patches() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     assert!(
         lowerer
             .accept_resolution::<()>(
@@ -1493,16 +1504,18 @@ fn first_invariant_stops_real_block_before_later_owner_mutation() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
-    let mut lowerer = lowerer(
-        &mut draft,
-        &mut records,
-        &durable,
-        &functions,
-        &generics,
-        &consts,
-        &mut diagnostics,
-        FactSink::discarding(),
-    );
+    let mut lowerer = lowerer(LowerCtx {
+        draft: &mut draft,
+        records: &mut records,
+        resolution: Resolution {
+            durable: &durable,
+            functions: &functions,
+            generics: &generics,
+            consts: &consts,
+        },
+        diagnostics: &mut diagnostics,
+        facts: FactSink::discarding(),
+    });
     assert!(
         lowerer
             .accept_resolution::<()>(

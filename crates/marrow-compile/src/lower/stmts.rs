@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// One `for` statement's parts, as the loop lowerer reads them.
+struct ForLoop<'a> {
+    binding: &'a ForBinding,
+    order: marrow_syntax::LoopOrder,
+    iterable: &'a Expression,
+    step: Option<&'a Expression>,
+    bound: Option<&'a TraversalBound>,
+    body: &'a Block,
+    span: SourceSpan,
+}
+
 impl<'a, 'd> FnLowerer<'a, 'd> {
     // --- statements ---
 
@@ -208,15 +219,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 bound,
                 body,
                 span,
-            } => self.lower_for(
+            } => self.lower_for(ForLoop {
                 binding,
-                *order,
+                order: *order,
                 iterable,
-                step.as_ref(),
-                bound.as_deref(),
+                step: step.as_ref(),
+                bound: bound.as_deref(),
                 body,
-                *span,
-            ),
+                span: *span,
+            }),
             Statement::Checked {
                 bind,
                 op,
@@ -1433,17 +1444,16 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// `^root(k).branch`) takes the bounded freeze-then-run path; a range or local
     /// `List`/`Map` iterable takes the collection path. Reversed order and a range
     /// step apply only to the latter.
-    #[allow(clippy::too_many_arguments)]
-    fn lower_for(
-        &mut self,
-        binding: &ForBinding,
-        order: marrow_syntax::LoopOrder,
-        iterable: &Expression,
-        step: Option<&Expression>,
-        bound: Option<&TraversalBound>,
-        body: &Block,
-        span: SourceSpan,
-    ) -> ConstructResult<Flow> {
+    fn lower_for(&mut self, statement: ForLoop<'_>) -> ConstructResult<Flow> {
+        let ForLoop {
+            binding,
+            order,
+            iterable,
+            step,
+            bound,
+            body,
+            span,
+        } = statement;
         // An integer range iterates its counter directly onto a pure counter loop; it
         // takes neither a durable `at most` bound nor a reversed walk in the first ring.
         if let Some(range) = range_expr(iterable) {

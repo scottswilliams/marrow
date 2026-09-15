@@ -17,7 +17,9 @@ use marrow_syntax::{
     parse_source,
 };
 
-use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FileRef, StagedBodyTxn};
+use crate::analysis::{
+    AnalysisFactCollector, BodySite, BoundedAnalysisFacts, FileRef, StagedBodyTxn,
+};
 use crate::call_graph::AcyclicCallOrder;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
@@ -32,8 +34,8 @@ use crate::durable::{DurableRegistry, Family};
 use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, ModuleBinding,
-    ModuleLedger, PresenceObligation, SignatureOutcome, is_durable_place_op, is_mutation_instr,
-    is_reserved_builtin_name, reserved_builtin_name,
+    ModuleLedger, ModuleScope, PresenceObligation, Resolution, SignatureOutcome,
+    is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::BuildError;
 use crate::types::{
@@ -1541,10 +1543,12 @@ fn run_semantic(
                 txn,
                 &durable,
                 &functions,
-                modules,
-                imports,
+                ModuleScope {
+                    modules,
+                    imports,
+                    budget: budget.clone(),
+                },
                 &mut diagnostics,
-                budget.clone(),
                 &mut boundary_roots,
             ) {
                 Ok(signatures) => signatures,
@@ -1589,9 +1593,9 @@ fn run_semantic(
     // through the signature table, which is always available.
     let resolution = Resolution {
         durable: &durable,
-        signatures: &signatures,
+        functions: &signatures,
         generics: &generics,
-        constants: &constants,
+        consts: &constants,
     };
     if let Err(stop) = template_proof_phase(
         &mut records,
@@ -1717,21 +1721,6 @@ fn validate_lowered(
     Ok(lowered.is_complete() && acyclic.is_complete() && transactions_closed)
 }
 
-/// The registries the registry-dependent phases resolve names through that stay shared
-/// and read-only for the whole region.
-///
-/// The type registry is deliberately not among them: it is the one owner these phases
-/// mutate, so it travels beside this bundle as an exclusive borrow. Bundling it would
-/// make a `Copy` alias of a mutating owner, which is exactly what the generic-owner
-/// custody guard must be able to hold alone.
-#[derive(Clone, Copy)]
-struct Resolution<'a, 'p> {
-    durable: &'a DurableRegistry,
-    signatures: &'a FunctionRegistry,
-    generics: &'a GenericRegistry<'p>,
-    constants: &'a ConstRegistry,
-}
-
 /// A registry-dependent phase ended the whole semantic pass. The caller owns the
 /// diagnostic collector, so a stop names the outcome instead of sealing the terminal.
 enum PhaseStop {
@@ -1834,21 +1823,14 @@ fn template_proof_phase(
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
 ) -> Result<(), PhaseStop> {
-    let Resolution {
-        durable,
-        signatures,
-        generics,
-        constants,
-    } = resolution;
+    let generics = resolution.generics;
     for template in generics.templates() {
         // The template's editor facts are the product this pass keeps — its image work is
         // thrown away — so they are staged against the scope the proof erases, exactly as
         // a lowered body's are owned with the batch it commits. A lowering invariant drops
         // producer and payload together and releases none of them.
-        let outcome = FnLowerer::check_template(
-            draft, records, durable, signatures, generics, constants, facts, template,
-        )
-        .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        let outcome = FnLowerer::check_template(draft, records, resolution, facts, template)
+            .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
         outcome.body.absorb(diagnostics, facts);
         records.adopt_generic_diagnostics(outcome.generic);
         if records.has_instantiation_limit() {
@@ -1937,15 +1919,7 @@ fn registry_phases(
         // The instance's editor facts were collected once at its template's proof, so
         // its staged fact payload stays empty.
         let (released, outcome) = batch
-            .lower_instance(
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
-                template,
-                &args,
-                reserved,
-            )
+            .lower_instance(resolution, template, &args, reserved)
             .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
         released.absorb(diagnostics, facts);
         let lowered_body = match outcome {
@@ -2027,7 +2001,7 @@ fn lower_declared_functions(
     // refusal a body asks about is the one its own declaration received. Asking by
     // name would answer for the first declaration of a repeated name at every later
     // one.
-    let mut signatures = resolution.signatures.declarations();
+    let mut signatures = resolution.functions.declarations();
     for module in parsed {
         for declaration in &module.ast.declarations {
             let Declaration::Function(function) = declaration else {
@@ -2067,14 +2041,13 @@ fn lower_declared_functions(
             // diagnostics, and facts as one aggregate.
             let (released, outcome, export) = batch
                 .lower_function(
-                    resolution.durable,
-                    resolution.signatures,
-                    resolution.generics,
-                    resolution.constants,
+                    resolution,
                     facts,
-                    module.at,
-                    &module.file,
-                    &module.name,
+                    BodySite {
+                        at: module.at,
+                        file: &module.file,
+                        module: &module.name,
+                    },
                     function,
                     func,
                 )
@@ -2187,14 +2160,13 @@ fn lower_declared_tests(
         // Staged inside the producer-owning guard exactly as a declared body's rows are.
         let (released, outcome) = batch
             .lower_test(
-                resolution.durable,
-                resolution.signatures,
-                resolution.generics,
-                resolution.constants,
+                resolution,
                 facts,
-                module.at,
-                &module.file,
-                &module.name,
+                BodySite {
+                    at: module.at,
+                    file: &module.file,
+                    module: &module.name,
+                },
                 &test.name,
                 &test.body,
                 func,

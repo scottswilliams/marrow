@@ -320,6 +320,29 @@ pub(super) fn annotation_refusal_row(
     })
 }
 
+/// The registries a body's lowering resolves names through. Shared and read-only for
+/// the whole region, so they travel as one `Copy` bundle.
+///
+/// The type registry is deliberately not among them: it is the one owner these phases
+/// mutate, so it travels beside this bundle as an exclusive borrow.
+#[derive(Clone, Copy)]
+pub(crate) struct Resolution<'a, 'p> {
+    pub(crate) durable: &'a DurableRegistry,
+    pub(crate) functions: &'a FunctionRegistry,
+    pub(crate) generics: &'a GenericRegistry<'p>,
+    pub(crate) consts: &'a ConstRegistry,
+}
+
+/// Every owner one body's lowering runs against: the two it mutates, the registries it
+/// resolves through, and the two payload sinks it writes to.
+pub(crate) struct LowerCtx<'a, 'd> {
+    pub(crate) draft: &'a mut DraftTxn<'d>,
+    pub(crate) records: &'a mut TypeRegistry,
+    pub(crate) resolution: Resolution<'a, 'a>,
+    pub(crate) diagnostics: &'a mut DiagnosticCollector,
+    pub(crate) facts: FactSink<'a>,
+}
+
 pub(crate) struct FnLowerer<'a, 'd> {
     draft: &'a mut DraftTxn<'d>,
     records: &'a mut TypeRegistry,
@@ -431,7 +454,7 @@ pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::presence::PresenceObligation;
 pub(crate) use self::registry::{
     DeclaredFn, FunctionRegistry, GenericRegistry, GenericTemplate, ModuleBinding, ModuleLedger,
-    SignatureOutcome,
+    ModuleScope, SignatureOutcome,
 };
 pub(crate) use self::types::parse_int;
 
@@ -457,21 +480,26 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// A fresh lowerer over an empty body, for one function or test body. The
     /// shared field set has this single owner; `ret` and `body_kind` are the only
     /// per-body-kind inputs.
-    #[allow(clippy::too_many_arguments)]
     fn new(
-        draft: &'a mut DraftTxn<'d>,
-        records: &'a mut TypeRegistry,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
-        diagnostics: &'a mut DiagnosticCollector,
-        facts: FactSink<'a>,
+        ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
         module: &'a str,
         ret: RetType,
         body_kind: BodyKind,
     ) -> Self {
+        let LowerCtx {
+            draft,
+            records,
+            resolution:
+                Resolution {
+                    durable,
+                    functions,
+                    generics,
+                    consts,
+                },
+            diagnostics,
+            facts,
+        } = ctx;
         FnLowerer {
             draft,
             records,
@@ -556,30 +584,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// caller's job: it holds the dotted module name needed to compute the export's
     /// [`marrow_image::ExportId`]. A function that fails to lower pushes its
     /// diagnostics and returns [`BodyOutcome::Refused`].
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
-        draft: &'a mut DraftTxn<'d>,
-        records: &'a mut TypeRegistry,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
-        diagnostics: &'a mut DiagnosticCollector,
-        facts: FactSink<'a>,
+        ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
         func: FuncId,
     ) -> LowerResult {
         Self::lower_with_env(
-            draft,
-            records,
-            durable,
-            functions,
-            generics,
-            consts,
-            diagnostics,
-            facts,
+            ctx,
             file,
             module,
             function,
@@ -591,16 +604,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 
     /// Lower one monomorphized instance into its reserved image slot, binding the
     /// template's parameters to concrete arguments.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_instance(
-        draft: &'a mut DraftTxn<'d>,
-        records: &'a mut TypeRegistry,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
-        diagnostics: &'a mut DiagnosticCollector,
-        facts: FactSink<'a>,
+        ctx: LowerCtx<'a, 'd>,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
         func: FuncId,
@@ -615,14 +620,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             })
             .collect();
         Self::lower_with_env(
-            draft,
-            records,
-            durable,
-            functions,
-            generics,
-            consts,
-            diagnostics,
-            facts,
+            ctx,
             &template.file,
             &template.module,
             template.decl,
@@ -635,19 +633,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// Lower one generic template against its abstract parameter constraints. The
     /// producer-owning staging guard calls this exact operation without exposing its
     /// draft, registry, diagnostic, or fact owners to the driver.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_template(
-        draft: &'a mut DraftTxn<'d>,
-        records: &'a mut TypeRegistry,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
-        diagnostics: &'a mut DiagnosticCollector,
-        facts: FactSink<'a>,
+        ctx: LowerCtx<'a, 'd>,
         template: &'a GenericTemplate<'a>,
     ) -> LowerResult {
-        let func = draft.reserve_function()?;
+        let func = ctx.draft.reserve_function()?;
         let type_env = template
             .type_params
             .iter()
@@ -657,14 +647,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             })
             .collect();
         Self::lower_with_env(
-            draft,
-            records,
-            durable,
-            functions,
-            generics,
-            consts,
-            diagnostics,
-            facts,
+            ctx,
             &template.file,
             &template.module,
             template.decl,
@@ -680,14 +663,10 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// is checked once — including rejecting `==`/`<` on an unconstrained parameter —
     /// independently of whether or how it is instantiated. Its diagnostics and derived
     /// editor facts survive; the emitted code and proof-appended owner suffixes are erased.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_template(
         draft: &mut ImageDraft,
         records: &mut TypeRegistry,
-        durable: &DurableRegistry,
-        functions: &FunctionRegistry,
-        generics: &GenericRegistry,
-        consts: &ConstRegistry,
+        resolution: Resolution<'_, '_>,
         facts: &AnalysisFactCollector,
         template: &GenericTemplate,
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
@@ -709,8 +688,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // Proof and erasure are one consuming operation: no throwaway function identity
         // or staged payload can leave while its producer remains armed. An invariant
         // drops producer and payload together.
-        let (generic, body) =
-            scope.prove_template(durable, functions, generics, consts, facts, template)?;
+        let (generic, body) = scope.prove_template(resolution, facts, template)?;
         Ok(TemplateProofOutcome { generic, body })
     }
 
@@ -718,16 +696,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// template pass: resolve the return type in the type environment, bind the
     /// value parameters, lower the body, and fill the reserved image function.
     /// The `type_env` and `mode` distinguish the three.
-    #[allow(clippy::too_many_arguments)]
     fn lower_with_env(
-        draft: &'a mut DraftTxn<'d>,
-        records: &'a mut TypeRegistry,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
-        diagnostics: &'a mut DiagnosticCollector,
-        facts: FactSink<'a>,
+        ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
@@ -735,6 +705,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         type_env: Vec<TypeParamSlot>,
         mode: LowerMode,
     ) -> LowerResult {
+        let durable = ctx.resolution.durable;
         let ret = {
             let env = TypeEnv { params: &type_env };
             match &function.return_type {
@@ -744,11 +715,11 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         file,
                         span: annotation.span(),
                     };
-                    match resolve_type(records, draft, durable, annotation, env, site) {
+                    match resolve_type(ctx.records, ctx.draft, durable, annotation, env, site) {
                         Ok(ty) => RetType::Value(ty),
                         Err(ResolveError::Refusal(refusal)) => {
                             if let Some(row) = annotation_refusal_row(
-                                records,
+                                ctx.records,
                                 durable,
                                 refusal,
                                 file,
@@ -757,7 +728,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             )?
                             .row
                             {
-                                diagnostics.push(row);
+                                ctx.diagnostics.push(row);
                             }
                             return Ok(BodyOutcome::Refused);
                         }
@@ -767,20 +738,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
         };
 
-        let mut lowerer = FnLowerer::new(
-            draft,
-            records,
-            durable,
-            functions,
-            generics,
-            consts,
-            diagnostics,
-            facts,
-            file,
-            module,
-            ret,
-            BodyKind::Function,
-        );
+        let mut lowerer = FnLowerer::new(ctx, file, module, ret, BodyKind::Function);
         lowerer.type_env = type_env;
         lowerer.mode = mode;
 
@@ -922,36 +880,15 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     /// and return its [`Lowered`] identity. The body is the only place the owned
     /// `assert` is legal; `name` is the test title (interned as the function name),
     /// and the caller binds it into the image's TEST-ENTRY table.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_test(
-        draft: &'a mut DraftTxn<'d>,
-        records: &'a mut TypeRegistry,
-        durable: &'a DurableRegistry,
-        functions: &'a FunctionRegistry,
-        generics: &'a GenericRegistry<'a>,
-        consts: &'a ConstRegistry,
-        diagnostics: &'a mut DiagnosticCollector,
-        facts: FactSink<'a>,
+        ctx: LowerCtx<'a, 'd>,
         file: &'a FileIdentity,
         module: &'a str,
         name: &str,
         body: &Block,
         func: FuncId,
     ) -> LowerResult {
-        let mut lowerer = FnLowerer::new(
-            draft,
-            records,
-            durable,
-            functions,
-            generics,
-            consts,
-            diagnostics,
-            facts,
-            file,
-            module,
-            RetType::Unit,
-            BodyKind::Test,
-        );
+        let mut lowerer = FnLowerer::new(ctx, file, module, RetType::Unit, BodyKind::Test);
         // A test body is a unit-returning block: control that falls through ends with
         // an implicit return, exactly like a unit function.
         match lowerer.lower_block(body) {

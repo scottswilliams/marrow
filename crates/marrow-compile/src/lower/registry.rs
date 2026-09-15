@@ -38,6 +38,15 @@ pub(crate) type ModuleLedger = DeclarationLedger<String, ModuleBinding>;
 /// One function's key in the signature namespace: its dotted module and its name.
 pub(crate) type FnKey = ModuleScopedName;
 
+/// The module scope a signature build resolves names in, with the retention budget its
+/// own ledger charges against.
+pub(crate) struct ModuleScope {
+    pub(crate) modules: ModuleLedger,
+    /// `module -> [(final-segment binding, dotted target module)]`.
+    pub(crate) imports: BTreeMap<String, Vec<(String, String)>>,
+    pub(crate) budget: DeclarationBudget,
+}
+
 /// The project's functions and the module scope a call resolves against: every
 /// function signature (resolved before body lowering so a forward call resolves),
 /// the module ledger, and each module's `use` bindings. A duplicate name in one
@@ -141,18 +150,20 @@ impl FunctionRegistry {
     ///
     /// Each accepted occurrence reserves its image slot here. Body lowering fills
     /// that exact slot; a refused body leaves it vacant without changing later IDs.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build<'source>(
         records: &mut TypeRegistry,
         draft: &mut DraftTxn<'_>,
         durable: &DurableRegistry,
         functions: &'source [DeclaredFn<'_>],
-        modules: ModuleLedger,
-        imports: BTreeMap<String, Vec<(String, String)>>,
+        scope: ModuleScope,
         diagnostics: &mut DiagnosticCollector,
-        budget: DeclarationBudget,
         boundary_roots: &mut Vec<NominalBoundaryRoot<'source>>,
     ) -> Result<FunctionRegistry, BuildError> {
+        let ModuleScope {
+            modules,
+            imports,
+            budget,
+        } = scope;
         let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function, budget);
         let mut declarations = Vec::new();
         // Only monomorphic functions take an image index and enter the signature
