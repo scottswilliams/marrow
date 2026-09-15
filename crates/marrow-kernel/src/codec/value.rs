@@ -847,8 +847,8 @@ mod composite_codec {
         }
     }
 
-    /// A1/byte-identity KAT: a top-level scalar value encodes byte-for-byte as the existing
-    /// scalar codec — the oracle-differential-preserving property. No length prefix, no tag.
+    /// A top-level scalar value encodes byte-for-byte as the scalar codec: no length
+    /// prefix, no tag, so a scalar cell is readable without the composite framing.
     #[test]
     fn a_top_level_scalar_is_byte_identical_to_the_scalar_codec() {
         for value in [
