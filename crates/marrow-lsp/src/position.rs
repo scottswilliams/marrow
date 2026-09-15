@@ -13,18 +13,18 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Position {
     /// Zero-based line number.
-    pub line: u32,
+    pub(crate) line: u32,
     /// Zero-based UTF-16 code-unit offset within the line.
-    pub character: u32,
+    pub(crate) character: u32,
 }
 
 /// A zero-based half-open LSP range.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Range {
     /// Inclusive start.
-    pub start: Position,
+    pub(crate) start: Position,
     /// Exclusive end.
-    pub end: Position,
+    pub(crate) end: Position,
 }
 
 /// Maps UTF-8 byte offsets in one source string to LSP UTF-16 positions.

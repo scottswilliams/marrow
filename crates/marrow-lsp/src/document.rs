@@ -51,9 +51,9 @@ pub(crate) struct RevisionExhausted;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct UnavailableEvidence {
     /// The stable marrow diagnostic code string.
-    pub code: &'static str,
+    pub(crate) code: &'static str,
     /// The bounded operational message.
-    pub message: String,
+    pub(crate) message: String,
 }
 
 /// The state of one open document. Full-document sync: the text is the whole body.

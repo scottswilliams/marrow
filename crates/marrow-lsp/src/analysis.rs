@@ -31,9 +31,9 @@ const MAX_OPERATIONAL_MESSAGE_BYTES: usize = 8 * 1024;
 /// gathered from an open `OpenText` entry before capture.
 pub(crate) struct OverlayInput<'a> {
     /// The canonical root-relative key, e.g. `src/foo.mw`.
-    pub key: &'a str,
+    pub(crate) key: &'a str,
     /// The open-document body bytes.
-    pub bytes: &'a [u8],
+    pub(crate) bytes: &'a [u8],
 }
 
 /// The outcome of one analysis job.
@@ -60,10 +60,10 @@ pub(crate) enum AnalysisOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CaptureRejection {
     /// The revision the rejected capture belonged to.
-    pub revision: InputRevision,
+    pub(crate) revision: InputRevision,
     /// The rendered bounded evidence, or `None` when the operational message overflowed
     /// its bounded sink (an outbound-encoding failure the coordinator handles).
-    pub evidence: Option<UnavailableEvidence>,
+    pub(crate) evidence: Option<UnavailableEvidence>,
 }
 
 impl SelectedRoot {
