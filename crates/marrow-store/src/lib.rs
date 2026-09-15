@@ -73,8 +73,8 @@ mod public_surface_audit {
             write_txn::<crate::mem::MemTxn<'static>>,
             byte_engine::<MemoryEngine>,
         );
-        let _limits: (fn(&[u8], &[u8]) -> bool, fn(usize, usize, usize) -> bool) =
-            (cell_within_limits, batch_is_full);
+        let _cell_limit: fn(&[u8], &[u8]) -> bool = cell_within_limits;
+        let _batch_limit: fn(usize, usize, usize) -> bool = batch_is_full;
         // Concrete types and constructors.
         let _cell: Cell = (Vec::new(), Vec::new());
         let _outcomes = [

@@ -1956,12 +1956,73 @@ mod tests {
         }
     }
 
+    /// The three coordinated recovery cases the parent and child both drive.
+    /// The pair runs one exhaustive protocol: the tag crosses the process
+    /// boundary as text and is decoded back into this enum on arrival.
+    #[cfg(unix)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CoordinatedMode {
+        /// Reopen and audit both succeed.
+        Success,
+        /// The engine artifact is gone, so the recovery reopen refuses.
+        ReopenFailure,
+        /// The engine reopens and its full audit then fails.
+        AuditFailure,
+    }
+
+    #[cfg(unix)]
+    impl CoordinatedMode {
+        const ALL: [Self; 3] = [Self::Success, Self::ReopenFailure, Self::AuditFailure];
+
+        fn decode(tag: &str) -> Option<Self> {
+            Self::ALL.into_iter().find(|mode| mode.to_string() == tag)
+        }
+    }
+
+    #[cfg(unix)]
+    impl std::fmt::Display for CoordinatedMode {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(match self {
+                Self::Success => "success",
+                Self::ReopenFailure => "reopen-failure",
+                Self::AuditFailure => "audit-failure",
+            })
+        }
+    }
+
+    /// The rendezvous points of one coordinated case. Each is published by the
+    /// child and released by the parent.
+    #[cfg(unix)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CoordinatedPhase {
+        BeforeRecovery,
+        RecoveredLive,
+        RecoveredDropped,
+        ReopenRefused,
+        ReopenedBeforeAudit,
+        AuditRefused,
+    }
+
+    #[cfg(unix)]
+    impl std::fmt::Display for CoordinatedPhase {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(match self {
+                Self::BeforeRecovery => "before-recovery",
+                Self::RecoveredLive => "recovered-live",
+                Self::RecoveredDropped => "recovered-dropped",
+                Self::ReopenRefused => "reopen-refused",
+                Self::ReopenedBeforeAudit => "reopened-before-audit",
+                Self::AuditRefused => "audit-refused",
+            })
+        }
+    }
+
     #[cfg(unix)]
     struct ChildGuard(Option<std::process::Child>);
 
     #[cfg(unix)]
     impl ChildGuard {
-        fn spawn(directory: &Path, mode: &str) -> Self {
+        fn spawn(directory: &Path, mode: CoordinatedMode) -> Self {
             let child =
                 std::process::Command::new(std::env::current_exe().expect("test executable"))
                     .args([
@@ -1971,7 +2032,7 @@ mod tests {
                         "--nocapture",
                     ])
                     .env("MARROW_NATIVE_OWNER_COORDINATED_DIR", directory)
-                    .env("MARROW_NATIVE_OWNER_COORDINATED_MODE", mode)
+                    .env("MARROW_NATIVE_OWNER_COORDINATED_MODE", mode.to_string())
                     .spawn()
                     .expect("spawn coordinated quarantine child");
             Self(Some(child))
@@ -2052,12 +2113,22 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn phase_path(directory: &Path, mode: &str, phase: &str, kind: &str) -> PathBuf {
+    fn phase_path(
+        directory: &Path,
+        mode: CoordinatedMode,
+        phase: CoordinatedPhase,
+        kind: &str,
+    ) -> PathBuf {
         directory.join(format!(".quarantine-{mode}-{phase}-{kind}"))
     }
 
     #[cfg(unix)]
-    fn wait_for_phase(child: &mut ChildGuard, directory: &Path, mode: &str, phase: &str) {
+    fn wait_for_phase(
+        child: &mut ChildGuard,
+        directory: &Path,
+        mode: CoordinatedMode,
+        phase: CoordinatedPhase,
+    ) {
         let ready = phase_path(directory, mode, phase, "ready");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
@@ -2082,15 +2153,18 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn release_phase(directory: &Path, mode: &str, phase: &str) {
+    fn release_phase(directory: &Path, mode: CoordinatedMode, phase: CoordinatedPhase) {
         std::fs::write(phase_path(directory, mode, phase, "release"), b"release")
             .expect("release coordinated phase");
     }
 
     #[cfg(unix)]
-    fn child_barrier(directory: &Path, mode: &str, phase: &str) {
-        std::fs::write(phase_path(directory, mode, phase, "ready"), phase)
-            .expect("publish coordinated phase");
+    fn child_barrier(directory: &Path, mode: CoordinatedMode, phase: CoordinatedPhase) {
+        std::fs::write(
+            phase_path(directory, mode, phase, "ready"),
+            phase.to_string(),
+        )
+        .expect("publish coordinated phase");
         let release = phase_path(directory, mode, phase, "release");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !release.exists() {
@@ -2106,7 +2180,7 @@ mod tests {
     fn assert_competing_open_is_exactly_lock_refused(
         directory: &Path,
         child_pid: u32,
-        phase: &str,
+        phase: CoordinatedPhase,
     ) {
         match NativeEngineOwner::acquire_existing(directory) {
             Err(NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. })) => {
@@ -2230,76 +2304,104 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn run_coordinated_quarantine_case(mode: &str) {
-        let scratch = Scratch::new(mode);
+    fn run_coordinated_quarantine_case(mode: CoordinatedMode) {
+        let scratch = Scratch::new(&mode.to_string());
         NativeEngineOwner::provision(&scratch.0).expect("provision");
-        if mode == "audit-failure" {
+        if mode == CoordinatedMode::AuditFailure {
             seed_audit_body(&scratch.0);
         }
         let pristine =
             std::fs::read(scratch.0.join(NATIVE_ENGINE_FILE)).expect("read pristine engine");
         let mut child = ChildGuard::spawn(&scratch.0, mode);
 
-        wait_for_phase(&mut child, &scratch.0, mode, "before-recovery");
-        assert_competing_open_is_exactly_lock_refused(&scratch.0, child.id(), "before-recovery");
+        wait_for_phase(
+            &mut child,
+            &scratch.0,
+            mode,
+            CoordinatedPhase::BeforeRecovery,
+        );
+        assert_competing_open_is_exactly_lock_refused(
+            &scratch.0,
+            child.id(),
+            CoordinatedPhase::BeforeRecovery,
+        );
 
         let backup = scratch.0.join("store.redb.before-recovery");
-        if mode == "reopen-failure" {
+        if mode == CoordinatedMode::ReopenFailure {
             std::fs::rename(scratch.0.join(NATIVE_ENGINE_FILE), &backup)
                 .expect("remove engine before recovery reopen");
         }
-        release_phase(&scratch.0, mode, "before-recovery");
+        release_phase(&scratch.0, mode, CoordinatedPhase::BeforeRecovery);
 
         match mode {
-            "success" => {
-                wait_for_phase(&mut child, &scratch.0, mode, "recovered-live");
+            CoordinatedMode::Success => {
+                wait_for_phase(
+                    &mut child,
+                    &scratch.0,
+                    mode,
+                    CoordinatedPhase::RecoveredLive,
+                );
                 assert_competing_open_is_exactly_lock_refused(
                     &scratch.0,
                     child.id(),
-                    "recovered-live",
+                    CoordinatedPhase::RecoveredLive,
                 );
-                release_phase(&scratch.0, mode, "recovered-live");
+                release_phase(&scratch.0, mode, CoordinatedPhase::RecoveredLive);
 
-                wait_for_phase(&mut child, &scratch.0, mode, "recovered-dropped");
-                assert_competing_open_is_exactly_lock_refused(
+                wait_for_phase(
+                    &mut child,
                     &scratch.0,
-                    child.id(),
-                    "recovered-dropped",
+                    mode,
+                    CoordinatedPhase::RecoveredDropped,
                 );
-                release_phase(&scratch.0, mode, "recovered-dropped");
-            }
-            "reopen-failure" => {
-                wait_for_phase(&mut child, &scratch.0, mode, "reopen-refused");
                 assert_competing_open_is_exactly_lock_refused(
                     &scratch.0,
                     child.id(),
-                    "reopen-refused",
+                    CoordinatedPhase::RecoveredDropped,
+                );
+                release_phase(&scratch.0, mode, CoordinatedPhase::RecoveredDropped);
+            }
+            CoordinatedMode::ReopenFailure => {
+                wait_for_phase(
+                    &mut child,
+                    &scratch.0,
+                    mode,
+                    CoordinatedPhase::ReopenRefused,
+                );
+                assert_competing_open_is_exactly_lock_refused(
+                    &scratch.0,
+                    child.id(),
+                    CoordinatedPhase::ReopenRefused,
                 );
                 std::fs::rename(&backup, scratch.0.join(NATIVE_ENGINE_FILE))
                     .expect("restore valid engine before child exit");
-                release_phase(&scratch.0, mode, "reopen-refused");
+                release_phase(&scratch.0, mode, CoordinatedPhase::ReopenRefused);
             }
-            "audit-failure" => {
-                wait_for_phase(&mut child, &scratch.0, mode, "reopened-before-audit");
+            CoordinatedMode::AuditFailure => {
+                wait_for_phase(
+                    &mut child,
+                    &scratch.0,
+                    mode,
+                    CoordinatedPhase::ReopenedBeforeAudit,
+                );
                 assert_competing_open_is_exactly_lock_refused(
                     &scratch.0,
                     child.id(),
-                    "reopened-before-audit",
+                    CoordinatedPhase::ReopenedBeforeAudit,
                 );
                 corrupt_live_engine_for_audit(&scratch.0);
-                release_phase(&scratch.0, mode, "reopened-before-audit");
+                release_phase(&scratch.0, mode, CoordinatedPhase::ReopenedBeforeAudit);
 
-                wait_for_phase(&mut child, &scratch.0, mode, "audit-refused");
+                wait_for_phase(&mut child, &scratch.0, mode, CoordinatedPhase::AuditRefused);
                 assert_competing_open_is_exactly_lock_refused(
                     &scratch.0,
                     child.id(),
-                    "audit-refused",
+                    CoordinatedPhase::AuditRefused,
                 );
                 std::fs::write(scratch.0.join(NATIVE_ENGINE_FILE), &pristine)
                     .expect("restore valid engine before child exit");
-                release_phase(&scratch.0, mode, "audit-refused");
+                release_phase(&scratch.0, mode, CoordinatedPhase::AuditRefused);
             }
-            other => panic!("unknown coordinated mode {other}"),
         }
 
         child.wait_success();
@@ -2309,7 +2411,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn quarantine_is_observed_across_success_and_failed_recovery_phases() {
-        for mode in ["success", "reopen-failure", "audit-failure"] {
+        for mode in CoordinatedMode::ALL {
             run_coordinated_quarantine_case(mode);
         }
     }
@@ -2321,21 +2423,22 @@ mod tests {
         let Ok(path) = std::env::var("MARROW_NATIVE_OWNER_COORDINATED_DIR") else {
             return;
         };
-        let mode = std::env::var("MARROW_NATIVE_OWNER_COORDINATED_MODE").expect("coordinated mode");
+        let tag = std::env::var("MARROW_NATIVE_OWNER_COORDINATED_MODE").expect("coordinated mode");
+        let mode = CoordinatedMode::decode(&tag).expect("the parent names a coordinated mode");
         let directory = Path::new(&path);
         let owner = open_existing(directory, [0x71; 16]).expect("child opens owner");
-        child_barrier(directory, &mode, "before-recovery");
+        child_barrier(directory, mode, CoordinatedPhase::BeforeRecovery);
 
-        match mode.as_str() {
-            "success" => {
+        match mode {
+            CoordinatedMode::Success => {
                 let owner = owner
                     .reopen_existing_and_audit()
                     .expect("successful reopen and audit");
-                child_barrier(directory, &mode, "recovered-live");
+                child_barrier(directory, mode, CoordinatedPhase::RecoveredLive);
                 drop(owner);
-                child_barrier(directory, &mode, "recovered-dropped");
+                child_barrier(directory, mode, CoordinatedPhase::RecoveredDropped);
             }
-            "reopen-failure" => {
+            CoordinatedMode::ReopenFailure => {
                 let error = match owner.reopen_existing_and_audit() {
                     Ok(_) => panic!("a missing recovery engine unexpectedly reopened"),
                     Err(error) => error,
@@ -2345,9 +2448,9 @@ mod tests {
                     matches!(error, StoreError::Io { op: "open", .. }),
                     "missing recovery must fail in the existing-open phase: {error}",
                 );
-                child_barrier(directory, &mode, "reopen-refused");
+                child_barrier(directory, mode, CoordinatedPhase::ReopenRefused);
             }
-            "audit-failure" => {
+            CoordinatedMode::AuditFailure => {
                 let mut owner = owner;
                 owner.lock.quarantine();
                 drop(owner.engine.take());
@@ -2355,14 +2458,13 @@ mod tests {
                     NativeEngine::open_existing(&directory.join(NATIVE_ENGINE_FILE))
                         .expect("fresh existing-only reopen before audit"),
                 );
-                child_barrier(directory, &mode, "reopened-before-audit");
+                child_barrier(directory, mode, CoordinatedPhase::ReopenedBeforeAudit);
                 let error = without_panic_report(|| owner.engine_mut().audit_integrity())
                     .expect_err("hostile live mutation must fail the full audit");
                 assert_eq!(error.code(), Code::StoreCorruption.as_str());
                 without_panic_report(|| drop(owner));
-                child_barrier(directory, &mode, "audit-refused");
+                child_barrier(directory, mode, CoordinatedPhase::AuditRefused);
             }
-            other => panic!("unknown coordinated mode {other}"),
         }
     }
 }
