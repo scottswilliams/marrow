@@ -910,7 +910,7 @@ fn a_value_cycle_is_reported_at_the_concrete_declaration_not_a_homonym_template(
                 "check.name_conflict".to_string(),
                 3,
                 8,
-                "`A` is already declared as a type".to_string(),
+                "`A` is already declared as a struct".to_string(),
             ),
             (
                 "src/main.mw".to_string(),

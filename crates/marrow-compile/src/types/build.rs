@@ -4,6 +4,47 @@
 
 use super::*;
 
+/// Report that `name` cannot be declared because `holder` already took it.
+fn name_conflict(
+    diagnostics: &mut DiagnosticCollector,
+    file: &FileIdentity,
+    span: SourceSpan,
+    name: &str,
+    holder: NameHolder,
+) {
+    diagnostics.push(SourceDiagnostic::at(
+        Code::CheckNameConflict.as_str(),
+        file,
+        span,
+        format!("`{name}` is already declared as {}", holder.spelling()),
+    ));
+}
+
+/// What a declaration pass that has not run yet will bind `name` to.
+///
+/// The passes run alias, nominal, template, record, struct, enum, and each holds
+/// its names against the later ones; once a pass has run,
+/// [`TypeRegistry::name_conflict`] is the authority. Callers pass the source lists
+/// their own pass yields to, so the rule is the same predicate in every pass
+/// rather than a hand-written scan per pass.
+fn pending_name<'a>(
+    name: &str,
+    resources: impl IntoIterator<Item = &'a str>,
+    structs: impl IntoIterator<Item = &'a str>,
+    enums: impl IntoIterator<Item = &'a str>,
+) -> Option<NameHolder> {
+    let kind = if resources.into_iter().any(|other| other == name) {
+        NamedTypeKind::Resource
+    } else if structs.into_iter().any(|other| other == name) {
+        NamedTypeKind::Struct
+    } else if enums.into_iter().any(|other| other == name) {
+        NamedTypeKind::Enum
+    } else {
+        return None;
+    };
+    Some(NameHolder::Kind(kind))
+}
+
 /// The reserved toolchain generic templates, in fixed order (`Option` then
 /// `Result`), registered before any user template. They are ordinary generic enums
 /// defined here rather than by user source: the `some`/`none`/`ok`/`err` payload
@@ -90,20 +131,26 @@ pub(super) fn register_type_templates(
                 })
                 .collect()
         };
-    let name_taken = |registry: &TypeRegistry, name: &str| -> bool {
-        ScalarType::from_spelling(name).is_some()
-            || registry.aliases.contains_key(name)
-            || registry.nominal_by_name(name).is_some()
-            || resources.iter().any(|(_, _, r)| r.name == name)
-            || structs
-                .iter()
-                .filter(|(_, _, d)| d.type_params.is_empty())
-                .any(|(_, _, d)| d.name == name)
-            || enums
-                .iter()
-                .filter(|(_, _, d)| d.type_params.is_empty())
-                .any(|(_, _, d)| d.name == name)
-            || registry.named.declared(name)
+    // Templates yield to the concrete declarations of the same name; the generic
+    // rows of these lists are this pass's own, held by the ledger as it declares
+    // them.
+    let name_taken = |registry: &TypeRegistry,
+                      name: &str|
+     -> Result<Option<NameHolder>, DeclarationIndexDrift> {
+        Ok(registry.name_conflict(name)?.or_else(|| {
+            pending_name(
+                name,
+                resources.iter().map(|(_, _, r)| r.name.as_str()),
+                structs
+                    .iter()
+                    .filter(|(_, _, d)| d.type_params.is_empty())
+                    .map(|(_, _, d)| d.name.as_str()),
+                enums
+                    .iter()
+                    .filter(|(_, _, d)| d.type_params.is_empty())
+                    .map(|(_, _, d)| d.name.as_str()),
+            )
+        }))
     };
     for (at, file, decl) in structs {
         if decl.type_params.is_empty() {
@@ -126,13 +173,8 @@ pub(super) fn register_type_templates(
                 .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if name_taken(registry, &decl.name) {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as a type", decl.name),
-            ));
+        if let Some(holder) = name_taken(registry, &decl.name)? {
+            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
         let mut refusal = None;
@@ -207,13 +249,8 @@ pub(super) fn register_type_templates(
                 .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if name_taken(registry, &decl.name) {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as a type", decl.name),
-            ));
+        if let Some(holder) = name_taken(registry, &decl.name)? {
+            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
         let mut refusal = None;
@@ -520,34 +557,15 @@ pub(super) fn build_alias_table(
             ));
             continue;
         }
-        if resources
-            .iter()
-            .any(|(_, _, resource)| resource.name == decl.name)
-        {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as a resource", decl.name),
-            ));
-            continue;
-        }
-        if structs.iter().any(|(_, _, item)| item.name == decl.name) {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as a struct", decl.name),
-            ));
-            continue;
-        }
-        if enums.iter().any(|(_, _, item)| item.name == decl.name) {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as an enum", decl.name),
-            ));
+        // Aliases are resolved first, so every other declaration form is still
+        // only source here and an alias yields its name to all of them.
+        if let Some(holder) = pending_name(
+            &decl.name,
+            resources.iter().map(|(_, _, r)| r.name.as_str()),
+            structs.iter().map(|(_, _, d)| d.name.as_str()),
+            enums.iter().map(|(_, _, d)| d.name.as_str()),
+        ) {
+            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
         let target = match ty {
@@ -687,25 +705,19 @@ pub(super) fn build_nominals(
                 .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        // Scalar spellings are keywords the parser already rejects as names;
-        // owning them here keeps the conflict predicate self-contained. A nominal
-        // this pass already refused holds its name too, so the repeat conflicts
-        // whichever of the two the compiler could admit.
-        if ScalarType::from_spelling(&decl.name).is_some()
-            || registry.aliases.contains_key(&decl.name)
-            || resources
-                .iter()
-                .any(|(_, _, resource)| resource.name == decl.name)
-            || structs.iter().any(|(_, _, item)| item.name == decl.name)
-            || enums.iter().any(|(_, _, item)| item.name == decl.name)
-            || registry.named.declared(&decl.name)
-        {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as a type", decl.name),
-            ));
+        // Nominals yield to every declaration form the later passes bind, and a
+        // nominal this pass already refused holds its name too, so a repeat
+        // conflicts whichever of the two the compiler could admit.
+        let holder = registry.name_conflict(&decl.name)?.or_else(|| {
+            pending_name(
+                &decl.name,
+                resources.iter().map(|(_, _, r)| r.name.as_str()),
+                structs.iter().map(|(_, _, d)| d.name.as_str()),
+                enums.iter().map(|(_, _, d)| d.name.as_str()),
+            )
+        });
+        if let Some(holder) = holder {
+            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
         let refused = match registry.scalar_annotation(base) {
@@ -901,7 +913,6 @@ pub(super) fn declare_structs<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     structs: &'a [(FileRef, FileIdentity, &StructDecl)],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<Vec<ReservedStruct<'a>>, DeclareError> {
     let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
@@ -923,20 +934,8 @@ pub(super) fn declare_structs<'a>(
                 .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if ScalarType::from_spelling(&decl.name).is_some()
-            || registry.aliases.contains_key(&decl.name)
-            || registry.nominal_by_name(&decl.name).is_some()
-            || resources
-                .iter()
-                .any(|(_, _, resource)| resource.name == decl.name)
-            || registry.struct_by_name(&decl.name).is_some()
-        {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as a type", decl.name),
-            ));
+        if let Some(holder) = registry.name_conflict(&decl.name)? {
+            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
         let name_id = draft.intern_string(&decl.name)?;
@@ -1139,7 +1138,6 @@ pub(super) fn declare_enums<'a>(
     draft: &mut DraftTxn<'_>,
     registry: &mut TypeRegistry,
     enums: &'a [(FileRef, FileIdentity, &EnumDecl)],
-    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<Vec<ReservedEnum<'a>>, DeclareError> {
     let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
@@ -1161,22 +1159,8 @@ pub(super) fn declare_enums<'a>(
                 .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
-        if ScalarType::from_spelling(&decl.name).is_some()
-            || registry.aliases.contains_key(&decl.name)
-            || registry.nominal_by_name(&decl.name).is_some()
-            || registry.struct_by_name(&decl.name).is_some()
-            || resources
-                .iter()
-                .any(|(_, _, resource)| resource.name == decl.name)
-            || registry.enum_by_name(&decl.name).is_some()
-            || registry.named.declared(&decl.name)
-        {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                decl.name_span,
-                format!("`{}` is already declared as a type", decl.name),
-            ));
+        if let Some(holder) = registry.name_conflict(&decl.name)? {
+            name_conflict(diagnostics, file, decl.name_span, &decl.name, holder);
             continue;
         }
         if decl.members.len() > marrow_image::bounds::MAX_VARIANTS {
@@ -1438,20 +1422,29 @@ pub(super) fn declare_records<'a>(
             )?;
             continue;
         }
-        // Two resources of the same name have no unambiguous record identity, so a
-        // repeat is a precise typed rejection and the first declaration stands.
-        if registry
-            .records
-            .iter()
-            .any(|info| info.name == resource.name)
-        {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                file,
-                resource.name_span,
-                format!("`{}` is already declared as a resource", resource.name),
-            ));
-            continue;
+        match registry.name_conflict(&resource.name)? {
+            // Two resources of the same name have no unambiguous record identity,
+            // so a repeat is a precise typed rejection and the first stands.
+            Some(NameHolder::Kind(NamedTypeKind::Resource)) => {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    file,
+                    resource.name_span,
+                    format!("`{}` is already declared as a resource", resource.name),
+                ));
+                continue;
+            }
+            Some(holder) => {
+                name_conflict(
+                    diagnostics,
+                    file,
+                    resource.name_span,
+                    &resource.name,
+                    holder,
+                );
+                continue;
+            }
+            None => {}
         }
         let name_id = draft.intern_string(&resource.name)?;
         let type_id = draft.reserve_record_type(name_id)?;

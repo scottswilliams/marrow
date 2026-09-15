@@ -1338,6 +1338,45 @@ pub(crate) enum NamedTypeKind {
     /// concrete types share one namespace — the registry's own conflict predicate
     /// scans both — so they share one ledger.
     Template,
+    /// A builtin scalar spelling. No declaration binds one — the parser rejects a
+    /// scalar keyword in name position — so this kind never enters the ledger; it
+    /// exists so [`TypeRegistry::name_conflict`] is total over the namespace.
+    Scalar,
+}
+
+impl NamedTypeKind {
+    /// How a name-conflict report spells this kind, with its article.
+    fn spelling(self) -> &'static str {
+        match self {
+            Self::Alias => "an alias",
+            Self::Nominal => "a nominal type",
+            Self::Struct => "a struct",
+            Self::Enum => "an enum",
+            Self::Resource => "a resource",
+            Self::Template => "a generic type",
+            Self::Scalar => "a builtin type",
+        }
+    }
+}
+
+/// What already holds a declared type name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameHolder {
+    /// An accepted declaration of this kind, or a builtin scalar spelling.
+    Kind(NamedTypeKind),
+    /// A declaration this build refused. It occupies its name from where it is
+    /// written, and the ledger retains its cause rather than its kind.
+    Refused,
+}
+
+impl NameHolder {
+    /// How a name-conflict report spells the holder, with its article.
+    pub(super) fn spelling(self) -> &'static str {
+        match self {
+            Self::Kind(kind) => kind.spelling(),
+            Self::Refused => "a type",
+        }
+    }
 }
 
 /// The project named-type registry: the transparent aliases, the nominal int
@@ -3308,6 +3347,41 @@ impl TypeRegistry {
         })
     }
 
+    /// What already holds the type name `name`, or `None` when the name is free.
+    ///
+    /// The one conflict predicate every declaration pass runs, so which of two
+    /// colliding declarations is refused cannot depend on which pass asks.
+    ///
+    /// The named-type ledger answers for every name a pass has settled, accepted or
+    /// refused. Two kinds reach it later than they take their name, and the tables
+    /// that hold them in the meantime are read here rather than at each call site:
+    /// an accepted alias is declared only once its target is validated, after every
+    /// other pass, and a struct or enum name is declared with its fill verdict in
+    /// pass two, after pass one reserved its image index.
+    pub(super) fn name_conflict(
+        &self,
+        name: &str,
+    ) -> Result<Option<NameHolder>, DeclarationIndexDrift> {
+        if ScalarType::from_spelling(name).is_some() {
+            return Ok(Some(NameHolder::Kind(NamedTypeKind::Scalar)));
+        }
+        Ok(match self.named.lookup(name)? {
+            Binding::Accepted(kind) => Some(NameHolder::Kind(*kind)),
+            Binding::Refused(..) => Some(NameHolder::Refused),
+            Binding::Absent => {
+                if self.aliases.contains_key(name) {
+                    Some(NameHolder::Kind(NamedTypeKind::Alias))
+                } else if self.struct_by_name(name).is_some() {
+                    Some(NameHolder::Kind(NamedTypeKind::Struct))
+                } else if self.enum_by_name(name).is_some() {
+                    Some(NameHolder::Kind(NamedTypeKind::Enum))
+                } else {
+                    None
+                }
+            }
+        })
+    }
+
     /// What the declared type name `name` binds: its kind, the refusal that stands
     /// in its place, or a genuine absence.
     pub(crate) fn named_type(
@@ -3533,20 +3607,8 @@ impl TypeRegistry {
         // so a project's durable root and sites keep the same record index whether
         // or not dense structs are also declared.
         let record_decls = declare_records(draft, &mut registry, resources, diagnostics)?;
-        let struct_decls = declare_structs(
-            draft,
-            &mut registry,
-            &concrete_structs,
-            resources,
-            diagnostics,
-        )?;
-        let enum_decls = declare_enums(
-            draft,
-            &mut registry,
-            &concrete_enums,
-            resources,
-            diagnostics,
-        )?;
+        let struct_decls = declare_structs(draft, &mut registry, &concrete_structs, diagnostics)?;
+        let enum_decls = declare_enums(draft, &mut registry, &concrete_enums, diagnostics)?;
 
         // Pass two: resolve and fill each definition's members against the full
         // registry, monomorphizing any generic field type on first use. Each pass
