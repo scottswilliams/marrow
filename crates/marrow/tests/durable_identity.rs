@@ -1,4 +1,4 @@
-//! D00 slice 2: the durable-identity ledger through the production path.
+//! The durable-identity ledger through the production path.
 //!
 //! `.marrow/ids` is the optional machine-written identity artifact. The compiler
 //! is the fail-precisely owner: a durable declaration without a complete ledger
@@ -8,11 +8,12 @@
 //! them atomically; `marrow test` (the CI path) never mutates the tree.
 
 use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::Path;
+use std::process::Output;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+mod common;
+
+use common::{Project, TempDir, marrow_in, write};
 
 /// The version-control ignore entry the publication owner writes beside the
 /// entries no checkout may carry. A project adds no line of its own, so these
@@ -49,56 +50,6 @@ test "storeless arithmetic" {
     assert 1 + 1 == 2
 }
 "#;
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-d00-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
 
 fn combined(output: &Output) -> String {
     format!(
@@ -214,10 +165,9 @@ fn contract_of(source: &str, ids: &str) -> marrow_verify::DurableContractId {
 /// and writes nothing into the tree.
 #[test]
 fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
-    let temp = TempDir::new("no-ledger-test");
-    project(&temp, COUNTER_SOURCE);
+    let workspace = Project::single(COUNTER_SOURCE).materialize("no-ledger-test");
 
-    let output = run_in(&temp, &["test"]);
+    let output = workspace.marrow(&["test"]);
     assert!(!output.status.success(), "{output:?}");
     assert!(
         combined(&output).contains("check.durable_identity"),
@@ -225,13 +175,13 @@ fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
         combined(&output)
     );
     assert!(
-        !temp.join(".marrow/ids").exists(),
+        !workspace.path(".marrow/ids").exists(),
         "`marrow test` must never write .marrow/ids (CI never mutates the tree)"
     );
 }
 
 // --- The `marrow run` convenience mint (the one interim mint action; deleted
-// when the accepted apply action lands at F03). ---
+// when the accepted apply action lands). ---
 
 /// `marrow run` mints the missing identities from OS entropy and publishes a
 /// well-formed `.marrow/ids` before the durable export parks in the trough, and a
@@ -240,18 +190,17 @@ fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
 /// new declaration).
 #[test]
 fn run_mints_missing_identities_once_and_reuses_them() {
-    let temp = TempDir::new("run-mints");
-    project(&temp, COUNTER_SOURCE);
+    let workspace = Project::single(COUNTER_SOURCE).materialize("run-mints");
 
     // The durable export parks in the trough, but the mint pre-pass publishes
     // .marrow/ids from OS entropy first.
-    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    let set = workspace.marrow(&["run", "set", "--", "hits", "5"]);
     assert!(
         combined(&set).contains("cli.durable_unsupported"),
         "a durable run parks in the trough: {}",
         combined(&set)
     );
-    let published = fs::read(temp.join(".marrow/ids")).expect("run published .marrow/ids");
+    let published = fs::read(workspace.path(".marrow/ids")).expect("run published .marrow/ids");
     let text = String::from_utf8(published.clone()).expect("artifact is UTF-8");
     assert!(text.starts_with("marrow ids v0\n"), "header: {text}");
     assert!(text.contains("do not edit"), "notice: {text}");
@@ -267,8 +216,8 @@ fn run_mints_missing_identities_once_and_reuses_them() {
     }
     assert!(text.ends_with("end\n"), "end marker: {text}");
     assert!(
-        !temp
-            .join(format!(".marrow/ids.tmp.{}", std::process::id()))
+        !workspace
+            .path(&format!(".marrow/ids.tmp.{}", std::process::id()))
             .exists(),
         "no temp file survives a successful publication"
     );
@@ -276,14 +225,14 @@ fn run_mints_missing_identities_once_and_reuses_them() {
     // A second durable run finds a complete ledger: it mints nothing and leaves the
     // committed artifact byte-identical (re-running on a complete ledger is a no-op),
     // before parking in the trough again.
-    let get = run_in(&temp, &["run", "get", "--", "hits"]);
+    let get = workspace.marrow(&["run", "get", "--", "hits"]);
     assert!(
         combined(&get).contains("cli.durable_unsupported"),
         "{}",
         combined(&get)
     );
     assert_eq!(
-        fs::read(temp.join(".marrow/ids")).unwrap(),
+        fs::read(workspace.path(".marrow/ids")).unwrap(),
         published,
         "a second run leaves the committed artifact byte-identical"
     );
@@ -297,7 +246,6 @@ fn run_mints_missing_identities_once_and_reuses_them() {
 /// probe with the normal successful journey when that behavior is implemented.
 #[test]
 fn run_publication_probe_emits_shared_resource_anchors_once_without_reaching_verify() {
-    let temp = TempDir::new("run-mints-shared-resource");
     let source = r#"resource Shared {
     required value: int
 }
@@ -309,15 +257,15 @@ pub fn noop(): int {
     return 0
 }
 "#;
-    project(&temp, source);
+    let workspace = Project::single(source).materialize("run-mints-shared-resource");
 
     let expected_stderr =
         b"no exported function `missing` in this project; run marrow --help for usage\n";
-    let first = run_in(&temp, &["run", "missing"]);
+    let first = workspace.marrow(&["run", "missing"]);
     assert_eq!(first.status.code(), Some(2), "{first:?}");
     assert_eq!(first.stdout, b"");
     assert_eq!(first.stderr, expected_stderr);
-    let published = fs::read(temp.join(".marrow/ids")).unwrap_or_else(|error| {
+    let published = fs::read(workspace.path(".marrow/ids")).unwrap_or_else(|error| {
         panic!(
             "run must publish the compiler-owned gaps before any later outcome: {error}; {}",
             combined(&first)
@@ -348,7 +296,7 @@ pub fn noop(): int {
         ],
         "the publisher receives each compiler-owned request exactly once",
     );
-    let published_snapshot = metadata_snapshot(&temp);
+    let published_snapshot = metadata_snapshot(workspace.dir());
     assert_eq!(
         published_snapshot,
         vec![
@@ -369,12 +317,12 @@ pub fn noop(): int {
 
     // This repeats the same pre-verifier resolution outcome and must not touch
     // any byte or entry in the captured metadata directory.
-    let second = run_in(&temp, &["run", "missing"]);
+    let second = workspace.marrow(&["run", "missing"]);
     assert_eq!(second.status.code(), Some(2), "{second:?}");
     assert_eq!(second.stdout, b"");
     assert_eq!(second.stderr, expected_stderr);
     assert_eq!(
-        fs::read(temp.join(".marrow/ids")).unwrap_or_else(|error| {
+        fs::read(workspace.path(".marrow/ids")).unwrap_or_else(|error| {
             panic!(
                 "the second run must retain the ledger: {error}; {}",
                 combined(&second)
@@ -384,7 +332,7 @@ pub fn noop(): int {
         "a second run preserves the exact published bytes",
     );
     assert_eq!(
-        metadata_snapshot(&temp),
+        metadata_snapshot(workspace.dir()),
         published_snapshot,
         "a second run preserves the complete metadata snapshot",
     );
@@ -395,7 +343,6 @@ pub fn noop(): int {
 /// not create the project-metadata directory.
 #[test]
 fn run_refuses_a_513_byte_derived_anchor_without_creating_metadata() {
-    let temp = TempDir::new("run-refuses-overlong-anchor");
     let resource = format!("R{}", "r".repeat(255));
     let field = format!("f{}", "f".repeat(255));
     assert_eq!(format!("{resource}.{field}").len(), 513);
@@ -408,11 +355,11 @@ fn run_refuses_a_513_byte_derived_anchor_without_creating_metadata() {
          \x20   return 0\n\
          }}\n"
     );
-    project(&temp, &source);
+    let workspace = Project::single(&source).materialize("run-refuses-overlong-anchor");
 
-    let output = run_in(&temp, &["run", "noop"]);
+    let output = workspace.marrow(&["run", "noop"]);
     assert!(
-        !temp.join(".marrow").exists(),
+        !workspace.path(".marrow").exists(),
         "a planning refusal has no publication effect: {}",
         combined(&output),
     );
@@ -447,13 +394,12 @@ pub fn noop(): int {
     ];
 
     for (name, ids) in cases {
-        let temp = TempDir::new(name);
-        project(&temp, source);
-        fs::create_dir_all(temp.join(".marrow")).expect("metadata directory");
-        fs::write(temp.join(".marrow/ids"), &ids).expect("seed near-limit ledger");
-        let before = metadata_snapshot(&temp);
+        let workspace = Project::single(source).materialize(name);
+        fs::create_dir_all(workspace.path(".marrow")).expect("metadata directory");
+        fs::write(workspace.path(".marrow/ids"), &ids).expect("seed near-limit ledger");
+        let before = metadata_snapshot(workspace.dir());
 
-        let output = run_in(&temp, &["run", "absentExport"]);
+        let output = workspace.marrow(&["run", "absentExport"]);
         assert!(!output.status.success(), "{output:?}");
         assert!(
             combined(&output).contains(marrow_codes::Code::ProjectIdsMint.as_str()),
@@ -461,17 +407,17 @@ pub fn noop(): int {
             combined(&output),
         );
         assert_eq!(
-            fs::read(temp.join(".marrow/ids")).expect("ledger survives"),
+            fs::read(workspace.path(".marrow/ids")).expect("ledger survives"),
             ids,
             "{name}: the captured artifact remains byte-exact",
         );
         assert_eq!(
-            metadata_snapshot(&temp),
+            metadata_snapshot(workspace.dir()),
             before,
             "{name}: every metadata entry remains exact",
         );
         assert!(
-            metadata_snapshot(&temp)
+            metadata_snapshot(workspace.dir())
                 .iter()
                 .all(|(entry, _, _)| !entry.starts_with("ids.tmp.")),
             "{name}: no publication temp appears",
@@ -481,13 +427,13 @@ pub fn noop(): int {
 
 #[test]
 fn a_storeless_run_with_no_identity_gap_never_creates_metadata() {
-    let temp = TempDir::new("run-no-identity-gap");
-    project(&temp, "pub fn answer(): int {\n    return 42\n}\n");
-    let output = run_in(&temp, &["run", "answer"]);
+    let workspace = Project::single("pub fn answer(): int {\n    return 42\n}\n")
+        .materialize("run-no-identity-gap");
+    let output = workspace.marrow(&["run", "answer"]);
     assert!(output.status.success(), "{}", combined(&output));
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
     assert!(
-        !temp.join(".marrow").exists(),
+        !workspace.path(".marrow").exists(),
         "an empty identity request cannot reach entropy or publication",
     );
 }
@@ -497,26 +443,25 @@ fn a_storeless_run_with_no_identity_gap_never_creates_metadata() {
 /// committed ids — nothing re-mints and the artifact stays byte-identical.
 #[test]
 fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
-    let temp = TempDir::new("clone-src");
-    project(&temp, COUNTER_SOURCE);
+    let workspace = Project::single(COUNTER_SOURCE).materialize("clone-src");
     // The durable export parks, but its mint pre-pass publishes the committed ids.
-    let set = run_in(&temp, &["run", "set", "--", "hits", "1"]);
+    let set = workspace.marrow(&["run", "set", "--", "hits", "1"]);
     assert!(
         combined(&set).contains("cli.durable_unsupported"),
         "{}",
         combined(&set)
     );
-    let committed = fs::read(temp.join(".marrow/ids")).expect("committed artifact");
+    let committed = fs::read(workspace.path(".marrow/ids")).expect("committed artifact");
 
     // Clone: manifest, source, and .marrow/ids — no store, as a checkout would be.
     let clone = TempDir::new("clone-dst");
     write(
         &clone.join("marrow.toml"),
-        &fs::read_to_string(temp.join("marrow.toml")).unwrap(),
+        fs::read_to_string(workspace.path("marrow.toml")).unwrap(),
     );
     write(
         &clone.join("src").join("main.mw"),
-        &fs::read_to_string(temp.join("src").join("main.mw")).unwrap(),
+        fs::read_to_string(workspace.path("src").join("main.mw")).unwrap(),
     );
     fs::create_dir_all(clone.join(".marrow")).expect("create metadata dir");
     fs::write(clone.join(".marrow/ids"), &committed).expect("clone the artifact");
@@ -524,9 +469,9 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
     // The storeless CI path compiles and passes in the clone (identity is
     // complete from the committed artifact alone), and a durable run parks in the
     // trough — with the artifact untouched in both.
-    let test = run_in(&clone, &["test"]);
+    let test = marrow_in(&clone, &["test"]);
     assert!(test.status.success(), "{test:?}");
-    let run = run_in(&clone, &["run", "set", "--", "hits", "2"]);
+    let run = marrow_in(&clone, &["run", "set", "--", "hits", "2"]);
     assert!(
         combined(&run).contains("cli.durable_unsupported"),
         "{}",
@@ -544,21 +489,20 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
 /// with the typed corruption code, and the run never rewrites the artifact.
 #[test]
 fn conflicted_and_double_minted_artifacts_reject_whole() {
-    let temp = TempDir::new("merge-conflict");
-    project(&temp, COUNTER_SOURCE);
+    let workspace = Project::single(COUNTER_SOURCE).materialize("merge-conflict");
     // The durable run parks, but its mint pre-pass seeds a well-formed .marrow/ids.
-    let seeded = run_in(&temp, &["run", "set", "--", "hits", "1"]);
+    let seeded = workspace.marrow(&["run", "set", "--", "hits", "1"]);
     assert!(
         combined(&seeded).contains("cli.durable_unsupported"),
         "{}",
         combined(&seeded)
     );
-    let good = fs::read_to_string(temp.join(".marrow/ids")).unwrap();
+    let good = fs::read_to_string(workspace.path(".marrow/ids")).unwrap();
 
     // Unresolved Git conflict markers.
     let conflicted = good.replace("high-water", "<<<<<<< ours\nhigh-water");
-    fs::write(temp.join(".marrow/ids"), &conflicted).unwrap();
-    let output = run_in(&temp, &["test"]);
+    fs::write(workspace.path(".marrow/ids"), &conflicted).unwrap();
+    let output = workspace.marrow(&["test"]);
     assert!(!output.status.success());
     let rendered = combined(&output);
     assert!(rendered.contains("project.ids_corrupt"), "{rendered}");
@@ -580,8 +524,8 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
         &value_row,
         &format!("{value_row}\nid field Counter.value ffffffffffffffffffffffffffffffff"),
     );
-    fs::write(temp.join(".marrow/ids"), &doubled).unwrap();
-    let output = run_in(&temp, &["test"]);
+    fs::write(workspace.path(".marrow/ids"), &doubled).unwrap();
+    let output = workspace.marrow(&["test"]);
     assert!(!output.status.success());
     assert!(
         combined(&output).contains("project.ids_corrupt"),
@@ -589,7 +533,7 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
         combined(&output)
     );
     assert_eq!(
-        fs::read_to_string(temp.join(".marrow/ids")).unwrap(),
+        fs::read_to_string(workspace.path(".marrow/ids")).unwrap(),
         doubled,
         "a corrupt artifact is rejected, never repaired or rewritten"
     );
@@ -600,21 +544,20 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
 /// half-read, never silently re-minted over.
 #[test]
 fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
-    let temp = TempDir::new("torn");
-    project(&temp, COUNTER_SOURCE);
+    let workspace = Project::single(COUNTER_SOURCE).materialize("torn");
     // The durable run parks, but its mint pre-pass seeds a well-formed .marrow/ids.
-    let seeded = run_in(&temp, &["run", "set", "--", "hits", "1"]);
+    let seeded = workspace.marrow(&["run", "set", "--", "hits", "1"]);
     assert!(
         combined(&seeded).contains("cli.durable_unsupported"),
         "{}",
         combined(&seeded)
     );
-    let good = fs::read_to_string(temp.join(".marrow/ids")).unwrap();
+    let good = fs::read_to_string(workspace.path(".marrow/ids")).unwrap();
 
     let torn = good.replace("end\n", "");
-    fs::write(temp.join(".marrow/ids"), &torn).unwrap();
+    fs::write(workspace.path(".marrow/ids"), &torn).unwrap();
     for command in [&["test"][..], &["run", "get", "--", "hits"][..]] {
-        let output = run_in(&temp, command);
+        let output = workspace.marrow(command);
         assert!(!output.status.success(), "{output:?}");
         assert!(
             combined(&output).contains("project.ids_corrupt"),
@@ -623,7 +566,7 @@ fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
         );
     }
     assert_eq!(
-        fs::read_to_string(temp.join(".marrow/ids")).unwrap(),
+        fs::read_to_string(workspace.path(".marrow/ids")).unwrap(),
         torn,
         "the torn artifact is left for version control to restore"
     );
@@ -634,8 +577,7 @@ fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
 /// not mint over it and the artifact stays byte-identical.
 #[test]
 fn a_retired_anchor_cannot_be_redeclared_or_reminted() {
-    let temp = TempDir::new("tombstone");
-    project(&temp, COUNTER_SOURCE);
+    let workspace = Project::single(COUNTER_SOURCE).materialize("tombstone");
 
     // A committed artifact whose `counters` root was retired: complete rows for
     // everything else, plus the tombstone at the root anchor.
@@ -649,11 +591,11 @@ fn a_retired_anchor_cannot_be_redeclared_or_reminted() {
                retired root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b 1\n\
                high-water 1\n\
                end\n";
-    fs::create_dir_all(temp.join(".marrow")).unwrap();
-    fs::write(temp.join(".marrow/ids"), ids).unwrap();
+    fs::create_dir_all(workspace.path(".marrow")).unwrap();
+    fs::write(workspace.path(".marrow/ids"), ids).unwrap();
 
     for command in [&["test"][..], &["run", "set", "--", "hits", "1"][..]] {
-        let output = run_in(&temp, command);
+        let output = workspace.marrow(command);
         assert!(!output.status.success(), "{output:?}");
         assert!(
             combined(&output).contains("check.durable_identity"),
@@ -662,7 +604,7 @@ fn a_retired_anchor_cannot_be_redeclared_or_reminted() {
         );
     }
     assert_eq!(
-        fs::read_to_string(temp.join(".marrow/ids")).unwrap(),
+        fs::read_to_string(workspace.path(".marrow/ids")).unwrap(),
         ids,
         "a retired anchor is never minted over; the ledger bytes are unchanged"
     );
@@ -693,7 +635,7 @@ pub fn title(id: int): string? {
 
 /// Renaming a durable field preserves the durable-contract identity when the
 /// ledger anchor moves with it (same id at the new path), and a delete-then-
-/// re-add (a fresh id at the same path) changes it. This is the D00 exit
+/// re-add (a fresh id at the same path) changes it. This is the
 /// property the descriptor-over-ledger-ids payload exists for, observed
 /// through the full production path: capture → compile → verify.
 #[test]
@@ -737,26 +679,25 @@ fn a_rename_with_a_moved_anchor_preserves_the_contract_id() {
 /// both paths fail closed with the reconcile steer. Never two live copies.
 #[test]
 fn a_ledger_at_the_retired_root_path_is_refused_with_a_move_steer() {
-    let temp = TempDir::new("legacy-ledger");
-    project(&temp, COUNTER_SOURCE);
-    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    let workspace = Project::single(COUNTER_SOURCE).materialize("legacy-ledger");
+    let set = workspace.marrow(&["run", "set", "--", "hits", "5"]);
     assert!(
         combined(&set).contains("cli.durable_unsupported"),
         "{}",
         combined(&set)
     );
-    let ids = fs::read(temp.join(".marrow/ids")).expect("published ledger");
-    fs::write(temp.join("marrow.ids"), &ids).expect("plant the legacy copy");
-    fs::remove_file(temp.join(".marrow/ids")).expect("vacate the home");
+    let ids = fs::read(workspace.path(".marrow/ids")).expect("published ledger");
+    fs::write(workspace.path("marrow.ids"), &ids).expect("plant the legacy copy");
+    fs::remove_file(workspace.path(".marrow/ids")).expect("vacate the home");
 
-    let output = run_in(&temp, &["test"]);
+    let output = workspace.marrow(&["test"]);
     assert!(!output.status.success(), "{output:?}");
     let text = combined(&output);
     assert!(text.contains("project.ids_location"), "{text}");
     assert!(text.contains("git mv marrow.ids .marrow/ids"), "{text}");
 
-    fs::write(temp.join(".marrow/ids"), &ids).expect("occupy the home too");
-    let output = run_in(&temp, &["test"]);
+    fs::write(workspace.path(".marrow/ids"), &ids).expect("occupy the home too");
+    let output = workspace.marrow(&["test"]);
     assert!(!output.status.success(), "{output:?}");
     let text = combined(&output);
     assert!(text.contains("project.ids_location"), "{text}");
@@ -770,22 +711,21 @@ fn a_ledger_at_the_retired_root_path_is_refused_with_a_move_steer() {
 /// its own, which is exactly what the retained manual states exist to avoid.
 #[test]
 fn a_foreign_metadata_sibling_survives_a_publication_untouched() {
-    let temp = TempDir::new("foreign-sibling-retained");
-    project(&temp, COUNTER_SOURCE);
-    fs::create_dir_all(temp.join(".marrow")).expect("metadata directory");
+    let workspace = Project::single(COUNTER_SOURCE).materialize("foreign-sibling-retained");
+    fs::create_dir_all(workspace.path(".marrow")).expect("metadata directory");
     fs::write(
-        temp.join(".marrow/ids.tmp.99999"),
+        workspace.path(".marrow/ids.tmp.99999"),
         b"not this owner's entry",
     )
     .expect("sibling");
 
-    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    let set = workspace.marrow(&["run", "set", "--", "hits", "5"]);
     assert!(
         combined(&set).contains("cli.durable_unsupported"),
         "{}",
         combined(&set)
     );
-    let mut entries: Vec<String> = fs::read_dir(temp.join(".marrow"))
+    let mut entries: Vec<String> = fs::read_dir(workspace.path(".marrow"))
         .expect("metadata directory listing")
         .map(|entry| {
             entry
@@ -807,7 +747,7 @@ fn a_foreign_metadata_sibling_survives_a_publication_untouched() {
         "publication touches only the entries it names"
     );
     assert_eq!(
-        fs::read(temp.join(".marrow/ids.tmp.99999")).expect("the sibling is retained"),
+        fs::read(workspace.path(".marrow/ids.tmp.99999")).expect("the sibling is retained"),
         b"not this owner's entry"
     );
 }

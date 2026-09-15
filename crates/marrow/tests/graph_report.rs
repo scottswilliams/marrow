@@ -1,4 +1,4 @@
-//! End-to-end Graph Report dogfood tests (P02a): a storeless `.mw` program over the
+//! End-to-end Graph Report dogfood tests: a storeless `.mw` program over the
 //! final procedural surface (records/enums, the text/collection/generic floor, nested
 //! loops, in-source `test`s) travels the real production path through the built binary.
 //! The `graph_report` conformance fixture's in-source `test`s run under `marrow test`,
@@ -7,13 +7,11 @@
 mod common;
 
 use std::io::{ErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 
-use common::Project;
-
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+use common::{MARROW_BIN, Project, conformance_dir, marrow_in};
 
 /// The frozen `report` output for the canonical rooted chain input `-> a / a -> b /
 /// b -> c`, as one multiline UTF-8 text. `marrow run` prints this followed by a
@@ -31,30 +29,13 @@ const CHAIN_REPORT: &str = "Graph Report\n\
      -- cycle --\n\
      \x20 none";
 
-fn conformance_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance")
-        .join(name)
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
 /// The Graph Report fixture's in-source `test`s pass end to end: parsing a line-based
 /// directed-graph encoding, per-node degree/role classification, a bounded
 /// reachability fixpoint, a layered topological order, and cycle detection all report
 /// `passed` through the production `marrow test` path.
 #[test]
 fn graph_report_conformance_fixture_passes_on_the_production_path() {
-    let output = run_in(
+    let output = marrow_in(
         &conformance_dir("graph_report"),
         &["test", "--format", "jsonl"],
     );
@@ -81,7 +62,7 @@ fn report_renders_a_deterministic_multiline_report_through_run() {
     let dir = conformance_dir("graph_report");
     let input = "-> a\na -> b\nb -> c";
 
-    let text = run_in(&dir, &["run", "graph_report.report", "--", input]);
+    let text = marrow_in(&dir, &["run", "graph_report.report", "--", input]);
     assert!(
         text.status.success(),
         "run failed: {}",
@@ -92,7 +73,7 @@ fn report_renders_a_deterministic_multiline_report_through_run() {
         format!("{CHAIN_REPORT}\n"),
     );
 
-    let jsonl = run_in(
+    let jsonl = marrow_in(
         &dir,
         &[
             "run",
@@ -120,7 +101,7 @@ fn report_detects_a_cycle_through_run() {
     let dir = conformance_dir("graph_report");
     let input = "a -> b\nb -> c\nc -> a\nd -> a";
 
-    let jsonl = run_in(
+    let jsonl = marrow_in(
         &dir,
         &[
             "run",
@@ -158,7 +139,7 @@ fn run_with_stdin(dir: &Path, args: &[&str], input: &[u8]) -> Output {
     thread::scope(|scope| {
         // Error cleanup kills and reaps the child before the scope joins its reader.
         let mut child = ChildGuard(Some(
-            Command::new(MARROW)
+            Command::new(MARROW_BIN)
                 .args(args)
                 .current_dir(dir)
                 .env("NO_COLOR", "1")
@@ -322,7 +303,7 @@ fn stdin_refusal_precedes_invocation_and_a_non_string_result_is_allowed() {
 fn a_closed_output_pipe_returns_failure_without_panicking() {
     let workspace = Project::single(NON_STRING_RESULT_SOURCE).materialize("closed-output");
     let mut child = ChildGuard(Some(
-        Command::new(MARROW)
+        Command::new(MARROW_BIN)
             .args(["run", "answer", "--stdin"])
             .current_dir(workspace.dir())
             .env("NO_COLOR", "1")

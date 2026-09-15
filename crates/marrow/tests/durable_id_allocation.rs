@@ -1,4 +1,4 @@
-//! The counter-as-allocator idiom, executed end to end from source (DX04).
+//! The counter-as-allocator idiom, executed end to end from source.
 //!
 //! Marrow has no `nextId` built-in: an application that needs a fresh, monotonically
 //! increasing key mints one from a durable counter it owns. This pins the documented

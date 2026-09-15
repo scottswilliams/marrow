@@ -4,72 +4,9 @@
 //! built binary, via the `local_sparse` conformance fixture and inline
 //! invalid-source projects asserting typed diagnostics.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-c02-sparse-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/local_sparse")
-}
+use common::{Project, conformance_dir, marrow_in};
 
 /// The local-sparse conformance fixture passes end to end: a fresh sparse field
 /// reads absent, assignment sets it present, `unset` clears it, value/copy
@@ -77,11 +14,10 @@ fn fixture_dir() -> PathBuf {
 /// distinct from a present `Option` none.
 #[test]
 fn local_sparse_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("local_sparse"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -99,9 +35,7 @@ fn local_sparse_conformance_fixture_passes_on_the_production_path() {
 /// assigns a sparse field, and reads it back yields the assigned value.
 #[test]
 fn a_sparse_field_assignment_flows_through_the_vm() {
-    let temp = TempDir::new("assign");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Box {
     required id: int
     note: string
@@ -113,8 +47,9 @@ pub fn f(): string {
     return b.note ?? "absent"
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("assign");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":"hi""#), "{stdout}");
@@ -123,9 +58,7 @@ pub fn f(): string {
 /// `unset` clears a present sparse field back to absent, observed through the VM.
 #[test]
 fn unset_clears_a_sparse_field_through_the_vm() {
-    let temp = TempDir::new("unset");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Box {
     required id: int
     note: string
@@ -137,8 +70,9 @@ pub fn f(): string {
     return b.note ?? "absent"
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("unset");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":"absent""#), "{stdout}");
@@ -147,9 +81,7 @@ pub fn f(): string {
 /// A required field cannot be unset: it is a typed `check.type` at the field.
 #[test]
 fn unsetting_a_required_field_is_a_check_type_diagnostic() {
-    let temp = TempDir::new("required-unset");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Box {
     required id: int
 }
@@ -160,8 +92,9 @@ pub fn f(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("required-unset");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
@@ -170,9 +103,7 @@ pub fn f(): int {
 /// `unset` on a durable place is rejected: durable erasure uses `delete`.
 #[test]
 fn unsetting_a_durable_place_is_a_check_type_diagnostic() {
-    let temp = TempDir::new("durable-unset");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Box {
     required id: int
     note: string
@@ -186,8 +117,9 @@ pub fn f(k: int) {
     }
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "1"]);
+    )
+    .materialize("durable-unset");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl", "--", "1"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
@@ -201,9 +133,7 @@ pub fn f(k: int) {
 /// longer a `check.type` on the declaration.
 #[test]
 fn a_store_over_an_option_field_resource_is_identity_complete() {
-    let temp = TempDir::new("store-option");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Box {
     required id: int
     tag: Option<string>
@@ -215,12 +145,13 @@ pub fn f(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("store-option");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":0"#), "{stdout}");
-    let ids = std::fs::read_to_string(temp.join(".marrow/ids")).expect(".marrow/ids written");
+    let ids = workspace.read(".marrow/ids");
     assert!(ids.contains("sum Option[string] "), "{ids}");
     assert!(ids.contains("member Option[string].none "), "{ids}");
     assert!(ids.contains("member Option[string].some "), "{ids}");
@@ -232,9 +163,7 @@ pub fn f(): int {
 /// another.
 #[test]
 fn an_option_typed_sparse_field_keeps_absent_and_present_none_distinct() {
-    let temp = TempDir::new("option-field");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Box {
     required id: int
     tag: Option<string>
@@ -257,19 +186,17 @@ pub fn classify(mode: int): string {
     return "absent"
 }
 "#,
-    );
+    )
+    .materialize("option-field");
     for (mode, expected) in [(0, "absent"), (1, "present-none"), (2, "hi")] {
-        let output = run_in(
-            &temp,
-            &[
-                "run",
-                "classify",
-                "--format",
-                "jsonl",
-                "--",
-                &mode.to_string(),
-            ],
-        );
+        let output = workspace.marrow(&[
+            "run",
+            "classify",
+            "--format",
+            "jsonl",
+            "--",
+            &mode.to_string(),
+        ]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success(), "mode {mode}: {stdout}");
         assert!(
@@ -283,9 +210,7 @@ pub fn classify(mode: int): string {
 /// immutable, so the field cannot be reassigned.
 #[test]
 fn assigning_a_field_of_a_const_record_is_a_check_type_diagnostic() {
-    let temp = TempDir::new("const-field");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Box {
     required id: int
     note: string
@@ -297,8 +222,9 @@ pub fn f(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("const-field");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");

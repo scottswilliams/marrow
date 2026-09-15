@@ -3,77 +3,9 @@
 //! through the built binary, via the `generics` conformance fixture and inline
 //! projects that run a monomorphized generic and assert its rendered result.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-c03-generics-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    conformance_dir("generics")
-}
-
-fn conformance_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance")
-        .join(name)
-}
+use common::{Project, conformance_dir, marrow_in};
 
 /// The generic value-types conformance fixture passes end to end: user generic
 /// `struct`/`enum` construction, field access, `match`, constrained instantiation,
@@ -81,11 +13,10 @@ fn conformance_dir(name: &str) -> PathBuf {
 /// (ordinary generic enums) all report `passed` through the production path.
 #[test]
 fn generic_types_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(conformance_dir("generic_types"))
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("generic_types"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -104,11 +35,7 @@ fn generic_types_conformance_fixture_passes_on_the_production_path() {
 /// all report `passed` through the production path, each call monomorphized.
 #[test]
 fn generics_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(&conformance_dir("generics"), &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -126,9 +53,7 @@ fn generics_conformance_fixture_passes_on_the_production_path() {
 /// helper at a concrete type and returns its result, rendered by `marrow run`.
 #[test]
 fn a_monomorphized_generic_runs_through_the_vm() {
-    let temp = TempDir::new("run");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 fn firstOr<T>(xs: List<T>, fallback: T): T {
@@ -145,8 +70,9 @@ pub fn head(): int {
     return firstOr(xs, 0)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "head", "--format", "jsonl"]);
+    )
+    .materialize("run");
+    let output = workspace.marrow(&["run", "head", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":11"#), "{stdout}");
@@ -158,9 +84,7 @@ pub fn head(): int {
 /// verifies the image, then the VM returns the boxed value through the real export.
 #[test]
 fn template_check_mints_do_not_shift_production_type_or_collection_indices() {
-    let temp = TempDir::new("template-check-indices");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 struct Box<T> {
@@ -178,8 +102,9 @@ pub fn run(): int {
     return unwrap(41)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "run", "--format", "jsonl"]);
+    )
+    .materialize("template-check-indices");
+    let output = workspace.marrow(&["run", "run", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{output:?}\n{stdout}\n{stderr}");
@@ -192,9 +117,7 @@ pub fn run(): int {
 /// monomorphized instances carry no stable export identity.
 #[test]
 fn a_generic_function_is_not_an_export() {
-    let temp = TempDir::new("no-export");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn identity<T>(x: T): T {
@@ -205,15 +128,16 @@ pub fn concrete(): int {
     return identity(1)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "identity", "--format", "jsonl"]);
+    )
+    .materialize("no-export");
+    let output = workspace.marrow(&["run", "identity", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
         "a generic function is not a runnable export: {stdout}"
     );
     // The monomorphic entry that calls it does run.
-    let concrete = run_in(&temp, &["run", "concrete", "--format", "jsonl"]);
+    let concrete = workspace.marrow(&["run", "concrete", "--format", "jsonl"]);
     assert!(
         concrete.status.success(),
         "{}",
@@ -226,9 +150,7 @@ pub fn concrete(): int {
 /// record after the rejected generic body.
 #[test]
 fn instantiation_limit_is_one_diagnostic_and_no_partial_cli_output() {
-    let temp = TempDir::new("instantiation-limit");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 fn identity<T>(x: T): T {
@@ -247,8 +169,9 @@ pub fn driver(): int {
     return grow(1)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "driver", "--format", "jsonl"]);
+    )
+    .materialize("instantiation-limit");
+    let output = workspace.marrow(&["run", "driver", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stdout}");

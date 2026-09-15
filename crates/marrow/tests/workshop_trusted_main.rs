@@ -1,5 +1,5 @@
-//! The G03 exit-gate journey: the Workshop client completes add / list / correct /
-//! rollback and **restart** over a real persistent native store (F02) driven entirely
+//! The Workshop client completes add / list / correct / rollback and **restart** over
+//! a real persistent native store, driven entirely
 //! through the trusted Node main (the pinned supervision module) and the generated
 //! strict TypeScript client.
 //!
@@ -11,7 +11,7 @@
 //! that reads back the committed data — each attach is a separate runner process over the
 //! persisted store.
 //!
-//! A companion journey proves the term-3 (D08) refusal end to end through the Node path: a
+//! A companion journey proves the accepted-ceiling refusal end to end through the Node path: a
 //! store provisioned under a read-only image refuses an attached image whose demand exceeds
 //! the accepted ceiling with a typed `MarrowReject` carrying `store.demand_exceeds_ceiling`,
 //! and the source-vocabulary refusal sentence arrives on the runner's byte-log (stderr).
@@ -27,14 +27,15 @@
 //! `--all-targets` build (which builds `marrow` and `marrow-runner`).
 
 use std::fs;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+mod common;
+
+use common::{MARROW_BIN, TempDir, write};
 
 fn runner_path() -> PathBuf {
-    let path = Path::new(MARROW)
+    let path = Path::new(MARROW_BIN)
         .parent()
         .expect("binary dir")
         .join("marrow-runner");
@@ -44,45 +45,6 @@ fn runner_path() -> PathBuf {
         path.display()
     );
     path
-}
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-workshop-tm-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
 }
 
 /// The stable identity ledger the fixtures below share, so every variant keeps one durable
@@ -235,7 +197,7 @@ fn prepare(temp: &TempDir, dir: &str, source: &str) -> PathBuf {
     write(&project.join("src/main.mw"), source);
     write(&project.join(".marrow/ids"), IDS);
 
-    let generated = Command::new(MARROW)
+    let generated = Command::new(MARROW_BIN)
         .args(["client", "typescript", "--out", "gen"])
         .current_dir(&project)
         .output()
@@ -287,8 +249,7 @@ fn native_close_preserves_child_until_controlled_release() {
     use std::os::unix::fs::PermissionsExt;
     for mode in ["ordinary", "protocol", "startup", "abort"] {
         let temp = TempDir::new("close");
-        fs::set_permissions(&temp.root, fs::Permissions::from_mode(0o700))
-            .expect("private fixture");
+        fs::set_permissions(&*temp, fs::Permissions::from_mode(0o700)).expect("private fixture");
         eprintln!("supervisor close fixture: {}", temp.display());
         write(
             &temp.join("marrow-supervisor.mjs"),
@@ -303,9 +264,9 @@ fn native_close_preserves_child_until_controlled_release() {
         fs::set_permissions(&child, fs::Permissions::from_mode(0o700)).expect("executable child");
         let output = Command::new("node")
             .arg("driver.mjs")
-            .env("MARROW_CLOSE_ROOT", &temp.root)
+            .env("MARROW_CLOSE_ROOT", &*temp)
             .env("MARROW_CLOSE_CASE", mode)
-            .current_dir(&temp.root)
+            .current_dir(&*temp)
             .output()
             .expect("run controlled Node driver");
         assert_driver_passed(&output);
@@ -749,7 +710,7 @@ finish();
     ));
 }
 
-/// The term-3 (D08) refusal end to end through the Node path: a store provisioned under the
+/// The accepted-ceiling refusal end to end through the Node path: a store provisioned under the
 /// read-only image refuses an attached image whose demand exceeds the accepted ceiling, with a
 /// typed `MarrowReject` carrying `store.demand_exceeds_ceiling`; the source-vocabulary sentence
 /// arrives on the runner's byte-log.

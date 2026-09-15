@@ -1,4 +1,4 @@
-//! Full subtree removal by composition, and the payload-only ghost it removes (DX03).
+//! Full subtree removal by composition, and the payload-only ghost it removes.
 //!
 //! A whole-entry `delete` is payload-only: it removes the addressed node's own payload
 //! and marker while its keyed `branch` descendants persist at their own addresses — the

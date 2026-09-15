@@ -4,66 +4,19 @@
 //! exercised over a parameterized `f(x: int): bool`; the malformed forms assert their
 //! typed diagnostic codes.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use crate::common::Project;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-sx03-in-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn project(dir: &Path, body: &str) {
-    fs::create_dir_all(dir.join("src")).expect("create src");
-    fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n").expect("toml");
-    let source = format!("module main\n\npub fn f(x: int): bool {{\n    return {body}\n}}\n");
-    fs::write(dir.join("src").join("main.mw"), source).expect("source");
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
+/// A single-export project whose `f(x: int): bool` body is `body`.
+fn membership(body: &str) -> Project {
+    Project::single(&format!(
+        "module main\n\npub fn f(x: int): bool {{\n    return {body}\n}}\n"
+    ))
 }
 
 /// Evaluate `f(x): bool` whose body is `body`, at argument `x`, returning the value.
 fn eval(name: &str, body: &str, x: i64) -> bool {
-    let temp = TempDir::new(name);
-    project(&temp, body);
-    let output = run_in(
-        &temp,
+    let output = membership(body).run_cli(
+        name,
         &["run", "f", "--format", "jsonl", "--", &x.to_string()],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -79,9 +32,7 @@ fn eval(name: &str, body: &str, x: i64) -> bool {
 
 /// Compile a body expected to fail; return the typed diagnostic code.
 fn reject(name: &str, body: &str) -> String {
-    let temp = TempDir::new(name);
-    project(&temp, body);
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "0"]);
+    let output = membership(body).run_cli(name, &["run", "f", "--format", "jsonl", "--", "0"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{body} must fail: {stdout}");
     stdout

@@ -1,4 +1,4 @@
-//! D02 slice 2: source-local named `place` bindings and the operand-timing law.
+//! Source-local named `place` bindings and the operand-timing law.
 //!
 //! A `place p = ^root(key)` binding names one concrete durable entry address. Its
 //! key tuple is evaluated exactly once at the binding; every operation through the
@@ -522,7 +522,7 @@ fn a_value_binding_cannot_reuse_a_place_name() {
 
 /// Every place operation form compiles and verifies over the executable flat scalar
 /// root, so the image is well-formed and identity-complete (execution is parked in
-/// the trough until E01). One export exercises the whole algebra through a place.
+/// the trough). One export exercises the whole algebra through a place.
 #[test]
 fn every_place_operation_form_compiles_and_verifies() {
     let source = format!(

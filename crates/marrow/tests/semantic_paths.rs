@@ -1,4 +1,4 @@
-//! D02 slice 1: the derived stable semantic path of every durable graph node.
+//! The derived stable semantic path of every durable graph node.
 //!
 //! Every node of a program's durable graph — a root placement, a static `group`
 //! namespace, a keyed `branch` placement, and each stored field — has a derived
@@ -6,8 +6,8 @@
 //! application down to the node. The path follows the ledger ids, not the source
 //! spelling, so a rename that moves a ledger anchor (id unchanged) leaves every
 //! node's path unchanged, while re-minting an id changes exactly the paths that
-//! pass through it. This is the D02 exit-gate row-1 property, observed through the
-//! full production path: capture -> compile -> verify -> semantic nodes.
+//! pass through it, observed through the full production path: capture -> compile ->
+//! verify -> semantic nodes.
 
 use marrow_verify::{SemanticNodeKind, SemanticStepKind};
 

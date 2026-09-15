@@ -1,11 +1,11 @@
-//! The optional-vs-present misuse family steers to the presence idiom (DX06 item 3).
+//! The optional-vs-present misuse family steers to the presence idiom.
 //!
 //! When an optional value `T?` is used where the present `T` is required — returned or
 //! passed where a bare value is wanted, or combined under an operator that has no optional
 //! form — the `check.type` diagnostic names the two presence idioms (bind with `if const`,
 //! or supply a `??` fallback) rather than only reporting the type clash. The code and the
 //! span at the misuse are the contract; the steer substring is asserted because it is the
-//! actionable payload the M3 actionability standard scores, not prose style. A genuine
+//! actionable payload the actionability standard scores, not prose style. A genuine
 //! kind mismatch that has nothing to do with optionality carries no such steer.
 
 mod common;

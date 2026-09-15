@@ -3,16 +3,18 @@
 //! manifest parsing, and formatting travel the real production path.
 
 use std::fs;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+mod common;
+
+use common::{CliOutcome, MARROW_BIN, Project, TempDir, marrow_in, write};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Child, ExitStatus, Stdio};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
 const VALID_MANIFEST: &str = "edition = \"2026\"\n";
 const FORMATTED_SOURCE: &str = "pub fn main() {\n    return\n}\n";
 const UNFORMATTED_SOURCE: &str = "pub fn main() {\n        return\n}\n";
@@ -25,54 +27,15 @@ const SOURCE_FILE_COUNT_LIMIT: usize = 4_096;
 const VISITED_ENTRY_LIMIT: usize = 65_536;
 const SOURCE_DEPTH_LIMIT: usize = 64;
 
-/// A temporary directory removed when dropped, even on a failing assertion.
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-b01-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
+/// Invoke the binary with no working directory of its own, so the project root is
+/// whatever the arguments name — the surface `init` and `fmt <projectdir>` present.
+fn run(args: &[&str]) -> CliOutcome {
+    CliOutcome {
+        output: Command::new(MARROW_BIN)
+            .args(args)
+            .output()
+            .expect("run marrow binary"),
     }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn run(args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(root: &Path, source: &str) {
-    write(&root.join("marrow.toml"), VALID_MANIFEST);
-    write(&root.join("src").join("main.mw"), source);
 }
 
 fn assert_empty_streams(output: &Output) {
@@ -218,7 +181,7 @@ fn create_fifo(path: &Path) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_with_fifo(project: &Path, fifo: &Path, payload: &str, after_open: &Path) -> Output {
+fn run_with_fifo(project: &Path, fifo: &Path, payload: &str, after_open: &Path) -> CliOutcome {
     let mut writer_command = Command::new("/bin/sh");
     writer_command.args([
         "-c",
@@ -230,7 +193,7 @@ fn run_with_fifo(project: &Path, fifo: &Path, payload: &str, after_open: &Path) 
     ]);
     let mut writer = ChildGuard::spawn(&mut writer_command);
 
-    let mut cli_command = Command::new(MARROW);
+    let mut cli_command = Command::new(MARROW_BIN);
     cli_command.args(["fmt", "--write", project.to_str().unwrap()]);
     let mut cli = ChildGuard::spawn(&mut cli_command);
 
@@ -263,12 +226,12 @@ fn run_with_fifo(project: &Path, fifo: &Path, payload: &str, after_open: &Path) 
             "current successful FIFO journey needs a successful writer: {writer_output:?}"
         );
     }
-    cli_output
+    CliOutcome { output: cli_output }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_with_deadline(args: &[&str]) -> Output {
-    let mut command = Command::new(MARROW);
+fn run_with_deadline(args: &[&str]) -> CliOutcome {
+    let mut command = Command::new(MARROW_BIN);
     command.args(args);
     let mut child = ChildGuard::spawn(&mut command);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -279,7 +242,9 @@ fn run_with_deadline(args: &[&str]) -> Output {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    child.finish()
+    CliOutcome {
+        output: child.finish(),
+    }
 }
 
 #[test]
@@ -306,7 +271,7 @@ fn init_creates_a_manifest_and_src_tree() {
 fn project_help_describes_captured_source_files_and_the_headerless_script() {
     let root_help = run(&["--help"]);
     assert!(root_help.status.success(), "{root_help:?}");
-    let root_stdout = String::from_utf8(root_help.stdout).expect("root help is UTF-8");
+    let root_stdout = root_help.stdout_text();
     assert!(
         root_stdout.contains("every captured source file"),
         "{root_stdout}"
@@ -314,12 +279,12 @@ fn project_help_describes_captured_source_files_and_the_headerless_script() {
 
     let init_help = run(&["init", "--help"]);
     assert!(init_help.status.success(), "{init_help:?}");
-    let init_stdout = String::from_utf8(init_help.stdout).expect("init help is UTF-8");
+    let init_stdout = init_help.stdout_text();
     assert!(init_stdout.contains("headerless script"), "{init_stdout}");
 
     let fmt_help = run(&["fmt", "--help"]);
     assert!(fmt_help.status.success(), "{fmt_help:?}");
-    let fmt_stdout = String::from_utf8(fmt_help.stdout).expect("fmt help is UTF-8");
+    let fmt_stdout = fmt_help.stdout_text();
     assert!(
         fmt_stdout.contains("every captured source file"),
         "{fmt_stdout}"
@@ -360,7 +325,7 @@ fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
     let temp = TempDir::new("init-unwind");
     let project = temp.join("app");
 
-    let failed = Command::new(MARROW)
+    let failed = Command::new(MARROW_BIN)
         .args(["init", project.to_str().unwrap()])
         .env("MARROW_TEST_INIT_FAIL_SCAFFOLD", "1")
         .output()
@@ -563,7 +528,7 @@ fn a_symlinked_source_file_is_refused_and_never_followed() {
     let output = run(&["fmt", "--check", project.to_str().unwrap()]);
     assert_io_read(&output);
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "io.read: {} is a symbolic link\n",
             project.join("src/linked.mw").display()
@@ -578,9 +543,8 @@ fn a_symlinked_source_file_is_refused_and_never_followed() {
 
 #[test]
 fn a_manifest_over_the_physical_byte_bound_is_refused_before_formatting() {
-    let temp = TempDir::new("manifest-bound");
-    let source_path = temp.join("src/main.mw");
-    project(&temp, UNFORMATTED_SOURCE);
+    let workspace = Project::single(UNFORMATTED_SOURCE).materialize("manifest-bound");
+    let source_path = workspace.path("src/main.mw");
 
     let target_len = MANIFEST_BYTES_LIMIT + 1;
     let mut manifest = String::with_capacity(target_len);
@@ -594,9 +558,9 @@ fn a_manifest_over_the_physical_byte_bound_is_refused_before_formatting() {
     ));
     manifest.push('\n');
     assert_eq!(manifest.len(), target_len);
-    write(&temp.join("marrow.toml"), &manifest);
+    write(&workspace.path("marrow.toml"), &manifest);
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--write", workspace.dir().to_str().unwrap()]);
     assert_refused_without_writing(&source_path, UNFORMATTED_SOURCE, &output);
 }
 
@@ -618,7 +582,7 @@ fn a_missing_manifest_at_a_nested_root_keeps_its_exact_io_read_record() {
     assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
     assert!(!output.status.success(), "missing manifest must fail");
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "io.read: failed to read {}: {os_error}\n",
             manifest_path.display()
@@ -630,16 +594,15 @@ fn a_missing_manifest_at_a_nested_root_keeps_its_exact_io_read_record() {
 fn a_located_malformed_manifest_keeps_its_exact_cli_record() {
     const MALFORMED_MANIFEST: &str = "edition = [\n";
 
-    let temp = TempDir::new("located-malformed-manifest");
-    let retained = temp.join("src/main.mw");
-    project(&temp, UNFORMATTED_SOURCE);
-    let manifest_path = temp.join("marrow.toml");
+    let workspace = Project::single(UNFORMATTED_SOURCE).materialize("located-malformed-manifest");
+    let manifest_path = workspace.path("marrow.toml");
+    let retained = workspace.path("src/main.mw");
     write(&manifest_path, MALFORMED_MANIFEST);
     let error = marrow_project::Manifest::parse(MALFORMED_MANIFEST)
         .expect_err("fixture must be malformed TOML");
     let position = error.position().expect("malformed TOML has a location");
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--write", workspace.dir().to_str().unwrap()]);
     assert_eq!(
         fs::read_to_string(&retained).expect("read source after refusal"),
         UNFORMATTED_SOURCE,
@@ -648,7 +611,7 @@ fn a_located_malformed_manifest_keeps_its_exact_cli_record() {
     assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
     assert!(!output.status.success(), "malformed manifest must fail");
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "{}:{}:{}: {}: {}\n",
             manifest_path.display(),
@@ -732,15 +695,14 @@ fn a_hardlinked_manifest_is_refused_before_formatting() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_hardlinked_identity_ledger_is_refused_before_formatting() {
-    let temp = TempDir::new("ids-hardlink");
-    let source_path = temp.join("src/main.mw");
-    project(&temp, UNFORMATTED_SOURCE);
-    let outside = temp.join("outside.ids");
+    let workspace = Project::single(UNFORMATTED_SOURCE).materialize("ids-hardlink");
+    let outside = workspace.path("outside.ids");
+    let source_path = workspace.path("src/main.mw");
     write(&outside, EMPTY_IDS);
-    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
-    fs::hard_link(&outside, temp.join(".marrow/ids")).expect("hardlink identity ledger");
+    fs::create_dir_all(workspace.path(".marrow")).expect("create metadata dir");
+    fs::hard_link(&outside, workspace.path(".marrow/ids")).expect("hardlink identity ledger");
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--write", workspace.dir().to_str().unwrap()]);
     assert_refused_without_writing(&source_path, UNFORMATTED_SOURCE, &output);
 }
 
@@ -786,16 +748,15 @@ fn a_manifest_fifo_is_refused_without_waiting_for_its_body() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn an_identity_ledger_fifo_is_refused_without_waiting_for_its_body() {
-    let temp = TempDir::new("ids-fifo");
-    let retained = temp.join("src/main.mw");
-    project(&temp, UNFORMATTED_SOURCE);
-    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
-    let fifo = temp.join(".marrow/ids");
+    let workspace = Project::single(UNFORMATTED_SOURCE).materialize("ids-fifo");
+    fs::create_dir_all(workspace.path(".marrow")).expect("create metadata dir");
+    let retained = workspace.path("src/main.mw");
+    let fifo = workspace.path(".marrow/ids");
     create_fifo(&fifo);
-    let after_open = temp.join("ids.after-open");
+    let after_open = workspace.path("ids.after-open");
 
-    let output = run_with_fifo(&temp, &fifo, EMPTY_IDS, &after_open);
-    let without_writer = run_with_deadline(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run_with_fifo(workspace.dir(), &fifo, EMPTY_IDS, &after_open);
+    let without_writer = run_with_deadline(&["fmt", "--write", workspace.dir().to_str().unwrap()]);
     assert!(
         !after_open.exists(),
         "refusing the identity-ledger FIFO must not let the writer open it"
@@ -867,17 +828,16 @@ fn a_manifest_only_project_with_no_source_root_is_a_silent_noop() {
 
 #[test]
 fn an_identity_ledger_over_its_byte_bound_keeps_its_exact_refusal() {
-    let temp = TempDir::new("ids-byte-bound");
-    let source_path = temp.join("src/main.mw");
-    project(&temp, UNFORMATTED_SOURCE);
-    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
-    let ids_path = temp.join(".marrow/ids");
+    let workspace = Project::single(UNFORMATTED_SOURCE).materialize("ids-byte-bound");
+    let source_path = workspace.path("src/main.mw");
+    fs::create_dir_all(workspace.path(".marrow")).expect("create metadata dir");
+    let ids_path = workspace.path(".marrow/ids");
     let oversized_bytes = marrow_project::MAX_IDS_BYTES + 1;
     let ids = fs::File::create(&ids_path).expect("create oversized identity ledger");
     ids.set_len(u64::try_from(oversized_bytes).expect("identity bound fits u64"))
         .expect("size oversized identity ledger");
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--write", workspace.dir().to_str().unwrap()]);
     assert!(!output.status.success(), "oversized ledger must fail");
     assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
     assert_eq!(
@@ -886,7 +846,7 @@ fn an_identity_ledger_over_its_byte_bound_keeps_its_exact_refusal() {
         "identity-ledger refusal must precede formatter writes"
     );
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "project.ids_corrupt: {} is {oversized_bytes} bytes, over the {}-byte identity-artifact bound\n",
             ids_path.display(),
@@ -899,13 +859,12 @@ fn an_identity_ledger_over_its_byte_bound_keeps_its_exact_refusal() {
 fn an_under_bound_non_source_entry_is_ignored_with_exact_silent_output() {
     const IGNORED_BYTES: &str = "ordinary file; not Marrow source\n";
 
-    let temp = TempDir::new("ignored-regular");
-    let source_path = temp.join("src/main.mw");
-    let ignored_path = temp.join("src/ignored.txt");
-    project(&temp, FORMATTED_SOURCE);
+    let workspace = Project::single(FORMATTED_SOURCE).materialize("ignored-regular");
+    let source_path = workspace.path("src/main.mw");
+    let ignored_path = workspace.path("src/ignored.txt");
     write(&ignored_path, IGNORED_BYTES);
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", workspace.dir().to_str().unwrap()]);
     assert!(
         output.status.success(),
         "an ordinary non-source entry must remain ignored: {output:?}"
@@ -939,7 +898,7 @@ fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
         "linked ledger must fail: {output:?}"
     );
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "project.ids_corrupt: {} is a symlink; the identity artifact must be a real file inside the project\n",
             temp.join(".marrow/ids").display()
@@ -952,19 +911,18 @@ fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
 fn a_symlinked_source_directory_is_refused() {
     use std::os::unix::fs::symlink;
 
-    let temp = TempDir::new("source-dir-symlink");
-    project(&temp, FORMATTED_SOURCE);
-    let outside = temp.join("outside");
+    let workspace = Project::single(FORMATTED_SOURCE).materialize("source-dir-symlink");
+    let outside = workspace.path("outside");
     write(&outside.join("unformatted.mw"), UNFORMATTED_SOURCE);
-    symlink(&outside, temp.join("src/linked")).expect("symlink nested source directory");
+    symlink(&outside, workspace.path("src/linked")).expect("symlink nested source directory");
 
-    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", workspace.dir().to_str().unwrap()]);
     assert_io_read(&output);
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "io.read: {} is a symbolic link\n",
-            temp.join("src/linked").display()
+            workspace.path("src/linked").display()
         ),
         "the refusal names the link, not a module it would have carried"
     );
@@ -977,7 +935,8 @@ fn a_symlinked_project_root_alias_remains_accepted() {
 
     let temp = TempDir::new("root-alias");
     let project_root = temp.join("project");
-    project(&project_root, FORMATTED_SOURCE);
+    write(&project_root.join("marrow.toml"), VALID_MANIFEST);
+    write(&project_root.join("src/main.mw"), FORMATTED_SOURCE);
     let alias = temp.join("alias");
     symlink(&project_root, &alias).expect("symlink project root alias");
 
@@ -991,20 +950,19 @@ fn a_symlinked_project_root_alias_remains_accepted() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_fifo_at_a_module_identity_is_refused_without_being_opened() {
-    let temp = TempDir::new("module-identity-fifo");
-    project(&temp, FORMATTED_SOURCE);
-    create_fifo(&temp.join("src/ignored.mw"));
+    let workspace = Project::single(FORMATTED_SOURCE).materialize("module-identity-fifo");
+    create_fifo(&workspace.path("src/ignored.mw"));
 
     // The deadline is the load-bearing assertion: capture classifies the kind
     // before it opens the object, so a FIFO with no writer refuses rather than
     // blocking forever.
-    let output = run_with_deadline(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run_with_deadline(&["fmt", "--check", workspace.dir().to_str().unwrap()]);
     assert_io_read(&output);
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "io.read: {} is not a regular file\n",
-            temp.join("src/ignored.mw").display()
+            workspace.path("src/ignored.mw").display()
         )
     );
 }
@@ -1012,11 +970,10 @@ fn a_fifo_at_a_module_identity_is_refused_without_being_opened() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_fifo_naming_no_module_remains_an_ignored_special_entry() {
-    let temp = TempDir::new("ignored-source-fifo");
-    project(&temp, FORMATTED_SOURCE);
-    create_fifo(&temp.join("src/notes.txt"));
+    let workspace = Project::single(FORMATTED_SOURCE).materialize("ignored-source-fifo");
+    create_fifo(&workspace.path("src/notes.txt"));
 
-    let output = run_with_deadline(&["fmt", "--check", temp.to_str().unwrap()]);
+    let output = run_with_deadline(&["fmt", "--check", workspace.dir().to_str().unwrap()]);
     assert!(
         output.status.success(),
         "an ignored special entry must never be opened: {output:?}"
@@ -1040,7 +997,7 @@ fn a_non_utf8_source_path_retains_its_existing_exact_refusal() {
     let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
     assert!(!output.status.success(), "non-UTF-8 source path must fail");
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "project.source_path: source path {} is not valid UTF-8\n",
             path.display()
@@ -1061,7 +1018,7 @@ fn existing_source_file_byte_bound_keeps_its_exact_cli_rendering() {
     let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
     assert!(!output.status.success(), "oversized source must fail");
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "project.capture_limit: `src/main.mw` capture is {}, over the per-file byte limit ({SOURCE_FILE_BYTES_LIMIT})\n",
             SOURCE_FILE_BYTES_LIMIT + 1
@@ -1084,7 +1041,7 @@ fn existing_source_file_count_bound_keeps_its_exact_cli_rendering() {
     let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
     assert!(!output.status.success(), "too many sources must fail");
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "project.capture_limit: `{}` capture is {}, over the source-file limit ({SOURCE_FILE_COUNT_LIMIT})\n",
             offender.display(),
@@ -1115,22 +1072,12 @@ fn existing_source_total_byte_bound_keeps_its_exact_cli_rendering() {
         "source total over bound must fail"
     );
     assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.stderr_text(),
         format!(
             "project.capture_limit: `src/{full_files:04}.mw` capture is {}, over the project byte limit ({SOURCE_TOTAL_BYTES_LIMIT})\n",
             SOURCE_TOTAL_BYTES_LIMIT + 1
         )
     );
-}
-
-/// Run the built binary with `dir` as its working directory, so `run`, `test`, and
-/// `client` capture the project there (each captures the current directory).
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("run marrow binary")
 }
 
 /// The unlocated `io.read` message a missing-manifest capture renders. The binary
@@ -1147,79 +1094,64 @@ const RUN_ERROR_JSONL: &str = "{\"code\":\"io.read\",\"kind\":\"run\",\"outcome\
 fn client_reports_an_unlocated_capture_failure_on_styled_stderr() {
     let temp = TempDir::new("client-capture");
     let expected = missing_manifest_io_read_message(&temp);
-    let output = run_in(&temp, &["client", "typescript"]);
+    let output = marrow_in(&temp, &["client", "typescript"]);
     assert!(
         output.stdout.is_empty(),
         "client capture wrote stdout: {output:?}"
     );
     assert!(!output.status.success(), "a missing manifest must fail");
-    assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
-        format!("{expected}\n")
-    );
+    assert_eq!(output.stderr_text(), format!("{expected}\n"));
 }
 
 #[test]
 fn run_reports_an_unlocated_capture_failure_on_stdout_text() {
     let temp = TempDir::new("run-capture-text");
     let expected = missing_manifest_io_read_message(&temp);
-    let output = run_in(&temp, &["run", "main"]);
+    let output = marrow_in(&temp, &["run", "main"]);
     assert!(
         output.stderr.is_empty(),
         "run capture wrote stderr: {output:?}"
     );
     assert!(!output.status.success(), "a missing manifest must fail");
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
-        format!("{expected}\n")
-    );
+    assert_eq!(output.stdout_text(), format!("{expected}\n"));
 }
 
 #[test]
 fn run_reports_a_capture_failure_as_one_jsonl_record() {
     let temp = TempDir::new("run-capture-jsonl");
-    let output = run_in(&temp, &["run", "main", "--format", "jsonl"]);
+    let output = marrow_in(&temp, &["run", "main", "--format", "jsonl"]);
     assert!(
         output.stderr.is_empty(),
         "run jsonl wrote stderr: {output:?}"
     );
     assert!(!output.status.success(), "a missing manifest must fail");
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
-        RUN_ERROR_JSONL
-    );
+    assert_eq!(output.stdout_text(), RUN_ERROR_JSONL);
 }
 
 #[test]
 fn test_reports_an_unlocated_capture_failure_on_stdout_text() {
     let temp = TempDir::new("test-capture-text");
     let expected = missing_manifest_io_read_message(&temp);
-    let output = run_in(&temp, &["test"]);
+    let output = marrow_in(&temp, &["test"]);
     assert!(
         output.stderr.is_empty(),
         "test capture wrote stderr: {output:?}"
     );
     assert!(!output.status.success(), "a missing manifest must fail");
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
-        format!("{expected}\n")
-    );
+    assert_eq!(output.stdout_text(), format!("{expected}\n"));
 }
 
 #[test]
 fn test_reports_a_capture_failure_as_one_jsonl_record_with_run_kind() {
     let temp = TempDir::new("test-capture-jsonl");
-    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    let output = marrow_in(&temp, &["test", "--format", "jsonl"]);
     assert!(
         output.stderr.is_empty(),
         "test jsonl wrote stderr: {output:?}"
     );
     assert!(!output.status.success(), "a missing manifest must fail");
     // `test` intentionally retains the current `kind:"run"`.
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
-        RUN_ERROR_JSONL
-    );
+    assert_eq!(output.stdout_text(), RUN_ERROR_JSONL);
 }
 
 #[test]
@@ -1229,14 +1161,14 @@ fn run_renders_a_located_manifest_fault_as_an_unlocated_record() {
     let temp = TempDir::new("run-located-manifest");
     write(&temp.join("marrow.toml"), "edition = [\n");
     let error = marrow_project::Manifest::parse("edition = [\n").expect_err("malformed");
-    let output = run_in(&temp, &["run", "main"]);
+    let output = marrow_in(&temp, &["run", "main"]);
     assert!(
         output.stderr.is_empty(),
         "run located manifest wrote stderr: {output:?}"
     );
     assert!(!output.status.success(), "a malformed manifest must fail");
     assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        output.stdout_text(),
         format!("{}: {}\n", error.code().as_str(), error.message())
     );
 }
@@ -1263,51 +1195,35 @@ fn fmt_reports_a_captured_module_under_one_path_spelling() {
         "pub fn main() {\n        undefined()\n}\n",
     );
 
-    let inside = Command::new(MARROW)
-        .args(["fmt", "--check", "."])
-        .current_dir(&project)
-        .output()
-        .expect("run marrow binary");
+    let inside = marrow_in(&project, &["fmt", "--check", "."]);
     assert!(!inside.status.success());
     assert_eq!(
-        String::from_utf8(inside.stderr).expect("utf8 stderr"),
+        inside.stderr_text(),
         "src/main.mw: not formatted; run marrow fmt --write src/main.mw to format it\n",
         "a `.` root must not print a `./`-prefixed path that `check` never prints"
     );
 
-    let outside = Command::new(MARROW)
-        .args(["fmt", "--check", "app"])
-        .current_dir(&*temp)
-        .output()
-        .expect("run marrow binary");
+    let outside = marrow_in(&temp, &["fmt", "--check", "app"]);
     assert!(!outside.status.success());
     assert_eq!(
-        String::from_utf8(outside.stderr).expect("utf8 stderr"),
+        outside.stderr_text(),
         "app/src/main.mw: not formatted; run marrow fmt --write app/src/main.mw to format it\n",
         "a named root stays joined so the printed hint is runnable as shown"
     );
 
     const DIAGNOSTIC: &str = "src/main.mw:2:9: check.type: `undefined` is not in scope\n";
-    let checked_inside = Command::new(MARROW)
-        .args(["check", "."])
-        .current_dir(&project)
-        .output()
-        .expect("run marrow binary");
+    let checked_inside = marrow_in(&project, &["check", "."]);
     assert!(!checked_inside.status.success());
     assert_eq!(
-        String::from_utf8(checked_inside.stderr).expect("utf8 stderr"),
+        checked_inside.stderr_text(),
         DIAGNOSTIC,
         "`check` reports the module under the same project-relative spelling"
     );
 
-    let checked_outside = Command::new(MARROW)
-        .args(["check", "app"])
-        .current_dir(&*temp)
-        .output()
-        .expect("run marrow binary");
+    let checked_outside = marrow_in(&temp, &["check", "app"]);
     assert!(!checked_outside.status.success());
     assert_eq!(
-        String::from_utf8(checked_outside.stderr).expect("utf8 stderr"),
+        checked_outside.stderr_text(),
         DIAGNOSTIC,
         "a diagnostic carries no runnable hint, so `check` joins no root"
     );
@@ -1318,26 +1234,18 @@ fn fmt_reports_a_captured_module_under_one_path_spelling() {
     let oversized = format!("// {}\n", "a".repeat(SOURCE_FILE_BYTES_LIMIT as usize - 3));
     write(&heavy.join("src").join("big.mw"), &oversized);
 
-    let refused_fmt = Command::new(MARROW)
-        .args(["fmt", "--check", "heavy"])
-        .current_dir(&*temp)
-        .output()
-        .expect("run marrow binary");
+    let refused_fmt = marrow_in(&temp, &["fmt", "--check", "heavy"]);
     assert!(!refused_fmt.status.success());
-    let refusal = String::from_utf8(refused_fmt.stderr).expect("utf8 stderr");
+    let refusal = refused_fmt.stderr_text();
     assert!(
         refusal.contains("`src/big.mw`") && !refusal.contains("heavy/src/big.mw"),
         "the capture refusal keeps the facade's project-relative spelling: {refusal}"
     );
 
-    let refused_check = Command::new(MARROW)
-        .args(["check", "heavy"])
-        .current_dir(&*temp)
-        .output()
-        .expect("run marrow binary");
+    let refused_check = marrow_in(&temp, &["check", "heavy"]);
     assert_eq!(
         refusal,
-        String::from_utf8(refused_check.stderr).expect("utf8 stderr"),
+        refused_check.stderr_text(),
         "one refusal reads the same whichever command prints it"
     );
 }

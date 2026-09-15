@@ -3,71 +3,7 @@
 //! through the built binary, via the `nominal_types` conformance fixture and
 //! inline invalid-source projects asserting typed diagnostics and faults.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-c02-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR is `<root>/crates/marrow`.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/nominal_types")
-}
+use crate::common::{Project, conformance_dir, marrow_in};
 
 /// The nominal conformance fixture passes end to end: construction across the
 /// whole interval, every `supports`-gated operator with interval revalidation,
@@ -75,11 +11,10 @@ fn fixture_dir() -> PathBuf {
 /// same-nominal comparisons all report `passed` through the production path.
 #[test]
 fn nominal_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("nominal_types"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -99,9 +34,7 @@ fn nominal_conformance_fixture_passes_on_the_production_path() {
 /// not a source diagnostic or a catchable error.
 #[test]
 fn out_of_interval_construction_faults_run_range() {
-    let temp = TempDir::new("nominal-range-fault");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"type Age: int in 0..=150
 
 pub fn make(n: int): int {
@@ -109,9 +42,10 @@ pub fn make(n: int): int {
     return 0
 }
 "#,
-    );
+    )
+    .materialize("nominal-range-fault");
     for (arg, ok) in [("0", true), ("150", true), ("-1", false), ("151", false)] {
-        let output = run_in(&temp, &["run", "make", "--format", "jsonl", "--", arg]);
+        let output = workspace.marrow(&["run", "make", "--format", "jsonl", "--", arg]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         if ok {
             assert!(
@@ -135,9 +69,7 @@ pub fn make(n: int): int {
 /// faults `run.range` at the operation.
 #[test]
 fn supported_arithmetic_revalidates_the_interval() {
-    let temp = TempDir::new("nominal-arith-fault");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"type Age: int in 0..=150 supports add, subtract, scale
 
 pub fn older(n: int): int {
@@ -155,22 +87,20 @@ pub fn scaled(n: int): int {
     return 0
 }
 "#,
-    );
+    )
+    .materialize("nominal-arith-fault");
     for (export, ok_arg, fault_arg) in [
         ("older", "10", "11"),
         ("younger", "10", "11"),
         ("scaled", "3", "4"),
     ] {
-        let output = run_in(&temp, &["run", export, "--format", "jsonl", "--", ok_arg]);
+        let output = workspace.marrow(&["run", export, "--format", "jsonl", "--", ok_arg]);
         assert!(
             output.status.success(),
             "{export}({ok_arg}) must stay in the interval: {:?}",
             String::from_utf8_lossy(&output.stdout)
         );
-        let output = run_in(
-            &temp,
-            &["run", export, "--format", "jsonl", "--", fault_arg],
-        );
+        let output = workspace.marrow(&["run", export, "--format", "jsonl", "--", fault_arg]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{export}({fault_arg}) must fault");
         assert!(stdout.contains(r#""code":"run.range""#), "{stdout}");
@@ -190,19 +120,16 @@ fn a_missing_capability_is_a_check_type_diagnostic() {
         "2 + Age(1)",
         "2 * Age(1)",
     ] {
-        let temp = TempDir::new("nominal-missing-cap");
-        project(
-            &temp,
-            &format!(
-                "type Age: int in 0..=150\n\
+        let workspace = Project::single(&format!(
+            "type Age: int in 0..=150\n\
                  \n\
                  pub fn f(): int {{\n\
                  \x20   const a = {body}\n\
                  \x20   return 0\n\
                  }}\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        ))
+        .materialize("nominal-missing-cap");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body} must fail: {stdout}");
         let line = stdout
@@ -217,9 +144,7 @@ fn a_missing_capability_is_a_check_type_diagnostic() {
 /// computed or larger step needs `add`/`subtract`.
 #[test]
 fn step_admits_only_the_literal_one() {
-    let temp = TempDir::new("nominal-step");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"type Age: int in 0..=150 supports step
 
 pub fn next(): int {
@@ -228,8 +153,9 @@ pub fn next(): int {
     return b - Age(0)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "next", "--format", "jsonl"]);
+    )
+    .materialize("nominal-step");
+    let output = workspace.marrow(&["run", "next", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     // `b - Age(0)` needs subtract, which `step` does not grant: check.type at
     // the subtraction on line 6.
@@ -240,9 +166,7 @@ pub fn next(): int {
         .unwrap_or_else(|| panic!("no check.type: {stdout}"));
     assert!(line.contains(r#""line":6"#), "{stdout}");
 
-    let temp = TempDir::new("nominal-step-two");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"type Age: int in 0..=150 supports step
 
 pub fn skip(): int {
@@ -250,8 +174,9 @@ pub fn skip(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "skip", "--format", "jsonl"]);
+    )
+    .materialize("nominal-step-two");
+    let output = workspace.marrow(&["run", "skip", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
@@ -301,9 +226,8 @@ pub fn f(): bool {
 }
 "#,
     ] {
-        let temp = TempDir::new("nominal-distinct");
-        project(&temp, body);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(body).materialize("nominal-distinct");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body:?} must fail: {stdout}");
         assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
@@ -315,18 +239,15 @@ pub fn f(): bool {
 #[test]
 fn a_malformed_interval_is_a_check_type_diagnostic() {
     for interval in ["10..=1", "5..5", "0..10 by 2", "0..n"] {
-        let temp = TempDir::new("nominal-interval");
-        project(
-            &temp,
-            &format!(
-                "type Age: int in {interval}\n\
+        let workspace = Project::single(&format!(
+            "type Age: int in {interval}\n\
                  \n\
                  pub fn f(): int {{\n\
                  \x20   return 1\n\
                  }}\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        ))
+        .materialize("nominal-interval");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{interval} must fail: {stdout}");
         let line = stdout
@@ -406,9 +327,8 @@ pub fn f(): int {
             "check.name_conflict",
         ),
     ] {
-        let temp = TempDir::new("nominal-decl-defect");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("nominal-decl-defect");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source:?} must fail: {stdout}");
         assert!(
@@ -443,9 +363,8 @@ fn checked_on_a_non_nominal_is_rejected() {
             r#""code":"check."#,
         ),
     ] {
-        let temp = TempDir::new("nominal-checked-miss");
-        project(&temp, body);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(body).materialize("nominal-checked-miss");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body:?} must fail: {stdout}");
         assert!(stdout.contains(family), "{body:?}: {stdout}");
@@ -462,18 +381,15 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
         "return Age(n: 1) - Age(0)",
         "return Age(\"x\") - Age(0)",
     ] {
-        let temp = TempDir::new("nominal-bad-construct");
-        project(
-            &temp,
-            &format!(
-                "type Age: int in 0..=150 supports subtract\n\
+        let workspace = Project::single(&format!(
+            "type Age: int in 0..=150 supports subtract\n\
                  \n\
                  pub fn f(): int {{\n\
                  \x20   {body}\n\
                  }}\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        ))
+        .materialize("nominal-bad-construct");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body} must fail: {stdout}");
         assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
@@ -485,22 +401,21 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
 /// argument faults `run.range` instead of entering the type unchecked.
 #[test]
 fn a_terminal_argument_outside_the_interval_faults_on_entry() {
-    let temp = TempDir::new("nominal-entry-guard");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"type Age: int in 0..=150 supports subtract
 
 pub fn value(a: Age): int {
     return a - Age(0)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "value", "--format", "jsonl", "--", "42"]);
+    )
+    .materialize("nominal-entry-guard");
+    let output = workspace.marrow(&["run", "value", "--format", "jsonl", "--", "42"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":42"#), "{stdout}");
 
-    let output = run_in(&temp, &["run", "value", "--format", "jsonl", "--", "500"]);
+    let output = workspace.marrow(&["run", "value", "--format", "jsonl", "--", "500"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
@@ -538,9 +453,8 @@ pub fn f(): int {
 }
 "#,
     ] {
-        let temp = TempDir::new("nominal-position");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("nominal-position");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source:?} must fail: {stdout}");
         assert!(

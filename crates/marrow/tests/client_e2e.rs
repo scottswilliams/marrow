@@ -1,5 +1,5 @@
-//! The G02a lane exit gate, end to end: generated strict TypeScript performs a
-//! real storeless call against the stock runner.
+//! Generated strict TypeScript performs a real storeless call against the stock
+//! runner, end to end.
 //!
 //! Node spawns the runner per the channel law (through the pinned supervision
 //! module), calls generated methods, and receives typed results; the child-death
@@ -21,16 +21,17 @@
 //! workspace binaries built (`--all-targets` builds `marrow-runner`).
 
 use std::fs;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+mod common;
+
+use common::{MARROW_BIN, TempDir, write};
 
 /// The stock runner binary: built into the same deps/../ directory as the CLI
 /// test binary by a workspace `--all-targets` build.
 fn runner_path() -> PathBuf {
-    let path = Path::new(MARROW)
+    let path = Path::new(MARROW_BIN)
         .parent()
         .expect("binary dir")
         .join("marrow-runner");
@@ -40,43 +41,6 @@ fn runner_path() -> PathBuf {
         path.display()
     );
     path
-}
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-e2e-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
 }
 
 const FIXTURE: &str = r#"struct Point {
@@ -170,7 +134,7 @@ fn prepare(temp: &TempDir) -> PathBuf {
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), FIXTURE);
 
-    let generated = Command::new(MARROW)
+    let generated = Command::new(MARROW_BIN)
         .args(["client", "typescript", "--out", "gen"])
         .current_dir(&project)
         .output()
@@ -208,7 +172,7 @@ fn prepare_durable(temp: &TempDir) -> PathBuf {
     write(&project.join("src/main.mw"), DURABLE_FIXTURE);
     write(&project.join(".marrow/ids"), DURABLE_IDS);
 
-    let generated = Command::new(MARROW)
+    let generated = Command::new(MARROW_BIN)
         .args(["client", "typescript", "--out", "gen"])
         .current_dir(&project)
         .output()

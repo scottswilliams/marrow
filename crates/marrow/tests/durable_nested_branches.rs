@@ -565,7 +565,7 @@ fn bounded_traversal_iterates_an_inner_branch_layer_under_a_fixed_ancestor_path(
     );
 }
 
-// --- DX05 gap 2 (sibling): a sub-branch is not a field of a materialized branch value. ---
+// --- A sub-branch is not a field of a materialized branch value. ---
 
 fn compile_diags(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
     let source = format!("{SOURCE}\n{body}");

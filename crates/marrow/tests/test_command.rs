@@ -370,7 +370,7 @@ test "a fresh attachment does not observe another test's write" {
 /// A driver test drives the application's exports: it calls a mutating export, then
 /// reads the result back through a reading export, each call its own invocation
 /// boundary. The mutating export commits to the test's fresh attachment and the later
-/// read observes the committed value, with no raw seeding — the E06 app-testing style.
+/// read observes the committed value, with no raw seeding.
 #[test]
 fn a_driver_test_drives_a_mutating_export_and_reads_it_back() {
     let output = Project::single(

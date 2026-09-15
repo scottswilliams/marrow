@@ -3,72 +3,9 @@
 //! verify -> VM) through the built binary, via the `enum_types` conformance
 //! fixture and inline invalid-source projects asserting typed diagnostics.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-c02-enum-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/enum_types")
-}
+use common::{Project, conformance_dir, marrow_in};
 
 /// The enum conformance fixture passes end to end: payloadless and payload
 /// construction, exhaustive `match` with positional payload binding, payload-
@@ -76,11 +13,10 @@ fn fixture_dir() -> PathBuf {
 /// construction/matching across function boundaries all report `passed`.
 #[test]
 fn enum_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("enum_types"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -98,9 +34,7 @@ fn enum_conformance_fixture_passes_on_the_production_path() {
 /// constructs a payload variant yields the canonical enum object.
 #[test]
 fn a_payload_enum_value_renders_through_the_vm() {
-    let temp = TempDir::new("render");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"enum Shape {
     dot
     circle(radius: int)
@@ -110,8 +44,9 @@ pub fn make(r: int): Shape {
     return Shape::circle(radius: r)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl", "--", "7"]);
+    )
+    .materialize("render");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl", "--", "7"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(
@@ -123,9 +58,7 @@ pub fn make(r: int): Shape {
 /// A non-exhaustive `match` is `check.match_nonexhaustive`.
 #[test]
 fn a_non_exhaustive_match_is_reported() {
-    let temp = TempDir::new("nonexhaustive");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"enum E {
     a
     b
@@ -137,8 +70,9 @@ pub fn f(e: E): int {
     }
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("nonexhaustive");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(
@@ -157,12 +91,11 @@ fn a_malformed_arm_is_a_check_match_arm_diagnostic() {
         // duplicate member
         "match e {\n        a => return 1\n        a => return 2\n        b => return 3\n    }",
     ] {
-        let temp = TempDir::new("arm");
-        project(
-            &temp,
-            &format!("enum E {{\n    a\n    b\n}}\n\npub fn f(e: E): int {{\n    {body}\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "enum E {{\n    a\n    b\n}}\n\npub fn f(e: E): int {{\n    {body}\n}}\n"
+        ))
+        .materialize("arm");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body}\n{stdout}");
         assert!(
@@ -175,9 +108,7 @@ fn a_malformed_arm_is_a_check_match_arm_diagnostic() {
 /// A payload-arity mismatch on a binding arm is a typed `check.match_arm`.
 #[test]
 fn a_payload_arity_mismatch_is_reported() {
-    let temp = TempDir::new("arity");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"enum E {
     a(x: int)
     b
@@ -190,8 +121,9 @@ pub fn f(e: E): int {
     }
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("arity");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.match_arm""#), "{stdout}");
@@ -208,14 +140,10 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
         "Shape::dot(x: 1)",
         "Shape::triangle",
     ] {
-        let temp = TempDir::new("construct");
-        project(
-            &temp,
-            &format!(
+        let workspace = Project::single(&format!(
                 "enum Shape\n    dot\n    circle(radius: int)\n\npub fn f(): int\n    const s = {expr}\n    return 0\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+            )).materialize("construct");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{expr}\n{stdout}");
         // `Shape::circle()` is a parse error (an empty payload); the rest are
@@ -230,9 +158,7 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
 /// A `category` member or a nested member is deferred: `check.unsupported`.
 #[test]
 fn a_hierarchical_enum_is_deferred() {
-    let temp = TempDir::new("hierarchy");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"enum Animal {
     category cat {
         tiger
@@ -244,8 +170,9 @@ pub fn f(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("hierarchy");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
@@ -254,9 +181,7 @@ pub fn f(): int {
 /// An enum whose name collides with another type is a `check.name_conflict`.
 #[test]
 fn an_enum_name_collision_is_reported() {
-    let temp = TempDir::new("collision");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Color {
     r: int
 }
@@ -269,8 +194,9 @@ pub fn f(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("collision");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(
@@ -286,9 +212,7 @@ pub fn f(): int {
 /// `store` still admits only scalar fields.)
 #[test]
 fn a_resource_field_may_be_a_user_enum_and_match_over_the_field_read() {
-    let temp = TempDir::new("resource-enum-field");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Paint {
     required shade: Color
 }
@@ -306,8 +230,9 @@ pub fn name(): string {
     }
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "name", "--format", "jsonl"]);
+    )
+    .materialize("resource-enum-field");
+    let output = workspace.marrow(&["run", "name", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":"g""#), "{stdout}");
@@ -324,9 +249,7 @@ pub fn name(): string {
 /// durable-field widening suite); it is no longer a `check.type` on the declaration.
 #[test]
 fn a_stored_resource_with_an_enum_field_is_identity_complete() {
-    let temp = TempDir::new("stored-enum-field");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Paint {
     required id: int
     required shade: Color
@@ -343,14 +266,15 @@ pub fn f(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("stored-enum-field");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""outcome":"value""#), "{stdout}");
     assert!(stdout.contains(r#""data":0"#), "{stdout}");
     // The enum reachable through the store gained sum and per-member identities.
-    let ids = std::fs::read_to_string(temp.join(".marrow/ids")).expect(".marrow/ids written");
+    let ids = workspace.read(".marrow/ids");
     assert!(ids.contains("sum Color "), "{ids}");
     assert!(ids.contains("member Color.red "), "{ids}");
     assert!(ids.contains("member Color.green "), "{ids}");

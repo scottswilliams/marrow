@@ -1,128 +1,33 @@
 #![allow(dead_code)]
 //! The shared `.mw` fixture harness for the `marrow` crate's integration suites.
 //!
-//! One harness scaffolds a Marrow project, drives it through the production paths,
-//! and captures typed outcomes, so a fixture suite is a thin file of assertions
-//! rather than a fresh copy of the capture → compile → verify → run plumbing. Every
-//! suite shares this one module (`mod common;`); it recompiles into each including
-//! test binary but is authored and fixed in one place.
+//! A [`Project`] is an in-memory project — manifest, optional `.marrow/ids`, source
+//! files — built inline or loaded from `crates/marrow/tests/fixtures/v01/<name>/`.
+//! Drive it through the library path ([`Project::image`], [`Project::try_image`],
+//! [`Project::session`]) or the CLI path ([`Project::materialize`] ->
+//! [`Workspace::marrow`], or the one-shot [`Project::run_cli`]). Assertions read typed
+//! outcomes, never rendered prose: a [`CallOutcome`] fault carries the stable
+//! `marrow-codes` string and [`Diagnostics`] carries `(code, line, column)`.
 //!
-//! # Scaffolding a project
-//!
-//! A [`Project`] is an in-memory project image: a manifest, an optional identity
-//! ledger, and a set of source files. Build one inline, or load one from disk:
-//!
-//! ```ignore
-//! // Inline, single source file at `src/main.mw`, default `edition = "2026"` manifest:
-//! let project = Project::single("pub fn answer(): int {\n    return 42\n}\n");
-//!
-//! // Inline, several files and a durable identity ledger:
-//! let project = Project::new()
-//!     .source("src/bookstore.mw", BOOKSTORE_SOURCE)
-//!     .ids(BOOKSTORE_IDS);
-//!
-//! // On disk, from `crates/marrow/tests/fixtures/v01/<name>/`:
-//! let project = Project::from_fixture("counter_allocation");
-//! ```
-//!
-//! # On-disk fixtures
-//!
-//! A fixture lives under `crates/marrow/tests/fixtures/v01/<name>/` as ordinary
-//! source files, so new language behavior is authored as `.mw`, not as a Rust
-//! string constant. This corpus is private to the `marrow` crate and is distinct
-//! from the repository-root `fixtures/v01/`, whose every `.mw` file is swept into
-//! the shared parse corpus; see `fixtures/README.md`. The layout is a real project
-//! directory:
-//!
-//! ```text
-//! crates/marrow/tests/fixtures/v01/<name>/
-//!     marrow.toml        (required — the manifest)
-//!     .marrow/ids         (optional — the frozen identity ledger; see the trap below)
-//!     src/<module>.mw    (one or more source files, any subtree depth)
-//! ```
-//!
-//! [`Project::from_fixture`] reads `marrow.toml`, reads `.marrow/ids` when present,
-//! and walks `src/` recursively, keying each file by its `src`-relative canonical
-//! path (`src/bookstore.mw`). The module name a fixture's exports carry is derived
-//! from that path by the production owner, so an export in `src/bookstore.mw` is
-//! `bookstore.<fn>`. `v01` is the identity version of the fixture corpus; a future
-//! incompatible corpus is a new directory, never an edit that silently reinterprets
-//! existing fixtures.
-//!
-//! # The ids-minting trap (read before authoring any durable fixture)
-//!
-//! The compiler never mints durable identities. On the library path
-//! ([`Project::image`], [`Project::session`]) and on every CLI path except
-//! `marrow run`, a durable declaration whose identity ledger is missing a row is a
-//! hard `check.durable_identity` diagnostic at that declaration's span — not a
-//! silent mint. Entropy minting is a `marrow run` convenience only, and it *rewrites
-//! `.marrow/ids` from OS entropy*, which would both dirty the repository and make the
-//! fixture nondeterministic.
-//!
-//! So every durable fixture ships a complete, fixed-hex ledger with `high-water 0`
-//! and never relies on the mint. Completeness is the trap: adding one durable
-//! declaration usually adds *several* ledger rows, and omitting any one fails the
-//! build. A declaration mints an anchor for each of:
-//!
-//! - the application itself (anchor path `.`), exactly once;
-//! - each stored product (`resource`);
-//! - each stored field, at its dotted path — including fields nested inside a
-//!   `branch` or a `group` (`Book.notes.text`);
-//! - each keyed placement: a `store` root *and* each keyed `branch`;
-//! - each placement's key column (`books.id`, `Book.notes.noteId`);
-//! - each compiler-maintained managed index (`books.byIsbn`);
-//! - each durable-reachable closed enum and each of its variants;
-//! - each unkeyed `group` namespace.
-//!
-//! Copy the shape of an existing ledger and extend it row by row. The two shipped
-//! fixtures cover the common rows: `counter_allocation/.marrow/ids`
-//! (`application`/`product`/`field`/`root`/`key`) and `bookstore/.marrow/ids`
-//! (the same plus an `index` row). For the row kinds neither fixture demonstrates,
-//! copy the exact spelling from a sibling suite in this directory: keyed `branch`
-//! placements and their nested `id root`/`id key`/`id field` rows in
-//! `durable_subtree_purge.rs`, an `id group` namespace in `durable_groups.rs`, and
-//! `id sum`/`id member` enum rows in `durable_field_widening.rs`. A storeless project
-//! needs no ledger; pass [`EMPTY_IDS`] only if a test needs an explicit empty
-//! `.marrow/ids` on disk.
-//!
-//! # Driving a project and capturing outcomes
-//!
-//! Two production paths, three outcome capture types:
-//!
-//! - **Library path — [`Project::session`] → [`Session::call`] / [`Session::try_call`].**
-//!   Compiles, verifies, and mints one persistent ephemeral-memory attachment, then
-//!   runs exports against it. The attachment persists across calls, so a mutating
-//!   export's committed `transaction` is observable by a later reading export and a
-//!   rolled-back one is not — this is how durable store effects are captured without
-//!   a real store. Storeless exports run on the VM directly. [`Session::call`]
-//!   returns the export's `Option<Value>` and panics on any fault; [`Session::try_call`]
-//!   returns a [`CallOutcome`] that also captures faults, parks, and operational
-//!   failures.
-//!
-//! - **Library path — [`Project::image`] / [`Project::try_image`].** The verified
-//!   image, for a suite that inspects it directly. [`Project::try_image`] returns
-//!   [`Diagnostics`] (typed codes and spans) on a source-diagnostic failure, so a
-//!   diagnostics fixture can assert a code without spawning a subprocess.
-//!
-//! - **CLI path — [`Project::materialize`] → [`Workspace::marrow`], or the
-//!   one-shot [`Project::run_cli`].** Writes the project to a fresh temporary
-//!   directory and invokes the built `marrow` binary (`CARGO_BIN_EXE_marrow`) there
-//!   with `NO_COLOR=1`, capturing a [`CliOutcome`]. `CliOutcome` derefs to the raw
-//!   `std::process::Output` (so `.status`, `.stdout`, `.stderr` are available) and
-//!   adds `stdout_text`/`stderr_text`/`jsonl_lines` helpers. The temporary directory
-//!   is removed on drop, so a `marrow run` mint cannot dirty the repository.
-//!
-//! Outcome types never render prose for assertions: a [`CallOutcome`] fault carries
-//! the stable `marrow-codes` string, and [`Diagnostics`] carries `(code, line,
-//! column)` — assert those, not messages.
+//! The compiler never mints durable identity. On every path except `marrow run`, a
+//! durable declaration whose ledger row is missing is a hard `check.durable_identity`
+//! diagnostic; `marrow run` mints from OS entropy and rewrites `.marrow/ids`, which
+//! would make a fixture nondeterministic. So every durable fixture ships a complete
+//! fixed-hex ledger with `high-water 0`, and one declaration mints a row for each of:
+//! the application (anchor path `.`), each `resource`, each stored field at its dotted
+//! path (including inside a `branch` or `group`), each keyed placement (a `store` root
+//! and each keyed `branch`) and its key column, each managed index, each
+//! durable-reachable closed enum and each of its variants, and each unkeyed `group`
+//! namespace. Omitting any one row fails the build.
 
 use std::borrow::Cow;
 use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput, capture};
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{
@@ -262,6 +167,12 @@ impl Project {
         }
     }
 
+    /// Capture and compile without verifying, for a suite that pins the compiled image's
+    /// bytes or identity directly.
+    pub fn compiled(&self) -> Compiled {
+        compile(&self.capture()).expect("project compiles")
+    }
+
     /// Open a persistent ephemeral-memory session: compile, verify, and (for a
     /// durable project) mint one attachment that serves every export call in
     /// sequence.
@@ -301,12 +212,12 @@ impl Project {
     /// for easier debugging; it need not be unique.
     pub fn materialize(&self, label: &str) -> Workspace {
         let root = TempDir::new(label);
-        write_file(&root.join("marrow.toml"), &self.manifest);
+        write(&root.join("marrow.toml"), &self.manifest);
         if let Some(ids) = &self.ids {
-            write_file(&root.join(".marrow/ids"), ids);
+            write(&root.join(".marrow/ids"), ids);
         }
         for (path, bytes) in &self.files {
-            write_file(&root.join(path), bytes);
+            write(&root.join(path), bytes);
         }
         Workspace { root }
     }
@@ -406,6 +317,11 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
+    /// The diagnostics in compiler order, for a fixture asserting exact byte spans.
+    pub fn iter(&self) -> std::slice::Iter<'_, SourceDiagnostic> {
+        self.diagnostics.iter()
+    }
+
     /// The diagnostic codes in compiler order.
     pub fn codes(&self) -> Vec<&str> {
         self.diagnostics.iter().map(|d| d.code()).collect()
@@ -494,13 +410,7 @@ impl Workspace {
     /// outcome. Runs with `NO_COLOR=1`; the CLI emits no color to a pipe regardless,
     /// so this is a no-op for piped output and only guards a stray terminal.
     pub fn marrow(&self, args: &[&str]) -> CliOutcome {
-        let output = Command::new(MARROW_BIN)
-            .args(args)
-            .current_dir(&*self.root)
-            .env("NO_COLOR", "1")
-            .output()
-            .expect("run the marrow binary");
-        CliOutcome { output }
+        marrow_in(&self.root, args)
     }
 }
 
@@ -565,6 +475,30 @@ pub fn unaccepted_ceiling_id(stderr: &str) -> String {
 // Support
 // ---------------------------------------------------------------------------
 
+/// Invoke the `marrow` binary with `args` in `dir` — the one spawn primitive. Runs with
+/// `NO_COLOR=1`; the CLI emits no color to a pipe regardless, so this only guards a stray
+/// terminal.
+pub fn marrow_in(dir: &Path, args: &[&str]) -> CliOutcome {
+    let output = Command::new(MARROW_BIN)
+        .args(args)
+        .current_dir(dir)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run the marrow binary");
+    CliOutcome { output }
+}
+
+/// A conformance fixture directory in the repository-root corpus
+/// (`fixtures/v01/conformance/<name>`), which suites drive in place through the CLI.
+pub fn conformance_dir(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root two levels above the crate manifest")
+        .join("fixtures/v01/conformance")
+        .join(name)
+}
+
 /// The fixture corpus root, resolved from the crate manifest directory so it is the
 /// same regardless of the working directory a test runs in.
 fn fixtures_root() -> PathBuf {
@@ -597,26 +531,33 @@ fn collect_sources(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
     }
 }
 
-fn write_file(path: &Path, bytes: &[u8]) {
+/// Write `contents` to `path`, creating parent directories.
+pub fn write(path: &Path, contents: impl AsRef<[u8]>) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create parent directory");
     }
-    fs::write(path, bytes).expect("write project file");
+    fs::write(path, contents).expect("write project file");
 }
 
-/// A temporary directory removed on drop, even through a failing assertion.
-struct TempDir {
+/// A temporary directory removed on drop, even through a failing assertion. The
+/// per-process serial makes two directories minted in the same nanosecond distinct,
+/// so a suite may scaffold scratch projects in a tight loop.
+pub struct TempDir {
     root: PathBuf,
 }
 
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
 impl TempDir {
-    fn new(label: &str) -> Self {
+    /// A fresh directory named after `label`, which need not be unique.
+    pub fn new(label: &str) -> Self {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
+        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "marrow-e07h-{label}-{}-{nanos}",
+            "marrow-test-{label}-{}-{serial}-{nanos}",
             std::process::id()
         ));
         fs::create_dir_all(&root).expect("create temp dir");

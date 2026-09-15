@@ -1,32 +1,11 @@
-//! The admitted-subset AGREEMENT GATE (RV01).
-//!
-//! The durable round trip is spellable only if the checker and the independent
-//! verifier agree on the admitted subset: a program the checker accepts must
-//! also verify (checker-accept ⇒ verify-accept) and, when it carries a driving
-//! `test`, run without an artifact rejection. Five checker/verifier divergences
-//! in this family were found by the 2026-07-18 review of record; this gate turns
-//! that family into a standing enumeration so a divergence becomes a failing
-//! test rather than a review finding.
-//!
-//! The gate enumerates a bounded matrix of durable op forms × contexts — no
-//! unbounded fuzzing — and pins each composition's whole-pipeline verdict
-//! (capture → compile → verify → run). A composition whose intended round trip
-//! is not yet whole is recorded as an EXPLICIT ledger entry with its exact
-//! current code, so the remaining divergence set is visible rather than skipped.
-//! When a fix lands, its row moves to [`Expect::RoundTrips`]; if the fix lands
-//! without moving the row, the gate fails on the changed verdict — the ledger
-//! cannot silently drift.
-//!
-//! RV01 closed the three review-of-record defects: D1 (a test body drives a mutating
-//! export, each call its own invocation boundary), D2 (a whole-entry read inside a
-//! read-only region is admitted), and D3 (a whole-entry write through an identity
-//! lookup lowers). DX01 then made a `return` inside an owned region a commit site, so
-//! the return-inside-region row is a round trip too. TX02 promoted the last divergence —
-//! an empty (no-op) `transaction`, which the verifier refuses — to a check-time
-//! diagnostic, so the checker now rejects it before an image is minted and the
-//! divergence ledger is empty. Its row is a `CheckerRejects` control. The correct-
-//! rollback journey below locks the invocation-boundary isolation law: a faulting export
-//! invocation rolls back without disturbing a prior committed one.
+//! The admitted-subset agreement gate: a program the checker accepts must also
+//! verify, and, when it carries a driving `test`, run without an artifact rejection.
+//! The gate enumerates a bounded matrix of durable op forms by context — no unbounded
+//! fuzzing — and pins each composition's whole-pipeline verdict (capture -> compile ->
+//! verify -> run). A composition whose round trip is not yet whole is an explicit
+//! ledger entry carrying its exact current code, so the divergence set stays visible
+//! and cannot silently drift: a fix that lands without moving its row to
+//! [`Expect::RoundTrips`] fails the gate on the changed verdict.
 
 use marrow_verify::VerifiedImage;
 use marrow_vm::{
@@ -192,10 +171,9 @@ enum Expect {
     /// verifier rejects. The exact current code and detail are pinned so a fix
     /// that changes the verdict forces this row to move to `RoundTrips`.
     ///
-    /// The ledger is empty after TX02 promoted the last divergence (the empty
-    /// transaction) to a check-time diagnostic; the variant is retained as the
-    /// mechanism a future divergence is recorded through, so a regression becomes a
-    /// failing row rather than a review finding.
+    /// The ledger is currently empty; the variant is retained as the mechanism a
+    /// future divergence is recorded through, so a regression becomes a failing row
+    /// rather than a review finding.
     #[allow(dead_code)]
     KnownDivergent {
         code: &'static str,
@@ -205,7 +183,7 @@ enum Expect {
     /// verifier — checker-accept ⇒ verify holds vacuously and the two agree. The exact
     /// `check.*` code is pinned so a change to the verdict forces this row to move.
     /// A former `KnownDivergent` row lands here once its divergence is promoted to a
-    /// source-facing diagnostic (TX02 moved the empty-transaction row here).
+    /// source-facing diagnostic.
     CheckerRejects { code: &'static str },
 }
 
@@ -326,31 +304,31 @@ fn matrix() -> Vec<Row> {
             ops: "fn withSubtitle(b: Book, s: string): Book {\n    var working = b\n    working.subtitle = s\n    return working\n}\n\npub fn seed(id: int, title: string, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: title, isbn: isbn)\n    }\n}\n\npub fn revise(id: int, s: string) {\n    transaction {\n        if const current = ^books[id] {\n            ^books[id] = withSubtitle(current, s)\n        }\n    }\n}\n\npub fn subtitleOf(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"resource value crosses a helper and writes back\" {\n    seed(4, \"dune\", \"i4\")\n    revise(4, \"revised\")\n    assert subtitleOf(4) ?? \"none\" == \"revised\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- The review-of-record round trip, now whole (RV01 closes D1/D2/D3). ----
-        // D2 (closed): a whole-entry read inside a region the export owns is coherent.
+        // ---- Closed divergences, kept as standing round-trip rows. ----
+        // A whole-entry read inside a region the export owns is coherent.
         // The owner lattice now runs for any export that owns a transaction, so a
         // read-only region reads inside and returns the captured value after the block.
         Row {
-            label: "D2: whole-entry read / inside a read-only region (captured, returned after)",
+            label: "whole-entry read / inside a read-only region (captured, returned after)",
             ops: "pub fn d2ReadOnlyRegion(id: int): string? {\n    var out: string? = absent\n    transaction {\n        if const b = ^books[id] {\n            out = b.title\n        }\n    }\n    return out\n}",
             expect: Expect::RoundTrips { run: false },
         },
-        // D1 (closed): a test body drives a mutating export, then reads back through a
+        // A test body drives a mutating export, then reads back through a
         // reading export — each call its own invocation boundary. The round trip runs.
         Row {
-            label: "D1: driver test — mutating export call then read-back export",
+            label: "driver test — mutating export call then read-back export",
             ops: "pub fn d1Add(id: int, title: string) {\n    transaction {\n        ^books[id] = Book(title: title, isbn: \"i\")\n    }\n}\n\npub fn d1Title(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"driver adds through an export and reads it back\" {\n    d1Add(7, \"dune\")\n    assert d1Title(7) ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // D3 (closed): a whole-entry write through an identity-lookup result. A field
+        // A whole-entry write through an identity-lookup result. A field
         // write through the same lookup already round-trips; the whole-entry form now
         // lowers by spreading the identity into the root's key columns.
         Row {
-            label: "D3: identity-keyed whole-entry write / inside a mutating region",
+            label: "identity-keyed whole-entry write / inside a mutating region",
             ops: "pub fn d3IdentityWrite(isbn: string, title: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found] = Book(title: title, isbn: isbn)\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
-        // ---- DX01: a return inside an owned region commits, then returns. ----
+        // ---- A return inside an owned region commits, then returns. ----
         // The in-region `return b.title` commits the region's staged writes (here a
         // read-only region, so nothing is staged), evaluates the return value
         // pre-commit, then returns it. The lowering places `TxnCommit` before the
@@ -358,37 +336,36 @@ fn matrix() -> Vec<Row> {
         // and the round trip runs. Driven end to end: a seed export commits an entry,
         // then the in-region return reads its title back.
         Row {
-            label: "DX01: return inside an owned region (commits, then returns the read value)",
+            label: "return inside an owned region (commits, then returns the read value)",
             ops: "pub fn dxSeed(id: int, title: string) {\n    transaction {\n        ^books[id] = Book(title: title, isbn: \"i\")\n    }\n}\n\npub fn returnInsideRegion(id: int): string? {\n    transaction {\n        if const b = ^books[id] {\n            return b.title\n        }\n    }\n    return absent\n}\n\ntest \"in-region return commits and returns the read value\" {\n    dxSeed(8, \"dune\")\n    assert returnInsideRegion(8) ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // DX01: an all-paths-return region — every path returns from inside the
+        // An all-paths-return region — every path returns from inside the
         // `transaction`, so the region has no fall-through. The checker must accept it
         // (the region diverges, so the function returns on every path) and the verifier
         // must admit it (no unreachable closing commit is emitted). This is the natural
         // `transaction { ...; return x }` shape; it nets the checker-accept ⇒ verify
         // class for a region with no trailing return. Driven end to end.
         Row {
-            label: "DX01: all-paths-return region (no fall-through, no closing commit)",
+            label: "all-paths-return region (no fall-through, no closing commit)",
             ops: "pub fn allPaths(id: int, title: string): string? {\n    transaction {\n        ^books[id] = Book(title: title, isbn: \"i\")\n        return ^books[id].title\n    }\n}\n\ntest \"all-paths-return region commits and returns the staged value\" {\n    assert allPaths(11, \"dune\") ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // DX01: a mutating in-region guard-return — the shape the Workshop app teaches.
+        // A mutating in-region guard-return — the shape the Workshop app teaches.
         // The present path returns `false` at the guard (committing an empty stage); the
         // absent path stages the write and returns `true` at the closing brace. Driven:
         // a first add commits, a re-add is rejected without disturbing the first entry.
         Row {
-            label: "DX01: mutating in-region guard-return (commits on both exits)",
+            label: "mutating in-region guard-return (commits on both exits)",
             ops: "pub fn addOnce(id: int, title: string): bool {\n    transaction {\n        if exists(^books[id]) {\n            return false\n        }\n        ^books[id] = Book(title: title, isbn: \"i\")\n    }\n    return true\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"guard-return adds once and rejects a re-add\" {\n    assert addOnce(9, \"dune\")\n    assert not addOnce(9, \"impostor\")\n    assert titleOf(9) ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A `transaction` block with no durable operation is a no-op region the runtime
-        // cannot run (it opens no session). TX02 promoted this law to a check-time
-        // diagnostic, so the checker now refuses it before an image is minted — the
-        // former checker-accept/verify-reject divergence is closed and the checker and
-        // verifier agree (a tampered image is still refused at `image.flow`).
+        // cannot run (it opens no session). The checker refuses it before an image is
+        // minted, so checker and verifier agree (a tampered image is still refused at
+        // `image.flow`).
         Row {
-            label: "empty transaction — no durable operation (checker-rejected since TX02)",
+            label: "empty transaction — no durable operation (checker-rejected)",
             ops: "pub fn emptyRegion() {\n    transaction {\n    }\n}",
             expect: Expect::CheckerRejects {
                 code: "check.transaction_empty",
@@ -416,20 +393,20 @@ fn matrix() -> Vec<Row> {
         // committing in-region `return`. Driven end to end: the ok path commits
         // the write, the require path rejects without disturbing the store.
         Row {
-            label: "REQ01: require in a helper joining the region / driver test",
+            label: "require in a helper joining the region / driver test",
             ops: "fn addChecked(id: int, title: string): Result<bool, string> {\n    require id > 0 else \"id must be positive\"\n    require not exists(^books[id]) else \"already shelved\"\n    ^books[id] = Book(title: title, isbn: \"i\")\n    return ok(true)\n}\n\npub fn shelve(id: int, title: string): Result<bool, string> {\n    transaction {\n        return addChecked(id, title)\n    }\n}\n\npub fn shelvedTitle(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"require guards admit the valid add and reject the invalid ones\" {\n    match shelve(200, \"dune\") {\n        ok(v) => {}\n        err(e) => {\n            assert false\n        }\n    }\n    match shelve(0, \"zero\") {\n        ok(v) => {\n            assert false\n        }\n        err(e) => {\n            assert e == \"id must be positive\"\n        }\n    }\n    match shelve(200, \"impostor\") {\n        ok(v) => {\n            assert false\n        }\n        err(e) => {\n            assert e == \"already shelved\"\n        }\n    }\n    assert shelvedTitle(200) ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- DX05: `exists` over a unique index — the presence half of the lookup. ----
+        // ---- `exists` over a unique index — the presence half of the lookup. ----
         // `exists(^books.byIsbn[isbn])` probes the unique index for a matching entry
         // without materializing its identity: the same complete-key lookup the `if const`
         // read uses, yielding a bare bool. Driven end to end — a present and an absent isbn.
         Row {
-            label: "DX05: exists over a unique index / driver test",
+            label: "exists over a unique index / driver test",
             ops: "pub fn hasIsbn(isbn: string): bool {\n    return exists(^books.byIsbn[isbn])\n}\n\npub fn addBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\ntest \"exists over a unique index sees a present and an absent isbn\" {\n    addBook(30, \"i30\")\n    assert hasIsbn(\"i30\")\n    assert not hasIsbn(\"absent-isbn\")\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- IDK01: entry-identity operands in every key-path-capturing position. ----
+        // ---- Entry-identity operands in every key-path-capturing position. ----
         // An identity operand spreads into the addressed root's key columns at the one
         // capture point a read-modify-write, an upsert, or a `place` binding evaluates its
         // key-path into slots — the same `IdentityKeyPath` spread the single-emit forms
@@ -438,9 +415,9 @@ fn matrix() -> Vec<Row> {
         //
         // A `place` bound to an identity operand: the identity is captured into the root's
         // key slots at the binding, so a whole-entry write and a field read through the place
-        // key off the one pre-evaluated address (durable-places.md §Named Places).
+        // key off the one pre-evaluated address.
         Row {
-            label: "IDK01: place bound to an identity operand writes then reads back / driver test",
+            label: "place bound to an identity operand writes then reads back / driver test",
             ops: "pub fn plWrite(id: int, title: string) {\n    transaction {\n        place p = ^books[Id(^books, id)]\n        p = Book(title: title, isbn: \"i\")\n    }\n}\n\npub fn plTitle(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"place over an identity operand round trips\" {\n    plWrite(20, \"dune\")\n    assert plTitle(20) ?? \"none\" == \"dune\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
@@ -449,7 +426,7 @@ fn matrix() -> Vec<Row> {
         // columns and the branch key into its own slot, then keys exists/replace/create off
         // the same evaluation.
         Row {
-            label: "IDK01: branch whole-entry write through an identity key / driver test",
+            label: "branch whole-entry write through an identity key / driver test",
             ops: "pub fn brWrite(id: int, n: string, text: string) {\n    transaction {\n        ^books[Id(^books, id)].notes[n] = Book.notes(text: text)\n    }\n}\n\npub fn brText(id: int, n: string): string? {\n    return ^books[id].notes[n].text\n}\n\ntest \"branch write through an identity key round trips\" {\n    brWrite(21, \"n1\", \"hello\")\n    assert brText(21, \"n1\") ?? \"none\" == \"hello\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
@@ -457,27 +434,27 @@ fn matrix() -> Vec<Row> {
         // read-modify-write captures the identity into the root's key columns, reads the
         // group, rewrites the leaf, and writes the group back off the same slots.
         Row {
-            label: "IDK01: group-leaf write through an identity key / driver test",
+            label: "group-leaf write through an identity key / driver test",
             ops: "pub fn glWrite(id: int, pages: int) {\n    transaction {\n        place m = ^books[Id(^books, id)]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.details.pages = pages\n    }\n}\n\npub fn glPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf write through an identity key round trips\" {\n    glWrite(22, 7)\n    assert glPages(22) ?? 0 == 7\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A group-leaf delete through an identity key: the same read-modify-write, clearing
         // the leaf. The sibling of the write above, from the same capturing helper.
         Row {
-            label: "IDK01: group-leaf delete through an identity key / driver test",
+            label: "group-leaf delete through an identity key / driver test",
             ops: "pub fn gdSet(id: int, pages: int) {\n    transaction {\n        place m = ^books[id]\n        m = Book(title: \"t\", isbn: \"i\")\n        m.details.pages = pages\n    }\n}\n\npub fn gdClear(id: int) {\n    transaction {\n        delete ^books[Id(^books, id)].details.pages\n    }\n}\n\npub fn gdPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf delete through an identity key round trips\" {\n    gdSet(23, 7)\n    gdClear(23)\n    assert gdPages(23) ?? 0 == 0\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A composite-root `place` bound to a single identity operand: the identity spreads
-        // into the composite root's several key columns at the binding (the PL01 provenance —
+        // into the composite root's several key columns at the binding (the provenance —
         // a place carries several key slots yet is still a root), so a field write and read
         // through the place resolve the root's field off the pre-evaluated address.
         Row {
-            label: "IDK01: composite-root place bound to a single identity operand / driver test",
+            label: "composite-root place bound to a single identity operand / driver test",
             ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdPlaceWrite(s: string, c: string, score: int) {\n    transaction {\n        place g = ^grades[Id(^grades, s, c)]\n        if exists(g) {\n            g.score = score\n        }\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root place over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdPlaceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- DX02: a named place or per-iteration pin as a bounded-traversal base. ----
+        // ---- A named place or per-iteration pin as a bounded-traversal base. ----
         // A place already addresses an entry; `for k in <place>.branch` traverses the branch
         // family beneath it, feeding the place's captured key slots as the traversal's
         // ancestor key-path. Each row drives the branch traversal through a place/pin base
@@ -486,7 +463,7 @@ fn matrix() -> Vec<Row> {
         // A root place is a branch traversal base: `place b = ^books[id]; for noteId in
         // b.notes` counts the entries under the fixed parent the place binds.
         Row {
-            label: "DX02: root place branch traversal / driver test",
+            label: "root place branch traversal / driver test",
             ops: "pub fn aAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn aAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn aCountViaPlace(id: int): int {\n    var c = 0\n    place b = ^books[id]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"root place is a branch traversal base\" {\n    aAddBook(50)\n    aAddNote(50, \"a\")\n    aAddNote(50, \"b\")\n    assert aCountViaPlace(50) == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
@@ -494,18 +471,18 @@ fn matrix() -> Vec<Row> {
         // followed by each frozen note key, so `delete note` erases through the pin. This
         // drives the ancestor-slot capture over a `PlaceKey::Bound` column.
         Row {
-            label: "DX02: two-binding place base deletes through the pin / driver test",
+            label: "two-binding place base deletes through the pin / driver test",
             ops: "pub fn bAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn bAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn bClearViaPlace(id: int): int {\n    var c = 0\n    transaction {\n        place b = ^books[id]\n        for noteId, note in b.notes at most 100 {\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn bCountViaPlace(id: int): int {\n    var c = 0\n    place b = ^books[id]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"two-binding place base deletes through the pin\" {\n    bAddBook(60)\n    bAddNote(60, \"a\")\n    bAddNote(60, \"b\")\n    assert bClearViaPlace(60) == 2\n    assert bCountViaPlace(60) == 0\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A per-iteration pin is an inner traversal base: the outer pin `book` addresses each
         // frozen entry, and `for noteId in book.notes` traverses the branch beneath it.
         Row {
-            label: "DX02: per-iteration pin as an inner traversal base / driver test",
+            label: "per-iteration pin as an inner traversal base / driver test",
             ops: "pub fn cAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn cAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn cCountViaPin(): int {\n    var c = 0\n    for id, book in ^books at most 100 {\n        for noteId in book.notes at most 100 {\n            c += 1\n        } on more {\n            c = -1\n        }\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"a per-iteration pin is an inner traversal base\" {\n    cAddBook(70, \"i70\")\n    cAddNote(70, \"a\")\n    cAddBook(71, \"i71\")\n    cAddNote(71, \"b\")\n    assert cCountViaPin() == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- DX06: a named place composes as a base for branch-entry and group-leaf ops. ----
+        // ---- A named place composes as a base for branch-entry and group-leaf ops. ----
         // A bound place already addresses an entry; extending it with `.branch[bk]` or
         // `.group.leaf` composes the same operation an inline `^root(k).branch(bk)` /
         // `^root(k).group.leaf` does, keying off the place's pre-evaluated slots. Each row
@@ -513,23 +490,23 @@ fn matrix() -> Vec<Row> {
         //
         // A root place composes a whole branch-entry write and a branch-field read.
         Row {
-            label: "DX06: root place composes a branch-entry write + branch-field read / driver test",
+            label: "root place composes a branch-entry write + branch-field read / driver test",
             ops: "pub fn dAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn dAddNoteVia(id: int, n: string, t: string) {\n    transaction {\n        place b = ^books[id]\n        b.notes[n] = Book.notes(text: t)\n    }\n}\n\npub fn dNoteVia(id: int, n: string): string? {\n    place b = ^books[id]\n    return b.notes[n].text\n}\n\ntest \"root place composes a branch write then reads it back\" {\n    dAddBook(100)\n    dAddNoteVia(100, \"a\", \"hello\")\n    assert dNoteVia(100, \"a\") ?? \"none\" == \"hello\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // A root place composes a group-leaf write and read (whole-group read-modify-write).
         Row {
-            label: "DX06: root place composes a group-leaf write + read / driver test",
+            label: "root place composes a group-leaf write + read / driver test",
             ops: "pub fn eAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn eSetPagesVia(id: int, p: int) {\n    transaction {\n        place b = ^books[id]\n        if exists(b) {\n            b.details.pages = p\n        }\n    }\n}\n\npub fn ePagesVia(id: int): int? {\n    place b = ^books[id]\n    return b.details.pages\n}\n\ntest \"root place composes a group-leaf write then reads it back\" {\n    eAddBook(101)\n    eSetPagesVia(101, 7)\n    assert ePagesVia(101) ?? 0 == 7\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // `exists(place.branch)` is the family-populated probe, not a missing-field error.
         Row {
-            label: "DX06: exists over a branch family named through a place / driver test",
+            label: "exists over a branch family named through a place / driver test",
             ops: "pub fn fAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn fAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn fHasNotesVia(id: int): bool {\n    place b = ^books[id]\n    return exists(b.notes)\n}\n\ntest \"exists over a branch family named through a place\" {\n    fAddBook(102, \"i102\")\n    fAddBook(103, \"i103\")\n    fAddNote(102, \"a\")\n    assert fHasNotesVia(102)\n    assert not fHasNotesVia(103)\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- IDTRAV01: an entry-identity parent as a bounded-traversal / family-probe base. ----
+        // ---- An entry-identity parent as a bounded-traversal / family-probe base. ----
         // A traversal or family probe whose fixed parent is addressed through an entry
         // identity (`^root[Id(…)].branch`, or an identity-keyed place base) feeds an identity
         // column as the ancestor key-path. The verifier's ancestor pop re-proves that column's
@@ -538,21 +515,21 @@ fn matrix() -> Vec<Row> {
         // An identity-keyed place base: `place b = ^books[Id(^books, id)]; for noteId in
         // b.notes` traverses the branch beneath the entry the identity addresses.
         Row {
-            label: "IDTRAV01: identity-keyed place base branch traversal / driver test",
+            label: "identity-keyed place base branch traversal / driver test",
             ops: "pub fn iAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn iAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn iCountViaIdPlace(id: int): int {\n    var c = 0\n    place b = ^books[Id(^books, id)]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"identity-keyed place base is a branch traversal base\" {\n    iAddBook(80)\n    iAddNote(80, \"a\")\n    iAddNote(80, \"b\")\n    assert iCountViaIdPlace(80) == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // The inline sibling: `for noteId in ^books[Id(^books, id)].notes` supplies the one
         // identity operand as the branch traversal's ancestor key-path.
         Row {
-            label: "IDTRAV01: inline identity-parent branch traversal / driver test",
+            label: "inline identity-parent branch traversal / driver test",
             ops: "pub fn jAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn jAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn jCountViaInlineId(id: int): int {\n    var c = 0\n    for noteId in ^books[Id(^books, id)].notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"inline identity parent is a branch traversal base\" {\n    jAddBook(81)\n    jAddNote(81, \"a\")\n    jAddNote(81, \"b\")\n    assert jCountViaInlineId(81) == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // The two-binding inline form: the per-iteration pin `note` reuses the identity
         // ancestor slots plus the frozen key to delete each note through the pin.
         Row {
-            label: "IDTRAV01: inline identity-parent two-binding delete through the pin / driver test",
+            label: "inline identity-parent two-binding delete through the pin / driver test",
             ops: "pub fn kAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn kAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn kClearViaInlineId(id: int): int {\n    var c = 0\n    transaction {\n        for noteId, note in ^books[Id(^books, id)].notes at most 100 {\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn kCountViaInlineId(id: int): int {\n    var c = 0\n    for noteId in ^books[Id(^books, id)].notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"inline identity parent two-binding deletes through the pin\" {\n    kAddBook(82)\n    kAddNote(82, \"a\")\n    kAddNote(82, \"b\")\n    assert kClearViaInlineId(82) == 2\n    assert kCountViaInlineId(82) == 0\n}",
             expect: Expect::RoundTrips { run: true },
         },
@@ -560,7 +537,7 @@ fn matrix() -> Vec<Row> {
         // identity ancestor key-path before `DurFamilyExists`, so its ancestor pop re-proves
         // the same identity column the traversal pop does.
         Row {
-            label: "IDTRAV01: family-populated probe under an identity parent / driver test",
+            label: "family-populated probe under an identity parent / driver test",
             ops: "pub fn mAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn mAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn mHasNotes(id: int): bool {\n    return exists(^books[Id(^books, id)].notes)\n}\n\ntest \"family probe under an identity parent sees present and empty\" {\n    mAddBook(83, \"i83\")\n    mAddBook(84, \"i84\")\n    mAddNote(83, \"a\")\n    assert mHasNotes(83)\n    assert not mHasNotes(84)\n}",
             expect: Expect::RoundTrips { run: true },
         },
@@ -569,18 +546,18 @@ fn matrix() -> Vec<Row> {
         // which carry the identity column. The set-sparse-present slot-type check re-proves
         // that identity column exactly as the stack key-path pop does, so the round trip runs.
         Row {
-            label: "IDTRAV01: strict present sparse set through an identity-keyed place / driver test",
+            label: "strict present sparse set through an identity-keyed place / driver test",
             ops: "pub fn spSeed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn spSetVia(id: int, s: string): bool {\n    transaction {\n        place b = ^books[Id(^books, id)]\n        if exists(b) {\n            b.subtitle = s\n            return true\n        }\n    }\n    return false\n}\n\npub fn spSubtitle(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"strict present sparse set through an identity place round trips\" {\n    spSeed(90)\n    assert spSetVia(90, \"x\")\n    assert spSubtitle(90) ?? \"none\" == \"x\"\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- ENUMDUP01: two durable fields of one enum type. ----
+        // ---- Two durable fields of one enum type. ----
         // `glucose` and `lactate` are both `Option<int>`, so they share one enum durable
         // identity (its sum and member ids appear once per referencing field). The
         // checker emits the shared identity and the verifier reads the reuse as one
         // per-declaration claim rather than a duplicate ledger id. Driven end to end: one
         // write sets both fields, and a reader unwraps each `some` payload back.
         Row {
-            label: "ENUMDUP01: two Option<int> fields of one enum type round trip / driver test",
+            label: "two Option<int> fields of one enum type round trip / driver test",
             ops: "pub fn setReadings(id: int, g: int, l: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\", glucose: some(g), lactate: some(l))\n    }\n}\n\npub fn glucoseVal(id: int): int {\n    if const cell = ^books[id].glucose {\n        match cell {\n            some(v) => return v\n            none => return -1\n        }\n    }\n    return -2\n}\n\npub fn lactateVal(id: int): int {\n    if const cell = ^books[id].lactate {\n        match cell {\n            some(v) => return v\n            none => return -1\n        }\n    }\n    return -2\n}\n\ntest \"two fields of one enum type round trip\" {\n    setReadings(1, 95, 12)\n    assert glucoseVal(1) == 95\n    assert lactateVal(1) == 12\n}",
             expect: Expect::RoundTrips { run: true },
         },
@@ -708,17 +685,11 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
         }
     }
 
-    // The divergence set is closed. RV01 closed D1/D2/D3, DX01 turned the return-inside-
-    // region row into a round trip, IDK01 lowered every identity-operand capturing position,
-    // and TX02 promoted the last divergence — the empty (no-op) transaction — to a check-time
-    // diagnostic, so the checker-accept/verify-reject ledger is now empty. A new divergence
-    // added without a ledger row fails an individual row above; these counts fail if a
-    // closed checker-rejected row silently changes verdict. The two rejections are the
-    // empty transaction and the unproven inline field write.
-    assert_eq!(
-        known_divergent, 0,
-        "the divergence ledger is empty after TX02"
-    );
+    // The checker-accept/verify-reject ledger is empty. A new divergence added without a
+    // ledger row fails an individual row above; these counts fail if a closed
+    // checker-rejected row silently changes verdict. The two rejections are the empty
+    // transaction and the unproven inline field write.
+    assert_eq!(known_divergent, 0, "the divergence ledger is empty");
     assert_eq!(
         checker_rejected, 2,
         "expected exactly the empty-transaction and unproven-field-write \

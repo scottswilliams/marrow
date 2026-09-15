@@ -1,7 +1,7 @@
-//! Composite-root `place` presence shortcuts, executed end to end (DX05 gap 4 pin).
+//! Composite-root `place` presence shortcuts, executed end to end.
 //!
 //! A `place` bound to a composite-key root (`place e = ^t[a, b]`) carries several key
-//! slots yet is still a root (the PL01 provenance). Its presence shortcuts run through the
+//! slots yet is still a root. Its presence shortcuts run through the
 //! whole production path — capture -> compile -> verify -> attach -> VM — over one
 //! persistent ephemeral attachment:
 //!
@@ -9,7 +9,7 @@
 //! - `if const e = ^t[a, b] { … }` binds the whole entry through the composite root;
 //! - `exists(^t[a, b])` probes a composite-root entry inline.
 //!
-//! This pins that all three compose over a composite key, closing the DX05 gap the PL01
+//! This pins that all three compose over a composite key, closing the gap the
 //! explicit-place work already made executable.
 
 use marrow_verify::{SealedExport, VerifiedImage};

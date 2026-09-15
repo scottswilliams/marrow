@@ -6,83 +6,19 @@
 //! diagnostics. Option/Result ride the same ENUMS section and enum opcodes as a
 //! user `enum`, so no new image section or opcode is introduced by this vertical.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-c02-optres-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/option_result")
-}
+use common::{Project, conformance_dir, marrow_in};
 
 /// The Option/Result conformance fixture passes end to end: construction and
 /// exhaustive `match`, nested `Option[Option[int]]` distinctness, exact equality,
 /// and prefix `try` success and error propagation all report `passed`.
 #[test]
 fn option_result_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("option_result"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -100,9 +36,7 @@ fn option_result_conformance_fixture_passes_on_the_production_path() {
 /// names, for `some`, `none`, and `err`.
 #[test]
 fn option_and_result_values_render_through_the_vm() {
-    let temp = TempDir::new("render");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"pub fn opt(n: int): Option<int> {
     if n == 0 { return none }
     return some(n)
@@ -113,21 +47,22 @@ pub fn res(n: int): Result<int, string> {
     return ok(n)
 }
 "#,
-    );
-    let some = run_in(&temp, &["run", "opt", "--format", "jsonl", "--", "7"]);
+    )
+    .materialize("render");
+    let some = workspace.marrow(&["run", "opt", "--format", "jsonl", "--", "7"]);
     let stdout = String::from_utf8_lossy(&some.stdout);
     assert!(some.status.success(), "{stdout}");
     assert!(
         stdout.contains(r#""data":{"enum":"Option","member":"some","payload":[7]}"#),
         "{stdout}"
     );
-    let none = run_in(&temp, &["run", "opt", "--format", "jsonl", "--", "0"]);
+    let none = workspace.marrow(&["run", "opt", "--format", "jsonl", "--", "0"]);
     let stdout = String::from_utf8_lossy(&none.stdout);
     assert!(
         stdout.contains(r#""data":{"enum":"Option","member":"none","payload":[]}"#),
         "{stdout}"
     );
-    let err = run_in(&temp, &["run", "res", "--format", "jsonl", "--", "-1"]);
+    let err = workspace.marrow(&["run", "res", "--format", "jsonl", "--", "-1"]);
     let stdout = String::from_utf8_lossy(&err.stdout);
     assert!(
         stdout.contains(r#""data":{"enum":"Result","member":"err","payload":["neg"]}"#),
@@ -142,9 +77,7 @@ pub fn res(n: int): Result<int, string> {
 /// needed and the three states render distinctly through the VM.
 #[test]
 fn a_sparse_optional_enum_target_takes_all_three_states_in_one_line() {
-    let temp = TempDir::new("three-state");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"pub fn state(sel: int): Option<int>? {
     if sel == 0 {
         const cleared: Option<int>? = absent
@@ -158,18 +91,19 @@ fn a_sparse_optional_enum_target_takes_all_three_states_in_one_line() {
     return value
 }
 "#,
-    );
-    let absent = run_in(&temp, &["run", "state", "--format", "jsonl", "--", "0"]);
+    )
+    .materialize("three-state");
+    let absent = workspace.marrow(&["run", "state", "--format", "jsonl", "--", "0"]);
     let absent_out = String::from_utf8_lossy(&absent.stdout);
     assert!(absent.status.success(), "{absent_out}");
     assert!(absent_out.contains(r#""data":null"#), "{absent_out}");
-    let none = run_in(&temp, &["run", "state", "--format", "jsonl", "--", "1"]);
+    let none = workspace.marrow(&["run", "state", "--format", "jsonl", "--", "1"]);
     let none_out = String::from_utf8_lossy(&none.stdout);
     assert!(
         none_out.contains(r#""data":{"enum":"Option","member":"none","payload":[]}"#),
         "{none_out}"
     );
-    let some = run_in(&temp, &["run", "state", "--format", "jsonl", "--", "2"]);
+    let some = workspace.marrow(&["run", "state", "--format", "jsonl", "--", "2"]);
     let some_out = String::from_utf8_lossy(&some.stdout);
     assert!(
         some_out.contains(r#""data":{"enum":"Option","member":"some","payload":[9]}"#),
@@ -181,9 +115,7 @@ fn a_sparse_optional_enum_target_takes_all_three_states_in_one_line() {
 /// typed `check.type` (same `E`, no implicit conversion).
 #[test]
 fn a_try_with_a_mismatched_error_type_is_reported() {
-    let temp = TempDir::new("mismatchE");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"pub fn g(n: int): Result<int, string> {
     return ok(n)
 }
@@ -193,8 +125,9 @@ pub fn f(): Result<int, int> {
     return ok(x)
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("mismatchE");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
@@ -216,9 +149,8 @@ fn a_try_in_the_wrong_context_is_reported() {
 }
 "#,
     ] {
-        let temp = TempDir::new("trycontext");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("trycontext");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source}\n{stdout}");
         assert!(
@@ -242,12 +174,9 @@ fn redeclaring_a_builtin_generic_name_is_reported() {
 }
 "#,
     ] {
-        let temp = TempDir::new("reserved");
-        project(
-            &temp,
-            &format!("{decl}\npub fn f(): int {{\n    return 0\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!("{decl}\npub fn f(): int {{\n    return 0\n}}\n"))
+            .materialize("reserved");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{decl}\n{stdout}");
         assert!(
@@ -267,9 +196,8 @@ fn the_removed_throw_catch_channel_is_reported() {
         "pub fn f(): int\n    try\n        return 1\n    catch e\n        return 2\n",
         "pub fn f(): int\n    catch e\n        return 2\n",
     ] {
-        let temp = TempDir::new("throwcatch");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("throwcatch");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source}\n{stdout}");
         assert!(
@@ -284,12 +212,11 @@ fn the_removed_throw_catch_channel_is_reported() {
 #[test]
 fn an_uninferable_bare_constructor_is_reported() {
     for value in ["none", "ok(5)", "err(\"x\")"] {
-        let temp = TempDir::new("infer");
-        project(
-            &temp,
-            &format!("pub fn f(): int {{\n    const x = {value}\n    return 0\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "pub fn f(): int {{\n    const x = {value}\n    return 0\n}}\n"
+        ))
+        .materialize("infer");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{value}\n{stdout}");
         assert!(
@@ -346,9 +273,8 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
             ),
         ];
         for source in sources {
-            let temp = TempDir::new("reserved-value");
-            project(&temp, &source);
-            let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+            let workspace = Project::single(&source).materialize("reserved-value");
+            let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(!output.status.success(), "{source}\n{stdout}");
             assert!(
@@ -365,9 +291,7 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
 /// which no built-in ever occupies. Such a program checks and runs.
 #[test]
 fn a_struct_field_or_enum_variant_may_spell_a_builtin_name() {
-    let temp = TempDir::new("member-name-ok");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct S {
     none: int
     trim: int
@@ -388,8 +312,9 @@ pub fn f(): int {
     return s.none + s.trim
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("member-name-ok");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":7"#), "{stdout}");

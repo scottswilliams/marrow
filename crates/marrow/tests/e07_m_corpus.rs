@@ -1,4 +1,4 @@
-//! E07-M — the M-shaped corpus: ERP/clinical scale slices that feed the E07 veto.
+//! The M-shaped corpus: ERP/clinical scale slices.
 //!
 //! Three frozen projects under `fixtures/v01/e07_m_corpus/`, each driven from source
 //! through the shared harness's production path (capture -> compile -> verify ->

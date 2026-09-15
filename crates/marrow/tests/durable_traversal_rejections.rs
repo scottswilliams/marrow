@@ -1,4 +1,4 @@
-//! Bounded-traversal source rejections (E04): every ill-formed durable `for` head is a
+//! Bounded-traversal source rejections: every ill-formed durable `for` head is a
 //! precise typed compiler rejection carrying a located span, never a silent miscompile.
 //!
 //! These drive the production capture -> compile pipeline over a store whose identity is

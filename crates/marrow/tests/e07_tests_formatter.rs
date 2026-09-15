@@ -1,4 +1,4 @@
-//! E07 frozen gate — the source-test and formatter journeys.
+//! The frozen gate: the source-test and formatter journeys.
 //!
 //! Two production-path journeys, driven over on-disk fixtures under
 //! `fixtures/v01/e07_tests_formatter/` so each program lives as idiomatic `.mw`

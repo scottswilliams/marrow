@@ -1,4 +1,4 @@
-//! D03 slice 1: narrow managed indexes — declaration, admission, identity, and
+//! Narrow managed indexes: declaration, admission, identity, and
 //! image growth, observed through the full production path capture -> compile ->
 //! verify.
 //!

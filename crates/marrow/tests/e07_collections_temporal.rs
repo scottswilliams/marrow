@@ -1,4 +1,4 @@
-//! E07 COLLECTIONS + TEMPORAL gate: the frozen ensemble of small programs a user
+//! The collections + temporal gate: the frozen ensemble of small programs a user
 //! would actually write over `List`/`Map` and the narrow temporal value types, driven
 //! end to end through the production path (capture -> compile -> verify -> VM) by the
 //! shared `.mw` fixture harness and asserted as typed [`Value`]s.

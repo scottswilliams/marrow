@@ -1,4 +1,4 @@
-//! D00 slice 3b: durable-graph breadth — static `group` namespaces and keyed
+//! Durable-graph breadth: static `group` namespaces and keyed
 //! `branch` placements.
 //!
 //! A resource's durable shape is a member tree: its top-level fields, plus static

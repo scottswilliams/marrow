@@ -1,42 +1,18 @@
-//! CRES01 command-surface bytes: a program that exhausts an aggregate compiler
+//! Command-surface bytes: a program that exhausts an aggregate compiler
 //! resource bound (no single source construct at fault) surfaces through the real
 //! `marrow` binary as the fixed `cli.compiler_resource_limit` outcome carrying the typed
 //! kind detail — which bound fired — on `run`/`test` records and the `client` stderr
 //! line, with no image, identity mint, diagnostic, numeric limit, source location, or
 //! partial output. Over `MAX_FUNCTIONS` functions reports `Functions`; over `MAX_EXPORTS`
 //! public functions reports `Exports`. Single-file `marrow fmt` reuses the same typed
-//! code for its stat-first `ProjectFileBytes` module-size admission (A9), pinned here
+//! code for its stat-first `ProjectFileBytes` module-size admission, pinned here
 //! beside the aggregate bounds.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::Path;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+mod common;
 
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-cres01-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.root).ok();
-    }
-}
+use common::{TempDir, marrow_in};
 
 /// A storeless program with more functions than the fixed limit admits: an aggregate
 /// exhaustion with no single offending declaration.
@@ -93,22 +69,14 @@ fn over_image_bytes_project(dir: &Path) {
     std::fs::write(dir.join("src").join("main.mw"), source).expect("write source");
 }
 
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
 #[test]
 fn run_text_emits_the_kinded_resource_limit_record() {
     let dir = TempDir::new("run-text");
-    over_bound_project(&dir.root);
-    let output = run_in(&dir.root, &["run", "main"]);
+    over_bound_project(&dir);
+    let output = marrow_in(&dir, &["run", "main"]);
     assert!(!output.status.success(), "an exhausted bound fails the run");
     assert_eq!(
-        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        output.stdout_text(),
         "cli.compiler_resource_limit: the function table is full\n",
         "text output names the bound in words; the Rust variant name stays on the \
          machine-readable `kind_detail` surface"
@@ -118,11 +86,11 @@ fn run_text_emits_the_kinded_resource_limit_record() {
 #[test]
 fn run_jsonl_emits_the_kinded_operational_record() {
     let dir = TempDir::new("run-jsonl");
-    over_bound_project(&dir.root);
-    let output = run_in(&dir.root, &["run", "main", "--format", "jsonl"]);
+    over_bound_project(&dir);
+    let output = marrow_in(&dir, &["run", "main", "--format", "jsonl"]);
     assert!(!output.status.success());
     assert_eq!(
-        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        output.stdout_text(),
         "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"kind_detail\":\"Functions\",\"outcome\":\"error\"}\n"
     );
 }
@@ -130,11 +98,11 @@ fn run_jsonl_emits_the_kinded_operational_record() {
 #[test]
 fn test_command_emits_the_kinded_operational_record() {
     let dir = TempDir::new("test-jsonl");
-    over_bound_project(&dir.root);
-    let output = run_in(&dir.root, &["test", "--format", "jsonl"]);
+    over_bound_project(&dir);
+    let output = marrow_in(&dir, &["test", "--format", "jsonl"]);
     assert!(!output.status.success());
     assert_eq!(
-        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        output.stdout_text(),
         "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"kind_detail\":\"Functions\",\"outcome\":\"error\"}\n"
     );
 }
@@ -142,15 +110,15 @@ fn test_command_emits_the_kinded_operational_record() {
 #[test]
 fn client_emits_the_kinded_stderr_line_and_no_stdout() {
     let dir = TempDir::new("client");
-    over_bound_project(&dir.root);
-    let output = run_in(&dir.root, &["client", "typescript"]);
+    over_bound_project(&dir);
+    let output = marrow_in(&dir, &["client", "typescript"]);
     assert!(!output.status.success());
     assert!(
         output.stdout.is_empty(),
         "the generator writes no client on a resource limit"
     );
     assert_eq!(
-        String::from_utf8(output.stderr).expect("utf8 stderr"),
+        output.stderr_text(),
         "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
          function table is full\n"
     );
@@ -162,20 +130,20 @@ fn client_emits_the_kinded_stderr_line_and_no_stdout() {
 #[test]
 fn check_emits_the_same_kinded_stderr_line_as_its_siblings() {
     let dir = TempDir::new("check-stderr");
-    over_bound_project(&dir.root);
-    let checked = run_in(&dir.root, &["check", "."]);
+    over_bound_project(&dir);
+    let checked = marrow_in(&dir, &["check", "."]);
     assert!(!checked.status.success());
-    let checked_stderr = String::from_utf8(checked.stderr).expect("utf8 stderr");
+    let checked_stderr = checked.stderr_text();
     assert_eq!(
         checked_stderr,
         "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
          function table is full\n"
     );
 
-    let generated = run_in(&dir.root, &["client", "typescript"]);
+    let generated = marrow_in(&dir, &["client", "typescript"]);
     assert_eq!(
         checked_stderr,
-        String::from_utf8(generated.stderr).expect("utf8 stderr"),
+        generated.stderr_text(),
         "one bound must read the same whichever command reports it on stderr"
     );
 }
@@ -188,8 +156,8 @@ fn check_emits_the_same_kinded_stderr_line_as_its_siblings() {
 #[test]
 fn check_reports_an_export_ceiling_with_no_diagnostic() {
     let dir = TempDir::new("check-exports");
-    over_export_project(&dir.root);
-    let checked = run_in(&dir.root, &["check", "."]);
+    over_export_project(&dir);
+    let checked = marrow_in(&dir, &["check", "."]);
     assert!(
         !checked.status.success(),
         "an exhausted bound fails the check"
@@ -198,7 +166,7 @@ fn check_reports_an_export_ceiling_with_no_diagnostic() {
         checked.stdout.is_empty(),
         "no demand summary is described for a project with no image"
     );
-    let checked_stderr = String::from_utf8(checked.stderr).expect("utf8 stderr");
+    let checked_stderr = checked.stderr_text();
     assert_eq!(
         checked_stderr,
         "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
@@ -206,15 +174,15 @@ fn check_reports_an_export_ceiling_with_no_diagnostic() {
         "the bound is the only thing reported: no diagnostic, location, or count"
     );
 
-    let generated = run_in(&dir.root, &["client", "typescript"]);
+    let generated = marrow_in(&dir, &["client", "typescript"]);
     assert_eq!(
         checked_stderr,
-        String::from_utf8(generated.stderr).expect("utf8 stderr"),
+        generated.stderr_text(),
         "one bound must read the same whichever command reports it on stderr"
     );
 }
 
-/// A9: single-file `marrow fmt` admits at most the compiler's `ProjectFileBytes`
+/// Single-file `marrow fmt` admits at most the compiler's `ProjectFileBytes`
 /// module byte limit, refusing with that admission's exact typed code from the stat
 /// alone — before any open, read, or allocation. The oversized target is unreadable
 /// (mode `0o000`), so a route that read first would report `io.read` instead: the
@@ -226,16 +194,16 @@ fn fmt_refuses_an_over_limit_file_before_reading_it() {
 
     let limit = marrow_compile::MAX_PARSED_FILE_BYTES as u64;
     let dir = TempDir::new("fmt-file-bound");
-    let path = dir.root.join("big.mw");
+    let path = dir.join("big.mw");
     let file = std::fs::File::create(&path).expect("create oversized source");
     file.set_len(limit + 1).expect("size oversized source");
     drop(file);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
         .expect("make source unreadable");
 
-    let output = run_in(&dir.root, &["fmt", "--check", "big.mw"]);
+    let output = marrow_in(&dir, &["fmt", "--check", "big.mw"]);
     assert!(!output.status.success(), "an over-limit file must refuse");
-    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    let stderr = output.stderr_text();
     assert_eq!(
         stderr,
         format!(
@@ -262,16 +230,16 @@ fn fmt_admits_a_file_of_exactly_the_module_limit() {
 
     let limit = marrow_compile::MAX_PARSED_FILE_BYTES as u64;
     let dir = TempDir::new("fmt-file-at-bound");
-    let path = dir.root.join("exact.mw");
+    let path = dir.join("exact.mw");
     let file = std::fs::File::create(&path).expect("create at-bound source");
     file.set_len(limit).expect("size at-bound source");
     drop(file);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
         .expect("make source unreadable");
 
-    let output = run_in(&dir.root, &["fmt", "--check", "exact.mw"]);
+    let output = marrow_in(&dir, &["fmt", "--check", "exact.mw"]);
     assert!(!output.status.success(), "the unreadable open still fails");
-    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    let stderr = output.stderr_text();
     assert!(
         stderr.contains("io.read"),
         "an at-limit file passes admission and reaches the read: {stderr}"
@@ -288,11 +256,11 @@ fn fmt_admits_a_file_of_exactly_the_module_limit() {
 #[test]
 fn run_jsonl_names_the_export_bound_kind() {
     let dir = TempDir::new("run-exports");
-    over_export_project(&dir.root);
-    let output = run_in(&dir.root, &["run", "main", "--format", "jsonl"]);
+    over_export_project(&dir);
+    let output = marrow_in(&dir, &["run", "main", "--format", "jsonl"]);
     assert!(!output.status.success());
     assert_eq!(
-        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        output.stdout_text(),
         "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"kind_detail\":\"Exports\",\"outcome\":\"error\"}\n"
     );
 }
@@ -305,8 +273,8 @@ fn run_jsonl_names_the_export_bound_kind() {
 #[test]
 fn check_refuses_a_test_entry_ceiling_that_the_production_run_does_not_reach() {
     let dir = TempDir::new("check-test-entries");
-    over_test_entries_project(&dir.root);
-    let checked = run_in(&dir.root, &["check", "."]);
+    over_test_entries_project(&dir);
+    let checked = marrow_in(&dir, &["check", "."]);
     assert!(
         !checked.status.success(),
         "the test-inclusive image is refused"
@@ -316,18 +284,18 @@ fn check_refuses_a_test_entry_ceiling_that_the_production_run_does_not_reach() {
         "no demand summary without an image"
     );
     assert_eq!(
-        String::from_utf8(checked.stderr).expect("utf8 stderr"),
+        checked.stderr_text(),
         "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
          test entry table is full\n"
     );
 
-    let ran = run_in(&dir.root, &["run", "main"]);
+    let ran = marrow_in(&dir, &["run", "main"]);
     assert!(
         ran.status.success(),
         "the production image excludes the tests and fits: {}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    assert_eq!(String::from_utf8(ran.stdout).expect("utf8 stdout"), "0\n");
+    assert_eq!(ran.stdout_text(), "0\n");
 }
 
 /// Two hundred exports each returning a distinct literal near the per-string bound:
@@ -360,12 +328,12 @@ fn check_reports_the_image_byte_ceiling_in_one_sentence_from_either_owner() {
         ),
     ] {
         let dir = TempDir::new(name);
-        project(&dir.root);
-        let checked = run_in(&dir.root, &["check", "."]);
+        project(&dir);
+        let checked = marrow_in(&dir, &["check", "."]);
         assert!(!checked.status.success(), "{name}");
         assert!(checked.stdout.is_empty(), "{name}");
         assert_eq!(
-            String::from_utf8(checked.stderr).expect("utf8 stderr"),
+            checked.stderr_text(),
             "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
              program image is too large\n",
             "{name}"

@@ -1,8 +1,8 @@
-//! Diagnostic actionability: the E07-M3 seeded-defect corpus as a permanent red suite.
+//! Diagnostic actionability: a seeded-defect corpus as a permanent red suite.
 //!
-//! The M3 gate scored the diagnostic each seeded memory-path defect produces on four
-//! axes — location, cause, steer, and cascade cleanliness — and flagged five as merely
-//! detected or cascade-obscured. This suite reconstructs each flagged defect on the
+//! Each seeded memory-path defect's diagnostic is scored on four axes — location, cause,
+//! steer, and cascade cleanliness. Five were once merely detected or cascade-obscured;
+//! this suite reconstructs each on the
 //! durable shapes it was measured on, reduced to owner-local fixtures (`actionability`,
 //! `cross_module_roots`), and pins the
 //! *actionable* shape the fix establishes: the typed code, the span at the defect, the
@@ -54,7 +54,7 @@ fn diagnostics(project: &Project) -> Diagnostics {
 }
 
 // ---------------------------------------------------------------------------
-// Item 1 — D11: an unclosed delimiter names its open site and does not cascade.
+// Item 1 — an unclosed delimiter names its open site and does not cascade.
 // ---------------------------------------------------------------------------
 
 /// A function body missing its closing `}` swallows every following declaration as body
@@ -105,7 +105,7 @@ fn d11_a_truncated_body_is_reported_not_silently_recovered() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 2 — D13: an unbounded durable traversal names the bound law.
+// Item 2 — an unbounded durable traversal names the bound law.
 // ---------------------------------------------------------------------------
 
 /// A durable `for` head written without `at most` reaches the checker's bounded-traversal
@@ -140,7 +140,7 @@ fn d13_unbounded_traversal_names_the_bound_law_at_the_head() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 3 — D07: a dropped root reports once, not at every reference.
+// Item 3 — a dropped root reports once, not at every reference.
 // ---------------------------------------------------------------------------
 
 /// One missing `.marrow/ids` field row drops `^members` from the durable registry. The
@@ -188,7 +188,7 @@ fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 4 — D04: a failed initializer poisons its name; no scope cascade.
+// Item 4 — a failed initializer poisons its name; no scope cascade.
 // ---------------------------------------------------------------------------
 
 /// A forgotten `??` leaves an optional in arithmetic. The precise primary
@@ -224,7 +224,7 @@ fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 5 — D08/D10: not-in-scope distinguishes family and offers one candidate.
+// Item 5 — not-in-scope distinguishes family and offers one candidate.
 // ---------------------------------------------------------------------------
 
 /// A misspelled store root offers the nearest declared root, spelled as a root.

@@ -1,15 +1,14 @@
-//! D00 slice 3: durable-graph breadth — singleton roots and multi-column key
-//! tuples.
+//! Durable-graph breadth: singleton roots and multi-column key tuples.
 //!
 //! A `store` root is either a singleton (no key) or a keyed tuple of one or more
 //! ordered key columns. Every such root is a distinct graph node with a complete
 //! ledger identity (its placement, its product, one identity per key column, and
 //! one per stored field), a slot in the image DURABLE table, and a contribution
 //! to the durable-contract identity the verifier independently re-encodes. The
-//! wider runtime (multi-column keys, singleton entry addressing) executes at E01;
-//! in this preview these shapes compile, verify, and complete their identity, but
-//! an operation over a shape the single-root kernel cannot yet serve is a precise
-//! typed `check.unsupported` rejection rather than a silent drop.
+//! wider runtime (multi-column keys, singleton entry addressing) does not execute
+//! yet: these shapes compile, verify, and complete their identity, but an operation
+//! over a shape the single-root kernel cannot serve is a precise typed
+//! `check.unsupported` rejection rather than a silent drop.
 
 use marrow_compile::{Compiled, SourceDiagnostic};
 use marrow_verify::DurableContractId;

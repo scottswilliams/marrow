@@ -1,4 +1,4 @@
-//! D04: verifier-reconstructed durable demand and the export/image/demand
+//! Verifier-reconstructed durable demand and the export/image/demand
 //! identities, observed through the full production path (capture -> compile ->
 //! verify).
 //!
@@ -352,7 +352,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 // --- Ceiling admission vs. invocation coverage feeding the kernel triple. ---
 
 /// The read/write coverage the store ceiling checks, projected from an image
-/// demand. This is the seam a durable runtime driver crosses at E01: the stable
+/// demand. This is the seam a durable runtime driver crosses: the stable
 /// atom set feeds the kernel's authority triple (`marrow-kernel`, which owns the
 /// engine) through its read/write coverage. The intersection with a ceiling and a
 /// grant is the kernel's; here the projection and the union-vs-named distinction

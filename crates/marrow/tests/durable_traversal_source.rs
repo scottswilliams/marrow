@@ -1,4 +1,4 @@
-//! Bounded nested `for` traversal, executed end to end from source (E04).
+//! Bounded nested `for` traversal, executed end to end from source.
 //!
 //! `for k in ^root at most N [from f] on more` freezes the first `N` immediate keys of
 //! a durable root or single-level branch family, runs the body once per frozen key in
@@ -464,7 +464,7 @@ fn family_populated_exists_answers_whether_a_family_has_a_child() {
         run(&image, &mut attachment, "anyBooks", vec![]),
         Some(Value::Bool(true))
     );
-    // No book has notes yet — the E06 "does this asset have notes?" question is false.
+    // No book has notes yet — the "does this asset have notes?" question is false.
     assert_eq!(
         run(&image, &mut attachment, "bookHasNotes", vec![Value::Int(1)]),
         Some(Value::Bool(false))

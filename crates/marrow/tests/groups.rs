@@ -6,83 +6,16 @@
 //! production path (capture -> compile -> encode -> verify -> VM) through the built
 //! binary; inline projects assert the completeness rejection.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-groups-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/groups")
-}
+use common::{Project, conformance_dir, marrow_in};
 
 /// The group conformance fixture passes end to end: a fresh group leaf reads
 /// absent, an assignment sets a leaf present, the whole group reads and copies as
 /// a value unit with value semantics, and `unset` clears a leaf.
 #[test]
 fn group_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(&conformance_dir("groups"), &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -102,9 +35,7 @@ fn group_conformance_fixture_passes_on_the_production_path() {
 /// member rather than a silent incomplete value.
 #[test]
 fn a_required_group_leaf_makes_construction_incomplete() {
-    let temp = TempDir::new("required-group-leaf");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -119,8 +50,9 @@ pub fn make(): string {
     return b.title
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("required-group-leaf");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
@@ -137,9 +69,7 @@ pub fn make(): string {
 /// constructs and runs, and the leaf reads present.
 #[test]
 fn a_required_group_leaf_constructs_when_supplied() {
-    let temp = TempDir::new("required-group-supplied");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -154,8 +84,9 @@ pub fn make(): int {
     return b.details.pages
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("required-group-supplied");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -171,9 +102,7 @@ pub fn make(): int {
 /// required leaf in `Book.details(...)` is a `check.type` rejection.
 #[test]
 fn a_group_constructor_missing_a_required_leaf_is_rejected() {
-    let temp = TempDir::new("group-ctor-missing-required");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -188,8 +117,9 @@ pub fn make(): int {
     return b.details.pages
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("group-ctor-missing-required");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
@@ -205,9 +135,7 @@ pub fn make(): int {
 /// absent through the production path.
 #[test]
 fn a_sparse_group_constructs_and_reads_absent() {
-    let temp = TempDir::new("sparse-group");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -222,8 +150,9 @@ pub fn make(): int {
     return b.details.pages ?? 5
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("sparse-group");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -240,9 +169,7 @@ pub fn make(): int {
 /// is recorded for the lane that lifts it.
 #[test]
 fn a_nested_group_is_declared_unsupported() {
-    let temp = TempDir::new("nested-group");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -260,8 +187,9 @@ pub fn make(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("nested-group");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
@@ -277,9 +205,7 @@ pub fn make(): int {
 /// a required struct field is read-modified-written the same way.
 #[test]
 fn nested_assignment_reaches_through_a_required_struct() {
-    let temp = TempDir::new("nested-struct-rmw");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 struct Point {
@@ -298,8 +224,9 @@ pub fn make(): int {
     return b.at.x
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("nested-struct-rmw");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -316,9 +243,7 @@ pub fn make(): int {
 /// absent. Assign the member a present value first.
 #[test]
 fn assignment_through_a_possibly_absent_member_is_rejected() {
-    let temp = TempDir::new("absent-through");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 struct Point {
@@ -337,8 +262,9 @@ pub fn make(): int {
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("absent-through");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),

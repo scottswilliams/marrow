@@ -183,7 +183,7 @@ fn construct_dereference_reads_the_named_entry() {
 // A `place` bound to an identity operand `^books[id]`: the identity spreads into the
 // root's key columns at the binding, so a whole-entry write and a field read through the
 // place both key off the one pre-evaluated address, exactly as an inline `^books[id]`
-// operation does (durable-places.md §Named Places).
+// operation does; see the named-places reference.
 const PLACE_SOURCE: &str = r#"resource Book {
     required title: string
 }

@@ -1000,7 +1000,7 @@ fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place(
     );
 }
 
-// --- DX05 gap 2: a branch is not a field of a materialized entry record. ---
+// --- A branch is not a field of a materialized entry record. ---
 
 fn compile_diags(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
     let source = format!("{SOURCE}\n{body}");

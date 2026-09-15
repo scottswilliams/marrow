@@ -1,6 +1,6 @@
-//! E07 Graph Report gate: the complete durable-graph report journey.
+//! The Graph Report gate: the complete durable-graph report journey.
 //!
-//! The storeless P02a Graph Report (`graph_report.rs`) parses a directed graph out of a
+//! The storeless Graph Report (`graph_report.rs`) parses a directed graph out of a
 //! text blob. This suite drives its *durable* analog — the `e07_graph_report` fixture —
 //! through the shared harness: the graph lives in the store, the build API mutates it
 //! under transactions, and the read-only `report` export harvests the whole graph with

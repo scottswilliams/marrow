@@ -5,74 +5,8 @@
 
 mod common;
 
-use common::Project;
+use common::{Project, conformance_dir, marrow_in};
 use marrow_vm::{Value, run};
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-c03-coll-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/collections")
-}
 
 /// The collection conformance fixture passes end to end: list construction, append,
 /// iteration, length/isEmpty, map insert/get/replace/remove, key-ordered iteration, nested
@@ -80,11 +14,10 @@ fn fixture_dir() -> PathBuf {
 /// (`split`/`lines`/`join`) all report `passed` through the production path.
 #[test]
 fn collection_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("collections"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -102,9 +35,7 @@ fn collection_conformance_fixture_passes_on_the_production_path() {
 /// and as `[a, b, ...]` in text.
 #[test]
 fn a_returned_list_renders_through_the_run_path() {
-    let temp = TempDir::new("list-return");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn nums(): List<int> {
@@ -114,13 +45,14 @@ pub fn nums(): List<int> {
     return xs
 }
 "#,
-    );
-    let jsonl = run_in(&temp, &["run", "nums", "--format", "jsonl"]);
+    )
+    .materialize("list-return");
+    let jsonl = workspace.marrow(&["run", "nums", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
     assert!(jsonl.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":[1,2]"#), "{stdout}");
 
-    let text = run_in(&temp, &["run", "nums"]);
+    let text = workspace.marrow(&["run", "nums"]);
     let stdout = String::from_utf8_lossy(&text.stdout);
     assert!(stdout.contains("[1, 2]"), "{stdout}");
 }
@@ -211,9 +143,7 @@ pub fn named(): Map<string, string> {
 /// `--format jsonl` and as `[k: v, ...]` in text.
 #[test]
 fn a_returned_map_renders_in_ascending_key_order() {
-    let temp = TempDir::new("map-return");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn scores(): Map<string, int> {
@@ -223,8 +153,9 @@ pub fn scores(): Map<string, int> {
     return m
 }
 "#,
-    );
-    let jsonl = run_in(&temp, &["run", "scores", "--format", "jsonl"]);
+    )
+    .materialize("map-return");
+    let jsonl = workspace.marrow(&["run", "scores", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
     assert!(jsonl.status.success(), "{stdout}");
     assert!(
@@ -232,7 +163,7 @@ pub fn scores(): Map<string, int> {
         "{stdout}"
     );
 
-    let text = run_in(&temp, &["run", "scores"]);
+    let text = workspace.marrow(&["run", "scores"]);
     let stdout = String::from_utf8_lossy(&text.stdout);
     assert!(stdout.contains("[ada: 10, grace: 12]"), "{stdout}");
 }
@@ -241,9 +172,7 @@ pub fn scores(): Map<string, int> {
 /// VM, and both claims in the language reference.
 #[test]
 fn map_key_domain_and_reference_agree() {
-    let accepted = TempDir::new("map-key-domain");
-    project(
-        &accepted,
+    let accepted = Project::single(
         r#"module main
 
 type Rank: int in 1..=8
@@ -287,8 +216,9 @@ pub fn values(): string {
     return result
 }
 "#,
-    );
-    let output = run_in(&accepted, &["run", "values"]);
+    )
+    .materialize("map-key-domain");
+    let output = accepted.marrow(&["run", "values"]);
     assert!(
         output.status.success(),
         "all admitted Map keys must compile, verify, and run: {}",
@@ -350,9 +280,8 @@ pub fn value(): int {
         ),
     ];
     for (name, source, expected_code) in rejected {
-        let temp = TempDir::new("map-key-rejection");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "value", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("map-key-rejection");
+        let output = workspace.marrow(&["run", "value", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             !output.status.success(),
@@ -432,8 +361,8 @@ pub fn value(): int {
 /// law-9 typed runtime fault, rather than allocating unboundedly.
 #[test]
 fn exceeding_the_aggregate_bound_faults() {
-    let output = run_in(
-        &fixture_dir(),
+    let output = marrow_in(
+        &conformance_dir("collections"),
         &["run", "overflowAggregate", "--format", "jsonl"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -449,8 +378,8 @@ fn exceeding_the_aggregate_bound_faults() {
 /// materializing an unbounded string.
 #[test]
 fn exceeding_the_join_text_ceiling_faults() {
-    let output = run_in(
-        &fixture_dir(),
+    let output = marrow_in(
+        &conformance_dir("collections"),
         &["run", "overflowJoin", "--format", "jsonl"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -531,12 +460,11 @@ pub fn show(): string {
 #[test]
 fn a_bare_constructor_without_expected_type_is_a_check_type() {
     for body in ["const xs = List()", "const m = Map()"] {
-        let temp = TempDir::new("bare-ctor");
-        project(
-            &temp,
-            &format!("module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"
+        ))
+        .materialize("bare-ctor");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body} must fail: {stdout}");
         assert!(
@@ -584,10 +512,9 @@ pub fn f(): int {
         ),
     ];
     for (source, code) in cases {
-        let temp = TempDir::new("misuse");
         let full = format!("module main\n\n{source}");
-        project(&temp, &full);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&full).materialize("misuse");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source:?} must fail: {stdout}");
         assert!(
@@ -608,12 +535,11 @@ fn variadic_construction_rejections_are_typed() {
         "const xs = List(a: 1)",
     ];
     for body in cases {
-        let temp = TempDir::new("variadic-reject");
-        project(
-            &temp,
-            &format!("module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"
+        ))
+        .materialize("variadic-reject");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body} must fail: {stdout}");
         assert!(
@@ -628,14 +554,10 @@ fn variadic_construction_rejections_are_typed() {
 #[test]
 fn redeclaring_a_reserved_collection_name_is_a_conflict() {
     for name in ["List", "Map"] {
-        let temp = TempDir::new("reserved");
-        project(
-            &temp,
-            &format!(
+        let workspace = Project::single(&format!(
                 "module main\n\nstruct {name} {{\n\x20   x: int\n}}\n\npub fn f(): int {{\n\x20   return 0\n}}\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+            )).materialize("reserved");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{name} must fail: {stdout}");
         assert!(
@@ -651,14 +573,10 @@ fn redeclaring_a_reserved_collection_name_is_a_conflict() {
 #[test]
 fn redeclaring_a_text_floor_builtin_is_a_conflict() {
     for name in ["split", "lines", "join"] {
-        let temp = TempDir::new("reserved-floor");
-        project(
-            &temp,
-            &format!(
+        let workspace = Project::single(&format!(
                 "module main\n\nfn {name}(): int {{\n\x20   return 0\n}}\n\npub fn f(): int {{\n\x20   return 0\n}}\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+            )).materialize("reserved-floor");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{name} must fail: {stdout}");
         assert!(
@@ -691,9 +609,8 @@ fn a_top_level_collection_equality_is_a_check_type() {
 "#,
     ];
     for source in cases {
-        let temp = TempDir::new("coll-eq");
-        project(&temp, &format!("module main\n\n{source}"));
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!("module main\n\n{source}")).materialize("coll-eq");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source:?} must fail: {stdout}");
         assert!(
@@ -707,9 +624,7 @@ fn a_top_level_collection_equality_is_a_check_type() {
 /// — the text floor joins only a list of string.
 #[test]
 fn join_on_a_non_string_list_is_unsupported() {
-    let temp = TempDir::new("join-misuse");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn f(): string {
@@ -717,8 +632,9 @@ pub fn f(): string {
     return join(xs, ",")
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("join-misuse");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");

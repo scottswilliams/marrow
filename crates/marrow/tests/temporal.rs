@@ -1,4 +1,4 @@
-//! End-to-end narrow-temporal tests (C04): `date`/`instant`/`duration` value types
+//! End-to-end narrow-temporal tests: `date`/`instant`/`duration` value types
 //! built from canonical text literals travel the real production path (capture ->
 //! compile -> encode -> verify -> VM) through the built binary, via the `temporal`
 //! conformance fixture (a due-date scheduler). The language comparison order agrees
@@ -6,72 +6,13 @@
 //! `temporal_order_agreement` test); these cases exercise the language verdicts and
 //! the closed arithmetic floor.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-c04-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn project(dir: &Path, source: &str) {
-    fs::create_dir_all(dir.join("src")).expect("create src");
-    fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n").expect("write toml");
-    fs::write(dir.join("src").join("main.mw"), source).expect("write source");
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/temporal")
-}
+use common::{Project, conformance_dir, marrow_in};
 
 #[test]
 fn temporal_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(&conformance_dir("temporal"), &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -100,12 +41,11 @@ fn a_malformed_temporal_literal_is_a_check_type() {
         r#"const u: duration = duration("-PT0S")"#, // negative zero
     ];
     for body in bodies {
-        let temp = TempDir::new("bad-lit");
-        project(
-            &temp,
-            &format!("module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"
+        ))
+        .materialize("bad-lit");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body} must fail: {stdout}");
         assert!(
@@ -119,20 +59,16 @@ fn a_malformed_temporal_literal_is_a_check_type() {
 /// argument is a typed `check.unsupported` (there is no runtime temporal parse).
 #[test]
 fn a_non_literal_temporal_argument_is_a_check_unsupported() {
-    let temp = TempDir::new("non-lit");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn f(s: string): date {
     return date(s)
 }
 "#,
-    );
-    let output = run_in(
-        &temp,
-        &["run", "f", "--format", "jsonl", "--", "2026-07-15"],
-    );
+    )
+    .materialize("non-lit");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl", "--", "2026-07-15"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
@@ -142,17 +78,16 @@ pub fn f(s: string): date {
 /// is a typed `check.unsupported` pointing at the canonical-text constructor.
 #[test]
 fn a_duration_suffix_literal_is_rejected() {
-    let temp = TempDir::new("suffix");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn f(): duration {
     return 1.second
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("suffix");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
@@ -162,9 +97,7 @@ pub fn f(): duration {
 /// ascending date order regardless of insertion order.
 #[test]
 fn a_date_keyed_map_iterates_in_date_order() {
-    let temp = TempDir::new("date-map");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn schedule(): Map<date, int> {
@@ -174,8 +107,9 @@ pub fn schedule(): Map<date, int> {
     return m
 }
 "#,
-    );
-    let jsonl = run_in(&temp, &["run", "schedule", "--format", "jsonl"]);
+    )
+    .materialize("date-map");
+    let jsonl = workspace.marrow(&["run", "schedule", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
     assert!(jsonl.status.success(), "{stdout}");
     // Keys render as canonical text in ascending date order (earlier date first).
@@ -188,25 +122,21 @@ pub fn schedule(): Map<date, int> {
 /// A temporal export renders its result as canonical text (and JSONL string).
 #[test]
 fn a_temporal_result_renders_as_canonical_text() {
-    let temp = TempDir::new("render");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn tomorrow(d: date): date {
     return addDays(d, 1)
 }
 "#,
-    );
-    let text = run_in(&temp, &["run", "tomorrow", "--", "2026-07-15"]);
+    )
+    .materialize("render");
+    let text = workspace.marrow(&["run", "tomorrow", "--", "2026-07-15"]);
     let stdout = String::from_utf8_lossy(&text.stdout);
     assert!(text.status.success(), "{stdout}");
     assert!(stdout.contains("2026-07-16"), "{stdout}");
 
-    let jsonl = run_in(
-        &temp,
-        &["run", "tomorrow", "--format", "jsonl", "--", "2026-07-15"],
-    );
+    let jsonl = workspace.marrow(&["run", "tomorrow", "--format", "jsonl", "--", "2026-07-15"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
     assert!(stdout.contains(r#""data":"2026-07-16""#), "{stdout}");
 }
@@ -215,20 +145,16 @@ pub fn tomorrow(d: date): date {
 /// runtime (the value is computed from arguments, not a compile-time literal).
 #[test]
 fn date_add_days_overflow_is_a_runtime_fault() {
-    let temp = TempDir::new("overflow");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 pub fn f(d: date, n: int): date {
     return addDays(d, n)
 }
 "#,
-    );
-    let output = run_in(
-        &temp,
-        &["run", "f", "--format", "jsonl", "--", "9999-12-31", "1"],
-    );
+    )
+    .materialize("overflow");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl", "--", "9999-12-31", "1"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(
@@ -244,14 +170,11 @@ pub fn f(d: date, n: int): date {
 #[test]
 fn the_retired_snake_case_temporal_names_are_out_of_scope() {
     for retired in ["date_add_days", "date_days_between"] {
-        let temp = TempDir::new("retired");
-        project(
-            &temp,
-            &format!(
-                "module main\n\npub fn f(a: date, b: date): int {{\n    return {retired}(a, b)\n}}\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(a: date, b: date): int {{\n    return {retired}(a, b)\n}}\n"
+        ))
+        .materialize("retired");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{retired} must fail: {stdout}");
         assert!(
@@ -273,12 +196,11 @@ fn duration_word_literals_fold_to_canonical_durations() {
         ("5 minutes", "PT300S"),
     ];
     for (literal, canonical) in cases {
-        let temp = TempDir::new("dur-words");
-        project(
-            &temp,
-            &format!("module main\n\npub fn f(): duration {{\n    return {literal}\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(): duration {{\n    return {literal}\n}}\n"
+        ))
+        .materialize("dur-words");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success(), "{literal}: {stdout}");
         assert!(
@@ -292,12 +214,11 @@ fn duration_word_literals_fold_to_canonical_durations() {
 /// literal, so an ordinary identifier spelling a unit is untouched.
 #[test]
 fn a_unit_word_is_an_ordinary_identifier_away_from_an_integer_literal() {
-    let temp = TempDir::new("dur-ident");
-    project(
-        &temp,
+    let workspace = Project::single(
         "module main\n\npub fn f(): int {\n    const seconds = 5\n    return seconds\n}\n",
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("dur-ident");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":5"#), "{stdout}");
@@ -308,12 +229,11 @@ fn a_unit_word_is_an_ordinary_identifier_away_from_an_integer_literal() {
 #[test]
 fn a_month_or_year_word_literal_is_a_parse_error() {
     for literal in ["1 month", "3 months", "1 year", "2 years"] {
-        let temp = TempDir::new("dur-unfixed");
-        project(
-            &temp,
-            &format!("module main\n\npub fn f(): duration {{\n    return {literal}\n}}\n"),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(&format!(
+            "module main\n\npub fn f(): duration {{\n    return {literal}\n}}\n"
+        ))
+        .materialize("dur-unfixed");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{literal} must fail: {stdout}");
         assert!(
@@ -327,12 +247,11 @@ fn a_month_or_year_word_literal_is_a_parse_error() {
 /// a `duration` first, so `n * 1 minute` is a plain `int * duration` type error.
 #[test]
 fn scaling_a_duration_literal_is_a_type_error() {
-    let temp = TempDir::new("dur-scale");
-    project(
-        &temp,
+    let workspace = Project::single(
         "module main\n\npub fn f(n: int): duration {\n    return n * 1 minute\n}\n",
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("dur-scale");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");

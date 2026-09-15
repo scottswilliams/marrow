@@ -22,6 +22,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod common;
+
+use common::TempDir;
+
 /// The pinned supervision module: the mirror under test.
 fn supervisor_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/supervisor/marrow-supervisor.mjs")
@@ -33,29 +37,6 @@ fn fixtures_dir() -> PathBuf {
         .parent()
         .expect("crates dir")
         .join("marrow-local-wire/tests/fixtures")
-}
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new() -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-wire-kat-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
 }
 
 fn assert_driver_passed(output: &Output) {
@@ -1362,15 +1343,15 @@ process.exit(failures === 0 ? 0 : 1);
 #[test]
 #[ignore = "spawns Node; run with the sandbox disabled"]
 fn mirror_agrees_with_authoritative_encoder_on_kat_vectors() {
-    let temp = TempDir::new();
-    let driver = temp.root.join("driver.mjs");
+    let temp = TempDir::new("wire-kat");
+    let driver = temp.join("driver.mjs");
     fs::write(&driver, DRIVER).expect("write driver");
 
     let output = Command::new("node")
         .arg(&driver)
         .env("MARROW_SUPERVISOR", supervisor_path())
         .env("MARROW_KAT_DIR", fixtures_dir())
-        .current_dir(&temp.root)
+        .current_dir(&*temp)
         .output()
         .expect("node not found: the wire KAT cross-check needs Node v23.6+ on PATH");
     assert_driver_passed(&output);

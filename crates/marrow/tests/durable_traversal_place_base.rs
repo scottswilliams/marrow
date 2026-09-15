@@ -1,4 +1,4 @@
-//! A named `place` or a per-iteration pin is a durable traversal base (DX02).
+//! A named `place` or a per-iteration pin is a durable traversal base.
 //!
 //! `for k[, p] in <place>.branch at most N on more` traverses the keyed branch family
 //! beneath the entry a `place`/pin already addresses, exactly as an inline

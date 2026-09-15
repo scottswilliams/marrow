@@ -102,7 +102,7 @@ pub fn getLabel(id: int): string? {
 }
 "#;
 
-/// In-region guard-return exports (DX01): a `return` inside the owned region commits
+/// In-region guard-return exports: a `return` inside the owned region commits
 /// the region's staged writes, then returns. Every export here reuses the `Counter`
 /// schema so the shared identity ledger covers it. `addOnce` is the guard-return
 /// shape the Workshop app teaches: the present path returns `false` (committing an
@@ -197,7 +197,7 @@ pub fn getValue(id: int): int? {
 }
 "#;
 
-/// A `Result`-returning export whose in-region `return` commits (DX01). `setUnlessBig`
+/// A `Result`-returning export whose in-region `return` commits. `setUnlessBig`
 /// stages the write, then on the over-limit path returns `err(...)` *after* the stage
 /// — the author-explicit trap: the staged write commits before the `err` returns.
 const RESULT_SOURCE: &str = r#"resource Counter {
@@ -722,7 +722,7 @@ fn a_fault_before_commit_rolls_the_transaction_back() {
 /// The commit consumes the session's engine transaction, so a mutating export observes
 /// the store inside its region and returns values captured there. A read into a local
 /// before the block closes is the supported form; a read after it cannot reach a live
-/// transaction. TX02 promoted this law to check time: the checker refuses it at the
+/// transaction. The checker enforces this law at check time, refusing it at the
 /// read's span (`check.durable_after_commit`), so it never reaches the verifier. A
 /// tampered image is still refused at `image.flow` (see the `marrow-verify` hostiles).
 #[test]
@@ -776,7 +776,7 @@ pub fn setAndGet(id: int, v: int): int? {
     );
 }
 
-/// DX01: an in-region guard-return commits the region's staged writes, then returns.
+/// An in-region guard-return commits the region's staged writes, then returns.
 /// The present path returns `false` at the guard, committing an empty stage; the
 /// absent path stages the write and returns `true` at the closing brace. Both paths
 /// commit, so a re-add is rejected without disturbing the first entry.
@@ -819,7 +819,7 @@ fn an_in_region_guard_return_commits_and_returns() {
     );
 }
 
-/// DX01: an in-region `return <expr>` evaluates the expression (a durable read runs
+/// An in-region `return <expr>` evaluates the expression (a durable read runs
 /// pre-commit), commits, then returns. The captured value is the committed one.
 #[test]
 fn an_in_region_value_return_commits_the_read_value() {
@@ -842,7 +842,7 @@ fn an_in_region_value_return_commits_the_read_value() {
     );
 }
 
-/// DX01: a `return` from inside two nested guards commits the region's staged write.
+/// A `return` from inside two nested guards commits the region's staged write.
 #[test]
 fn a_return_in_a_nested_guard_commits() {
     let image = compile_verify(GUARD_SOURCE);
@@ -879,7 +879,7 @@ fn a_return_in_a_nested_guard_commits() {
     );
 }
 
-/// DX01: a helper's own early `return` inside the owner's region is not a region exit
+/// A helper's own early `return` inside the owner's region is not a region exit
 /// — only the owning export's returns commit. The helper returns a value to the owner,
 /// which commits at its closing brace.
 #[test]
@@ -912,7 +912,7 @@ fn a_helper_return_is_not_a_region_exit() {
     );
 }
 
-/// DX01 all-paths-return region: a `transaction` whose only path returns from inside
+/// An all-paths-return region: a `transaction` whose only path returns from inside
 /// (no trailing return after the block) is a legal, whole region — the checker accepts
 /// it (the region diverges, so the function returns on every path) and the verifier
 /// admits it (no unreachable closing commit is emitted). The in-region return commits
@@ -938,7 +938,7 @@ fn an_unconditional_in_region_return_commits() {
     );
 }
 
-/// DX01 all-paths-return region: an `if`/`else` where both arms return from inside the
+/// An all-paths-return region: an `if`/`else` where both arms return from inside the
 /// region is a whole region with no fall-through. Each arm commits its own staged write
 /// before returning, and no closing-brace commit is emitted.
 #[test]
@@ -977,7 +977,7 @@ fn both_arms_returning_in_region_commit() {
     );
 }
 
-/// DX01: a `return checked` inside a region commits on its success path — the
+/// A `return checked` inside a region commits on its success path — the
 /// `CheckedBind::Return` lowering site places the commit before the return. The whole
 /// region is an all-paths-return region (the checked form and its diverging arm both
 /// exit), so no closing commit is emitted.
@@ -1003,7 +1003,7 @@ fn a_return_checked_in_region_commits() {
     );
 }
 
-/// DX01 adversarial: `return err(...)` after a staged write COMMITS the write. The
+/// Adversarial: `return err(...)` after a staged write COMMITS the write. The
 /// in-region return is a commit site regardless of the returned `Result` tag — the
 /// author-explicit trap the decision of record pins. The over-limit path returns an
 /// `err` value, yet the staged write is durably committed and reads back.
@@ -1408,7 +1408,7 @@ fn a_direct_mutation_outside_a_transaction_is_a_check_error() {
 }
 
 /// An `unreachable` fault reached conditionally inside a transaction rolls the
-/// region back, exactly like an arithmetic fault: the C01 divergence machinery and
+/// region back, exactly like an arithmetic fault: the divergence machinery and
 /// the transaction effects compose. The non-diverging path commits normally.
 #[test]
 fn an_unreachable_fault_inside_a_transaction_rolls_back() {
@@ -1449,7 +1449,7 @@ fn an_unreachable_fault_inside_a_transaction_rolls_back() {
 /// mutating invocation on the same attachment commits normally. This is the
 /// budget-family instance of the rollback-isolation law already pinned above for
 /// overflow and unreachable faults; it fixes budget exhaustion as
-/// an ordinary rolling-back terminal fault before the E07 taxonomy freeze.
+/// an ordinary rolling-back terminal fault.
 ///
 /// Ignored in the default suite: the instruction budget is a private VM constant
 /// (`1 << 26`) with no runner, CLI, or environment override by design, so the

@@ -1,7 +1,7 @@
 //! A named `place`/pin composes as a base for group-leaf and branch-entry operations
-//! wherever the equivalent inline `^root…` path is admitted (DX06 item 1).
+//! wherever the equivalent inline `^root…` path is admitted.
 //!
-//! Before DX06 a bound place composed only as a traversal base (DX02) and for a single
+//! A bound place formerly composed only as a traversal base and for a single
 //! top-level field; a branch-entry write, a branch-field read, or a group-leaf operation
 //! through a place was refused with a message that misnamed the failure ("no field",
 //! "not in scope", "not yet supported"). These tests drive the whole production path
@@ -202,7 +202,7 @@ pub fn replaceDetailsViaPlace(id: int, p: int) {
     }
 }
 
-// --- exists over a branch family named through a place (DX06 item 2) ---
+// --- exists over a branch family named through a place ---
 
 pub fn hasNotesViaPlace(id: int): bool {
     place b = ^books[id]
@@ -213,7 +213,7 @@ pub fn hasNotesInline(id: int): bool {
     return exists(^books[id].notes)
 }
 
-// --- a per-iteration pin's presence participates in the presence lattice (DX06 item 4) ---
+// --- a per-iteration pin's presence participates in the presence lattice ---
 
 pub fn touchNotesPinExists(id: int) {
     transaction {
@@ -670,7 +670,7 @@ fn exists_over_a_branch_family_named_through_a_place_matches_inline() {
 /// A per-iteration pin's presence participates in the presence lattice exactly where the
 /// equivalent branch `place` binding's does: a field set guarded by `exists(p)` or by an
 /// `if const` binding of the pin lowers to the present-entry form (`DurSetField`). This
-/// pins the parity DX06 item 4 verified as already-held, so a regression is conspicuous.
+/// pins that parity, so a regression is conspicuous.
 #[test]
 fn a_pin_guarded_sparse_set_lowers_strict_at_parity_with_a_place() {
     let image = compile_verify();

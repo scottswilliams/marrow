@@ -16,62 +16,17 @@
 //! endpoint. A generic transport or second grammar fails here.
 
 use std::fs;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+
+mod common;
+
+use common::{TempDir, marrow_in, write};
 
 use marrow_image::{
     CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, RecordShape,
     RootShape, VariantShape,
 };
 use marrow_verify::{RetShape, SealedCollectionType};
-
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-g02a-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
 
 #[test]
 fn nominal_aggregate_inputs_publish_neither_client_nor_image() {
@@ -85,9 +40,9 @@ fn nominal_aggregate_inputs_publish_neither_client_nor_image() {
         vec!["client", "typescript", "--out", "gen"],
         vec!["image", "--out", "program.image"],
     ] {
-        let output = run_in(&temp, &args);
+        let output = marrow_in(&temp, &args);
         assert_eq!(output.status.code(), Some(1));
-        let stderr = String::from_utf8(output.stderr).expect("UTF-8 diagnostics");
+        let stderr = output.stderr_text();
         assert!(
             stderr.starts_with("src/main.mw:4:19: check.unsupported:"),
             "{stderr}"
@@ -173,7 +128,7 @@ fn fixture_project(temp: &TempDir) -> PathBuf {
 }
 
 fn generate(project: &Path, out: &str) -> PathBuf {
-    let output = run_in(project, &["client", "typescript", "--out", out]);
+    let output = marrow_in(project, &["client", "typescript", "--out", out]);
     assert!(
         output.status.success(),
         "generation failed: {}",
@@ -396,7 +351,7 @@ fn a_collection_export_generates() {
 }
 "#,
     );
-    let output = run_in(&project, &["client", "typescript", "--out", "gen"]);
+    let output = marrow_in(&project, &["client", "typescript", "--out", "gen"]);
     assert!(
         output.status.success(),
         "generation failed: {}",

@@ -1,5 +1,8 @@
 //! Storeless language behavior through the CLI and compiler.
 
+#[path = "common/mod.rs"]
+mod common;
+
 #[path = "storeless/alias_types.rs"]
 mod alias_types;
 #[path = "storeless/interval_membership.rs"]

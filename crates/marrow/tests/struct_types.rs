@@ -3,73 +3,9 @@
 //! VM) through the built binary, via the `struct_types` conformance fixture and
 //! inline invalid-source projects asserting typed diagnostics.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-c02-struct-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR is `<root>/crates/marrow`.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/struct_types")
-}
+use common::{Project, conformance_dir, marrow_in};
 
 /// The struct conformance fixture passes end to end: named-only construction,
 /// order-independent field arguments, value/copy semantics through locals and a
@@ -78,11 +14,10 @@ fn fixture_dir() -> PathBuf {
 /// path.
 #[test]
 fn struct_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("struct_types"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -100,9 +35,7 @@ fn struct_conformance_fixture_passes_on_the_production_path() {
 /// that builds a struct and returns one field yields that field's value.
 #[test]
 fn a_struct_field_read_flows_through_the_vm() {
-    let temp = TempDir::new("field-read");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Point {
     x: int
     y: int
@@ -113,8 +46,9 @@ pub fn originX(): int {
     return p.x
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "originX", "--format", "jsonl"]);
+    )
+    .materialize("field-read");
+    let output = workspace.marrow(&["run", "originX", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":3"#), "{stdout}");
@@ -128,9 +62,7 @@ pub fn originX(): int {
 #[test]
 fn a_record_typed_optional_vacant_load_verifies_and_runs() {
     // D1: an explicit `absent` in a struct-typed optional local.
-    let temp = TempDir::new("record-optional-absent");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Point {
     x: int
     y: int
@@ -147,21 +79,20 @@ pub fn pick(hit: bool): int {
     return -1
 }
 "#,
-    );
-    let absent = run_in(&temp, &["run", "pick", "--format", "jsonl", "--", "false"]);
+    )
+    .materialize("record-optional-absent");
+    let absent = workspace.marrow(&["run", "pick", "--format", "jsonl", "--", "false"]);
     let absent_out = String::from_utf8_lossy(&absent.stdout);
     assert!(absent.status.success(), "{absent_out}");
     assert!(absent_out.contains(r#""data":-1"#), "{absent_out}");
-    let present = run_in(&temp, &["run", "pick", "--format", "jsonl", "--", "true"]);
+    let present = workspace.marrow(&["run", "pick", "--format", "jsonl", "--", "true"]);
     let present_out = String::from_utf8_lossy(&present.stdout);
     assert!(present.status.success(), "{present_out}");
     assert!(present_out.contains(r#""data":1"#), "{present_out}");
 
     // The twin: a sparse struct-typed resource field omitted at construction
     // defaults to a vacant optional record.
-    let twin = TempDir::new("record-optional-omitted");
-    project(
-        &twin,
+    let twin = Project::single(
         r#"struct Addr {
     city: string
 }
@@ -181,8 +112,9 @@ pub fn hasAddr(): int {
     return -1
 }
 "#,
-    );
-    let output = run_in(&twin, &["run", "hasAddr", "--format", "jsonl"]);
+    )
+    .materialize("record-optional-omitted");
+    let output = twin.marrow(&["run", "hasAddr", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":-1"#), "{stdout}");
@@ -193,9 +125,7 @@ pub fn hasAddr(): int {
 /// sparse composite field without a double wrap.
 #[test]
 fn optional_member_read_propagates_absence_and_chains() {
-    let temp = TempDir::new("optional-member");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Inner {
     tag: string
 }
@@ -213,13 +143,14 @@ pub fn tagOf(hit: bool): string {
     return o?.inner?.tag ?? "none"
 }
 "#,
-    );
+    )
+    .materialize("optional-member");
     assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "tagOf", "--", "true"]).stdout),
+        String::from_utf8_lossy(&workspace.marrow(&["run", "tagOf", "--", "true"]).stdout),
         "T\n"
     );
     assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "tagOf", "--", "false"]).stdout),
+        String::from_utf8_lossy(&workspace.marrow(&["run", "tagOf", "--", "false"]).stdout),
         "none\n"
     );
 }
@@ -238,9 +169,8 @@ fn optional_member_read_rejects_a_non_optional_or_non_composite_base() {
             "f",
         ),
     ] {
-        let temp = TempDir::new("optional-member-bad");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", entry, "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("optional-member-bad");
+        let output = workspace.marrow(&["run", entry, "--format", "jsonl"]);
         assert!(!output.status.success(), "{source}");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("check.type"), "{source}: {stdout}");
@@ -259,11 +189,8 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
         "const p = Point(1, 2)",
         "const p = Point(x: \"s\", y: 2)",
     ] {
-        let temp = TempDir::new("bad-construct");
-        project(
-            &temp,
-            &format!(
-                "struct Point {{\n\
+        let workspace = Project::single(&format!(
+            "struct Point {{\n\
                  \x20   x: int\n\
                  \x20   y: int\n\
                  }}\n\
@@ -272,9 +199,9 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
                  \x20   {body}\n\
                  \x20   return 0\n\
                  }}\n"
-            ),
-        );
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        ))
+        .materialize("bad-construct");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{body} must fail: {stdout}");
         assert!(
@@ -287,9 +214,7 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
 /// Reading a field a struct does not declare is a typed `check.type`.
 #[test]
 fn reading_an_unknown_field_is_a_check_type_diagnostic() {
-    let temp = TempDir::new("unknown-field");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Point {
     x: int
 }
@@ -299,8 +224,9 @@ pub fn f(): int {
     return p.z
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("unknown-field");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
@@ -363,9 +289,8 @@ pub fn f(): int {
 }
 "#,
     ] {
-        let temp = TempDir::new("non-bare-field");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("non-bare-field");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source:?} must fail: {stdout}");
         assert!(
@@ -425,9 +350,8 @@ pub fn f(): int {
 }
 "#,
     ] {
-        let temp = TempDir::new("name-conflict");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("name-conflict");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source:?} must fail: {stdout}");
         assert!(
@@ -443,9 +367,7 @@ pub fn f(): int {
 /// `{field: value, ...}` in text.
 #[test]
 fn a_returned_struct_renders_through_the_run_path() {
-    let temp = TempDir::new("struct-return");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Point {
     x: int
     y: int
@@ -459,13 +381,14 @@ pub fn moved(): Point {
     return shift(Point(x: 1, y: 2), 10)
 }
 "#,
-    );
-    let jsonl = run_in(&temp, &["run", "moved", "--format", "jsonl"]);
+    )
+    .materialize("struct-return");
+    let jsonl = workspace.marrow(&["run", "moved", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
     assert!(jsonl.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":{"x":11,"y":2}"#), "{stdout}");
 
-    let text = run_in(&temp, &["run", "moved"]);
+    let text = workspace.marrow(&["run", "moved"]);
     let stdout = String::from_utf8_lossy(&text.stdout);
     assert!(stdout.contains("{x: 11, y: 2}"), "{stdout}");
 }
@@ -474,9 +397,7 @@ pub fn moved(): Point {
 /// cannot be run from the terminal: the argument decode is a usage error (exit 2).
 #[test]
 fn a_struct_argument_cannot_be_passed_on_the_command_line() {
-    let temp = TempDir::new("struct-arg");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Point {
     x: int
 }
@@ -485,8 +406,9 @@ pub fn takesPoint(p: Point): int {
     return p.x
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "takesPoint", "--", "5"]);
+    )
+    .materialize("struct-arg");
+    let output = workspace.marrow(&["run", "takesPoint", "--", "5"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
@@ -495,9 +417,7 @@ pub fn takesPoint(p: Point): int {
 /// value semantics — lives in the `resource_values` fixture and test.
 #[test]
 fn a_resource_return_is_admitted() {
-    let temp = TempDir::new("resource-return");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"resource Book {
     required title: string
 }
@@ -510,8 +430,9 @@ fn draft(): Book {
     return Book(title: "t")
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("resource-return");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":"t""#), "{stdout}");
@@ -522,9 +443,7 @@ fn draft(): Book {
 /// is admitted with no depth restriction other than the value-graph having no cycle.
 #[test]
 fn a_struct_field_may_be_a_struct() {
-    let temp = TempDir::new("nested-struct");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Inner {
     v: int
 }
@@ -543,13 +462,14 @@ pub fn whole(): Outer {
     return Outer(inner: Inner(v: 9), tag: 1)
 }
 "#,
-    );
-    let sum = run_in(&temp, &["run", "sum", "--format", "jsonl"]);
+    )
+    .materialize("nested-struct");
+    let sum = workspace.marrow(&["run", "sum", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&sum.stdout);
     assert!(sum.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":10"#), "{stdout}");
 
-    let whole = run_in(&temp, &["run", "whole", "--format", "jsonl"]);
+    let whole = workspace.marrow(&["run", "whole", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&whole.stdout);
     assert!(whole.status.success(), "{stdout}");
     assert!(
@@ -564,9 +484,7 @@ pub fn whole(): Outer {
 /// through the VM.
 #[test]
 fn a_struct_field_may_name_a_later_declared_struct() {
-    let temp = TempDir::new("forward-ref");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct A {
     b: B
 }
@@ -584,8 +502,9 @@ pub fn f(): int {
     return a.b.c.v
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    )
+    .materialize("forward-ref");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":42"#), "{stdout}");
@@ -596,9 +515,7 @@ pub fn f(): int {
 /// keeps its enum identity through `FieldGet`).
 #[test]
 fn a_struct_field_may_be_an_enum_and_match_over_the_field_read() {
-    let temp = TempDir::new("struct-enum-field");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"enum Color {
     red
     green
@@ -616,8 +533,9 @@ pub fn name(): string {
     }
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "name", "--format", "jsonl"]);
+    )
+    .materialize("struct-enum-field");
+    let output = workspace.marrow(&["run", "name", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":"g""#), "{stdout}");
@@ -662,9 +580,8 @@ pub fn f(): int {
 }
 "#,
     ] {
-        let temp = TempDir::new("value-cycle");
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize("value-cycle");
+        let output = workspace.marrow(&["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{source:?} must fail: {stdout}");
         assert!(
@@ -679,9 +596,7 @@ pub fn f(): int {
 /// transaction, both verifying in one image.
 #[test]
 fn a_struct_and_a_resource_coexist() {
-    let temp = TempDir::new("coexist");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"struct Point {
     x: int
 }
@@ -703,8 +618,9 @@ pub fn writer(id: int) {
     }
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "pointX", "--format", "jsonl"]);
+    )
+    .materialize("coexist");
+    let output = workspace.marrow(&["run", "pointX", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":5"#), "{stdout}");
@@ -717,15 +633,14 @@ pub fn writer(id: int) {
 /// code, not the prose.
 #[test]
 fn a_method_call_on_a_value_is_a_check_unsupported_diagnostic() {
-    let temp = TempDir::new("method-call");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"pub fn f(s: string): string {
     return s.trim()
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "hi"]);
+    )
+    .materialize("method-call");
+    let output = workspace.marrow(&["run", "f", "--format", "jsonl", "--", "hi"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");

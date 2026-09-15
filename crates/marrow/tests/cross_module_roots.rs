@@ -1,13 +1,11 @@
 //! The project-wide durable-root pin: a durable root is visible to every module in
 //! the project, not only the module that declares it.
 //!
-//! Module `bank` declares `store ^accounts` and `teller` both reads and writes it.
-//! The E07 M1 flagship read this law as broken and was forced single-module; the M2
-//! evidence check found the law already holds (one flat root gather, a single durable
-//! registry, no module gate on root resolution) and that the flagship symptom was a
-//! separate identity-admission diagnostic confound. This pin makes the law a
-//! regression target directly, through the production capture -> compile -> verify ->
-//! run path and through `marrow check`, so the confound cannot mislead again.
+//! Module `bank` declares `store ^accounts` and `teller` both reads and writes it. The
+//! law holds through one flat root gather, a single durable registry, and no module gate
+//! on root resolution; this pin makes it a regression target directly, through the
+//! production capture -> compile -> verify -> run path and through `marrow check`, so a
+//! separate identity-admission diagnostic cannot be mistaken for a module gate.
 
 mod common;
 

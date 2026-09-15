@@ -7,12 +7,9 @@
 //! compile -> encode -> verify -> VM) through the built binary; inline projects pin
 //! the boundary of the admitted subset (an optional resource parameter stays refused).
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+use common::{Project, conformance_dir, marrow_in};
 
 fn verify_resource_group_read(members: &str) {
     let source = format!(
@@ -48,76 +45,15 @@ fn resource_group_read_without_a_generic_field() {
     verify_resource_group_read("    details { required count: int }");
 }
 
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-resource-values-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/resource_values")
-}
-
 /// The resource-value conformance fixture passes end to end: a resource
 /// annotation, a resource parameter, a resource return, the copy-part-and-save-back
 /// helper shape (group leaf included), and value semantics across the call.
 #[test]
 fn resource_value_conformance_fixture_passes_on_the_production_path() {
-    let output = Command::new(MARROW)
-        .args(["test", "--format", "jsonl"])
-        .current_dir(fixture_dir())
-        .output()
-        .expect("run marrow binary");
+    let output = marrow_in(
+        &conformance_dir("resource_values"),
+        &["test", "--format", "jsonl"],
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -137,9 +73,7 @@ fn resource_value_conformance_fixture_passes_on_the_production_path() {
 /// structurally.
 #[test]
 fn a_callee_mutation_does_not_alias_the_caller_resource() {
-    let temp = TempDir::new("no-alias");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -159,8 +93,9 @@ pub fn make(): string {
     return original.subtitle ?? "untouched"
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("no-alias");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -177,9 +112,7 @@ pub fn make(): string {
 /// as an optional `struct` does. Positive control for the admitted binding position.
 #[test]
 fn an_optional_resource_binding_is_admitted() {
-    let temp = TempDir::new("optional-resource-binding");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -194,8 +127,9 @@ pub fn make(): string {
     return "none"
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("optional-resource-binding");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -212,9 +146,7 @@ pub fn make(): string {
 /// return position.
 #[test]
 fn an_optional_resource_return_is_admitted() {
-    let temp = TempDir::new("optional-resource-return");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -235,8 +167,9 @@ pub fn make(): string {
     return "none"
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("optional-resource-return");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -253,9 +186,7 @@ pub fn make(): string {
 /// type is `check.unsupported`. The boundary of the admitted parameter subset.
 #[test]
 fn an_optional_resource_parameter_is_refused_like_any_optional_parameter() {
-    let temp = TempDir::new("optional-resource-param");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"module main
 
 resource Book {
@@ -270,8 +201,9 @@ pub fn make(): string {
     return "x"
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    )
+    .materialize("optional-resource-param");
+    let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
@@ -358,9 +290,8 @@ pub fn make(): string {
         ),
     ];
     for (name, source) in cases {
-        let temp = TempDir::new(name);
-        project(&temp, source);
-        let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+        let workspace = Project::single(source).materialize(name);
+        let output = workspace.marrow(&["run", "make", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             !output.status.success(),
