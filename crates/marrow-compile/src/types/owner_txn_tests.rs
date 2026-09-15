@@ -472,11 +472,6 @@ fn an_abandoned_batch_restores_the_metadata_cache_and_the_queue_front() {
 /// guard produces, not a registry rollback.
 #[test]
 fn an_abandoned_batch_leaves_the_diagnostic_owners_to_their_own_custody() {
-    assert_eq!(
-        super::owner_txn::UNRESTORED_DIAGNOSTIC_OWNERS,
-        ["limit", "collection_payloads"],
-    );
-
     let mut records = registry(vec![template("Leaf", vec![("value", name("T"))])]);
     let mut owner = ImageDraft::new();
     assert!(matches!(records.generics.borrow().limit, LimitState::Open));

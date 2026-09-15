@@ -36,31 +36,22 @@ pub(super) struct RegistryInverse {
     pub(super) isolation: Option<ProofIsolation>,
 }
 
-/// The two `Monomorph` owners this inverse deliberately does not restore, and why.
-///
-/// `limit` and `collection_payloads` are the instantiation-limit terminal and the
-/// ordered collection-payload diagnostic buffer. Both are diagnostic payload, which the
-/// phase places exclusively in the predecessor substrate's custody: `DraftTxn` never
-/// owns, copies, journals, or exposes it, and this inverse mirrors that boundary rather
-/// than opening a second custody for the same rows.
-///
-/// That exclusion is only sound because something else decides visibility: the staged-body
-/// guard owns this guard and its still-private diagnostic and fact payloads together. A
-/// batch that ends in an invariant drops that aggregate and publishes nothing regardless
-/// of what these two owners hold. Journaling them here as well would be a second custody
-/// over rows this inverse is not entitled to own.
-///
-/// An isolated template proof is the one exception, and it is not a restoration of
-/// these owners either: it *swaps them out* at admission so the throwaway pass cannot
-/// reach the live ones at all, then puts the live owners back whole.
-///
-/// This is stated here because [`TypeRegistry::admit_generic_owners`] destructures
-/// `Monomorph` exhaustively: a new owner cannot be added without a decision recorded at
-/// one of these two places.
-#[cfg(test)]
-pub(super) const UNRESTORED_DIAGNOSTIC_OWNERS: [&str; 2] = ["limit", "collection_payloads"];
-
 /// The live owners an isolated template proof runs without.
+///
+/// `Monomorph`'s `limit` and `collection_payloads` — the instantiation-limit terminal
+/// and the ordered collection-payload diagnostic buffer — are the two owners this
+/// inverse deliberately does not restore. Both are diagnostic payload, which the phase
+/// places exclusively in the predecessor substrate's custody: `DraftTxn` never owns,
+/// copies, journals, or exposes it, and this inverse mirrors that boundary rather than
+/// opening a second custody for the same rows. That exclusion is sound because the
+/// staged-body guard owns this guard and its still-private diagnostic and fact payloads
+/// together, and a batch that ends in an invariant drops the aggregate whole.
+///
+/// An isolated template proof is the one exception, and it is not a restoration either:
+/// it *swaps them out* at admission so the throwaway pass cannot reach the live ones at
+/// all, then puts the live owners back whole. [`TypeRegistry::admit_generic_owners`]
+/// destructures `Monomorph` exhaustively, so a new owner cannot be added without a
+/// decision recorded at one of these two places.
 pub(super) struct ProofIsolation {
     pub(super) prior_payloads: DiagnosticCollector,
 }

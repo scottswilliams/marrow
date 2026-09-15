@@ -991,8 +991,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let spans = std::mem::take(&mut self.spans);
         let code_spans = std::mem::take(&mut self.full_spans);
         let has_direct_durable_op = code.iter().any(is_durable_place_op);
-        #[cfg(test)]
-        let allocation = code.as_ptr();
         self.draft.fill_function(
             func_id,
             FunctionDef {
@@ -1005,18 +1003,6 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 spans,
             },
         )?;
-        #[cfg(test)]
-        instruction_ownership_tests::observe(
-            self.mode,
-            self.body_kind,
-            !self.type_env.is_empty(),
-            allocation,
-            self.draft
-                .function_code(func_id)
-                .expect("the successful fill is present"),
-            &self.calls,
-            &self.presence_obligations,
-        );
         Ok(BodyOutcome::Lowered(Lowered {
             func: func_id,
             callees: std::mem::take(&mut self.calls),
@@ -1511,7 +1497,7 @@ fn refusal_control(owner: &mut ImageDraft) -> marrow_image::EncodedImage {
 mod lower_metadata_successor_tests;
 
 #[cfg(test)]
-mod instruction_ownership_tests;
+mod presence_interval_tests;
 
 #[cfg(test)]
 mod generic_cache_boundary_tests;
