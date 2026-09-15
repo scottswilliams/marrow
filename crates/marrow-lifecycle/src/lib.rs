@@ -38,7 +38,6 @@ mod headmap;
 mod image;
 mod import;
 mod instance;
-mod lock;
 mod provision;
 mod recovery;
 mod report;
@@ -74,7 +73,6 @@ pub use import::{
     import_jsonl,
 };
 pub use instance::{EntropyUnavailable, StoreInstanceId};
-pub use lock::{LockError, LockOwner};
 pub use restore::{RestoreBatchOutcome, RestoreError, RestoreFault, RestoredStore, restore};
 // The invocation grant `import_jsonl` requires. It is a kernel type, re-exported here so a
 // privileged caller (the companion runner's `import` command) can name and mint the full-store

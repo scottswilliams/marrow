@@ -28,8 +28,9 @@ use std::path::{Path, PathBuf};
 use marrow_codes::Code;
 use marrow_kernel::durable::{
     AuditReport, CommitRecovery, ContentDigest, DemandCoverage, DurableCommitState,
-    InvocationGrant, NativeOpenAccess, NativeOwnerAcquireError, NativeOwnerOpenError, NativeStore,
-    NumberedProjection, ReadSession, SessionError, SessionHost, StoreError, TxnSession,
+    InvocationGrant, NativeLockError, NativeOpenAccess, NativeOwnerAcquireError,
+    NativeOwnerOpenError, NativeStore, NumberedProjection, ReadSession, SessionError, SessionHost,
+    StoreError, TxnSession,
 };
 
 use crate::durable_fs::Publication;
@@ -37,7 +38,6 @@ use crate::envelope::StoreEnvelope;
 use crate::envelope::{EnvelopeRecord, EnvelopeState};
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
-use crate::lock::LockError;
 use crate::store_dir::{
     self, AdmissionError, AdmittedStoreDir, Artifact, StoreAccessError, StoreEntry,
 };
@@ -511,7 +511,7 @@ impl OpenStore {
             head_digest,
         } = self;
         let owner = owner.into_service().map_err(|error| match error {
-            NativeOwnerOpenError::Lock(error) => OpenError::Lock(LockError::from(error)),
+            NativeOwnerOpenError::Lock(error) => OpenError::Lock(error),
             NativeOwnerOpenError::Store(error) => OpenError::Store(error),
             NativeOwnerOpenError::Refused(refusal) => OpenError::Corruption {
                 message: format!("service preparation refused the owner state: {refusal:?}"),
@@ -588,7 +588,7 @@ pub enum OpenError {
     /// The store directory exists but is missing a durable artifact.
     Incomplete,
     /// The store is held by another owner, or the lock could not be taken.
-    Lock(LockError),
+    Lock(NativeLockError),
     /// One of the store directory's own artifacts could not be admitted under the owner:
     /// its entry was refused, it was reachable under a second name, it changed while it was
     /// being read, or its bytes did not decode. A decode failure carries the typed
@@ -709,7 +709,7 @@ impl LockedStore {
         decide_before_locking(dir)?;
         let pending = NativeStore::acquire_existing(dir).map_err(|error| match error {
             NativeOwnerAcquireError::Io(error) => OpenError::Io(error),
-            NativeOwnerAcquireError::Lock(error) => OpenError::Lock(LockError::from(error)),
+            NativeOwnerAcquireError::Lock(error) => OpenError::Lock(error),
         })?;
         #[cfg(test)]
         admission_substitution::apply(pending.directory());
@@ -790,7 +790,7 @@ impl LockedStore {
                 Ok::<_, std::convert::Infallible>(layout)
             })
             .map_err(|error| match error {
-                NativeOwnerOpenError::Lock(error) => OpenError::Lock(LockError::from(error)),
+                NativeOwnerOpenError::Lock(error) => OpenError::Lock(error),
                 NativeOwnerOpenError::Refused(never) => match never {},
                 NativeOwnerOpenError::Store(StoreError::Corruption { message }) => {
                     OpenError::Corruption { message }
@@ -1258,7 +1258,7 @@ mod tests {
         assert!(matches!(
             held.fault,
             crate::RecoveryFault::Validation(crate::AuditError::Open(OpenError::Lock(
-                LockError::StoreInUse { .. }
+                NativeLockError::StoreInUse { .. }
             )))
         ));
         drop(admitted);

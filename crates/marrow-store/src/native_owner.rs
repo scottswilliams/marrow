@@ -117,15 +117,30 @@ impl NativeLockOwner {
 pub enum NativeLockError {
     /// Another live owner holds the store.
     StoreInUse { owner: Option<NativeLockOwner> },
+    /// This process is denied the access taking the lock requires, so the lock was never
+    /// asked for. Nothing about the store was established: a failure to reach the store
+    /// directory or its lock entry is not an observation of either.
+    AccessDenied(std::io::Error),
     /// The lock file or directory could not be read or synchronized.
     Io(std::io::Error),
 }
 
 impl NativeLockError {
+    /// Classify an I/O failure taking the lock. A denial is its own state, so it is
+    /// decided once here rather than re-read from the error at each reporting boundary.
+    fn io(error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            Self::AccessDenied(error)
+        } else {
+            Self::Io(error)
+        }
+    }
+
     /// The stable diagnostic code for this lock failure.
     pub fn code(&self) -> &'static str {
         match self {
             Self::StoreInUse { .. } => Code::StoreLocked.as_str(),
+            Self::AccessDenied(_) => Code::StorePermissionDenied.as_str(),
             Self::Io(_) => Code::StoreIo.as_str(),
         }
     }
@@ -134,6 +149,23 @@ impl NativeLockError {
 impl std::fmt::Display for NativeLockError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::StoreInUse {
+                owner:
+                    Some(NativeLockOwner {
+                        pid,
+                        instance: Some(instance),
+                        ..
+                    }),
+            } => {
+                write!(
+                    formatter,
+                    "the store is already open; its marker records process {pid} (store instance ",
+                )?;
+                for byte in instance {
+                    write!(formatter, "{byte:02x}")?;
+                }
+                write!(formatter, "); close the current holder, then retry")
+            }
             Self::StoreInUse { owner: Some(owner) } => write!(
                 formatter,
                 "the store is already open; its marker records process {}; close the current holder, then retry",
@@ -142,6 +174,10 @@ impl std::fmt::Display for NativeLockError {
             Self::StoreInUse { owner: None } => write!(
                 formatter,
                 "the store is already open by another process; close it, then retry",
+            ),
+            Self::AccessDenied(error) => write!(
+                formatter,
+                "access to the store directory or its lock is denied: {error}",
             ),
             Self::Io(error) => write!(formatter, "the store lock could not be taken: {error}"),
         }
@@ -230,7 +266,7 @@ impl OwnerLock {
     /// before asking for this lock, so exclusion rests on it and the marker's lock stands
     /// behind it.
     fn acquire(dir: &Path) -> Result<Self, NativeLockError> {
-        let directory_node = open_directory_node(dir).map_err(NativeLockError::Io)?;
+        let directory_node = open_directory_node(dir).map_err(NativeLockError::io)?;
         match directory_node.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -242,7 +278,7 @@ impl OwnerLock {
                 });
             }
             Err(std::fs::TryLockError::Error(error)) => {
-                return Err(NativeLockError::Io(error));
+                return Err(NativeLockError::io(error));
             }
         }
         // Every subsequent refusal releases the acquired directory lock through its owner.
@@ -273,7 +309,7 @@ impl OwnerLock {
         dir: &Path,
         access: NativeOpenAccess,
     ) -> Result<bool, NativeLockError> {
-        let Some(mut file) = open_marker(dir, access).map_err(NativeLockError::Io)? else {
+        let Some(mut file) = open_marker(dir, access).map_err(NativeLockError::io)? else {
             return Ok(false);
         };
 
@@ -288,7 +324,7 @@ impl OwnerLock {
                 });
             }
             Err(std::fs::TryLockError::Error(error)) => {
-                return Err(NativeLockError::Io(error));
+                return Err(NativeLockError::io(error));
             }
         }
         let file = self.file.insert(file);
@@ -298,8 +334,8 @@ impl OwnerLock {
         // hold, so it is refused — but it does not divide exclusion (every opener of either
         // name locks the same node), and refusing on it ahead of the lock would hand a
         // contender an I/O verdict where the exclusion verdict applies.
-        let held = file.metadata().map_err(NativeLockError::Io)?;
-        admit_held_marker(&held).map_err(NativeLockError::Io)?;
+        let held = file.metadata().map_err(NativeLockError::io)?;
+        admit_held_marker(&held).map_err(NativeLockError::io)?;
         Ok(held.len() != 0)
     }
 
@@ -313,8 +349,8 @@ impl OwnerLock {
                     acquired_unix_secs: now_unix_secs(),
                 },
             )
-            .map_err(NativeLockError::Io)?;
-            sync_dir(dir).map_err(NativeLockError::Io)?;
+            .map_err(NativeLockError::io)?;
+            sync_dir(dir).map_err(NativeLockError::io)?;
         }
         Ok(())
     }
@@ -326,13 +362,13 @@ impl OwnerLock {
             .as_ref()
             .map(File::metadata)
             .transpose()
-            .map_err(NativeLockError::Io)?;
+            .map_err(NativeLockError::io)?;
         let marker = dir.join(NATIVE_LOCK_FILE);
         match &previous {
-            Some(held) => verify_named_node(&marker, held).map_err(NativeLockError::Io)?,
+            Some(held) => verify_named_node(&marker, held).map_err(NativeLockError::io)?,
             None => match std::fs::symlink_metadata(&marker) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(NativeLockError::Io(error)),
+                Err(error) => return Err(NativeLockError::io(error)),
                 Ok(_) => return Err(NativeLockError::Io(changed_node())),
             },
         }
@@ -346,7 +382,7 @@ impl OwnerLock {
                 .as_ref()
                 .expect("mutable access retains its marker")
                 .metadata()
-                .map_err(NativeLockError::Io)?;
+                .map_err(NativeLockError::io)?;
             if !names_same_node(&previous, &held) {
                 return Err(NativeLockError::Io(changed_node()));
             }
@@ -2029,10 +2065,12 @@ mod tests {
                     NativeLockError::StoreInUse { owner: None } => {
                         panic!("phase {phase} lost the exact owner detail")
                     }
-                    NativeLockError::Io(_) => unreachable!(),
+                    NativeLockError::AccessDenied(_) | NativeLockError::Io(_) => unreachable!(),
                 }
             }
-            Err(NativeOwnerAcquireError::Lock(NativeLockError::Io(error))) => {
+            Err(NativeOwnerAcquireError::Lock(
+                NativeLockError::AccessDenied(error) | NativeLockError::Io(error),
+            )) => {
                 panic!("phase {phase} produced lock I/O instead of contention: {error}")
             }
             Err(NativeOwnerAcquireError::Io(error)) => {

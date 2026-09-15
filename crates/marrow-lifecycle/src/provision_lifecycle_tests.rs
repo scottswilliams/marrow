@@ -368,9 +368,13 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
         Err(OpenError::Lock(error)) => {
             assert_eq!(error.code(), "store.locked");
             match error {
-                crate::LockError::StoreInUse { owner: Some(owner) } => {
+                marrow_kernel::durable::NativeLockError::StoreInUse { owner: Some(owner) } => {
                     assert_eq!(owner.pid, std::process::id(), "names the live owner pid");
-                    assert_eq!(owner.instance, Some(id), "names the held store instance");
+                    assert_eq!(
+                        owner.instance.map(StoreInstanceId::from_bytes),
+                        Some(id),
+                        "names the held store instance"
+                    );
                 }
                 other => panic!("expected a named StoreInUse owner, got {other:?}"),
             }
@@ -509,13 +513,15 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     // The parent is refused, named by the child's pid.
     let outcome = open(&store, projection());
     match outcome {
-        Err(OpenError::Lock(crate::LockError::StoreInUse { owner: Some(owner) })) => {
+        Err(OpenError::Lock(marrow_kernel::durable::NativeLockError::StoreInUse {
+            owner: Some(owner),
+        })) => {
             assert_eq!(
                 owner.pid,
                 child.id(),
                 "the parent is blocked by the child's pid"
             );
-            assert_eq!(owner.instance, Some(id));
+            assert_eq!(owner.instance.map(StoreInstanceId::from_bytes), Some(id));
         }
         Ok(_) => {
             let _ = std::fs::write(&release, b"");

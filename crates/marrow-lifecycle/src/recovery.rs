@@ -1097,7 +1097,7 @@ mod tests {
         assert!(matches!(
             error.fault,
             RecoveryFault::Validation(AuditError::Open(OpenError::Lock(
-                crate::LockError::StoreInUse { .. }
+                marrow_kernel::durable::NativeLockError::StoreInUse { .. }
             )))
         ));
         assert_eq!(error.code(), Code::StoreLocked.as_str());
