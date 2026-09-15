@@ -41,19 +41,10 @@ use workspace::{tracked_paths, workspace_root};
 
 #[derive(Debug, PartialEq, Eq)]
 enum ViolationKind {
-    UntrackedTarget {
-        target: String,
-    },
-    MissingAnchor {
-        target: String,
-        fragment: String,
-    },
-    MalformedExternal {
-        target: String,
-    },
-    UndefinedReference {
-        label: String,
-    },
+    UntrackedTarget { target: String },
+    MissingAnchor { target: String, fragment: String },
+    MalformedExternal { target: String },
+    UndefinedReference { label: String },
 }
 
 impl fmt::Display for ViolationKind {

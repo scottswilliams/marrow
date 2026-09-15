@@ -972,7 +972,6 @@ fn the_import_mode_is_unreachable_from_bytecode_and_client() {
         depends_on_lifecycle("marrow-runner"),
         "the privileged CLI host is the legitimate caller of the lifecycle",
     );
-
 }
 
 /// The only workspace crates depending on `marrow-lifecycle` in production are the privileged

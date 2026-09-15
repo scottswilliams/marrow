@@ -313,4 +313,3 @@ fn a_storeless_project_grows_no_metadata_directory() {
         "a project that mints nothing grows no metadata directory"
     );
 }
-

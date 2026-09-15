@@ -2134,7 +2134,6 @@ fn the_publication_names_derive_from_the_pure_owner_s_spellings() {
         fs::read(&joined).is_ok_and(|bytes| !bytes.is_empty()),
         "the publication installed the successor at the pure owner's path"
     );
-
 }
 
 // ===== Faulted mutations =====================================================

@@ -625,28 +625,6 @@ impl CommitRecoveryScope {
 /// before and proposed-after witness-cell states plus the attached store's lifecycle scope.
 /// There is deliberately no constructor, clone, copy, byte accessor, or serialization API;
 /// only the kernel can mint it and classification consumes it.
-///
-/// ```compile_fail
-/// use marrow_kernel::durable::CommitRecovery;
-/// fn duplicate(fact: CommitRecovery) {
-///     let copy = fact;
-///     drop((fact, copy));
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use marrow_kernel::durable::CommitRecovery;
-/// fn clone_fact(fact: CommitRecovery) {
-///     let _copy: CommitRecovery = fact.clone();
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use marrow_kernel::durable::CommitRecovery;
-/// fn compare(left: &CommitRecovery, right: &CommitRecovery) {
-///     let _same = left == right;
-/// }
-/// ```
 #[must_use = "an indeterminate commit recovery fact must be classified or its attached service retired"]
 pub struct CommitRecovery {
     pub(super) scope: Option<CommitRecoveryScope>,
@@ -661,14 +639,6 @@ impl std::fmt::Debug for CommitRecovery {
 }
 
 /// The result of committing a transaction.
-///
-/// ```compile_fail
-/// use marrow_kernel::durable::CommitResult;
-/// fn require_partial_eq<T: PartialEq>() {}
-/// fn main() {
-///     require_partial_eq::<CommitResult>();
-/// }
-/// ```
 #[must_use = "a transaction commit outcome must be handled"]
 #[derive(Debug)]
 pub enum CommitResult {

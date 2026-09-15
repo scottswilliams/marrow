@@ -47,8 +47,8 @@ const RETAINED_MEMBERS: &[&str] = &[
 
 #[test]
 fn workspace_members_are_exactly_the_retained_set() {
-    let manifest =
-        fs::read_to_string(workspace_root().join("Cargo.toml")).expect("read the workspace manifest");
+    let manifest = fs::read_to_string(workspace_root().join("Cargo.toml"))
+        .expect("read the workspace manifest");
     let listing = manifest
         .split_once("members = [")
         .and_then(|(_, rest)| rest.split_once(']'))
@@ -91,7 +91,10 @@ fn workspace_edges() -> Vec<PackageEdges> {
     RETAINED_MEMBERS
         .iter()
         .map(|name| {
-            let manifest = workspace_root().join("crates").join(name).join("Cargo.toml");
+            let manifest = workspace_root()
+                .join("crates")
+                .join(name)
+                .join("Cargo.toml");
             let text = fs::read_to_string(&manifest)
                 .unwrap_or_else(|_| panic!("read {}", manifest.display()));
             let mut edges = Vec::new();
@@ -505,7 +508,8 @@ fn the_absence_scans_hold() {
     for scan in ABSENCE_SCANS {
         let mut read = 0usize;
         for relative in tracked_paths() {
-            if !relative.ends_with(".rs") || !scan.roots.iter().any(|root| relative.starts_with(root))
+            if !relative.ends_with(".rs")
+                || !scan.roots.iter().any(|root| relative.starts_with(root))
             {
                 continue;
             }

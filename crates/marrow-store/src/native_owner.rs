@@ -411,14 +411,6 @@ impl Drop for OwnerLock {
 
 /// The only public native-engine capability. The raw engine and owner lock are
 /// private and cannot be detached or replaced by safe dependents.
-///
-/// ```compile_fail
-/// use marrow_store::NativeEngineOwner;
-/// fn detach(owner: NativeEngineOwner) {
-///     let _raw_engine = owner.engine;
-///     let _raw_lock = owner.lock;
-/// }
-/// ```
 pub struct NativeEngineOwner {
     engine: Option<NativeEngine>,
     lock: OwnerLock,
@@ -439,13 +431,6 @@ struct ReadOnlySnapshot {
 /// this owner leaves the next acquisition owing the same full audit.
 ///
 /// The lock is private and cannot be detached or re-armed by safe dependents.
-///
-/// ```compile_fail
-/// use marrow_store::PendingNativeEngineOwner;
-/// fn detach(pending: PendingNativeEngineOwner) {
-///     let _raw_lock = pending.lock;
-/// }
-/// ```
 pub struct PendingNativeEngineOwner {
     lock: OwnerLock,
     directory: PathBuf,

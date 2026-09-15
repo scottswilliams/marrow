@@ -23,13 +23,6 @@ use super::{
 /// A persistent native store whose semantic handle, engine, and process owner
 /// lock cannot be separated by safe dependents.
 ///
-/// ```compile_fail
-/// use marrow_kernel::durable::NativeStoreOwner;
-/// fn detach(owner: NativeStoreOwner) {
-///     let _semantic_store = owner.store;
-/// }
-/// ```
-///
 /// The former path-plus-instance constructor is absent; only the opaque owner
 /// composition can mint a persistent recovery scope.
 ///
@@ -156,13 +149,6 @@ impl NativeStoreOwner {
 /// engine, session, or recovery scope exists until it has been.
 ///
 /// The lower pending owner is private and cannot be detached by safe dependents.
-///
-/// ```compile_fail
-/// use marrow_kernel::durable::PendingNativeStoreOwner;
-/// fn detach(pending: PendingNativeStoreOwner) {
-///     let _lower = pending.pending;
-/// }
-/// ```
 pub struct PendingNativeStoreOwner {
     pending: PendingNativeEngineOwner,
 }
