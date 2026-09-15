@@ -33,7 +33,7 @@ fn runner_exe() -> PathBuf {
 
 #[test]
 #[ignore = "spawns a native runner inside a controlled lingering direct child"]
-fn exact_reply_survives_forced_settlement_of_a_lingering_companion() {
+fn exact_reply_survives_unconfirmed_native_cleanup_and_explicit_reap() {
     use std::os::unix::fs::PermissionsExt;
     let (image, bytes) = compile_verify();
     let store = scratch();
@@ -70,9 +70,10 @@ fn exact_reply_survives_forced_settlement_of_a_lingering_companion() {
         vec![],
     );
     let elapsed = started.elapsed();
-    completion
-        .cleanup
-        .expect("direct child reaped and stage removed");
+    eprintln!(
+        "native lingering fixture: {}; settled in {elapsed:?}",
+        root.display()
+    );
     assert!(matches!(
         completion.outcome,
         Ok(CallOutcome::Value(Some(Value::Int(0))))
@@ -81,10 +82,19 @@ fn exact_reply_survives_forced_settlement_of_a_lingering_companion() {
         std::fs::read(&marker).expect("stock runner exited before linger"),
         b"waiting"
     );
-    assert!(
-        elapsed < std::time::Duration::from_secs(1),
-        "settlement must not wait for the two-second linger: {elapsed:?}"
-    );
+    let Err(marrow_runner::CompanionCleanupError::Unreaped {
+        mut child,
+        staging,
+        kill_error,
+        ..
+    }) = completion.cleanup
+    else {
+        panic!("native linger must report unconfirmed cleanup");
+    };
+    // The unreaped child stays owned and unsignalled, so the caller can still reap it.
+    assert!(child.wait().expect("explicit reap").success());
+    assert!(kill_error.is_none() && staging.exists());
+    std::fs::remove_dir_all(staging).expect("remove stage after explicit reap");
     std::fs::remove_dir_all(root).expect("remove owned successful fixture");
 }
 

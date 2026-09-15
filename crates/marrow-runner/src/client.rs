@@ -49,7 +49,7 @@ pub fn attach_and_call(
     let launch = terminal::mint_nonce()
         .map_err(terminal::CompanionStartupError::from)
         .and_then(|nonce| {
-            spawn_companion(runner_exe, "attach", image_bytes, Some(store), nonce)
+            spawn_companion(runner_exe, image_bytes, Some(store), nonce)
                 .map(|(companion, descriptor)| (nonce, companion, descriptor))
         });
     let (nonce, companion, descriptor) = match launch {
@@ -85,7 +85,7 @@ fn call_over_socket(
     // Attach may already have rebound the store before the handshake. A missing startup
     // result cannot establish its outcome, even though no invocation has been sent.
     let mut stream =
-        connect_and_handshake(descriptor, nonce, deadline, terminal::StartupKind::Native)
+        connect_and_handshake(descriptor, nonce, deadline, terminal::CompanionKind::Native)
             .map_err(ClientError::activation_unknown)?;
     const TURN: u32 = 0;
     write_message_with_turn(

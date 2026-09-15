@@ -36,34 +36,6 @@ mod startup_tests {
     use super::*;
 
     #[test]
-    fn synthetic_unconfirmed_reap_retains_stage_and_reports_observation() {
-        let dir = stage_dir();
-        create_private_dir(&dir).expect("owned stage");
-        std::fs::write(dir.join("image.mwi"), b"retained image").expect("image");
-        // No OS process is represented by this synthetic observation.
-        let companion = Companion {
-            child: None,
-            dir: dir.clone(),
-        };
-        let result = companion.finish_settlement(
-            123,
-            ReapObservation::Unconfirmed {
-                cause: io::ErrorKind::TimedOut.into(),
-                kill_error: Some(io::ErrorKind::PermissionDenied.into()),
-            },
-        );
-        drop(companion);
-        assert!(matches!(result, Err(CompanionCleanupError::Unreaped {
-            pid: 123, staging, cause, kill_error: Some(kill),
-        }) if staging == dir && cause.kind() == io::ErrorKind::TimedOut && kill.kind() == io::ErrorKind::PermissionDenied));
-        assert_eq!(
-            std::fs::read(dir.join("image.mwi")).expect("retained after Drop"),
-            b"retained image"
-        );
-        std::fs::remove_dir_all(&dir).expect("remove synthetic fixture");
-    }
-
-    #[test]
     #[ignore = "spawns clean-exit companion controls"]
     fn confirmed_reap_distinguishes_removed_stage_from_removal_failure() {
         for replacement in [false, true] {
@@ -95,6 +67,7 @@ mod startup_tests {
             let companion = Companion {
                 child: Some(child),
                 dir: dir.clone(),
+                kind: CompanionKind::Native,
             };
             let result = companion.settle();
             if replacement {
@@ -132,6 +105,7 @@ mod startup_tests {
             let mut companion = Companion {
                 child: Some(child),
                 dir,
+                kind: CompanionKind::Ephemeral,
             };
             let result =
                 companion.settle_inner(Duration::from_millis(10), Duration::from_millis(100));
@@ -145,6 +119,49 @@ mod startup_tests {
             matches!(observed, Ok(Ok(()))),
             "settlement must finish before parent release"
         );
+    }
+
+    #[test]
+    #[ignore = "spawns native-kind startup and Drop controls"]
+    fn native_startup_refusal_and_drop_allow_natural_exit() {
+        use std::os::unix::fs::PermissionsExt;
+        for explicit in [true, false] {
+            let root = stage_dir();
+            create_private_dir(&root).expect("fixture root");
+            let script = root.join("runner");
+            let marker = root.join("natural-exit");
+            let quoted = marker
+                .to_str()
+                .expect("fixture UTF-8")
+                .replace('\'', "'\\''");
+            std::fs::write(&script, format!(
+                "#!/bin/sh\nprintf 'invalid descriptor\\n'\n/bin/sleep 0.3\nprintf closed > '{quoted}'\n"
+            )).expect("startup fixture");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+                .expect("script mode");
+            let (companion, descriptor) = spawn_companion(
+                &script,
+                b"fixture image",
+                Some(&root.join("store")),
+                Id32::from_bytes([1; 32]),
+            )
+            .expect("spawn fixture");
+            let stage = companion.dir.clone();
+            let descriptor_refused = descriptor.is_err();
+            let cleanup = if explicit {
+                Some(companion.settle())
+            } else {
+                drop(companion);
+                None
+            };
+            let marker_bytes = std::fs::read(&marker);
+            eprintln!("native startup fixture: {}", root.display());
+            assert!(descriptor_refused);
+            assert!(matches!(cleanup, None | Some(Ok(()))));
+            assert_eq!(marker_bytes.expect("natural exit reached"), b"closed");
+            assert!(!stage.exists());
+            std::fs::remove_dir_all(root).expect("remove successful control");
+        }
     }
 
     fn descriptor_json(socket: &str) -> String {
@@ -281,9 +298,9 @@ mod startup_tests {
                 result.expect("delivered response");
             });
             let kind = if mismatch == Some("ephemeral") {
-                StartupKind::Ephemeral
+                CompanionKind::Ephemeral
             } else {
-                StartupKind::Native
+                CompanionKind::Native
             };
             let error = connect_and_handshake(&descriptor, nonce, Duration::from_secs(1), kind)
                 .expect_err("no invocation stream on uncertainty")
@@ -501,10 +518,11 @@ pub(crate) struct Descriptor {
 /// A cleanup failure independent of the companion's reported call or startup outcome.
 #[derive(Debug)]
 pub enum CompanionCleanupError {
-    /// Direct-child reap could not be confirmed. The stage is retained. `pid` identifies
-    /// the child at observation time; it is not authority to signal a reused PID later.
+    /// Direct-child reap could not be confirmed within the settlement bound. The caller
+    /// receives the still-owned child and the retained stage; dropping this error reaps
+    /// neither.
     Unreaped {
-        pid: u32,
+        child: Child,
         staging: PathBuf,
         cause: io::Error,
         kill_error: Option<io::Error>,
@@ -536,24 +554,22 @@ fn remove_stage(dir: &Path) -> Result<(), CompanionCleanupError> {
     })
 }
 
-/// A spawned direct child and its staging directory. Explicit settlement reports failure;
-/// Drop only attempts the same bounded observation and retains unconfirmed staging.
+/// A spawned direct child and its staging directory. Explicit settlement reports failure and
+/// hands back an unreaped child; Drop applies the same policy but can only discard it.
 pub(crate) struct Companion {
     child: Option<Child>,
     dir: PathBuf,
+    kind: CompanionKind,
 }
 
-enum ReapObservation {
-    Confirmed,
-    Unconfirmed {
-        cause: io::Error,
-        kill_error: Option<io::Error>,
-    },
-}
+/// Time a companion is given to exit on its own.
+const GRACE: Duration = Duration::from_millis(100);
+/// Further time allowed after the grace period lapses.
+const REAP: Duration = Duration::from_secs(1);
 
 impl Companion {
     pub(crate) fn settle(mut self) -> Result<(), CompanionCleanupError> {
-        self.settle_inner(Duration::from_millis(100), Duration::from_secs(1))
+        self.settle_inner(GRACE, REAP)
     }
 
     fn settle_inner(
@@ -561,45 +577,42 @@ impl Companion {
         grace: Duration,
         reap: Duration,
     ) -> Result<(), CompanionCleanupError> {
-        // Taking custody prevents Drop from repeating signals or cleanup after any result.
+        // Custody moves out of `self` so Drop cannot settle a second time.
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        let initial = observe_exit(&mut child, grace);
-        let observation = if matches!(initial, Ok(Some(_))) {
-            ReapObservation::Confirmed
-        } else {
-            let kill_error = child.kill().err();
-            match observe_exit(&mut child, reap) {
-                Ok(Some(_)) => ReapObservation::Confirmed,
-                result => ReapObservation::Unconfirmed {
-                    cause: result
-                        .err()
-                        .or_else(|| initial.err())
-                        .unwrap_or_else(|| io::ErrorKind::TimedOut.into()),
-                    kill_error,
-                },
+        // A native companion may still be closing the store, where a signal would leave the
+        // engine unclean, so it waits out both bounds instead of being killed; an ephemeral
+        // companion holds nothing durable and is killed once the grace period lapses.
+        let natural = match self.kind {
+            CompanionKind::Native => grace + reap,
+            CompanionKind::Ephemeral => grace,
+        };
+        let initial = observe_exit(&mut child, natural);
+        if matches!(initial, Ok(Some(_))) {
+            return remove_stage(&self.dir);
+        }
+        let mut cause = initial
+            .err()
+            .unwrap_or_else(|| io::ErrorKind::TimedOut.into());
+        let kill_error = match self.kind {
+            CompanionKind::Native => None,
+            CompanionKind::Ephemeral => {
+                let kill_error = child.kill().err();
+                match observe_exit(&mut child, reap) {
+                    Ok(Some(_)) => return remove_stage(&self.dir),
+                    Err(error) => cause = error,
+                    Ok(None) => {}
+                }
+                kill_error
             }
         };
-        self.finish_settlement(child.id(), observation)
-    }
-
-    fn finish_settlement(
-        &self,
-        pid: u32,
-        observation: ReapObservation,
-    ) -> Result<(), CompanionCleanupError> {
-        match observation {
-            ReapObservation::Confirmed => remove_stage(&self.dir),
-            ReapObservation::Unconfirmed { cause, kill_error } => {
-                Err(CompanionCleanupError::Unreaped {
-                    pid,
-                    staging: self.dir.clone(),
-                    cause,
-                    kill_error,
-                })
-            }
-        }
+        Err(CompanionCleanupError::Unreaped {
+            child,
+            staging: self.dir.clone(),
+            cause,
+            kill_error,
+        })
     }
 }
 
@@ -622,21 +635,25 @@ fn observe_exit(
 
 impl Drop for Companion {
     fn drop(&mut self) {
-        let _ = self.settle_inner(Duration::from_millis(100), Duration::from_secs(1));
+        let _ = self.settle_inner(GRACE, REAP);
     }
 }
 
-/// Spawn the verified companion at `runner_exe` under `subcommand`, staging `image_bytes` to a
-/// private file passed as `--image`, and reading its one launch descriptor. `store` is the
-/// persistent store directory for the native `attach` subcommand and `None` for the storeless
-/// or ephemeral subcommands. `runner_exe` must already be the release-verified stock runner.
+/// Spawn the verified companion at `runner_exe`, staging `image_bytes` to a private file
+/// passed as `--image`, and reading its one launch descriptor. `store` selects the kind: a
+/// persistent store directory attaches natively, `None` attaches ephemerally. `runner_exe`
+/// must already be the release-verified stock runner.
 pub(crate) fn spawn_companion(
     runner_exe: &Path,
-    subcommand: &str,
     image_bytes: &[u8],
     store: Option<&Path>,
     nonce: Id32,
 ) -> Result<(Companion, Result<Descriptor, ClientError>), CompanionStartupError> {
+    let kind = if store.is_some() {
+        CompanionKind::Native
+    } else {
+        CompanionKind::Ephemeral
+    };
     let (mut stdout, child_stdout) = UnixStream::pair().map_err(ClientError::Io)?;
     let dir = stage_dir();
     create_private_dir(&dir).map_err(ClientError::ImageStage)?;
@@ -647,7 +664,13 @@ pub(crate) fn spawn_companion(
     })?;
 
     let mut command = Command::new(runner_exe);
-    command.arg(subcommand).arg("--image").arg(&image_path);
+    command
+        .arg(match kind {
+            CompanionKind::Native => "attach",
+            CompanionKind::Ephemeral => "attach-ephemeral",
+        })
+        .arg("--image")
+        .arg(&image_path);
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
@@ -666,9 +689,10 @@ pub(crate) fn spawn_companion(
     let companion = Companion {
         child: Some(child),
         dir,
+        kind,
     };
     let descriptor = read_descriptor(&mut stdout, CALL_DEADLINE).map_err(|error| {
-        if store.is_some() {
+        if kind == CompanionKind::Native {
             error.activation_unknown()
         } else {
             error
@@ -740,9 +764,9 @@ fn parse_descriptor(line: &str) -> Option<Descriptor> {
     })
 }
 
-/// Which lifecycle evidence the requesting client can accept at startup.
+/// The child ownership policy and lifecycle evidence accepted at startup.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StartupKind {
+pub(crate) enum CompanionKind {
     Native,
     Ephemeral,
 }
@@ -754,7 +778,7 @@ pub(crate) fn connect_and_handshake(
     descriptor: &Descriptor,
     nonce: Id32,
     deadline: Duration,
-    kind: StartupKind,
+    kind: CompanionKind,
 ) -> Result<UnixStream, ClientError> {
     let mut stream = UnixStream::connect(&descriptor.socket).map_err(ClientError::Io)?;
     stream.set_nonblocking(true).map_err(ClientError::Io)?;
@@ -770,7 +794,7 @@ pub(crate) fn connect_and_handshake(
                 instance,
             },
             None,
-        ) if kind == StartupKind::Native
+        ) if kind == CompanionKind::Native
             && session == descriptor.session
             && interface == descriptor.interface =>
         {

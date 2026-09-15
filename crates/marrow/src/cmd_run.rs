@@ -594,12 +594,12 @@ fn attached_records(completion: marrow_runner::AttachCompletion) -> (Vec<Record>
 fn cleanup_record(error: marrow_runner::CompanionCleanupError) -> Record {
     match error {
         marrow_runner::CompanionCleanupError::Unreaped {
-            pid,
+            child,
             staging,
             cause,
             kill_error,
         } => Record::CompanionUnreaped {
-            pid,
+            pid: child.id(),
             staging: staging.display().to_string(),
             cause: cause.to_string(),
             kill_error: kill_error.map(|error| error.to_string()),
@@ -981,18 +981,16 @@ mod terminal_tests {
         ] {
             let (records, exit) = attached_records(marrow_runner::AttachCompletion {
                 outcome,
-                cleanup: Err(marrow_runner::CompanionCleanupError::Unreaped {
-                    pid: 123,
-                    staging: PathBuf::from("/tmp/retained"),
-                    cause: io::ErrorKind::TimedOut.into(),
-                    kill_error: None,
+                cleanup: Err(marrow_runner::CompanionCleanupError::Staging {
+                    path: PathBuf::from("/tmp/retained"),
+                    cause: io::ErrorKind::PermissionDenied.into(),
                 }),
             });
             assert_eq!(exit, ExitCode::FAILURE);
             assert_eq!(records.len(), 2);
             assert_eq!(records[0], first);
             assert!(
-                matches!(&records[1], Record::CompanionUnreaped { pid: 123, staging, .. } if staging == "/tmp/retained")
+                matches!(&records[1], Record::CompanionStaging { path, .. } if path == "/tmp/retained")
             );
             let mut bytes = Vec::new();
             assert_eq!(

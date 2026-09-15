@@ -70,8 +70,7 @@ impl<'a> EphemeralSession<'a> {
         image_bytes: &[u8],
     ) -> Result<Self, CompanionStartupError> {
         let nonce = terminal::mint_nonce()?;
-        let (companion, descriptor) =
-            spawn_companion(runner_exe, "attach-ephemeral", image_bytes, None, nonce)?;
+        let (companion, descriptor) = spawn_companion(runner_exe, image_bytes, None, nonce)?;
 
         let startup = descriptor.and_then(|descriptor| {
             require_interface(&descriptor, image)?;
@@ -79,7 +78,7 @@ impl<'a> EphemeralSession<'a> {
                 &descriptor,
                 nonce,
                 CALL_DEADLINE,
-                crate::terminal::StartupKind::Ephemeral,
+                crate::terminal::CompanionKind::Ephemeral,
             )
         });
         let stream = match startup {
