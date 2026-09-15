@@ -1,22 +1,30 @@
-//! Standing anti-legacy tidy gate for the beta workspace.
+//! Standing repository gates: the workspace shape, the retired legacy families,
+//! and the small set of absences no type or lint can express.
 //!
-//! Two invariants, both enforced from source and the Cargo DAG rather than prose:
+//! 1. The workspace members are exactly the retained set, and `crates/` holds
+//!    exactly those crates.
+//! 2. The Cargo DAG respects the trust boundaries: the VM never decodes the
+//!    image container, the analysis owners cannot reach a runtime or store
+//!    crate, and the raw byte engine is consumed only through the path kernel.
+//! 3. No tracked file names a forbidden legacy family as a Rust identifier or a
+//!    crate reference.
+//! 4. The absence scans in [`ABSENCE_SCANS`] hold.
 //!
-//! 1. The workspace members are exactly the retained beta set.
-//! 2. No tracked file in the repository names a forbidden legacy family — the
-//!    deleted crates (hyphen and underscore forms), the `surface` construct,
-//!    `ProjectSession`, `Value::Absent`, or the tree-walking interpreter — as a
-//!    Rust identifier, crate reference, or documented-current name.
-//!
-//! The scan matches concrete Rust identifiers (crate paths and type/enum names),
-//! not the ordinary English word "surface", so it stays precise as the retained
-//! crates keep using words like "diagnostic surface" in prose. This test file is
-//! the one place the forbidden strings are spelled, so it excludes itself.
+//! Every scan here is one substring search over tracked `.rs` files. A gate that
+//! needed more than that — a Rust lexer, a call graph, an occurrence count —
+//! would be policing something a visibility boundary, a Cargo edge, or a
+//! behavioral test should carry instead.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::fs;
+use std::path::Path;
 
-/// The exact set of workspace packages the beta line retains after B00.
+#[path = "common/workspace.rs"]
+mod workspace;
+
+use workspace::{tracked_paths, workspace_root};
+
+/// The exact set of workspace packages the workspace retains, which is also the
+/// exact set of directories under `crates/`.
 const RETAINED_MEMBERS: &[&str] = &[
     "marrow",
     "marrow-codes",
@@ -37,250 +45,76 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-vm",
 ];
 
-/// Forbidden legacy families, spelled as the concrete identifiers or crate
-/// references that would appear in retained source if a deleted owner leaked
-/// back in. Each is a real Rust token, never an English word, so the scan has no
-/// false positives against ordinary prose.
-const FORBIDDEN_FAMILIES: &[&str] = &[
-    // Deleted crate references: source edges (`use marrow_x` / `marrow_x::`)
-    // and manifest/doc spellings (`marrow-x`).
-    "marrow_check",
-    "marrow_run",
-    "marrow_schema",
-    "marrow_catalog",
-    "marrow_json",
-    "marrow-check",
-    "marrow-run",
-    "marrow-schema",
-    "marrow-catalog",
-    "marrow-json",
-    // The surface construct: AST nodes, the keyword variant, the codes family,
-    // and the wire ABI types all share the `Surface` identifier prefix.
-    "Surface",
-    // The composed prototype session owner.
-    "ProjectSession",
-    // The deleted structural-optional value variant.
-    "Value::Absent",
-    // The tree-walking interpreter's owning type.
-    "Interpreter",
-    // Store-owned language vocabulary relocated to the path kernel at K.5: the
-    // key/value scalar types and the deleted tree-cell/catalog-id key substrate.
-    // The kernel now owns `KeyScalar`/`RuntimeScalar`; these old spellings must
-    // not reappear in the store or anywhere else.
-    "SavedKey",
-    "SavedValue",
-    "CatalogId",
-    "DataPathSegment",
-];
-
-/// Whether `contents` names a forbidden family. A `marrow*` crate token matches
-/// only as a whole crate reference, never as a prefix of a longer name — so the
-/// deleted interpreter crate `marrow-run`/`marrow_run` does not false-match the
-/// retained `marrow-runner`/`marrow_runner`. The non-crate identifiers (`Surface`,
-/// `Interpreter`, …) keep matching as prefixes, which is intended. A `.md#`
-/// fragment ending in `)` is treated as a document-link destination.
-fn names_forbidden_family(contents: &str, family: &str) -> bool {
-    if !family.starts_with("marrow") {
-        return contents.contains(family);
-    }
-    let mut from = 0;
-    while let Some(offset) = contents[from..].find(family) {
-        let start = from + offset;
-        let end = start + family.len();
-        let extends = contents[end..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-        let document_fragment =
-            contents[..start].ends_with(".md#") && contents[end..].starts_with(')');
-        if !extends && !document_fragment {
-            return true;
-        }
-        from = end;
-    }
-    false
-}
-
-#[test]
-fn crate_reference_census_distinguishes_document_fragments() {
-    for (source, family) in [
-        ("use marrow_run::Run;", "marrow_run"),
-        (r#"marrow-run = { path = "../marrow-run" }"#, "marrow-run"),
-        ("use r#marrow_run::Run;", "marrow_run"),
-        ("path+file:///old#marrow-run@0.1.0", "marrow-run"),
-        ("path+file:///old.md#marrow-run@0.1.0", "marrow-run"),
-        (
-            "[old owner](../crates/marrow-run/src/lib.rs#entry)",
-            "marrow-run",
-        ),
-        ("[marrow-run](../tools/cli.md#marrow-run)", "marrow-run"),
-        (
-            "[limits](../tools/cli.md#marrow-run); marrow-run",
-            "marrow-run",
-        ),
-        (
-            "marrow-run; [limits](../tools/cli.md#marrow-run)",
-            "marrow-run",
-        ),
-        ("SurfaceAst", "Surface"),
-    ] {
-        assert!(
-            names_forbidden_family(source, family),
-            "missed {family}: {source}",
-        );
-    }
-    for (source, family) in [
-        ("marrow-runner", "marrow-run"),
-        ("marrow_runner::Run", "marrow_run"),
-    ] {
-        assert!(
-            !names_forbidden_family(source, family),
-            "false hit: {source}",
-        );
-    }
-    assert!(
-        !names_forbidden_family("[output limits](../tools/cli.md#marrow-run)", "marrow-run"),
-        "a command heading fragment is not a retired crate reference",
-    );
-}
-
-fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR is `<root>/crates/marrow-codes`.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .to_path_buf()
-}
-
-fn tracked_files(root: &Path) -> Vec<PathBuf> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files"])
-        .output()
-        .expect("run git ls-files");
-    assert!(output.status.success(), "git ls-files failed");
-    String::from_utf8(output.stdout)
-        .expect("git output is utf-8")
-        .lines()
-        .map(|line| root.join(line))
-        .collect()
-}
-
 #[test]
 fn workspace_members_are_exactly_the_retained_set() {
-    let root = workspace_root();
-    let output = Command::new(env!("CARGO"))
-        .arg("metadata")
-        .args(["--format-version", "1", "--no-deps"])
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
-        .output()
-        .expect("run cargo metadata");
-    assert!(output.status.success(), "cargo metadata failed");
-    let text = String::from_utf8(output.stdout).expect("metadata is utf-8");
-
-    // Minimal, dependency-free extraction of package names from the metadata
-    // JSON: the `--no-deps` package list carries only workspace members. Package
-    // ids are the unambiguous carrier — `path+file://.../crates/<dir>#<version>`,
-    // or `...#<name>@<version>` when the name differs from the directory. Bare
-    // `"name"` fields also match lib-target names, which use underscores.
-    let mut members: Vec<String> = text
-        .split("\"id\":\"")
-        .skip(1)
-        .filter_map(|rest| {
-            let id = rest.split('"').next()?;
-            let (path, fragment) = id.split_once('#')?;
-            let name = match fragment.split_once('@') {
-                Some((name, _version)) => name,
-                None => path.rsplit('/').next()?,
-            };
-            Some(name.to_string())
-        })
-        .filter(|name| name.starts_with("marrow"))
+    let manifest =
+        fs::read_to_string(workspace_root().join("Cargo.toml")).expect("read the workspace manifest");
+    let listing = manifest
+        .split_once("members = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(body, _)| body)
+        .expect("the workspace manifest lists its members");
+    let mut declared: Vec<&str> = listing
+        .split(',')
+        .map(|entry| entry.trim().trim_matches('"'))
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| entry.trim_start_matches("crates/"))
         .collect();
-    members.sort();
-    members.dedup();
+    declared.sort_unstable();
 
-    let mut expected: Vec<String> = RETAINED_MEMBERS.iter().map(|s| s.to_string()).collect();
-    expected.sort();
+    let mut present: Vec<String> = fs::read_dir(workspace_root().join("crates"))
+        .expect("read the crates directory")
+        .flatten()
+        .filter(|entry| entry.path().join("Cargo.toml").is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    present.sort();
 
-    assert_eq!(
-        members, expected,
-        "workspace members must be exactly the retained beta set"
-    );
+    let mut expected: Vec<&str> = RETAINED_MEMBERS.to_vec();
+    expected.sort_unstable();
+
+    assert_eq!(declared, expected, "the declared members drifted");
+    assert_eq!(present, expected, "the crates directory drifted");
 }
 
-/// One workspace package's dependency edges, extracted from `cargo metadata`.
+/// One workspace member's internal dependency edges.
 struct PackageEdges {
-    name: String,
+    name: &'static str,
     /// `(dependency name, is_dev)` for every workspace-internal `marrow*` edge.
     edges: Vec<(String, bool)>,
 }
 
-/// Extract each workspace member's internal dependency edges from
-/// `cargo metadata --no-deps`. The `--no-deps` package list carries every
-/// member's `dependencies` array (name + kind), which is exactly the Cargo DAG
-/// the trust-boundary gates below assert over. Parsing is the same minimal
-/// dependency-free string extraction the membership test uses: the field order
-/// within a package object is stable (`id` precedes `dependencies` precedes
-/// `targets`), so splitting on `"id":"` yields one chunk per package.
+/// Every member's `marrow*` edges, read from the dependency tables of its own
+/// manifest. A path edge is spelled there or it does not exist, so resolution
+/// adds nothing this gate needs.
 fn workspace_edges() -> Vec<PackageEdges> {
-    let root = workspace_root();
-    let output = Command::new(env!("CARGO"))
-        .arg("metadata")
-        .args(["--format-version", "1", "--no-deps"])
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
-        .output()
-        .expect("run cargo metadata");
-    assert!(output.status.success(), "cargo metadata failed");
-    let text = String::from_utf8(output.stdout).expect("metadata is utf-8");
-
-    let mut packages = Vec::new();
-    for chunk in text.split("\"id\":\"").skip(1) {
-        let id = chunk.split('"').next().expect("id string terminates");
-        let (path, fragment) = id.split_once('#').expect("package id has a fragment");
-        let name = match fragment.split_once('@') {
-            Some((name, _version)) => name.to_string(),
-            None => path
-                .rsplit('/')
-                .next()
-                .expect("package id path has segments")
-                .to_string(),
-        };
-        let deps_body = chunk
-            .split_once("\"dependencies\":[")
-            .map(|(_, rest)| rest)
-            .and_then(|rest| rest.split_once("],\"targets\""))
-            .map(|(body, _)| body)
-            .unwrap_or("");
-        let edges = deps_body
-            .split("{\"name\":\"")
-            .skip(1)
-            .filter_map(|entry| {
-                let dep = entry.split('"').next()?;
-                if !dep.starts_with("marrow") {
-                    return None;
+    RETAINED_MEMBERS
+        .iter()
+        .map(|name| {
+            let manifest = workspace_root().join("crates").join(name).join("Cargo.toml");
+            let text = fs::read_to_string(&manifest)
+                .unwrap_or_else(|_| panic!("read {}", manifest.display()));
+            let mut edges = Vec::new();
+            let mut is_dev = false;
+            for line in text.lines().map(str::trim) {
+                if let Some(section) = line.strip_prefix('[') {
+                    is_dev = section.starts_with("dev-dependencies");
+                    continue;
                 }
-                let is_dev = entry
-                    .split_once('}')
-                    .is_some_and(|(fields, _)| fields.contains("\"kind\":\"dev\""));
-                Some((dep.to_string(), is_dev))
-            })
-            .collect();
-        packages.push(PackageEdges { name, edges });
-    }
-    assert_eq!(
-        packages.len(),
-        RETAINED_MEMBERS.len(),
-        "metadata should list every workspace member"
-    );
-    packages
+                let Some((key, _)) = line.split_once('=') else {
+                    continue;
+                };
+                let key = key.trim();
+                if key.starts_with("marrow") {
+                    edges.push((key.to_owned(), is_dev));
+                }
+            }
+            PackageEdges { name, edges }
+        })
+        .collect()
 }
 
-/// Trust-boundary Cargo-DAG gates (design §A): the VM never decodes the image
+/// Trust-boundary Cargo-DAG gates: the VM never decodes the image
 /// container, the compiler cannot reach the verifier/VM/kernel/store (it opens
 /// no store and mints no VerifiedImage), and the raw byte engine is consumed
 /// only through the path kernel. These edges are architecture, not convenience;
@@ -414,7 +248,7 @@ fn cargo_dag_respects_the_trust_boundaries() {
     // adapter; no other crate may reach it.
     const PROJECT_FS_CONSUMERS: &[&str] = &["marrow", "marrow-lsp"];
     for package in &packages {
-        if PROJECT_FS_CONSUMERS.contains(&package.name.as_str()) {
+        if PROJECT_FS_CONSUMERS.contains(&package.name) {
             continue;
         }
         assert!(
@@ -485,25 +319,89 @@ fn cargo_dag_respects_the_trust_boundaries() {
     }
 }
 
+/// Forbidden legacy families, spelled as the concrete identifiers or crate
+/// references that would appear in retained source if a deleted owner leaked
+/// back in. Each is a real Rust token, never an English word, so the scan has no
+/// false positives against ordinary prose.
+const FORBIDDEN_FAMILIES: &[&str] = &[
+    // Deleted crate references: source edges (`use marrow_x` / `marrow_x::`)
+    // and manifest/doc spellings (`marrow-x`).
+    "marrow_check",
+    "marrow_run",
+    "marrow_schema",
+    "marrow_catalog",
+    "marrow_json",
+    "marrow-check",
+    "marrow-run",
+    "marrow-schema",
+    "marrow-catalog",
+    "marrow-json",
+    // The surface construct: AST nodes, the keyword variant, the codes family,
+    // and the wire ABI types all share the `Surface` identifier prefix.
+    "Surface",
+    // The composed prototype session owner.
+    "ProjectSession",
+    // The deleted structural-optional value variant.
+    "Value::Absent",
+    // The tree-walking interpreter's owning type.
+    "Interpreter",
+    // Store-owned language vocabulary relocated to the path kernel at K.5: the
+    // key/value scalar types and the deleted tree-cell/catalog-id key substrate.
+    // The kernel now owns `KeyScalar`/`RuntimeScalar`; these old spellings must
+    // not reappear in the store or anywhere else.
+    "SavedKey",
+    "SavedValue",
+    "CatalogId",
+    "DataPathSegment",
+];
+
+/// Whether `contents` names a forbidden family. A `marrow*` crate token matches
+/// only as a whole crate reference, never as a prefix of a longer name — so the
+/// deleted interpreter crate `marrow-run`/`marrow_run` does not false-match the
+/// retained `marrow-runner`/`marrow_runner`. The non-crate identifiers (`Surface`,
+/// `Interpreter`, …) keep matching as prefixes, which is intended. A `.md#`
+/// fragment ending in `)` is treated as a document-link destination.
+fn names_forbidden_family(contents: &str, family: &str) -> bool {
+    if !family.starts_with("marrow") {
+        return contents.contains(family);
+    }
+    let mut from = 0;
+    while let Some(offset) = contents[from..].find(family) {
+        let start = from + offset;
+        let end = start + family.len();
+        let extends = contents[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        let document_fragment =
+            contents[..start].ends_with(".md#") && contents[end..].starts_with(')');
+        if !extends && !document_fragment {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
 #[test]
 fn no_tracked_file_names_a_forbidden_family() {
-    let root = workspace_root();
     let this_file = Path::new(file!())
         .file_name()
         .expect("this test file has a name")
         .to_owned();
 
     let mut violations: Vec<String> = Vec::new();
-    for path in tracked_files(&root) {
+    for relative in tracked_paths() {
+        let path = workspace_root().join(relative);
         if path.file_name() == Some(this_file.as_os_str()) {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Ok(contents) = fs::read_to_string(&path) else {
             continue; // binary/non-utf8 tracked asset
         };
         for family in FORBIDDEN_FAMILIES {
             if names_forbidden_family(&contents, family) {
-                violations.push(format!("{}: {family}", path.display()));
+                violations.push(format!("{relative}: {family}"));
             }
         }
     }
@@ -515,1108 +413,117 @@ fn no_tracked_file_names_a_forbidden_family() {
     );
 }
 
-/// Ambient-clock APIs that must not reach the temporal language path. A Marrow
-/// temporal value is pure: it never derives from a wall or monotonic clock, a
-/// timezone database, or a date/time crate. `Instant::now` (not the bare word
-/// `Instant`, which is the temporal type) and `SystemTime` are the standard-library
-/// clocks; the rest are the common third-party date/time crates.
-const FORBIDDEN_CLOCK_APIS: &[&str] = &[
-    "SystemTime",
-    "UNIX_EPOCH",
-    "Instant::now",
-    "chrono",
-    "OffsetDateTime",
-    "PrimitiveDateTime",
-];
-
-/// The production source roots on the temporal language path: the temporal domain
-/// owner, the compiler, the image container, the verifier, the VM, the parser, and
-/// the kernel's logical codecs. The kernel's durable *store substrate* is excluded:
-/// storage ownership may record host time as forensic process metadata, which is
-/// a physical-substrate concern and never feeds a language temporal value.
-const TEMPORAL_PATH_SRC: &[&str] = &[
-    "crates/marrow-temporal/src",
-    "crates/marrow-compile/src",
-    "crates/marrow-image/src",
-    "crates/marrow-verify/src",
-    "crates/marrow-vm/src",
-    "crates/marrow-syntax/src",
-    "crates/marrow-kernel/src/codec",
-];
-
-fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            rust_sources(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// The pure owners have no filesystem edge: `marrow-project` owns project input
-/// plus pure admitted identity mutation and canonical serialization, while
-/// `marrow-compile` is a read-only ledger consumer. Neither touches `std::fs` or
-/// draws entropy. The CLI supplies OS entropy and owns physical `.marrow/ids`
-/// publication, so neither pure owner can read or write identity artifacts.
-#[test]
-fn pure_owners_have_no_filesystem_edge() {
-    let root = workspace_root();
-    let mut files = Vec::new();
-    for relative in ["crates/marrow-project/src", "crates/marrow-compile/src"] {
-        rust_sources(&root.join(relative), &mut files);
-    }
-    assert!(
-        !files.is_empty(),
-        "the pure-owner source scan found no files; the roots moved"
-    );
-
-    let mut violations: Vec<String> = Vec::new();
-    for path in files {
-        let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
-        for api in ["std::fs", "std::io::Read", "File::open", "File::create"] {
-            if contents.contains(api) {
-                violations.push(format!("{}: {api}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "a filesystem edge reached a pure owner:\n{}",
-        violations.join("\n")
-    );
-}
-
-#[test]
-fn durable_identity_hex_has_one_nonallocating_owner() {
-    let root = workspace_root();
-    let source = std::fs::read_to_string(root.join("crates/marrow-project/src/ids.rs"))
-        .expect("read durable-identity owner");
-    assert_eq!(
-        source.matches("const ID_HEX_DIGITS:").count(),
-        1,
-        "the lowercase identity alphabet must have one owner",
-    );
-    assert_eq!(
-        source.matches("fn write_canonical_hex").count(),
-        1,
-        "identity formatting must use one nonallocating fixed-buffer writer",
-    );
-    for duplicate in ["char::from_digit", "fn push_id_hex"] {
-        assert!(
-            !source.contains(duplicate),
-            "a duplicate identity-hex implementation remains: {duplicate}",
-        );
-    }
-}
-
-/// The raw logical-cell maintenance escape is absent. Such a seam can clone the
-/// witness lineage and bypass session authority, so neither its former read nor
-/// write call shape may reappear anywhere in production or tests.
-#[test]
-fn the_raw_cell_maintenance_seam_is_absent() {
-    let root = workspace_root();
-    let mut files = Vec::new();
-    rust_sources(&root.join("crates"), &mut files);
-    assert!(!files.is_empty(), "the crate source scan found no files");
-
-    let forbidden_patterns = [
-        ["fn ", "visit_cells"].concat(),
-        [".", "visit_cells("].concat(),
-        ["::", "visit_cells"].concat(),
-        ["fn ", "insert_cells"].concat(),
-        [".", "insert_cells("].concat(),
-        ["::", "insert_cells"].concat(),
-        ["backup", "_slice"].concat(),
-        ["restore", "_slice"].concat(),
-        ["Slice", "Error"].concat(),
-        ["reopen", "_and_classify"].concat(),
-        ["RawCell", "Archive"].concat(),
-        ["CellSlice", "Archive"].concat(),
-        ["Replacement", "Archive"].concat(),
-    ];
-    let mut violations: Vec<String> = Vec::new();
-    for path in files {
-        let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
-        for pattern in &forbidden_patterns {
-            if contents.contains(pattern.as_str()) {
-                violations.push(format!("{}: {pattern}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "a raw cell-maintenance seam reappeared:\n{}",
-        violations.join("\n"),
-    );
-}
-
-/// The indeterminate-commit fact remains an opaque affine value, and the product has no
-/// replay, resubmission, delivery-ledger, or commit-recovery-ledger machinery. Classification
-/// consumes the one fact; no public byte projection can turn it into reusable authority.
-#[test]
-fn commit_recovery_has_no_projection_or_replay_machinery() {
-    let root = workspace_root();
-    let durable = std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/mod.rs"))
-        .expect("read commit-recovery owner");
-    let declaration_start = durable
-        .find("pub struct CommitRecovery {")
-        .expect("commit-recovery declaration");
-    let declaration_tail = &durable[declaration_start..];
-    let declaration_end = declaration_tail
-        .find("\n}")
-        .map(|offset| offset + 2)
-        .expect("commit-recovery declaration end");
-    let declaration = &declaration_tail[..declaration_end];
-    for field in declaration
-        .lines()
-        .skip(1)
-        .filter(|line| line.contains(':'))
-    {
-        assert!(
-            field.trim_start().starts_with("pub(super) "),
-            "CommitRecovery gained a publicly projectable field: {field}",
-        );
-    }
-    let attribute_start = durable[..declaration_start]
-        .rfind("#[must_use")
-        .expect("commit-recovery must-use attribute");
-    assert!(
-        !durable[attribute_start..declaration_start].contains("#[derive"),
-        "CommitRecovery must not derive clone, copy, or serialization traits",
-    );
-
-    let forbidden_fact_surfaces = [
-        ["impl ", "Clone for CommitRecovery"].concat(),
-        ["impl ", "Copy for CommitRecovery"].concat(),
-        ["impl ", "PartialEq for CommitRecovery"].concat(),
-        ["impl ", "Eq for CommitRecovery"].concat(),
-        ["impl std::cmp::", "PartialEq for CommitRecovery"].concat(),
-        ["impl std::cmp::", "Eq for CommitRecovery"].concat(),
-        ["impl core::cmp::", "PartialEq for CommitRecovery"].concat(),
-        ["impl core::cmp::", "Eq for CommitRecovery"].concat(),
-        ["impl ", "CommitRecovery {"].concat(),
-        ["impl From<CommitRecovery", ">"].concat(),
-        ["impl From<&CommitRecovery", ">"].concat(),
-        ["impl TryFrom<CommitRecovery", ">"].concat(),
-        ["impl AsRef<[u8]> for ", "CommitRecovery"].concat(),
-        ["impl serde::Serialize for ", "CommitRecovery"].concat(),
-        ["impl serde::Deserialize", "CommitRecovery"].concat(),
-    ];
-    let present: Vec<&str> = forbidden_fact_surfaces
-        .iter()
-        .filter(|pattern| durable.contains(pattern.as_str()))
-        .map(String::as_str)
-        .collect();
-    assert!(
-        present.is_empty(),
-        "CommitRecovery exposes a reusable projection or construction surface: {present:?}",
-    );
-
-    let commit_result_start = durable
-        .find("pub enum CommitResult {")
-        .expect("commit-result declaration");
-    let commit_result_item_start = durable[..commit_result_start]
-        .rfind("\n\n")
-        .map_or(0, |offset| offset + 2);
-    for derive in durable[commit_result_item_start..commit_result_start]
-        .lines()
-        .filter(|line| line.trim_start().starts_with("#[derive("))
-    {
-        assert!(
-            !derive.contains("PartialEq")
-                && !derive
-                    .split([',', '(', ')'])
-                    .any(|part| part.trim() == "Eq"),
-            "CommitResult must not derive equality over an affine recovery fact: {derive}",
-        );
-    }
-    for pattern in [
-        ["impl ", "PartialEq for CommitResult"].concat(),
-        ["impl ", "Eq for CommitResult"].concat(),
-        ["impl std::cmp::", "PartialEq for CommitResult"].concat(),
-        ["impl std::cmp::", "Eq for CommitResult"].concat(),
-        ["impl core::cmp::", "PartialEq for CommitResult"].concat(),
-        ["impl core::cmp::", "Eq for CommitResult"].concat(),
-    ] {
-        assert!(
-            !durable.contains(&pattern),
-            "CommitResult exposes equality over an affine recovery fact: {pattern}",
-        );
-    }
-
-    let forbidden_machinery = [
-        ["struct ", "DeliveryLedger"].concat(),
-        ["struct ", "CommitRecoveryLedger"].concat(),
-        ["enum ", "ReplayOutcome"].concat(),
-        ["fn ", "replay_commit("].concat(),
-        ["fn ", "replay_invocation("].concat(),
-        ["fn ", "resume_invocation("].concat(),
-        ["fn ", "resume_bytecode("].concat(),
-        ["fn ", "resubmit("].concat(),
-        ["delivery", "_ledger:"].concat(),
-        ["replay", "_buffer:"].concat(),
-        ["recovery", "_ledger:"].concat(),
-        ["delivery", "Ledger:"].concat(),
-        ["replay", "Buffer:"].concat(),
-        ["recovery", "Ledger:"].concat(),
-    ];
-    let mut violations = Vec::new();
-    for path in tracked_files(&root) {
-        let relative = path
-            .strip_prefix(&root)
-            .expect("tracked path beneath workspace")
-            .display()
-            .to_string();
-        if !relative.starts_with("crates/") || !relative.contains("/src/") {
-            continue;
-        }
-        if !path.is_file() {
-            continue;
-        }
-        let extension = path.extension().and_then(|extension| extension.to_str());
-        if !matches!(extension, Some("rs" | "mjs" | "mts" | "ts")) {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).expect("read product source");
-        for pattern in &forbidden_machinery {
-            if source.contains(pattern.as_str()) {
-                violations.push(format!("{relative}: {pattern}"));
-            }
-        }
-    }
-    assert!(
-        violations.is_empty(),
-        "replay or commit-outcome ledger machinery appeared:\n{}",
-        violations.join("\n"),
-    );
-}
-
-/// A durable execution failure cannot be implicitly collapsed to its runtime
-/// fault. The explicit typed inspectors and consuming incomplete disposition are
-/// the only projections; generic formatting/error traits or conversion impls
-/// could otherwise erase an affine pending recovery fact.
-#[test]
-fn durable_execution_failure_has_no_generic_collapse_surface() {
-    let source = std::fs::read_to_string(workspace_root().join("crates/marrow-vm/src/fault.rs"))
-        .expect("read durable fault owner");
-    let forbidden = [
-        ["impl std::ops::", "Deref for DurableExecutionFault"].concat(),
-        ["impl std::fmt::", "Display for DurableExecutionFault"].concat(),
-        ["impl std::error::", "Error for DurableExecutionFault"].concat(),
-        ["impl From<DurableExecutionFault> for ", "RuntimeFault"].concat(),
-        ["impl From<&DurableExecutionFault> for ", "RuntimeFault"].concat(),
-        ["impl AsRef<RuntimeFault> for ", "DurableExecutionFault"].concat(),
-    ];
-    let present: Vec<&str> = forbidden
-        .iter()
-        .filter(|pattern| source.contains(pattern.as_str()))
-        .map(String::as_str)
-        .collect();
-    assert!(
-        present.is_empty(),
-        "durable execution failure exposes a collapse surface: {present:?}",
-    );
-
-    for declaration in [
-        "pub struct InvocationIncomplete {",
-        "enum IncompleteDurability {",
-        "pub enum IncompleteDisposition {",
-        "pub enum DurableExecutionFault {",
-    ] {
-        let declaration_start = source
-            .find(declaration)
-            .expect("durable failure declaration");
-        let item_start = source[..declaration_start]
-            .rfind("\n\n")
-            .map_or(0, |offset| offset + 2);
-        for derive in source[item_start..declaration_start]
-            .lines()
-            .filter(|line| line.trim_start().starts_with("#[derive("))
-        {
-            assert!(
-                !derive.contains("PartialEq")
-                    && !derive
-                        .split([',', '(', ')'])
-                        .any(|part| part.trim() == "Eq"),
-                "{declaration} must not derive equality over an affine recovery fact: {derive}",
-            );
-        }
-    }
-
-    for type_name in [
-        "InvocationIncomplete",
-        "IncompleteDurability",
-        "IncompleteDisposition",
-        "DurableExecutionFault",
-    ] {
-        for trait_name in ["PartialEq", "Eq"] {
-            for prefix in ["impl ", "impl std::cmp::", "impl core::cmp::"] {
-                let pattern = format!("{prefix}{trait_name} for {type_name}");
-                assert!(
-                    !source.contains(&pattern),
-                    "{type_name} exposes a non-consuming equality oracle: {pattern}",
-                );
-            }
-        }
-    }
-}
-
-/// The source of one formatted function through its own closing indentation.
-/// Nested blocks and struct literals must not truncate the phase being checked.
-fn fn_body<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
-    let start = source.find(signature)?;
-    let rest = &source[start..];
-    let line = source[..start].rsplit('\n').next()?;
-    let indentation: String = line.chars().take_while(|ch| ch.is_whitespace()).collect();
-    let end = rest.find(&format!("\n{indentation}}}\n"))?;
-    Some(&rest[..end])
-}
-
-/// Native access is a two-layer opaque owner: the storage layer owns the real
-/// lock plus engine, the kernel owns the scoped semantic store, and lifecycle
-/// can only provision, open, delegate sessions, or consume recovery.
-#[test]
-fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
-    let root = workspace_root();
-    let lifecycle = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/provision.rs"))
-        .expect("read lifecycle open owner");
-    let lifecycle_lock = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/lock.rs"))
-        .expect("read lifecycle lock facade");
-    let lifecycle_root = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/lib.rs"))
-        .expect("read lifecycle public surface");
-    let kernel_owner =
-        std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/native_owner.rs"))
-            .expect("read kernel native owner");
-    let handle =
-        std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/store/handle.rs"))
-            .expect("read generic store constructor owner");
-    let store_root = std::fs::read_to_string(root.join("crates/marrow-store/src/lib.rs"))
-        .expect("read store public surface");
-    let lower_owner = std::fs::read_to_string(root.join("crates/marrow-store/src/native_owner.rs"))
-        .expect("read lower native owner");
-    let raw_engine = std::fs::read_to_string(root.join("crates/marrow-store/src/redb.rs"))
-        .expect("read private raw engine");
-    let lifecycle_product = lifecycle
-        .split("\n#[cfg(test)]\nmod tests")
-        .next()
-        .expect("lifecycle product source");
-
-    // The store shape reaches every one of these owners as one checked projection: the roots
-    // and the site table already resolved against them. A raw root or site vector in any of
-    // their signatures is the intake that let a site name a position no root declared, and it
-    // is the pattern this pin keeps from returning.
-    for (owner, source) in [
-        ("the lifecycle open owner", lifecycle_product),
-        ("the kernel native owner", kernel_owner.as_str()),
-        ("the generic store handle", handle.as_str()),
-    ] {
-        for raw in [
-            "Vec<StoreSchema>",
-            "Vec<SiteSpec>",
-            "Vec<Site>",
-            "&[StoreSchema]",
-            "&[SiteSpec]",
-            "&[Site]",
-        ] {
-            assert!(
-                !source.contains(raw),
-                "{owner} takes a raw store-shape vector `{raw}` rather than the checked projection",
-            );
-        }
-    }
-
-    let provision_call = ["NativeStore::", "provision("].concat();
-    assert_eq!(
-        lifecycle_product.match_indices(&provision_call).count(),
-        1,
-        "lifecycle provisioning must call the one non-returning create operation once",
-    );
-    let build =
-        fn_body(lifecycle_product, "fn build_in_temp(").expect("private construction owner exists");
-    let locked = lifecycle_product
-        .split("impl LockedStore {")
-        .nth(1)
-        .expect("locked store owner exists");
-    let acquire =
-        fn_body(locked, "pub(crate) fn acquire(").expect("ordinary acquisition owner exists");
-    let open =
-        fn_body(locked, "pub(crate) fn open<R>(").expect("admitted engine opening owner exists");
-    let compatible = fn_body(locked, "pub(crate) fn open_compatible(")
-        .expect("compatible admission owner exists");
-    let decoded = fn_body(locked, "fn open_decoded(").expect("decoded engine opening owner exists");
-    let ordinary =
-        fn_body(lifecycle_product, "fn open_admitted<R>(").expect("ordinary state gate exists");
-    let acquire_call = "NativeStore::acquire_existing(";
-    assert!(
-        !lifecycle_product.contains("AdmittedStoreDir::admit("),
-        "lifecycle directory admission must require the physical owner",
-    );
-    assert_eq!(
-        lifecycle_product.matches(acquire_call).count(),
-        2,
-        "only private construction and ordinary acquisition take an owner"
-    );
-    for body in [build, acquire] {
-        assert_eq!(
-            body.matches(acquire_call).count(),
-            1,
-            "each acquisition belongs to its named owner"
-        );
-    }
-    assert_eq!(
-        build.matches(&provision_call).count(),
-        1,
-        "only private construction creates an engine"
-    );
-    let bind_call = ".bind_and_open_existing(";
-    assert_eq!(
-        lifecycle_product.matches(bind_call).count(),
-        1,
-        "there is one admitted engine opening"
-    );
-    assert_eq!(
-        decoded.matches(bind_call).count(),
-        1,
-        "the locked store consumes the pending owner when opening"
-    );
-    assert!(
-        !acquire.contains(bind_call),
-        "acquisition cannot open an engine"
-    );
-    assert_eq!(
-        lifecycle_product
-            .matches("AdmittedStoreDir::admit_under_owner(")
-            .count(),
-        2,
-        "both admitted directories must belong to the named acquisition phases"
-    );
-
-    // These are recurrence guards over the named owners, not a Rust parser. Runtime
-    // ownership and substitution fixtures exercise the corresponding boundaries.
-    let phases: [(&str, &str, &[&str]); 6] = [
-        (
-            "private construction",
-            build,
-            &[
-                "NativeStore::acquire_existing(temp)",
-                "AdmittedStoreDir::admit_under_owner(&owner)",
-                ".write_new(Artifact::Envelope,",
-                ".write_new(Artifact::Head,",
-                "NativeStore::provision(temp)",
-                "admitted.sync()",
-                "Ok((owner, admitted))",
-            ],
-        ),
-        (
-            "ordinary acquisition",
-            acquire,
-            &[
-                "decide_before_locking(dir)",
-                "NativeStore::acquire_existing(dir)",
-                "AdmittedStoreDir::admit_under_owner(&pending)",
-                "directory.is_complete()",
-                "decode_record(&directory)",
-                "check_engine_stamp(&envelope.metadata)",
-            ],
-        ),
-        (
-            "ordinary state gate",
-            ordinary,
-            &[
-                "LockedStore::acquire(dir)",
-                "locked.envelope.state != EnvelopeState::Active",
-                "OpenError::ActivationRequired",
-                "locked.open(",
-            ],
-        ),
-        (
-            "ordinary semantic admission",
-            open,
-            &[
-                "decode_head(&self.directory)",
-                "admit(&head, digest)",
-                "self.open_decoded(",
-            ],
-        ),
-        (
-            "compatible semantic admission",
-            compatible,
-            &[
-                "self.envelope.state != EnvelopeState::Active",
-                "decode_head(&self.directory)",
-                "admission.incoming() == &head.binding",
-                "admission.admit_compatible(&head)",
-                ".open_decoded(NativeOpenAccess::ReadWrite,",
-                ".open_decoded(NativeOpenAccess::ReadOnly,",
-            ],
-        ),
-        (
-            "decoded engine opening",
-            decoded,
-            &[bind_call, "Ok::<_, std::convert::Infallible>(layout)"],
-        ),
-    ];
-    for (name, body, steps) in phases {
-        let mut next = 0;
-        for step in steps {
-            let at = body
-                .find(step)
-                .unwrap_or_else(|| panic!("{name} lacks {step}"));
-            assert!(at >= next, "{name} places {step} before its prerequisite");
-            next = at + step.len();
-        }
-    }
-    let before_locking = fn_body(lifecycle_product, "fn decide_before_locking(dir: &Path)")
-        .expect("the pre-lock decision owner exists");
-    assert!(
-        before_locking.contains("qualified_platform("),
-        "an open must refuse an unqualified platform before taking the owner lock"
-    );
-    assert!(
-        !lifecycle_product.contains("std::fs::read(store_dir::")
-            && !lifecycle_product.contains("std::fs::read(&store_dir::"),
-        "lifecycle artifacts must be admitted through the retained directory, not path-read",
-    );
-
-    // The two-phase lower owner. Acquisition takes the lock and does nothing else: naming a
-    // store or reaching the engine there would put work that can fail ahead of the exclusion
-    // verdict, which is exactly the ordering this row exists to forbid.
-    let acquire_body = fn_body(&lower_owner, "pub fn acquire_existing(")
-        .expect("the lower owner exposes an acquisition phase");
-    assert!(
-        !acquire_body.contains("NativeEngine::"),
-        "owner acquisition must make no engine call",
-    );
-    assert!(
-        // Call and binding shapes, not the bare word: an instance is passed, bound, or
-        // destructured through one of these, while prose may name the concept freely.
-        !["instance:", "instance,", "instance)", "instance ="]
-            .iter()
-            .any(|shape| acquire_body.contains(shape)),
-        "owner acquisition must name no store instance",
-    );
-    assert!(
-        lower_owner.contains("pub fn bind_and_open_existing<R>(")
-            && fn_body(&lower_owner, "pub fn bind_and_open_existing<R>(")
-                .is_some_and(|body| body.contains("NativeEngine::open_existing(")),
-        "the existing-only engine open must live in the binding phase",
-    );
-    let lower_bind = fn_body(&lower_owner, "pub fn bind_and_open_existing<R>(")
-        .expect("lower binding phase exists");
-    let admitted = lower_bind
-        .find("admit()")
-        .expect("binding admits the stored image");
-    assert!(
-        lower_bind
-            .find(".prepare_existing(")
-            .expect("binding prepares the marker under retained directory exclusion")
-            < admitted,
-        "marker preparation must precede admission",
-    );
-    for engine_open in [
-        "NativeEngine::open_existing(",
-        "NativeEngine::open_read_only(",
-    ] {
-        assert!(
-            admitted
-                < lower_bind
-                    .find(engine_open)
-                    .expect("engine open branch exists"),
-            "every engine branch must follow image admission"
-        );
-    }
-    assert!(
-        lower_owner.contains("fn acquire(dir: &Path) -> Result<Self, NativeLockError>"),
-        "lock acquisition must require no store instance",
-    );
-    assert!(
-        lower_owner.contains("pub instance: Option<[u8; 16]>"),
-        "a holder that has not bound its store must not be projected as naming one",
-    );
-    assert!(
-        lower_owner.contains("owner: read_owner(&mut file),"),
-        "a contention verdict must not depend on the marker decoding",
-    );
-
-    // Exclusion is settled before anything about the marker entry beyond its own node is
-    // admitted. A second link does not divide exclusion, so checking it ahead of the lock
-    // would hand a contender an I/O refusal where the exclusion verdict applies.
-    let lock_acquire = fn_body(&lower_owner, "fn acquire(dir: &Path)")
-        .expect("the lower owner exposes lock acquisition");
-    // Exclusion rests on the store directory node, which no replacement of the directory's
-    // own children changes. Every name inside the directory — the marker and the engine file
-    // both — can be unlinked and recreated, so a lock taken only on those names is divided by
-    // replacing them, and replacing both at once divides it entirely.
-    assert!(
-        lock_acquire.contains("directory_node.try_lock()")
-            && !lock_acquire.contains("open_marker(")
-            && !lock_acquire.contains("write_owner(")
-            && !lock_acquire.contains("NativeEngine::"),
-        "acquisition must take directory exclusion without opening or publishing a marker \
-         or opening an engine",
-    );
-    let quarantined =
-        fn_body(&lower_owner, "fn drop(&mut self)").expect("the owner lock decides its own drop");
-    for handle in ["self.directory_node.take()", "self.file.take()"] {
-        assert!(
-            quarantined.contains(handle),
-            "quarantine must retain every handle exclusion rests on, including {handle}",
-        );
-    }
-    let marker_prepare = fn_body(&lower_owner, "fn prepare_existing(")
-        .expect("the retained lock prepares the marker");
-    assert!(
-        marker_prepare
-            .find("self.inspect_marker(")
-            .expect("inspect marker")
-            < marker_prepare
-                .find("self.publish_owner(")
-                .expect("publish owner"),
-        "marker inspection must precede holder publication",
-    );
-    let marker_inspect =
-        fn_body(&lower_owner, "fn inspect_marker(").expect("the retained lock inspects the marker");
-    let marker_opened = marker_inspect
-        .find("open_marker(")
-        .expect("marker preparation opens the marker entry");
-    let locked = marker_inspect
-        .find("file.try_lock()")
-        .expect("marker preparation takes the advisory lock");
-    let held_admission = marker_inspect
-        .find("admit_held_marker(")
-        .expect("marker preparation admits the held marker");
-    assert!(
-        marker_opened < locked && locked < held_admission,
-        "the marker's link admission must run after exclusion is decided, not before it",
-    );
-    let open_marker = fn_body(&lower_owner, "fn open_marker(dir: &Path,")
-        .expect("the lower owner opens the marker entry");
-    assert!(
-        !open_marker.contains("admit_held_marker("),
-        "opening the marker must not decide anything that belongs after the lock",
-    );
-
-    // The marker a contender reads is bytes it did not write, so the decoder admits before
-    // it indexes: every access goes through a checked lookup.
-    let decode = fn_body(&lower_owner, "fn decode(bytes: &[u8])")
-        .expect("the lower owner decodes the marker");
-    assert!(
-        !decode.contains("bytes["),
-        "the owner-marker decoder must reach every byte through a checked lookup",
-    );
-
-    // Every artifact ceiling is derived beside the encoder it bounds, so a layout change
-    // that moves the maximum cannot leave the admission bound behind.
-    let envelope = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/envelope.rs"))
-        .expect("read the envelope codec");
-    let head = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/head.rs"))
-        .expect("read the head codec");
-    assert!(
-        envelope.contains("const LEGACY_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES as u64 + 32")
-            && envelope.contains(
-                "pub const MAX_ENVELOPE_FILE_BYTES: u64 = LEGACY_FILE_BYTES + 1 + 2 * 32"
-            )
-            && head.contains("MAX_HEAD_MAP_ENTRIES as u64 * (16 + 4)")
-            && head.contains("+ MAX_ACCEPTED_CEILING_BYTES as u64"),
-        "an artifact file ceiling must be derived from the bounds its own decoder enforces",
-    );
-    assert!(
-        lifecycle_product.contains("owner.resolve_recovery(recovery)")
-            && !lifecycle_product.contains("reopen_existing_and_audit")
-            && !lifecycle_product.contains("marrow_store"),
-        "lifecycle recovery must consume the upper owner without reaching the lower store",
-    );
-
-    for forbidden in [
-        "pub fn from_engine_with_recovery_scope(",
-        "pub fn from_numbered_with_ceiling_and_recovery_scope(",
-        "pub fn from_projection_with_ceiling_and_recovery_scope(",
-        // The former spelling of the same constructor, kept so a rename back to it is as
-        // visible as reintroducing the constructor under its current name.
-        "pub fn from_schemas_with_ceiling_and_recovery_scope(",
-        "pub fn classify_recovery(",
-        "pub fn audit(",
-        "pub fn has_unresolved_recovery(",
-    ] {
-        assert!(
-            !handle.contains(forbidden),
-            "the generic store exposes persistent recovery authority: {forbidden}",
-        );
-    }
-    let durable = std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/mod.rs"))
-        .expect("read recovery-fact owner");
-    assert!(
-        !durable.contains("pub struct CommitRecoveryScope")
-            && !durable.contains("pub fn persistent("),
-        "the lifecycle recovery scope must not be publicly constructible or nameable",
-    );
-
-    assert!(
-        kernel_owner.contains("store: Option<DurableStore<NativeEngineOwner>>")
-            && kernel_owner.contains("store.into_parts()")
-            && kernel_owner.contains("engine.reopen_existing_and_audit()")
-            && kernel_owner.contains("reopened.classify_recovery(recovery)"),
-        "the upper owner must keep semantic recovery inside the lower locked owner",
-    );
-    assert!(
-        !kernel_owner.contains("pub store:")
-            && !kernel_owner.contains("pub fn store(")
-            && !kernel_owner.contains("pub fn store_mut(")
-            && !kernel_owner.contains("pub fn into_store("),
-        "the upper owner exposes a semantic-store detachment seam",
-    );
-
-    assert!(
-        lower_owner.contains("engine: Option<NativeEngine>")
-            && lower_owner.contains("lock: OwnerLock")
-            && lower_owner.contains("file.try_lock()")
-            && lower_owner.contains("NativeEngine::open_existing")
-            && lower_owner.contains("lock.quarantine()"),
-        "the lower capsule must own the real lock, engine, existing-open, and quarantine",
-    );
-    assert!(
-        !lower_owner.contains("pub engine:")
-            && !lower_owner.contains("pub lock:")
-            && !lower_owner.contains("pub fn engine(")
-            && !lower_owner.contains("pub fn engine_mut(")
-            && !lower_owner.contains("pub fn mark_clean(")
-            && !lower_owner.contains("pub fn rearm"),
-        "the lower owner exposes a detach or quarantine re-arm seam",
-    );
-
-    let mutable_prepare = fn_body(marker_prepare, "if access != NativeOpenAccess::ReadOnly")
-        .expect("read-only marker preparation must not publish an owner");
-    assert_eq!(
-        mutable_prepare.matches("self.publish_owner(").count(),
-        marker_prepare.matches("self.publish_owner(").count(),
-        "holder publication must remain inside mutable marker preparation",
-    );
-    let publish_owner =
-        fn_body(&lower_owner, "fn publish_owner(").expect("the retained lock publishes the holder");
-    let owner_write = publish_owner
-        .find("write_owner(")
-        .expect("owner descriptor write exists");
-    let directory_sync = publish_owner
-        .find("sync_dir(dir).map_err(NativeLockError::Io)?")
-        .expect("owner-lock directory sync exists");
-    assert!(
-        owner_write < directory_sync,
-        "mutable marker preparation must durably publish the directory entry before returning",
-    );
-    assert!(
-        fn_body(lower_bind, "if access != NativeOpenAccess::ReadOnly")
-            .is_some_and(|body| body.contains("lock.mark_clean()")),
-        "read-only binding must not clear the marker on drop",
-    );
-    assert!(
-        fn_body(&lower_owner, "fn write_owner(")
-            .is_some_and(|body| body.matches("sync_all()").count() == 2),
-        "the owner marker must be made durable around every rewrite of its body",
-    );
-
-    assert!(
-        !store_root.contains("pub use redb::NativeEngine")
-            && raw_engine.contains("pub(crate) struct NativeEngine")
-            && raw_engine.contains("pub(crate) fn create_new(")
-            && raw_engine.contains("pub(crate) fn open_existing("),
-        "raw native construction must stay private behind the lower owner",
-    );
-    assert!(
-        !lifecycle_lock.contains("try_lock(")
-            && !lifecycle_lock.contains("struct OwnerLock")
-            && lifecycle_lock.contains("impl From<NativeLockError> for LockError"),
-        "lifecycle lock.rs must be a diagnostic facade, not a second physical lock owner",
-    );
-    assert!(
-        !lifecycle_root.contains("OwnerLock") && !lifecycle_root.contains("Acquired"),
-        "the lifecycle public surface must not export raw owner-lock capabilities",
-    );
-
-    for forbidden in [
-        "pub store: NativeStore",
-        "pub owner: NativeStore",
-        "pub fn store(",
-        "pub fn store_mut(",
-        "pub fn into_store(",
-        "pub fn take_store(",
-        "pub fn replace_store(",
-        "pub fn with_store(",
-    ] {
-        assert!(
-            !lifecycle.contains(forbidden),
-            "OpenStore exposes a raw owner-separation seam: {forbidden}",
-        );
-    }
-}
-
-/// No ambient clock feeds a temporal value: the temporal language path reads no wall
-/// or monotonic clock and depends on no date/time crate. A clock is a later explicit
-/// host effect; the temporal types are constructed only from literals and arguments.
-#[test]
-fn no_ambient_clock_on_the_temporal_path() {
-    let root = workspace_root();
-    let mut files = Vec::new();
-    for relative in TEMPORAL_PATH_SRC {
-        rust_sources(&root.join(relative), &mut files);
-    }
-    assert!(
-        !files.is_empty(),
-        "the temporal-path source scan found no files; the roots moved"
-    );
-
-    let mut violations: Vec<String> = Vec::new();
-    for path in files {
-        let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
-        for api in FORBIDDEN_CLOCK_APIS {
-            if contents.contains(api) {
-                violations.push(format!("{}: {api}", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "an ambient clock reached the temporal language path:\n{}",
-        violations.join("\n")
-    );
-}
-
-/// Public rustdoc must not retain a link to the removed raw native constructor.
-#[test]
-fn native_store_alias_docs_name_the_opaque_owner_not_a_removed_constructor() {
-    let root = workspace_root();
-    let source = std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/mod.rs"))
-        .expect("read durable module");
-    assert!(
-        !source.contains("DurableStore::open_native"),
-        "the native alias rustdoc still links the removed raw constructor",
-    );
-    assert!(
-        source.contains("NativeStoreOwner"),
-        "the native alias docs must name the opaque semantic owner",
-    );
-}
-
-// ---------------------------------------------------------------------------
-// The per-file length cap.
-// ---------------------------------------------------------------------------
-
-/// The raw-line ceiling for a tracked Rust source file.
+/// One absence scan: none of `needles` may occur in a tracked `.rs` file whose
+/// path starts with one of `roots`.
 ///
-/// A file past this length has stopped being one readable unit: reviews sample it
-/// instead of reading it, and unrelated concerns accrete inside it unnoticed. The
-/// cap is deliberately blunt — raw lines, not statements or items — so it cannot be
-/// argued with, and the remedy is always the same: find the seam and lift it out.
-const FILE_LINE_CAP: usize = 3_000;
+/// Each entry states an invariant that no type, visibility, or lint can carry.
+/// `unsafe` is deliberately absent: `unsafe_code = "forbid"` at the workspace
+/// root already refuses it at compile time.
+struct AbsenceScan {
+    subject: &'static str,
+    roots: &'static [&'static str],
+    needles: &'static [&'static str],
+}
 
-/// The files that were already past [`FILE_LINE_CAP`] when the cap was installed,
-/// each with the exact length it is allowed to keep. These are inherited debt and
-/// named follow-on split targets, not exemptions: a budget may only ever be
-/// lowered. Growing one fails, and so does leaving a retired entry behind.
-///
-/// Recording the exact length rather than a blanket waiver is what keeps the gate
-/// honest — without it the longest files in the tree would be the only ones free
-/// to grow without limit.
-const OVER_CAP_ALLOWLIST: &[(&str, usize)] = &[
-    ("crates/marrow-compile/src/compile.rs", 3_750),
-    ("crates/marrow-compile/src/lower/durable.rs", 3_107),
-    ("crates/marrow-compile/src/lower/exprs.rs", 3_371),
-    (
-        "crates/marrow-compile/src/types/instantiation_state_tests.rs",
-        3_731,
-    ),
-    ("crates/marrow-compile/src/types/mod.rs", 4_214),
-    ("crates/marrow-kernel/src/durable/store/tests.rs", 3_590),
-    ("crates/marrow-verify/tests/hostile.rs", 5_541),
-];
-
-/// Why one file, or one allowlist entry, fails the cap.
-#[derive(Debug, PartialEq, Eq)]
-enum CapViolation {
-    /// A file grew past the cap without being an inherited, budgeted one.
-    OverCap { path: String, lines: usize },
-    /// An inherited file grew past the budget it was admitted with.
-    OverBudget {
-        path: String,
-        lines: usize,
-        budget: usize,
+const ABSENCE_SCANS: &[AbsenceScan] = &[
+    AbsenceScan {
+        subject: "a bounded kernel owner stops being bounded through one of these",
+        roots: &["crates/marrow-kernel/src/"],
+        needles: &["ManuallyDrop", "mem::forget"],
     },
-    /// An inherited file came back under the cap: the entry has to go, or the
-    /// allowlist will silently re-license it to grow again later.
-    Retired { path: String, lines: usize },
-    /// An entry names a file that is no longer tracked.
-    Vanished { path: String },
-}
-
-impl CapViolation {
-    fn render(&self) -> String {
-        match self {
-            Self::OverCap { path, lines } => format!(
-                "{path}: {lines} lines exceeds the {FILE_LINE_CAP}-line cap; split it at a seam"
-            ),
-            Self::OverBudget {
-                path,
-                lines,
-                budget,
-            } => format!("{path}: {lines} lines exceeds its inherited budget of {budget}"),
-            Self::Retired { path, lines } => {
-                format!("{path}: {lines} lines is under the cap; drop its OVER_CAP_ALLOWLIST entry")
-            }
-            Self::Vanished { path } => {
-                format!("{path}: no longer tracked; drop its OVER_CAP_ALLOWLIST entry")
-            }
-        }
-    }
-}
-
-/// The whole cap decision, over measured `(path, lines)` pairs, as a pure function
-/// so both of its failure directions can be probed directly.
-fn cap_violations(measured: &[(String, usize)], allowlist: &[(&str, usize)]) -> Vec<CapViolation> {
-    let mut violations = Vec::new();
-
-    for (path, lines) in measured {
-        let budget = allowlist
-            .iter()
-            .find(|(allowed, _)| allowed == path)
-            .map(|(_, budget)| *budget);
-        match budget {
-            None if *lines > FILE_LINE_CAP => violations.push(CapViolation::OverCap {
-                path: path.clone(),
-                lines: *lines,
-            }),
-            Some(budget) if *lines > budget => violations.push(CapViolation::OverBudget {
-                path: path.clone(),
-                lines: *lines,
-                budget,
-            }),
-            Some(_) if *lines <= FILE_LINE_CAP => violations.push(CapViolation::Retired {
-                path: path.clone(),
-                lines: *lines,
-            }),
-            _ => {}
-        }
-    }
-
-    for (path, _) in allowlist {
-        if !measured.iter().any(|(measured, _)| measured == path) {
-            violations.push(CapViolation::Vanished {
-                path: (*path).to_string(),
-            });
-        }
-    }
-
-    violations
-}
-
-/// Every tracked Rust source file, as a repository-relative path and its raw line
-/// count.
-fn measured_rust_sources(root: &Path) -> Vec<(String, usize)> {
-    let mut measured = Vec::new();
-    for path in tracked_files(root) {
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
-            let relative = path
-                .strip_prefix(root)
-                .expect("a tracked path lies under the workspace root");
-            measured.push((
-                relative.to_string_lossy().into_owned(),
-                contents.lines().count(),
-            ));
-        }
-    }
-    measured
-}
+    AbsenceScan {
+        subject: "the image site binder validates rows it borrows, so shared mutation or an \
+                  aliasing split would let a row change under a validation that already answered",
+        roots: &[
+            "crates/marrow-image/src/product.rs",
+            "crates/marrow-image/src/site_plan.rs",
+            "crates/marrow-image/src/draft.rs",
+        ],
+        needles: &[
+            "Cell<",
+            "RefCell<",
+            "UnsafeCell<",
+            "Mutex<",
+            "RwLock<",
+            "split_at_mut",
+            "as *mut",
+            "as *const",
+        ],
+    },
+    // A Marrow temporal value is pure: it never derives from a wall or monotonic
+    // clock, a timezone database, or a date/time crate. The kernel's durable store
+    // substrate is out of scope — storage ownership may record host time as forensic
+    // process metadata, which never feeds a language temporal value.
+    AbsenceScan {
+        subject: "an ambient clock reached the temporal language path",
+        roots: &[
+            "crates/marrow-temporal/src/",
+            "crates/marrow-compile/src/",
+            "crates/marrow-image/src/",
+            "crates/marrow-verify/src/",
+            "crates/marrow-vm/src/",
+            "crates/marrow-syntax/src/",
+            "crates/marrow-kernel/src/codec/",
+        ],
+        needles: &[
+            "SystemTime",
+            "UNIX_EPOCH",
+            "Instant::now",
+            "chrono",
+            "OffsetDateTime",
+            "PrimitiveDateTime",
+        ],
+    },
+    // `marrow-project` owns project input plus pure admitted identity mutation and
+    // canonical serialization; `marrow-compile` is a read-only ledger consumer. The
+    // CLI owns physical `.marrow/ids` publication, so neither pure owner can read or
+    // write an identity artifact.
+    AbsenceScan {
+        subject: "a filesystem edge reached a pure owner",
+        roots: &["crates/marrow-project/src/", "crates/marrow-compile/src/"],
+        needles: &["std::fs", "std::io::Read", "File::open", "File::create"],
+    },
+    // No current envelope claims power-loss durability, so the full-flush fcntl and
+    // the std sync wrappers — whose Darwin implementation issues that fcntl — stay
+    // out of the journal.
+    AbsenceScan {
+        subject: "a sync stronger or weaker than plain fsync entered the journal",
+        roots: &["crates/marrow-fs-journal/src/"],
+        needles: &[
+            "fcntl_fullfsync",
+            "F_FULLFSYNC",
+            "sync_all",
+            "sync_data",
+            "fdatasync",
+        ],
+    },
+];
 
 #[test]
-fn no_rust_source_exceeds_the_line_cap() {
-    let root = workspace_root();
-    let measured = measured_rust_sources(&root);
-    assert!(
-        measured.len() > 100,
-        "the tracked-source scan found only {} files; the enumeration broke",
-        measured.len()
-    );
-
-    let violations = cap_violations(&measured, OVER_CAP_ALLOWLIST);
-    assert!(
-        violations.is_empty(),
-        "the {FILE_LINE_CAP}-line cap is violated:\n{}",
-        violations
-            .iter()
-            .map(CapViolation::render)
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-}
-
-/// The gate's own coverage: planted inputs drive each arm, so a refactor that
-/// quietly stops detecting one direction fails here rather than going unnoticed
-/// until the tree has already grown into the gap.
-#[test]
-fn the_line_cap_detects_every_violation_direction() {
-    let allowlist: &[(&str, usize)] = &[("inherited.rs", 4_000)];
-
-    /// The planted tree: the inherited file at some length, plus one ordinary
-    /// file at another. Both entries are always present, so every violation the
-    /// probe sees is the one it planted.
-    fn planted(
-        allowlist: &[(&str, usize)],
-        inherited: usize,
-        ordinary: usize,
-    ) -> Vec<CapViolation> {
-        cap_violations(
-            &[
-                ("inherited.rs".to_string(), inherited),
-                ("ordinary.rs".to_string(), ordinary),
-            ],
-            allowlist,
-        )
+fn the_absence_scans_hold() {
+    let mut violations: Vec<String> = Vec::new();
+    for scan in ABSENCE_SCANS {
+        let mut read = 0usize;
+        for relative in tracked_paths() {
+            if !relative.ends_with(".rs") || !scan.roots.iter().any(|root| relative.starts_with(root))
+            {
+                continue;
+            }
+            read += 1;
+            let contents = fs::read_to_string(workspace_root().join(relative))
+                .unwrap_or_else(|_| panic!("read {relative}"));
+            for needle in scan.needles {
+                if contents.contains(needle) {
+                    violations.push(format!("{relative}: {needle} — {}", scan.subject));
+                }
+            }
+        }
+        assert!(
+            read > 0,
+            "the scan for `{}` read no file; its roots moved",
+            scan.subject
+        );
     }
 
-    // The quiet case: nothing planted, nothing reported.
-    assert_eq!(planted(allowlist, 4_000, FILE_LINE_CAP), Vec::new());
-
-    // An ordinary file is judged against the cap, one line either side of it.
-    assert_eq!(
-        planted(allowlist, 4_000, FILE_LINE_CAP + 1),
-        vec![CapViolation::OverCap {
-            path: "ordinary.rs".to_string(),
-            lines: FILE_LINE_CAP + 1,
-        }],
-    );
-
-    // An inherited file is judged against its own budget instead, so shrinking
-    // is free and growing is not.
-    assert_eq!(planted(allowlist, 3_999, 10), Vec::new());
-    assert_eq!(
-        planted(allowlist, 4_001, 10),
-        vec![CapViolation::OverBudget {
-            path: "inherited.rs".to_string(),
-            lines: 4_001,
-            budget: 4_000,
-        }],
-    );
-
-    // The staleness half, both spellings: an inherited file that came back under
-    // the cap, and an entry whose file is no longer tracked.
-    assert_eq!(
-        planted(allowlist, FILE_LINE_CAP, 10),
-        vec![CapViolation::Retired {
-            path: "inherited.rs".to_string(),
-            lines: FILE_LINE_CAP,
-        }],
-    );
-    assert_eq!(
-        cap_violations(&[("ordinary.rs".to_string(), 10)], allowlist),
-        vec![CapViolation::Vanished {
-            path: "inherited.rs".to_string(),
-        }],
-    );
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
 }

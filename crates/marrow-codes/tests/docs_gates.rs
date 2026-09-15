@@ -1,182 +1,39 @@
-//! Standing documentation gates over every tracked Markdown file.
+//! The documentation link gate over every tracked Markdown file.
 //!
-//! Two invariants, both enforced from the files themselves rather than from
-//! prose in the contributor rules:
+//! Every relative link target names a git-tracked path, and every `#fragment`
+//! resolves to a heading anchor in the file it names, under GitHub's slug rules
+//! including duplicate-heading suffixes. Existence is decided against the
+//! tracked-path set rather than against `stat`, so the verdict is exact on a
+//! case-insensitive filesystem and identical on every host. External `http(s)`
+//! links are checked for syntactic sanity only: the battery is offline and must
+//! stay offline.
 //!
-//! 1. Every relative link target names a git-tracked path, and every
-//!    `#fragment` resolves to a heading anchor in the file it names, under
-//!    GitHub's slug rules including duplicate-heading suffixes. Existence is
-//!    decided against the tracked-path set rather than against `stat`, so the
-//!    verdict is exact on a case-insensitive filesystem and identical on every
-//!    host. External `http(s)` links are checked for syntactic sanity only:
-//!    the battery is offline and must stay offline.
-//! 2. No sentence states a banned claim family. The documentation standard
-//!    bans these claims everywhere, so `docs/future/` is in scope on the same
-//!    terms as the current reference: a future page may record a goal, but it
-//!    may not assert the claim.
+//! The scan reads one blanked text, produced by [`blank_literals`]. Blanking
+//! replaces fenced code, inline code spans, and HTML comments with spaces while
+//! preserving every byte offset, so a scan over the blanked text addresses the
+//! same positions as the file.
 //!
-//! Both scans read one blanked text, produced by the single pass in
-//! [`blank_literals`]. That pass is this workspace's only Markdown blanker —
-//! the Rust projection owner blanks a different grammar and shares nothing
-//! with it. Blanking replaces fenced code, inline code spans, and HTML
-//! comments with spaces while preserving every byte offset, so a scan over the
-//! blanked text addresses the same positions as the file.
-//!
-//! Literal blindness is the failure this gate is most exposed to, so every way
-//! a literal could swallow the rest of a file is loud rather than silent: an
+//! Literal blindness is the failure this gate is most exposed to, so every way a
+//! literal could swallow the rest of a file is loud rather than silent: an
 //! unterminated HTML comment or code fence panics with the file and the byte
-//! offset of the opener, and one state machine decides comment/fence
-//! precedence so a `<!--` inside a fence cannot govern blanking outside it and
-//! a fence line inside a comment cannot open a fence.
+//! offset of the opener, and one state machine decides comment/fence precedence
+//! so a `<!--` inside a fence cannot govern blanking outside it and a fence line
+//! inside a comment cannot open a fence.
 //!
 //! Two Markdown constructs are deliberately unmodelled and fail loudly rather
-//! than passing unchecked: setext headings (`===`/`---` underlines) and
-//! explicit HTML or attribute anchors (`<a name=`, `<a id=`, `{#slug}`). Both
-//! would create anchors this gate cannot see; a file that introduces one must
-//! extend the gate.
-//!
-//! The claim patterns are spelled here, so this file is not itself a scanned
-//! subject: only `.md` files are.
+//! than passing unchecked: setext headings (`===`/`---` underlines) and explicit
+//! HTML or attribute anchors (`<a name=`, `<a id=`, `{#slug}`). Both would create
+//! anchors this gate cannot see; a file that introduces one must extend the gate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::path::{Component, Path};
 use std::sync::OnceLock;
 
-// ---------------------------------------------------------------------------
-// Claim families
-// ---------------------------------------------------------------------------
+#[path = "common/workspace.rs"]
+mod workspace;
 
-/// One banned claim family and the literal phrases that state it. Phrases are
-/// spelled with spaces and never hyphens: a hyphen in the text is normalized to
-/// a space before matching, so `blazing-fast` and `blazing fast` are one claim
-/// and neither spelling needs its own row. A phrase spells the claim, never the
-/// bare word, so `instant` as a Marrow type name is not a speed claim.
-struct ClaimFamily {
-    name: &'static str,
-    phrases: &'static [&'static str],
-}
-
-const CLAIM_FAMILIES: &[ClaimFamily] = &[
-    ClaimFamily {
-        name: "speed",
-        phrases: &[
-            "blazing",
-            "blazing fast",
-            "blazingly fast",
-            "lightning fast",
-            "screaming fast",
-            "compiles fast",
-            "compile fast",
-            "tests fast",
-            "tests are fast",
-            "is fast",
-            "are fast",
-            "runs fast",
-            "extremely fast",
-            "very fast",
-            "ultra fast",
-            "faster than",
-            "high performance",
-            "instantaneous",
-            "near instant",
-            "feels instant",
-            "feel instant",
-            "instant feedback",
-            "instant compile",
-        ],
-    },
-    ClaimFamily {
-        name: "readiness",
-        phrases: &[
-            "production ready",
-            "battle tested",
-            "enterprise grade",
-            "industrial strength",
-            "bulletproof",
-            "rock solid",
-            "mainframe grade",
-        ],
-    },
-    ClaimFamily {
-        name: "security",
-        phrases: &[
-            "is secure",
-            "are secure",
-            "secure by default",
-            "fully secure",
-            "completely secure",
-            "system secure",
-            "unhackable",
-        ],
-    },
-    ClaimFamily {
-        name: "proof",
-        // A proof claim is a claim about quality. Stating a fact the compiler
-        // or the protocol decides ("provably impossible", "provably never
-        // ran") is evidence, not a claim, so the family pairs the proof word
-        // with the adjective it would be selling.
-        phrases: &[
-            "formally proven",
-            "provably secure",
-            "provably safe",
-            "provably correct",
-            "mathematically proven",
-            "mathematically guaranteed",
-            "proven correct",
-            "proven safe",
-            "proven secure",
-            "compiler proven",
-        ],
-    },
-    ClaimFamily {
-        name: "scale",
-        phrases: &["scalable", "web scale", "scales infinitely"],
-    },
-    ClaimFamily {
-        name: "ai-native",
-        phrases: &["ai native", "ai first"],
-    },
-    ClaimFamily {
-        name: "zero-cost",
-        phrases: &["zero cost"],
-    },
-];
-
-/// Governance phrases that make a claim word a subject of discussion rather
-/// than an assertion, as in "what may be called production-ready" or "do not
-/// write that Marrow compiles fast". Each is a multi-word phrase, so a single
-/// ordinary word cannot buy an exemption, and each counts only when it occurs
-/// *before* the claim phrase in the same sentence.
-const GOVERNANCE_MARKERS: &[&str] = &[
-    "do not",
-    "does not",
-    "must not",
-    "may not",
-    "cannot",
-    "makes no",
-    "no measure",
-    "no current claim",
-    "not a claim",
-    "may be called",
-    "may be described",
-    "referred to as",
-    "write that",
-];
-
-/// Words that negate a claim when they sit within the three words immediately
-/// before it. "Marrow is not production-ready" is the sentence the
-/// documentation standard encourages, so it must not fail the gate that bans
-/// the assertion.
-const NEGATORS: &[&str] = &[
-    "not", "isn't", "aren't", "no", "never", "nor", "neither", "without",
-];
-
-/// Exact `(tracked path, trimmed line text)` pairs the claim gate accepts
-/// despite matching a family. Entries are recorded findings pending routing,
-/// never a way to keep new prose: each names why the line stands.
-const CLAIM_ALLOWLIST: &[(&str, &str)] = &[];
+use workspace::{tracked_paths, workspace_root};
 
 // ---------------------------------------------------------------------------
 // Violations
@@ -197,10 +54,6 @@ enum ViolationKind {
     UndefinedReference {
         label: String,
     },
-    BannedClaim {
-        family: &'static str,
-        phrase: String,
-    },
 }
 
 impl fmt::Display for ViolationKind {
@@ -220,9 +73,6 @@ impl fmt::Display for ViolationKind {
             Self::MalformedExternal { target } => write!(f, "malformed external link: {target}"),
             Self::UndefinedReference { label } => {
                 write!(f, "undefined link reference label: [{label}]")
-            }
-            Self::BannedClaim { family, phrase } => {
-                write!(f, "banned {family} claim: \"{phrase}\"")
             }
         }
     }
@@ -498,15 +348,6 @@ impl Document {
             .filter(|byte| *byte == b'\n')
             .count()
             + 1
-    }
-
-    fn line_text(&self, offset: usize) -> &str {
-        let capped = offset.min(self.raw.len());
-        let start = self.raw[..capped].rfind('\n').map_or(0, |at| at + 1);
-        let end = self.raw[capped..]
-            .find('\n')
-            .map_or(self.raw.len(), |at| capped + at);
-        self.raw[start..end].trim()
     }
 
     /// The directory this document's relative links resolve against.
@@ -887,158 +728,6 @@ fn check_one_link(
 }
 
 // ---------------------------------------------------------------------------
-// Claim gate
-// ---------------------------------------------------------------------------
-
-/// Sentence spans of blanked text, as `(offset, sentence)` lowercased with
-/// [`str::to_ascii_lowercase`]. Unicode lowercasing can change a string's byte
-/// length and would drift every reported offset; every claim phrase and marker
-/// is ASCII, so an ASCII fold loses no subject and keeps offsets exact. A span
-/// ends at `.`, `!`, or `?` followed by whitespace, at a line whose successor
-/// begins a new block (a blank line, a list item, a heading, a table row, or a
-/// block quote), or at end of input. Breaking at block starts keeps a marker in
-/// one bullet from exempting a claim in the next.
-fn sentences(blanked: &str) -> Vec<(usize, String)> {
-    let bytes = blanked.as_bytes();
-    let mut spans = Vec::new();
-    let mut start = 0;
-    let mut at = 0;
-    while at < bytes.len() {
-        let terminator = matches!(bytes[at], b'.' | b'!' | b'?')
-            && bytes
-                .get(at + 1)
-                .is_none_or(|byte| byte.is_ascii_whitespace());
-        let block_break = bytes[at] == b'\n' && begins_block(&blanked[at + 1..]);
-        if terminator || block_break {
-            let end = at + 1;
-            spans.push((start, blanked[start..end].to_ascii_lowercase()));
-            start = end;
-        }
-        at += 1;
-    }
-    if start < bytes.len() {
-        spans.push((start, blanked[start..].to_ascii_lowercase()));
-    }
-    spans
-}
-
-fn begins_block(rest: &str) -> bool {
-    let line = rest.split('\n').next().unwrap_or("");
-    let trimmed = line.trim_start();
-    let Some(first) = trimmed.chars().next() else {
-        return true;
-    };
-    if matches!(first, '-' | '*' | '+' | '#' | '|' | '>') {
-        return true;
-    }
-    first.is_ascii_digit()
-        && trimmed
-            .split_once(['.', ')'])
-            .is_some_and(|(number, _)| number.chars().all(|ch| ch.is_ascii_digit()))
-}
-
-/// Word characters for phrase boundaries. `-` is one, so a hyphen abutting a
-/// phrase binds it into a longer word.
-fn is_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '\''
-}
-
-/// Renders a hyphenated compound as its spaced spelling. Both characters are
-/// one ASCII byte, so the result shares every offset with its input.
-fn hyphens_to_spaces(text: &str) -> String {
-    text.replace('-', " ")
-}
-
-/// Finds `needle` in the hyphen-normalized text while testing its boundaries
-/// against the original. Searching the normalized text makes `blazing-fast` and
-/// `blazing fast` one claim; testing the original makes a hyphen that abuts the
-/// phrase a word character, so `is fast` does not match inside
-/// `is fast-forwarded`.
-fn word_boundary_match(original: &str, normalized: &str, needle: &str) -> Option<usize> {
-    let mut from = 0;
-    while let Some(offset) = normalized[from..].find(needle) {
-        let start = from + offset;
-        let end = start + needle.len();
-        let before_ok = original[..start].chars().next_back().is_none_or(|ch| {
-            // A leading `-` binds the phrase into a longer word, but a leading
-            // apostrophe does not.
-            !(ch.is_alphanumeric() || ch == '_' || ch == '-')
-        });
-        let after_ok = original[end..]
-            .chars()
-            .next()
-            .is_none_or(|ch| !is_word_char(ch));
-        if before_ok && after_ok {
-            return Some(start);
-        }
-        from = end;
-    }
-    None
-}
-
-/// Whether the sentence discusses the claim word rather than asserting it, or
-/// negates it. Governance markers and a sentence-initial prohibition must
-/// precede the phrase; a negator must sit in the three words immediately
-/// before it.
-fn mentioned_or_negated(sentence: &str, phrase_at: usize) -> bool {
-    let before = &sentence[..phrase_at];
-    if GOVERNANCE_MARKERS
-        .iter()
-        .any(|marker| before.contains(marker))
-    {
-        return true;
-    }
-    if sentence.trim_start().starts_with("never ") {
-        return true;
-    }
-    before
-        .split_whitespace()
-        .rev()
-        .take(3)
-        .map(|word| word.trim_matches(|ch: char| !is_word_char(ch)))
-        .any(|word| NEGATORS.contains(&word))
-}
-
-fn check_claims(documents: &[Document]) -> Vec<Violation> {
-    let mut violations = Vec::new();
-    for document in documents {
-        for (offset, sentence) in sentences(&document.blanked) {
-            let normalized = hyphens_to_spaces(&sentence);
-            for family in CLAIM_FAMILIES {
-                // One sentence states a family once, however many of its
-                // phrases overlap the same words.
-                for phrase in family.phrases {
-                    let Some(at) = word_boundary_match(&sentence, &normalized, phrase) else {
-                        continue;
-                    };
-                    if mentioned_or_negated(&sentence, at) {
-                        continue;
-                    }
-                    let absolute = offset + at;
-                    let line_text = document.line_text(absolute);
-                    if CLAIM_ALLOWLIST
-                        .iter()
-                        .any(|(file, text)| *file == document.rel && *text == line_text)
-                    {
-                        continue;
-                    }
-                    violations.push(Violation {
-                        file: document.rel.clone(),
-                        line: document.line_of(absolute),
-                        kind: ViolationKind::BannedClaim {
-                            family: family.name,
-                            phrase: (*phrase).to_string(),
-                        },
-                    });
-                    break;
-                }
-            }
-        }
-    }
-    violations
-}
-
-// ---------------------------------------------------------------------------
 // Corpus
 // ---------------------------------------------------------------------------
 
@@ -1047,48 +736,16 @@ struct Corpus {
     documents: Vec<Document>,
 }
 
-fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR is `<root>/crates/marrow-codes`.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root two levels above the crate manifest")
-        .to_path_buf()
-}
-
-fn tracked_paths(root: &Path) -> BTreeSet<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .arg("ls-files")
-        .output()
-        .unwrap_or_else(|error| panic!("run git ls-files: {error}"));
-    assert!(
-        output.status.success(),
-        "git ls-files failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let listing = String::from_utf8(output.stdout).expect("git output is utf-8");
-    let paths: BTreeSet<String> = listing.lines().map(str::to_string).collect();
-    assert!(
-        !paths.is_empty(),
-        "no tracked files under {}",
-        root.display()
-    );
-    paths
-}
-
-/// The scanned corpus, built once: the gates below and the tail sentinel all
-/// read the same parse.
+/// The scanned corpus, built once.
 fn corpus() -> &'static Corpus {
     static CORPUS: OnceLock<Corpus> = OnceLock::new();
     CORPUS.get_or_init(|| {
         let root = workspace_root();
-        let tracked = tracked_paths(&root);
+        let tracked = tracked_paths().clone();
         let documents: Vec<Document> = tracked
             .iter()
             .filter(|rel| rel.ends_with(".md"))
-            .map(|rel| Document::read(&root, rel))
+            .map(|rel| Document::read(root, rel))
             .collect();
         assert!(
             !documents.is_empty(),
@@ -1116,317 +773,4 @@ fn every_documentation_link_and_anchor_resolves() {
         "unresolved documentation links:\n{}",
         report(&violations)
     );
-}
-
-#[test]
-fn no_documentation_states_a_banned_claim_family() {
-    let violations = check_claims(&corpus().documents);
-    assert!(
-        violations.is_empty(),
-        "banned claim families in documentation:\n{}",
-        report(&violations)
-    );
-}
-
-/// Content sentinel: a claim and a broken link appended to the final bytes of
-/// each real file, with no trailing newline, must both be reported. A scanner
-/// that stops at the last structure it understands — an unclosed literal, a
-/// table, a fence — reports nothing here and fails.
-#[test]
-fn both_gates_reach_the_final_byte_of_every_file() {
-    let corpus = corpus();
-    // Appending a paragraph publishes no new heading, so each probe's anchors
-    // are the ones the corpus already indexed.
-    let anchors = anchor_index(&corpus.documents);
-    for document in &corpus.documents {
-        let tail = "\n\nMarrow is production-ready, see [tail](absent-tail-target.md).";
-        let probe = Document::new(
-            document.rel.clone(),
-            format!("{}{tail}", document.raw.trim_end()),
-        );
-        let last_line = probe.raw.lines().count();
-
-        let claims = check_claims(std::slice::from_ref(&probe));
-        assert_eq!(
-            claims.len(),
-            1,
-            "{}: the claim scan did not reach the appended tail:\n{}",
-            document.rel,
-            report(&claims)
-        );
-        assert_eq!(claims[0].line, last_line, "{}", document.rel);
-
-        assert_eq!(probe.anchors, document.anchors, "{}", document.rel);
-        let links = check_links(std::slice::from_ref(&probe), &anchors, &corpus.tracked);
-        assert_eq!(
-            links.len(),
-            1,
-            "{}: the link scan did not reach the appended tail:\n{}",
-            document.rel,
-            report(&links)
-        );
-        assert_eq!(links[0].line, last_line, "{}", document.rel);
-    }
-}
-
-/// Anti-vacuity floor. A parser regression that silently found no links or no
-/// headings would make the resolution gate pass by scanning nothing, so the
-/// corpus's measured shape is asserted alongside the invariant it feeds.
-#[test]
-fn the_link_gate_has_a_corpus_to_resolve() {
-    let documents = &corpus().documents;
-    let links: Vec<Link> = documents
-        .iter()
-        .flat_map(|document| inline_links(&document.blanked))
-        .collect();
-    let fragments = links
-        .iter()
-        .filter(|link| link.target.contains('#'))
-        .count();
-    let anchors: usize = documents
-        .iter()
-        .map(|document| document.anchors.len())
-        .sum();
-    assert!(documents.len() >= 50, "documents: {}", documents.len());
-    assert!(links.len() >= 200, "links: {}", links.len());
-    assert!(fragments >= 50, "fragment links: {fragments}");
-    assert!(anchors >= 300, "heading anchors: {anchors}");
-}
-
-// ---------------------------------------------------------------------------
-// Plant probes
-// ---------------------------------------------------------------------------
-
-fn probe(rel: &str, raw: &str) -> Document {
-    Document::new(rel.to_string(), raw.to_string())
-}
-
-fn tracked_set(paths: &[&str]) -> BTreeSet<String> {
-    paths.iter().map(|path| (*path).to_string()).collect()
-}
-
-#[test]
-fn the_link_gate_detects_every_failure_direction() {
-    let target = probe("docs/target.md", "# Alpha\n\n## Alpha\n\nBody.\n");
-    let subject = probe(
-        "docs/subject.md",
-        concat!(
-            "# Subject\n\n",
-            "[gone](missing.md)\n\n",
-            "[bad fragment](target.md#nope)\n\n",
-            "[third duplicate](target.md#alpha-2)\n\n",
-            "[first duplicate](target.md#alpha-1)\n\n",
-            "[self](#subject)\n\n",
-            "[up and out](../../../escape.md)\n\n",
-            "```\n[ignored](also-missing.md)\n```\n\n",
-            "`[inline](never-here.md)`\n\n",
-            "[external](https://example.com/x)\n\n",
-            "[malformed](https:///)\n",
-        ),
-    );
-    let tracked = tracked_set(&["docs/target.md", "docs/subject.md"]);
-    let documents = [target, subject];
-    let violations = check_links(&documents, &anchor_index(&documents), &tracked);
-    let rendered = report(&violations);
-
-    for expected in [
-        "link target is not a tracked path: missing.md",
-        "link target is not a tracked path: ../../../escape.md",
-        "no heading anchor `#nope` in docs/target.md",
-        "no heading anchor `#alpha-2` in docs/target.md",
-        "malformed external link",
-    ] {
-        assert!(
-            rendered.contains(expected),
-            "undetected: {expected}\n{rendered}"
-        );
-    }
-    for unexpected in [
-        "alpha-1",
-        "#subject",
-        "also-missing.md",
-        "never-here.md",
-        "example.com",
-    ] {
-        assert!(
-            !rendered.contains(unexpected),
-            "false positive: {unexpected}\n{rendered}"
-        );
-    }
-    assert_eq!(violations.len(), 5, "unexpected violations:\n{rendered}");
-}
-
-#[test]
-fn the_claim_gate_detects_every_failure_direction() {
-    // The banned sentence sits in the final bytes with no trailing newline, so
-    // a scan that stops early cannot pass this probe.
-    let subject = probe(
-        "docs/subject.md",
-        concat!(
-            "# Subject\n\n",
-            "Marrow is production-ready today.\n\n",
-            "Marrow is not production-ready.\n\n",
-            "Do not write that Marrow compiles fast in public documentation.\n\n",
-            "What may be called production-ready is governed by the status page.\n\n",
-            "```\nThe compiler is blazingly fast.\n```\n\n",
-            "<!-- The runtime is production-ready. -->\n\n",
-            "The lane is fast-forwarded onto the integration line.\n\n",
-            "The compiler is blazing-fast.\n\n",
-            "- A bullet that must not overstate anything.\n",
-            "- The compiler is blazingly fast.\n\n",
-            "The runtime is secure",
-        ),
-    );
-    let violations = check_claims(&[subject]);
-    let rendered = report(&violations);
-
-    for expected in [
-        "docs/subject.md:3: banned readiness claim: \"production ready\"",
-        "docs/subject.md:19: banned speed claim: \"blazing fast\"",
-        "docs/subject.md:22: banned speed claim: \"blazingly fast\"",
-        "docs/subject.md:24: banned security claim: \"is secure\"",
-    ] {
-        assert!(
-            rendered.contains(expected),
-            "undetected: {expected}\n{rendered}"
-        );
-    }
-    assert_eq!(
-        violations.len(),
-        4,
-        "an honest negation, a prohibition, a governance sentence, a fenced \
-         claim, a commented claim, and `fast-forwarded` are not claims:\n{rendered}"
-    );
-}
-
-#[test]
-fn an_unterminated_comment_fails_loudly_instead_of_blanking_the_file() {
-    let raw = "# Subject\n\n<!-- opened and never closed\n\nMarrow is production-ready.\n";
-    let Err(panic) = std::panic::catch_unwind(|| probe("docs/subject.md", raw)) else {
-        panic!("an unterminated comment must panic")
-    };
-    let message = panic
-        .downcast_ref::<String>()
-        .cloned()
-        .unwrap_or_else(|| "non-string panic".to_string());
-    assert!(
-        message.contains("docs/subject.md: unterminated HTML comment opened at byte 11"),
-        "{message}"
-    );
-}
-
-#[test]
-fn an_unterminated_fence_fails_loudly_instead_of_blanking_the_file() {
-    let raw = "# Subject\n\n```rust\nlet x = 1;\n\nMarrow is production-ready.\n";
-    let Err(panic) = std::panic::catch_unwind(|| probe("docs/subject.md", raw)) else {
-        panic!("an unterminated fence must panic")
-    };
-    let message = panic
-        .downcast_ref::<String>()
-        .cloned()
-        .unwrap_or_else(|| "non-string panic".to_string());
-    assert!(
-        message.contains("docs/subject.md: unterminated code fence opened at byte 11"),
-        "{message}"
-    );
-}
-
-#[test]
-fn one_state_machine_decides_comment_and_fence_precedence() {
-    // A comment opener inside a fence is fenced text, so the prose after the
-    // fence is still scanned; a fence line inside a comment is comment text, so
-    // the prose after the comment is still scanned.
-    let subject = probe(
-        "docs/subject.md",
-        concat!(
-            "# Subject\n\n",
-            "```\n<!-- not a comment\n```\n\n",
-            "Marrow is production-ready.\n\n",
-            "<!--\n```\nstill a comment\n```\n-->\n\n",
-            "The compiler is blazingly fast.\n",
-        ),
-    );
-    let violations = check_claims(&[subject]);
-    let rendered = report(&violations);
-    assert!(
-        rendered.contains("docs/subject.md:7: banned readiness claim"),
-        "a fenced comment opener must not swallow the file:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("docs/subject.md:15: banned speed claim"),
-        "a commented fence must not swallow the file:\n{rendered}"
-    );
-    assert_eq!(violations.len(), 2, "{rendered}");
-}
-
-#[test]
-fn a_setext_heading_and_an_explicit_anchor_fail_loudly() {
-    for (raw, expected) in [
-        ("# Subject\n\nA Heading\n=========\n", "setext heading"),
-        ("# Subject\n\n<a name=\"manual\"></a>\n", "explicit anchor"),
-    ] {
-        let Err(panic) = std::panic::catch_unwind(|| probe("docs/subject.md", raw)) else {
-            panic!("an unmodelled construct must panic")
-        };
-        let message = panic
-            .downcast_ref::<String>()
-            .cloned()
-            .unwrap_or_else(|| "non-string panic".to_string());
-        assert!(message.contains(expected), "{message}");
-    }
-}
-
-#[test]
-fn literal_blanking_preserves_offsets_and_hides_only_literals() {
-    let source = "a `code` b\n\n```rust\nlet x = 1;\n```\n\n<!-- note -->tail\n";
-    let blanked = blank_literals("probe.md", source);
-    assert_eq!(blanked.len(), source.len());
-    assert!(blanked.contains("a        b"), "{blanked:?}");
-    assert!(!blanked.contains("let x"), "{blanked:?}");
-    assert!(!blanked.contains("note"), "{blanked:?}");
-    assert!(blanked.contains("tail"), "{blanked:?}");
-    assert_eq!(blanked.lines().count(), source.lines().count());
-}
-
-#[test]
-fn heading_slugs_follow_the_duplicate_suffix_rule() {
-    let raw = "# Types and Values\n## The `mw` Command\n## Types and Values\n## Types and Values\n\n```\n# Not a heading\n```\n\n<!--\n# Also not a heading\n-->\n";
-    let anchors = heading_anchors(raw, &blank_literals("probe.md", raw));
-    let expected: BTreeSet<String> = [
-        "types-and-values",
-        "the-mw-command",
-        "types-and-values-1",
-        "types-and-values-2",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
-    assert_eq!(anchors, expected);
-}
-
-#[test]
-fn a_reference_link_resolves_or_reports_its_label() {
-    let subject = probe(
-        "docs/subject.md",
-        concat!(
-            "# Subject\n\n",
-            "See [the guide][guide] and [status][] and [absent][nowhere].\n\n",
-            "[guide]: target.md\n",
-            "[status]: target.md\n",
-        ),
-    );
-    let documents = [subject];
-    let violations = check_links(
-        &documents,
-        &anchor_index(&documents),
-        &tracked_set(&["docs/target.md"]),
-    );
-    let rendered = report(&violations);
-    assert!(
-        rendered.contains("undefined link reference label: [nowhere]"),
-        "{rendered}"
-    );
-    assert!(!rendered.contains("[guide]"), "{rendered}");
-    assert!(!rendered.contains("[status]"), "{rendered}");
-    assert_eq!(violations.len(), 1, "{rendered}");
 }
