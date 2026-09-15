@@ -19,7 +19,7 @@
 //!
 //! ```compile_fail
 //! use marrow_store::NativeEngine;
-//! let _ = NativeEngine::open(std::path::Path::new("store.redb"));
+//! let _ = NativeEngine::create_new(std::path::Path::new("store.redb"));
 //! ```
 
 mod engine;

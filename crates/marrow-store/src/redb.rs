@@ -622,29 +622,9 @@ impl NativeEngine {
         })
     }
 
-    /// Open the redb-backed store at `path`, creating the file if needed. A
-    /// concurrent read-only or read-write holder is rejected as
-    /// [`StoreError::Locked`], and a file recording a different [`FORMAT_VERSION`]
-    /// as [`StoreError::FormatVersion`]. A brand-new file is stamped with the
-    /// current format version; an existing complete store is verified. A malformed
-    /// body surfaces redb's own open error as a typed [`StoreError`] through
-    /// [`map_open_error`].
-    #[cfg(test)]
-    pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
-        contain_panic("open", || {
-            guard_regular_store_file(path)?;
-            let sync_parent_after_commit = prepare_new_store_file(path)?;
-            let db = open_past_lock_release(path, || Database::create(path))?;
-            stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
-            Ok(Self {
-                db: Some(DatabaseHandle::ReadWrite(db)),
-                contain_drop_panic: false,
-            })
-        })
-    }
-
-    /// Open an existing store with write capability. Unlike [`open`](Self::open),
-    /// this operation never creates a file or stamps a database: the complete
+    /// Open an existing store with write capability. Unlike
+    /// [`create_new`](Self::create_new), this operation never creates a file or
+    /// stamps a database: the complete
     /// Marrow metadata and data tables must already be present. A missing,
     /// malformed, foreign, or unstamped file is refused without modification.
     pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
@@ -680,9 +660,9 @@ impl NativeEngine {
         })
     }
 
-    /// Open an existing store read-only. Unlike [`open`](Self::open) it never
-    /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
-    /// than stamping it; write-capability operations fail before any write
+    /// Open an existing store read-only. Unlike
+    /// [`create_new`](Self::create_new) it never creates the file and only
+    /// verifies the recorded [`FORMAT_VERSION`]  rather than stamping it; write-capability operations fail before any write
     /// transaction begins. A malformed body surfaces redb's own open error as a
     /// typed [`StoreError`] through [`map_open_error`].
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
@@ -1036,7 +1016,7 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-denied-file").expect("temp dir");
         let path = dir.path().join("marrow.redb");
         {
-            let mut store = NativeEngine::open(&path).expect("create fresh store");
+            let mut store = NativeEngine::create_new(&path).expect("create fresh store");
             let mut txn = store.begin().expect("begin");
             txn.put(b"k", b"v".to_vec()).expect("write");
             assert_eq!(txn.commit(), CommitOutcome::Confirmed);
@@ -1045,7 +1025,6 @@ mod tests {
             .expect("deny access to the store file");
 
         for result in [
-            NativeEngine::open(&path).map(|_| ()),
             NativeEngine::open_existing(&path).map(|_| ()),
             NativeEngine::open_read_only(&path).map(|_| ()),
         ] {
@@ -1090,7 +1069,7 @@ mod tests {
         };
 
         // A symlink loop is rejected before any handle opens, on every open path.
-        expect_io(NativeEngine::open(&loop_a).map(|_| ()), "loop open");
+        expect_io(NativeEngine::create_new(&loop_a).map(|_| ()), "loop create");
         expect_io(
             NativeEngine::open_existing(&loop_a).map(|_| ()),
             "loop existing",
@@ -1170,7 +1149,7 @@ mod tests {
             // its files) outlives every store, dropping only when the test ends.
             counter += 1;
             let path = dir.path().join(format!("store-{counter}.redb"));
-            NativeEngine::open(&path)
+            NativeEngine::create_new(&path)
         })
     }
 
@@ -1183,7 +1162,7 @@ mod tests {
 
         let dir = TempDir::new("marrow-store-redb-audit").expect("temp dir");
         let path = dir.path().join("audit.redb");
-        let mut store = NativeEngine::open(&path).expect("open fresh");
+        let mut store = NativeEngine::create_new(&path).expect("open fresh");
         {
             let mut txn = store.begin().expect("begin");
             for n in 0..64u32 {
@@ -1283,7 +1262,7 @@ mod tests {
 
         let dir = TempDir::new("marrow-store-redb-diff").expect("temp dir");
         let path = dir.path().join("diff.redb");
-        let native = apply(&mut NativeEngine::open(&path).expect("open native"));
+        let native = apply(&mut NativeEngine::create_new(&path).expect("open native"));
 
         assert_eq!(mem, native, "memory and redb disagree on the byte algebra");
     }
@@ -1296,7 +1275,7 @@ mod tests {
         let old: &[u8] = b"old";
         let new: &[u8] = b"new";
 
-        let mut store = NativeEngine::open(&path).expect("open");
+        let mut store = NativeEngine::create_new(&path).expect("open");
         {
             let mut txn = store.begin().expect("begin");
             txn.put(key, old.to_vec()).expect("seed old value");
@@ -1351,7 +1330,7 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("aborted-write.redb");
 
-        drop(NativeEngine::open(&path).expect("open"));
+        drop(NativeEngine::create_new(&path).expect("open"));
         let db = reopen_raw(&path, "raw redb handle");
 
         let seed = db.begin_write().expect("begin seed transaction");
@@ -1411,7 +1390,7 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("ordered-bytes.redb");
 
-        drop(NativeEngine::open(&path).expect("open"));
+        drop(NativeEngine::create_new(&path).expect("open"));
         let db = reopen_raw(&path, "raw redb handle");
 
         let write = db.begin_write().expect("begin write transaction");
@@ -1475,7 +1454,6 @@ mod tests {
         }
 
         for result in [
-            NativeEngine::open(&path),
             NativeEngine::open_existing(&path),
             NativeEngine::open_read_only(&path),
         ] {
@@ -1556,7 +1534,6 @@ mod tests {
         }
 
         for result in [
-            NativeEngine::open(&path),
             NativeEngine::open_existing(&path),
             NativeEngine::open_read_only(&path),
         ] {
@@ -1578,16 +1555,16 @@ mod tests {
     /// A brand-new file is created and stamped, and reopening the stamped store
     /// succeeds — the new-vs-existing distinction does not break the normal path.
     #[test]
-    fn open_creates_and_reopens_a_fresh_store() {
+    fn create_new_then_open_existing_round_trips_a_fresh_store() {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("fresh.redb");
         {
-            let mut store = NativeEngine::open(&path).expect("create fresh");
+            let mut store = NativeEngine::create_new(&path).expect("create fresh");
             let mut txn = store.begin().expect("begin");
             txn.put(b"k", b"v".to_vec()).expect("write");
             assert_eq!(txn.commit(), CommitOutcome::Confirmed);
         }
-        let store = NativeEngine::open(&path).expect("reopen stamped store");
+        let store = NativeEngine::open_existing(&path).expect("reopen stamped store");
         assert_eq!(
             store
                 .read_view()
@@ -1615,7 +1592,7 @@ mod tests {
             "an existing-only open must leave a missing path absent",
         );
 
-        drop(NativeEngine::open(&path).expect("provisioner creates and stamps store"));
+        drop(NativeEngine::create_new(&path).expect("provisioner creates and stamps store"));
         {
             let mut store = NativeEngine::open_existing(&path).expect("open existing writable");
             let mut txn = store.begin().expect("begin writable transaction");
@@ -1651,12 +1628,12 @@ mod tests {
             .expect("spawn mkfifo");
         assert!(status.success(), "mkfifo failed");
 
-        for label in ["open", "open_existing", "open_read_only"] {
+        for label in ["create_new", "open_existing", "open_read_only"] {
             let path = path.clone();
             let (sender, receiver) = mpsc::channel();
             std::thread::spawn(move || {
                 let result = match label {
-                    "open" => NativeEngine::open(&path),
+                    "create_new" => NativeEngine::create_new(&path),
                     "open_existing" => NativeEngine::open_existing(&path),
                     _ => NativeEngine::open_read_only(&path),
                 };
