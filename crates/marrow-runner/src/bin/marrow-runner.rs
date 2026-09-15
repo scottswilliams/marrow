@@ -193,6 +193,74 @@ fn write_receipt(output: &mut dyn Write, receipt: &str) -> std::io::Result<()> {
     output.flush()
 }
 
+/// Deliver one store-command receipt in `format`. A delivery failure does not undo the
+/// lifecycle effects the receipt describes, so the known result is repeated on the
+/// diagnostic channel whenever that channel is still writable.
+fn deliver(
+    output: &mut dyn Write,
+    diagnostic: &mut dyn Write,
+    receipt: &Json,
+    format: ReportFormat,
+) -> std::io::Result<()> {
+    let result = match format {
+        ReportFormat::Jsonl => write_receipt(output, &encode(receipt)),
+        ReportFormat::Text => write_text(output, receipt),
+    };
+    if result.is_err() {
+        let _ = writeln!(
+            diagnostic,
+            "{}: receipt delivery failed; known lifecycle result follows",
+            marrow_codes::Code::IoWrite.as_str()
+        );
+        let _ = write_receipt(diagnostic, &encode(receipt));
+    }
+    result
+}
+
+/// Render a receipt object as one `key: value` line per field. A string value is spelled
+/// as itself; every other value keeps its JSON spelling.
+fn write_text(output: &mut dyn Write, receipt: &Json) -> std::io::Result<()> {
+    if let Json::Object(fields) = receipt {
+        for (key, value) in fields {
+            match value {
+                Json::Str(value) => writeln!(output, "{key}: {value}")?,
+                _ => writeln!(output, "{key}: {}", encode(value))?,
+            }
+        }
+    }
+    output.flush()
+}
+
+/// The `--store` and `--format` flags every store command accepts, parsed in one owner.
+/// Returns `None` when the flag is one of these two but its value is missing, unrecognised,
+/// or already given, so a caller's `?` refuses the whole command line.
+fn shared_store_flag(
+    flag: &str,
+    args: &mut impl Iterator<Item = String>,
+    store: &mut Option<PathBuf>,
+    format: &mut Option<ReportFormat>,
+) -> Option<SharedFlag> {
+    match flag {
+        "--store" if store.is_none() => *store = Some(PathBuf::from(args.next()?)),
+        "--format" if format.is_none() => {
+            *format = Some(match args.next()?.as_str() {
+                "text" => ReportFormat::Text,
+                "jsonl" => ReportFormat::Jsonl,
+                _ => return None,
+            });
+        }
+        "--store" | "--format" => return None,
+        _ => return Some(SharedFlag::Other),
+    }
+    Some(SharedFlag::Taken)
+}
+
+/// Whether [`shared_store_flag`] consumed the word or left it to the calling command.
+enum SharedFlag {
+    Taken,
+    Other,
+}
+
 fn provision_output(image_path: &Path, store: &Path, accept: bool) -> std::io::Result<ExitCode> {
     let store_text = validate_store_output(store)?;
     let image = match load_image(image_path) {
@@ -1029,6 +1097,54 @@ fn launch_descriptor(interface: Id32, nonce: Option<Id32>, session: Id32, socket
     encode(&Json::Object(pairs))
 }
 
+/// How a test [`Sink`] fails: after accepting `WriteAt(n)` bytes in total, or on flush.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum Failure {
+    WriteAt(usize),
+    Flush,
+}
+
+/// An output channel that retains what it accepted and then fails, so a test can assert both
+/// the bytes a caller committed and that the caller never claimed delivery.
+#[cfg(test)]
+struct Sink {
+    bytes: Vec<u8>,
+    failure: Failure,
+}
+
+#[cfg(test)]
+impl Sink {
+    fn new(failure: Failure) -> Self {
+        Self {
+            bytes: Vec::new(),
+            failure,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Write for Sink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let count = match self.failure {
+            Failure::WriteAt(limit) => bytes.len().min(limit.saturating_sub(self.bytes.len())),
+            Failure::Flush => bytes.len(),
+        };
+        if count == 0 {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.bytes.extend_from_slice(&bytes[..count]);
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.failure {
+            Failure::Flush => Err(std::io::ErrorKind::BrokenPipe.into()),
+            Failure::WriteAt(_) => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod output_tests {
     #[test]
@@ -1075,10 +1191,7 @@ mod output_tests {
             "{\"cleanup\":{\"code\":\"store.io\",\"os_error\":null,\"stage\":\".marrow-provisioning.123.0\"},\"code\":\"store.locked\",\"kind\":\"provision_failed\",\"store\":\"parent/store\"}\n"
         );
         for limit in [0, 7, output.len() - 1] {
-            let mut sink = Sink {
-                bytes: Vec::new(),
-                failure: Failure::WriteAt(limit),
-            };
+            let mut sink = Sink::new(Failure::WriteAt(limit));
             assert_eq!(
                 write_provision_failure(&mut sink, Path::new("parent/store"), &error)
                     .unwrap_err()
@@ -1087,10 +1200,7 @@ mod output_tests {
             );
             assert_eq!(sink.bytes, output[..limit]);
         }
-        let mut sink = Sink {
-            bytes: Vec::new(),
-            failure: Failure::Flush,
-        };
+        let mut sink = Sink::new(Failure::Flush);
         assert_eq!(
             write_provision_failure(&mut sink, Path::new("parent/store"), &error)
                 .unwrap_err()
@@ -1157,56 +1267,19 @@ mod output_tests {
         );
     }
 
-    enum Failure {
-        WriteAt(usize),
-        Flush,
-    }
-
-    struct Sink {
-        bytes: Vec<u8>,
-        failure: Failure,
-    }
-
-    impl Write for Sink {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            let count = match self.failure {
-                Failure::WriteAt(limit) => bytes.len().min(limit.saturating_sub(self.bytes.len())),
-                Failure::Flush => bytes.len(),
-            };
-            if count == 0 {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
-            }
-            self.bytes.extend_from_slice(&bytes[..count]);
-            Ok(count)
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            match self.failure {
-                Failure::Flush => Err(std::io::ErrorKind::BrokenPipe.into()),
-                Failure::WriteAt(_) => Ok(()),
-            }
-        }
-    }
-
     #[test]
     fn receipt_delivery_stops_at_partial_write_and_requires_flush() {
         let receipt = "{\"instance\":\"0123456789abcdef0123456789abcdef\",\"store\":\"fixture\"}";
         let expected = format!("{receipt}\n");
         for limit in [0, 5, receipt.len()] {
-            let mut sink = Sink {
-                bytes: Vec::new(),
-                failure: Failure::WriteAt(limit),
-            };
+            let mut sink = Sink::new(Failure::WriteAt(limit));
             assert_eq!(
                 write_receipt(&mut sink, receipt).unwrap_err().kind(),
                 std::io::ErrorKind::BrokenPipe
             );
             assert_eq!(sink.bytes, expected.as_bytes()[..limit]);
         }
-        let mut sink = Sink {
-            bytes: Vec::new(),
-            failure: Failure::Flush,
-        };
+        let mut sink = Sink::new(Failure::Flush);
         assert_eq!(
             write_receipt(&mut sink, receipt).unwrap_err().kind(),
             std::io::ErrorKind::BrokenPipe
@@ -1302,10 +1375,7 @@ mod output_tests {
                     }
                 }
                 for failure in [Failure::WriteAt(0), Failure::WriteAt(5), Failure::Flush] {
-                    let mut sink = Sink {
-                        bytes: Vec::new(),
-                        failure,
-                    };
+                    let mut sink = Sink::new(failure);
                     assert_eq!(
                         write_recovery_result(&mut sink, "store", result, format)
                             .unwrap_err()

@@ -6,9 +6,11 @@ use std::process::ExitCode;
 
 use marrow_image::CeilingId;
 use marrow_lifecycle::ApplyError;
-use marrow_local_wire::{Id32, Json, encode};
+use marrow_local_wire::{Id32, Json};
 
-use super::{ReportFormat, load_image, validate_store_output, write_receipt};
+use super::{
+    ReportFormat, SharedFlag, deliver, load_image, shared_store_flag, validate_store_output,
+};
 
 pub(super) struct Command {
     old: PathBuf,
@@ -21,21 +23,16 @@ pub(super) struct Command {
 pub(super) fn parse(mut args: impl Iterator<Item = String>) -> Option<Command> {
     let (mut old, mut new, mut store, mut accepted, mut format) = (None, None, None, None, None);
     while let Some(flag) = args.next() {
+        if let SharedFlag::Taken = shared_store_flag(&flag, &mut args, &mut store, &mut format)? {
+            continue;
+        }
         match flag.as_str() {
             "--old-image" if old.is_none() => old = Some(PathBuf::from(args.next()?)),
             "--new-image" if new.is_none() => new = Some(PathBuf::from(args.next()?)),
-            "--store" if store.is_none() => store = Some(PathBuf::from(args.next()?)),
             "--accept-ceiling" if accepted.is_none() => {
                 accepted = Some(CeilingId::from_bytes(
                     *Id32::from_hex(&args.next()?)?.bytes(),
                 ));
-            }
-            "--format" if format.is_none() => {
-                format = Some(match args.next()?.as_str() {
-                    "text" => ReportFormat::Text,
-                    "jsonl" => ReportFormat::Jsonl,
-                    _ => return None,
-                })
             }
             _ => return None,
         }
@@ -134,52 +131,54 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
     })
 }
 
-fn deliver(
-    output: &mut dyn Write,
-    diagnostic: &mut dyn Write,
-    report: &Json,
-    format: ReportFormat,
-) -> io::Result<()> {
-    let receipt = encode(report);
-    let delivery = match format {
-        ReportFormat::Jsonl => write_receipt(output, &receipt),
-        ReportFormat::Text => {
-            let Json::Object(fields) = report else {
-                unreachable!("object constructed above")
-            };
-            let rendered = fields
-                .iter()
-                .map(|(key, value)| format!("{key}: {}", encode(value)))
-                .collect::<Vec<_>>()
-                .join("\n");
-            write_receipt(output, &rendered)
-        }
-    };
-    if delivery.is_err() {
-        let _ = write_receipt(diagnostic, &receipt);
-    }
-    delivery
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Failure, Sink};
+    use marrow_local_wire::encode;
 
-    struct BrokenOutput {
-        fail_write: bool,
+    fn receipt(outcome: &str) -> Json {
+        Json::Object(vec![
+            ("kind".into(), Json::Str("apply".into())),
+            ("outcome".into(), Json::Str(outcome.into())),
+        ])
     }
 
-    impl Write for BrokenOutput {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if self.fail_write {
-                Err(io::ErrorKind::BrokenPipe.into())
-            } else {
-                Ok(bytes.len())
-            }
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Err(io::ErrorKind::BrokenPipe.into())
-        }
+    /// Text output is the default, so its spelling is part of the command's contract: one
+    /// `key: value` line per field, strings unquoted, structured values in JSON.
+    #[test]
+    fn text_output_spells_one_line_per_field_without_quoting_strings() {
+        let report = Json::Object(vec![
+            ("kind".into(), Json::Str("apply".into())),
+            (
+                "outcome".into(),
+                Json::Str("ceiling_unaccepted_outcome".into()),
+            ),
+            ("code".into(), Json::Str("store.ceiling_unaccepted".into())),
+            ("old_ceiling".into(), Json::Str("ab".repeat(32))),
+            (
+                "added_effects".into(),
+                Json::Array(vec![Json::Object(vec![
+                    ("export".into(), Json::Str("main.bump".into())),
+                    ("effect".into(), Json::Str("write".into())),
+                    ("place".into(), Json::Null),
+                ])]),
+            ),
+        ]);
+        let mut rendered = Vec::new();
+        deliver(&mut rendered, &mut Vec::new(), &report, ReportFormat::Text)
+            .expect("text delivery");
+        assert_eq!(
+            String::from_utf8(rendered).expect("UTF-8"),
+            format!(
+                "kind: apply\n\
+                 outcome: ceiling_unaccepted_outcome\n\
+                 code: store.ceiling_unaccepted\n\
+                 old_ceiling: {}\n\
+                 added_effects: [{{\"effect\":\"write\",\"export\":\"main.bump\",\"place\":null}}]\n",
+                "ab".repeat(32)
+            )
+        );
     }
 
     #[test]
@@ -190,22 +189,19 @@ mod tests {
             "metadata_failed",
             "refused",
         ] {
-            let report = Json::Object(vec![
-                ("kind".into(), Json::Str("apply".into())),
-                ("outcome".into(), Json::Str(outcome.into())),
-            ]);
+            let report = receipt(outcome);
             for format in [ReportFormat::Text, ReportFormat::Jsonl] {
-                for fail_write in [true, false] {
+                for failure in [Failure::WriteAt(0), Failure::Flush] {
                     let mut diagnostic = Vec::new();
-                    let error = deliver(
-                        &mut BrokenOutput { fail_write },
-                        &mut diagnostic,
-                        &report,
-                        format,
-                    )
-                    .expect_err("write or flush fails");
+                    let error = deliver(&mut Sink::new(failure), &mut diagnostic, &report, format)
+                        .expect_err("write or flush fails");
                     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
-                    assert_eq!(diagnostic, format!("{}\n", encode(&report)).as_bytes());
+                    assert!(
+                        String::from_utf8(diagnostic)
+                            .expect("UTF-8")
+                            .lines()
+                            .any(|line| line == encode(&report))
+                    );
                 }
             }
         }

@@ -4,9 +4,11 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use marrow_local_wire::{Json, encode};
+use marrow_local_wire::Json;
 
-use super::{ReportFormat, read_image_bytes, validate_store_output, write_receipt};
+use super::{
+    ReportFormat, SharedFlag, deliver, read_image_bytes, shared_store_flag, validate_store_output,
+};
 
 pub(super) enum Command {
     Backup {
@@ -29,23 +31,18 @@ pub(super) fn parse(name: &str, mut args: impl Iterator<Item = String>) -> Optio
     let mut output = None;
     let mut format = None;
     while let Some(flag) = args.next() {
+        if let SharedFlag::Taken = shared_store_flag(&flag, &mut args, &mut store, &mut format)? {
+            continue;
+        }
         match flag.as_str() {
             "--image" if name == "backup" && image.is_none() => {
                 image = Some(PathBuf::from(args.next()?))
             }
-            "--store" if store.is_none() => store = Some(PathBuf::from(args.next()?)),
             "--from" if name == "restore" && input.is_none() => {
                 input = Some(PathBuf::from(args.next()?))
             }
             "--out" if name == "backup" && output.is_none() => {
                 output = Some(PathBuf::from(args.next()?))
-            }
-            "--format" if format.is_none() => {
-                format = Some(match args.next()?.as_str() {
-                    "text" => ReportFormat::Text,
-                    "jsonl" => ReportFormat::Jsonl,
-                    _ => return None,
-                })
             }
             _ => return None,
         }
@@ -103,7 +100,7 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
             deliver(
                 &mut io::stdout().lock(),
                 &mut io::stderr().lock(),
-                fields,
+                &Json::Object(fields),
                 format,
             )?;
             Ok(if result.is_ok() {
@@ -162,7 +159,7 @@ pub(super) fn run(command: Command) -> io::Result<ExitCode> {
             deliver(
                 &mut io::stdout().lock(),
                 &mut io::stderr().lock(),
-                fields,
+                &Json::Object(fields),
                 format,
             )?;
             Ok(if result.is_ok() {
@@ -220,43 +217,6 @@ fn retained(fields: &mut Vec<(String, Json)>, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn deliver(
-    output: &mut dyn Write,
-    diagnostic: &mut dyn Write,
-    fields: Vec<(String, Json)>,
-    format: ReportFormat,
-) -> io::Result<()> {
-    let receipt = Json::Object(fields);
-    let result = match format {
-        ReportFormat::Jsonl => write_receipt(output, &encode(&receipt)),
-        ReportFormat::Text => write_text(output, &receipt),
-    };
-    if result.is_err() {
-        // Delivery failure does not undo lifecycle effects. Retain the known
-        // result in a bounded diagnostic if that channel is still writable.
-        let _ = writeln!(
-            diagnostic,
-            "{}: transfer receipt delivery failed; known lifecycle result follows",
-            marrow_codes::Code::IoWrite.as_str()
-        );
-        let _ = write_receipt(diagnostic, &encode(&receipt));
-    }
-    result
-}
-
-fn write_text(output: &mut dyn Write, receipt: &Json) -> io::Result<()> {
-    if let Json::Object(fields) = receipt {
-        for (key, value) in fields {
-            if let Json::Str(value) = value {
-                writeln!(output, "{key}: {value}")?;
-            } else {
-                writeln!(output, "{key}: {}", encode(value))?;
-            }
-        }
-    }
-    output.flush()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,38 +247,23 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
-    enum Failure {
-        Write,
-        Flush,
-    }
-    struct Sink(Failure);
-    impl Write for Sink {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            match self.0 {
-                Failure::Write => Err(io::ErrorKind::BrokenPipe.into()),
-                Failure::Flush => Ok(bytes.len()),
-            }
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Err(io::ErrorKind::BrokenPipe.into())
-        }
-    }
-
     #[test]
     fn write_and_flush_failure_keep_known_result_without_claiming_delivery() {
+        use crate::{Failure, Sink};
+        use marrow_local_wire::encode;
         for format in [ReportFormat::Text, ReportFormat::Jsonl] {
-            for failure_at in [Failure::Write, Failure::Flush] {
+            for failure_at in [Failure::WriteAt(0), Failure::Flush] {
                 let mut fields = base("restore", "published", "input");
                 fields.push(("outcome".into(), Json::Str("complete".into())));
                 fields.push(("instance".into(), Json::Str("01".repeat(16))));
-                let expected = encode(&Json::Object(fields.clone()));
+                let receipt = Json::Object(fields);
+                let expected = encode(&receipt);
                 let mut diagnostic = Vec::new();
                 assert_eq!(
                     deliver(
-                        &mut Sink(failure_at),
+                        &mut Sink::new(failure_at),
                         &mut diagnostic,
-                        fields.clone(),
+                        &receipt,
                         format
                     )
                     .unwrap_err()
@@ -333,9 +278,9 @@ mod tests {
                 );
                 assert_eq!(
                     deliver(
-                        &mut Sink(failure_at),
-                        &mut Sink(Failure::Write),
-                        fields,
+                        &mut Sink::new(failure_at),
+                        &mut Sink::new(Failure::WriteAt(0)),
+                        &receipt,
                         format
                     )
                     .unwrap_err()
