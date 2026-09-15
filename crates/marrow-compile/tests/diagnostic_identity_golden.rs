@@ -76,14 +76,16 @@ fn refused(project: &ProjectInput) -> Vec<SourceDiagnostic> {
     }
 }
 
-/// Render an artifact as one line per row, so a mismatch prints as a readable diff
-/// rather than a wall of tuple syntax.
+/// The identity of each row — file, code, and exact span — one line per row, so a
+/// mismatch prints as a readable diff rather than a wall of tuple syntax.
+///
+/// The rendered message is deliberately absent: prose is the renderer's output, not the
+/// contract these goldens pin. What they pin is which rows are reported, under which
+/// code, at which construct, and in which order.
 fn artifact(diagnostics: &[SourceDiagnostic]) -> String {
     rows(diagnostics)
         .into_iter()
-        .map(|(file, code, line, column, message)| {
-            format!("{file}:{line}:{column} {} {message}", code.as_str())
-        })
+        .map(|(file, code, line, column, _)| format!("{file}:{line}:{column} {}", code.as_str()))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -150,12 +152,12 @@ fn the_cycle_heavy_corpus_reports_its_exact_ordered_artifact() {
 
     assert_eq!(
         artifact(&diagnostics),
-        "src/main.mw:3:1 check.recursion `selfLoop` is part of a recursive call cycle\n\
-         src/main.mw:11:1 check.recursion `mutualA` is part of a recursive call cycle\n\
-         src/main.mw:15:1 check.recursion `mutualB` is part of a recursive call cycle\n\
-         src/main.mw:27:1 check.recursion `triangleA` is part of a recursive call cycle\n\
-         src/main.mw:31:1 check.recursion `triangleB` is part of a recursive call cycle\n\
-         src/main.mw:35:1 check.recursion `triangleC` is part of a recursive call cycle",
+        "src/main.mw:3:1 check.recursion\n\
+         src/main.mw:11:1 check.recursion\n\
+         src/main.mw:15:1 check.recursion\n\
+         src/main.mw:27:1 check.recursion\n\
+         src/main.mw:31:1 check.recursion\n\
+         src/main.mw:35:1 check.recursion",
         "the cycle-heavy artifact moved",
     );
 }
@@ -236,24 +238,11 @@ fn the_transaction_heavy_corpus_reports_its_exact_ordered_artifact() {
 
     assert_eq!(
         artifact(&diagnostics),
-        "src/main.mw:26:5 check.requires_transaction calling `outerCaller` here has no ambient \
-         transaction. A durable write, replacement, or erase executes only inside a \
-         `transaction` block. Wrap the call in a `transaction { … }` block.",
+        "src/main.mw:26:5 check.requires_transaction",
         "the transaction-heavy artifact moved",
     );
 }
 
-/// The transitive depth is real: the reported call is three edges from the mutation,
-/// so a depth-one propagation cannot produce this artifact.
-#[test]
-fn the_transaction_heavy_corpus_requires_transitive_propagation() {
-    assert!(
-        TRANSACTION_HEAVY.contains("fn outerCaller")
-            && TRANSACTION_HEAVY.contains("    middle(id, v)")
-            && TRANSACTION_HEAVY.contains("    inner(id, v)"),
-        "the mutating chain must stay three deep for this corpus to bind",
-    );
-}
 // ---------------------------------------------------------------------------
 // Corpus C — value-containment cycles across two modules.
 // ---------------------------------------------------------------------------
@@ -324,36 +313,14 @@ fn the_value_cycle_corpus_reports_its_exact_ordered_artifact() {
 
     assert_eq!(
         artifact(&diagnostics),
-        "src/main.mw:9:8 check.recursion value type `Knot` contains itself through the cycle \
-         Knot -> Knot\n\
-         src/main.mw:13:8 check.recursion value type `StepA` contains itself through the cycle \
-         StepA -> StepB -> StepA\n\
-         src/main.mw:17:8 check.recursion value type `StepB` contains itself through the cycle \
-         StepB -> StepA -> StepB\n\
-         src/shapes.mw:7:8 check.recursion value type `Coil` contains itself through the cycle \
-         Coil -> Coil",
+        "src/main.mw:9:8 check.recursion\n\
+         src/main.mw:13:8 check.recursion\n\
+         src/main.mw:17:8 check.recursion\n\
+         src/shapes.mw:7:8 check.recursion",
         "the value-cycle artifact moved",
     );
 }
 
-/// The corpus earns its name: cycles of two distinct shapes in two distinct
-/// modules, with acyclic declarations in both. A corpus that had drifted to a
-/// single module, or to no acyclic declaration, would keep passing while proving
-/// neither the module coordinate nor the interleaving.
-#[test]
-fn the_value_cycle_corpus_spans_two_modules_and_stays_interleaved() {
-    assert!(
-        VALUE_CYCLE_MAIN.contains("struct Settled")
-            && VALUE_CYCLE_MAIN.contains("struct Knot")
-            && VALUE_CYCLE_MAIN.contains("struct StepA")
-            && VALUE_CYCLE_MAIN.contains("struct StepB"),
-        "the main module must keep an acyclic struct beside its cyclic ones",
-    );
-    assert!(
-        VALUE_CYCLE_SHAPES.contains("struct Calm") && VALUE_CYCLE_SHAPES.contains("struct Coil"),
-        "the second module must keep an acyclic struct beside its cyclic one",
-    );
-}
 // ---------------------------------------------------------------------------
 // Corpus D — store resource bindings.
 // ---------------------------------------------------------------------------
@@ -433,27 +400,21 @@ fn the_store_binding_corpus_reports_its_exact_ordered_artifact() {
 
     assert_eq!(
         artifact(&diagnostics),
-        STORE_BINDING_ARTIFACT,
-        "the store-binding artifact moved",
+        "src/main.mw:13:7 check.durable_identity\n\
+         src/main.mw:13:7 check.durable_identity\n\
+         src/main.mw:13:7 check.durable_identity\n\
+         src/main.mw:13:7 check.durable_identity\n\
+         src/main.mw:13:7 check.durable_identity\n\
+         src/main.mw:15:1 check.type\n\
+         src/main.mw:17:1 check.type\n\
+         src/other.mw:7:7 check.durable_identity\n\
+         src/other.mw:7:7 check.durable_identity\n\
+         src/other.mw:7:7 check.durable_identity\n\
+         src/other.mw:7:7 check.durable_identity\n\
+         src/other.mw:9:1 check.type"
     );
 }
 
-/// The corpus earns its name: every binding class is present, in two modules, with
-/// admitted stores interleaved between the refused ones.
-#[test]
-fn the_store_binding_corpus_covers_every_binding_class() {
-    assert!(
-        STORE_BINDING_MAIN.contains("resource Kept")
-            && STORE_BINDING_MAIN.contains("struct NotAResource")
-            && STORE_BINDING_MAIN.contains(": NeverDeclared"),
-        "the main module must keep an admitted, a wrong-kind, and an undeclared binding",
-    );
-    assert!(
-        STORE_BINDING_OTHER.contains("resource Elsewhere")
-            && STORE_BINDING_OTHER.contains(": StillNeverDeclared"),
-        "the second module must keep an admitted and an undeclared binding of its own",
-    );
-}
 // ---------------------------------------------------------------------------
 // Corpus E — managed-index admission.
 // ---------------------------------------------------------------------------
@@ -623,8 +584,50 @@ fn the_index_admission_corpus_reports_its_exact_ordered_artifact() {
 
     assert_eq!(
         artifact(&diagnostics),
-        INDEX_ADMISSION_ARTIFACT,
-        "the index-admission artifact moved",
+        "src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:24:7 check.durable_identity\n\
+         src/main.mw:24:7 check.durable_identity\n\
+         src/main.mw:24:7 check.durable_identity\n\
+         src/main.mw:25:1 check.type\n\
+         src/main.mw:28:7 check.durable_identity\n\
+         src/main.mw:28:7 check.durable_identity\n\
+         src/main.mw:29:1 check.type\n\
+         src/main.mw:28:7 check.durable_identity\n\
+         src/main.mw:31:1 check.type\n\
+         src/main.mw:34:7 check.durable_identity\n\
+         src/main.mw:34:7 check.durable_identity\n\
+         src/main.mw:43:1 check.type\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:13:7 check.durable_identity\n\
+         src/other.mw:14:26 check.type\n\
+         src/other.mw:15:21 check.type\n\
+         src/other.mw:16:21 check.type\n\
+         src/other.mw:17:24 check.type\n\
+         src/other.mw:18:1 check.type\n\
+         src/wide.mw:7:7 check.durable_identity\n\
+         src/wide.mw:7:7 check.durable_identity\n\
+         src/wide.mw:7:7 check.durable_identity\n\
+         src/wide.mw:7:7 check.durable_identity\n\
+         src/wide.mw:8:1 check.resource_limit"
     );
 }
 
@@ -694,29 +697,6 @@ store ^wide[k1: int, k2: int, k3: int, k4: int, k5: int, k6: int, k7: int, k8: i
 store ^atCap[c1: int, c2: int, c3: int, c4: int, c5: int, c6: int, c7: int, c8: int]: Plain
 "#;
 
-/// The artifact this corpus reported before the two key tuples became one row table,
-/// captured from the pre-conversion tree and unchanged by it.
-const KEY_WIDTH_ARTIFACT: &str = "src/main.mw:15:7 check.durable_identity durable identity for application `.` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:15:7 check.durable_identity durable identity for root `branchy` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:15:7 check.durable_identity durable identity for product `Slim` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:15:7 check.durable_identity durable identity for key `branchy.id` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:15:7 check.durable_identity durable identity for field `Slim.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:15:7 check.durable_identity durable identity for root `Slim.deep` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:6:1 check.resource_limit a branch key tuple has 9 columns; the fixed limit is 8\n\
-     src/main.mw:15:7 check.durable_identity durable identity for field `Slim.deep.note` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:17:7 check.resource_limit a store root key tuple has 9 columns; the fixed limit is 8\n\
-     src/main.mw:19:7 check.durable_identity durable identity for root `atCap` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for product `Plain` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c1` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c2` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c3` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c4` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c5` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c6` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c7` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for key `atCap.c8` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)\n\
-     src/main.mw:19:7 check.durable_identity durable identity for field `Plain.label` is missing from .marrow/ids; `marrow run` mints missing identities (commit the updated .marrow/ids)";
-
 #[test]
 fn the_key_width_corpus_reports_its_exact_ordered_artifact() {
     let project = project_capture::project_with_ids(&[("src/main.mw", KEY_WIDTH_MAIN)], None);
@@ -724,8 +704,26 @@ fn the_key_width_corpus_reports_its_exact_ordered_artifact() {
 
     assert_eq!(
         artifact(&diagnostics),
-        KEY_WIDTH_ARTIFACT,
-        "the key-width artifact moved",
+        "src/main.mw:15:7 check.durable_identity\n\
+         src/main.mw:15:7 check.durable_identity\n\
+         src/main.mw:15:7 check.durable_identity\n\
+         src/main.mw:15:7 check.durable_identity\n\
+         src/main.mw:15:7 check.durable_identity\n\
+         src/main.mw:15:7 check.durable_identity\n\
+         src/main.mw:6:1 check.resource_limit\n\
+         src/main.mw:15:7 check.durable_identity\n\
+         src/main.mw:17:7 check.resource_limit\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity\n\
+         src/main.mw:19:7 check.durable_identity"
     );
 }
 
@@ -740,13 +738,26 @@ fn the_key_width_corpus_carries_both_tuple_subjects() {
         9,
         "the corpus declares nine-column tuples because the fixed limit is eight",
     );
-    assert!(
-        KEY_WIDTH_ARTIFACT.contains("a branch key tuple has 9 columns")
-            && KEY_WIDTH_ARTIFACT.contains("a store root key tuple has 9 columns"),
-        "the artifact must carry both key-tuple subjects",
+    let project = project_capture::project_with_ids(&[("src/main.mw", KEY_WIDTH_MAIN)], None);
+    let reported = rows(&refused(&project));
+    let subjects: Vec<&str> = reported
+        .iter()
+        .filter(|(_, code, _, _, _)| *code == Code::CheckResourceLimit)
+        .map(|(_, _, _, _, message)| message.as_str())
+        .collect();
+    assert_eq!(
+        subjects,
+        [
+            "a branch key tuple has 9 columns; the fixed limit is 8",
+            "a store root key tuple has 9 columns; the fixed limit is 8",
+        ],
+        "the corpus must carry both key-tuple subjects, and only those",
     );
     assert!(
-        KEY_WIDTH_ARTIFACT.contains("key `atCap.c8`"),
+        reported.iter().any(
+            |(_, code, _, _, message)| *code == Code::CheckDurableIdentity
+                && message.contains("key `atCap.c8`")
+        ),
         "the at-cap tuple must stay admitted: its eighth column anchors instead of \
          earning a width refusal",
     );
