@@ -4,6 +4,7 @@
 //! The durable graph still admits a single store this step; a second resource is a
 //! value type, not a second root.
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -87,7 +88,7 @@ pub fn make(): string {
     };
     let hit = diagnostics
         .iter()
-        .find(|d| d.code() == "check.type")
+        .find(|d| d.code() == Code::CheckType)
         .unwrap_or_else(|| {
             panic!(
                 "expected a `check.type` diagnostic, got {:?}",

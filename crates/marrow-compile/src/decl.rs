@@ -196,7 +196,7 @@ impl DeclarationRefusalId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeclarationRefusalSummary {
     name: String,
-    code: &'static str,
+    code: Code,
     /// The ledger that holds this refusal, stamped by [`Ledger::declare`].
     ///
     /// A summary is built by the refusing pass and only then handed to a ledger, so
@@ -249,10 +249,10 @@ pub enum SourceStage {
 
 impl SourceStage {
     /// The code this stage refuses a whole module with.
-    pub(crate) fn code(self) -> &'static str {
+    pub(crate) fn code(self) -> Code {
         match self {
-            Self::Decode => Code::CheckUnsupported.as_str(),
-            Self::Parse => Code::ParseSyntax.as_str(),
+            Self::Decode => Code::CheckUnsupported,
+            Self::Parse => Code::ParseSyntax,
         }
     }
 
@@ -275,7 +275,7 @@ impl SourceStage {
 pub(crate) fn refuse(
     diagnostics: &mut DiagnosticCollector,
     at: DeclarationSite<'_>,
-    code: &'static str,
+    code: Code,
     message: String,
 ) -> DeclarationRefusalSummary {
     refuse_row(
@@ -355,7 +355,7 @@ impl<'a> MemberNamespace<'a> {
             return None;
         }
         Some(SourceDiagnostic::at(
-            Code::CheckNameConflict.as_str(),
+            Code::CheckNameConflict,
             file,
             span,
             format!("`{}` already declares `{name}`", self.owner),
@@ -366,10 +366,7 @@ impl<'a> MemberNamespace<'a> {
 /// Retain the code for a cause whose report another occurrence or pass owns.
 /// The caller supplies that ownership; the filename inventory is a review prompt,
 /// not a report-delivery check. Deferred reporting depends on reaching its pass.
-pub(crate) fn refuse_covered(
-    at: DeclarationSite<'_>,
-    code: &'static str,
-) -> DeclarationRefusalSummary {
+pub(crate) fn refuse_covered(at: DeclarationSite<'_>, code: Code) -> DeclarationRefusalSummary {
     covered(at, code, RefusalReport::ByCoveringPass)
 }
 
@@ -389,7 +386,7 @@ pub(crate) fn refuse_at_earlier_stage(
 
 fn covered(
     at: DeclarationSite<'_>,
-    code: &'static str,
+    code: Code,
     report: RefusalReport,
 ) -> DeclarationRefusalSummary {
     DeclarationRefusalSummary {
@@ -468,7 +465,7 @@ impl DeclarationRefusalSummary {
 
     /// The declaring diagnostic's stable code, which the causal steer reuses so a
     /// use-site assertion carries the declaration's typed identity.
-    pub(crate) fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> Code {
         self.code
     }
 
@@ -510,11 +507,15 @@ impl DeclarationRefusalSummary {
         let (name, code) = (self.name(), self.code());
         match self.report {
             RefusalReport::AtDeclaration => {
-                format!("Correct the `{code}` report at the declaration of `{name}`.")
+                format!(
+                    "Correct the `{}` report at the declaration of `{name}`.",
+                    code.as_str()
+                )
             }
-            RefusalReport::ByCoveringPass => format!("Correct the reported `{code}`."),
+            RefusalReport::ByCoveringPass => format!("Correct the reported `{}`.", code.as_str()),
             RefusalReport::ByEarlierStage(stage) => format!(
-                "Correct the `{code}` reports `{name}` received when it was {}.",
+                "Correct the `{}` reports `{name}` received when it was {}.",
+                code.as_str(),
                 stage.past_participle()
             ),
         }
@@ -890,7 +891,7 @@ mod tests {
                 at: file(),
                 span: span(),
             },
-            "check.type",
+            Code::CheckType,
             "refused".to_string(),
         )
     }
@@ -920,7 +921,7 @@ mod tests {
         match ledger.lookup(&"a".to_string()) {
             Ok(Binding::Refused(_, summary)) => {
                 assert_eq!(summary.name(), "a");
-                assert_eq!(summary.code(), "check.type");
+                assert_eq!(summary.code(), Code::CheckType);
             }
             other => panic!("expected a refusal, got {other:?}"),
         }

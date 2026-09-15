@@ -304,7 +304,7 @@ fn diagnostic_records(diagnostics: &[SourceDiagnostic]) -> Vec<Record> {
     diagnostics
         .iter()
         .map(|diagnostic| Record::Diagnostic {
-            code: diagnostic.code(),
+            code: diagnostic.code().as_str(),
             line: diagnostic.line(),
             column: diagnostic.column(),
         })

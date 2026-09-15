@@ -73,14 +73,14 @@ enum CompilerDiagnostic {
     /// An ordinary compiler finding: a stable code, the offending span, and the
     /// rendered message.
     Rendered {
-        code: &'static str,
+        code: Code,
         span: SourceSpan,
         message: String,
     },
     /// A `check.durable_identity` finding carrying its typed gap, which the
     /// CLI's mint action consumes instead of the rendered message.
     IdentityGap {
-        code: &'static str,
+        code: Code,
         span: SourceSpan,
         message: String,
         gap: IdentityGap,
@@ -89,7 +89,7 @@ enum CompilerDiagnostic {
     /// compiler refused, carrying the typed facts that tell it apart from a row
     /// about a name that was never declared.
     RefusedDeclaration {
-        code: &'static str,
+        code: Code,
         span: SourceSpan,
         message: String,
         refused: RefusedDeclaration,
@@ -134,19 +134,14 @@ pub struct RefusedDeclaration {
     pub namespace: Option<DeclarationNamespace>,
     /// The stable code of the row reported at the declaration, which this steer
     /// reuses so the reader follows one code to one fix.
-    pub declaring_code: &'static str,
+    pub declaring_code: Code,
     /// Where that report was made: at the declaration, by a covering pass, or by an
     /// earlier stage that refused the whole source.
     pub report: RefusalReport,
 }
 
 impl SourceDiagnostic {
-    pub(crate) fn at(
-        code: &'static str,
-        file: &FileIdentity,
-        span: SourceSpan,
-        message: String,
-    ) -> Self {
+    pub(crate) fn at(code: Code, file: &FileIdentity, span: SourceSpan, message: String) -> Self {
         Self {
             file: file.clone(),
             payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Rendered {
@@ -158,7 +153,7 @@ impl SourceDiagnostic {
     }
 
     pub(crate) fn with_identity_gap(
-        code: &'static str,
+        code: Code,
         file: &FileIdentity,
         span: SourceSpan,
         message: String,
@@ -183,7 +178,7 @@ impl SourceDiagnostic {
     /// the declaring row, and differ for the identity class, whose cause is a report
     /// *family* the steer names under its own `check.type`.
     pub(crate) fn with_refused_declaration(
-        code: &'static str,
+        code: Code,
         file: &FileIdentity,
         span: SourceSpan,
         message: String,
@@ -223,17 +218,18 @@ impl SourceDiagnostic {
         }
     }
 
-    /// The stable `marrow-codes` string of this diagnostic.
-    pub fn code(&self) -> &'static str {
+    /// The typed identity of this diagnostic. A renderer spells it with
+    /// [`Code::as_str`] at the boundary; nothing compares the spelling.
+    pub fn code(&self) -> Code {
         match &self.payload {
-            SourceDiagnosticPayload::Syntax(diagnostic) => diagnostic.code,
+            SourceDiagnosticPayload::Syntax(diagnostic) => diagnostic.typed_code(),
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Rendered { code, .. }
                 | CompilerDiagnostic::IdentityGap { code, .. }
                 | CompilerDiagnostic::RefusedDeclaration { code, .. },
-            ) => code,
+            ) => *code,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
-                Code::CheckUnsupported.as_str()
+                Code::CheckUnsupported
             }
         }
     }
@@ -637,7 +633,7 @@ mod tests {
     /// `file.len() + message_len`.
     fn row_with_message_len(message_len: usize) -> SourceDiagnostic {
         SourceDiagnostic::at(
-            "check.type",
+            Code::CheckType,
             file(),
             SourceSpan::default(),
             "x".repeat(message_len),
@@ -655,7 +651,7 @@ mod tests {
         assert_eq!(rendered.retained_owned_bytes(), file_len + 10);
 
         let gap = SourceDiagnostic::with_identity_gap(
-            "check.durable_identity",
+            Code::CheckDurableIdentity,
             file(),
             SourceSpan::default(),
             "y".repeat(7),
@@ -671,7 +667,7 @@ mod tests {
         assert_eq!(utf8.retained_owned_bytes(), file_len);
         assert_eq!(utf8.invalid_utf8_facts(), Some((3, Some(1))));
         assert_eq!(utf8.message(), "source file is not valid UTF-8");
-        assert_eq!(utf8.code(), "check.unsupported");
+        assert_eq!(utf8.code(), Code::CheckUnsupported);
         let span = utf8.span();
         assert_eq!(
             (span.start_byte, span.end_byte, span.line, span.column),

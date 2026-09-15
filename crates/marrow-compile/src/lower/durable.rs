@@ -479,7 +479,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         if keys.len() != index.projection.len() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -519,7 +519,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         if keys.len() != index.projection.len() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -612,7 +612,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return;
         }
         self.fail(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             self.file,
             name_span,
             format!("group `{}` has no field `{field_name}`", group.name),
@@ -638,7 +638,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return;
         }
         self.fail(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             self.file,
             name_span,
             node.no_field_message(field_name),
@@ -867,7 +867,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         if self.lookup(name).is_some() || self.lookup_place(name).is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 name_span,
                 format!("`{name}` is already bound in this scope"),
@@ -902,7 +902,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if !matches!(access, Some(DurShape::Entry)) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 place_expr.span(),
                 "a `place` names a whole durable entry address such as `^root(key)`".to_string(),
@@ -915,7 +915,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let span = place.span;
         let DurTarget::Entry { node, .. } = place.target else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 place_expr.span(),
                 "a `place` names a whole durable entry address such as `^root(key)`, not a field"
@@ -947,7 +947,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 PlaceKey::Bound(_) => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         place_expr.span(),
                         "a `place` names a store address `^root(key)`, not another place"
@@ -1180,7 +1180,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     let (mut columns, parent) = self.resolve_entry_node(base, parent_base)?;
                     let Some(branch) = parent.branch(branch_name) else {
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             *branch_span,
                             parent.no_branch_message(branch_name),
@@ -1210,7 +1210,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> Option<()> {
         if keys.len() != key_columns.len() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -1366,7 +1366,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`exists` takes one store place".to_string(),
@@ -1388,7 +1388,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return self.lower_index_exists(read.root, read.index, read.keys, arg.value.span());
             }
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 format!(
@@ -1443,7 +1443,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // site of its own. Probe the containing entry instead.
                 DurTarget::Group { .. } | DurTarget::GroupLeaf { .. } => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckUnsupported.as_str(),
+                        Code::CheckUnsupported,
                         self.file,
                         arg.value.span(),
                         "`exists` over a group or a group leaf is not supported; probe the \
@@ -1467,7 +1467,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Err(LoweringFailure::Recoverable);
         }
         self.fail(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             self.file,
             arg.value.span(),
             "`exists` takes a store place such as `^root(key)`, a field, a store root, or a \
@@ -1490,7 +1490,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         if args.iter().any(|arg| arg.name.is_some()) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`Id` takes positional arguments: a store root then one value per key column"
@@ -1500,7 +1500,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         let Some((root_arg, key_args)) = args.split_first() else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`Id` takes a store root `^root` then one value per key column".to_string(),
@@ -1513,7 +1513,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = &root_arg.value
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 root_arg.value.span(),
                 "`Id`'s first argument is the store root `^root`".to_string(),
@@ -1526,7 +1526,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let key_columns = root.key.clone();
         if key_args.len() != key_columns.len() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -1653,7 +1653,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if optional {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -1699,7 +1699,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         {
             if *required {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     place.span,
                     "a required group leaf cannot be deleted".to_string(),
@@ -1719,7 +1719,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = &place.target
         {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 place.span,
                 "a group with a required leaf is erased only with its entry".to_string(),
@@ -1742,7 +1742,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } => {
                 if required {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         place.span,
                         "a required field cannot be deleted".to_string(),

@@ -73,7 +73,9 @@ pub fn diagnostics_for_file(
             Diagnostic {
                 range,
                 severity: Some(to_lsp_severity(diagnostic.severity())),
-                code: Some(NumberOrString::String(diagnostic.code().to_owned())),
+                code: Some(NumberOrString::String(
+                    diagnostic.code().as_str().to_owned(),
+                )),
                 code_description: None,
                 source: Some("marrow".to_owned()),
                 message: diagnostic.message().to_owned(),

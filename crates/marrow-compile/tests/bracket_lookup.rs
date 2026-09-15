@@ -5,6 +5,7 @@
 //! builtins. Diagnostics are asserted by typed code and, for the teaching diagnostics
 //! this lane mints, by the governing teaching sentence.
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -37,11 +38,11 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     }
 }
 
-fn first_of(diagnostics: &[SourceDiagnostic], code: &str) -> SourceDiagnostic {
+fn first_of(diagnostics: &[SourceDiagnostic], code: Code) -> SourceDiagnostic {
     diagnostics
         .iter()
         .find(|diagnostic| diagnostic.code() == code)
-        .unwrap_or_else(|| panic!("no `{code}` diagnostic in {diagnostics:#?}"))
+        .unwrap_or_else(|| panic!("no `{code:?}` diagnostic in {diagnostics:#?}"))
         .clone()
 }
 
@@ -85,7 +86,7 @@ fn a_literal_dead_list_index_is_a_teaching_check_type() {
         let diagnostics = compile_err(&wrap(&format!(
             "pub fn f(xs: List<int>): int {{\n    return xs[{index}] ?? 0\n}}"
         )));
-        let diagnostic = first_of(&diagnostics, "check.type");
+        let diagnostic = first_of(&diagnostics, Code::CheckType);
         // Fact-first (voice standard, rule 1): the source spelling of the dead index
         // leads, the governing law follows, the canonical first position closes.
         assert!(
@@ -131,7 +132,7 @@ fn a_map_bracket_write_needs_a_var_binding() {
     let diagnostics = compile_err(&wrap(
         "pub fn f(): int {\n    const m: Map<string, int> = Map()\n    m[\"k\"] = 1\n    return 0\n}",
     ));
-    let diagnostic = first_of(&diagnostics, "check.type");
+    let diagnostic = first_of(&diagnostics, Code::CheckType);
     assert!(
         diagnostic.message().contains("`const`")
             && diagnostic.message().contains("cannot be reassigned"),
@@ -147,7 +148,7 @@ fn a_list_keyed_write_is_a_teaching_check_type() {
     let diagnostics = compile_err(&wrap(
         "pub fn f(): int {\n    var xs: List<int> = List()\n    xs = append(xs, 1)\n    xs[1] = 9\n    return 0\n}",
     ));
-    let diagnostic = first_of(&diagnostics, "check.type");
+    let diagnostic = first_of(&diagnostics, Code::CheckType);
     // Fact-first: the list is named in source spelling, the law follows, and the fix
     // names the user's own right-hand side (`9`) with the canonical spellings.
     assert!(
@@ -176,7 +177,7 @@ fn a_map_bracket_unset_needs_a_var_binding() {
     let diagnostics = compile_err(&wrap(
         "pub fn f(): int {\n    const m: Map<string, int> = Map()\n    unset m[\"k\"]\n    return 0\n}",
     ));
-    let diagnostic = first_of(&diagnostics, "check.type");
+    let diagnostic = first_of(&diagnostics, Code::CheckType);
     assert!(
         diagnostic.message().contains("`const`")
             && diagnostic.message().contains("cannot be modified"),
@@ -192,7 +193,7 @@ fn a_list_bracket_unset_is_a_teaching_check_type() {
     let diagnostics = compile_err(&wrap(
         "pub fn f(): int {\n    var xs: List<int> = List()\n    xs = append(xs, 1)\n    unset xs[1]\n    return 0\n}",
     ));
-    let diagnostic = first_of(&diagnostics, "check.type");
+    let diagnostic = first_of(&diagnostics, Code::CheckType);
     assert!(
         diagnostic.message().starts_with("`xs` is a list"),
         "{}",
@@ -214,7 +215,7 @@ fn get_and_insert_are_deleted_but_shadowable() {
         let diagnostics = compile_err(&wrap(&format!(
             "pub fn f(m: Map<string, int>): int {{\n    return {name}(m, \"k\") ?? 0\n}}"
         )));
-        let diagnostic = first_of(&diagnostics, "check.type");
+        let diagnostic = first_of(&diagnostics, Code::CheckType);
         assert!(
             diagnostic.message().contains("not in scope"),
             "{name}: {}",
@@ -239,7 +240,7 @@ fn equality_against_absent_steers_to_the_presence_forms() {
         let diagnostics = compile_err(&wrap(&format!(
             "pub fn f(xs: List<int>): bool {{\n    return xs[1] {op} absent\n}}"
         )));
-        let diagnostic = first_of(&diagnostics, "check.type");
+        let diagnostic = first_of(&diagnostics, Code::CheckType);
         // Voice: `absent` in source spelling leads, the presence rule follows, and the fix
         // names the canonical presence forms.
         assert!(

@@ -24,7 +24,7 @@ fn assert_requires_presence_with_schema(schema: &str, body: &str, place: &str) {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     let diagnostic = &diagnostics[0];
     assert_eq!(
-        diagnostic.code(),
+        diagnostic.code().as_str(),
         marrow_codes::Code::CheckRequiresPresence.as_str(),
     );
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");

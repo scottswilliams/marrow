@@ -52,7 +52,7 @@ fn contract_of(source: &str, ids: &str) -> DurableContractId {
 }
 
 fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code()).collect()
+    diagnostics.iter().map(|d| d.code().as_str()).collect()
 }
 
 // A resource with a top-level field, a static `group` holding a field, and a keyed

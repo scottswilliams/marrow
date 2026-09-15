@@ -1037,7 +1037,7 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
     );
     let diagnostic = diagnostics
         .iter()
-        .find(|d| d.code() == "check.type")
+        .find(|d| d.code().as_str() == "check.type")
         .unwrap_or_else(|| panic!("no check.type diagnostic in {diagnostics:#?}"));
     // The span points at the branch name `notes` in `b.notes`.
     assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message());
@@ -1084,9 +1084,10 @@ fn compile_source_ids(source: &str, ids: &str) -> Result<VerifiedImage, Vec<Stri
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(compiled) => Ok(marrow_verify::verify(&compiled.image.bytes).expect("verify")),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            Err(diagnostics.iter().map(|d| d.code().to_string()).collect())
-        }
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => Err(diagnostics
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect()),
         Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
     }
 }

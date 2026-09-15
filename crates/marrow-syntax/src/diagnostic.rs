@@ -166,8 +166,14 @@ impl DiagnosticReason {
     /// lexical finding is `parse.syntax`; a declaration-parser reason maps
     /// through [`ParseDiagnosticReason::code`].
     fn code(&self) -> &'static str {
+        self.typed_code().as_str()
+    }
+
+    /// The typed identity behind that dotted spelling. The sole owner of the mapping;
+    /// [`Self::code`] renders it.
+    fn typed_code(&self) -> marrow_codes::Code {
         match self {
-            Self::Lexer(_) => crate::PARSE_SYNTAX,
+            Self::Lexer(_) => marrow_codes::Code::ParseSyntax,
             Self::Parser(reason) => reason.code(),
         }
     }
@@ -526,10 +532,10 @@ impl ParseDiagnosticReason {
     /// wherever the front end raises it, so it surfaces alongside the type-check
     /// findings the operator reads; every other declaration parse error is
     /// `parse.syntax`.
-    pub(crate) fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> marrow_codes::Code {
         match self {
-            Self::NestingLimit => crate::NESTING_LIMIT,
-            _ => crate::PARSE_SYNTAX,
+            Self::NestingLimit => marrow_codes::Code::CheckNestingLimit,
+            _ => marrow_codes::Code::ParseSyntax,
         }
     }
 }
@@ -613,6 +619,15 @@ pub enum UnsupportedSyntax {
     TryCatchBlock,
     /// A stray `catch` clause with no `try`: the throw/catch channel was removed.
     CatchClause,
+}
+
+impl Diagnostic {
+    /// The typed identity of this row's code. The wire string on [`Diagnostic::code`] is
+    /// [`marrow_codes::Code::as_str`] of exactly this value, so a consumer that keeps the
+    /// identity typed never recovers it from the spelling.
+    pub fn typed_code(&self) -> marrow_codes::Code {
+        self.reason.typed_code()
+    }
 }
 
 impl fmt::Display for Diagnostic {

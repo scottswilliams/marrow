@@ -50,7 +50,7 @@ fn contract_of(source: &str, ids: &str) -> DurableContractId {
 }
 
 fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code()).collect()
+    diagnostics.iter().map(|d| d.code().as_str()).collect()
 }
 
 // A resource storing supported widened values: plain scalars (`id`/`balance`), a
@@ -170,7 +170,7 @@ fn a_nominal_field_binding_is_refused_without_a_durable_operation() {
         .iter()
         .map(|diagnostic| {
             let span = diagnostic.span();
-            (diagnostic.code(), span.start_byte, span.end_byte)
+            (diagnostic.code().as_str(), span.start_byte, span.end_byte)
         })
         .collect();
     assert_eq!(sites, [("check.unsupported", 262, 295)], "{diagnostics:?}");

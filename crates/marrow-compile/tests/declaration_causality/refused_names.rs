@@ -16,7 +16,7 @@ pub fn independent(): int {
     return 7
 }
 "#;
-    let conflict = marrow_codes::Code::CheckNameConflict.as_str();
+    let conflict = marrow_codes::Code::CheckNameConflict;
     let repeated_parameter = marrow_syntax::SourceSpan {
         start_byte: 26,
         end_byte: 27,
@@ -94,14 +94,14 @@ fn a_generic_enum_duplicate_preserves_the_original_refusal() {
                 )
             })
             .collect();
-        let type_error = marrow_codes::Code::CheckType.as_str();
+        let type_error = marrow_codes::Code::CheckType;
         assert_eq!(
             actual,
             vec![
                 ("src/main.mw", type_error, unknown),
                 (
                     "src/main.mw",
-                    marrow_codes::Code::CheckNameConflict.as_str(),
+                    marrow_codes::Code::CheckNameConflict,
                     duplicate,
                 ),
                 ("src/main.mw", type_error, annotation),
@@ -123,8 +123,8 @@ fn an_over_wide_enum_occupies_its_name() {
         pub fn inspect(value: E): int {\n    return 7\n}\n";
     compile(&project(VALID)).expect("the standalone enum and its annotation compile");
 
-    let conflict = marrow_codes::Code::CheckNameConflict.as_str();
-    let limit = marrow_codes::Code::CheckResourceLimit.as_str();
+    let conflict = marrow_codes::Code::CheckNameConflict;
+    let limit = marrow_codes::Code::CheckResourceLimit;
     let cause = RefusedDeclaration {
         namespace: Some(DeclarationNamespace::NamedType),
         declaring_code: limit,

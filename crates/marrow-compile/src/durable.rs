@@ -774,7 +774,7 @@ impl DurableRegistry {
                 // whichever of the two the compiler could admit.
                 if registry.declared.declared(store.root.root.as_str()) {
                     settled.push(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         file,
                         store.root.span,
                         format!(
@@ -962,7 +962,7 @@ fn refuse_store(
                 ),
                 // Covered by the first store to reach this project-wide anchor, which
                 // pushed the `check.durable_identity` row this refusal names.
-                _ => refuse_covered(at, Code::CheckDurableIdentity.as_str()),
+                _ => refuse_covered(at, Code::CheckDurableIdentity),
             };
             summary.with_gap(gap)
         }
@@ -972,13 +972,13 @@ fn refuse_store(
         DurableRefusal::Index { message, span } => refuse_row(
             diagnostics,
             at,
-            SourceDiagnostic::at(Code::CheckType.as_str(), at.file, span, message),
+            SourceDiagnostic::at(Code::CheckType, at.file, span, message),
         ),
         DurableRefusal::Bound { message, span } => {
             refuse_row(diagnostics, at, resource_limit(at.file, span, message))
         }
         // The value-cycle pass owns this report when reached after lowering.
-        DurableRefusal::ValueCycle => refuse_covered(at, Code::CheckRecursion.as_str()),
+        DurableRefusal::ValueCycle => refuse_covered(at, Code::CheckRecursion),
         DurableRefusal::Admission { row } => refuse_row(diagnostics, at, row),
     }
 }
@@ -1299,7 +1299,7 @@ fn resolve_root_tuple<'a>(
         StoreResourceBinding::Accepted(bound) => directory.row(bound),
         StoreResourceBinding::Unbound => {
             return Err(Box::new(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 file,
                 span,
                 format!("`{}` is not a resource in this project", row.resource),
@@ -2900,7 +2900,7 @@ fn identity_gap(
         )
     };
     SourceDiagnostic::with_identity_gap(
-        Code::CheckDurableIdentity.as_str(),
+        Code::CheckDurableIdentity,
         file,
         span,
         message,
@@ -2914,7 +2914,7 @@ fn identity_gap(
 
 fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckUnsupported.as_str(),
+        Code::CheckUnsupported,
         file,
         span,
         format!("{subject} is not yet supported on the beta line"),
@@ -2925,7 +2925,7 @@ fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDi
 /// bound the image cannot represent, reported at the offending construct's span so
 /// the source, not a fabricated location, carries the diagnostic.
 fn resource_limit(file: &FileIdentity, span: SourceSpan, message: String) -> SourceDiagnostic {
-    SourceDiagnostic::at(Code::CheckResourceLimit.as_str(), file, span, message)
+    SourceDiagnostic::at(Code::CheckResourceLimit, file, span, message)
 }
 
 /// Where the durable member walk is: the ordinal of the node whose members are being

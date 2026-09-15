@@ -131,7 +131,7 @@ fn diagnostic_line(diagnostic: &SourceDiagnostic) -> String {
         term_paint(Style::Muted, diagnostic.file().as_str()),
         diagnostic.line(),
         diagnostic.column(),
-        term_paint(Style::Code, diagnostic.code()),
+        term_paint(Style::Code, diagnostic.code().as_str()),
         diagnostic.message(),
     )
 }

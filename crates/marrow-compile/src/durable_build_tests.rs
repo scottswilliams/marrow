@@ -109,7 +109,7 @@ mod generic_enum_shape_tests {
             diagnostics
                 .probe_rows()
                 .iter()
-                .all(|diagnostic| diagnostic.code() == Code::CheckDurableIdentity.as_str())
+                .all(|diagnostic| diagnostic.code() == Code::CheckDurableIdentity)
         );
     }
 
@@ -169,10 +169,7 @@ mod generic_enum_shape_tests {
         assert!(resolver.refusal.is_some());
         drop(resolver);
         assert_eq!(diagnostics.probe_rows().len(), 1);
-        assert_eq!(
-            diagnostics.probe_rows()[0].code(),
-            Code::CheckUnsupported.as_str()
-        );
+        assert_eq!(diagnostics.probe_rows()[0].code(), Code::CheckUnsupported);
         assert!(diagnostics.probe_rows()[0].identity_gap().is_none());
     }
 

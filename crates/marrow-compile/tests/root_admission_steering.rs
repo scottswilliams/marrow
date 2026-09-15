@@ -5,6 +5,7 @@
 //! misdirecting toward a typo. A genuinely undeclared root keeps the plain not-in-scope
 //! message.
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -62,7 +63,7 @@ fn a_reference_to_an_admission_failed_root_is_steered_to_the_identity_reports() 
 
     let steering = diagnostics
         .iter()
-        .find(|d| d.file().as_str() == "src/report.mw" && d.code() == "check.type")
+        .find(|d| d.file().as_str() == "src/report.mw" && d.code() == Code::CheckType)
         .unwrap_or_else(|| panic!("expected a reference-site diagnostic, got {diagnostics:#?}"));
     assert_eq!(
         steering.message(),
@@ -78,7 +79,7 @@ fn a_reference_to_an_admission_failed_root_is_steered_to_the_identity_reports() 
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code() == "check.durable_identity"),
+            .any(|d| d.code() == Code::CheckDurableIdentity),
         "the primary identity gaps are still reported: {diagnostics:#?}",
     );
 }
@@ -100,7 +101,8 @@ fn the_steering_holds_within_the_declaring_module() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code() == "check.type" && d.message().contains("failed identity admission")),
+            .any(|d| d.code() == Code::CheckType
+                && d.message().contains("failed identity admission")),
         "the declaring module's own reference is steered too: {diagnostics:#?}",
     );
 }
@@ -120,7 +122,7 @@ fn a_genuinely_undeclared_root_keeps_the_unknown_name_message() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code() == "check.type" && d.message() == "`ghosts` is not in scope"),
+            .any(|d| d.code() == Code::CheckType && d.message() == "`ghosts` is not in scope"),
         "an undeclared root is a plain unknown name: {diagnostics:#?}",
     );
     assert!(
@@ -155,9 +157,8 @@ fn a_dropped_root_referenced_from_a_generic_and_an_ordinary_function_steers_once
     assert_eq!(
         diagnostics
             .iter()
-            .filter(
-                |d| d.code() == "check.type" && d.message().contains("failed identity admission")
-            )
+            .filter(|d| d.code() == Code::CheckType
+                && d.message().contains("failed identity admission"))
             .count(),
         1,
         "one steer per dropped root, not one per reference site: {diagnostics:#?}",
@@ -213,7 +214,7 @@ fn a_refused_store_does_not_steer_a_product_its_sibling_admits() {
     assert!(
         diagnostics
             .iter()
-            .all(|d| d.code() == "check.durable_identity"),
+            .all(|d| d.code() == Code::CheckDurableIdentity),
         "only ^a's own identity gaps are reported; the constructor is not blamed for \
          them: {diagnostics:#?}",
     );
@@ -243,7 +244,8 @@ fn a_refused_store_still_steers_its_own_references() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code() == "check.type" && d.message().contains("failed identity admission")),
+            .any(|d| d.code() == Code::CheckType
+                && d.message().contains("failed identity admission")),
         "a use of the refused store is steered to its cause: {diagnostics:#?}",
     );
 }
@@ -309,7 +311,7 @@ fn a_branch_named_as_a_field_is_steered_whether_or_not_a_root_is_executable() {
     ));
     let keyed_message = keyed
         .iter()
-        .find(|d| d.code() == "check.type")
+        .find(|d| d.code() == Code::CheckType)
         .unwrap_or_else(|| panic!("expected a check.type report, got {keyed:#?}"))
         .message()
         .to_string();
@@ -321,7 +323,7 @@ fn a_branch_named_as_a_field_is_steered_whether_or_not_a_root_is_executable() {
     ));
     let keyless_message = keyless
         .iter()
-        .find(|d| d.code() == "check.type")
+        .find(|d| d.code() == Code::CheckType)
         .unwrap_or_else(|| panic!("expected a check.type report, got {keyless:#?}"))
         .message()
         .to_string();

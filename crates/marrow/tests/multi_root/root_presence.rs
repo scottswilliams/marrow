@@ -234,9 +234,10 @@ fn compile_source(source: &str) -> Result<VerifiedImage, Vec<String>> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(compiled) => Ok(marrow_verify::verify(&compiled.image.bytes).expect("verify")),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            Err(diagnostics.iter().map(|d| d.code().to_string()).collect())
-        }
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => Err(diagnostics
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect()),
         Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
     }
 }

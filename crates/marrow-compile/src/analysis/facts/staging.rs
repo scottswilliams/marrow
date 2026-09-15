@@ -98,7 +98,7 @@ impl<'r, 'd> StagedBodyTxn<'r, 'd> {
                     Some(id)
                 } else {
                     staged_diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckModulePath.as_str(),
+                        Code::CheckModulePath,
                         file,
                         function.span,
                         format!(

@@ -17,6 +17,7 @@
 //! The one prose assertion left is negative — that a refused name is never called
 //! out of scope — which is the fabrication these fixtures exist to kill.
 
+use marrow_codes::Code;
 use marrow_compile::{
     CompileFailure, DeclarationNamespace, InputRevision, RefusalReport, RefusedDeclaration,
     SourceDiagnostic, analyze, compile,
@@ -93,7 +94,7 @@ fn snapshot_diagnostics(input: ProjectInput) -> Vec<SourceDiagnostic> {
 /// The file is part of the shape, not context: a multi-file fixture that asserted
 /// only `(code, line, column)` would pass with every row attributed to the wrong
 /// module, which is the class of defect a project-wide namespace makes possible.
-fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, &str, u32, u32)> {
+fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, Code, u32, u32)> {
     diagnostics
         .iter()
         .map(|row| {
@@ -115,7 +116,7 @@ fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, &str, u32, u32)> {
 fn assert_steers_to(
     diagnostics: &[SourceDiagnostic],
     namespace: DeclarationNamespace,
-    declaring_code: &str,
+    declaring_code: Code,
     report: RefusalReport,
 ) {
     let last = diagnostics
@@ -163,8 +164,8 @@ fn a_type_refused_constant_is_not_out_of_scope_at_its_use() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 3, 1),
-            ("src/main.mw", "check.type", 6, 12)
+            ("src/main.mw", Code::CheckType, 3, 1),
+            ("src/main.mw", Code::CheckType, 6, 12)
         ],
         "the declaration reports the cause and the use is steered to it",
     );
@@ -186,8 +187,8 @@ fn a_value_refused_constant_steers_with_the_declaring_code() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 3, 15),
-            ("src/main.mw", "check.unsupported", 6, 12)
+            ("src/main.mw", Code::CheckUnsupported, 3, 15),
+            ("src/main.mw", Code::CheckUnsupported, 6, 12)
         ],
         "the steer carries the declaring cause's code, so a use-site assertion \
          names the declaration's typed identity",
@@ -216,7 +217,10 @@ fn a_refused_constant_is_reported_once_across_many_uses() {
         "one declaring row and one steer, whatever the use count: {:#?}",
         rows(&diagnostics),
     );
-    assert_eq!(rows(&diagnostics)[0], ("src/main.mw", "check.type", 3, 1));
+    assert_eq!(
+        rows(&diagnostics)[0],
+        ("src/main.mw", Code::CheckType, 3, 1)
+    );
 }
 
 /// a refused declaration still occupies its name, in both orders. The
@@ -236,9 +240,9 @@ fn a_refused_constant_occupies_its_name_when_declared_first() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 3, 15),
-            ("src/main.mw", "check.name_conflict", 4, 1),
-            ("src/main.mw", "check.unsupported", 7, 12),
+            ("src/main.mw", Code::CheckUnsupported, 3, 15),
+            ("src/main.mw", Code::CheckNameConflict, 4, 1),
+            ("src/main.mw", Code::CheckUnsupported, 7, 12),
         ],
         "a refused declaration occupies its name, so the redeclaration conflicts: {:#?}",
         rows(&diagnostics),
@@ -259,7 +263,7 @@ fn a_refused_constant_occupies_its_name_when_declared_second() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.name_conflict", 4, 1)],
+        vec![("src/main.mw", Code::CheckNameConflict, 4, 1)],
         "the accepted first declaration answers the use; only the conflict reports",
     );
 }
@@ -354,7 +358,7 @@ fn assert_not_steered_to_identity(diagnostics: &[SourceDiagnostic]) {
     assert!(
         diagnostics
             .iter()
-            .all(|row| row.code() != "check.durable_identity"),
+            .all(|row| row.code() != Code::CheckDurableIdentity),
         "the fixture must isolate a non-identity refusal: {:#?}",
         messages(diagnostics),
     );
@@ -381,8 +385,8 @@ fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_write() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 3, 1),
-            ("src/main.mw", "check.type", 7, 9)
+            ("src/main.mw", Code::CheckType, 3, 1),
+            ("src/main.mw", Code::CheckType, 7, 9)
         ],
         "the declaration reports the cause and the write is steered to it",
     );
@@ -407,7 +411,7 @@ fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_place() {
     assert_not_steered_to_identity(&diagnostics);
     assert_eq!(
         rows(&diagnostics)[0],
-        ("src/main.mw", "check.type", 3, 1),
+        ("src/main.mw", Code::CheckType, 3, 1),
         "the declaration still owns the cause: {:#?}",
         rows(&diagnostics),
     );
@@ -489,7 +493,7 @@ fn a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::DurableRoot,
-        "check.durable_identity",
+        Code::CheckDurableIdentity,
         RefusalReport::AtDeclaration,
     );
     // The identity class is the one refusal whose cause is a report *family*
@@ -497,7 +501,7 @@ fn a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
     // every other reference to a store refused for a missing identity receives.
     assert_eq!(
         rows(&diagnostics).last().copied(),
-        Some(("src/main.mw", "check.type", 14, 15)),
+        Some(("src/main.mw", Code::CheckType, 14, 15)),
         "the constructor is steered to the store's own cause: {:#?}",
         messages(&diagnostics),
     );
@@ -542,7 +546,7 @@ fn a_branch_named_on_a_refused_stores_resource_names_the_stores_cause() {
     );
     assert_eq!(
         rows(&diagnostics).last().copied(),
-        Some(("src/main.mw", "check.type", 15, 15)),
+        Some(("src/main.mw", Code::CheckType, 15, 15)),
         "{:#?}",
         messages(&diagnostics),
     );
@@ -586,7 +590,7 @@ fn a_root_refused_for_a_key_tuple_bound_reuses_its_own_cause() {
     assert_eq!(
         diagnostics
             .iter()
-            .filter(|row| row.code() == "check.resource_limit")
+            .filter(|row| row.code() == Code::CheckResourceLimit)
             .count(),
         2,
         "the declaration reports the bound and the use reuses its code: {:#?}",
@@ -636,8 +640,8 @@ fn a_root_refused_for_a_value_cycle_names_the_recursion_cause() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.recursion", 17, 9),
-            ("src/main.mw", "check.recursion", 3, 8),
+            ("src/main.mw", Code::CheckRecursion, 17, 9),
+            ("src/main.mw", Code::CheckRecursion, 3, 8),
         ],
         "the covering pass reports the cycle: {:#?}",
         rows(&diagnostics),
@@ -718,8 +722,8 @@ fn a_refused_resource_member_is_not_absent_at_its_use() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 5, 10),
-            ("src/main.mw", "check.unsupported", 9, 38)
+            ("src/main.mw", Code::CheckUnsupported, 5, 10),
+            ("src/main.mw", Code::CheckUnsupported, 9, 38)
         ],
     );
 }
@@ -785,8 +789,8 @@ fn a_refused_struct_is_not_out_of_scope_at_its_construction() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 4, 8),
-            ("src/main.mw", "check.unsupported", 9, 15)
+            ("src/main.mw", Code::CheckUnsupported, 4, 8),
+            ("src/main.mw", Code::CheckUnsupported, 9, 15)
         ],
         "the field reports the cause and the construction is steered to it",
     );
@@ -819,8 +823,8 @@ fn a_refused_enum_steers_its_qualified_use_to_the_payload_report() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 4, 15),
-            ("src/main.mw", "check.unsupported", 9, 15)
+            ("src/main.mw", Code::CheckUnsupported, 4, 15),
+            ("src/main.mw", Code::CheckUnsupported, 9, 15)
         ],
     );
 }
@@ -840,14 +844,14 @@ fn a_refused_alias_steers_its_annotation_to_the_alias_report() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.type",
+        Code::CheckType,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 3, 1),
-            ("src/main.mw", "check.type", 5, 16)
+            ("src/main.mw", Code::CheckType, 3, 1),
+            ("src/main.mw", Code::CheckType, 5, 16)
         ],
         "the alias reports the cause and the annotation is steered to it",
     );
@@ -869,15 +873,15 @@ fn a_cyclic_alias_steers_its_annotation_to_the_recursion_report() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.recursion",
+        Code::CheckRecursion,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.recursion", 3, 7),
-            ("src/main.mw", "check.recursion", 4, 7),
-            ("src/main.mw", "check.recursion", 6, 16),
+            ("src/main.mw", Code::CheckRecursion, 3, 7),
+            ("src/main.mw", Code::CheckRecursion, 4, 7),
+            ("src/main.mw", Code::CheckRecursion, 6, 16),
         ],
     );
 }
@@ -897,14 +901,14 @@ fn a_refused_nominal_steers_its_annotation_to_the_interval_report() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.type",
+        Code::CheckType,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 3, 18),
-            ("src/main.mw", "check.type", 5, 16)
+            ("src/main.mw", Code::CheckType, 3, 18),
+            ("src/main.mw", Code::CheckType, 5, 16)
         ],
     );
 }
@@ -926,9 +930,9 @@ fn a_refused_type_does_not_absorb_a_genuine_absence_beside_it() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 3, 1),
-            ("src/main.mw", "check.type", 5, 16),
-            ("src/main.mw", "check.unsupported", 5, 26),
+            ("src/main.mw", Code::CheckType, 3, 1),
+            ("src/main.mw", Code::CheckType, 5, 16),
+            ("src/main.mw", Code::CheckUnsupported, 5, 26),
         ],
         "`a` is steered to the alias's cause; `b` names a type nothing declared and \
          keeps the subset-gap report",
@@ -962,8 +966,8 @@ fn a_refused_type_is_never_named_as_another_names_cause() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 8, 1),
-            ("src/main.mw", "check.type", 10, 16)
+            ("src/main.mw", Code::CheckType, 8, 1),
+            ("src/main.mw", Code::CheckType, 10, 16)
         ],
     );
 }
@@ -991,8 +995,8 @@ fn a_refused_template_is_reported_at_its_declaration() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 5, 13),
-            ("src/main.mw", "check.type", 9, 15)
+            ("src/main.mw", Code::CheckType, 5, 13),
+            ("src/main.mw", Code::CheckType, 9, 15)
         ],
         "the member reports the cause and the construction is steered to it",
     );
@@ -1015,7 +1019,7 @@ fn a_refused_template_is_reported_even_with_no_use() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.type", 5, 13)]
+        vec![("src/main.mw", Code::CheckType, 5, 13)]
     );
 }
 
@@ -1038,14 +1042,14 @@ fn a_refused_template_steers_its_annotation_to_the_member_report() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.type",
+        Code::CheckType,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 5, 13),
-            ("src/main.mw", "check.type", 8, 16)
+            ("src/main.mw", Code::CheckType, 5, 13),
+            ("src/main.mw", Code::CheckType, 8, 16)
         ],
     );
 }
@@ -1067,9 +1071,9 @@ fn a_refused_nominal_occupies_its_name() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.type", 3, 18),
-            ("src/main.mw", "check.name_conflict", 4, 6),
-            ("src/main.mw", "check.type", 6, 16),
+            ("src/main.mw", Code::CheckType, 3, 18),
+            ("src/main.mw", Code::CheckNameConflict, 4, 6),
+            ("src/main.mw", Code::CheckType, 6, 16),
         ],
         "the refused first declaration still holds the name: {:#?}",
         rows(&diagnostics),
@@ -1121,7 +1125,7 @@ fn a_resource_member_occupies_its_name() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.name_conflict", 5, 14)],
+        vec![("src/main.mw", Code::CheckNameConflict, 5, 14)],
         "the second member of one name is a repeat at its name, not a second slot: {:#?}",
         messages(&diagnostics),
     );
@@ -1167,8 +1171,8 @@ fn a_refused_parameter_type_never_truncates_its_signature() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 3, 14),
-            ("src/main.mw", "check.unsupported", 8, 12)
+            ("src/main.mw", Code::CheckUnsupported, 3, 14),
+            ("src/main.mw", Code::CheckUnsupported, 8, 12)
         ],
         "the parameter reports the cause and the call is steered to it",
     );
@@ -1198,7 +1202,7 @@ fn a_signature_refused_behind_an_accepted_duplicate_reports_its_cause_once() {
     assert_eq!(
         diagnostics
             .iter()
-            .filter(|row| row.code() == "check.unsupported")
+            .filter(|row| row.code() == Code::CheckUnsupported)
             .count(),
         1,
         "the refused parameter type is the declaration's own cause, reported at it \
@@ -1227,7 +1231,7 @@ fn a_return_type_refused_behind_an_accepted_duplicate_reports_its_cause_once() {
     assert_eq!(
         diagnostics
             .iter()
-            .filter(|row| row.code() == "check.unsupported")
+            .filter(|row| row.code() == Code::CheckUnsupported)
             .count(),
         1,
         "the refused return type is the declaration's own cause, reported at it \
@@ -1278,9 +1282,9 @@ fn a_module_refused_for_its_header_is_not_absent_at_its_import() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/helper.mw", "check.module_path", 1, 1),
-            ("src/main.mw", "check.import", 3, 1),
-            ("src/main.mw", "check.module_path", 6, 12),
+            ("src/helper.mw", Code::CheckModulePath, 1, 1),
+            ("src/main.mw", Code::CheckImport, 3, 1),
+            ("src/main.mw", Code::CheckModulePath, 6, 12),
         ],
         "the header reports the cause, the import names it, and the call is \
          steered to it: {:#?}",
@@ -1323,15 +1327,15 @@ fn a_module_refused_for_a_parse_error_is_not_absent_at_its_import() {
     let observed = rows(&diagnostics);
     assert_eq!(
         (observed[0].0, observed[0].1),
-        ("src/helper.mw", "parse.syntax"),
+        ("src/helper.mw", Code::ParseSyntax),
         "the parse stage reports the cause first, in the module it refused: \
          {observed:?}",
     );
     assert_eq!(
         observed[1..],
         [
-            ("src/main.mw", "check.import", 3, 1),
-            ("src/main.mw", "parse.syntax", 6, 12)
+            ("src/main.mw", Code::CheckImport, 3, 1),
+            ("src/main.mw", Code::ParseSyntax, 6, 12)
         ],
         "the import names the parse report and the call is steered to it: {:#?}",
         messages(&diagnostics),
@@ -1361,8 +1365,8 @@ fn a_module_refused_for_invalid_utf8_is_not_absent_at_its_import() {
     assert_eq!(
         rows(&diagnostics)[1..],
         [
-            ("src/main.mw", "check.import", 3, 1),
-            ("src/main.mw", "check.unsupported", 6, 12)
+            ("src/main.mw", Code::CheckImport, 3, 1),
+            ("src/main.mw", Code::CheckUnsupported, 6, 12)
         ],
         "the import names the decode report and the call is steered to it: {:#?}",
         messages(&diagnostics),
@@ -1385,7 +1389,7 @@ fn a_genuinely_absent_module_is_still_reported_as_absent() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.import", 3, 1)]
+        vec![("src/main.mw", Code::CheckImport, 3, 1)]
     );
     assert!(
         diagnostics[0]
@@ -1428,8 +1432,8 @@ fn a_refused_signature_does_not_silence_an_unrelated_body() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 3, 14),
-            ("src/main.mw", "check.type", 8, 12)
+            ("src/main.mw", Code::CheckUnsupported, 3, 14),
+            ("src/main.mw", Code::CheckType, 8, 12)
         ],
         "the refused signature reports its own cause and the unrelated body still \
          reports its own: {:#?}",
@@ -1459,8 +1463,8 @@ fn a_reused_cause_never_admits_the_body_that_reused_it() {
             assert_eq!(
                 rows(&diagnostics),
                 vec![
-                    ("src/main.mw", "check.unsupported", 3, 14),
-                    ("src/main.mw", "check.unsupported", 8, 12)
+                    ("src/main.mw", Code::CheckUnsupported, 3, 14),
+                    ("src/main.mw", Code::CheckUnsupported, 8, 12)
                 ],
                 "the call reuses the signature's cause and still refuses: {:#?}",
                 messages(&diagnostics),
@@ -1497,7 +1501,7 @@ fn a_refused_parameter_is_not_out_of_scope_in_its_own_body() {
     assert_never_out_of_scope(&diagnostics, "p");
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 3, 14)],
+        vec![("src/main.mw", Code::CheckUnsupported, 3, 14)],
         "the parameter type reports the cause and its uses reuse it: {:#?}",
         messages(&diagnostics),
     );
@@ -1531,7 +1535,7 @@ fn a_refused_generic_parameter_is_reported_once_not_once_per_use() {
     );
     assert_eq!(
         rows(&diagnostics)[0],
-        ("src/main.mw", "check.unsupported", 3, 17),
+        ("src/main.mw", Code::CheckUnsupported, 3, 17),
         "the parameter type reports the cause once, at its own span: {:#?}",
         messages(&diagnostics),
     );
@@ -1563,8 +1567,8 @@ fn a_nested_group_repeating_a_member_name_is_a_name_conflict() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.name_conflict", 7, 9),
-            ("src/main.mw", "check.type", 14, 15),
+            ("src/main.mw", Code::CheckNameConflict, 7, 9),
+            ("src/main.mw", Code::CheckType, 14, 15),
         ],
         "the nested group repeats `body`, which the group already declares: {:#?}",
         messages(&diagnostics),
@@ -1596,7 +1600,7 @@ fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
     assert_never_out_of_scope(&diagnostics, "x");
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 4, 14)],
+        vec![("src/main.mw", Code::CheckUnsupported, 4, 14)],
         "the annotation reports the cause and its uses reuse it: {:#?}",
         messages(&diagnostics),
     );
@@ -1640,7 +1644,7 @@ fn a_resource_field_naming_a_refused_struct_reports_the_structs_own_cause() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 4, 8)],
+        vec![("src/main.mw", Code::CheckUnsupported, 4, 8)],
         "the struct declaration reports its own cause: {:#?}",
         messages(&diagnostics),
     );
@@ -1667,7 +1671,7 @@ fn a_resource_field_naming_a_refused_enum_reports_the_enums_own_cause() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 7, 13)],
+        vec![("src/main.mw", Code::CheckUnsupported, 7, 13)],
         "the enum payload reports its own cause: {:#?}",
         messages(&diagnostics),
     );
@@ -1691,7 +1695,7 @@ fn a_refused_enum_reports_the_same_row_with_and_without_a_resource_field() {
 
     assert_eq!(
         rows(&without),
-        vec![("src/main.mw", "check.unsupported", 7, 13)],
+        vec![("src/main.mw", Code::CheckUnsupported, 7, 13)],
         "{:#?}",
         messages(&without),
     );
@@ -1716,7 +1720,7 @@ fn a_struct_field_naming_a_later_refused_struct_reports_its_cause() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 8, 8)],
+        vec![("src/main.mw", Code::CheckUnsupported, 8, 8)],
         "the later struct reports its own cause: {:#?}",
         messages(&diagnostics),
     );
@@ -1743,7 +1747,7 @@ fn a_struct_field_naming_a_refused_enum_reports_its_cause() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 11, 13)],
+        vec![("src/main.mw", Code::CheckUnsupported, 11, 13)],
         "the enum reports its own cause: {:#?}",
         messages(&diagnostics),
     );
@@ -1773,8 +1777,8 @@ fn a_resource_field_aliasing_a_refused_struct_reports_the_structs_cause() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 6, 8),
-            ("src/main.mw", "check.unsupported", 3, 1)
+            ("src/main.mw", Code::CheckUnsupported, 6, 8),
+            ("src/main.mw", Code::CheckUnsupported, 3, 1)
         ],
         "the struct reports its own cause and the alias is steered to it, never \
          told the target is unknown: {:#?}",
@@ -1803,7 +1807,7 @@ fn a_cycle_partner_refused_for_its_own_cause_does_not_dangle() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 9, 8)],
+        vec![("src/main.mw", Code::CheckUnsupported, 9, 8)],
         "the refused cycle partner reports its own cause: {:#?}",
         messages(&diagnostics),
     );
@@ -1828,8 +1832,8 @@ fn a_refused_struct_named_after_the_fill_is_still_steered() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 4, 8),
-            ("src/main.mw", "check.unsupported", 8, 15)
+            ("src/main.mw", Code::CheckUnsupported, 4, 8),
+            ("src/main.mw", Code::CheckUnsupported, 8, 15)
         ],
         "the refused struct keeps its name and steers its construction: {:#?}",
         messages(&diagnostics),
@@ -1875,14 +1879,14 @@ fn a_refused_struct_as_a_parameter_type_steers_to_its_cause() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 8, 12),
+            ("src/main.mw", Code::CheckUnsupported, 5, 8),
+            ("src/main.mw", Code::CheckUnsupported, 8, 12),
         ],
         "the struct field reports the cause and the parameter is steered to it: {:#?}",
         messages(&diagnostics),
@@ -1906,14 +1910,14 @@ fn a_refused_struct_as_a_return_type_steers_to_its_cause() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 8, 16),
+            ("src/main.mw", Code::CheckUnsupported, 5, 8),
+            ("src/main.mw", Code::CheckUnsupported, 8, 16),
         ],
         "the return annotation is steered, never described as a type the body \
          failed to produce: {:#?}",
@@ -1937,14 +1941,14 @@ fn a_refused_struct_as_a_local_annotation_steers_to_its_cause() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 9, 14),
+            ("src/main.mw", Code::CheckUnsupported, 5, 8),
+            ("src/main.mw", Code::CheckUnsupported, 9, 14),
         ],
         "the annotation is steered to the struct's cause: {:#?}",
         messages(&diagnostics),
@@ -1978,8 +1982,8 @@ fn a_field_read_on_a_refused_struct_is_not_a_missing_field() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 8, 12),
+            ("src/main.mw", Code::CheckUnsupported, 5, 8),
+            ("src/main.mw", Code::CheckUnsupported, 8, 12),
         ],
         "the parameter is steered and its body reuses that cause: {:#?}",
         messages(&diagnostics),
@@ -2025,8 +2029,8 @@ fn a_match_on_a_refused_enum_is_not_a_set_of_unknown_members() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 7, 13),
-            ("src/main.mw", "check.unsupported", 10, 12),
+            ("src/main.mw", Code::CheckUnsupported, 7, 13),
+            ("src/main.mw", Code::CheckUnsupported, 10, 12),
         ],
         "the payload reports the cause and the parameter is steered to it: {:#?}",
         messages(&diagnostics),
@@ -2073,8 +2077,8 @@ fn a_struct_field_naming_a_refused_sibling_steers_to_its_cause() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 4, 8),
-            ("src/main.mw", "check.unsupported", 8, 8),
+            ("src/main.mw", Code::CheckUnsupported, 4, 8),
+            ("src/main.mw", Code::CheckUnsupported, 8, 8),
         ],
         "the sibling reports the cause and the field is steered to it: {:#?}",
         messages(&diagnostics),
@@ -2102,14 +2106,14 @@ fn a_collection_element_naming_a_refused_sibling_steers_to_its_cause() {
     assert_steers_to(
         &diagnostics,
         DeclarationNamespace::NamedType,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("src/main.mw", "check.unsupported", 4, 8),
-            ("src/main.mw", "check.unsupported", 8, 9),
+            ("src/main.mw", Code::CheckUnsupported, 4, 8),
+            ("src/main.mw", Code::CheckUnsupported, 8, 9),
         ],
         "the element position is steered to the refused struct's cause: {:#?}",
         messages(&diagnostics),
@@ -2138,7 +2142,7 @@ fn a_genuinely_unadmitted_member_type_keeps_the_subset_gap_phrase() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 8, 18)],
+        vec![("src/main.mw", Code::CheckUnsupported, 8, 18)],
         "nothing here was refused; the report is about the admitted subset: {:#?}",
         messages(&diagnostics),
     );
@@ -2182,7 +2186,7 @@ fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
     assert_steers_to(
         &payload,
         DeclarationNamespace::NamedType,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
 
@@ -2217,12 +2221,7 @@ fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
 /// The steer facts of the last row, with the row's own code beside them.
 fn steer_facts(
     diagnostics: &[SourceDiagnostic],
-) -> (
-    &'static str,
-    Option<DeclarationNamespace>,
-    &'static str,
-    RefusalReport,
-) {
+) -> (Code, Option<DeclarationNamespace>, Code, RefusalReport) {
     let last = diagnostics
         .last()
         .expect("a steered use reports at least one row");
@@ -2242,11 +2241,11 @@ fn steer_facts(
 
 #[test]
 fn every_refusal_class_carries_its_own_typed_steer_facts() {
-    let mut audited: Vec<(DeclarationNamespace, &'static str, RefusalReport)> = Vec::new();
+    let mut audited: Vec<(DeclarationNamespace, Code, RefusalReport)> = Vec::new();
     let mut audit = |label: &str,
                      diagnostics: &[SourceDiagnostic],
                      namespace: DeclarationNamespace,
-                     declaring_code: &'static str,
+                     declaring_code: Code,
                      report: RefusalReport| {
         let (row_code, observed_namespace, observed_code, observed_report) =
             steer_facts(diagnostics);
@@ -2277,7 +2276,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }\n",
         ),
         DeclarationNamespace::Constant,
-        "check.type",
+        Code::CheckType,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2290,7 +2289,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }\n",
         ),
         DeclarationNamespace::Constant,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2305,7 +2304,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }\n",
         ),
         DeclarationNamespace::DurableRoot,
-        "check.type",
+        Code::CheckType,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2320,7 +2319,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }\n",
         ),
         DeclarationNamespace::Function,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2345,7 +2344,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
             ),
         ])),
         DeclarationNamespace::Module,
-        "check.module_path",
+        Code::CheckModulePath,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2370,7 +2369,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
             ),
         ]),
         DeclarationNamespace::Module,
-        "parse.syntax",
+        Code::ParseSyntax,
         RefusalReport::ByEarlierStage(SourceStage::Parse),
     );
     audit(
@@ -2392,7 +2391,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
             )
         },
         DeclarationNamespace::Module,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::ByEarlierStage(SourceStage::Decode),
     );
     audit(
@@ -2405,7 +2404,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }\n",
         ),
         DeclarationNamespace::NamedType,
-        "check.type",
+        Code::CheckType,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2419,7 +2418,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }\n",
         ),
         DeclarationNamespace::NamedType,
-        "check.recursion",
+        Code::CheckRecursion,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2435,7 +2434,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }}\n"
         )),
         DeclarationNamespace::NamedType,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
     audit(
@@ -2452,7 +2451,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
              }\n",
         ),
         DeclarationNamespace::ResourceMember,
-        "check.unsupported",
+        Code::CheckUnsupported,
         RefusalReport::AtDeclaration,
     );
 
@@ -2477,9 +2476,9 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
     assert_eq!(
         steer_facts(&identity),
         (
-            "check.type",
+            Code::CheckType,
             Some(DeclarationNamespace::DurableRoot),
-            "check.durable_identity",
+            Code::CheckDurableIdentity,
             RefusalReport::AtDeclaration,
         ),
         "the identity steer reports under its own code and names the report family \
@@ -2488,7 +2487,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
     );
     audited.push((
         DeclarationNamespace::DurableRoot,
-        "check.durable_identity",
+        Code::CheckDurableIdentity,
         RefusalReport::AtDeclaration,
     ));
 
@@ -2515,9 +2514,9 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
             covered_steer.report,
         ),
         (
-            "check.recursion",
+            Code::CheckRecursion,
             Some(DeclarationNamespace::DurableRoot),
-            "check.recursion",
+            Code::CheckRecursion,
             RefusalReport::ByCoveringPass,
         ),
         "{:#?}",
@@ -2525,7 +2524,7 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
     );
     audited.push((
         DeclarationNamespace::DurableRoot,
-        "check.recursion",
+        Code::CheckRecursion,
         RefusalReport::ByCoveringPass,
     ));
 
@@ -2612,9 +2611,9 @@ fn refused_aliases_keep_available_causes_in_scalar_and_concrete_siblings() {
         ),
     ];
     for (target, code) in [
-        ("Missing", "check.type"),
-        ("Bad", "check.recursion"),
-        ("List<int>", "check.unsupported"),
+        ("Missing", Code::CheckType),
+        ("Bad", Code::CheckRecursion),
+        ("List<int>", Code::CheckUnsupported),
     ] {
         for (consumer, before_validation_column) in consumers {
             let source = format!("module main\nalias Bad = {target}\n{consumer}\n");
@@ -2645,8 +2644,8 @@ fn refused_aliases_keep_available_causes_in_scalar_and_concrete_siblings() {
                 assert_eq!(
                     rows(&diagnostics),
                     [
-                        ("src/main.mw", "check.unsupported", 3, column),
-                        ("src/main.mw", "check.type", 2, 1),
+                        ("src/main.mw", Code::CheckUnsupported, 3, column),
+                        ("src/main.mw", Code::CheckType, 2, 1),
                     ],
                     "{consumer}: {diagnostics:#?}"
                 );
@@ -2696,13 +2695,13 @@ fn a_refused_alias_in_a_group_field_keeps_its_declaring_file() {
     let start = schema.rfind("Bad").expect("field annotation");
     let expected = RefusedDeclaration {
         namespace: Some(DeclarationNamespace::NamedType),
-        declaring_code: "check.type",
+        declaring_code: Code::CheckType,
         report: RefusalReport::AtDeclaration,
     };
     assert!(
         diagnostics.iter().any(|row| {
             row.file().as_str() == "src/schema.mw"
-                && row.code() == "check.type"
+                && row.code() == Code::CheckType
                 && row.span()
                     == marrow_syntax::SourceSpan {
                         start_byte: start,
@@ -2730,9 +2729,9 @@ fn written_span(source: &str, spelling: &str) -> marrow_syntax::SourceSpan {
 #[test]
 fn refused_alias_member_and_key_uses_keep_their_own_files() {
     for (target, code) in [
-        ("Missing", "check.type"),
-        ("Bad", "check.recursion"),
-        ("List<int>", "check.unsupported"),
+        ("Missing", Code::CheckType),
+        ("Bad", Code::CheckRecursion),
+        ("List<int>", Code::CheckUnsupported),
     ] {
         for (member, root_key, early) in [
             ("required value: Bad", "int", true),
@@ -2758,7 +2757,7 @@ fn refused_alias_member_and_key_uses_keep_their_own_files() {
                 ("src/schema.mw", &schema)
             };
             let (code, cause) = if early && target == "Missing" {
-                ("check.unsupported", None)
+                (Code::CheckUnsupported, None)
             } else {
                 (
                     code,
@@ -2805,7 +2804,7 @@ fn ordinary_group_and_branch_field_refusals_keep_the_resource_file() {
             let span = written_span(&schema, field);
             let row = diagnostics
                 .iter()
-                .find(|row| row.code() == "check.unsupported" && row.span() == span)
+                .find(|row| row.code() == Code::CheckUnsupported && row.span() == span)
                 .unwrap_or_else(|| panic!("{field}, {placement}: {diagnostics:#?}"));
             assert_eq!(row.file().as_str(), "src/schema.mw");
             assert_eq!(row.refused_declaration(), None);
@@ -2841,7 +2840,7 @@ fn member_shape_bounds_keep_the_resource_file() {
         let diagnostics = diagnostics_of(&project);
         let row = diagnostics
             .iter()
-            .find(|row| row.code() == "check.resource_limit")
+            .find(|row| row.code() == Code::CheckResourceLimit)
             .unwrap_or_else(|| panic!("{diagnostics:#?}"));
         assert_eq!(row.span(), written_span(&schema, owner));
         assert_eq!(row.file().as_str(), "src/schema.mw");

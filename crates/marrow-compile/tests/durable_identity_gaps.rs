@@ -83,7 +83,7 @@ pub fn readSecond(id: int): int? {
     for root in ["first", "second"] {
         assert!(
             diagnostics.iter().any(|diagnostic| {
-                diagnostic.code() == Code::CheckType.as_str()
+                diagnostic.code() == Code::CheckType
                     && diagnostic.message()
                         == format!(
                             "`{root}` was declared but failed identity admission; see the \

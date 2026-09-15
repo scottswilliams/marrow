@@ -128,7 +128,7 @@ impl ConstRegistry {
             // conflicts whichever of the two the compiler could evaluate.
             if entries.declared(&key) {
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckNameConflict.as_str(),
+                    Code::CheckNameConflict,
                     file,
                     decl.span,
                     format!(
@@ -173,7 +173,7 @@ fn evaluate(
                 return Ok(DeclarationOccurrence::Refused(refuse(
                     diagnostics,
                     declared,
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     format!(
                         "constant `{}` is declared `{}` but its value is `{}`",
                         decl.name,
@@ -211,7 +211,7 @@ fn literal_value(
             diagnostics,
             declared,
             span,
-            Code::CheckType.as_str(),
+            Code::CheckType,
             "integer literal is out of the 64-bit range".to_string(),
         )
     };
@@ -235,7 +235,7 @@ fn literal_value(
                 diagnostics,
                 declared,
                 *span,
-                Code::CheckUnsupported.as_str(),
+                Code::CheckUnsupported,
                 "this literal is not yet supported in a constant".to_string(),
             )),
         },
@@ -254,7 +254,7 @@ fn literal_value(
                 diagnostics,
                 declared,
                 *span,
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 format!("cannot negate a `{}` constant", other.scalar().spelling()),
             )),
         },
@@ -280,7 +280,7 @@ fn literal_value(
             diagnostics,
             declared,
             other.span(),
-            Code::CheckUnsupported.as_str(),
+            Code::CheckUnsupported,
             "a constant must be a scalar literal on the beta line".to_string(),
         )),
     }
@@ -292,7 +292,7 @@ fn refuse_at(
     diagnostics: &mut DiagnosticCollector,
     declared: DeclarationSite<'_>,
     span: SourceSpan,
-    code: &'static str,
+    code: Code,
     message: String,
 ) -> DeclarationRefusalSummary {
     refuse(
@@ -313,7 +313,7 @@ fn unsupported(
         diagnostics,
         declared,
         span,
-        Code::CheckUnsupported.as_str(),
+        Code::CheckUnsupported,
         format!("{subject} is not yet supported on the beta line"),
     )
 }

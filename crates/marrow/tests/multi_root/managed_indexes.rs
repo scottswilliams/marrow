@@ -103,7 +103,7 @@ fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
             return Err(diagnostics
                 .iter()
-                .map(|diagnostic| diagnostic.code())
+                .map(|diagnostic| diagnostic.code().as_str())
                 .collect::<Vec<_>>()
                 .join(","));
         }
@@ -146,7 +146,7 @@ fn compile_diagnostics(source: &str, ids: &str) -> Vec<marrow_compile::SourceDia
 fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
     compile_diagnostics(source, ids)
         .iter()
-        .map(|diagnostic| diagnostic.code())
+        .map(|diagnostic| diagnostic.code().as_str())
         .collect()
 }
 
@@ -200,7 +200,7 @@ fn a_nominal_field_managed_index_binding_is_refused() {
     let diagnostics = compile_diagnostics(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     let diagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code(), "check.unsupported");
+    assert_eq!(diagnostic.code().as_str(), "check.unsupported");
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (8, 1));
 }
@@ -221,7 +221,13 @@ fn a_nominal_field_binding_refusal_preserves_the_root_operation_diagnostic() {
     );
     let sites: Vec<_> = diagnostics
         .iter()
-        .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
+        .map(|diagnostic| {
+            (
+                diagnostic.code().as_str(),
+                diagnostic.line(),
+                diagnostic.column(),
+            )
+        })
         .collect();
     assert_eq!(
         sites,

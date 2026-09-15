@@ -26,7 +26,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // carries the expected optional's image shape.
             if !expected.is_optional() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     *span,
                     format!(
@@ -84,7 +84,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 return self.lower_index_lookup(read.root, read.index, read.keys, expr.span());
             }
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 expr.span(),
                 format!(
@@ -129,7 +129,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // instantiation, so a bare `none` in value position is a type error.
                 [name] if name.text() == "none" => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         *span,
                         "the Option type of `none` cannot be inferred here; use it where an Option is expected".to_string(),
@@ -168,7 +168,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     // its bare name cannot be read, passed, or returned.
                     if self.lookup_place(name).is_some() {
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             *span,
                             format!(
@@ -240,7 +240,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             },
             Expression::Absent { span } => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     *span,
                     "the type of `absent` cannot be inferred here".to_string(),
@@ -263,7 +263,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 CallResult::Value(ty) => Ok(ty),
                 CallResult::Unit => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         *span,
                         "this call returns nothing and has no value here".to_string(),
@@ -280,7 +280,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         _ => "unreachable",
                     };
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         *span,
                         format!("`{name}` is a statement and cannot be used as a value"),
@@ -754,7 +754,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 _ => "equality",
             };
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -802,7 +802,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) {
         let name = ty.spelling(self.records);
         self.fail(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             self.file,
             span,
             format!(
@@ -818,7 +818,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let left_ty = self.lower_expr(left)?;
         if !left_ty.is_optional() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 left.span(),
                 format!(
@@ -927,7 +927,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         let Some(range) = range_expr(range) else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 range.span(),
                 "the right side of this `in` is not a range. Interval membership tests a \
@@ -938,7 +938,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if range.step.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 range.span,
                 "an interval-membership range takes no `by` step".to_string(),
@@ -947,7 +947,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         let (Some(lo), Some(hi)) = (range.start, range.end) else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 range.span,
                 "interval membership tests a range with both bounds; write `value in lo..hi`"
@@ -1065,7 +1065,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // admits; the teaching form is the free-function spelling of the same
                 // call, written with the receiver as the first argument.
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckUnsupported.as_str(),
+                    Code::CheckUnsupported,
                     self.file,
                     span,
                     format!(
@@ -1142,7 +1142,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Builtin::Some => self.lower_some_infer(args, span).map(CallResult::Value),
                 Builtin::Ok | Builtin::Err => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!(
@@ -1173,7 +1173,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     .map(CallResult::Value),
                 Builtin::Map if !args.is_empty() => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         "a map is constructed empty with `Map()` and filled with `m[k] = v`; \
@@ -1184,7 +1184,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 Builtin::List | Builtin::Map => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!(
@@ -1198,7 +1198,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // arguments, so a call form has no meaning.
                 Builtin::None => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         "`none` takes no arguments; write `none` where an Option is expected"
@@ -1209,7 +1209,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // The integer bounds are argument-free values; a call form has no meaning.
                 Builtin::MaxInt | Builtin::MinInt => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!("`{name}` takes no arguments; write `{name}` for the int bound"),
@@ -1366,7 +1366,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             CallResolution::NotPublic => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckVisibility.as_str(),
+                    Code::CheckVisibility,
                     self.file,
                     span,
                     format!("`{item}` is not `pub`, so it cannot be called from another module"),
@@ -1402,7 +1402,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 {
                     if !public && module != self.module {
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckVisibility.as_str(),
+                            Code::CheckVisibility,
                             self.file,
                             span,
                             format!(
@@ -1449,7 +1449,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<CallResult> {
         if args.len() != params.len() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("expected {} arguments, found {}", params.len(), args.len()),
@@ -1459,7 +1459,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for (argument, param) in args.iter().zip(params) {
             if argument.name.is_some() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     "function arguments are positional".to_string(),
@@ -1511,7 +1511,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let params = &template.decl.params;
         if args.len() != params.len() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("expected {} arguments, found {}", params.len(), args.len()),
@@ -1522,7 +1522,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for (argument, param) in args.iter().zip(params) {
             if argument.name.is_some() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     "function arguments are positional".to_string(),
@@ -1554,7 +1554,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Some(arg) => concrete.push(*arg),
                 None => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!(
@@ -1587,7 +1587,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             };
             if !satisfied {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!(
@@ -1799,7 +1799,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             _ => {
                 let name = self.records.nominal(id).name.clone();
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!("`{name}` takes one positional int value"),
@@ -1835,7 +1835,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     "constructor arguments must be named".to_string(),
@@ -1849,7 +1849,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // refusal rather than told the resource has no such field.
                 if !self.steer_refused_member(name, arg_name, argument.value.span()) {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         argument.value.span(),
                         format!("`{name}` has no field `{arg_name}`"),
@@ -1876,7 +1876,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 None if required => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!("missing required field `{field_name}`"),
@@ -1927,7 +1927,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             if has_required {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!("missing required field `{group_name}`"),
@@ -1980,7 +1980,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 head_span,
                 format!(
@@ -1997,7 +1997,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     "constructor arguments must be named".to_string(),
@@ -2007,7 +2007,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let arg_name = arg_name.text();
             if branch.field(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     format!("`{display}` has no field `{arg_name}`"),
@@ -2034,7 +2034,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 None if field.required => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!("missing required field `{}`", field.name),
@@ -2070,7 +2070,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 head_span,
                 format!(
@@ -2101,7 +2101,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     "constructor arguments must be named".to_string(),
@@ -2114,7 +2114,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // a refused leaf is steered to its own cause here too.
                 if !self.steer_refused_member(&display, arg_name, argument.value.span()) {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         argument.value.span(),
                         format!("`{display}` has no field `{arg_name}`"),
@@ -2136,7 +2136,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 None if required => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!("missing required field `{leaf_name}`"),
@@ -2183,7 +2183,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     format!("`{name}` fields are named, as `{name}(field: value, ...)`"),
@@ -2194,7 +2194,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let arg_name = arg_name.text();
             if info.field(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     format!("`{name}` has no field `{arg_name}`"),
@@ -2204,7 +2204,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             if !seen.insert(arg_name) {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     format!("field `{arg_name}` is set more than once"),
@@ -2231,7 +2231,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 None => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!("missing field `{field_name}`"),
@@ -2288,7 +2288,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()))
             else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!("missing field `{field_name}`"),
@@ -2354,7 +2354,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             Ok(Some(payload)) => payload,
             Ok(None) => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!("enum `{name}` has no member `{variant_name}`"),
@@ -2386,7 +2386,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()))
             else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!("missing payload field `{field_name}`"),
@@ -2457,7 +2457,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     format!("`{subject}` fields are named, as `{subject}(field: value, ...)`"),
@@ -2468,7 +2468,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let arg_name = arg_name.text();
             if !field_names.iter().any(|name| name == arg_name) {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     format!("`{subject}` has no field `{arg_name}`"),
@@ -2478,7 +2478,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             if !seen.insert(arg_name) {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     argument.value.span(),
                     format!("field `{arg_name}` is set more than once"),
@@ -2509,7 +2509,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 && !arg.satisfies(*constraint)
             {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!(
@@ -2540,7 +2540,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 Some(arg) => concrete.push(*arg),
                 None => {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         format!(
@@ -2579,7 +2579,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let (enum_id, variant_index) = {
             let Some((index, _)) = info.variant(variant_name) else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!("enum `{enum_name}` has no member `{variant_name}`"),
@@ -2602,7 +2602,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if plan.is_empty() {
             if !args.is_empty() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!("`{enum_name}::{variant_name}` carries no payload"),
@@ -2615,7 +2615,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             for argument in args {
                 let Some(arg_name) = &argument.name else {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         argument.value.span(),
                         format!(
@@ -2629,7 +2629,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 let arg_name = arg_name.text();
                 if !plan.iter().any(|(name, _)| name == arg_name) {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         argument.value.span(),
                         format!("`{enum_name}::{variant_name}` has no payload field `{arg_name}`"),
@@ -2639,7 +2639,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 }
                 if !seen.insert(arg_name) {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         argument.value.span(),
                         format!("payload field `{arg_name}` is set more than once"),
@@ -2660,7 +2660,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     }
                     None => {
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             span,
                             format!("missing payload field `{field_name}`"),
@@ -2739,7 +2739,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = expected
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -2814,7 +2814,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             _ => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!(
@@ -2834,7 +2834,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn lower_some_infer(&mut self, args: &[Argument], span: SourceSpan) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`some` takes exactly one value, as `some(value)`".to_string(),
@@ -2843,7 +2843,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 "`some` takes a positional value".to_string(),
@@ -2853,7 +2853,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let inner_ty = self.lower_expr(&arg.value)?;
         let Some(inner) = inner_ty.as_garg() else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 format!(
@@ -2888,7 +2888,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             [arg] if arg.name.is_none() => Some(&arg.value),
             _ => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     expr.span(),
                     format!("`{name}` takes exactly one value, as `{name}(value)`"),
@@ -2913,7 +2913,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let inner_ty = self.lower_expr(inner)?;
         let Some(src_id) = inner_ty.bare_enum() else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 inner.span(),
                 format!(
@@ -2946,7 +2946,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             .ok_or(LoweringFailure::Recoverable)?;
         let Some(ReservedEnumArgs::Result(t_arg, e_arg)) = source else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 inner.span(),
                 format!(
@@ -2958,7 +2958,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let Some((ret_id, ReservedEnumArgs::Result(_, ret_err))) = ret_result else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`try` is only valid in a function that returns a Result".to_string(),
@@ -2967,7 +2967,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if ret_err != e_arg {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -3050,7 +3050,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let base_ty = self.lower_expr(base)?;
         if !base_ty.is_optional() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 base.span(),
                 format!(
@@ -3157,7 +3157,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             }
                         }
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             field_span,
                             format!("record has no field `{name}`"),
@@ -3166,7 +3166,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     }
                     ProductFieldProjection::MissingGroupField => {
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             field_span,
                             format!("group has no field `{name}`"),
@@ -3195,7 +3195,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                             return None;
                         }
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             field_span,
                             format!("record has no field `{name}`"),
@@ -3222,7 +3222,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     StructFieldProjection::Field { index, ty } => Some((index, ty, true)),
                     StructFieldProjection::Missing => {
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             field_span,
                             format!("`{}` has no field `{name}`", base_ty.spelling(self.records)),
@@ -3243,7 +3243,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             _ => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     base_span,
                     format!(

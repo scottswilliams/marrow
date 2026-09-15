@@ -70,11 +70,14 @@ fn assert_rejected(body: &str, code: &str) {
     let diagnostics = diagnostics_of(body);
     let hit = diagnostics
         .iter()
-        .find(|d| d.code() == code)
+        .find(|d| d.code().as_str() == code)
         .unwrap_or_else(|| {
             panic!(
                 "expected a `{code}` diagnostic, got {:?}",
-                diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
+                diagnostics
+                    .iter()
+                    .map(|d| d.code().as_str())
+                    .collect::<Vec<_>>()
             )
         });
     assert!(

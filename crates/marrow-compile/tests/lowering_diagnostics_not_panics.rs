@@ -17,6 +17,7 @@
 //! a panic would abort this test process instead of returning `Err`, making the
 //! failure conspicuous.
 
+use marrow_codes::Code;
 use marrow_compile::{SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -55,14 +56,14 @@ fn project(source: &str) -> ProjectInput {
 }
 
 /// `compile` must return a diagnostic carrying `code`, not panic and not succeed.
-fn rejects_with(source: &str, code: &str) {
+fn rejects_with(source: &str, code: Code) {
     match compile(&project(source)) {
-        Ok(_) => panic!("expected `{code}`, but the program compiled:\n{source}"),
+        Ok(_) => panic!("expected `{code:?}`, but the program compiled:\n{source}"),
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => assert!(
             diagnostics
                 .iter()
                 .any(|d: &SourceDiagnostic| d.code() == code),
-            "expected `{code}` for:\n{source}\ngot {diagnostics:#?}",
+            "expected `{code:?}` for:\n{source}\ngot {diagnostics:#?}",
         ),
         Err(marrow_compile::CompileFailure::ResourceLimit(_)) => {
             panic!("source-triggered compiler failures must remain diagnostics")
@@ -79,11 +80,11 @@ fn rejects_with(source: &str, code: &str) {
 fn break_and_continue_outside_a_loop_are_diagnostics_not_panics() {
     rejects_with(
         "pub fn f(): int {\n    break\n    return 0\n}\n",
-        "check.type",
+        Code::CheckType,
     );
     rejects_with(
         "pub fn f(): int {\n    continue\n    return 0\n}\n",
-        "check.type",
+        Code::CheckType,
     );
 }
 
@@ -93,7 +94,7 @@ fn break_and_continue_outside_a_loop_are_diagnostics_not_panics() {
 fn a_match_on_a_non_enum_is_a_diagnostic_not_a_panic() {
     rejects_with(
         "pub fn f(n: int): int {\n    match n {\n        x => return x\n    }\n}\n",
-        "check.match_arm",
+        Code::CheckMatchArm,
     );
 }
 
@@ -103,7 +104,7 @@ fn a_match_on_a_non_enum_is_a_diagnostic_not_a_panic() {
 fn a_mis_arity_builtin_call_is_a_diagnostic_not_a_panic() {
     rejects_with(
         "pub fn f(s: string): int {\n    return length(s, s)\n}\n",
-        "check.type",
+        Code::CheckType,
     );
 }
 
@@ -113,7 +114,7 @@ fn a_mis_arity_builtin_call_is_a_diagnostic_not_a_panic() {
 fn an_ill_typed_operator_is_a_diagnostic_not_a_panic() {
     rejects_with(
         "pub fn f(a: string, b: string): int {\n    return a / b\n}\n",
-        "check.type",
+        Code::CheckType,
     );
 }
 
@@ -123,7 +124,7 @@ fn an_ill_typed_operator_is_a_diagnostic_not_a_panic() {
 fn an_unresolved_enum_member_is_a_diagnostic_not_a_panic() {
     rejects_with(
         "pub fn f(): int {\n    const x = Nope::member\n    return 0\n}\n",
-        "check.unsupported",
+        Code::CheckUnsupported,
     );
 }
 
@@ -133,6 +134,6 @@ fn an_unresolved_enum_member_is_a_diagnostic_not_a_panic() {
 fn an_empty_inferred_list_is_a_diagnostic_not_a_panic() {
     rejects_with(
         "pub fn f(): int {\n    const xs = List()\n    return 0\n}\n",
-        "check.type",
+        Code::CheckType,
     );
 }

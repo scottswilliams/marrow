@@ -107,7 +107,7 @@ fn export_path_validation_guards_the_id_payload() {
     assert!(!valid_export_path("a b", "run"));
 }
 
-fn diagnostic(code: &'static str, line: u32) -> SourceDiagnostic {
+fn diagnostic(code: Code, line: u32) -> SourceDiagnostic {
     SourceDiagnostic::at(
         code,
         crate::test_main_file_identity(),
@@ -201,11 +201,11 @@ fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
 /// logically non-empty stage and never mixes stages.
 #[test]
 fn an_earlier_stage_dominates_a_later_semantic_failure() {
-    let parse_row = diagnostic(Code::CheckType.as_str(), 3);
+    let parse_row = diagnostic(Code::CheckType, 3);
     for semantic in [
         image_bytes_stop(),
         SemanticOutcome::Diagnostics(
-            finished(vec![diagnostic(Code::CheckType.as_str(), 9)]),
+            finished(vec![diagnostic(Code::CheckType, 9)]),
             CompileStage::BodyLowering,
         ),
     ] {
@@ -231,8 +231,8 @@ fn an_earlier_stage_dominates_a_later_semantic_failure() {
 #[test]
 fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
     let expected = vec![
-        diagnostic(Code::CheckType.as_str(), 4),
-        diagnostic(Code::CheckType.as_str(), 9),
+        diagnostic(Code::CheckType, 4),
+        diagnostic(Code::CheckType, 9),
     ];
     let terminal = finished(expected.clone());
     let original_ptr = match &terminal {
@@ -409,7 +409,7 @@ fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
 /// stage crossed.
 #[test]
 fn the_analysis_union_follows_the_stage_table() {
-    let row = |line| diagnostic(Code::CheckType.as_str(), line);
+    let row = |line| diagnostic(Code::CheckType, line);
 
     // Empty prechecks pass the semantic failure through.
     assert!(matches!(
@@ -517,7 +517,7 @@ fn resource_limit_kind_detail_is_frozen() {
 fn a_limited_stage_terminal_is_the_displacing_resource_limit() {
     let mut collector = DiagnosticCollector::new();
     for line in 0..=MAX_DIAGNOSTIC_COUNT as u32 {
-        collector.push(diagnostic(Code::CheckType.as_str(), line + 1));
+        collector.push(diagnostic(Code::CheckType, line + 1));
     }
     let failure = driven(collector.finish(), empty_terminal(), image_bytes_stop())
         .production_built()
@@ -1449,7 +1449,7 @@ fn image_bytes_stop() -> SemanticOutcome {
 /// finding in both projections; the stop itself yields to a precheck finding.
 #[test]
 fn an_executed_invariant_dominates_the_stop_and_precheck_findings() {
-    let row = || diagnostic(Code::CheckType.as_str(), 3);
+    let row = || diagnostic(Code::CheckType, 3);
 
     let production = driven(
         finished(vec![row()]),

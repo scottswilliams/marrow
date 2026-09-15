@@ -12,6 +12,7 @@
 //! Transaction-owner and helper exits are pinned beside the other ownership
 //! laws in `transaction_ownership.rs`.
 
+use marrow_codes::Code;
 use std::collections::BTreeMap;
 
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
@@ -60,7 +61,7 @@ fn a_require_outside_a_result_function_is_rejected() {
     let source = "module main\n\npub fn check(n: int): int {\n    require n > 0 else \"not positive\"\n    return n\n}\n";
     let diagnostics = diagnostics(source);
     let diagnostic = diagnostics.first().expect("a rejection");
-    assert_eq!(diagnostic.code(), "check.type");
+    assert_eq!(diagnostic.code(), Code::CheckType);
     assert!(
         diagnostic.message().contains("require") && diagnostic.message().contains("Result"),
         "names `require` and the Result requirement: {}",
@@ -75,7 +76,7 @@ fn a_require_in_a_unit_function_is_rejected() {
         "module main\n\npub fn check(n: int) {\n    require n > 0 else \"not positive\"\n}\n";
     let diagnostics = diagnostics(source);
     let diagnostic = diagnostics.first().expect("a rejection");
-    assert_eq!(diagnostic.code(), "check.type");
+    assert_eq!(diagnostic.code(), Code::CheckType);
     assert!(
         diagnostic.message().contains("Result"),
         "{}",
@@ -90,7 +91,7 @@ fn a_mistyped_else_value_is_rejected() {
     let source = "module main\n\npub fn check(n: int): Result<int, string> {\n    require n > 0 else 42\n    return ok(n)\n}\n";
     let diagnostics = diagnostics(source);
     let diagnostic = diagnostics.first().expect("a rejection");
-    assert_eq!(diagnostic.code(), "check.type");
+    assert_eq!(diagnostic.code(), Code::CheckType);
 }
 
 /// The condition must be `bool`, exactly as an `if` condition must.
@@ -99,7 +100,7 @@ fn a_non_bool_condition_is_rejected() {
     let source = "module main\n\npub fn check(n: int): Result<int, string> {\n    require n else \"not positive\"\n    return ok(n)\n}\n";
     let diagnostics = diagnostics(source);
     let diagnostic = diagnostics.first().expect("a rejection");
-    assert_eq!(diagnostic.code(), "check.type");
+    assert_eq!(diagnostic.code(), Code::CheckType);
     assert!(
         diagnostic.message().contains("bool"),
         "{}",

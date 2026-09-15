@@ -142,7 +142,7 @@ fn source_errors(source: &str, ids: &str) -> Vec<marrow_compile::SourceDiagnosti
 fn has_type_error(diagnostics: &[marrow_compile::SourceDiagnostic]) -> bool {
     diagnostics
         .iter()
-        .any(|d| d.code() == "check.type" || d.code() == "check.unsupported")
+        .any(|d| d.code().as_str() == "check.type" || d.code().as_str() == "check.unsupported")
 }
 
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
@@ -705,7 +705,7 @@ pub fn localField(): string {{
         .map(|(name, body, ..)| {
             let diagnostics = compile_errors(body)
                 .into_iter()
-                .map(|diagnostic| (diagnostic.code().to_string(), diagnostic.span()))
+                .map(|diagnostic| (diagnostic.code().as_str().to_string(), diagnostic.span()))
                 .collect::<Vec<_>>();
             (*name, diagnostics)
         })
@@ -730,7 +730,7 @@ pub fn localField(): string {{
     insertion.column -= 1;
     let diagnostics = compile_errors(empty);
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code(), Code::ParseSyntax.as_str());
+    assert_eq!(diagnostics[0].code(), Code::ParseSyntax);
     assert_eq!(diagnostics[0].span(), insertion);
 
     let source = SUBSET_SOURCE.replace(
@@ -745,7 +745,7 @@ pub fn localField(): string {{
     let body = format!("pub fn bad() {{ {scan} }}\n");
     let diagnostics = source_errors(&format!("{source}\n{body}"), &ids);
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code(), Code::CheckUnsupported.as_str());
+    assert_eq!(diagnostics[0].code(), Code::CheckUnsupported);
     assert_eq!(
         diagnostics[0].span(),
         diagnostic_span(&source, &body, scan, scan.len())

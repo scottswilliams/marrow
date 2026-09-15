@@ -33,7 +33,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for statement in &block.statements {
             if flow == Flow::Terminates {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     statement.span(),
                     "this statement is unreachable".to_string(),
@@ -299,7 +299,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn lower_assert(&mut self, value: &Expression, span: SourceSpan) -> ConstructResult<()> {
         if self.body_kind != BodyKind::Test {
             self.fail(SourceDiagnostic::at(
-                Code::CheckAssertOutsideTest.as_str(),
+                Code::CheckAssertOutsideTest,
                 self.file,
                 span,
                 "`assert` is legal only inside a `test` declaration".to_string(),
@@ -326,7 +326,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // designation stay distinct, so a name resolves to exactly one of them.
         if self.lookup_place(name).is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 value.span(),
                 format!("`{name}` is already bound as a place in this scope"),
@@ -419,7 +419,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if !mutable {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("`{name}` is a `const` and cannot be reassigned"),
@@ -449,7 +449,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if !chain.mutable {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 chain.root_span,
                 format!(
@@ -513,7 +513,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn lower_unset(&mut self, place: &Expression, span: SourceSpan) -> ConstructResult<()> {
         if Self::durable_shape(place).is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`unset` clears a local field; use `delete` for a durable place".to_string(),
@@ -542,7 +542,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if !chain.mutable {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 chain.root_span,
                 format!("`{}` is a `const` and cannot be modified", chain.root_name),
@@ -556,7 +556,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if required {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 *field_span,
                 format!("`{name}` is a required field and cannot be unset"),
@@ -579,7 +579,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if !mutable {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("`{name}` is a `const` and cannot be reassigned"),
@@ -588,7 +588,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         if ty.bare_scalar_type().is_none() && ty.bare_nominal().is_none() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -681,7 +681,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     self.resolve_product_field(chain.ty, name, base.span(), *span)?;
                 if !required {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         *span,
                         format!(
@@ -754,7 +754,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let Some((ret_id, ReservedEnumArgs::Result(_, ret_err))) = resolved else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`require` is only valid in a function that returns a Result".to_string(),
@@ -786,7 +786,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             (None, RetType::Value(_)) => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     "this function must return a value".to_string(),
@@ -794,7 +794,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             (Some(expr), RetType::Unit) => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     expr.span(),
                     "this function returns nothing".to_string(),
@@ -1062,7 +1062,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             };
             if !optional.is_optional() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     value.span(),
                     format!(
@@ -1115,7 +1115,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let cond_ty = self.lower_expr(cond)?;
             if cond_ty != LTy::bare_scalar(ScalarType::Bool) {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     cond.span(),
                     format!(
@@ -1193,7 +1193,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         if else_flow != Flow::Terminates {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 else_block.span,
                 "the `else` of a let-else binding must diverge, for example with \
@@ -1240,7 +1240,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let scrut_ty = self.lower_expr(scrutinee)?;
         let Some(enum_id) = scrut_ty.bare_enum() else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckMatchArm.as_str(),
+                Code::CheckMatchArm,
                 self.file,
                 scrutinee.span(),
                 format!(
@@ -1306,7 +1306,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let member = member.text();
             let Some(variant_index) = variants.iter().position(|(name, _)| name == member) else {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckMatchArm.as_str(),
+                    Code::CheckMatchArm,
                     self.file,
                     arm.span,
                     format!("`{member}` is not a member of `{enum_name}`"),
@@ -1315,7 +1315,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             };
             if covered[variant_index] {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckMatchArm.as_str(),
+                    Code::CheckMatchArm,
                     self.file,
                     arm.span,
                     format!("member `{member}` is already covered by an earlier arm"),
@@ -1327,7 +1327,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             let payload = variants[variant_index].1.clone();
             if !arm.bindings.is_empty() && arm.bindings.len() != payload.len() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckMatchArm.as_str(),
+                    Code::CheckMatchArm,
                     self.file,
                     arm.span,
                     format!(
@@ -1418,7 +1418,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 .join(", ");
             let arm_word = if missing.len() == 1 { "arm" } else { "arms" };
             self.fail(SourceDiagnostic::at(
-                Code::CheckMatchNonexhaustive.as_str(),
+                Code::CheckMatchNonexhaustive,
                 self.file,
                 span,
                 format!(
@@ -1463,7 +1463,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             if bound.is_some() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     "`at most N` and `on more` apply only to a durable root or branch \
@@ -1486,7 +1486,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         if let Some(read) = index_read {
             if read.index.unique {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!(
@@ -1519,7 +1519,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // generic collection refusal.
         if self.is_place_name(iterable) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "a `place` names one durable entry, not a family to iterate. Traverse a \
@@ -1532,7 +1532,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         // A range or local collection takes no `at most N` / `on more` clause.
         if bound.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`at most N` and `on more` apply only to a durable root or branch \
@@ -1569,7 +1569,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<Flow> {
         let [name] = binding.names.as_slice() else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -1581,7 +1581,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let (Some(lo), Some(hi)) = (range.start, range.end) else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 range.span,
                 "a range `for` iterates between two bounds, but this range leaves one end \
@@ -1688,7 +1688,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Some(value);
         }
         self.fail(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             self.file,
             expr.span(),
             "this range step is not a positive integer literal. A range advances by a \
@@ -1787,7 +1787,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     self.resolve_entry_node(EntryBase::Inline(root), base)?;
                 let Some(layer) = parent.branch(layer_name) else {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         *layer_span,
                         parent.no_branch_message(layer_name),
@@ -1840,7 +1840,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let node = place.node;
         let Some(branch) = node.branch(layer_name) else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 layer_span,
                 node.no_branch_message(layer_name),
@@ -1893,7 +1893,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<Flow> {
         let Some(bound) = bound else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "this durable traversal is unbounded. A `for` head over a durable root or \
@@ -1920,7 +1920,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let Some(on_more) = &bound.on_more else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "this bounded traversal has no overflow arm. A bounded `for` head states its \
@@ -2109,7 +2109,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let Some(bound) = bound else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "this index scan is unbounded. A `for` head over a managed index is always \
@@ -2121,7 +2121,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let Some(on_more) = &bound.on_more else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "this bounded scan has no overflow arm. A bounded `for` head states its \
@@ -2170,7 +2170,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         }
         if keys.len() != prefix_types.len() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -2275,7 +2275,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = expr
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 expr.span(),
                 "`at most` requires a positive integer literal".to_string(),
@@ -2285,7 +2285,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let value = parse_int(text).filter(|value| *value > 0);
         let Some(value) = value else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 *span,
                 "`at most N` requires a positive integer literal".to_string(),
@@ -2294,7 +2294,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if value as u128 > u128::from(marrow_image::bounds::MAX_TRAVERSAL_BOUND) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 *span,
                 format!(
@@ -2326,7 +2326,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = coll_ty
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 iterable.span(),
                 format!(
@@ -2828,7 +2828,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                     }
                     RetType::Unit => {
                         self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
+                            Code::CheckType,
                             self.file,
                             span,
                             "this function returns nothing, so it cannot `return checked`"
@@ -2909,7 +2909,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let ty = self.lower_expr(expr)?;
         if ty != LTy::bare_scalar(ScalarType::Bool) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 expr.span(),
                 format!(

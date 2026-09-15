@@ -15,6 +15,7 @@
 //! - a `transaction` marker sits only in the owning export (`check.transaction_misplaced`);
 //! - explicit and propagated returns commit only their own active region.
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -84,17 +85,17 @@ fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
     let prelude = "fn padding(v: int): int {\n    var n = v\n    n = n + 1\n    n = n + 2\n    return n\n}\nfn identity<T>(v: T): T { return v }\n";
     let cases = [
         (
-            "check.transaction_empty",
+            Code::CheckTransactionEmpty,
             "pub fn empty() {\n    const n = identity(7)\n    transaction {}\n}\n",
             "{}",
         ),
         (
-            "check.transaction_owner_called",
+            Code::CheckTransactionOwnerCalled,
             "pub fn owner(id: int, v: int) {\n    transaction { ^counters[id] = Counter(value: v) }\n}\nfn callOwner<T>(id: int, v: int, tag: T) {\n    owner(id, v)\n}\nfn driver(id: int, v: int) { callOwner(id, v, true) }\n",
             "owner(id, v)",
         ),
         (
-            "check.durable_after_commit",
+            Code::CheckDurableAfterCommit,
             "fn readTagged<T>(id: int, tag: T): int? { return ^counters[id].value }\npub fn owner(id: int): int? {\n    transaction { ^counters[id] = Counter(value: identity(7)) }\n    return readTagged(id, true)\n}\n",
             "readTagged(id, true)",
         ),
@@ -115,7 +116,7 @@ fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
                 line: line_of(&ops, needle),
                 column: (start - line_start + 1) as u32,
             },
-            "{code} must keep its complete source coordinate"
+            "{code:?} must keep its complete source coordinate"
         );
     }
     let early_return = "pub fn owner(id: int): int {\n    if identity(true) { return 0 }\n    transaction { ^counters[id] = Counter(value: 7) }\n    return 1\n}\n";
@@ -132,7 +133,7 @@ fn borrowed_instruction_bodies_keep_complete_transaction_coordinates() {
 fn an_empty_transaction_is_rejected_at_the_block() {
     let ops = "pub fn emptyRegion() {\n    transaction {\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_empty");
+    assert_eq!(diagnostic.code(), Code::CheckTransactionEmpty);
     assert_eq!(diagnostic.line(), line_of(ops, "transaction {"));
     assert!(
         diagnostic.message().contains("no durable operation"),
@@ -147,7 +148,7 @@ fn an_empty_transaction_is_rejected_at_the_block() {
 fn a_second_region_reopens_an_owned_transaction() {
     let ops = "pub fn twoRegions(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    transaction {\n        ^counters[id] = Counter(value: v + 1)\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_reopened");
+    assert_eq!(diagnostic.code(), Code::CheckTransactionReopened);
     assert!(
         diagnostic.message().contains("exactly once") || diagnostic.message().contains("single"),
         "steers to the one-region remedy: {}",
@@ -168,7 +169,7 @@ fn an_early_return_before_the_region_compiles() {
 fn a_durable_read_after_commit_is_rejected() {
     let ops = "pub fn setAndGet(id: int, v: int): int? {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    return ^counters[id].value\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.durable_after_commit");
+    assert_eq!(diagnostic.code(), Code::CheckDurableAfterCommit);
     assert_eq!(
         diagnostic.line(),
         line_of(ops, "return ^counters[id].value")
@@ -191,7 +192,7 @@ fn a_durable_read_after_commit_is_rejected() {
 fn calling_a_transaction_owner_is_rejected() {
     let ops = "pub fn owner(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n}\n\npub fn driver(id: int, v: int) {\n    owner(id, v)\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_owner_called");
+    assert_eq!(diagnostic.code(), Code::CheckTransactionOwnerCalled);
     assert_eq!(diagnostic.line(), line_of(ops, "owner(id, v)\n}"));
     assert!(
         diagnostic.message().contains("`owner`")
@@ -211,7 +212,7 @@ fn calling_a_transaction_owner_is_rejected() {
 fn a_helper_owning_a_region_is_rejected() {
     let ops = "fn helperOwns(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_misplaced");
+    assert_eq!(diagnostic.code(), Code::CheckTransactionMisplaced);
     assert!(
         diagnostic
             .message()
@@ -258,7 +259,7 @@ fn a_require_before_an_owned_region_compiles() {
 fn a_require_inside_a_nested_region_is_still_refused() {
     let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        transaction {\n            require v > 0 else \"value must be positive\"\n            ^counters[id] = Counter(value: v)\n            return ok(v)\n        }\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code(), "check.transaction_reopened");
+    assert_eq!(diagnostic.code(), Code::CheckTransactionReopened);
 }
 
 /// Either propagated exit commits; success continues to the explicit return.

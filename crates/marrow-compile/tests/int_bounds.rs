@@ -4,6 +4,7 @@
 //! The owner ruling is that no source spells `9223372036854775807`; the language
 //! provides the bound as a named value.
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -31,7 +32,7 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     }
 }
 
-fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
+fn has_code(diagnostics: &[SourceDiagnostic], code: Code) -> bool {
     diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code() == code)
@@ -76,7 +77,7 @@ pub fn cap(): int {
 fn a_wrong_typed_annotation_on_a_bound_constant_is_rejected() {
     let diagnostics = compile_err(&wrap("const CAP: bool = maxInt\n"));
     assert!(
-        has_code(&diagnostics, "check.type"),
+        has_code(&diagnostics, Code::CheckType),
         "a bool-annotated int bound must be a type error: {diagnostics:#?}"
     );
 }
@@ -92,7 +93,7 @@ fn a_bound_name_cannot_be_redeclared() {
     ] {
         let diagnostics = compile_err(&source);
         assert!(
-            has_code(&diagnostics, "check.name_conflict"),
+            has_code(&diagnostics, Code::CheckNameConflict),
             "a declaration colliding with a bound must be a name conflict: {source}\n{diagnostics:#?}"
         );
     }
@@ -102,7 +103,7 @@ fn a_bound_name_cannot_be_redeclared() {
 fn a_bound_has_no_call_form() {
     let diagnostics = compile_err(&wrap("pub fn f(): int {\n    return maxInt(1)\n}\n"));
     assert!(
-        has_code(&diagnostics, "check.type"),
+        has_code(&diagnostics, Code::CheckType),
         "calling a value bound is a type error: {diagnostics:#?}"
     );
 }

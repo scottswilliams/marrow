@@ -12,6 +12,7 @@
 //! no store or with two stores reports a branch repeat once, and a generic
 //! function reports a parameter repeat once however often it is called.
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::ProjectInput;
 
@@ -21,7 +22,7 @@ mod ids;
 mod project_capture;
 
 /// The rows a project refuses with, as `(code, line, column)`.
-fn refused(input: &ProjectInput) -> Vec<(String, u32, u32)> {
+fn refused(input: &ProjectInput) -> Vec<(Code, u32, u32)> {
     let diagnostics: Vec<SourceDiagnostic> = match compile(input) {
         Ok(_) => panic!("the repeated name compiled: the namespace has no conflict owner"),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
@@ -29,7 +30,7 @@ fn refused(input: &ProjectInput) -> Vec<(String, u32, u32)> {
     };
     diagnostics
         .iter()
-        .map(|row| (row.code().to_string(), row.span().line, row.span().column))
+        .map(|row| (row.code(), row.span().line, row.span().column))
         .collect()
 }
 
@@ -52,7 +53,7 @@ const MAIN: &str = "pub fn main() {\n    return\n}\n";
 fn assert_one_conflict(input: &ProjectInput, line: u32, column: u32, what: &str) {
     assert_eq!(
         refused(input),
-        vec![("check.name_conflict".to_string(), line, column)],
+        vec![(Code::CheckNameConflict, line, column)],
         "{what}: one `check.name_conflict` at the repeated name, and no other row",
     );
 }
@@ -260,9 +261,9 @@ fn branch_layer_repeats_are_reported_in_declaration_order() {
     assert_eq!(
         refused(&storeless(&source)),
         vec![
-            ("check.name_conflict".to_string(), 4, 15),
-            ("check.name_conflict".to_string(), 5, 9),
-            ("check.name_conflict".to_string(), 7, 9),
+            (Code::CheckNameConflict, 4, 15),
+            (Code::CheckNameConflict, 5, 9),
+            (Code::CheckNameConflict, 7, 9),
         ],
         "the repeated key column, then the member repeating the key, then the repeated member",
     );
@@ -277,7 +278,7 @@ fn an_index_component_naming_both_a_key_and_a_field_is_refused() {
     );
     assert_eq!(
         refused(&durable(&source)),
-        vec![("check.type".to_string(), 7, 16)],
+        vec![(Code::CheckType, 7, 16)],
         "the component is refused at its own span",
     );
 }

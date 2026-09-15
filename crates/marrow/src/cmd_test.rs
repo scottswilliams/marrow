@@ -60,7 +60,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             let records: Vec<Record> = diagnostics
                 .iter()
                 .map(|diagnostic| Record::Diagnostic {
-                    code: diagnostic.code(),
+                    code: diagnostic.code().as_str(),
                     line: diagnostic.line(),
                     column: diagnostic.column(),
                 })

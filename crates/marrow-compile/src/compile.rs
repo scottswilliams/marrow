@@ -1248,7 +1248,7 @@ fn declare_modules(
                     at: module.at,
                     span: header.span,
                 },
-                Code::CheckModulePath.as_str(),
+                Code::CheckModulePath,
                 format!(
                     "module header `{}` does not match its path; expected `module {}`",
                     marrow_syntax::name_path_spelling(&header.segments),
@@ -1296,7 +1296,7 @@ fn bind_imports(
                 // for that cause, which it names, rather than denying the module.
                 Binding::Refused(_, summary) => {
                     diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckImport.as_str(),
+                        Code::CheckImport,
                         &module.file,
                         use_decl.span,
                         format!(
@@ -1309,7 +1309,7 @@ fn bind_imports(
                 }
                 Binding::Absent => {
                     diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckImport.as_str(),
+                        Code::CheckImport,
                         &module.file,
                         use_decl.span,
                         format!("no module `{spelling}` in this project"),
@@ -1319,7 +1319,7 @@ fn bind_imports(
             }
             if bindings.iter().any(|(seg, _)| seg == &segment) {
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckImport.as_str(),
+                    Code::CheckImport,
                     &module.file,
                     use_decl.span,
                     format!("import `{segment}` is already bound by another `use` in this module"),
@@ -1400,7 +1400,7 @@ fn report_nominal_boundary(
         }
     };
     diagnostics.push(SourceDiagnostic::at(
-        Code::CheckUnsupported.as_str(),
+        Code::CheckUnsupported,
         root.file,
         root.span,
         message.to_string(),
@@ -2145,7 +2145,7 @@ fn lower_declared_tests(
     for &(module, test, func) in tests {
         if !declared.insert(test.name.as_str()) {
             diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
+                Code::CheckNameConflict,
                 &module.file,
                 test.name_span,
                 format!("a test named `{}` is already declared", test.name),
@@ -2370,7 +2370,7 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
             }
             if seen.contains(&function.name.as_str()) {
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckNameConflict.as_str(),
+                    Code::CheckNameConflict,
                     &module.file,
                     function.span,
                     format!(
@@ -2406,7 +2406,7 @@ fn reject_recursion(
     for function in lowered.functions().iter().flatten() {
         if analysis.on_cycle(function.func.index()) {
             diagnostics.push(SourceDiagnostic::at(
-                Code::CheckRecursion.as_str(),
+                Code::CheckRecursion,
                 &function.file,
                 function.span,
                 format!("`{}` is part of a recursive call cycle", function.name),
@@ -2471,7 +2471,7 @@ fn reject_missing_transaction(
             }
             if seen.insert((span.line, span.column)) {
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckRequiresTransaction.as_str(),
+                    Code::CheckRequiresTransaction,
                     &function.file,
                     *span,
                     "the durable mutation here has no ambient transaction. A durable write, \
@@ -2492,7 +2492,7 @@ fn reject_missing_transaction(
                     .map(|f| f.name.as_str())
                     .unwrap_or("a mutating function");
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckRequiresTransaction.as_str(),
+                    Code::CheckRequiresTransaction,
                     &function.file,
                     *span,
                     if function.is_test {
@@ -2640,7 +2640,7 @@ fn reject_transaction_ownership(
                     .map(|f| f.function.name.as_str())
                     .unwrap_or("an export");
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckTransactionOwnerCalled.as_str(),
+                    Code::CheckTransactionOwnerCalled,
                     &function.file,
                     function.code_spans[idx],
                     format!(
@@ -2664,7 +2664,7 @@ fn reject_transaction_ownership(
         if function.is_export && has_begin[i] && !durable[i] {
             if let Some(span) = first_marker_span(body) {
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckTransactionEmpty.as_str(),
+                    Code::CheckTransactionEmpty,
                     &function.file,
                     span,
                     "this `transaction` block performs no durable operation, so it commits \
@@ -2689,7 +2689,7 @@ fn reject_transaction_ownership(
         if has_begin[i] || has_commit[i] {
             if let Some(span) = first_marker_span(body) {
                 diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckTransactionMisplaced.as_str(),
+                    Code::CheckTransactionMisplaced,
                     &function.file,
                     span,
                     "a `transaction` block belongs only in the export that owns it. A helper \
@@ -2723,7 +2723,7 @@ fn owner_lattice_violation(
     body: &LoweredBody<'_>,
     durable: &[bool],
     count: usize,
-) -> Option<(&'static str, SourceSpan, String)> {
+) -> Option<(Code, SourceSpan, String)> {
     let code = body.code;
     let function = body.function;
     if code.is_empty() {
@@ -2753,7 +2753,7 @@ fn owner_lattice_violation(
         match instr {
             Instr::TxnBegin if state != TxnState::BeforeBegin => {
                 return Some((
-                    Code::CheckTransactionReopened.as_str(),
+                    Code::CheckTransactionReopened,
                     function.code_spans[idx],
                     "this reopens a `transaction` region the export already owns. A mutating \
                      export may begin its region only once; \
@@ -2763,7 +2763,7 @@ fn owner_lattice_violation(
             }
             Instr::Return if state == TxnState::InTxn => {
                 return Some((
-                    Code::CheckTransactionUncommitted.as_str(),
+                    Code::CheckTransactionUncommitted,
                     function.code_spans[idx],
                     "this path returns while its `transaction` region is still open. \
                      Every normal exit from an entered region must commit its staged writes \
@@ -2776,7 +2776,7 @@ fn owner_lattice_violation(
                     || matches!(instr, Instr::Call(t) if (*t as usize) < count && durable[*t as usize]);
                 if durable_here && state == TxnState::AfterCommit {
                     return Some((
-                        Code::CheckDurableAfterCommit.as_str(),
+                        Code::CheckDurableAfterCommit,
                         function.code_spans[idx],
                         "this durable operation runs after the `transaction` region commits. \
                          The commit consumes the region's store session, so no durable read or \
@@ -2807,7 +2807,7 @@ fn reject_direct_test_operations(
             continue;
         }
         diagnostics.push(SourceDiagnostic::at(
-            Code::CheckTestDurableOperation.as_str(),
+            Code::CheckTestDurableOperation,
             &test.file,
             test.span,
             "this test body performs a durable operation directly. Read through an \
@@ -2849,7 +2849,7 @@ fn check_structural_resource_bounds(parsed: &[Module], diagnostics: &mut Diagnos
                     if function.params.len() > marrow_image::bounds::MAX_PARAMS =>
                 {
                     diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckResourceLimit.as_str(),
+                        Code::CheckResourceLimit,
                         &module.file,
                         function.span,
                         format!(
@@ -2880,7 +2880,7 @@ fn check_record_field_width(
         .count();
     if fields > marrow_image::bounds::MAX_RECORD_FIELDS {
         diagnostics.push(SourceDiagnostic::at(
-            Code::CheckResourceLimit.as_str(),
+            Code::CheckResourceLimit,
             file,
             span,
             format!(
@@ -3143,8 +3143,8 @@ mod driver_agreement {
         // import names that stage's report and the qualified call is steered to it,
         // carrying the declaring code. Neither denies the module or its callee exists.
         let referring_family = [
-            marrow_codes::Code::CheckImport.as_str(),
-            marrow_codes::Code::ParseSyntax.as_str(),
+            marrow_codes::Code::CheckImport,
+            marrow_codes::Code::ParseSyntax,
         ];
         assert!(
             dependent

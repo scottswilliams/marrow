@@ -2187,7 +2187,7 @@ mod tests {
             snapshot
                 .diagnostics()
                 .iter()
-                .any(|d| d.code() == "check.type")
+                .any(|d| d.code() == marrow_codes::Code::CheckType)
         );
         coordinator.on_worker_result(outcome);
         let delivered = deliver_frames(&mut coordinator);

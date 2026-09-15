@@ -220,7 +220,7 @@ pub fn f(value: PlainAlias): PlainAlias {
         .map(|diagnostic| {
             let span = diagnostic.span();
             (
-                diagnostic.code(),
+                diagnostic.code().as_str(),
                 span.start_byte,
                 span.end_byte,
                 span.line,

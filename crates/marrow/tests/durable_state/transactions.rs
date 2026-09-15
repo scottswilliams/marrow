@@ -321,7 +321,7 @@ test "a test cannot supply a helper transaction" {
             assert_eq!(diagnostics.len(), 1);
             let diagnostic = &diagnostics[0];
             assert_eq!(
-                diagnostic.code(),
+                diagnostic.code().as_str(),
                 marrow_codes::Code::CheckRequiresTransaction.as_str()
             );
             assert_eq!(diagnostic.file().as_str(), "src/main.mw");
@@ -373,7 +373,7 @@ fn relay() { write() }
         };
         assert_eq!(diagnostics.len(), 1, "{body}");
         let diagnostic = &diagnostics[0];
-        assert_eq!(diagnostic.code(), code.as_str(), "{body}");
+        assert_eq!(diagnostic.code().as_str(), code.as_str(), "{body}");
         assert_eq!(diagnostic.file().as_str(), "src/main.mw");
         let span = diagnostic.span();
         if code == marrow_codes::Code::CheckRequiresTransaction {
@@ -1305,9 +1305,10 @@ fn compile_error_codes(source: &str) -> Vec<String> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            diagnostics.iter().map(|d| d.code().to_string()).collect()
-        }
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect(),
         Err(
             marrow_compile::CompileFailure::Invariant(_)
             | marrow_compile::CompileFailure::ResourceLimit(_),

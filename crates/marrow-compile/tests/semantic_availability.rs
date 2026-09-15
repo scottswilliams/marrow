@@ -6,6 +6,7 @@
 //! still available runs and reports. No image entry, index, export, test slot, or
 //! dependent fact is fabricated from a missing prerequisite.
 
+use marrow_codes::Code;
 use std::sync::Arc;
 
 use marrow_compile::{
@@ -39,7 +40,7 @@ fn reported(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<SourceD
     }
 }
 
-fn codes(rows: &[SourceDiagnostic]) -> Vec<&str> {
+fn codes(rows: &[SourceDiagnostic]) -> Vec<Code> {
     rows.iter().map(SourceDiagnostic::code).collect()
 }
 
@@ -48,7 +49,7 @@ fn codes(rows: &[SourceDiagnostic]) -> Vec<&str> {
 fn assert_diagnostic_sites(
     files: &[(&str, &str)],
     ids: Option<&[u8]>,
-    expected: &[(&str, &str, &str)],
+    expected: &[(Code, &str, &str)],
 ) {
     let input = Arc::new(project_with_ids(files, ids));
     let compiled = reported(compile_with_tests(&input));
@@ -134,10 +135,10 @@ pub fn driver(): int {
     assert_eq!(
         codes(&rows),
         vec![
-            "check.unsupported",
-            "check.unsupported",
-            "check.type",
-            "check.recursion",
+            Code::CheckUnsupported,
+            Code::CheckUnsupported,
+            Code::CheckType,
+            Code::CheckRecursion,
         ],
         "the signature refusal, the constant refusal, the unrelated body's own \
          unresolved call, and the value cycle all report, in semantic order: {rows:#?}",
@@ -176,11 +177,11 @@ pub fn driver(): int {
     );
     let found = codes(&rows);
     assert!(
-        found.contains(&"check.name_conflict"),
+        found.contains(&Code::CheckNameConflict),
         "the duplicate function name is reported: {rows:#?}",
     );
     assert!(
-        found.contains(&"check.recursion"),
+        found.contains(&Code::CheckRecursion),
         "the independent call cycle is reported beside it: {rows:#?}",
     );
 }
@@ -217,11 +218,11 @@ test "same" {
     );
     let found = codes(&rows);
     assert!(
-        found.contains(&"check.name_conflict"),
+        found.contains(&Code::CheckNameConflict),
         "the duplicate test title is reported: {rows:#?}",
     );
     assert!(
-        found.contains(&"check.recursion"),
+        found.contains(&Code::CheckRecursion),
         "the independent call cycle is reported beside it: {rows:#?}",
     );
 }
@@ -249,11 +250,11 @@ pub fn driver(): int {
     )]);
     let found = codes(&rows);
     assert!(
-        found.contains(&"check.module_path"),
+        found.contains(&Code::CheckModulePath),
         "the module path mismatch is reported: {rows:#?}",
     );
     assert!(
-        found.contains(&"check.recursion"),
+        found.contains(&Code::CheckRecursion),
         "the independent call cycle is reported beside it: {rows:#?}",
     );
 }
@@ -314,7 +315,7 @@ fn a_refused_body_with_a_queued_instance_reports_diagnostics() {
     let found = codes(&rows);
     assert_eq!(
         found,
-        vec!["check.type"],
+        vec![Code::CheckType],
         "the refused body reports its own unresolved call and nothing else: {rows:#?}",
     );
 }
@@ -346,7 +347,7 @@ test "same" {
     let rows = diagnostics(source);
     assert_eq!(
         codes(&rows),
-        vec!["check.name_conflict"],
+        vec![Code::CheckNameConflict],
         "the duplicate title is the only report: {rows:#?}",
     );
     assert_eq!(
@@ -473,7 +474,7 @@ fn the_settled_body_byte_ceiling_stops_before_a_settled_refusal_is_reported() {
     }
     assert_eq!(
         codes(&diagnostics(&wide(16))),
-        vec!["check.type"],
+        vec![Code::CheckType],
         "under the ceiling the settled refusal is the outcome"
     );
 }
@@ -530,10 +531,10 @@ fn a_refused_instance_body_preserves_an_independent_cycle() {
         &[("src/main.mw", DRAIN_REFUSED_MID_QUEUE)],
         None,
         &[
-            ("check.type", "src/main.mw", "missing()"),
-            ("check.type", "src/main.mw", "missing()"),
-            ("check.recursion", "src/main.mw", "fn ping(): int {"),
-            ("check.recursion", "src/main.mw", "fn pong(): int {"),
+            (Code::CheckType, "src/main.mw", "missing()"),
+            (Code::CheckType, "src/main.mw", "missing()"),
+            (Code::CheckRecursion, "src/main.mw", "fn ping(): int {"),
+            (Code::CheckRecursion, "src/main.mw", "fn pong(): int {"),
         ],
     );
     for outcome in [
@@ -587,9 +588,9 @@ fn a_refused_declared_body_preserves_an_independent_cycle() {
         REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE,
         None,
         &[
-            ("check.type", "src/main.mw", "missingCall()"),
-            ("check.recursion", "src/other.mw", "fn cycA(): int {"),
-            ("check.recursion", "src/other.mw", "fn cycB(): int {"),
+            (Code::CheckType, "src/main.mw", "missingCall()"),
+            (Code::CheckRecursion, "src/other.mw", "fn cycA(): int {"),
+            (Code::CheckRecursion, "src/other.mw", "fn cycB(): int {"),
         ],
     );
     for outcome in [
@@ -616,7 +617,7 @@ fn a_complete_generic_cycle_reports_its_source() {
         &[("src/main.mw", GENERIC_CYCLE)],
         None,
         &[(
-            "check.recursion",
+            Code::CheckRecursion,
             "src/main.mw",
             "fn spin<T>(x: T): T { return spin(x) }",
         )],
@@ -630,9 +631,9 @@ fn generic_recursion_survives_an_unrelated_body_refusal() {
         &[("src/main.mw", &source)],
         None,
         &[
-            ("check.type", "src/main.mw", "true"),
+            (Code::CheckType, "src/main.mw", "true"),
             (
-                "check.recursion",
+                Code::CheckRecursion,
                 "src/main.mw",
                 "fn spin<T>(x: T): T { return spin(x) }",
             ),
@@ -663,15 +664,15 @@ fn spin<T>(x: T): T { return spin(x) }
         &[("src/main.mw", source)],
         None,
         &[
-            ("check.type", "src/main.mw", "missing()"),
-            ("check.type", "src/main.mw", "missing()"),
+            (Code::CheckType, "src/main.mw", "missing()"),
+            (Code::CheckType, "src/main.mw", "missing()"),
             (
-                "check.recursion",
+                Code::CheckRecursion,
                 "src/main.mw",
                 "fn spin<T>(x: T): T { return spin(x) }",
             ),
             (
-                "check.recursion",
+                Code::CheckRecursion,
                 "src/main.mw",
                 "fn after<T>(x: T): T { return after(x) }",
             ),
@@ -684,7 +685,7 @@ fn an_empty_transaction_reports_its_block() {
     assert_diagnostic_sites(
         &[("src/main.mw", EMPTY_TRANSACTION)],
         None,
-        &[("check.transaction_empty", "src/main.mw", "{}")],
+        &[(Code::CheckTransactionEmpty, "src/main.mw", "{}")],
     );
 }
 
@@ -695,8 +696,8 @@ fn a_refused_body_does_not_suppress_an_independent_empty_transaction() {
         &[("src/main.mw", &source)],
         None,
         &[
-            ("check.type", "src/main.mw", "true"),
-            ("check.transaction_empty", "src/main.mw", "{}"),
+            (Code::CheckType, "src/main.mw", "true"),
+            (Code::CheckTransactionEmpty, "src/main.mw", "{}"),
         ],
     );
 }
@@ -740,7 +741,7 @@ fn an_unavailable_durable_callee_does_not_prove_an_empty_transaction() {
     assert_diagnostic_sites(
         &[("src/main.mw", UNAVAILABLE_DURABLE_CALLEE)],
         Some(COUNTER_IDS),
-        &[("check.type", "src/main.mw", "missing()")],
+        &[(Code::CheckType, "src/main.mw", "missing()")],
     );
 }
 
@@ -753,8 +754,8 @@ fn an_unavailable_durable_callee_preserves_an_independent_empty_transaction() {
         &[("src/main.mw", &source)],
         Some(COUNTER_IDS),
         &[
-            ("check.type", "src/main.mw", "missing()"),
-            ("check.transaction_empty", "src/main.mw", "{}"),
+            (Code::CheckType, "src/main.mw", "missing()"),
+            (Code::CheckTransactionEmpty, "src/main.mw", "{}"),
         ],
     );
 }
@@ -769,16 +770,16 @@ fn a_cycle_does_not_suppress_an_independent_empty_transaction() {
         None,
         &[
             (
-                "check.recursion",
+                Code::CheckRecursion,
                 "src/main.mw",
                 "fn ping(): int { return pong() }",
             ),
             (
-                "check.recursion",
+                Code::CheckRecursion,
                 "src/main.mw",
                 "fn pong(): int { return ping() }",
             ),
-            ("check.transaction_empty", "src/main.mw", "{}"),
+            (Code::CheckTransactionEmpty, "src/main.mw", "{}"),
         ],
     );
 }
@@ -790,18 +791,18 @@ fn a_cycle_and_refused_body_preserve_an_independent_empty_transaction() {
         &[("src/main.mw", &source)],
         None,
         &[
-            ("check.type", "src/main.mw", "true"),
+            (Code::CheckType, "src/main.mw", "true"),
             (
-                "check.recursion",
+                Code::CheckRecursion,
                 "src/main.mw",
                 "fn ping(): int { return pong() }",
             ),
             (
-                "check.recursion",
+                Code::CheckRecursion,
                 "src/main.mw",
                 "fn pong(): int { return ping() }",
             ),
-            ("check.transaction_empty", "src/main.mw", "{}"),
+            (Code::CheckTransactionEmpty, "src/main.mw", "{}"),
         ],
     );
 }

@@ -118,7 +118,7 @@ pub(crate) fn run(operation: Operation, rest: &[String]) -> ExitCode {
         Ok(compiled) => compiled,
         Err(CompileFailure::Diagnostics(diagnostics)) => {
             for diagnostic in diagnostics.iter() {
-                eprintln!("{}: {}", diagnostic.code(), diagnostic.message());
+                eprintln!("{}: {}", diagnostic.code().as_str(), diagnostic.message());
             }
             eprintln!("the project does not compile; run `marrow check` before accessing a store");
             return ExitCode::FAILURE;

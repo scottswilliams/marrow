@@ -638,7 +638,7 @@ fn resolve_key_columns<'a>(
         };
         if !super::orderable_durable_key(key) {
             return Ok(Err(Box::new(SourceDiagnostic::at(
-                marrow_codes::Code::CheckType.as_str(),
+                marrow_codes::Code::CheckType,
                 file,
                 span,
                 "a durable key column must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"

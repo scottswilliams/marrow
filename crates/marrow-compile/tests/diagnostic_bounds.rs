@@ -3,6 +3,7 @@
 //! (equal to the syntax ceilings, drift-pinned through the public limit values),
 //! the invalid-UTF-8 contract, and the production/analysis stage tables.
 
+use marrow_codes::Code;
 use std::sync::Arc;
 
 use marrow_compile::{
@@ -226,7 +227,7 @@ fn invalid_utf8_rows_form_the_canonical_prefix_with_the_pinned_contract() {
 
     let utf8 = &rows[0];
     assert_eq!(utf8.file().as_str(), "src/b.mw");
-    assert_eq!(utf8.code(), "check.unsupported");
+    assert_eq!(utf8.code(), Code::CheckUnsupported);
     assert_eq!(utf8.message(), "source file is not valid UTF-8");
     let span = utf8.span();
     assert_eq!(

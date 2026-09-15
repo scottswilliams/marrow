@@ -10,6 +10,7 @@
 //! hold an empty file) is enforced by the type: `TypeTemplate::file` is
 //! `Option<FileIdentity>`, so an empty-string file cannot be constructed.
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
@@ -61,7 +62,7 @@ fn the_instantiation_limit_diagnostic_carries_the_real_use_site_file() {
     let produced = diagnostics(vec![("src/library.mw", library), ("src/main.mw", main)]);
     let limit = produced
         .iter()
-        .find(|d| d.code() == "check.instantiation_limit")
+        .find(|d| d.code() == Code::CheckInstantiationLimit)
         .expect("an instantiation-limit diagnostic");
     let expected = FileIdentity::validate("src/library.mw")
         .expect("canonical identity")

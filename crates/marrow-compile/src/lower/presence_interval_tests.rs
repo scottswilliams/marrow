@@ -1,4 +1,5 @@
 use crate::{test_ledger as ledger, test_project as project_capture};
+use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 
 /// A write guarded by an older presence proof, with erasers before and inside the
@@ -65,7 +66,7 @@ pub fn write(id: int, flag: bool) {
             "overlapping intervals report their use once",
         );
         let row = &rows.as_slice()[0];
-        assert_eq!(row.code(), "check.requires_presence");
+        assert_eq!(row.code(), Code::CheckRequiresPresence);
         assert_eq!(row.file().as_str(), "src/main.mw");
         assert_eq!(row.span(), write_span);
     }

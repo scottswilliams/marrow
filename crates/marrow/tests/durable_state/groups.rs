@@ -574,7 +574,7 @@ fn a_read_projecting_off_a_stored_durable_field_is_a_located_type_error() {
     );
     let hit = diagnostics
         .iter()
-        .find(|d| d.code() == marrow_codes::Code::CheckType.as_str())
+        .find(|d| d.code().as_str() == marrow_codes::Code::CheckType.as_str())
         .unwrap_or_else(|| panic!("a check.type diagnostic for the projection: {diagnostics:?}"));
     assert!(
         hit.line() >= 1 && hit.column() >= 1,
@@ -621,7 +621,7 @@ fn a_missing_group_leaf_still_reports_its_group_diagnostic() {
     );
     let hit = diagnostics
         .iter()
-        .find(|d| d.code() == marrow_codes::Code::CheckType.as_str())
+        .find(|d| d.code().as_str() == marrow_codes::Code::CheckType.as_str())
         .unwrap_or_else(|| panic!("a check.type diagnostic for the group leaf: {diagnostics:?}"));
     assert!(
         hit.line() >= 1 && hit.column() >= 1,
@@ -648,9 +648,10 @@ fn compile_codes(body: &str) -> Vec<String> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            diagnostics.iter().map(|d| d.code().to_string()).collect()
-        }
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect(),
         Err(
             marrow_compile::CompileFailure::Invariant(_)
             | marrow_compile::CompileFailure::ResourceLimit(_),
@@ -886,9 +887,10 @@ pub fn dropDetails(shelf: int, id: int) {{
     .expect("capture");
     let codes: Vec<String> = match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            diagnostics.iter().map(|d| d.code().to_string()).collect()
-        }
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
+            .iter()
+            .map(|d| d.code().as_str().to_string())
+            .collect(),
         Err(other) => panic!("source-triggered compiler failures must remain diagnostics: {other}"),
     };
     assert_eq!(

@@ -141,7 +141,7 @@ pub(super) fn unsupported(
     subject: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckUnsupported.as_str(),
+        Code::CheckUnsupported,
         file,
         span,
         format!("{subject} is not yet supported on the beta line"),
@@ -199,7 +199,7 @@ pub(super) fn not_yet_executable(
     root: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckUnsupported.as_str(),
+        Code::CheckUnsupported,
         file,
         span,
         format!(
@@ -224,7 +224,7 @@ pub(super) fn branch_not_a_field(
     resource: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!(
@@ -246,7 +246,7 @@ pub(super) fn subbranch_not_a_field(
     branch: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!(
@@ -268,7 +268,7 @@ pub(super) fn absent_not_operand(
     op: BinaryOp,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!(
@@ -282,7 +282,7 @@ pub(super) fn absent_not_operand(
 
 pub(super) fn name_error(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!("`{name}` is not in scope"),
@@ -319,7 +319,7 @@ pub(super) fn name_not_in_scope(
         };
         message.push_str(&hint);
     }
-    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
+    SourceDiagnostic::at(Code::CheckType, file, span, message)
 }
 
 /// The single declared name within edit distance two of `target`, or `None` when none
@@ -396,7 +396,7 @@ pub(super) fn identity_admission_failed(
 ) -> SourceDiagnostic {
     let name = refusal.name();
     SourceDiagnostic::with_refused_declaration(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!(
@@ -417,7 +417,7 @@ pub(super) fn checked_arm_error(
     detail: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!("this checked form {detail}"),
@@ -426,7 +426,7 @@ pub(super) fn checked_arm_error(
 
 pub(super) fn loop_error(file: &FileIdentity, span: SourceSpan, keyword: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!("`{keyword}` is not inside a loop"),
@@ -452,7 +452,7 @@ pub(crate) fn requires_presence(
     detail: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckRequiresPresence.as_str(),
+        Code::CheckRequiresPresence,
         file,
         span,
         format!(
@@ -482,7 +482,7 @@ pub(super) fn type_mismatch(
     if found.is_optional() && !want.is_optional() && found.to_bare() == want {
         present_idiom_steer(&mut message);
     }
-    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
+    SourceDiagnostic::at(Code::CheckType, file, span, message)
 }
 
 pub(super) fn unary_error(
@@ -500,7 +500,7 @@ pub(super) fn unary_error(
     if ty.is_optional() && ty.to_bare() == wanted {
         present_idiom_steer(&mut message);
     }
-    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
+    SourceDiagnostic::at(Code::CheckType, file, span, message)
 }
 
 pub(super) fn binary_error(
@@ -523,7 +523,7 @@ pub(super) fn binary_error(
     if (left.is_optional() || right.is_optional()) && left.to_bare() == right.to_bare() {
         present_idiom_steer(&mut message);
     }
-    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
+    SourceDiagnostic::at(Code::CheckType, file, span, message)
 }
 
 pub(super) fn logic_operand(
@@ -543,7 +543,7 @@ pub(super) fn logic_operand(
     if ty.is_optional() && ty.to_bare() == LTy::bare_scalar(ScalarType::Bool) {
         present_idiom_steer(&mut message);
     }
-    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
+    SourceDiagnostic::at(Code::CheckType, file, span, message)
 }
 
 #[cfg(test)]

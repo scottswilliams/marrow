@@ -11,6 +11,7 @@
 //! the reports agree on code and on *which declaration form* carries each one.
 
 use super::{diagnostics_of, project};
+use marrow_codes::Code;
 
 /// A declaration of the name `N`, one per form the type namespace admits.
 const FORMS: [(&str, &str); 6] = [
@@ -29,11 +30,11 @@ const TAIL: &str = "pub fn driver(n: int): int {\n    return n\n}\n";
 fn labelled(
     first: (&'static str, &'static str),
     second: (&'static str, &'static str),
-) -> Vec<(&'static str, String)> {
+) -> Vec<(&'static str, Code)> {
     let source = format!("module main\n\n{}\n{}\n{TAIL}", first.1, second.1);
     let first_lines = 3..3 + first.1.lines().count() as u32;
     let second_lines = first_lines.end + 1..first_lines.end + 1 + second.1.lines().count() as u32;
-    let mut rows: Vec<(&'static str, String)> = diagnostics_of(&project(&source))
+    let mut rows: Vec<(&'static str, Code)> = diagnostics_of(&project(&source))
         .iter()
         .map(|row| {
             let line = row.span().line;
@@ -44,10 +45,10 @@ fn labelled(
             } else {
                 "elsewhere"
             };
-            (owner, row.code().to_string())
+            (owner, row.code())
         })
         .collect();
-    rows.sort_unstable();
+    rows.sort_unstable_by_key(|(owner, code)| (*owner, code.as_str()));
     rows
 }
 
@@ -57,8 +58,9 @@ fn a_name_conflict_verdict_does_not_depend_on_declaration_order() {
         for second in FORMS.iter().skip(index + 1) {
             let written = labelled(*first, *second);
             assert!(
-                written.iter().any(|(_, code)| code == "check.name_conflict"
-                    || code == marrow_codes::Code::CheckType.as_str()),
+                written
+                    .iter()
+                    .any(|(_, code)| code == &Code::CheckNameConflict || code == &Code::CheckType),
                 "`{}` and `{}` declare one name and must collide: {written:?}",
                 first.0,
                 second.0,

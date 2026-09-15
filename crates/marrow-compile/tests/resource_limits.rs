@@ -8,6 +8,7 @@
 //! key-column bound reported as `check.unsupported`, and an unprechecked branch
 //! key tuple reaching the synthetic image-bound diagnostic.
 
+use marrow_codes::Code;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use marrow_compile::{CompileFailure, ResourceLimitKind, SourceDiagnostic, compile};
@@ -44,7 +45,7 @@ fn assert_source_resource_limit(result: Result<impl std::fmt::Debug, CompileFail
             assert!(
                 diagnostics
                     .iter()
-                    .any(|diagnostic| diagnostic.code() == "check.resource_limit"
+                    .any(|diagnostic| diagnostic.code() == Code::CheckResourceLimit
                         && diagnostic.file().as_str() == "src/main.mw"),
                 "expected a check.resource_limit at src/main.mw, got {:#?}",
                 diagnostics.as_slice(),
@@ -145,7 +146,7 @@ fn assert_exact_local_limit(
         "the first rejected slot request emits exactly one diagnostic: {diagnostics:#?}",
     );
     let diagnostic: &SourceDiagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code(), "check.resource_limit");
+    assert_eq!(diagnostic.code(), Code::CheckResourceLimit);
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!(diagnostic.span(), span);
 }
@@ -262,7 +263,7 @@ fn over_deep_durable_value_reports_resource_limit_not_a_silent_drop() {
 /// project compiled or failed at the aggregate/invariant arm. Also asserts no
 /// diagnostic carries a fabricated empty filename, so every pinned report lands at a
 /// real source span.
-fn diagnostic_codes(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<&'static str> {
+fn diagnostic_codes(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<Code> {
     match result {
         Ok(compiled) => panic!("expected diagnostics, compiled: {compiled:?}"),
         Err(CompileFailure::Diagnostics(diagnostics)) => {
@@ -316,7 +317,7 @@ fn long_value_cycle_reports_both_resource_limit_and_recursion() {
     assert_eq!(
         codes
             .iter()
-            .filter(|code| **code == "check.resource_limit")
+            .filter(|code| **code == Code::CheckResourceLimit)
             .count(),
         1,
         "a cycle crossing the depth bound draws exactly one depth report: {codes:?}",
@@ -324,7 +325,7 @@ fn long_value_cycle_reports_both_resource_limit_and_recursion() {
     assert_eq!(
         codes
             .iter()
-            .filter(|code| **code == "check.recursion")
+            .filter(|code| **code == Code::CheckRecursion)
             .count(),
         struct_count,
         "the value-cycle pass reports every struct on the cycle: {codes:?}",
@@ -338,11 +339,11 @@ fn long_value_cycle_reports_both_resource_limit_and_recursion() {
 fn short_value_cycle_reports_only_recursion() {
     let codes = diagnostic_codes(compile(&cyclic_struct_chain(2)));
     assert!(
-        codes.contains(&"check.recursion"),
+        codes.contains(&Code::CheckRecursion),
         "a cycle within the depth bound reports the value-cycle pass: {codes:?}",
     );
     assert!(
-        !codes.contains(&"check.resource_limit"),
+        !codes.contains(&Code::CheckResourceLimit),
         "a cycle within the depth bound draws no depth report: {codes:?}",
     );
 }
@@ -370,11 +371,11 @@ fn acyclic_over_deep_value_reports_only_resource_limit() {
     ]);
     let codes = diagnostic_codes(compile(&project(&source, Some(&ids))));
     assert!(
-        codes.contains(&"check.resource_limit"),
+        codes.contains(&Code::CheckResourceLimit),
         "an acyclic over-deep value reports the depth bound: {codes:?}",
     );
     assert!(
-        !codes.contains(&"check.recursion"),
+        !codes.contains(&Code::CheckRecursion),
         "an acyclic over-deep value draws no value-cycle report: {codes:?}",
     );
 }
@@ -565,7 +566,7 @@ fn only_resource_limit(result: Result<impl std::fmt::Debug, CompileFailure>) -> 
         Err(CompileFailure::Diagnostics(diagnostics)) => {
             let mut limits = diagnostics
                 .iter()
-                .filter(|diagnostic| diagnostic.code() == "check.resource_limit");
+                .filter(|diagnostic| diagnostic.code() == Code::CheckResourceLimit);
             let limit = limits
                 .next()
                 .unwrap_or_else(|| {
@@ -1373,7 +1374,7 @@ fn a_missing_member_anchor_is_a_located_identity_diagnostic() {
             assert!(
                 diagnostics
                     .iter()
-                    .any(|row| row.code() == "check.durable_identity"
+                    .any(|row| row.code() == Code::CheckDurableIdentity
                         && !row.file().as_str().is_empty()),
                 "{:#?}",
                 diagnostics.as_slice()
@@ -1402,7 +1403,7 @@ fn a_retired_member_anchor_is_a_located_identity_diagnostic() {
             assert!(
                 diagnostics
                     .iter()
-                    .any(|row| row.code() == "check.durable_identity"
+                    .any(|row| row.code() == Code::CheckDurableIdentity
                         && !row.file().as_str().is_empty()),
                 "{:#?}",
                 diagnostics.as_slice()

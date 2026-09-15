@@ -27,7 +27,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = expected
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!(
@@ -46,7 +46,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             ("Map", CollSpec::Map { .. }) => {
                 if !args.is_empty() {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         "a map is constructed empty with `Map()` and filled with `m[k] = v`; \
@@ -60,7 +60,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             _ => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!(
@@ -86,7 +86,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for arg in args {
             if arg.name.is_some() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     "`List(...)` takes positional element values, not named arguments".to_string(),
@@ -117,7 +117,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if first.name.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`List(...)` takes positional element values, not named arguments".to_string(),
@@ -127,7 +127,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let elem = self.lower_expr(&first.value)?;
         let Some(elem_garg) = elem.as_garg() else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 first.value.span(),
                 format!(
@@ -146,7 +146,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         for arg in rest {
             if arg.name.is_some() {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     "`List(...)` takes positional element values, not named arguments".to_string(),
@@ -247,7 +247,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = base_ty
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 base.span(),
                 format!(
@@ -259,7 +259,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let [key] = keys else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "a local bracket lookup takes exactly one key".to_string(),
@@ -281,7 +281,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                         ),
                     };
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         key.span(),
                         message,
@@ -343,7 +343,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = ty
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 *base_span,
                 format!(
@@ -355,7 +355,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let [key] = keys else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "a local bracket assignment takes exactly one key".to_string(),
@@ -369,7 +369,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } => {
                 if !mutable {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         *base_span,
                         format!("`{name}` is a `const` and cannot be reassigned"),
@@ -385,7 +385,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             CollSpec::List { elem } => {
                 let rhs = simple_value_spelling(value).unwrap_or_else(|| "_".to_string());
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!(
@@ -435,7 +435,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = ty
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 *base_span,
                 format!(
@@ -447,7 +447,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         let [key] = keys else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "a local bracket removal takes exactly one key".to_string(),
@@ -458,7 +458,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             CollSpec::Map { key: key_ty, .. } => {
                 if !mutable {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         *base_span,
                         format!("`{name}` is a `const` and cannot be modified"),
@@ -472,7 +472,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             CollSpec::List { elem } => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     span,
                     format!(
@@ -552,7 +552,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             } => Ok(idx),
             other => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     self.file,
                     expr.span(),
                     format!(

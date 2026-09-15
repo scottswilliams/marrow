@@ -281,7 +281,7 @@ pub(super) fn refusal_summary<'r>(
 /// it could not resolve retains a cause even when it owes no row.
 pub(super) struct AnnotationRefusal {
     pub(super) row: Option<SourceDiagnostic>,
-    pub(super) code: &'static str,
+    pub(super) code: Code,
 }
 
 /// The refusal a type-annotation position reports.
@@ -299,7 +299,7 @@ pub(super) fn annotation_refusal_row(
     Ok(match refusal {
         ResolveRefusal::Limit => AnnotationRefusal {
             row: None,
-            code: Code::CheckInstantiationLimit.as_str(),
+            code: Code::CheckInstantiationLimit,
         },
         ResolveRefusal::Unsupported => {
             let row = unsupported(file, span, subject);
@@ -843,7 +843,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             }
             (Flow::Fallthrough, RetType::Value(_)) => {
                 lowerer.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+                    Code::CheckType,
                     file,
                     function.span,
                     "not all paths return a value".to_string(),
@@ -971,7 +971,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.code_limit_reached = true;
             self.failed = true;
             self.diagnostics.push(SourceDiagnostic::at(
-                Code::CheckResourceLimit.as_str(),
+                Code::CheckResourceLimit,
                 self.file,
                 span,
                 format!(
@@ -1058,7 +1058,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             self.local_limit_reached = true;
             self.failed = true;
             self.diagnostics.push(SourceDiagnostic::at(
-                Code::CheckResourceLimit.as_str(),
+                Code::CheckResourceLimit,
                 self.file,
                 request_span,
                 format!(
@@ -1327,7 +1327,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     fn reject_unification(&mut self, error: UnifyError, span: SourceSpan, subject: &str) {
         match error {
             UnifyError::Mismatch(message) => self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 message,

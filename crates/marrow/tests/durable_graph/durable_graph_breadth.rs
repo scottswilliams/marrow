@@ -49,7 +49,7 @@ fn contract_of(source: &str, ids: &str) -> DurableContractId {
 }
 
 fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code()).collect()
+    diagnostics.iter().map(|d| d.code().as_str()).collect()
 }
 
 // --- Singleton roots: `store ^name: Resource` with no key column. ---

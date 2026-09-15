@@ -21,6 +21,7 @@
 //!    tree — a diamond, where the shared shape is the thing an interned graph
 //!    represents differently.
 
+use marrow_codes::Code;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
@@ -64,7 +65,7 @@ fn nominal_boundaries_reject_a_bound_durable_record() {
         .iter()
         .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
         .collect();
-    assert_eq!(sites, [("check.unsupported", 5, 1)], "{diagnostics:#?}");
+    assert_eq!(sites, [(Code::CheckUnsupported, 5, 1)], "{diagnostics:#?}");
 }
 
 #[test]
@@ -90,7 +91,7 @@ fn nominal_boundaries_include_sparse_and_parked_durable_bindings() {
             .collect();
         assert_eq!(
             sites,
-            [("check.unsupported", 5, 1)],
+            [(Code::CheckUnsupported, 5, 1)],
             "{field}: {diagnostics:#?}"
         );
     }
@@ -103,7 +104,7 @@ fn nominal_boundaries_preserve_the_existing_generic_struct_durable_refusal() {
     // this boundary check does not widen that existing subset.
     let diagnostics = diagnostics(compile(&project(source, Some(&store_ledger(&[])))));
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code(), "check.unsupported");
+    assert_eq!(diagnostics[0].code(), Code::CheckUnsupported);
     assert_eq!((diagnostics[0].line(), diagnostics[0].column()), (5, 1));
 }
 
@@ -130,14 +131,14 @@ fn diagnostics(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<Sour
 fn located_resource_limits(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<String> {
     diagnostics(result)
         .iter()
-        .filter(|diagnostic| diagnostic.code() == "check.resource_limit")
+        .filter(|diagnostic| diagnostic.code() == Code::CheckResourceLimit)
         .map(|diagnostic| {
             format!(
                 "{}:{}:{}: {}: {}",
                 diagnostic.file().as_str(),
                 diagnostic.line(),
                 diagnostic.column(),
-                diagnostic.code(),
+                diagnostic.code().as_str(),
                 diagnostic.message(),
             )
         })
@@ -372,7 +373,7 @@ fn an_enum_payload_leaf_reports_at_the_frozen_span() {
 
 /// Every located row of a failed compile carrying `code`, in report order, rendered
 /// exactly as the CLI spells it.
-fn located_rows(result: Result<impl std::fmt::Debug, CompileFailure>, code: &str) -> Vec<String> {
+fn located_rows(result: Result<impl std::fmt::Debug, CompileFailure>, code: Code) -> Vec<String> {
     diagnostics(result)
         .iter()
         .filter(|diagnostic| diagnostic.code() == code)
@@ -382,7 +383,7 @@ fn located_rows(result: Result<impl std::fmt::Debug, CompileFailure>, code: &str
                 diagnostic.file().as_str(),
                 diagnostic.line(),
                 diagnostic.column(),
-                diagnostic.code(),
+                diagnostic.code().as_str(),
                 diagnostic.message(),
             )
         })
@@ -464,7 +465,7 @@ fn an_unsupported_value_type_draws_one_row_however_many_fields_store_it() {
     let input = project(source, Some(&store_ledger(&["field R.g"])));
     let store_line = source_line(source, "store ^a");
     assert_eq!(
-        located_rows(compile(&input), "check.unsupported"),
+        located_rows(compile(&input), Code::CheckUnsupported),
         vec![format!(
             "src/main.mw:{store_line}:1: check.unsupported: a collection stored directly \
              in a durable field (a large collection belongs under a keyed branch) is not \
@@ -756,7 +757,7 @@ fn an_unsupported_shape_shared_by_two_over_deep_fields_draws_three_rows() {
                 diagnostic.file().as_str(),
                 diagnostic.line(),
                 diagnostic.column(),
-                diagnostic.code(),
+                diagnostic.code().as_str(),
                 diagnostic.message(),
             )
         })

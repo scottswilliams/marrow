@@ -251,7 +251,7 @@ pub(crate) fn reserved_builtin_name(
     name: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckNameConflict.as_str(),
+        Code::CheckNameConflict,
         file,
         span,
         format!("`{name}` is a built-in and cannot be redeclared"),
@@ -284,7 +284,7 @@ pub(super) fn builtin_arity(
     arity: usize,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
-        Code::CheckType.as_str(),
+        Code::CheckType,
         file,
         span,
         format!("`{name}` takes {arity} positional argument(s)"),
@@ -362,7 +362,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("`{name}` takes {arity} positional string argument(s)"),
@@ -390,7 +390,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let arity = if name == "split" { 2 } else { 1 };
         if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("`{name}` takes {arity} positional string argument(s)"),
@@ -430,7 +430,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let text = LTy::bare_scalar(ScalarType::Text);
         if args.len() != 2 || args.iter().any(|arg| arg.name.is_some()) {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`join` takes 2 positional argument(s): a list of string and a separator"
@@ -472,7 +472,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         let spelling = scalar.spelling();
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("`{spelling}` takes one string-literal argument"),
@@ -481,7 +481,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 format!("the `{spelling}` argument is positional"),
@@ -555,7 +555,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             _ => unreachable!("caller passes only a temporal scalar"),
         };
         self.fail(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             self.file,
             span,
             format!(
@@ -599,7 +599,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if first_arg.name.is_some() || second_arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("`{name}` arguments are positional"),
@@ -625,7 +625,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             return Ok(());
         }
         self.fail(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
+            Code::CheckType,
             self.file,
             expr.span(),
             format!(
@@ -645,7 +645,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<LTy> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 format!("`{target}` conversion takes one value"),
@@ -654,7 +654,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 "a conversion argument is positional".to_string(),
@@ -695,7 +695,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<CallResult> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`unreachable` takes one static string literal".to_string(),
@@ -704,7 +704,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 "`unreachable` takes one positional static string literal".to_string(),
@@ -718,7 +718,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = &arg.value
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 "`unreachable` requires a static string literal, not a computed value".to_string(),
@@ -746,7 +746,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     ) -> ConstructResult<CallResult> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 span,
                 "`todo` takes one static string literal".to_string(),
@@ -755,7 +755,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         };
         if arg.name.is_some() {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 "`todo` takes one positional static string literal".to_string(),
@@ -769,7 +769,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
         } = &arg.value
         else {
             self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+                Code::CheckType,
                 self.file,
                 arg.value.span(),
                 "`todo` requires a static string literal, not a computed value".to_string(),
@@ -792,6 +792,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
 mod tests {
     use super::{Builtin, builtin_const_int, builtin_value_names};
     use crate::{CompileFailure, compile};
+    use marrow_codes::Code;
     use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
     /// The integer bounds classify as value built-ins carrying exactly the `i64`
@@ -846,7 +847,7 @@ mod tests {
 
     /// The `(code, message)` rows a source is refused with, or the empty vector when
     /// it compiles clean.
-    fn refusals(source: &str) -> Vec<(&'static str, String)> {
+    fn refusals(source: &str) -> Vec<(Code, String)> {
         match compile(&project(source)) {
             Ok(_) => Vec::new(),
             Err(CompileFailure::Diagnostics(rows)) => rows
@@ -912,7 +913,7 @@ mod tests {
                 );
                 if KEYWORD_RESERVED.contains(&name) {
                     assert!(
-                        rows.iter().any(|(code, _)| *code == "parse.syntax"),
+                        rows.iter().any(|(code, _)| *code == Code::ParseSyntax),
                         "`{name}` is reserved by the lexer, so the parser refuses \
                          {position} before the semantic check: got {rows:?}",
                     );
@@ -921,7 +922,7 @@ mod tests {
                 let expected = format!("`{name}` is a built-in and cannot be redeclared");
                 assert!(
                     rows.iter()
-                        .any(|(code, message)| *code == "check.name_conflict"
+                        .any(|(code, message)| *code == Code::CheckNameConflict
                             && message == &expected),
                     "{position} named `{name}` must be refused as a built-in \
                      redeclaration: got {rows:?}",

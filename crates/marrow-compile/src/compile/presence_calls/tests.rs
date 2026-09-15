@@ -1,4 +1,5 @@
 use super::*;
+use marrow_codes::Code;
 use marrow_image::{
     AdmittedGraphInputPlan, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
     RecordTypeDef, RootOccurrenceDef, Scalar,
@@ -218,7 +219,7 @@ fn reporting_coalesces_only_the_exact_use_and_selects_its_earliest_call() {
     assert_eq!(rows.len(), 4);
     assert!(
         rows.iter()
-            .all(|row| row.code() == "check.requires_presence")
+            .all(|row| row.code() == Code::CheckRequiresPresence)
     );
     assert!(
         rows[0].message().contains("`first`"),
@@ -293,7 +294,7 @@ fn sparse_presence_reports_only_callee_closed_available_functions() {
         1,
         "the caller of the missing body must not be reported"
     );
-    assert_eq!(rows[0].code(), "check.requires_presence");
+    assert_eq!(rows[0].code(), Code::CheckRequiresPresence);
     assert_eq!(rows[0].file(), crate::test_main_file_identity());
     assert_eq!(rows[0].span(), use_span);
     assert!(

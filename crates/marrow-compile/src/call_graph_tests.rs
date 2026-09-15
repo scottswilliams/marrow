@@ -1,6 +1,7 @@
 //! Call-graph, propagation and presence analysis over widening programs, driven
 //! through the production compile path.
 
+use marrow_codes::Code;
 use std::fmt::Write as _;
 
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
@@ -66,18 +67,12 @@ fn durable_project(source: &str, roots: &[String]) -> ProjectInput {
 
 fn diagnostic_rows(
     result: Result<impl std::fmt::Debug, CompileFailure>,
-) -> Vec<(String, String, SourceSpan)> {
+) -> Vec<(Code, String, SourceSpan)> {
     let Err(CompileFailure::Diagnostics(rows)) = result else {
         panic!("expected source diagnostics, got {result:?}");
     };
     rows.iter()
-        .map(|row| {
-            (
-                row.code().to_string(),
-                row.file().as_str().to_string(),
-                row.span(),
-            )
-        })
+        .map(|row| (row.code(), row.file().as_str().to_string(), row.span()))
         .collect()
 }
 
@@ -106,7 +101,7 @@ test "same" {}
     let observed = diagnostic_rows(compile_with_tests(&input));
     assert_eq!(observed.len(), 1);
     let (code, file, span) = &observed[0];
-    assert_eq!(code, "check.name_conflict");
+    assert_eq!(*code, Code::CheckNameConflict);
     assert_eq!(file, "src/main.mw");
     assert_eq!((span.line, span.column), (18, 6));
     assert_eq!(diagnostic_rows(check(&input)), observed);
@@ -243,7 +238,7 @@ fn the_first_matching_eraser_drains_the_query_once() {
     let rows = diagnostic_rows(compile(&input));
     assert_eq!(rows.len(), 1);
     let (code, file, span) = &rows[0];
-    assert_eq!(code, "check.requires_presence");
+    assert_eq!(*code, Code::CheckRequiresPresence);
     assert_eq!(file, "src/main.mw");
     assert_eq!((span.line, span.column), (write_line, 13));
 }

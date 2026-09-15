@@ -33,7 +33,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             LiteralKind::Integer => {
                 let Some(value) = parse_int(text) else {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         "integer literal is out of the 64-bit range".to_string(),
@@ -50,7 +50,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 };
                 if decoded.len() > marrow_image::bounds::MAX_STRING_BYTES {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckResourceLimit.as_str(),
+                        Code::CheckResourceLimit,
                         self.file,
                         span,
                         format!(
@@ -68,7 +68,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // at the constructor rather than reporting a generic unsupported literal.
             LiteralKind::Duration => {
                 self.fail(SourceDiagnostic::at(
-                    Code::CheckUnsupported.as_str(),
+                    Code::CheckUnsupported,
                     self.file,
                     span,
                     "duration suffix literals are not supported; construct a duration \
@@ -83,7 +83,7 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             LiteralKind::DurationWords => {
                 let Some(nanos) = duration_words_nanos(text) else {
                     self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
+                        Code::CheckType,
                         self.file,
                         span,
                         "duration literal is out of the representable range".to_string(),

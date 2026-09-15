@@ -382,7 +382,7 @@ fn local_slot_limit_rejection_is_atomic_and_reported_once() {
     assert_eq!(lowerer.diagnostics.probe_rows().len(), 1);
     assert_eq!(
         lowerer.diagnostics.probe_rows()[0].code(),
-        Code::CheckResourceLimit.as_str()
+        Code::CheckResourceLimit
     );
     assert_eq!(lowerer.diagnostics.probe_rows()[0].span(), request_span);
     assert!(matches!(
@@ -460,7 +460,7 @@ fn code_byte_limit_rejection_precedes_tape_mutation_and_reports_once() {
     assert_eq!(lowerer.diagnostics.probe_rows().len(), 1);
     assert_eq!(
         lowerer.diagnostics.probe_rows()[0].code(),
-        Code::CheckResourceLimit.as_str()
+        Code::CheckResourceLimit
     );
     assert_eq!(lowerer.diagnostics.probe_rows()[0].span(), request_span);
     assert!(matches!(

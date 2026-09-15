@@ -4,6 +4,7 @@
 //! the instantiation bound, and the image-local (no stable identity) nature of
 //! monomorphized instances.
 
+use marrow_codes::Code;
 use marrow_compile::compile_with_tests;
 use marrow_compile::{CompileFailure, CompileInvariant, NonEmptySourceDiagnostics};
 use marrow_compile::{Compiled, SourceDiagnostic, compile};
@@ -31,7 +32,7 @@ fn compile_ok(source: &str) -> Compiled {
 #[test]
 fn nominal_boundaries_reject_a_public_record_input() {
     let source = "module main\ntype Age: int in 0..=150\nstruct Person { age: Age }\npub fn outside(p: Person): bool { return p.age > Age(150) }\n";
-    assert_diagnostic_sites(&compile_err(source), &[("check.unsupported", 4, 19)]);
+    assert_diagnostic_sites(&compile_err(source), &[(Code::CheckUnsupported, 4, 19)]);
 }
 
 #[test]
@@ -54,7 +55,7 @@ fn nominal_boundaries_follow_actual_public_value_leaves() {
         let prelude = format!("module main\ntype Age: int in 0..=150\n{declarations}\n");
         let line = prelude.lines().count() as u32 + 1;
         let source = format!("{prelude}pub fn take(p: {parameter}): int {{ return 0 }}\n");
-        assert_diagnostic_sites(&compile_err(&source), &[("check.unsupported", line, 16)]);
+        assert_diagnostic_sites(&compile_err(&source), &[(Code::CheckUnsupported, line, 16)]);
     }
 }
 
@@ -64,7 +65,7 @@ fn nominal_boundaries_keep_optional_parameters_refused() {
         let source = format!(
             "module main\ntype Age: int in 0..=150\nstruct Person {{ age: Age }}\nalias Maybe = Age?\npub fn take(p: {parameter}): int {{ return 0 }}\n"
         );
-        assert_diagnostic_sites(&compile_err(&source), &[("check.unsupported", 5, 16)]);
+        assert_diagnostic_sites(&compile_err(&source), &[(Code::CheckUnsupported, 5, 16)]);
     }
 }
 
@@ -85,7 +86,7 @@ fn nominal_boundaries_preserve_a_nominal_free_resource_with_generic_fields_and_g
 #[test]
 fn nominal_boundaries_reject_nominals_inside_owned_groups() {
     let source = "module main\ntype Age: int in 0..=150\nresource R {\n    reading: Option<int>\n    details { age: Age }\n}\npub fn take(p: R): int { return 0 }\n";
-    assert_diagnostic_sites(&compile_err(source), &[("check.unsupported", 7, 16)]);
+    assert_diagnostic_sites(&compile_err(source), &[(Code::CheckUnsupported, 7, 16)]);
 }
 
 #[test]
@@ -97,7 +98,7 @@ fn nominal_boundaries_follow_collection_cycles_past_a_shared_node() {
         if leaf == "age: int" {
             compile_ok(&source);
         } else {
-            assert_diagnostic_sites(&compile_err(&source), &[("check.unsupported", 8, 16)]);
+            assert_diagnostic_sites(&compile_err(&source), &[(Code::CheckUnsupported, 8, 16)]);
         }
     }
 }
@@ -123,7 +124,7 @@ fn nominal_boundaries_have_no_durable_depth_cutoff_or_per_export_expansion() {
     // shared graph has 41 identities but exponentially many occurrence paths.
     assert_diagnostic_sites(
         &compile_err(&source),
-        &[("check.unsupported", first_line, 17)],
+        &[(Code::CheckUnsupported, first_line, 17)],
     );
 }
 
@@ -134,7 +135,7 @@ fn nominal_boundaries_preserve_independent_body_diagnostics() {
     );
     assert_diagnostic_sites(
         &diagnostics,
-        &[("check.unsupported", 4, 16), ("check.type", 5, 24)],
+        &[(Code::CheckUnsupported, 4, 16), (Code::CheckType, 5, 24)],
     );
 }
 
@@ -186,7 +187,7 @@ fn compile_files_err(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
     }
 }
 
-fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
+fn has_code(diagnostics: &[SourceDiagnostic], code: Code) -> bool {
     diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code() == code)
@@ -199,19 +200,19 @@ fn assert_one_located_limit(diagnostics: &[SourceDiagnostic], line: u32, column:
         "a limit refusal must not cascade: {diagnostics:#?}"
     );
     let diagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code(), "check.instantiation_limit");
+    assert_eq!(diagnostic.code(), Code::CheckInstantiationLimit);
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (line, column));
 }
 
-fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, u32, u32)]) {
+fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(Code, u32, u32)]) {
     assert!(
         diagnostics
             .iter()
             .all(|diagnostic| diagnostic.file().as_str() == "src/main.mw"),
         "every diagnostic must retain the source file: {diagnostics:#?}"
     );
-    let actual: Vec<(&str, u32, u32)> = diagnostics
+    let actual: Vec<(Code, u32, u32)> = diagnostics
         .iter()
         .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
         .collect();
@@ -228,9 +229,9 @@ fn alias_global_targets_cannot_capture_function_parameters() {
         assert_diagnostic_sites(
             &diagnostics,
             &[
-                ("check.type", 4, return_column),
-                ("check.type", 5, 31),
-                ("check.type", 4, return_column),
+                (Code::CheckType, 4, return_column),
+                (Code::CheckType, 5, 31),
+                (Code::CheckType, 4, return_column),
             ],
         );
     }
@@ -267,7 +268,7 @@ fn public_compile_failure_is_exhaustive_nonempty_and_worker_safe() {
             let expected = diagnostics.as_slice().to_vec();
             assert_diagnostic_sites(
                 diagnostics.as_slice(),
-                &[("check.type", 4, 12), ("check.type", 8, 12)],
+                &[(Code::CheckType, 4, 12), (Code::CheckType, 8, 12)],
             );
 
             let as_ref: &[SourceDiagnostic] = diagnostics.as_ref();
@@ -394,7 +395,7 @@ pub fn driver(): int {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
         diagnostics
             .iter()
@@ -419,7 +420,7 @@ pub fn driver(): int {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
         diagnostics
             .iter()
@@ -444,7 +445,7 @@ pub fn driver(): int {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
         diagnostics
             .iter()
@@ -472,7 +473,7 @@ pub fn driver(): bool {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
         diagnostics
             .iter()
@@ -549,7 +550,7 @@ pub fn driver(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.recursion"),
+        has_code(&diagnostics, Code::CheckRecursion),
         "{diagnostics:#?}"
     );
 }
@@ -574,7 +575,7 @@ pub fn driver(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.instantiation_limit"),
+        has_code(&diagnostics, Code::CheckInstantiationLimit),
         "{diagnostics:#?}"
     );
 }
@@ -767,7 +768,7 @@ pub fn driver(): int {
     ]);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     let diagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code(), "check.instantiation_limit");
+    assert_eq!(diagnostic.code(), Code::CheckInstantiationLimit);
     assert_eq!(diagnostic.file().as_str(), "src/library.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (7, 25));
 }
@@ -1089,7 +1090,7 @@ pub fn driver(): string {
     );
     assert_diagnostic_sites(
         &diagnostics,
-        &[("check.type", 4, 15), ("check.type", 4, 32)],
+        &[(Code::CheckType, 4, 15), (Code::CheckType, 4, 32)],
     );
 }
 
@@ -1151,9 +1152,9 @@ pub fn driver(): int {
     assert_diagnostic_sites(
         &diagnostics,
         &[
-            ("check.instantiation_limit", 15, 17),
-            ("check.unsupported", 7, 22),
-            ("check.unsupported", 11, 22),
+            (Code::CheckInstantiationLimit, 15, 17),
+            (Code::CheckUnsupported, 7, 22),
+            (Code::CheckUnsupported, 11, 22),
         ],
     );
 }
@@ -1189,9 +1190,9 @@ pub fn driver(): int {
     assert_diagnostic_sites(
         &diagnostics,
         &[
-            ("check.instantiation_limit", 7, 17),
-            ("check.unsupported", 11, 22),
-            ("check.unsupported", 15, 22),
+            (Code::CheckInstantiationLimit, 7, 17),
+            (Code::CheckUnsupported, 11, 22),
+            (Code::CheckUnsupported, 15, 22),
         ],
     );
 }
@@ -1213,7 +1214,7 @@ pub fn driver(value: Pair<int, string>): int {
 "#,
     );
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-    assert_eq!(diagnostics[0].code(), "check.unsupported");
+    assert_eq!(diagnostics[0].code(), Code::CheckUnsupported);
     assert_eq!(diagnostics[0].file().as_str(), "src/main.mw");
     assert_eq!((diagnostics[0].line(), diagnostics[0].column()), (7, 22));
 }
@@ -1237,7 +1238,7 @@ pub fn driver(): int {
 }
 "#,
     );
-    assert_diagnostic_sites(&diagnostics, &[("check.unsupported", 8, 18)]);
+    assert_diagnostic_sites(&diagnostics, &[(Code::CheckUnsupported, 8, 18)]);
 }
 
 /// An unused generic template is checked inside an isolated savepoint over the live
@@ -1270,8 +1271,8 @@ pub fn safe(): int {
     assert_diagnostic_sites(
         &diagnostics,
         &[
-            ("check.instantiation_limit", 11, 21),
-            ("check.unsupported", 3, 22),
+            (Code::CheckInstantiationLimit, 11, 21),
+            (Code::CheckUnsupported, 3, 22),
         ],
     );
 }
@@ -1511,7 +1512,7 @@ pub fn safe(): int {
     // the steer is once per refused key.
     assert_diagnostic_sites(
         &diagnostics,
-        &[("check.type", 4, 13), ("check.type", 7, 17)],
+        &[(Code::CheckType, 4, 13), (Code::CheckType, 7, 17)],
     );
 }
 
@@ -1592,7 +1593,7 @@ fn useGood(value: Good<int>): int {
     // declared.
     assert_diagnostic_sites(
         &diagnostics,
-        &[("check.type", 9, 13), ("check.type", 12, 18)],
+        &[(Code::CheckType, 9, 13), (Code::CheckType, 12, 18)],
     );
 }
 
@@ -1645,7 +1646,7 @@ pub fn run(): int {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
 }
 
 /// A generic type's `supports order` constraint is revalidated at construction: an
@@ -1670,7 +1671,7 @@ pub fn run(): int {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
 }
 
 /// A monomorphized generic type cycle (`Tree[int]` directly containing `Tree[int]`)
@@ -1696,7 +1697,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.recursion"),
+        has_code(&diagnostics, Code::CheckRecursion),
         "{diagnostics:#?}"
     );
 }
@@ -1728,12 +1729,12 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.recursion"),
+        has_code(&diagnostics, Code::CheckRecursion),
         "{diagnostics:#?}"
     );
     let cycle = diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code() == "check.recursion")
+        .find(|diagnostic| diagnostic.code() == Code::CheckRecursion)
         .expect("a recursion diagnostic");
     assert!(
         cycle.message().contains("Loop<int>"),
@@ -1762,7 +1763,7 @@ pub fn run(): int {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
         diagnostics
             .iter()
@@ -1792,7 +1793,7 @@ pub fn f(): Result<int, int> {
 }
 "#,
     );
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
     assert!(
         diagnostics
             .iter()
@@ -1846,7 +1847,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.instantiation_limit"),
+        has_code(&diagnostics, Code::CheckInstantiationLimit),
         "{diagnostics:#?}"
     );
 }
@@ -1869,7 +1870,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.name_conflict"),
+        has_code(&diagnostics, Code::CheckNameConflict),
         "{diagnostics:#?}"
     );
 }
@@ -1914,7 +1915,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.unsupported"),
+        has_code(&diagnostics, Code::CheckUnsupported),
         "{diagnostics:#?}"
     );
     assert!(
@@ -1941,7 +1942,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.unsupported"),
+        has_code(&diagnostics, Code::CheckUnsupported),
         "{diagnostics:#?}"
     );
     assert!(
@@ -1965,7 +1966,7 @@ pub fn run(): Result<Map<int, int>, int> {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.unsupported"),
+        has_code(&diagnostics, Code::CheckUnsupported),
         "{diagnostics:#?}"
     );
     assert!(
@@ -1995,7 +1996,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.unsupported"),
+        has_code(&diagnostics, Code::CheckUnsupported),
         "{diagnostics:#?}"
     );
     assert!(
@@ -2025,7 +2026,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.unsupported"),
+        has_code(&diagnostics, Code::CheckUnsupported),
         "{diagnostics:#?}"
     );
     assert!(
@@ -2050,7 +2051,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.unsupported"),
+        has_code(&diagnostics, Code::CheckUnsupported),
         "{diagnostics:#?}"
     );
     assert!(
@@ -2078,7 +2079,7 @@ pub fn run(): int {
 "#,
     );
     assert!(
-        has_code(&diagnostics, "check.unsupported"),
+        has_code(&diagnostics, Code::CheckUnsupported),
         "{diagnostics:#?}"
     );
     assert!(
@@ -2215,7 +2216,7 @@ pub fn driver(): int {
         1,
         "the failed proof must not cascade into sibling templates or concrete work: {diagnostics:#?}"
     );
-    assert_eq!(diagnostics[0].code(), "check.type");
+    assert_eq!(diagnostics[0].code(), Code::CheckType);
     assert!(
         diagnostics[0].message().contains("supports order"),
         "{diagnostics:#?}"
@@ -2237,7 +2238,7 @@ fn a_type_parameter_past_the_u16_domain_does_not_alias_ordinal_zero() {
     // The control: the shape at width two is a mismatch.
     let diagnostics =
         compile_err("module main\n\nfn wrap<A, B>(a: A, b: B): B {\n    return a\n}\n");
-    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(has_code(&diagnostics, Code::CheckType), "{diagnostics:#?}");
 
     // The same shape at width 65,537: the last parameter's position exceeds `u16`.
     let mut source = String::from("module main\n\nfn wrap<");
@@ -2250,7 +2251,7 @@ fn a_type_parameter_past_the_u16_domain_does_not_alias_ordinal_zero() {
     source.push_str(">(a: T0, b: T65536): T65536 {\n    return a\n}\n");
     let diagnostics = compile_err(&source);
     assert!(
-        has_code(&diagnostics, "check.type"),
+        has_code(&diagnostics, Code::CheckType),
         "the position-65,536 parameter must not alias ordinal 0: {diagnostics:#?}",
     );
 }
@@ -2286,7 +2287,7 @@ fn aliases_and_type_parameters_keep_distinct_bindings_in_type_templates() {
         compile_ok(&source);
         let diagnostics = compile_err(&source.replace("saved: Item(value: 1)", "saved: false"));
         assert!(
-            diagnostics.iter().any(|row| row.code() == "check.type"),
+            diagnostics.iter().any(|row| row.code() == Code::CheckType),
             "{diagnostics:#?}"
         );
     }
@@ -2303,7 +2304,7 @@ fn optional_aliases_remain_global_in_generic_function_annotations() {
     assert!(
         diagnostics
             .iter()
-            .any(|row| row.code() == "check.unsupported")
+            .any(|row| row.code() == Code::CheckUnsupported)
     );
 }
 

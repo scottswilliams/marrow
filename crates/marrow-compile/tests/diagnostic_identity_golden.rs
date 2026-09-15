@@ -36,6 +36,7 @@
 //! two different modules (so an owner returning one module for every row is caught,
 //! which a single-file corpus cannot see).
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_image::bounds;
 use marrow_project::ProjectInput;
@@ -51,14 +52,14 @@ mod project_capture;
 /// The message is part of the shape rather than context. Recursion-cycle membership
 /// is spelled only in the prose, so a tuple without it would pass a rewrite that
 /// reported the right number of rows at the right spans naming the wrong functions.
-fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(String, String, u32, u32, String)> {
+fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(String, Code, u32, u32, String)> {
     diagnostics
         .iter()
         .map(|row| {
             let span = row.span();
             (
                 row.file().as_str().to_string(),
-                row.code().to_string(),
+                row.code(),
                 span.line,
                 span.column,
                 row.message().to_string(),
@@ -81,7 +82,7 @@ fn artifact(diagnostics: &[SourceDiagnostic]) -> String {
     rows(diagnostics)
         .into_iter()
         .map(|(file, code, line, column, message)| {
-            format!("{file}:{line}:{column} {code} {message}")
+            format!("{file}:{line}:{column} {} {message}", code.as_str())
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -778,7 +779,7 @@ fn an_over_wide_tuple_reports_its_width_rather_than_a_column_type() {
         rows(&diagnostics),
         vec![(
             "src/main.mw".to_string(),
-            "check.resource_limit".to_string(),
+            Code::CheckResourceLimit,
             7,
             7,
             "a store root key tuple has 9 columns; the fixed limit is 8".to_string(),
@@ -853,7 +854,7 @@ fn a_branch_key_refusal_is_attributed_to_the_declaring_module() {
         vec![
             (
                 "src/model.mw".to_string(),
-                "check.type".to_string(),
+                Code::CheckType,
                 10,
                 1,
                 "a durable key column must be an orderable durable-key scalar (int, string, \
@@ -862,7 +863,7 @@ fn a_branch_key_refusal_is_attributed_to_the_declaring_module() {
             ),
             (
                 "src/model.mw".to_string(),
-                "check.unsupported".to_string(),
+                Code::CheckUnsupported,
                 14,
                 1,
                 "this key type is not yet supported on the beta line".to_string(),
@@ -907,14 +908,14 @@ fn a_value_cycle_is_reported_at_the_concrete_declaration_not_a_homonym_template(
         vec![
             (
                 "src/main.mw".to_string(),
-                "check.name_conflict".to_string(),
+                Code::CheckNameConflict,
                 3,
                 8,
                 "`A` is already declared as a struct".to_string(),
             ),
             (
                 "src/main.mw".to_string(),
-                "check.recursion".to_string(),
+                Code::CheckRecursion,
                 7,
                 8,
                 "value type `A` contains itself through the cycle A -> A".to_string(),

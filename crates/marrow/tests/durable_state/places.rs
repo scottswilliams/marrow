@@ -576,7 +576,7 @@ fn compile_diagnostics_with_ids(source: &str, ids: &str) -> Vec<(String, u32, u3
         Ok(_) => Vec::new(),
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
             .iter()
-            .map(|d| (d.code().to_string(), d.line(), d.column()))
+            .map(|d| (d.code().as_str().to_string(), d.line(), d.column()))
             .collect(),
         Err(
             marrow_compile::CompileFailure::Invariant(_)
