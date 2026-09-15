@@ -37,7 +37,9 @@ mod traversal;
 mod conformance;
 
 pub use engine::limits::{MAX_KEY_LEN, MAX_VALUE_LEN, SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS};
-pub use engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn};
+pub use engine::{
+    ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn, batch_is_full, cell_within_limits,
+};
 pub use error::StoreError;
 pub use mem::MemoryEngine;
 #[cfg(feature = "native")]
@@ -71,6 +73,8 @@ mod public_surface_audit {
             write_txn::<crate::mem::MemTxn<'static>>,
             byte_engine::<MemoryEngine>,
         );
+        let _limits: (fn(&[u8], &[u8]) -> bool, fn(usize, usize, usize) -> bool) =
+            (cell_within_limits, batch_is_full);
         // Concrete types and constructors.
         let _cell: Cell = (Vec::new(), Vec::new());
         let _outcomes = [

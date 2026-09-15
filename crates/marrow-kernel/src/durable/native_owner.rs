@@ -40,25 +40,45 @@ pub struct NativeStoreOwner {
     instance: [u8; 16],
 }
 
+/// Compose the semantic store over a freshly opened engine: the ceiling the
+/// engine's own write access admits, and a recovery scope naming exactly the
+/// instance and directory this owner holds.
+fn bind_store(
+    engine: NativeEngineOwner,
+    layout: NumberedProjection,
+    instance: [u8; 16],
+    directory: &Path,
+) -> DurableStore<NativeEngineOwner> {
+    let ceiling = DemandCoverage {
+        read: true,
+        write: engine.require_write_access("open").is_ok(),
+    };
+    let scope = CommitRecoveryScope::persistent(instance, directory);
+    DurableStore::from_numbered_with_ceiling_and_recovery_scope(engine, layout, ceiling, scope)
+}
+
 impl NativeStoreOwner {
+    /// The semantic store this owner holds.
+    fn store(&self) -> &DurableStore<NativeEngineOwner> {
+        self.store
+            .as_ref()
+            .expect("a live native owner retains its semantic store")
+    }
+
+    /// Take the semantic store out for a consuming reopen.
+    fn take_store(&mut self) -> DurableStore<NativeEngineOwner> {
+        self.store
+            .take()
+            .expect("a live native owner retains its semantic store")
+    }
+
     /// Consume read-only access into service without replacing the accepted
     /// layout or releasing the directory owner. Unchanged admitted bytes take
     /// the saved allocator path; external same-inode mutation is not detected.
     pub fn into_service(mut self) -> Result<Self, NativeOwnerOpenError<NativePromotionRefusal>> {
-        let store = self
-            .store
-            .take()
-            .expect("a live native owner retains its semantic store");
-        let (engine, layout) = store.into_parts();
+        let (engine, layout) = self.take_store().into_parts();
         let engine = engine.into_service(self.instance)?;
-        let ceiling = DemandCoverage {
-            read: true,
-            write: engine.require_write_access("open").is_ok(),
-        };
-        let scope = CommitRecoveryScope::persistent(self.instance, &self.directory);
-        self.store = Some(DurableStore::from_numbered_with_ceiling_and_recovery_scope(
-            engine, layout, ceiling, scope,
-        ));
+        self.store = Some(bind_store(engine, layout, self.instance, &self.directory));
         Ok(self)
     }
 
@@ -87,23 +107,12 @@ impl NativeStoreOwner {
         mut self,
         recovery: CommitRecovery,
     ) -> (DurableCommitState, Option<Self>) {
-        let store = self
-            .store
-            .take()
-            .expect("a live native owner retains its semantic store");
-        let (engine, layout) = store.into_parts();
+        let (engine, layout) = self.take_store().into_parts();
         let engine = match engine.reopen_existing_and_audit() {
             Ok(engine) => engine,
             Err(_) => return (DurableCommitState::Unknown, None),
         };
-        let ceiling = DemandCoverage {
-            read: true,
-            write: engine.require_write_access("open").is_ok(),
-        };
-        let scope = CommitRecoveryScope::persistent(self.instance, &self.directory);
-        let mut reopened = DurableStore::from_numbered_with_ceiling_and_recovery_scope(
-            engine, layout, ceiling, scope,
-        );
+        let mut reopened = bind_store(engine, layout, self.instance, &self.directory);
         let state = reopened.classify_recovery(recovery);
         if state == DurableCommitState::Unknown {
             return (state, None);
@@ -118,10 +127,7 @@ impl NativeStoreOwner {
         &self,
         digest: &mut dyn ContentDigest,
     ) -> Result<AuditReport, SessionError> {
-        self.store
-            .as_ref()
-            .expect("a live native owner retains its semantic store")
-            .logical_audit(digest)
+        self.store().logical_audit(digest)
     }
 
     fn store_mut(&mut self) -> &mut DurableStore<NativeEngineOwner> {
@@ -137,10 +143,7 @@ impl NativeStoreOwner {
         digest: &mut dyn ContentDigest,
         sink: &mut dyn ExportSink,
     ) -> Result<AuditReport, ExportError> {
-        self.store
-            .as_ref()
-            .expect("a live native owner retains its semantic store")
-            .export_cells(digest, sink)
+        self.store().export_cells(digest, sink)
     }
 }
 
@@ -215,16 +218,11 @@ impl PendingNativeStoreOwner {
             layout = Some(admit()?);
             Ok(())
         })?;
-        let ceiling = DemandCoverage {
-            read: true,
-            write: engine.require_write_access("open").is_ok(),
-        };
-        let scope = CommitRecoveryScope::persistent(instance, &directory);
-        let store = DurableStore::from_numbered_with_ceiling_and_recovery_scope(
+        let store = bind_store(
             engine,
             layout.expect("successful engine open completed admission"),
-            ceiling,
-            scope,
+            instance,
+            &directory,
         );
         Ok(NativeStoreOwner {
             store: Some(store),

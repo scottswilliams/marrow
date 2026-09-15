@@ -2,8 +2,8 @@
 //! No ordinary session or native service owner exposes raw cell writes.
 
 use marrow_store::{
-    ByteEngine, Cell, CommitOutcome, MAX_KEY_LEN, MAX_VALUE_LEN, ReadView,
-    SCAN_MAX_AGGREGATE_BYTES, SCAN_MAX_RECORDS, StoreError, WriteTxn,
+    ByteEngine, Cell, CommitOutcome, ReadView, SCAN_MAX_RECORDS, StoreError, WriteTxn,
+    batch_is_full, cell_within_limits,
 };
 
 use super::audit::{self, AuditReport, ContentDigest, Tables};
@@ -52,7 +52,7 @@ pub(super) fn populate<E: ByteEngine, R>(
         let Some((key, value)) = next().map_err(RestoreError::Input)? else {
             break;
         };
-        if key.len() > MAX_KEY_LEN || value.len() > MAX_VALUE_LEN {
+        if !cell_within_limits(&key, &value) {
             return Err(RestoreError::CellLimit);
         }
         if previous.as_ref().is_some_and(|before| before >= &key) {
@@ -65,9 +65,7 @@ pub(super) fn populate<E: ByteEngine, R>(
             return Err(RestoreError::OutsideNamespace);
         }
         let size = key.len() + value.len();
-        if !batch.is_empty()
-            && (batch.len() == SCAN_MAX_RECORDS || bytes + size > SCAN_MAX_AGGREGATE_BYTES)
-        {
+        if batch_is_full(batch.len(), bytes, size) {
             commit(engine, &mut batch)?;
             bytes = 0;
         }
@@ -103,7 +101,7 @@ mod tests {
     use super::*;
     use crate::codec::{key::KeyScalar, value::ScalarKind};
     use crate::durable::{StoreProjection, StoreSchemaBuilder, number_store, physical};
-    use marrow_store::MemoryEngine;
+    use marrow_store::{MAX_VALUE_LEN, MemoryEngine};
 
     struct Digest;
     impl ContentDigest for Digest {

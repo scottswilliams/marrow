@@ -26,8 +26,8 @@
 use crate::error::StoreError;
 
 /// Bounds every batch the engine returns or admits, so no operation allocates
-/// unbounded work (campaign law 9). The values are engine policy; the kernel
-/// keys and values it stores sit far below them.
+/// unbounded work. The values are engine policy; the kernel keys and values it
+/// stores sit far below them.
 pub(crate) mod limits {
     /// The largest key the engine will store. A key beyond this is a
     /// [`LimitExceeded`](crate::error::StoreError::LimitExceeded).
@@ -140,6 +140,28 @@ pub trait ByteEngine {
     /// per-caller unbounded work. A backend with nothing durable beneath it
     /// (the in-memory engine) has nothing to walk and passes trivially.
     fn audit_integrity(&mut self) -> Result<(), StoreError>;
+}
+
+/// Whether one cell is within the engine's key and value limits. This is the
+/// predicate, so a producer that must classify an oversized cell as its own
+/// refusal asks here instead of comparing against the bare constants.
+#[must_use]
+pub fn cell_within_limits(key: &[u8], value: &[u8]) -> bool {
+    key.len() <= limits::MAX_KEY_LEN && value.len() <= limits::MAX_VALUE_LEN
+}
+
+/// Whether a batch of `records` cells totalling `bytes` must be closed before a
+/// cell of `next` bytes joins it.
+///
+/// This is the engine's paging rule, shared by the `scan_after` collector and
+/// by any producer writing batches the engine will page back. An empty batch
+/// always admits one more cell, so a cell at or beyond the aggregate limit
+/// still makes progress instead of stalling behind it.
+#[must_use]
+pub fn batch_is_full(records: usize, bytes: usize, next: usize) -> bool {
+    records > 0
+        && (records >= limits::SCAN_MAX_RECORDS
+            || bytes.saturating_add(next) > limits::SCAN_MAX_AGGREGATE_BYTES)
 }
 
 /// Reject a key or value that exceeds its batch limit before it is staged.

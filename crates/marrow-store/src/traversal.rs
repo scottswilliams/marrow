@@ -1,6 +1,6 @@
 //! The bounded forward `scan_after` collector shared by the two engines.
 
-use crate::engine::{Cell, limits};
+use crate::engine::{Cell, batch_is_full};
 use crate::error::StoreError;
 
 pub(crate) trait ScanEntry {
@@ -39,14 +39,12 @@ where
         if !key.starts_with(prefix) {
             break;
         }
-        if out.len() == limits::SCAN_MAX_RECORDS {
-            break;
-        }
         let value = entry.value();
-        aggregate = aggregate.saturating_add(key.len() + value.len());
-        if aggregate > limits::SCAN_MAX_AGGREGATE_BYTES && !out.is_empty() {
+        let size = key.len() + value.len();
+        if batch_is_full(out.len(), aggregate, size) {
             break;
         }
+        aggregate = aggregate.saturating_add(size);
         out.push((key.to_vec(), value.to_vec()));
     }
     Ok(out)
