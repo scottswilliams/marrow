@@ -17,13 +17,9 @@
 //! call. It is deliberately not a set comparison and deliberately not a code-only
 //! comparison: both would pass a reordering.
 //!
-//! **Pattern of record.** No diagnostic-identity golden existed in this tree before
-//! this suite; the shapes it composes are the ordered `(file, code, line, column)`
-//! tuple of `declaration_causality.rs` and the exact `codes()` vector of
-//! `semantic_availability.rs`, extended with the rendered message because cycle
-//! *membership* is carried in the prose ("`name` is part of a recursive call
-//! cycle") and nowhere else. A later diagnostic-preserving conversion of a
-//! whole-program analysis should cite this file rather than invent a fourth shape.
+//! The compared shape is the ordered `(file, code, line, column)` tuple extended with
+//! the rendered message, because cycle *membership* is carried in the prose ("`name`
+//! is part of a recursive call cycle") and nowhere else.
 //!
 //! **What a corpus must contain to be worth pinning.** Each fixture below is built
 //! so that a plausible wrong answer is observable: several disjoint cycles rather
@@ -41,10 +37,7 @@ use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_image::bounds;
 use marrow_project::ProjectInput;
 
-#[path = "common/ids.rs"]
-mod ids;
-#[path = "common/project.rs"]
-mod project_capture;
+use super::{ids, project_capture};
 
 /// Every row a compilation reports, as the ordered artifact this suite compares:
 /// `(file, code, line, column, message)`.
@@ -721,10 +714,9 @@ fn the_key_width_corpus_carries_both_tuple_subjects() {
 /// The two refusals are ranked: the width cap is reported and the key type is not.
 /// A tuple past the fixed width has no admissible column list to judge, so telling
 /// its author about one column's type first would steer them at the smaller of two
-/// faults. The ranking used to be the order two consumers happened to test in; it is
-/// now the order the key table answers in, and this corpus is what holds it — the
-/// key-width corpus alone keeps passing with the ranking inverted, because none of
-/// its tuples is both.
+/// faults. The ranking is the order the key table answers in, and this corpus is what
+/// holds it — the key-width corpus alone keeps passing with the ranking inverted,
+/// because none of its tuples is both.
 const KEY_RANK_MAIN: &str = r#"module main
 
 resource Plain {

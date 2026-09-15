@@ -5,11 +5,10 @@
 //! `panic!`, `unreachable!`, `todo!`, `unimplemented!`) in non-test builds
 //! (`crates/marrow-compile/src/lib.rs`); each surviving invariant guard carries a
 //! narrow `#[allow(clippy::..., reason = "...")]` naming the earlier stage that
-//! establishes it. That compiler-native enforcement makes an added or moved
-//! explicit abort fail Clippy at its own site, so this file no longer scans
-//! source text.
+//! establishes it. That compiler-native enforcement makes an added or moved explicit
+//! abort fail Clippy at its own site, so no source-text scan is needed here.
 //!
-//! What remains is behavioral: one adversarial source shape per invariant class
+//! What this file owns is behavioral: one adversarial source shape per invariant class
 //! is driven through the production `compile` path and must come back as a typed
 //! diagnostic. A `compile` that returned `Err` proves lowering did not abort, and
 //! the asserted code proves the checker intercepted the shape before a lowering
@@ -19,7 +18,9 @@
 
 use marrow_codes::Code;
 use marrow_compile::{SourceDiagnostic, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_project::ProjectInput;
+
+use super::project_capture;
 
 const EXPRS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/exprs.rs");
 
@@ -46,13 +47,7 @@ fn generic_enum_dispatch_binds_one_template_lookup() {
 }
 
 fn project(source: &str) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
+    project_capture::project(&[("src/main.mw", source)])
 }
 
 /// `compile` must return a diagnostic carrying `code`, not panic and not succeed.

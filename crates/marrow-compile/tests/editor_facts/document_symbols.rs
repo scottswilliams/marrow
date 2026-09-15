@@ -9,28 +9,8 @@ use marrow_compile::{
     AnalysisSnapshot, DeclKind, DeclSymbol, Fact, InputRevision, MAX_DOCUMENT_SYMBOLS_PER_FILE,
     MAX_SYMBOL_DEPTH, QueryError, Unavailability, analyze, compile_with_tests,
 };
-use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
-fn project(files: &[(&str, &str)]) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
-
-fn snap(files: &[(&str, &str)]) -> Arc<AnalysisSnapshot> {
-    let Ok(snapshot) = analyze(Arc::new(project(files)), InputRevision::new(1)) else {
-        panic!("expected an analysis snapshot for {files:?}");
-    };
-    snapshot
-}
-
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
-}
+use super::{identity, project, snap};
 
 /// The present symbol tree for a file, or a panic naming the non-present outcome.
 fn present<'a>(snapshot: &'a AnalysisSnapshot, path: &str) -> &'a [DeclSymbol] {

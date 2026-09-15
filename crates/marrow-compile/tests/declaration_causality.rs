@@ -14,8 +14,8 @@
 //! declared sit at the same span under the same code, because the steer reuses the
 //! *declaring* code rather than minting one of its own.
 //!
-//! The one prose assertion left is negative — that a refused name is never called
-//! out of scope — which is the fabrication these fixtures exist to kill.
+//! The one prose assertion is negative — that a refused name is never called out of
+//! scope — which is the fabrication these fixtures exist to rule out.
 
 use marrow_codes::Code;
 use marrow_compile::{
@@ -56,7 +56,7 @@ fn captured(sources: &[(&str, String)], ids: Option<&[u8]>) -> ProjectInput {
 ///
 /// The identity gap is the one refusal class entitled to the "see the
 /// `check.durable_identity` reports" steer, and with no ledger *every* store refuses
-/// that way first, so a red for any other durable refusal class has to mint past it.
+/// that way first, so any other durable refusal class has to mint past it.
 fn with_minted_ids(sources: &[(&str, String)]) -> ProjectInput {
     ids::minted(|ledger| captured(sources, ledger))
 }
@@ -89,7 +89,7 @@ fn snapshot_diagnostics(input: ProjectInput) -> Vec<SourceDiagnostic> {
     snapshot.diagnostics().to_vec()
 }
 
-/// Every row, as `(file, code, line, column)` — the typed shape a red asserts.
+/// Every row, as `(file, code, line, column)` — the shape these fixtures assert.
 ///
 /// The file is part of the shape, not context: a multi-file fixture that asserted
 /// only `(code, line, column)` would pass with every row attributed to the wrong
@@ -277,7 +277,7 @@ fn a_refused_constant_occupies_its_name_when_declared_second() {
 /// refused declaration never reaches the encoder, and a collector at its ceiling
 /// keeps admitting and discarding while the pass runs on.
 #[test]
-fn e9_crossing_the_ledger_ceiling_is_a_typed_resource_limit() {
+fn crossing_the_ledger_ceiling_is_a_typed_resource_limit() {
     // Each refused constant retains its name plus the summary's fixed footprint, so
     // wide names cross the 1 MiB ceiling in a project well inside the capture
     // limits. `1 + 2` is a non-literal value, refused with `check.unsupported`.
@@ -330,14 +330,13 @@ fn the_ledger_ceiling_is_one_budget_across_namespaces() {
 }
 
 // ---------------------------------------------------------------------------
-// Durable roots — I-3, I-9, I-10
+// Durable roots
 //
 // A `store` root refused for any reason other than a missing ledger identity is
 // dropped from the registry entirely, so every `^root` reference reads as an
-// unknown name. The identity class is the one class already retained, and it is
-// also the one class entitled to the "see the `check.durable_identity` reports"
-// steer — which nine of the ten refusal sites give it wrongly today, naming
-// reports that were never made.
+// unknown name. The identity class is the one class retained, and the one class
+// entitled to the "see the `check.durable_identity` reports" steer: any other
+// refusal site naming that steer points at reports that were never made.
 // ---------------------------------------------------------------------------
 
 /// Every diagnostic row's message, for the negative assertions below.
@@ -660,17 +659,17 @@ fn a_root_refused_for_a_value_cycle_names_the_recursion_cause() {
 }
 
 // ---------------------------------------------------------------------------
-// Resource members — I-7
+// Resource members
 //
 // The one namespace that drops a *member* and keeps the declaration, so the record
 // survives with a silently narrowed field set and every lookup of the dropped
 // member makes a false statement about the source.
 // ---------------------------------------------------------------------------
 
-/// the over-suppression guard, and R15's mutation-kill partner. A field that
-/// really is not declared still says so. Member granularity must distinguish a
-/// member the compiler refused from one the source never wrote; suppressing both
-/// would trade a false absence for a missing report.
+/// The over-suppression guard: a field that really is not declared still says so.
+/// Member granularity must distinguish a member the compiler refused from one the
+/// source never wrote; suppressing both would trade a false absence for a missing
+/// report.
 #[test]
 fn a_genuinely_absent_field_is_still_reported_as_absent() {
     let diagnostics = diagnostics(
@@ -758,7 +757,7 @@ fn a_refused_member_does_not_narrow_the_identity_gap_set() {
 }
 
 // ---------------------------------------------------------------------------
-// Named types — I-2
+// Named types
 //
 // Every named-type lookup funnels into one untyped bucket, so a use of a type this
 // project declared and the compiler refused is reported as a *language* gap: "not
@@ -767,8 +766,8 @@ fn a_refused_member_does_not_narrow_the_identity_gap_set() {
 // is steered to the cause instead).
 // ---------------------------------------------------------------------------
 
-/// a struct refused for a bad field. The construction resolves through the
-/// struct table, not through annotation resolution, so it reached its own
+/// A struct refused for a bad field. The construction resolves through the struct
+/// table, not through annotation resolution, so without the steer it reaches its own
 /// not-in-scope report: `Point` is not in scope, of a struct declared six lines
 /// above whose field the compiler had just diagnosed.
 #[test]
@@ -829,88 +828,79 @@ fn a_refused_enum_steers_its_qualified_use_to_the_payload_report() {
     );
 }
 
-/// an alias over an unknown target. Today the annotation blames the language;
-/// the alias's own `check.type` report two lines above is never connected to it.
-#[test]
-fn a_refused_alias_steers_its_annotation_to_the_alias_report() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         alias Count = Nope\n\n\
-         pub fn make(c: Count): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
-
-    assert_steers_to(
-        &diagnostics,
-        DeclarationNamespace::NamedType,
-        Code::CheckType,
-        RefusalReport::AtDeclaration,
-    );
-    assert_eq!(
-        rows(&diagnostics),
-        vec![
-            ("src/main.mw", Code::CheckType, 3, 1),
-            ("src/main.mw", Code::CheckType, 5, 16)
-        ],
-        "the alias reports the cause and the annotation is steered to it",
-    );
+/// One refused type declaration, and the annotation that must be steered to its cause.
+struct AnnotationSteerCase {
+    /// The refusal under test.
+    refusal: &'static str,
+    source: &'static str,
+    /// The code the declaration was refused under, which the steer reuses so one code
+    /// leads to one fix.
+    declaring_code: Code,
+    /// Every reported row as `(line, column)`; each carries `declaring_code`.
+    rows: &'static [(u32, u32)],
 }
 
-/// a cyclic alias chain. The steer carries `check.recursion`, the code of the
-/// report the reader must act on, not a subset-gap phrase.
+/// A type annotation naming a declaration the compiler refused reports that
+/// declaration's own code, never a subset-gap phrase about the language.
+const ANNOTATION_STEERS: &[AnnotationSteerCase] = &[
+    AnnotationSteerCase {
+        refusal: "an alias over an unknown target",
+        source: "module main\n\n\
+                 alias Count = Nope\n\n\
+                 pub fn make(c: Count): int {\n\
+                 \x20   return 1\n\
+                 }\n",
+        declaring_code: Code::CheckType,
+        rows: &[(3, 1), (5, 16)],
+    },
+    AnnotationSteerCase {
+        refusal: "a cyclic alias chain",
+        source: "module main\n\n\
+                 alias A = B\n\
+                 alias B = A\n\n\
+                 pub fn make(c: A): int {\n\
+                 \x20   return 1\n\
+                 }\n",
+        declaring_code: Code::CheckRecursion,
+        rows: &[(3, 7), (4, 7), (6, 16)],
+    },
+    AnnotationSteerCase {
+        refusal: "a nominal type whose interval admits no values",
+        source: "module main\n\n\
+                 type Age: int in 10..=0\n\n\
+                 pub fn make(a: Age): int {\n\
+                 \x20   return 1\n\
+                 }\n",
+        declaring_code: Code::CheckType,
+        rows: &[(3, 18), (5, 16)],
+    },
+];
+
 #[test]
-fn a_cyclic_alias_steers_its_annotation_to_the_recursion_report() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         alias A = B\n\
-         alias B = A\n\n\
-         pub fn make(c: A): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
+fn a_refused_type_declaration_steers_its_annotation_to_its_own_report() {
+    for case in ANNOTATION_STEERS {
+        let diagnostics = diagnostics(case.source);
 
-    assert_steers_to(
-        &diagnostics,
-        DeclarationNamespace::NamedType,
-        Code::CheckRecursion,
-        RefusalReport::AtDeclaration,
-    );
-    assert_eq!(
-        rows(&diagnostics),
-        vec![
-            ("src/main.mw", Code::CheckRecursion, 3, 7),
-            ("src/main.mw", Code::CheckRecursion, 4, 7),
-            ("src/main.mw", Code::CheckRecursion, 6, 16),
-        ],
-    );
-}
-
-/// a nominal type whose interval admits no values. The declaration is refused
-/// for a `check.type` and the annotation reuses that code.
-#[test]
-fn a_refused_nominal_steers_its_annotation_to_the_interval_report() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         type Age: int in 10..=0\n\n\
-         pub fn make(a: Age): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
-
-    assert_steers_to(
-        &diagnostics,
-        DeclarationNamespace::NamedType,
-        Code::CheckType,
-        RefusalReport::AtDeclaration,
-    );
-    assert_eq!(
-        rows(&diagnostics),
-        vec![
-            ("src/main.mw", Code::CheckType, 3, 18),
-            ("src/main.mw", Code::CheckType, 5, 16)
-        ],
-    );
+        assert_steers_to(
+            &diagnostics,
+            DeclarationNamespace::NamedType,
+            case.declaring_code,
+            RefusalReport::AtDeclaration,
+        );
+        let expected: Vec<(&str, Code, u32, u32)> = case
+            .rows
+            .iter()
+            .map(|(line, column)| ("src/main.mw", case.declaring_code, *line, *column))
+            .collect();
+        assert_eq!(
+            rows(&diagnostics),
+            expected,
+            "{}: the declaration reports the cause and the annotation is steered to it: \
+             {:#?}",
+            case.refusal,
+            messages(&diagnostics),
+        );
+    }
 }
 
 /// the cascade split. A refused declaration in one parameter must not absorb
@@ -975,9 +965,9 @@ fn a_refused_type_is_never_named_as_another_names_cause() {
 /// a generic template's defect is reported at its declaration.
 ///
 /// A template's member types are resolved per instantiation, so a member naming an
-/// undeclared type used to be reported only at a *construction* site, blaming the
-/// construction. The declaring cause was reported zero times — the same invariant
-/// broken downward rather than upward.
+/// undeclared type must still report its cause at the declaration: reporting only at
+/// a *construction* site blames the construction and reports the declaring cause
+/// zero times.
 #[test]
 fn a_refused_template_is_reported_at_its_declaration() {
     let diagnostics = diagnostics(
@@ -1002,8 +992,8 @@ fn a_refused_template_is_reported_at_its_declaration() {
     );
 }
 
-/// The same template with no use at all. A declaration nothing constructs used to
-/// compile clean at exit zero, because the only report was at a construction site.
+/// The same template with no use at all. Reporting only at a construction site would
+/// let a declaration nothing constructs compile clean at exit zero.
 #[test]
 fn a_refused_template_is_reported_even_with_no_use() {
     let diagnostics = diagnostics(
@@ -1056,7 +1046,7 @@ fn a_refused_template_steers_its_annotation_to_the_member_report() {
 
 /// named types — a refused nominal still occupies its name, so a redeclaration
 /// conflicts. The duplicate check reads the ledger, which retains the refused
-/// occurrence, rather than the accepted-only table it used to scan.
+/// occurrence, rather than the accepted-only table.
 #[test]
 fn a_refused_nominal_occupies_its_name() {
     let diagnostics = diagnostics(
@@ -1140,8 +1130,7 @@ fn a_resource_member_occupies_its_name() {
 // past a signature that was never built.
 // ---------------------------------------------------------------------------
 
-/// The scheduler-ordered red for the truncated-signature arity corruption. A
-/// function whose parameter type was refused must be refused whole: no signature
+/// A function whose parameter type was refused is refused whole: no signature
 /// with a short parameter list may enter the table, and the image index must not
 /// advance past a signature that was never built.
 ///
@@ -1241,7 +1230,7 @@ fn a_return_type_refused_behind_an_accepted_duplicate_reports_its_cause_once() {
 }
 
 // ---------------------------------------------------------------------------
-// Modules — I-1
+// Modules
 //
 // A module the project contains but did not admit — a header that disagrees
 // with its path, a file that did not parse, a file that is not UTF-8 — is
@@ -1298,8 +1287,8 @@ fn a_module_refused_for_its_header_is_not_absent_at_its_import() {
 ///
 /// Asserted through the resilient analysis snapshot, which is the production path
 /// that observes these rows: the staged production projection returns the parse
-/// stage's failure and never reaches the semantic terminal, so the fabrications
-/// this red kills are the ones an editor is shown.
+/// stage's failure and never reaches the semantic terminal, so the fabrications at
+/// stake here are the ones an editor is shown.
 #[test]
 fn a_module_refused_for_a_parse_error_is_not_absent_at_its_import() {
     let diagnostics = analyzed(&[
@@ -1373,8 +1362,8 @@ fn a_module_refused_for_invalid_utf8_is_not_absent_at_its_import() {
     );
 }
 
-/// The mutation-kill partner: a `use` of a module the project genuinely does not
-/// contain still says so. The causal arm must not swallow a real absence.
+/// A `use` of a module the project genuinely does not contain still says so: the
+/// causal arm must not swallow a real absence.
 #[test]
 fn a_genuinely_absent_module_is_still_reported_as_absent() {
     let diagnostics = diagnostics_of(&files(&[(
@@ -1412,11 +1401,9 @@ fn assert_no_absent_module(diagnostics: &[SourceDiagnostic], name: &str) {
     }
 }
 
-/// a refused signature stops its own declaration, not the whole project.
-///
-/// The lane's mutation-kill target: an unrelated body must still lower and report
-/// its own error. Withholding the registry silenced every body in the project, so
-/// one bad annotation hid every other diagnostic behind it.
+/// A refused signature stops its own declaration, not the whole project: an
+/// unrelated body still lowers and reports its own error. Withholding the whole
+/// registry instead would let one bad annotation hide every other diagnostic.
 #[test]
 fn a_refused_signature_does_not_silence_an_unrelated_body() {
     let diagnostics = diagnostics(
@@ -1441,7 +1428,7 @@ fn a_refused_signature_does_not_silence_an_unrelated_body() {
     );
 }
 
-/// the mutation-kill partner: reusing a cause never lets a body through.
+/// Reusing a cause never lets a body through.
 ///
 /// A `Binding::Refused` lookup fails its body exactly as a `Binding::Absent` one
 /// does. If it ever did not, an unavailable artifact would become available and a
@@ -1475,15 +1462,14 @@ fn a_reused_cause_never_admits_the_body_that_reused_it() {
 }
 
 // ---------------------------------------------------------------------------
-// Function parameters — I-13
+// Function parameters
 //
 // A parameter whose type is refused pushes no local and leaves no record of the
 // name, so every use in the body reports a fabricated absence — once per use.
 // ---------------------------------------------------------------------------
 
-/// the non-generic path, unmasked by deleting the whole-registry
-/// suppression. This red exists to prove R12 introduced no regression: with every
-/// body now lowering, a refused parameter must not make its own name unknown.
+/// The non-generic path: with every body lowering, a refused parameter must not
+/// make its own name unknown.
 #[test]
 fn a_refused_parameter_is_not_out_of_scope_in_its_own_body() {
     let diagnostics = diagnostics(
@@ -1576,7 +1562,7 @@ fn a_nested_group_repeating_a_member_name_is_a_name_conflict() {
 }
 
 // ---------------------------------------------------------------------------
-// Local bindings — I-8
+// Local bindings
 //
 // A local binding whose initializer failed is recorded, so a later use reuses
 // that cause. The annotation branch beside it returned without recording, so a
@@ -1607,183 +1593,175 @@ fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
 }
 
 // ---------------------------------------------------------------------------
-// Type-registry fill ordering — NOMLEAF01
+// Type-registry fill ordering
 //
 // Pass one reserves every value type's image index; pass two fills each body and
 // records the verdict. A name resolved by an *earlier* fill pass binds the
 // reservation, because the verdict the later pass reaches does not exist yet. When
 // that later pass refuses the declaration, the earlier reference must still address
-// a refused declaration — never a dropped one. A dropped target left the reference
-// dangling, and the dangling reference raised a `GenericInvariant`, which outranks
-// diagnostics: the correct `check.unsupported` row that *was* reported at the
-// declaration never reached the reader, who saw a spanless `cli.compiler_invariant`
-// instead.
+// a refused declaration — never a dropped one. A dropped target leaves the reference
+// dangling, and a dangling reference raises a `GenericInvariant`, which outranks
+// diagnostics: the `check.unsupported` row reported at the declaration would never
+// reach the reader, who would see a spanless `cli.compiler_invariant` instead.
 //
-// The reds below cover both fill-ordering directions that can bind a nominal leaf:
-// `fill_records` running before `fill_structs`/`fill_enums`, and `fill_structs`
+// The fixtures below cover both fill-ordering directions that can bind a nominal
+// leaf: `fill_records` running before `fill_structs`/`fill_enums`, and `fill_structs`
 // filling one struct before a later sibling it names. Each asserts the declaration's
 // own row survives to the reader.
 // ---------------------------------------------------------------------------
 
-/// A resource field naming a struct the later struct fill refuses reports that
-/// struct's own cause, not a compiler invariant.
-#[test]
-fn a_resource_field_naming_a_refused_struct_reports_the_structs_own_cause() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         struct Bad {\n\
-         \x20   p: int?\n\
-         }\n\n\
-         resource R {\n\
-         \x20   required b: Bad\n\
-         }\n\n\
-         pub fn make(): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
-
-    assert_eq!(
-        rows(&diagnostics),
-        vec![("src/main.mw", Code::CheckUnsupported, 4, 8)],
-        "the struct declaration reports its own cause: {:#?}",
-        messages(&diagnostics),
-    );
+/// One member position naming a value type a later declaration pass refuses, and the
+/// rows the reader is owed.
+struct FillOrderCase {
+    /// The naming position under test.
+    naming: &'static str,
+    source: &'static str,
+    /// Every reported row as `(line, column)`; each carries `check.unsupported` at
+    /// `src/main.mw`.
+    rows: &'static [(u32, u32)],
 }
 
-/// A resource field naming an enum the later enum fill refuses for a nominal
-/// payload leaf reports that enum's own payload cause, not a compiler invariant.
-#[test]
-fn a_resource_field_naming_a_refused_enum_reports_the_enums_own_cause() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         type Age: int in 0..=150\n\n\
-         enum E {\n\
-         \x20   none\n\
-         \x20   some(a: Age)\n\
-         }\n\n\
-         resource R {\n\
-         \x20   required e: E\n\
-         }\n\n\
-         pub fn make(): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
+/// Both fill-ordering directions that can bind a nominal leaf: records filled before
+/// structs and enums, and one struct filled before a later sibling it names. In every
+/// direction the refused declaration's own row survives to the reader rather than being
+/// replaced by a compiler invariant.
+const FILL_ORDER_CASES: &[FillOrderCase] = &[
+    FillOrderCase {
+        naming: "a resource field naming a struct the later struct fill refuses",
+        source: r#"module main
 
-    assert_eq!(
-        rows(&diagnostics),
-        vec![("src/main.mw", Code::CheckUnsupported, 7, 13)],
-        "the enum payload reports its own cause: {:#?}",
-        messages(&diagnostics),
-    );
+struct Bad {
+    p: int?
 }
 
-/// The same enum without the resource field already reported that payload row;
-/// adding the field must not replace it with an invariant.
-#[test]
-fn a_refused_enum_reports_the_same_row_with_and_without_a_resource_field() {
-    let without = diagnostics(
-        "module main\n\n\
-         type Age: int in 0..=150\n\n\
-         enum E {\n\
-         \x20   none\n\
-         \x20   some(a: Age)\n\
-         }\n\n\
-         pub fn make(): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
-
-    assert_eq!(
-        rows(&without),
-        vec![("src/main.mw", Code::CheckUnsupported, 7, 13)],
-        "{:#?}",
-        messages(&without),
-    );
+resource R {
+    required b: Bad
 }
 
-/// A struct field naming a *later* struct the same pass refuses reports that
-/// struct's own cause — the intra-pass direction of the same fill ordering.
-#[test]
-fn a_struct_field_naming_a_later_refused_struct_reports_its_cause() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         struct A {\n\
-         \x20   b: B\n\
-         }\n\n\
-         struct B {\n\
-         \x20   p: int?\n\
-         }\n\n\
-         pub fn make(): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
+pub fn make(): int {
+    return 1
+}
+"#,
+        rows: &[(4, 8)],
+    },
+    FillOrderCase {
+        naming: "a resource field naming an enum refused for a nominal payload leaf",
+        source: r#"module main
 
-    assert_eq!(
-        rows(&diagnostics),
-        vec![("src/main.mw", Code::CheckUnsupported, 8, 8)],
-        "the later struct reports its own cause: {:#?}",
-        messages(&diagnostics),
-    );
+type Age: int in 0..=150
+
+enum E {
+    none
+    some(a: Age)
 }
 
-/// A struct field naming an enum the later enum fill refuses reports that enum's
-/// own cause — the cross-pass direction within pass two.
-#[test]
-fn a_struct_field_naming_a_refused_enum_reports_its_cause() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         type Age: int in 0..=150\n\n\
-         struct A {\n\
-         \x20   e: E\n\
-         }\n\n\
-         enum E {\n\
-         \x20   none\n\
-         \x20   some(a: Age)\n\
-         }\n\n\
-         pub fn make(): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
-
-    assert_eq!(
-        rows(&diagnostics),
-        vec![("src/main.mw", Code::CheckUnsupported, 11, 13)],
-        "the enum reports its own cause: {:#?}",
-        messages(&diagnostics),
-    );
+resource R {
+    required e: E
 }
 
-/// An alias over a refused struct, used as a resource field type, reaches the same
-/// reservation through alias expansion; the refusal must still be addressable, and
-/// the alias validator — which runs after the struct fill and so sees the refused
-/// name leave the accepted set — must steer to that cause rather than report the
-/// declared name as an unknown type.
-#[test]
-fn a_resource_field_aliasing_a_refused_struct_reports_the_structs_cause() {
-    let diagnostics = diagnostics(
-        "module main\n\n\
-         alias Al = B\n\n\
-         struct B {\n\
-         \x20   p: int?\n\
-         }\n\n\
-         resource R {\n\
-         \x20   required x: Al\n\
-         }\n\n\
-         pub fn make(): int {\n\
-         \x20   return 1\n\
-         }\n",
-    );
+pub fn make(): int {
+    return 1
+}
+"#,
+        rows: &[(7, 13)],
+    },
+    FillOrderCase {
+        naming: "the same enum with no resource field, which must report the same row",
+        source: r#"module main
 
-    assert_eq!(
-        rows(&diagnostics),
-        vec![
-            ("src/main.mw", Code::CheckUnsupported, 6, 8),
-            ("src/main.mw", Code::CheckUnsupported, 3, 1)
-        ],
-        "the struct reports its own cause and the alias is steered to it, never \
-         told the target is unknown: {:#?}",
-        messages(&diagnostics),
-    );
+type Age: int in 0..=150
+
+enum E {
+    none
+    some(a: Age)
+}
+
+pub fn make(): int {
+    return 1
+}
+"#,
+        rows: &[(7, 13)],
+    },
+    FillOrderCase {
+        naming: "a struct field naming a later struct the same pass refuses",
+        source: r#"module main
+
+struct A {
+    b: B
+}
+
+struct B {
+    p: int?
+}
+
+pub fn make(): int {
+    return 1
+}
+"#,
+        rows: &[(8, 8)],
+    },
+    FillOrderCase {
+        naming: "a struct field naming an enum the later enum fill refuses",
+        source: r#"module main
+
+type Age: int in 0..=150
+
+struct A {
+    e: E
+}
+
+enum E {
+    none
+    some(a: Age)
+}
+
+pub fn make(): int {
+    return 1
+}
+"#,
+        rows: &[(11, 13)],
+    },
+    FillOrderCase {
+        naming: "a resource field aliasing a refused struct, which reaches the same \
+                 reservation through alias expansion",
+        source: r#"module main
+
+alias Al = B
+
+struct B {
+    p: int?
+}
+
+resource R {
+    required x: Al
+}
+
+pub fn make(): int {
+    return 1
+}
+"#,
+        rows: &[(6, 8), (3, 1)],
+    },
+];
+
+#[test]
+fn a_member_naming_a_refused_value_type_reports_that_types_own_cause() {
+    for case in FILL_ORDER_CASES {
+        let diagnostics = diagnostics(case.source);
+        let expected: Vec<(&str, Code, u32, u32)> = case
+            .rows
+            .iter()
+            .map(|(line, column)| ("src/main.mw", Code::CheckUnsupported, *line, *column))
+            .collect();
+        assert_eq!(
+            rows(&diagnostics),
+            expected,
+            "{}: the refused declaration reports its own cause and the naming position \
+             is steered to it: {:#?}",
+            case.naming,
+            messages(&diagnostics),
+        );
+    }
 }
 
 /// A struct on a containment cycle whose partner is refused: the cycle partner's
@@ -1843,116 +1821,98 @@ fn a_refused_struct_named_after_the_fill_is_still_steered() {
 // ---------------------------------------------------------------------------
 // Static named-type projections — the use positions
 //
-// The verdict filter reached the two registry name lookups but not the three
-// static projections beside them, which are what annotation resolution, signature
-// building, and body lowering actually read. An unfiltered projection answers a
-// refused struct or enum with its reserved-but-unfilled row: a *live empty type*.
-// Every use position below then reasons against that empty shape and fabricates a
-// statement about the source — or, worse, accepts it silently.
+// Annotation resolution, signature building, and body lowering read three static
+// projections beside the two registry name lookups, and the verdict filter has to
+// reach all five. An unfiltered projection answers a refused struct or enum with its
+// reserved-but-unfilled row — a *live empty type* — and every use position then
+// reasons against that empty shape and fabricates a statement about the source, or
+// accepts it silently.
 // ---------------------------------------------------------------------------
 
-/// The refused value types these reds are written against: `Point` is refused for
-/// an optional struct field, `Color` for a nominal enum payload. Both keep a
+/// The refused value types these fixtures are written against: `Point` is refused
+/// for an optional struct field, `Color` for a nominal enum payload. Both keep a
 /// reserved row, and neither may answer a name.
 const REFUSED_STRUCT: &str = "struct Point {\n\
                               \x20   x: int\n\
                               \x20   p: int?\n\
                               }\n";
 
-/// a refused struct named as a parameter type. The projection answered the
-/// reserved row, so the signature was built over a live empty struct and the whole
-/// program compiled with no diagnostic at all — the declaration's own cause never
-/// reached the reader.
-#[test]
-fn a_refused_struct_as_a_parameter_type_steers_to_its_cause() {
-    let diagnostics = diagnostics(&format!(
-        "module main\n\n\
-         {REFUSED_STRUCT}\n\
-         fn take(q: Point): int {{\n\
-         \x20   return 1\n\
-         }}\n\n\
-         pub fn make(): int {{\n\
-         \x20   return 2\n\
-         }}\n"
-    ));
-
-    assert_steers_to(
-        &diagnostics,
-        DeclarationNamespace::NamedType,
-        Code::CheckUnsupported,
-        RefusalReport::AtDeclaration,
-    );
-    assert_eq!(
-        rows(&diagnostics),
-        vec![
-            ("src/main.mw", Code::CheckUnsupported, 5, 8),
-            ("src/main.mw", Code::CheckUnsupported, 8, 12),
-        ],
-        "the struct field reports the cause and the parameter is steered to it: {:#?}",
-        messages(&diagnostics),
-    );
+/// One use position that names [`REFUSED_STRUCT`]'s `Point`, and where the steer lands.
+struct StructUseCase {
+    /// The use position under test.
+    position: &'static str,
+    /// The source written after `REFUSED_STRUCT`; its first line is source line 8.
+    body: &'static str,
+    /// Line and column of the steered row at the use site.
+    steered_at: (u32, u32),
 }
 
-/// the same name as a return type. The empty struct is a real type to the
-/// checker, so the returned `int` was reported as the wrong type for `Point` —
-/// a statement about the return expression derived from the compiler's own
-/// unfilled row.
+/// The three resolution entries into the same projection: a signature parameter, a
+/// signature return, and a local annotation. An unfiltered projection answers each of
+/// them with the refused struct's reserved-but-unfilled row — a live empty type — and
+/// then reasons against that empty shape, so a use position must instead be steered to
+/// the declaration's own cause.
+const REFUSED_STRUCT_USES: &[StructUseCase] = &[
+    StructUseCase {
+        position: "a signature parameter type",
+        body: "fn take(q: Point): int {\n\
+               \x20   return 1\n\
+               }\n\n\
+               pub fn make(): int {\n\
+               \x20   return 2\n\
+               }\n",
+        steered_at: (8, 12),
+    },
+    StructUseCase {
+        position: "a signature return type",
+        body: "pub fn make(): Point {\n\
+               \x20   return 1\n\
+               }\n",
+        steered_at: (8, 16),
+    },
+    StructUseCase {
+        position: "a local binding's annotation",
+        body: "pub fn make(): int {\n\
+               \x20   const q: Point = 1\n\
+               \x20   return 2\n\
+               }\n",
+        steered_at: (9, 14),
+    },
+];
+
 #[test]
-fn a_refused_struct_as_a_return_type_steers_to_its_cause() {
-    let diagnostics = diagnostics(&format!(
-        "module main\n\n\
-         {REFUSED_STRUCT}\n\
-         pub fn make(): Point {{\n\
-         \x20   return 1\n\
-         }}\n"
-    ));
+fn a_refused_struct_named_in_any_use_position_steers_to_its_cause() {
+    for case in REFUSED_STRUCT_USES {
+        let diagnostics = diagnostics(&format!(
+            "module main\n\n\
+             {REFUSED_STRUCT}\n\
+             {}",
+            case.body,
+        ));
 
-    assert_steers_to(
-        &diagnostics,
-        DeclarationNamespace::NamedType,
-        Code::CheckUnsupported,
-        RefusalReport::AtDeclaration,
-    );
-    assert_eq!(
-        rows(&diagnostics),
-        vec![
-            ("src/main.mw", Code::CheckUnsupported, 5, 8),
-            ("src/main.mw", Code::CheckUnsupported, 8, 16),
-        ],
-        "the return annotation is steered, never described as a type the body \
-         failed to produce: {:#?}",
-        messages(&diagnostics),
-    );
-}
-
-/// the same name as a local binding's annotation — the third resolution entry
-/// into the same projection.
-#[test]
-fn a_refused_struct_as_a_local_annotation_steers_to_its_cause() {
-    let diagnostics = diagnostics(&format!(
-        "module main\n\n\
-         {REFUSED_STRUCT}\n\
-         pub fn make(): int {{\n\
-         \x20   const q: Point = 1\n\
-         \x20   return 2\n\
-         }}\n"
-    ));
-
-    assert_steers_to(
-        &diagnostics,
-        DeclarationNamespace::NamedType,
-        Code::CheckUnsupported,
-        RefusalReport::AtDeclaration,
-    );
-    assert_eq!(
-        rows(&diagnostics),
-        vec![
-            ("src/main.mw", Code::CheckUnsupported, 5, 8),
-            ("src/main.mw", Code::CheckUnsupported, 9, 14),
-        ],
-        "the annotation is steered to the struct's cause: {:#?}",
-        messages(&diagnostics),
-    );
+        assert_steers_to(
+            &diagnostics,
+            DeclarationNamespace::NamedType,
+            Code::CheckUnsupported,
+            RefusalReport::AtDeclaration,
+        );
+        assert_eq!(
+            rows(&diagnostics),
+            vec![
+                ("src/main.mw", Code::CheckUnsupported, 5, 8),
+                (
+                    "src/main.mw",
+                    Code::CheckUnsupported,
+                    case.steered_at.0,
+                    case.steered_at.1,
+                ),
+            ],
+            "{}: the struct field reports the cause and the use position is steered to \
+             it, never described in terms of the unfilled row: {:#?}",
+            case.position,
+            messages(&diagnostics),
+        );
+    }
 }
 
 /// a field read through a parameter of the refused struct. The reserved row
@@ -2043,13 +2003,13 @@ fn a_match_on_a_refused_enum_is_not_a_set_of_unknown_members() {
 // `unresolved_member_row` is documented as the one place a member-position
 // resolution failure becomes a report, so a refused sibling can never be described
 // as an unsupported language form. A member whose declared type names a refused
-// sibling reached a subset-gap report beside it instead, and said the *form* was
-// not yet supported for a type the reader can see declared and already diagnosed.
+// sibling must be steered to that sibling's cause: a subset-gap report there would
+// blame the *form* for a type the reader can see declared and already diagnosed.
 // ---------------------------------------------------------------------------
 
-/// a struct field whose type names a refused sibling. The phrase blamed the
-/// language for a struct this project declared and the compiler had refused four
-/// lines above.
+/// A struct field whose type names a refused sibling is steered to that sibling's
+/// cause, never given a phrase blaming the language for a struct this project
+/// declared and the compiler refused four lines above.
 #[test]
 fn a_struct_field_naming_a_refused_sibling_steers_to_its_cause() {
     let diagnostics = diagnostics(
@@ -2157,13 +2117,13 @@ fn a_genuinely_unadmitted_member_type_keeps_the_subset_gap_phrase() {
 // Payload enum construction — the last asymmetric member of the steer family
 //
 // `Enum::member` steers when the enum was refused; `Enum::member(payload…)` is
-// dispatched by a different arm, which consulted the accepted-only enum table,
-// found nothing, and fell through to the qualified-call report: `Color::blue` is
+// dispatched by a different arm. That arm consults the accepted-only enum table, so
+// without the steer it falls through to the qualified-call report — `Color::blue` is
 // not in scope, of an enum declared six lines above.
 // ---------------------------------------------------------------------------
 
-/// a payload construction on a refused enum names the enum's cause, exactly as
-/// its bare-member sibling already did.
+/// A payload construction on a refused enum names the enum's cause, exactly as its
+/// bare-member sibling does.
 #[test]
 fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
     let source = |construct: &str| {
@@ -2190,8 +2150,7 @@ fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
         RefusalReport::AtDeclaration,
     );
 
-    // The sibling this closes the asymmetry with: both spellings of a use of the
-    // same refused enum report the same rows.
+    // Both spellings of a use of the same refused enum report the same rows.
     let bare = diagnostics(&source("Color::red"));
     assert_eq!(
         rows(&payload),
@@ -2239,226 +2198,137 @@ fn steer_facts(
     )
 }
 
-#[test]
-fn every_refusal_class_carries_its_own_typed_steer_facts() {
-    let mut audited: Vec<(DeclarationNamespace, Code, RefusalReport)> = Vec::new();
-    let mut audit = |label: &str,
-                     diagnostics: &[SourceDiagnostic],
-                     namespace: DeclarationNamespace,
-                     declaring_code: Code,
-                     report: RefusalReport| {
-        let (row_code, observed_namespace, observed_code, observed_report) =
-            steer_facts(diagnostics);
-        assert_eq!(
-            (observed_namespace, observed_code, observed_report),
-            (Some(namespace), declaring_code, report),
-            "{label}: the steer names the ledger holding the refusal, the code of the \
-             report the reader must act on, and where that report sits: {:#?}",
-            rows(diagnostics),
-        );
-        assert_eq!(
-            row_code,
-            declaring_code,
-            "{label}: a steer that reuses its declaring row reports under that row's \
-             own code, so one code leads to one fix: {:#?}",
-            rows(diagnostics),
-        );
-        audited.push((namespace, declaring_code, report));
-    };
+/// One refusal class a single module expresses, and the steer facts its use owes.
+struct SteerClass {
+    /// The refusal under test.
+    refusal: &'static str,
+    source: &'static str,
+    /// The ledger holding the refusal.
+    namespace: DeclarationNamespace,
+    /// The code of the report the reader must act on, which the steer reuses.
+    declaring_code: Code,
+}
 
-    audit(
-        "a constant refused for a type mismatch",
-        &diagnostics(
-            "module main\n\n\
-             const limit: int = \"x\"\n\n\
-             pub fn read(): int {\n\
-             \x20   return limit\n\
-             }\n",
-        ),
-        DeclarationNamespace::Constant,
-        Code::CheckType,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a constant refused for a non-literal value",
-        &diagnostics(
-            "module main\n\n\
-             const limit = 1 + 2\n\n\
-             pub fn read(): int {\n\
-             \x20   return limit\n\
-             }\n",
-        ),
-        DeclarationNamespace::Constant,
-        Code::CheckUnsupported,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a store root refused for its resource",
-        &diagnostics(
-            "module main\n\n\
-             store ^items[id: int]: Widget\n\n\
-             pub fn write() {\n\
-             \x20   transaction {\n\
-             \x20       ^items[1].name = \"a\"\n\
-             \x20   }\n\
-             }\n",
-        ),
-        DeclarationNamespace::DurableRoot,
-        Code::CheckType,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a function signature refused for a parameter type",
-        &diagnostics(
-            "module main\n\n\
-             fn helper(a: Nope, b: int): int {\n\
-             \x20   return b\n\
-             }\n\n\
-             pub fn other(): int {\n\
-             \x20   return helper(1, 2)\n\
-             }\n",
-        ),
-        DeclarationNamespace::Function,
-        Code::CheckUnsupported,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a module refused for its header",
-        &diagnostics_of(&files(&[
-            (
-                "src/main.mw",
-                "module main\n\n\
-                 use helper\n\n\
-                 pub fn run(): int {\n\
-                 \x20   return helper::twice(2)\n\
-                 }\n"
-                .to_string(),
-            ),
-            (
-                "src/helper.mw",
-                "module wrong\n\n\
-                 pub fn twice(n: int): int {\n\
-                 \x20   return n\n\
-                 }\n"
-                .to_string(),
-            ),
-        ])),
-        DeclarationNamespace::Module,
-        Code::CheckModulePath,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a module the parse stage refused",
-        &analyzed(&[
-            (
-                "src/main.mw",
-                "module main\n\n\
-                 use helper\n\n\
-                 pub fn run(): int {\n\
-                 \x20   return helper::twice(2)\n\
-                 }\n"
-                .to_string(),
-            ),
-            (
-                "src/helper.mw",
-                "module helper\n\n\
-                 pub fn twice(n: int): int {\n\
-                 \x20   return n +\n\
-                 }\n"
-                .to_string(),
-            ),
-        ]),
-        DeclarationNamespace::Module,
-        Code::ParseSyntax,
-        RefusalReport::ByEarlierStage(SourceStage::Parse),
-    );
-    audit(
-        "a module the decode stage refused",
-        &{
-            let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-            let main = "module main\n\n\
-                        use helper\n\n\
-                        pub fn run(): int {\n\
-                        \x20   return helper::twice(2)\n\
-                        }\n";
-            let captured = vec![
-                CapturedFile::new("src/helper.mw".to_string(), vec![0xff, 0xfe, 0x00]),
-                CapturedFile::new("src/main.mw".to_string(), main.as_bytes().to_vec()),
-            ];
-            snapshot_diagnostics(
-                marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-                    .expect("capture project"),
-            )
-        },
-        DeclarationNamespace::Module,
-        Code::CheckUnsupported,
-        RefusalReport::ByEarlierStage(SourceStage::Decode),
-    );
-    audit(
-        "an alias over an unknown target",
-        &diagnostics(
-            "module main\n\n\
-             alias Count = Nope\n\n\
-             pub fn make(c: Count): int {\n\
-             \x20   return 1\n\
-             }\n",
-        ),
-        DeclarationNamespace::NamedType,
-        Code::CheckType,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a cyclic alias chain",
-        &diagnostics(
-            "module main\n\n\
-             alias A = B\n\
-             alias B = A\n\n\
-             pub fn make(c: A): int {\n\
-             \x20   return 1\n\
-             }\n",
-        ),
-        DeclarationNamespace::NamedType,
-        Code::CheckRecursion,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a struct refused for a field type",
-        &diagnostics(&format!(
-            "module main\n\n\
-             {REFUSED_STRUCT}\n\
-             fn take(q: Point): int {{\n\
-             \x20   return 1\n\
-             }}\n\n\
-             pub fn make(): int {{\n\
-             \x20   return 2\n\
-             }}\n"
-        )),
-        DeclarationNamespace::NamedType,
-        Code::CheckUnsupported,
-        RefusalReport::AtDeclaration,
-    );
-    audit(
-        "a resource member refused for its type",
-        &diagnostics(
-            "module main\n\n\
-             resource Widget {\n\
-             \x20   required name: string\n\
-             \x20   bad: Nope\n\
-             }\n\n\
-             pub fn make(): int {\n\
-             \x20   const w = Widget(name: \"a\", bad: 1)\n\
-             \x20   return 1\n\
-             }\n",
-        ),
-        DeclarationNamespace::ResourceMember,
-        Code::CheckUnsupported,
-        RefusalReport::AtDeclaration,
-    );
+/// The refusal classes a single module expresses. Each is reported at its own
+/// declaration, so its steer names that row rather than an earlier stage or a family.
+const SINGLE_MODULE_STEER_CLASSES: &[SteerClass] = &[
+    SteerClass {
+        refusal: "a constant refused for a type mismatch",
+        source: "module main\n\n\
+                 const limit: int = \"x\"\n\n\
+                 pub fn read(): int {\n\
+                 \x20   return limit\n\
+                 }\n",
+        namespace: DeclarationNamespace::Constant,
+        declaring_code: Code::CheckType,
+    },
+    SteerClass {
+        refusal: "a constant refused for a non-literal value",
+        source: "module main\n\n\
+                 const limit = 1 + 2\n\n\
+                 pub fn read(): int {\n\
+                 \x20   return limit\n\
+                 }\n",
+        namespace: DeclarationNamespace::Constant,
+        declaring_code: Code::CheckUnsupported,
+    },
+    SteerClass {
+        refusal: "a store root refused for its resource",
+        source: "module main\n\n\
+                 store ^items[id: int]: Widget\n\n\
+                 pub fn write() {\n\
+                 \x20   transaction {\n\
+                 \x20       ^items[1].name = \"a\"\n\
+                 \x20   }\n\
+                 }\n",
+        namespace: DeclarationNamespace::DurableRoot,
+        declaring_code: Code::CheckType,
+    },
+    SteerClass {
+        refusal: "a function signature refused for a parameter type",
+        source: "module main\n\n\
+                 fn helper(a: Nope, b: int): int {\n\
+                 \x20   return b\n\
+                 }\n\n\
+                 pub fn other(): int {\n\
+                 \x20   return helper(1, 2)\n\
+                 }\n",
+        namespace: DeclarationNamespace::Function,
+        declaring_code: Code::CheckUnsupported,
+    },
+    SteerClass {
+        refusal: "an alias over an unknown target",
+        source: "module main\n\n\
+                 alias Count = Nope\n\n\
+                 pub fn make(c: Count): int {\n\
+                 \x20   return 1\n\
+                 }\n",
+        namespace: DeclarationNamespace::NamedType,
+        declaring_code: Code::CheckType,
+    },
+    SteerClass {
+        refusal: "a cyclic alias chain",
+        source: "module main\n\n\
+                 alias A = B\n\
+                 alias B = A\n\n\
+                 pub fn make(c: A): int {\n\
+                 \x20   return 1\n\
+                 }\n",
+        namespace: DeclarationNamespace::NamedType,
+        declaring_code: Code::CheckRecursion,
+    },
+    SteerClass {
+        refusal: "a resource member refused for its type",
+        source: "module main\n\n\
+                 resource Widget {\n\
+                 \x20   required name: string\n\
+                 \x20   bad: Nope\n\
+                 }\n\n\
+                 pub fn make(): int {\n\
+                 \x20   const w = Widget(name: \"a\", bad: 1)\n\
+                 \x20   return 1\n\
+                 }\n",
+        namespace: DeclarationNamespace::ResourceMember,
+        declaring_code: Code::CheckUnsupported,
+    },
+];
 
-    // The identity class, which the audit above cannot express: it is the one steer
-    // whose row code is *not* its declaring code, because its cause is a report
-    // family rather than a single row. Asserting it through the same helper would
-    // have required weakening the relation the other eleven classes hold.
+/// The facts one audited steer contributes to the coverage derivation.
+type AuditedSteer = (DeclarationNamespace, Code, RefusalReport);
+
+/// Assert one steer's three typed fields and, where the class reuses its declaring row,
+/// that the row's own code is that same code — so one code leads to one fix.
+fn audit_steer(
+    audited: &mut Vec<AuditedSteer>,
+    label: &str,
+    diagnostics: &[SourceDiagnostic],
+    namespace: DeclarationNamespace,
+    declaring_code: Code,
+    report: RefusalReport,
+) {
+    let (row_code, observed_namespace, observed_code, observed_report) = steer_facts(diagnostics);
+    assert_eq!(
+        (observed_namespace, observed_code, observed_report),
+        (Some(namespace), declaring_code, report),
+        "{label}: the steer names the ledger holding the refusal, the code of the \
+         report the reader must act on, and where that report sits: {:#?}",
+        rows(diagnostics),
+    );
+    assert_eq!(
+        row_code,
+        declaring_code,
+        "{label}: a steer that reuses its declaring row reports under that row's \
+         own code, so one code leads to one fix: {:#?}",
+        rows(diagnostics),
+    );
+    audited.push((namespace, declaring_code, report));
+}
+
+/// The classes whose cause is a report family or a covering pass rather than the
+/// declaring row itself, which the shared audit cannot express.
+fn audit_family_and_covering_pass(audited: &mut Vec<AuditedSteer>) {
+    // The identity class: the one steer whose row code is *not* its declaring code,
+    // because its cause is a report family rather than a single row.
     let identity = diagnostics(
         "module main\n\n\
          resource Widget {\n\
@@ -2527,11 +2397,12 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
         Code::CheckRecursion,
         RefusalReport::ByCoveringPass,
     ));
+}
 
-    // Coverage, derived rather than asserted in prose: every namespace a declaration
-    // can be refused into, and every kind of report a steer can name, is exercised
-    // above. A seventh namespace or a fourth report kind fails here until a fixture
-    // pins its facts too.
+/// Coverage, derived rather than asserted in prose: every namespace a declaration can be
+/// refused into, and every kind of report a steer can name, is exercised. A seventh
+/// namespace or a fourth report kind fails here until a fixture pins its facts too.
+fn assert_every_class_is_audited(audited: &[AuditedSteer]) {
     let namespaces: BTreeSet<String> = audited
         .iter()
         .map(|(namespace, _, _)| format!("{namespace:?}"))
@@ -2568,6 +2439,104 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
         .collect::<BTreeSet<String>>(),
         "every kind of report a steer can name is audited",
     );
+}
+
+/// The multi-module project every module-class fixture varies: `main` imports `helper`
+/// and calls into it, so the import and the qualified call both have a steer to place.
+fn importing_main() -> (&'static str, String) {
+    (
+        "src/main.mw",
+        "module main\n\n\
+         use helper\n\n\
+         pub fn run(): int {\n\
+         \x20   return helper::twice(2)\n\
+         }\n"
+        .to_string(),
+    )
+}
+
+#[test]
+fn every_refusal_class_carries_its_own_typed_steer_facts() {
+    let mut audited: Vec<AuditedSteer> = Vec::new();
+
+    for case in SINGLE_MODULE_STEER_CLASSES {
+        audit_steer(
+            &mut audited,
+            case.refusal,
+            &diagnostics(case.source),
+            case.namespace,
+            case.declaring_code,
+            RefusalReport::AtDeclaration,
+        );
+    }
+
+    audit_steer(
+        &mut audited,
+        "a struct refused for a field type",
+        &diagnostics(&format!(
+            "module main\n\n\
+             {REFUSED_STRUCT}\n\
+             fn take(q: Point): int {{\n\
+             \x20   return 1\n\
+             }}\n\n\
+             pub fn make(): int {{\n\
+             \x20   return 2\n\
+             }}\n"
+        )),
+        DeclarationNamespace::NamedType,
+        Code::CheckUnsupported,
+        RefusalReport::AtDeclaration,
+    );
+    audit_steer(
+        &mut audited,
+        "a module refused for its header",
+        &diagnostics_of(&files(&[
+            importing_main(),
+            (
+                "src/helper.mw",
+                "module wrong\n\n\
+                 pub fn twice(n: int): int {\n\
+                 \x20   return n\n\
+                 }\n"
+                .to_string(),
+            ),
+        ])),
+        DeclarationNamespace::Module,
+        Code::CheckModulePath,
+        RefusalReport::AtDeclaration,
+    );
+    audit_steer(
+        &mut audited,
+        "a module the parse stage refused",
+        &analyzed(&[
+            importing_main(),
+            (
+                "src/helper.mw",
+                "module helper\n\n\
+                 pub fn twice(n: int): int {\n\
+                 \x20   return n +\n\
+                 }\n"
+                .to_string(),
+            ),
+        ]),
+        DeclarationNamespace::Module,
+        Code::ParseSyntax,
+        RefusalReport::ByEarlierStage(SourceStage::Parse),
+    );
+    audit_steer(
+        &mut audited,
+        "a module the decode stage refused",
+        &snapshot_diagnostics(project_capture::project_bytes(&[
+            ("src/helper.mw", vec![0xff, 0xfe, 0x00]),
+            ("src/main.mw", importing_main().1.into_bytes()),
+        ])),
+        DeclarationNamespace::Module,
+        Code::CheckUnsupported,
+        RefusalReport::ByEarlierStage(SourceStage::Decode),
+    );
+
+    audit_family_and_covering_pass(&mut audited);
+    assert_every_class_is_audited(&audited);
 }
 
 #[test]

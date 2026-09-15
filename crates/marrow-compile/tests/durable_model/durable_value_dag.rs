@@ -26,22 +26,10 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use marrow_compile::{CompileFailure, ResourceLimitKind, SourceDiagnostic, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_project::ProjectInput;
 
-#[path = "common/ids.rs"]
-mod ids;
-
-use ids::ledger;
-
-fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, ids, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
+use super::ids::{self, ledger};
+use super::project;
 
 /// The ledger anchors a single keyed store `^a` over resource `R` with one durable
 /// field `R.f` needs, plus any extra anchors the corpus declares.

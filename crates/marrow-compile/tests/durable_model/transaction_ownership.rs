@@ -1,4 +1,4 @@
-//! Check-time transaction-ownership diagnostics (TX02).
+//! Check-time transaction-ownership diagnostics.
 //!
 //! The ownership contract has four laws the independent verifier reconstructs from the
 //! program image (`image.flow`); this suite pins the source-facing `check.*` diagnostic
@@ -17,7 +17,8 @@
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+
+use super::project;
 
 /// The committed identity ledger for the `Counter` schema every fixture is written
 /// against, so a store declaration is identity-complete and only the transaction law
@@ -39,19 +40,7 @@ const SCHEMA: &str = "resource Counter {\n    required value: int\n    label: st
 /// vector when it compiles clean).
 fn diagnostics(ops: &str) -> Vec<SourceDiagnostic> {
     let source = format!("{SCHEMA}{ops}");
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project: ProjectInput = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    match compile(&project) {
+    match compile(&project(&source, Some(IDS.as_bytes()))) {
         Ok(_) => Vec::new(),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_iter().collect(),
         Err(other) => panic!("source-triggered failure must remain diagnostics, got {other:?}"),
@@ -299,8 +288,8 @@ fn a_require_two_helpers_deep_inside_the_region_compiles() {
     );
 }
 
-/// A `require` after the region's closing commit: the commit has already
-/// happened on that path, so the implicit failure exit no longer bypasses it.
+/// A `require` after the region's closing commit: the commit has already happened on
+/// that path, so the implicit failure exit cannot bypass it.
 #[test]
 fn a_require_after_the_regions_commit_compiles() {
     let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    require v > 0 else \"value must be positive\"\n    return ok(v)\n}\n";

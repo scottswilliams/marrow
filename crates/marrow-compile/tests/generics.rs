@@ -556,7 +556,7 @@ pub fn driver(): int {
 }
 
 /// A generic that recurses over an ever-growing type diverges monomorphization;
-/// the instantiation bound (law 9) fails it with a typed `check.instantiation_limit`
+/// the instantiation bound fails it with a typed `check.instantiation_limit`
 /// rather than looping unboundedly.
 #[test]
 fn divergent_monomorphization_hits_the_instantiation_bound() {
@@ -609,7 +609,7 @@ pub fn driver(): int {
     assert_one_located_limit(&diagnostics, 11, 20);
 }
 
-/// An Option-free fan-out leaves a previously queued safe follower behind the first
+/// An Option-free fan-out leaves an already queued safe follower behind the first
 /// body whose second reservation reaches the shared bound. The driver must stop at
 /// that rejected reserved body before the follower can occupy its missing slot.
 #[test]
@@ -710,19 +710,29 @@ pub fn driver(): int {
     assert_one_located_limit(&diagnostics, 20, 21);
 }
 
-/// A depth refusal while resolving a generic function's return annotation is the
-/// limit itself. It cannot be substituted with Unit and then reported as a second
-/// return/body mismatch.
-#[test]
-fn depth_limit_in_a_generic_return_does_not_collapse_to_unit() {
-    let diagnostics = compile_err(
-        r#"module main
+/// The recursive generic every depth-limit fixture names. Resolving `Grow<int>` reaches
+/// the shared instantiation depth bound, whatever construct asks for it.
+const GROW: &str = "struct Grow<T> {\n    next: Grow<List<T>>\n}\n";
 
-struct Grow<T> {
-    next: Grow<List<T>>
+/// One site that names [`GROW`], and where the single located limit it must report sits.
+struct DepthLimitSite {
+    /// The construct under test, named in a failure.
+    site: &'static str,
+    /// The source written after `GROW`; its first line is source line 7.
+    tail: &'static str,
+    /// Line and column of the one `check.instantiation_limit` row.
+    at: (u32, u32),
 }
 
-fn deepen<T>(x: T): Grow<T> {
+/// Every resolution path that can reach the depth bound while building a signature, an
+/// annotation, or a declared field. A refusal there is the limit itself: it may not be
+/// substituted with Unit, may not drop the parameter or return it annotates, may not be
+/// reclassified as the declaring pass's contextual `check.unsupported`, and may not be
+/// followed by a second diagnostic derived from the construct it rejected.
+const RESOLUTION_SITES: &[DepthLimitSite] = &[
+    DepthLimitSite {
+        site: "a generic function's return annotation",
+        tail: r#"fn deepen<T>(x: T): Grow<T> {
     return deepen(x)
 }
 
@@ -731,8 +741,149 @@ pub fn driver(): int {
     return 0
 }
 "#,
+        at: (7, 21),
+    },
+    DepthLimitSite {
+        site: "a monomorphic signature parameter",
+        tail: r#"fn take(value: Grow<int>): int {
+    return 0
+}
+
+pub fn driver(): int {
+    return take(0)
+}
+"#,
+        at: (7, 16),
+    },
+    DepthLimitSite {
+        site: "a monomorphic signature return",
+        tail: r#"fn make(): Grow<int> {
+    unreachable("unreachable fixture")
+}
+
+pub fn driver(): int {
+    const value = make()
+    return 0
+}
+"#,
+        at: (7, 12),
+    },
+    DepthLimitSite {
+        site: "a local binding's explicit annotation",
+        tail: r#"pub fn driver(): int {
+    const value: Grow<int> = 0
+    return 0
+}
+"#,
+        at: (8, 18),
+    },
+    DepthLimitSite {
+        site: "a checked-result `const` annotation",
+        tail: r#"pub fn driver(): int {
+    const value: Grow<int> = checked 1 + 2
+        on out_of_range return 0
+    return value.next
+}
+"#,
+        at: (8, 18),
+    },
+    DepthLimitSite {
+        site: "a checked-result `var` annotation",
+        tail: r#"pub fn driver(): int {
+    var value: Grow<int> = checked 1 + 2
+        on out_of_range return 0
+    return value.next
+}
+"#,
+        at: (8, 16),
+    },
+    DepthLimitSite {
+        site: "an `if const` annotation",
+        tail: r#"pub fn driver(): int {
+    const maybe: int? = 1
+    if const value: Grow<int> = maybe {
+        return value
+    } else {
+        return 0
+    }
+}
+"#,
+        at: (9, 21),
+    },
+    DepthLimitSite {
+        site: "a concrete struct field",
+        tail: r#"struct Holder {
+    value: Grow<int>
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+        at: (8, 12),
+    },
+    DepthLimitSite {
+        site: "a resource field",
+        tail: r#"resource Holder {
+    value: Grow<int>
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+        at: (8, 12),
+    },
+    DepthLimitSite {
+        site: "a group leaf",
+        tail: r#"resource Holder {
+    details {
+        value: Grow<int>
+    }
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+        at: (9, 16),
+    },
+];
+
+#[test]
+fn every_resolution_site_reports_one_located_depth_limit() {
+    for case in RESOLUTION_SITES {
+        assert_one_site_limit(case);
+    }
+}
+
+/// The one located `check.instantiation_limit` a depth-limit site owes, named by the site
+/// so a failure says which one broke.
+fn assert_one_site_limit(case: &DepthLimitSite) {
+    let diagnostics = compile_err(&format!("module main\n\n{GROW}\n{}", case.tail));
+    let located: Vec<(Code, &str, u32, u32)> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.code(),
+                diagnostic.file().as_str(),
+                diagnostic.line(),
+                diagnostic.column(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        located,
+        vec![(
+            Code::CheckInstantiationLimit,
+            "src/main.mw",
+            case.at.0,
+            case.at.1,
+        )],
+        "{}: exactly one located instantiation limit, with nothing derived from the \
+         construct it rejected: {diagnostics:#?}",
+        case.site,
     );
-    assert_one_located_limit(&diagnostics, 7, 21);
 }
 
 /// A generic return instantiated from another module must keep the return template's
@@ -771,184 +922,6 @@ pub fn driver(): int {
     assert_eq!(diagnostic.code(), Code::CheckInstantiationLimit);
     assert_eq!(diagnostic.file().as_str(), "src/library.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (7, 25));
-}
-
-/// A monomorphic signature cannot silently drop a parameter whose generic type
-/// reaches the depth bound. The caller must not see a zero-parameter signature and
-/// invent a wrong-arity diagnostic after the one limit refusal.
-#[test]
-fn depth_limit_does_not_drop_a_monomorphic_signature_parameter() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-fn take(value: Grow<int>): int {
-    return 0
-}
-
-pub fn driver(): int {
-    return take(0)
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 7, 16);
-}
-
-/// A monomorphic signature return that reaches the depth bound must remain a
-/// refusal. Substituting Unit makes a value-position call report that the function
-/// returns nothing, even though its declaration has a value return.
-#[test]
-fn depth_limit_does_not_substitute_unit_for_a_monomorphic_signature_return() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-fn make(): Grow<int> {
-    unreachable("unreachable fixture")
-}
-
-pub fn driver(): int {
-    const value = make()
-    return 0
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 7, 12);
-}
-
-/// Resolving a local's explicit annotation is a lowering boundary. A limit there
-/// rejects the body directly; it is not an ordinary unsupported annotation layered
-/// on top of the shared limit.
-#[test]
-fn depth_limit_in_an_annotated_binding_is_not_reclassified_as_unsupported() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-pub fn driver(): int {
-    const value: Grow<int> = 0
-    return 0
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 8, 18);
-}
-
-/// A checked-result `const` resolves its annotation through `coerce_int_result`.
-/// A recursive generic depth refusal is the one located limit, not contextual
-/// Unsupported, and the unresolved binding cannot keep lowering the body.
-#[test]
-fn checked_const_annotation_preserves_a_limit_and_rejects_the_body() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-pub fn driver(): int {
-    const value: Grow<int> = checked 1 + 2
-        on out_of_range return 0
-    return value.next
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 8, 18);
-}
-
-/// The mutable checked-result binding takes the same `coerce_int_result` path. Its
-/// recursive annotation must reject the body with only the first real limit site.
-#[test]
-fn checked_var_annotation_preserves_a_limit_and_rejects_the_body() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-pub fn driver(): int {
-    var value: Grow<int> = checked 1 + 2
-        on out_of_range return 0
-    return value.next
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 8, 16);
-}
-
-/// The `if const` annotation path preserves a failed `resolve_type`: a shared limit
-/// rejects the body without binding the optional's bare type as though the requested
-/// annotation had resolved.
-#[test]
-fn depth_limit_in_an_if_const_annotation_is_not_ignored() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-pub fn driver(): int {
-    const maybe: int? = 1
-    if const value: Grow<int> = maybe {
-        return value
-    } else {
-        return 0
-    }
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 9, 21);
-}
-
-/// The concrete-declaration passes own their contextual unsupported diagnostic. A depth
-/// refusal from a generic field type is the shared limit instead and must not be
-/// reclassified while the declaring pass drops the field — in a concrete struct field, a
-/// resource field, and a group leaf alike.
-#[test]
-fn a_depth_limit_in_a_declared_field_is_not_reclassified_as_unsupported() {
-    for (what, holder, line, column) in [
-        (
-            "a concrete struct field",
-            "struct Holder {\n    value: Grow<int>\n}",
-            8,
-            12,
-        ),
-        (
-            "a resource field",
-            "resource Holder {\n    value: Grow<int>\n}",
-            8,
-            12,
-        ),
-        (
-            "a group leaf",
-            "resource Holder {\n    details {\n        value: Grow<int>\n    }\n}",
-            9,
-            16,
-        ),
-    ] {
-        let diagnostics = compile_err(&format!(
-            "module main\n\n\
-             struct Grow<T> {{\n    next: Grow<List<T>>\n}}\n\n\
-             {holder}\n\n\
-             pub fn driver(): int {{\n    return 0\n}}\n"
-        ));
-        assert!(
-            !diagnostics.is_empty(),
-            "{what} must report the shared instantiation limit",
-        );
-        assert_one_located_limit(&diagnostics, line, column);
-    }
 }
 
 /// A direct generic-struct construction that reaches the shared count bound must
@@ -1316,19 +1289,14 @@ struct Cycle {
     assert_one_located_limit(&diagnostics, 8, 18);
 }
 
-/// A generic template can reach the type-instantiation limit while resolving a
-/// parameter before its first statement. The rejected signature stops that template
-/// body immediately, so the statement cannot add a secondary name diagnostic.
-#[test]
-fn template_parameter_limit_stops_before_the_first_body_statement() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-fn inspect<T>(value: Grow<T>): int {
+/// Every nested control owner that can hold a depth-limit refusal. Each body places a
+/// `missing()` call after the refusing construct: if the owner kept visiting after the
+/// limit, that call — or the owner's own exhaustiveness, fallthrough, or divergence
+/// check — would add a second row, so the single-row assertion is what pins the stop.
+const NESTED_STOP_SITES: &[DepthLimitSite] = &[
+    DepthLimitSite {
+        site: "a generic template's parameter, before its first body statement",
+        tail: r#"fn inspect<T>(value: Grow<T>): int {
     return missing()
 }
 
@@ -1336,22 +1304,11 @@ pub fn safe(): int {
     return 0
 }
 "#,
-    );
-    assert_one_located_limit(&diagnostics, 7, 22);
-}
-
-/// Once an `if` branch reaches the shared limit, no later branch is semantically
-/// visited and no enclosing fallthrough diagnostic is manufactured.
-#[test]
-fn nested_if_limit_stops_later_branches_and_structural_diagnostics() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-pub fn driver(flag: bool): int {
+        at: (7, 22),
+    },
+    DepthLimitSite {
+        site: "an `if` branch",
+        tail: r#"pub fn driver(flag: bool): int {
     if flag {
         const value: Grow<int> = 0
         return 1
@@ -1360,23 +1317,11 @@ pub fn driver(flag: bool): int {
     }
 }
 "#,
-    );
-    assert_one_located_limit(&diagnostics, 9, 22);
-}
-
-/// The present branch of `if const` owns the same nested-block stop. Its absent
-/// tail is not visited after a limit, and the enclosing value-return check stays
-/// downstream of that stop.
-#[test]
-fn nested_if_const_limit_stops_the_absent_tail() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-pub fn driver(): int {
+        at: (9, 22),
+    },
+    DepthLimitSite {
+        site: "the present branch of `if const`",
+        tail: r#"pub fn driver(): int {
     const maybe: int? = 1
     if const present = maybe {
         const value: Grow<int> = 0
@@ -1386,22 +1331,11 @@ pub fn driver(): int {
     }
 }
 "#,
-    );
-    assert_one_located_limit(&diagnostics, 10, 22);
-}
-
-/// A limit in one enum arm stops arm dispatch before later arm bodies and before
-/// the match owner's exhaustiveness/termination diagnostics.
-#[test]
-fn nested_match_arm_limit_stops_later_arms_and_match_diagnostics() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-enum Choice {
+        at: (10, 22),
+    },
+    DepthLimitSite {
+        site: "a match arm",
+        tail: r#"enum Choice {
     first
     second
 }
@@ -1416,23 +1350,11 @@ pub fn driver(choice: Choice): int {
     }
 }
 "#,
-    );
-    assert_one_located_limit(&diagnostics, 15, 26);
-}
-
-/// Checked-fault arms are nested control owners too. A limit in the first branch
-/// of the handler stops its later branch and suppresses the handler-divergence
-/// diagnostic that would otherwise be layered on the rejected body.
-#[test]
-fn nested_checked_arm_limit_stops_later_control_and_arm_diagnostics() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-pub fn driver(flag: bool): int {
+        at: (15, 26),
+    },
+    DepthLimitSite {
+        site: "a checked-fault handler branch",
+        tail: r#"pub fn driver(flag: bool): int {
     const value = checked 1 + 2
         on out_of_range {
             if flag {
@@ -1444,8 +1366,15 @@ pub fn driver(flag: bool): int {
     return value
 }
 "#,
-    );
-    assert_one_located_limit(&diagnostics, 11, 31);
+        at: (11, 31),
+    },
+];
+
+#[test]
+fn every_nested_control_owner_stops_at_a_depth_limit() {
+    for case in NESTED_STOP_SITES {
+        assert_one_site_limit(case);
+    }
 }
 
 /// Reusing one rejected generic application at two real signature consumers keeps
@@ -1865,91 +1794,56 @@ pub fn run(): int {
     );
 }
 
-/// A collection as a bare `some(...)` payload is refused at check time. The image
-/// admits a scalar, record, or enum enum-payload leaf; a `List` is not one, so a
-/// checker-clean program can never mint an image the verifier rejects at the Table
-/// phase. The refusal is located at the constructed value.
-#[test]
-fn a_collection_some_payload_is_rejected() {
-    let diagnostics = compile_err(
-        r#"module main
+/// One position where a collection would become an enum-payload leaf, and the naming the
+/// refusal must carry.
+struct PayloadRefusal {
+    /// The payload position under test.
+    position: &'static str,
+    source: &'static str,
+    /// Fragments one rendered row must carry together, so the reader is told which
+    /// member holds the leaf the image cannot represent.
+    naming: &'static [&'static str],
+}
+
+/// The image admits a scalar, record, or enum enum-payload leaf; a collection is not one.
+/// Every position that can carry one is refused at check time, so a checker-clean program
+/// can never mint an image the verifier rejects at the Table phase.
+const COLLECTION_PAYLOAD_REFUSALS: &[PayloadRefusal] = &[
+    PayloadRefusal {
+        position: "a bare `some(...)` constructor",
+        source: r#"module main
 
 pub fn run(): int {
     const x = some(List(1, 2, 3))
     return 0
 }
 "#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckUnsupported),
-        "{diagnostics:#?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("`some` payload of `Option`")
-                && d.message().contains("not a payload type")),
-        "{diagnostics:#?}"
-    );
-}
-
-/// The same rejection reaches an `Option<List<int>>` type annotation carrying no
-/// constructor: the mint that resolves the annotation is where the collection
-/// payload leaf is refused.
-#[test]
-fn a_collection_option_annotation_is_rejected() {
-    let diagnostics = compile_err(
-        r#"module main
+        naming: &["`some` payload of `Option`", "not a payload type"],
+    },
+    PayloadRefusal {
+        position: "an `Option<List<int>>` annotation carrying no constructor",
+        source: r#"module main
 
 pub fn run(): int {
     const x: Option<List<int>> = none
     return 0
 }
 "#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckUnsupported),
-        "{diagnostics:#?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("not a payload type")),
-        "{diagnostics:#?}"
-    );
-}
-
-/// A `Result` whose `ok` payload monomorphizes to a `Map` is refused with the same
-/// teaching diagnostic, naming the offending member.
-#[test]
-fn a_collection_result_payload_is_rejected() {
-    let diagnostics = compile_err(
-        r#"module main
+        naming: &["not a payload type"],
+    },
+    PayloadRefusal {
+        position: "a `Result` whose `ok` payload monomorphizes to a `Map`",
+        source: r#"module main
 
 pub fn run(): Result<Map<int, int>, int> {
     return ok(Map())
 }
 "#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckUnsupported),
-        "{diagnostics:#?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("`ok` payload of `Result`")
-                && d.message().contains("`Map`")),
-        "{diagnostics:#?}"
-    );
-}
-
-/// A user generic enum instantiated with a collection type argument that lands in a
-/// payload position is refused, exactly like the reserved generics.
-#[test]
-fn a_user_generic_enum_collection_argument_is_rejected() {
-    let diagnostics = compile_err(
-        r#"module main
+        naming: &["`ok` payload of `Result`", "`Map`"],
+    },
+    PayloadRefusal {
+        position: "a user generic enum instantiated at a collection argument",
+        source: r#"module main
 
 enum Box<T> {
     wrap(v: T)
@@ -1960,26 +1854,11 @@ pub fn run(): int {
     return 0
 }
 "#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckUnsupported),
-        "{diagnostics:#?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("`wrap` payload of `Box`")),
-        "{diagnostics:#?}"
-    );
-}
-
-/// A user generic enum whose template body wraps its parameter in a collection has a
-/// collection payload leaf for every instantiation — even `E<int>` — and is refused
-/// at the instantiation site.
-#[test]
-fn a_user_generic_enum_internal_collection_payload_is_rejected() {
-    let diagnostics = compile_err(
-        r#"module main
+        naming: &["`wrap` payload of `Box`"],
+    },
+    PayloadRefusal {
+        position: "a user generic enum whose template body wraps its parameter in a collection",
+        source: r#"module main
 
 enum E<T> {
     v(x: List<T>)
@@ -1990,50 +1869,22 @@ pub fn run(): int {
     return 0
 }
 "#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckUnsupported),
-        "{diagnostics:#?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("`v` payload of `E`")),
-        "{diagnostics:#?}"
-    );
-}
-
-/// A collection buried under nested `Option` layers is still refused: the inner
-/// `Option<List<int>>` mint carries the illegal leaf.
-#[test]
-fn a_nested_option_collection_payload_is_rejected() {
-    let diagnostics = compile_err(
-        r#"module main
+        naming: &["`v` payload of `E`"],
+    },
+    PayloadRefusal {
+        position: "a collection buried under nested `Option` layers",
+        source: r#"module main
 
 pub fn run(): int {
     const x = some(some(List(1, 2, 3)))
     return 0
 }
 "#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckUnsupported),
-        "{diagnostics:#?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("not a payload type")),
-        "{diagnostics:#?}"
-    );
-}
-
-/// A function parameter typed `Option<List<int>>` is refused during signature
-/// resolution, so the collection payload leaf never reaches an image function type.
-#[test]
-fn a_collection_option_parameter_is_rejected() {
-    let diagnostics = compile_err(
-        r#"module main
+        naming: &["not a payload type"],
+    },
+    PayloadRefusal {
+        position: "a function parameter typed `Option<List<int>>`",
+        source: r#"module main
 
 pub fn takes(o: Option<List<int>>): int {
     return 0
@@ -2043,17 +1894,30 @@ pub fn run(): int {
     return 0
 }
 "#,
-    );
-    assert!(
-        has_code(&diagnostics, Code::CheckUnsupported),
-        "{diagnostics:#?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("not a payload type")),
-        "{diagnostics:#?}"
-    );
+        naming: &["not a payload type"],
+    },
+];
+
+#[test]
+fn every_collection_payload_position_is_refused_by_name() {
+    for case in COLLECTION_PAYLOAD_REFUSALS {
+        let diagnostics = compile_err(case.source);
+        assert!(
+            has_code(&diagnostics, Code::CheckUnsupported),
+            "{}: the collection payload leaf is refused: {diagnostics:#?}",
+            case.position,
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                case.naming
+                    .iter()
+                    .all(|fragment| diagnostic.message().contains(fragment))
+            }),
+            "{}: one row names the refused payload {:?}: {diagnostics:#?}",
+            case.position,
+            case.naming,
+        );
+    }
 }
 
 /// An `Option` of a struct keeps compiling: a struct is an admitted enum-payload
@@ -2095,12 +1959,11 @@ pub fn run(): int {
 }
 
 /// A generic-heavy program that settles many instantiations at declare time and then runs
-/// several once-checked template proofs over that population: the proofs now run directly on
-/// the in-progress registry and draft inside a savepoint (BND03), not on a per-template
-/// clone. This is the accepted-program byte-identity fence for that path — the encoded image
-/// bytes are frozen, so any perturbation of the proof pass that leaked into the real image
-/// turns this red. The digest is a hash of the full encoded image; a single changed byte
-/// changes it.
+/// several once-checked template proofs over that population. The proofs run directly on
+/// the in-progress registry and draft inside a savepoint, not on a per-template clone, so
+/// this is the accepted-program byte-identity fence for that path: the encoded image bytes
+/// are frozen, and any perturbation of the proof pass that leaked into the real image fails
+/// here. The digest is a hash of the full encoded image; a single changed byte changes it.
 #[test]
 fn a_generic_heavy_program_has_frozen_image_bytes() {
     let compiled = compile_ok(

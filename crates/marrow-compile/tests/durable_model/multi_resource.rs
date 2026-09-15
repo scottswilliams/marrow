@@ -1,12 +1,12 @@
-//! Multiple resource record types per project (MR01 step 3a): the checker admits
-//! more than one `resource` declaration, each becoming its own value record type,
-//! while two resources sharing a name are a precise typed `check.type` rejection.
-//! The durable graph still admits a single store this step; a second resource is a
-//! value type, not a second root.
+//! Multiple resource record types per project: the checker admits more than one
+//! `resource` declaration, each becoming its own value record type, while two
+//! resources sharing a name are a precise typed `check.type` rejection. A second
+//! resource is a value type, not a second root.
 
 use marrow_codes::Code;
 use marrow_compile::{CompileFailure, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+
+use super::project;
 
 /// The identity ledger for a single `^ledgers` store over the `Ledger` resource. A
 /// second, storeless resource needs no durable identity — it is a value type only.
@@ -20,19 +20,8 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, ids, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
-
 /// Two resources — one backing a store, one storeless — both usable as by-value
-/// record types compile to a canonical image. Before step 3a the second resource
-/// was a `check.unsupported` rejection ("only one resource type per project").
+/// record types compile to a canonical image.
 #[test]
 fn two_resources_compile_together() {
     let source = r#"module main

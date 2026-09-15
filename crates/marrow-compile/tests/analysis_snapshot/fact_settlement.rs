@@ -15,27 +15,16 @@
 use std::sync::Arc;
 
 use marrow_compile::{AnalysisSnapshot, Fact, InputRevision, Unavailability, analyze};
-use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
-fn project(files: &[(&str, &str)]) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
+use super::{identity, project};
 
+/// Analyze a project and unwrap its snapshot (the opaque `AnalysisFailure` is not
+/// `Debug`, so a `let`-else keeps the failure boundary opaque).
 fn snap(files: &[(&str, &str)]) -> Arc<AnalysisSnapshot> {
     let Ok(snapshot) = analyze(Arc::new(project(files)), InputRevision::new(1)) else {
         panic!("expected an analysis snapshot for {files:?}");
     };
     snapshot
-}
-
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
 }
 
 fn offset_of(source: &str, needle: &str) -> usize {

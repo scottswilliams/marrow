@@ -4,44 +4,15 @@
 
 use std::sync::Arc;
 
-use marrow_compile::{
-    AnalysisSnapshot, Definition, Fact, InputRevision, QueryError, Unavailability, analyze,
-};
-use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
+use marrow_compile::{Definition, Fact, InputRevision, QueryError, Unavailability, analyze};
 
-fn project(files: &[(&str, &str)]) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
-
-/// Analyze a project and unwrap its snapshot (the opaque `AnalysisFailure` is not
-/// `Debug`, so a `let`-else keeps the failure boundary opaque).
-fn snap(files: &[(&str, &str)]) -> Arc<AnalysisSnapshot> {
-    let Ok(snapshot) = analyze(Arc::new(project(files)), InputRevision::new(1)) else {
-        panic!("expected an analysis snapshot for {files:?}");
-    };
-    snapshot
-}
-
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
-}
-
-/// The byte offset of the first occurrence of `needle` in `source`.
-fn offset_of(source: &str, needle: &str) -> usize {
-    source.find(needle).expect("needle present in source")
-}
+use super::{at, identity, project_bytes, snap};
 
 #[test]
 fn hover_on_a_parameter_use_shows_its_value_type() {
     let source = "pub fn f(x: int): int {\n    return x\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let use_offset = offset_of(source, "return x") + "return ".len();
+    let use_offset = at(source, "return x", 0) + "return ".len();
     match snapshot.hover(&identity("src/main.mw"), use_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "int"),
         other => panic!(
@@ -55,7 +26,7 @@ fn hover_on_a_parameter_use_shows_its_value_type() {
 fn hover_on_a_local_use_shows_its_inferred_type() {
     let source = "pub fn f(): int {\n    const n = 7\n    return n\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let use_offset = offset_of(source, "return n") + "return ".len();
+    let use_offset = at(source, "return n", 0) + "return ".len();
     match snapshot.hover(&identity("src/main.mw"), use_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "int"),
         other => panic!("expected Present(int), got {}", label(&other)),
@@ -67,7 +38,7 @@ fn hover_on_a_valid_position_with_no_fact_is_absent() {
     let source = "pub fn f(): int {\n    return 1\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
     // The `1` literal is a valid position with no local/parameter fact.
-    let literal = offset_of(source, "return 1") + "return ".len();
+    let literal = at(source, "return 1", 0) + "return ".len();
     assert!(matches!(
         snapshot.hover(&identity("src/main.mw"), literal),
         Ok(Fact::Absent)
@@ -110,7 +81,7 @@ fn a_valid_module_keeps_hover_facts_past_a_sibling_parse_error() {
     let valid = "module valid\n\npub fn h(x: int): int {\n    return x\n}\n";
     let broken = "module broken\n\npub fn g(: int {\n    return 1\n}\n";
     let snapshot = snap(&[("src/valid.mw", valid), ("src/broken.mw", broken)]);
-    let use_offset = offset_of(valid, "return x") + "return ".len();
+    let use_offset = at(valid, "return x", 0) + "return ".len();
     match snapshot.hover(&identity("src/valid.mw"), use_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "int"),
         other => panic!(
@@ -142,7 +113,7 @@ pub fn f(x: int): int {
         !snapshot.diagnostics().is_empty(),
         "the fixture's body fails to check"
     );
-    let use_offset = offset_of(source, "= x") + "= ".len();
+    let use_offset = at(source, "= x", 0) + "= ".len();
     match snapshot.hover(&identity("src/main.mw"), use_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "int"),
         other => panic!(
@@ -180,7 +151,7 @@ pub fn run(): bool {
         !snapshot.diagnostics().is_empty(),
         "the fixture's template proof fails on the unconstrained `==`"
     );
-    let use_offset = offset_of(source, "= a") + "= ".len();
+    let use_offset = at(source, "= a", 0) + "= ".len();
     match snapshot.hover(&identity("src/main.mw"), use_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "T"),
         other => panic!(
@@ -195,7 +166,7 @@ fn hover_on_a_same_module_call_shows_the_resolved_signature() {
     let source = "pub fn add(a: int, b: int): int {\n    return a\n}\n\n\
                   pub fn f(): int {\n    return add(1, 2)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let call_offset = offset_of(source, "add(1, 2)");
+    let call_offset = at(source, "add(1, 2)", 0);
     match snapshot.hover(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "fn add(int, int): int"),
         other => panic!("expected the resolved signature, got {}", label(&other)),
@@ -208,7 +179,7 @@ fn hover_on_a_cross_module_call_shows_the_resolved_signature() {
     let main = "module main\nuse lib\n\npub fn f(): int {\n    return lib::helper(1)\n}\n";
     let snapshot = snap(&[("src/lib.mw", lib), ("src/main.mw", main)]);
     // The origin is the callee leaf `helper`, not the `lib` prefix.
-    let call_offset = offset_of(main, "lib::helper") + "lib::".len();
+    let call_offset = at(main, "lib::helper", 0) + "lib::".len();
     match snapshot.hover(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "fn helper(int): int"),
         other => panic!("expected the resolved signature, got {}", label(&other)),
@@ -223,7 +194,7 @@ fn hover_inside_a_generic_body_shows_the_template_parameter_spelling() {
     let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
                   pub fn f(): int {\n    return id(1)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let use_offset = offset_of(source, "return x") + "return ".len();
+    let use_offset = at(source, "return x", 0) + "return ".len();
     match snapshot.hover(&identity("src/main.mw"), use_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "T"),
         other => panic!(
@@ -241,12 +212,12 @@ fn definition_inside_a_generic_body_targets_a_called_helper() {
                   pub fn wrap<T>(x: T): int {\n    return helper(1)\n}\n\n\
                   pub fn f(): int {\n    return wrap(1)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let call_offset = offset_of(source, "return helper(1)") + "return ".len();
+    let call_offset = at(source, "return helper(1)", 0) + "return ".len();
     match snapshot.definition(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(def)) => {
             let name = &source[def.name_span().start_byte..def.name_span().end_byte];
             assert_eq!(name, "helper");
-            assert_eq!(def.name_span().start_byte, offset_of(source, "helper"));
+            assert_eq!(def.name_span().start_byte, at(source, "helper", 0));
         }
         other => panic!("expected the helper definition, got {}", label_def(&other)),
     }
@@ -257,17 +228,17 @@ fn definition_on_a_same_module_call_targets_the_declaration() {
     let source = "pub fn add(a: int, b: int): int {\n    return a\n}\n\n\
                   pub fn f(): int {\n    return add(1, 2)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let call_offset = offset_of(source, "add(1, 2)");
+    let call_offset = at(source, "add(1, 2)", 0);
     match snapshot.definition(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(def)) => {
             assert_eq!(def.file().as_str(), "src/main.mw");
             // The selection range is the declaration's name, not the call's.
             let name = &source[def.name_span().start_byte..def.name_span().end_byte];
             assert_eq!(name, "add");
-            assert_eq!(def.name_span().start_byte, offset_of(source, "add"));
+            assert_eq!(def.name_span().start_byte, at(source, "add", 0));
             // The declaration range runs from the header start through the body end.
             assert_eq!(def.declaration_range().start_byte, 0);
-            assert!(def.declaration_range().end_byte > offset_of(source, "return a"));
+            assert!(def.declaration_range().end_byte > at(source, "return a", 0));
         }
         other => panic!("expected a definition, got {}", label_def(&other)),
     }
@@ -278,7 +249,7 @@ fn definition_on_a_cross_module_call_targets_the_other_file() {
     let lib = "module lib\n\npub fn helper(x: int): int {\n    return x\n}\n";
     let main = "module main\nuse lib\n\npub fn f(): int {\n    return lib::helper(1)\n}\n";
     let snapshot = snap(&[("src/lib.mw", lib), ("src/main.mw", main)]);
-    let call_offset = offset_of(main, "lib::helper") + "lib::".len();
+    let call_offset = at(main, "lib::helper", 0) + "lib::".len();
     match snapshot.definition(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(def)) => {
             assert_eq!(def.file().as_str(), "src/lib.mw");
@@ -296,7 +267,7 @@ fn definition_on_a_cross_module_call_targets_the_other_file() {
 fn definition_on_a_local_use_is_absent() {
     let source = "pub fn f(x: int): int {\n    return x\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let use_offset = offset_of(source, "return x") + "return ".len();
+    let use_offset = at(source, "return x", 0) + "return ".len();
     assert!(matches!(
         snapshot.definition(&identity("src/main.mw"), use_offset),
         Ok(Fact::Absent)
@@ -318,7 +289,7 @@ fn hover_on_a_generic_call_shows_the_template_signature() {
     let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
                   pub fn f(): int {\n    return id(1)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let call_offset = offset_of(source, "id(1)");
+    let call_offset = at(source, "id(1)", 0);
     match snapshot.hover(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "fn id<T>(T): T"),
         other => panic!("expected the template signature, got {}", label(&other)),
@@ -330,14 +301,14 @@ fn definition_on_a_generic_call_targets_the_source_template() {
     let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
                   pub fn f(): int {\n    return id(1)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
-    let call_offset = offset_of(source, "id(1)");
+    let call_offset = at(source, "id(1)", 0);
     match snapshot.definition(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(def)) => {
             assert_eq!(def.file().as_str(), "src/main.mw");
             // The target is the template declaration, not a minted instance.
             let name = &source[def.name_span().start_byte..def.name_span().end_byte];
             assert_eq!(name, "id");
-            assert_eq!(def.name_span().start_byte, offset_of(source, "id"));
+            assert_eq!(def.name_span().start_byte, at(source, "id", 0));
         }
         other => panic!(
             "expected the template definition, got {}",
@@ -351,7 +322,7 @@ fn definition_on_a_cross_module_generic_call_targets_the_template_file() {
     let lib = "module lib\n\npub fn wrap<T>(x: T): T {\n    return x\n}\n";
     let main = "module main\nuse lib\n\npub fn f(): int {\n    return lib::wrap(1)\n}\n";
     let snapshot = snap(&[("src/lib.mw", lib), ("src/main.mw", main)]);
-    let call_offset = offset_of(main, "lib::wrap") + "lib::".len();
+    let call_offset = at(main, "lib::wrap", 0) + "lib::".len();
     match snapshot.definition(&identity("src/main.mw"), call_offset) {
         Ok(Fact::Present(def)) => {
             assert_eq!(def.file().as_str(), "src/lib.mw");
@@ -371,7 +342,7 @@ fn hover_on_a_call_to_a_parse_failed_module_is_dependency_unavailable() {
     let main = "module main\nuse broken\n\npub fn f(): int {\n    return broken::helper()\n}\n";
     let snapshot = snap(&[("src/broken.mw", broken), ("src/main.mw", main)]);
     // The callee leaf `helper` targets a module that did not parse.
-    let call_offset = offset_of(main, "broken::helper") + "broken::".len();
+    let call_offset = at(main, "broken::helper", 0) + "broken::".len();
     assert!(matches!(
         snapshot.hover(&identity("src/main.mw"), call_offset),
         Ok(Fact::Unavailable(Unavailability::Dependency))
@@ -383,7 +354,7 @@ fn definition_on_a_call_to_a_parse_failed_module_is_dependency_unavailable() {
     let broken = "module broken\n\npub fn helper(: int {\n    return 1\n}\n";
     let main = "module main\nuse broken\n\npub fn f(): int {\n    return broken::helper()\n}\n";
     let snapshot = snap(&[("src/broken.mw", broken), ("src/main.mw", main)]);
-    let call_offset = offset_of(main, "broken::helper") + "broken::".len();
+    let call_offset = at(main, "broken::helper", 0) + "broken::".len();
     assert!(matches!(
         snapshot.definition(&identity("src/main.mw"), call_offset),
         Ok(Fact::Unavailable(Unavailability::Dependency))
@@ -397,7 +368,7 @@ fn an_unrelated_valid_position_is_absent_not_dependency_unavailable() {
     let broken = "module broken\n\npub fn helper(: int {\n    return 1\n}\n";
     let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
     let snapshot = snap(&[("src/broken.mw", broken), ("src/main.mw", main)]);
-    let literal = offset_of(main, "return 1") + "return ".len();
+    let literal = at(main, "return 1", 0) + "return ".len();
     assert!(matches!(
         snapshot.hover(&identity("src/main.mw"), literal),
         Ok(Fact::Absent)
@@ -408,21 +379,18 @@ fn an_unrelated_valid_position_is_absent_not_dependency_unavailable() {
 fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
     // A non-UTF-8 source never enters parsing, but it is still a project module that
     // did not parse: a qualified call into it is a dependency gap, not an absence.
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let main = "module main\nuse broken\n\n\
                 pub fn f(): int {\n    return broken::helper()\n}\n\n\
                 pub fn g(): int {\n    return 5\n}\n";
-    let files = vec![
-        CapturedFile::new("src/broken.mw".to_string(), vec![0xff, 0xfe, 0x00]),
-        CapturedFile::new("src/main.mw".to_string(), main.as_bytes().to_vec()),
-    ];
-    let input = marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
-        .expect("capture project");
+    let input = project_bytes(&[
+        ("src/broken.mw", vec![0xff, 0xfe, 0x00]),
+        ("src/main.mw", main.as_bytes().to_vec()),
+    ]);
     let Ok(snapshot) = analyze(Arc::new(input), InputRevision::new(1)) else {
         panic!("a resilient snapshot is produced");
     };
     let main_id = identity("src/main.mw");
-    let call_offset = offset_of(main, "broken::helper") + "broken::".len();
+    let call_offset = at(main, "broken::helper", 0) + "broken::".len();
     assert!(matches!(
         snapshot.hover(&main_id, call_offset),
         Ok(Fact::Unavailable(Unavailability::Dependency))
@@ -433,7 +401,7 @@ fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
     ));
     // The unrelated-position control extends: a valid literal in the same file with a
     // non-UTF-8 sibling stays Absent, not Dependency.
-    let literal = offset_of(main, "return 5") + "return ".len();
+    let literal = at(main, "return 5", 0) + "return ".len();
     assert!(matches!(
         snapshot.hover(&main_id, literal),
         Ok(Fact::Absent)
@@ -442,10 +410,9 @@ fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
 
 #[test]
 fn analysis_floor_boundary_comments_are_gone() {
-    // CORE-F4 closed the generic-template-body floor: hover and definition now cover
-    // positions inside a generic template body. The two "Floor boundary" comments that
-    // named that deferral must be gone so a stale timeline cannot contradict the behavior
-    // the tests above pin.
+    // Hover and definition cover positions inside a generic template body, so no
+    // "Floor boundary" comment may claim that deferral: a stale comment would
+    // contradict the behavior the fixtures above pin.
     let analysis = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/analysis.rs"))
         .expect("analysis.rs is readable");
     assert!(

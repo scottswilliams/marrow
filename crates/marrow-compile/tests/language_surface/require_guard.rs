@@ -1,4 +1,4 @@
-//! The `require <condition> else <value>` guard statement (REQ01).
+//! The `require <condition> else <value>` guard statement.
 //!
 //! `require C else E` is pure lowering sugar for `if not C { return err(E) }`:
 //! the condition is a `bool`, the bare failure value types against the enclosing
@@ -10,22 +10,14 @@
 //! differs: the two spellings occupy different source positions.)
 //!
 //! Transaction-owner and helper exits are pinned beside the other ownership
-//! laws in `transaction_ownership.rs`.
+//! laws in `durable_model/transaction_ownership.rs`.
 
 use marrow_codes::Code;
 use std::collections::BTreeMap;
 
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-fn project(source: &str) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT).expect("capture")
-}
+use super::project;
 
 /// Compile a pure (storeless) module, returning the check diagnostics.
 fn diagnostics(source: &str) -> Vec<SourceDiagnostic> {

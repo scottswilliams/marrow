@@ -4,7 +4,7 @@
 //! Three properties are pinned here.
 //!
 //! **Outcome agreement.** Parsing is a pure function of the source bytes, so an outcome
-//! derived from a per-query parse equals the one the superseded retained trees produced.
+//! derived from a per-query parse equals the one a retained parse tree would produce.
 //! This file freezes a corpus of rendered outcomes covering the classification cases
 //! those trees served — clean files, a recovered-broken file, a file that never decoded —
 //! so a divergence is a failing assertion rather than an assumption.
@@ -97,9 +97,9 @@ const ORDINARY_QUERY_BUDGET_MS: u128 = 10;
 ///
 /// **Derived, not sampled.** `the_query_parse_transient_closes_under_the_exported_term`
 /// re-derives the figure from the pinned representation and asserts it. Every measurement
-/// in this file and in the lane's evidence is a corroborating sample under this bound,
-/// never the source of it — three earlier passes each published a measured term and each
-/// was beaten by a denser admissible file within days.
+/// in this file is a corroborating sample under this bound, never the source of it: a
+/// measured term is only ever a lower bound, because a denser admissible file can always
+/// beat it.
 ///
 /// The accounting charges allocated capacity, not resident pages: a container's amortized
 /// growth slack is allocated and paid for by an allocator, but a sampled
@@ -744,10 +744,10 @@ fn corpus_outcomes(snapshot: &AnalysisSnapshot) -> Vec<(String, String, String)>
         .collect()
 }
 
-/// The frozen corpus outcomes. Each is exactly what the retained-tree path produced
-/// before the trees were deleted, so a query-local parse that classified differently —
-/// a recovered-broken file that stopped classifying, an undecodable file that stopped
-/// being syntax-unavailable, a candidate set that changed — fails here.
+/// The frozen corpus outcomes. Each is the outcome a retained parse tree yields, so a
+/// query-local parse that classified differently — a recovered-broken file that stopped
+/// classifying, an undecodable file that stopped being syntax-unavailable, a candidate
+/// set that changed — fails here.
 #[test]
 fn query_local_outcomes_match_the_frozen_corpus() {
     let snapshot = snapshot(corpus_files());
@@ -1406,8 +1406,8 @@ fn container_growth_stays_within_the_accounted_factor() {
         );
     }
 
-    // The minimum non-zero capacity is the half of the rule the tables used to omit: a
-    // container holding one element takes four slots, not the two a doubling factor
+    // The minimum non-zero capacity is the half of the rule a doubling factor hides: a
+    // container holding one element takes four slots, not the two that factor
     // alone suggests, and one element is the least a family's own spelling admits. Every
     // per-family slot above is charged through `vec_bytes`, so this is the rule those
     // charges rest on, asserted over the widths that decide the bound.

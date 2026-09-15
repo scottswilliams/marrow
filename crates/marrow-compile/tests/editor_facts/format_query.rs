@@ -4,21 +4,8 @@
 use std::sync::Arc;
 
 use marrow_compile::{FormatOutcome, FormatRefusal, InputRevision, QueryError, analyze};
-use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
-fn project(files: &[(&str, &str)]) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
-
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
-}
+use super::{identity, project, project_bytes};
 
 #[test]
 fn snapshot_formats_a_clean_file() {
@@ -55,10 +42,7 @@ fn snapshot_format_refuses_a_parse_failed_file() {
 
 #[test]
 fn snapshot_format_of_a_non_utf8_file_is_the_typed_invalid_utf8_outcome() {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = vec![CapturedFile::new("src/main.mw".to_string(), vec![0xFF])];
-    let input = marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project");
+    let input = project_bytes(&[("src/main.mw", vec![0xFF])]);
     let Ok(snapshot) = analyze(Arc::new(input), InputRevision::new(1)) else {
         panic!("a snapshot is produced even for a non-UTF-8 file");
     };

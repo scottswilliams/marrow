@@ -12,34 +12,8 @@ use marrow_compile::{
     MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, PositionClass, QueryError,
     Unavailability, analyze,
 };
-use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
-fn project_bytes(files: &[(&str, Vec<u8>)]) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.clone()))
-        .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
-
-fn snap(source: &str) -> Arc<AnalysisSnapshot> {
-    let files = [("src/app.mw", source.as_bytes().to_vec())];
-    let Ok(snapshot) = analyze(Arc::new(project_bytes(&files)), InputRevision::new(1)) else {
-        panic!("expected an analysis snapshot");
-    };
-    snapshot
-}
-
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
-}
-
-/// The byte offset of `needle` in `source`, advanced by `extra` bytes.
-fn at(source: &str, needle: &str, extra: usize) -> usize {
-    source.find(needle).expect("needle present") + extra
-}
+use super::{at, identity, project_bytes, snap_app};
 
 /// The class and labels of a present completion fact, or a panic.
 fn labels(snapshot: &AnalysisSnapshot, offset: usize) -> (PositionClass, Vec<String>) {
@@ -71,7 +45,7 @@ fn completions_expression_name() {
     let source = "module app\n\n\
         fn helper(): int {\n    return 1\n}\n\n\
         fn caller(): int {\n    const total = 2\n    return t\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "return t\n}", "return ".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::ExpressionName);
@@ -95,7 +69,7 @@ fn completions_member_fields() {
     let source = "module app\n\n\
         struct Point {\n    x: int\n    y: int\n}\n\n\
         fn f(p: Point): int {\n    return p.\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "return p.\n", "return p.".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::Member);
@@ -107,7 +81,7 @@ fn completions_enum_members() {
     let source = "module app\n\n\
         enum Role {\n    admin\n    guest\n}\n\n\
         fn f(): int {\n    const r = Role::\n    return 1\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "Role::\n", "Role::".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::EnumPath);
@@ -119,7 +93,7 @@ fn completions_enum_members_mark_category_non_selectable() {
     let source = "module app\n\n\
         enum Cat {\n    category tiger {\n        bengal\n    }\n    lion\n}\n\n\
         fn f(): int {\n    const r = Cat::\n    return 1\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "Cat::\n", "Cat::".len());
     match snapshot.completions(&identity("src/app.mw"), offset) {
         Ok(CompletionOutcome::Ready(Fact::Present(completions))) => {
@@ -143,7 +117,7 @@ fn completions_type_annotation() {
     let source = "module app\n\n\
         struct Thing {\n    v: int\n}\n\n\
         fn f(): int {\n    const x: Thing = Thing(v: 1)\n    return x.v\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "const x: Thing", "const x: ".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::TypeAnnotation);
@@ -165,7 +139,7 @@ fn completions_type_annotation() {
 fn completions_type_annotation_offers_generic_type_parameters() {
     let source = "module app\n\n\
         fn f<T>(value: T): int {\n    const x: T = value\n    return 1\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "const x: T =", "const x: ".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::TypeAnnotation);
@@ -182,7 +156,7 @@ fn completions_broken_file_still_classifies() {
     let source = "module app\n\n\
         struct Point {\n    x: int\n    y: int\n}\n\n\
         fn f(p: Point): int {\n    return p.\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "return p.\n", "return p.".len());
     let file = identity("src/app.mw");
 
@@ -205,7 +179,7 @@ fn completions_unresolvable_base_is_absent_fields_not_panic() {
     // yields an empty field set, never a resolver failure or panic.
     let source = "module app\n\n\
         fn f(): int {\n    return mystery.\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "return mystery.\n", "return mystery.".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::Member);
@@ -222,7 +196,7 @@ fn completions_over_cap_refuses() {
         source.push_str(&format!("fn f{index}(): int {{\n    return 1\n}}\n\n"));
     }
     source.push_str("fn caller(): int {\n    return f0\n}\n");
-    let snapshot = snap(&source);
+    let snapshot = snap_app(&source);
     let offset = at(&source, "return f0\n}", "return ".len());
     match snapshot.completions(&identity("src/app.mw"), offset) {
         Ok(CompletionOutcome::Refused(AnalysisResourceLimit::CompletionCandidateCount {
@@ -250,7 +224,7 @@ fn member_source(field_count: usize, name_width: usize) -> String {
 }
 
 fn member_outcome(source: &str) -> Result<CompletionOutcome, QueryError> {
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "return p.\n", "return p.".len());
     snapshot.completions(&identity("src/app.mw"), offset)
 }
@@ -305,7 +279,7 @@ fn completions_render_bytes_refuses_when_labels_exceed_the_budget() {
 fn completions_absent_in_literal() {
     let source = "module app\n\n\
         fn f(): int {\n    return 42\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     let offset = at(source, "return 42", "return 4".len());
     assert!(
         matches!(
@@ -319,7 +293,7 @@ fn completions_absent_in_literal() {
 #[test]
 fn completions_unknown_file() {
     let source = "module app\n\nfn f(): int {\n    return 1\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     assert!(matches!(
         snapshot.completions(&identity("src/other.mw"), 0),
         Err(QueryError::UnknownFile)
@@ -329,7 +303,7 @@ fn completions_unknown_file() {
 #[test]
 fn completions_offset_out_of_range() {
     let source = "module app\n\nfn f(): int {\n    return 1\n}\n";
-    let snapshot = snap(source);
+    let snapshot = snap_app(source);
     assert!(matches!(
         snapshot.completions(&identity("src/app.mw"), source.len() + 1),
         Err(QueryError::OffsetOutOfRange)

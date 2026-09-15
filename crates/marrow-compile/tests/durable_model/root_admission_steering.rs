@@ -1,13 +1,16 @@
-//! Root-admission steering (E07-M2A): a reference to a store root whose durable identity
-//! failed admission is steered to the `check.durable_identity` reports, not reported as a
-//! bare unknown name. The ledger confound: an identity-less root drops from the durable
-//! registry, so a `^root` reference — even from another module — read as `not in scope`,
+//! A reference to a store root whose durable identity failed admission is steered to the
+//! `check.durable_identity` reports, not reported as a bare unknown name.
+//!
+//! The ledger confound: an identity-less root drops from the durable registry, so a
+//! `^root` reference — even from another module — would read as `not in scope`,
 //! misdirecting toward a typo. A genuinely undeclared root keeps the plain not-in-scope
 //! message.
 
 use marrow_codes::Code;
-use marrow_compile::{CompileFailure, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_project::ProjectInput;
+
+use super::project_capture::project_with_ids;
+use super::refused as diagnostics;
 
 /// Capture a multi-file project with no `.marrow/ids` ledger, so every durable identity is
 /// missing and any declared store fails admission.
@@ -18,26 +21,7 @@ fn project(files: &[(&str, &str)]) -> ProjectInput {
 /// Capture a project against an explicit partial ledger, so some declared stores are
 /// admitted and others fail admission.
 fn project_with(files: &[(&str, &str)], ids: Option<&str>) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    marrow_project::capture(
-        &manifest,
-        captured,
-        ids.map(str::as_bytes),
-        &CaptureLimits::DEFAULT,
-    )
-    .expect("capture project")
-}
-
-fn diagnostics(project: &ProjectInput) -> Vec<marrow_compile::SourceDiagnostic> {
-    match compile(project) {
-        Ok(compiled) => panic!("expected an admission failure, compiled: {compiled:?}"),
-        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_iter().collect(),
-        Err(other) => panic!("expected source diagnostics, got {other:?}"),
-    }
+    project_with_ids(files, ids.map(str::as_bytes))
 }
 
 const STORE_MODULE: &str = "module main\n\n\

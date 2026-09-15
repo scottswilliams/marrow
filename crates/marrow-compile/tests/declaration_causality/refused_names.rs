@@ -61,22 +61,42 @@ pub fn independent(): int {
     );
 }
 
+/// A written span as `(start_byte, end_byte, line, column)`.
+type WrittenSpan = (usize, usize, u32, u32);
+
+/// One refused declaration whose name a later duplicate reuses.
+struct DuplicateCase {
+    /// The refused declaration, written first.
+    declaration: &'static str,
+    /// The unknown type inside `declaration` that refuses it.
+    unknown: WrittenSpan,
+    /// The later declaration of the same name.
+    duplicate: WrittenSpan,
+    /// The annotation naming that name, which is steered to the first refusal.
+    annotation: WrittenSpan,
+}
+
+/// Both declaration forms that can reserve the name `Box`: the original refusal, the
+/// name conflict, and the steered annotation are reported in that order for each.
+const DUPLICATE_CASES: &[DuplicateCase] = &[
+    DuplicateCase {
+        declaration: "enum Box<T> { item(value: Missing) }",
+        unknown: (39, 46, 3, 27),
+        duplicate: (55, 58, 4, 6),
+        annotation: (103, 111, 5, 23),
+    },
+    DuplicateCase {
+        declaration: "struct Box<T> { value: Missing }",
+        unknown: (36, 43, 3, 24),
+        duplicate: (51, 54, 4, 6),
+        annotation: (99, 107, 5, 23),
+    },
+];
+
 #[test]
 fn a_generic_enum_duplicate_preserves_the_original_refusal() {
-    for (declaration, unknown, duplicate, annotation) in [
-        (
-            "enum Box<T> { item(value: Missing) }",
-            (39, 46, 3, 27),
-            (55, 58, 4, 6),
-            (103, 111, 5, 23),
-        ),
-        (
-            "struct Box<T> { value: Missing }",
-            (36, 43, 3, 24),
-            (51, 54, 4, 6),
-            (99, 107, 5, 23),
-        ),
-    ] {
+    for case in DUPLICATE_CASES {
+        let declaration = case.declaration;
         let source = format!(
             "module main\n\n{declaration}\n\
              enum Box<U> {{ item(value: U) }}\n\
@@ -98,13 +118,13 @@ fn a_generic_enum_duplicate_preserves_the_original_refusal() {
         assert_eq!(
             actual,
             vec![
-                ("src/main.mw", type_error, unknown),
+                ("src/main.mw", type_error, case.unknown),
                 (
                     "src/main.mw",
                     marrow_codes::Code::CheckNameConflict,
-                    duplicate,
+                    case.duplicate,
                 ),
-                ("src/main.mw", type_error, annotation),
+                ("src/main.mw", type_error, case.annotation),
             ],
             "{declaration}",
         );

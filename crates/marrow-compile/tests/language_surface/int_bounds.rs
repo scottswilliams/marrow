@@ -5,41 +5,14 @@
 //! provides the bound as a named value.
 
 use marrow_codes::Code;
-use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_compile::SourceDiagnostic;
 
-fn project(source: &str) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
-
-fn compile_ok(source: &str) -> Compiled {
-    compile(&project(source)).unwrap_or_else(|diagnostics| {
-        panic!("expected a clean compile, got {diagnostics:#?}");
-    })
-}
-
-fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
-    match compile(&project(source)) {
-        Ok(_) => panic!("expected a diagnostic, but the program compiled"),
-        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(other) => panic!("expected diagnostics, got {other:#?}"),
-    }
-}
+use super::{compile_err, compile_ok, wrap};
 
 fn has_code(diagnostics: &[SourceDiagnostic], code: Code) -> bool {
     diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code() == code)
-}
-
-fn wrap(body: &str) -> String {
-    format!("module main\n\n{body}\n")
 }
 
 #[test]

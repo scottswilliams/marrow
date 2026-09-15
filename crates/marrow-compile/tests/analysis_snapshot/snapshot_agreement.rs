@@ -17,17 +17,9 @@ use marrow_compile::{
     CompileFailure, InputRevision, ResourceLimitKind, SourceDiagnostic, analyze, check,
     compile_with_tests,
 };
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_project::ProjectInput;
 
-fn project(files: &[(&str, &str)]) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
-        .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
+use super::project;
 
 /// The diagnostics `compile_with_tests` reports (empty for a built image), or the
 /// resource-limit kind it stopped on.

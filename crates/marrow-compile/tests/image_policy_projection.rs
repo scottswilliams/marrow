@@ -529,7 +529,8 @@ fn corpus() -> Vec<Corpus> {
 #[derive(Debug, PartialEq, Eq)]
 enum ImageDigest {
     /// `(kind name, bound)`. The kind is rendered by name only so the frozen table stays
-    /// a const; the enum's own variant set is pinned separately by red 3.
+    /// a const; the enum's own variant set is pinned separately by
+    /// `every_resource_limit_kind_has_exactly_one_owner`.
     Refused(String, u64),
     Accepted {
         bytes: usize,

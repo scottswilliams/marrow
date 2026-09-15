@@ -14,9 +14,8 @@ use marrow_compile::{
     compile_with_tests,
 };
 use marrow_syntax::SourceSpan;
-#[path = "common/project.rs"]
-mod common_project;
-use common_project::{project, project_with_ids};
+
+use super::{project, project_with_ids};
 
 /// The diagnostics `compile_with_tests` reports over a single module.
 fn diagnostics(source: &str) -> Vec<SourceDiagnostic> {

@@ -12,18 +12,22 @@ use marrow_compile::{
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 use marrow_syntax::{SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT};
 
+use super::project_capture;
+
+/// Capture a project whose files are given as raw bytes under explicit paths, so a
+/// fixture can hold a file that is not UTF-8 and can name its own module paths.
+fn project(files: Vec<(String, Vec<u8>)>) -> ProjectInput {
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let captured = files
+        .into_iter()
+        .map(|(path, source)| CapturedFile::new(path, source))
+        .collect();
+    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+        .expect("capture project")
+}
+
 mod bounds {
     use super::*;
-    fn project(files: Vec<(String, Vec<u8>)>) -> ProjectInput {
-        let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-        let captured = files
-            .into_iter()
-            .map(|(path, source)| CapturedFile::new(path, source))
-            .collect();
-        marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-            .expect("capture project")
-    }
-
     fn diagnostics(input: &ProjectInput) -> Vec<SourceDiagnostic> {
         match compile(input) {
             Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
@@ -103,7 +107,7 @@ mod bounds {
 
     /// One row past the count ceiling discards the whole collection (prefix
     /// included) for the typed DiagnosticCount resource limit, whose public limit
-    /// value equals the syntax ceiling (A7 pin).
+    /// value equals the syntax ceiling.
     #[test]
     fn one_past_the_count_ceiling_is_a_diagnostic_count_resource_limit() {
         assert_one_error_per_at_sign();
@@ -134,7 +138,7 @@ mod bounds {
         assert_eq!(limit.kind(), ResourceLimitKind::DiagnosticCount);
     }
 
-    /// A2: absorbing a Limited syntax terminal unconditionally leaves the compiler
+    /// Absorbing a Limited syntax terminal unconditionally leaves the compiler
     /// collector Limited. A sibling clean file must not let the destroyed payload
     /// disappear into a successful or partial compile — in either canonical order,
     /// so a clean batch absorbed after the Limited one cannot restore a retaining
@@ -170,9 +174,9 @@ mod bounds {
     /// The premise that keeps the collector's *unconditional* Limited guard
     /// unobservable from production: a sealed syntax terminal always reports at
     /// least one total past the ceiling it names, and the compiler ceilings equal
-    /// the syntax ceilings (A7), so every absorbed Limited terminal crosses a
-    /// compiler ceiling on the composition alone. The guard is what still holds A2
-    /// if this premise changes; its own red lives beside it in the collector.
+    /// the syntax ceilings, so every absorbed Limited terminal crosses a compiler
+    /// ceiling on the composition alone. The guard is what holds the bound if that
+    /// premise changes; it is covered where it lives, in the collector.
     #[test]
     fn a_limited_syntax_terminal_always_crosses_a_compiler_ceiling_on_its_own() {
         let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
@@ -193,7 +197,7 @@ mod bounds {
 
     /// Crossing the retained-owned-byte ceiling discards the collection for the
     /// typed DiagnosticBytes resource limit whose public value equals the syntax
-    /// byte ceiling (A7 pin); a set below the ceiling stays a complete
+    /// byte ceiling; a set below the ceiling stays a complete
     /// diagnostics failure with every row intact.
     #[test]
     fn crossing_the_byte_ceiling_is_a_diagnostic_bytes_resource_limit() {
@@ -656,7 +660,7 @@ mod retention {
     }
 }
 
-/// A5: no pre-collector amplification. An error-dense many-file project is
+/// No pre-collector amplification. An error-dense many-file project is
 /// bounded by the one compiler collector's ceiling — the drive absorbs each
 /// file's syntax terminal immediately after parsing it, so no un-absorbed
 /// per-file diagnostic collection ever accumulates. The structural half of the
@@ -665,16 +669,6 @@ mod retention {
 ///
 mod amplification {
     use super::*;
-    fn project(files: Vec<(String, Vec<u8>)>) -> ProjectInput {
-        let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-        let captured = files
-            .into_iter()
-            .map(|(path, source)| CapturedFile::new(path, source))
-            .collect();
-        marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-            .expect("capture project")
-    }
-
     fn assert_limit(failure: CompileFailure, kind: ResourceLimitKind, limit: usize) {
         let CompileFailure::ResourceLimit(resource) = failure else {
             panic!("expected the compiler collector's ceiling, got {failure:?}");
@@ -749,32 +743,21 @@ mod amplification {
     }
 }
 
-/// Every source diagnostic names one real FIDB01-bounded `FileIdentity`, never an
-/// empty or sentinel filename. The editor analysis floor (H00f) attributes each
-/// diagnostic to a captured source file; a diagnostic with no truthful file is not
-/// a source diagnostic.
+/// Every source diagnostic names one real bounded `FileIdentity`, never an empty or
+/// sentinel filename. The editor analysis floor attributes each diagnostic to a
+/// captured source file; a diagnostic with no truthful file is not a source
+/// diagnostic.
 ///
-/// This pins the behavioral half of the sentinel-elimination checkpoint: an
-/// instantiation-limit diagnostic — the one path that previously fell back to a
-/// reserved template's empty file and a 0:0 span — now carries the real use-site
-/// file. The structural half (the reserved `TypeTemplate` no longer being able to
-/// hold an empty file) is enforced by the type: `TypeTemplate::file` is
-/// `Option<FileIdentity>`, so an empty-string file cannot be constructed.
+/// This is the behavioral half of sentinel elimination: an instantiation-limit
+/// diagnostic carries the real use-site file rather than a reserved template's empty
+/// file and a 0:0 span. The structural half is enforced by the type:
+/// `TypeTemplate::file` is `Option<FileIdentity>`, so an empty-string file cannot be
+/// constructed.
 ///
 mod file_identity {
     use super::*;
-    fn project(files: Vec<(&str, &str)>) -> ProjectInput {
-        let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-        let captured = files
-            .into_iter()
-            .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
-            .collect();
-        marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-            .expect("capture project")
-    }
-
     fn diagnostics(files: Vec<(&str, &str)>) -> Vec<SourceDiagnostic> {
-        match compile(&project(files)) {
+        match compile(&project_capture::project(&files)) {
             Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
             other => panic!("expected source diagnostics, got {other:?}"),
         }
@@ -799,9 +782,9 @@ mod file_identity {
         }
     }
 
-    /// The instantiation-limit diagnostic attributes to the real use site's file,
-    /// where the deleted `site.file.is_empty()` fallback would have emitted a reserved
-    /// template's empty file and a 0:0 span.
+    /// The instantiation-limit diagnostic attributes to the real use site's file. An
+    /// empty-file fallback here would emit a reserved template's empty file and a 0:0
+    /// span instead.
     #[test]
     fn the_instantiation_limit_diagnostic_carries_the_real_use_site_file() {
         let library = "module library\n\nstruct Grow<T> {\n    next: Grow<List<T>>\n}\n\n\
@@ -823,28 +806,17 @@ mod file_identity {
 }
 
 /// Every source diagnostic retains the full UTF-8 byte span of the offending
-/// construct, not only a 1-based point. The editor analysis floor (H00f) projects
-/// this span into a selection range; a point-only diagnostic could not.
+/// construct, not only a 1-based point. The editor analysis floor projects this span
+/// into a selection range; a point-only diagnostic could not.
 ///
-/// Red-first for the `SourceDiagnostic` full-span retention checkpoint: the
-/// production `compile` path already threads a full `SourceSpan` into every
-/// diagnostic constructor, and this gate proves the constructor keeps the byte
-/// range rather than collapsing it to a point.
+/// The production `compile` path threads a full `SourceSpan` into every diagnostic
+/// constructor, and this gate proves the constructor keeps the byte range rather than
+/// collapsing it to a point.
 ///
 mod full_span {
     use super::*;
-    fn project(source: &str) -> ProjectInput {
-        let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-        let files = vec![CapturedFile::new(
-            "src/main.mw".to_string(),
-            source.as_bytes().to_vec(),
-        )];
-        marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
-            .expect("capture project")
-    }
-
     fn first_diagnostic(source: &str) -> SourceDiagnostic {
-        match compile(&project(source)) {
+        match compile(&project_capture::project(&[("src/main.mw", source)])) {
             Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics
                 .into_vec()
                 .into_iter()

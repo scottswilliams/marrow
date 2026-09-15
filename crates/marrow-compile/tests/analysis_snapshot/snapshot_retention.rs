@@ -13,7 +13,9 @@ use marrow_compile::{
     MAX_DOCUMENT_SYMBOLS_PER_FILE, MAX_SNAPSHOT_FACT_BYTES, MAX_SNAPSHOT_FACT_COUNT,
     MAX_SYMBOL_DEPTH, Unavailability, analyze,
 };
-use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
+use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+
+use super::identity;
 
 /// Capture a project at limits wide enough for the fixture, exactly as the pure
 /// project owner admits one. The compiler's own drive admission still applies the
@@ -88,10 +90,6 @@ fn analyze_snapshot(
     revision: u64,
 ) -> Result<Arc<AnalysisSnapshot>, AnalysisFailure> {
     analyze(captured(files), InputRevision::new(revision))
-}
-
-fn identity(path: &str) -> FileIdentity {
-    FileIdentity::validate(path).expect("canonical identity").0
 }
 
 /// The revision a failure echoes, for a panic message: `AnalysisFailure` is
@@ -210,10 +208,9 @@ fn count_wins_a_simultaneous_crossing() {
     }
 }
 
-/// A per-file declaration-hierarchy bound is no longer a whole-snapshot refusal: the
-/// crossing file's outline is simply never retained, so the snapshot is produced and
-/// that one fact is bounded-unavailable. Nothing partial is retained for it, which is
-/// the invariant the transactional refusal used to carry.
+/// A per-file declaration-hierarchy bound bounds one fact, not the snapshot: the
+/// crossing file's outline is never retained, so the snapshot is produced and that one
+/// fact is bounded-unavailable. Nothing partial is retained for it.
 #[test]
 fn the_per_file_symbol_bound_bounds_one_fact_not_the_snapshot() {
     let files = vec![symbol_module(

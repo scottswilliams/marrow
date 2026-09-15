@@ -13,22 +13,13 @@
 //! function reports a parameter repeat once however often it is called.
 
 use marrow_codes::Code;
-use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::ProjectInput;
 
-#[path = "common/ids.rs"]
-mod ids;
-#[path = "common/project.rs"]
-mod project_capture;
+use super::{ids, project_capture, refused};
 
 /// The rows a project refuses with, as `(code, line, column)`.
-fn refused(input: &ProjectInput) -> Vec<(Code, u32, u32)> {
-    let diagnostics: Vec<SourceDiagnostic> = match compile(input) {
-        Ok(_) => panic!("the repeated name compiled: the namespace has no conflict owner"),
-        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(other) => panic!("expected source diagnostics, got {other:?}"),
-    };
-    diagnostics
+fn conflict_rows(input: &ProjectInput) -> Vec<(Code, u32, u32)> {
+    refused(input)
         .iter()
         .map(|row| (row.code(), row.span().line, row.span().column))
         .collect()
@@ -52,7 +43,7 @@ const MAIN: &str = "pub fn main() {\n    return\n}\n";
 
 fn assert_one_conflict(input: &ProjectInput, line: u32, column: u32, what: &str) {
     assert_eq!(
-        refused(input),
+        conflict_rows(input),
         vec![(Code::CheckNameConflict, line, column)],
         "{what}: one `check.name_conflict` at the repeated name, and no other row",
     );
@@ -118,8 +109,8 @@ fn a_function_parameter_declared_twice() {
     assert_one_conflict(&storeless(&source), 3, 14, "function parameter");
 }
 
-/// The executable shape: a second `a` used to take the second slot, so `f(1, 2)`
-/// answered `2` for a body that wrote one parameter name.
+/// The executable shape: admitting a second `a` would give it the second slot, so
+/// `f(1, 2)` would answer `2` for a body that wrote one parameter name.
 #[test]
 fn a_called_function_with_a_repeated_parameter_never_compiles() {
     let source = "fn f(a: int, a: int): int {\n    return a\n}\n\
@@ -259,7 +250,7 @@ fn branch_layer_repeats_are_reported_in_declaration_order() {
          \x20   }}\n}}\n{MAIN}"
     );
     assert_eq!(
-        refused(&storeless(&source)),
+        conflict_rows(&storeless(&source)),
         vec![
             (Code::CheckNameConflict, 4, 15),
             (Code::CheckNameConflict, 5, 9),
@@ -277,7 +268,7 @@ fn an_index_component_naming_both_a_key_and_a_field_is_refused() {
         "resource R {{\n    id: int\n}}\nstore ^r[id: int]: R {{\n    index byId[id] unique\n}}\n{MAIN}"
     );
     assert_eq!(
-        refused(&durable(&source)),
+        conflict_rows(&durable(&source)),
         vec![(Code::CheckType, 7, 16)],
         "the component is refused at its own span",
     );

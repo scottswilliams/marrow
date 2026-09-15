@@ -24,16 +24,13 @@
 //! production `compile` entry point, so a conversion that changes how a path is
 //! assembled fails here at the byte.
 
-#[path = "common/ids.rs"]
-mod ids;
-#[path = "common/project.rs"]
-mod project_capture;
-
 use std::sync::LazyLock;
 
 use marrow_compile::compile;
 use marrow_project::{IdentityAnchor, IdentityKind, ProjectInput};
-use project_capture::project_with_ids;
+
+use super::ids;
+use super::project_capture::project_with_ids;
 
 /// A corpus minting an anchor of every `IdentityKind` the durable builder resolves.
 ///

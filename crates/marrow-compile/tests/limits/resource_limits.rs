@@ -1,12 +1,9 @@
-//! Compiler resource-limit totality (CRES01): every user-reachable construction
-//! bound classifies before mutation as a truthful `check.resource_limit` source
-//! diagnostic (one offending construct), a payload-free `CompileFailure::ResourceLimit`
-//! (an aggregate exhaustion), or a private invariant (a producer contradiction).
-//! These reds drive the production `compile()` path over over-bound projects and
-//! assert the classified outcome, including the three defects the rescope named:
-//! a finite acyclic over-deep durable value silently dropping its root, a root
-//! key-column bound reported as `check.unsupported`, and an unprechecked branch
-//! key tuple reaching the synthetic image-bound diagnostic.
+//! Compiler resource-limit totality: every user-reachable construction bound
+//! classifies before mutation as a truthful `check.resource_limit` source diagnostic
+//! (one offending construct), a payload-free `CompileFailure::ResourceLimit` (an
+//! aggregate exhaustion), or a private invariant (a producer contradiction). These
+//! fixtures drive the production `compile()` path over over-bound projects and assert
+//! the classified outcome.
 
 use marrow_codes::Code;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -15,18 +12,7 @@ use marrow_compile::{CompileFailure, ResourceLimitKind, SourceDiagnostic, compil
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use marrow_syntax::SourceSpan;
 
-#[path = "common/ids.rs"]
-mod ids;
-
-fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, ids, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
+use super::{ledger, project};
 
 /// Assert the failure is a source-diagnostic result carrying exactly one
 /// `check.resource_limit` at a real, non-empty source file, and that no diagnostic
@@ -62,13 +48,6 @@ fn assert_aggregate_resource_limit(result: Result<impl std::fmt::Debug, CompileF
         Err(CompileFailure::ResourceLimit(_)) => {}
         Err(other) => panic!("expected CompileFailure::ResourceLimit, got {other:?}"),
     }
-}
-
-/// A durable identity ledger over an ordered anchor list. The caller lists exactly
-/// the anchors its shape declares; the format is written in one place.
-fn ledger(anchors: &[String]) -> Vec<u8> {
-    let borrowed: Vec<&str> = anchors.iter().map(String::as_str).collect();
-    ids::ledger(&borrowed)
 }
 
 // ---- Per-function source precheck: total local-slot allocation.
@@ -246,7 +225,7 @@ fn over_deep_durable_value_reports_resource_limit_not_a_silent_drop() {
     assert_source_resource_limit(compile(&project(&source, Some(&ids))));
 }
 
-// ---- Long-cycle double-report law (QP01): the depth bound and the value-cycle
+// ---- Long-cycle double-report: the depth bound and the value-cycle
 // pass are distinct owners in separate compile stages. The over-deep depth report
 // is emitted by the durable value-shape builder (before the value graph exists);
 // the cycle report is emitted later by the independent `reject_value_cycles` graph
@@ -751,10 +730,9 @@ fn too_many_exports_is_an_aggregate_resource_limit() {
     assert_aggregate_resource_limit(compile(&project(&source, None)));
 }
 
-/// Exactly `MAX_EXPORTS` (256) public functions compiles: the M2 widen raised the export
-/// bound from the T01 waypoint of 32 to admit a production application's multi-module
-/// public surface (a measured 43-export ensemble) with headroom. Before the widen a
-/// 33-export program refused as an aggregate resource limit.
+/// Exactly `MAX_EXPORTS` (256) public functions compiles. The bound admits a production
+/// application's multi-module public surface (a measured 43-export ensemble) with
+/// headroom; one export past it is an aggregate resource limit.
 #[test]
 fn exports_within_the_widened_bound_compile() {
     let mut source = String::from("module main\n\n");
@@ -879,7 +857,7 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
     }
 }
 
-// ---- Red R24: the operation-site policy pair, at the cap and one demand past it.
+// ---- The operation-site policy pair, at the cap and one demand past it.
 
 /// The declared width of the site-policy corpus's one shared Product. The last field is
 /// deliberately left untouched by the corpus below, so it is the single unused demand the
@@ -1307,8 +1285,8 @@ fn the_value_arena_independent_maxima_are_dominated_by_enum_references() {
 /// occurrence over it — does not close under the same ceiling.
 ///
 /// Without this, the equation above would be satisfied by any representation at all,
-/// including the one this row deleted, and closing it would not be evidence that the
-/// deletion was load-bearing.
+/// including the superseded one, so closing it would be no evidence that sharing the
+/// declaration is load-bearing.
 #[test]
 fn the_superseded_per_occurrence_member_tree_does_not_close() {
     // Every occurrence carried its own copy of the Product's member rows, so the member

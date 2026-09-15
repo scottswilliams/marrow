@@ -15,8 +15,9 @@
 use marrow_codes::Code;
 
 use marrow_compile::{CompileFailure, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use marrow_syntax::SourceSpan;
+
+use super::project;
 
 /// The widest admissible record declaration, read from the owner that fixes it rather
 /// than hand-copied: a bound change must move the corpus with it, not leave it describing
@@ -26,9 +27,9 @@ use marrow_syntax::SourceSpan;
 /// different subjects, and the owner says so at its own declaration: a dense inline
 /// composite's leaf count is a value shape, not a record's field set, and does NOT scale
 /// with `MAX_RECORD_FIELDS`. A generic `struct` template is a record declaration, so its
-/// width is governed by the record bound; the corpus previously read the value-shape bound
-/// and was sixty-four times narrower than the widest body the compiler admits, which is
-/// not the hostile maximum it claimed to measure.
+/// width is governed by the record bound. Reading the value-shape bound here would make
+/// the corpus sixty-four times narrower than the widest body the compiler admits, which is
+/// not the hostile maximum this gate exists to measure.
 const ADMITTED_RECORD_FIELDS: usize = marrow_image::bounds::MAX_RECORD_FIELDS;
 
 /// The widest admissible function body, by the bound that actually governs one: a
@@ -84,12 +85,12 @@ const ADMITTED_PAYLOAD_FIELDS: usize = marrow_image::bounds::MAX_PAYLOAD_FIELDS;
 /// and payload width.
 ///
 /// This arm exists because the struct arm does not exercise enum-template materialization.
-/// A fill now reads its declared shape through a shared handle and materializes only the
-/// distinct per-instance rows, but the two shapes still take separate paths over separately
+/// A fill reads its declared shape through a shared handle and materializes only the
+/// distinct per-instance rows, but the two shapes take separate paths over separately
 /// bounded populations: a struct fill materializes `MAX_RECORD_FIELDS` declared fields,
 /// while an enum fill materializes `MAX_VARIANTS` variants each of `MAX_PAYLOAD_FIELDS`
-/// leaves. The enum shape is the larger of the two per instantiation and previously had no
-/// corpus at all, so its cost was asserted by the comment beside it rather than measured.
+/// leaves. The enum shape is the larger of the two per instantiation, so its cost is
+/// measured here rather than argued.
 fn enum_amplification_arm() -> String {
     let mut source = String::from("struct Wrap<T> {\n    inner: T\n}\n\n");
     source.push_str("enum Grown<T> {\n");
@@ -191,16 +192,6 @@ fn hostile_corpus() -> String {
     )
 }
 
-fn project(source: &str) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
-        .expect("capture the hostile corpus")
-}
-
 /// This process's peak resident set size, where the platform publishes it to the
 /// Whether compilation returns the shared `check.instantiation_limit` code.
 ///
@@ -210,7 +201,7 @@ fn project(source: &str) -> ProjectInput {
 /// not establish a 4096-instance-wide bound. The function corpus reaches the
 /// shared count limit because function reservation has no depth guard.
 fn reaches_a_generic_mint_bound(source: &str) -> bool {
-    match compile(&project(source)) {
+    match compile(&project(source, None)) {
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics
             .iter()
             .any(|row| row.code() == Code::CheckInstantiationLimit),
@@ -332,7 +323,7 @@ fn each_corpus_is_driven_at_the_width_of_the_bound_that_governs_it() {
 /// the widest admissible body.
 #[test]
 fn the_function_arm_sits_exactly_at_the_code_byte_envelope() {
-    match compile(&project(&code_envelope_mirror(ADMITTED_CODE_PADDING))) {
+    match compile(&project(&code_envelope_mirror(ADMITTED_CODE_PADDING), None)) {
         Ok(_) => {}
         other => panic!(
             "the arm's body at {ADMITTED_CODE_PADDING} padding statements must encode: \
@@ -357,7 +348,7 @@ fn the_function_arm_sits_exactly_at_the_code_byte_envelope() {
             + 1,
         column: 12,
     };
-    match compile(&project(&over_bound)) {
+    match compile(&project(&over_bound, None)) {
         Err(CompileFailure::Diagnostics(diagnostics)) => {
             let rows: Vec<_> = diagnostics.iter().collect();
             assert_eq!(
@@ -380,7 +371,7 @@ fn the_function_arm_sits_exactly_at_the_code_byte_envelope() {
 ///
 /// Every figure is counted out of the generated source rather than restated from the
 /// constants that generate it, so a corpus that stopped emitting what it claims to emit
-/// fails here rather than reporting a width it no longer drives. This is the table a
+/// fails here rather than reporting a width it does not drive. This is the table a
 /// capacity join reads instead of rediscovering the widths from the generators.
 #[test]
 fn the_recorded_operation_envelope_is_exact() {

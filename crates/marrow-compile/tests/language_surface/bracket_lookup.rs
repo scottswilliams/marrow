@@ -2,41 +2,13 @@
 //! production `compile` path: the presence-typed optional read, the 1-based list
 //! positions with their literal dead-index teaching diagnostic, the map create-or-
 //! replace write, the refused list keyed write, and the deletion of the `get`/`insert`
-//! builtins. Diagnostics are asserted by typed code and, for the teaching diagnostics
-//! this lane mints, by the governing teaching sentence.
+//! builtins. Diagnostics are asserted by typed code and, for the teaching diagnostics,
+//! by the governing teaching sentence.
 
 use marrow_codes::Code;
-use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_compile::SourceDiagnostic;
 
-fn project(source: &str) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
-}
-
-fn compile_ok(source: &str) -> Compiled {
-    compile(&project(source)).unwrap_or_else(|diagnostics| {
-        panic!("expected a clean compile, got {diagnostics:#?}");
-    })
-}
-
-fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
-    match compile(&project(source)) {
-        Ok(_) => panic!("expected a diagnostic, but the program compiled"),
-        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(CompileFailure::ResourceLimit(_)) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-        Err(CompileFailure::Invariant(_)) => {
-            panic!("source-triggered compiler failures must remain diagnostics")
-        }
-    }
-}
+use super::{compile_err, compile_ok, wrap};
 
 fn first_of(diagnostics: &[SourceDiagnostic], code: Code) -> SourceDiagnostic {
     diagnostics
@@ -44,10 +16,6 @@ fn first_of(diagnostics: &[SourceDiagnostic], code: Code) -> SourceDiagnostic {
         .find(|diagnostic| diagnostic.code() == code)
         .unwrap_or_else(|| panic!("no `{code:?}` diagnostic in {diagnostics:#?}"))
         .clone()
-}
-
-fn wrap(body: &str) -> String {
-    format!("module main\n\n{body}\n")
 }
 
 /// A local list bracket read and a map bracket read both type as the presence-typed
