@@ -180,6 +180,15 @@ pub(crate) struct DurableGroup {
 }
 
 impl DurableGroup {
+    /// Whether any leaf of this group is required. A whole-group replace must supply
+    /// every required leaf, so the lowerer reads this rather than re-scanning the leaves
+    /// at each address that reaches the group.
+    pub(crate) fn holds_required(&self) -> bool {
+        self.fields.iter().any(|leaf| leaf.required)
+    }
+}
+
+impl DurableGroup {
     /// The declaration-order slot index and descriptor of the group leaf `name` — the
     /// slot into the group's materialized record a leaf read projects and a leaf write
     /// rewrites, so a group-leaf operation addresses the same slot the record types.

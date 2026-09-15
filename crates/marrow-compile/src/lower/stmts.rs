@@ -1730,53 +1730,9 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
             // recognized here so `exists(b.notes)` routes to the family-populated probe
             // rather than misreporting the branch as a missing field.
             Expression::Field { base, name, .. } => self
-                .entry_address_node(base)?
-                .or_else(|| self.place_base_node(base))
+                .entry_node(base)?
                 .is_some_and(|parent| parent.branch(name).is_some()),
             _ => false,
-        })
-    }
-
-    /// The durable node a bare named `place`/pin base addresses, for the `exists` family
-    /// classifier — the bare-place base form the traversal-place resolver admits (a keyed
-    /// place base is not a family probe here). `None` when the base is not an in-scope place
-    /// name. Non-emitting.
-    fn place_base_node(&self, base: &Expression) -> Option<DurNode<'a>> {
-        let Expression::Name { segments, .. } = base else {
-            return None;
-        };
-        let [name] = &segments[..] else {
-            return None;
-        };
-        Some(self.lookup_place(name.text())?.node)
-    }
-
-    /// The durable node an entry-address expression addresses, resolved against the named
-    /// durable root without emitting a diagnostic. `None` when `expr` is not a resolvable
-    /// entry address (a wrong or parked root name, an unknown branch, or a non-address
-    /// shape). Used only to classify an `exists` tail; the real resolvers own diagnostics.
-    fn entry_address_node(
-        &self,
-        expr: &Expression,
-    ) -> Result<Option<DurNode<'a>>, DeclarationIndexDrift> {
-        let Expression::Keyed { base, .. } = expr else {
-            return Ok(None);
-        };
-        Ok(match &**base {
-            Expression::SavedRoot { name, .. } => {
-                self.durable.root_by_name(name)?.map(DurNode::Root)
-            }
-            Expression::Field {
-                base: parent_base,
-                name: branch_name,
-                ..
-            } => match self.entry_address_node(parent_base)? {
-                Some(parent) => parent
-                    .branch(branch_name)
-                    .map(|branch| parent.child(branch)),
-                None => None,
-            },
-            _ => None,
         })
     }
 
@@ -1827,7 +1783,8 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
                 // base's `^name` leaf.
                 let root_name = saved_root_name(base)?;
                 let root = self.resolve_root(root_name, iterable.span())?;
-                let (ancestor_keys, parent) = self.resolve_entry_address(root, base)?;
+                let (ancestor_keys, parent) =
+                    self.resolve_entry_node(EntryBase::Inline(root), base)?;
                 let Some(layer) = parent.branch(layer_name) else {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
