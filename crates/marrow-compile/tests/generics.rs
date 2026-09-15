@@ -911,78 +911,44 @@ pub fn driver(): int {
     assert_one_located_limit(&diagnostics, 9, 21);
 }
 
-/// The concrete-struct declaration pass owns its contextual unsupported diagnostic.
-/// A depth refusal from a generic field type is the shared limit instead and must
-/// not be reclassified while `struct_fields` drops the field.
+/// The concrete-declaration passes own their contextual unsupported diagnostic. A depth
+/// refusal from a generic field type is the shared limit instead and must not be
+/// reclassified while the declaring pass drops the field — in a concrete struct field, a
+/// resource field, and a group leaf alike.
 #[test]
-fn depth_limit_in_a_concrete_struct_field_is_not_reclassified_as_unsupported() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-struct Holder {
-    value: Grow<int>
-}
-
-pub fn driver(): int {
-    return 0
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 8, 12);
-}
-
-/// The resource-record declaration pass has the same split: ordinary unsupported
-/// fields retain their contextual diagnostic, but a generic depth refusal is only
-/// the one shared located limit.
-#[test]
-fn depth_limit_in_a_resource_field_is_not_reclassified_as_unsupported() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-resource Holder {
-    value: Grow<int>
-}
-
-pub fn driver(): int {
-    return 0
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 8, 12);
-}
-
-/// An unkeyed group's materialized leaves resolve through `build_group_leaves`.
-/// That declaration consumer must propagate Limit without adding its ordinary
-/// unsupported-group-field diagnostic.
-#[test]
-fn depth_limit_in_a_group_leaf_is_not_reclassified_as_unsupported() {
-    let diagnostics = compile_err(
-        r#"module main
-
-struct Grow<T> {
-    next: Grow<List<T>>
-}
-
-resource Holder {
-    details {
-        value: Grow<int>
+fn a_depth_limit_in_a_declared_field_is_not_reclassified_as_unsupported() {
+    for (what, holder, line, column) in [
+        (
+            "a concrete struct field",
+            "struct Holder {\n    value: Grow<int>\n}",
+            8,
+            12,
+        ),
+        (
+            "a resource field",
+            "resource Holder {\n    value: Grow<int>\n}",
+            8,
+            12,
+        ),
+        (
+            "a group leaf",
+            "resource Holder {\n    details {\n        value: Grow<int>\n    }\n}",
+            9,
+            16,
+        ),
+    ] {
+        let diagnostics = compile_err(&format!(
+            "module main\n\n\
+             struct Grow<T> {{\n    next: Grow<List<T>>\n}}\n\n\
+             {holder}\n\n\
+             pub fn driver(): int {{\n    return 0\n}}\n"
+        ));
+        assert!(
+            !diagnostics.is_empty(),
+            "{what} must report the shared instantiation limit",
+        );
+        assert_one_located_limit(&diagnostics, line, column);
     }
-}
-
-pub fn driver(): int {
-    return 0
-}
-"#,
-    );
-    assert_one_located_limit(&diagnostics, 9, 16);
 }
 
 /// A direct generic-struct construction that reaches the shared count bound must
