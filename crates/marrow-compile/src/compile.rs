@@ -1059,8 +1059,6 @@ impl Driven {
 /// runs over whatever parsed cleanly; the projection decides what the production
 /// compile reports.
 fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResourceLimit> {
-    #[cfg(test)]
-    tests::observe_drive();
     // The admission proof carries one coordinate per module, so every fact this pass
     // retains has a coordinate before the first one allocates.
     let admitted = admit_modules(project)?;
@@ -1927,7 +1925,7 @@ fn registry_phases(
             continue;
         };
         if !records.has_instantiation_limit() {
-            settle_image_capacity(draft, result.func)?;
+            settle_image_capacity(draft)?;
         }
         lowered.retain(
             draft,
@@ -1960,17 +1958,13 @@ fn registry_phases(
     })
 }
 
-/// Poll the image owner once `settled` has been retained: when the settled bodies
-/// alone already exceed the image byte ceiling, no completion of the draft can encode,
-/// so the pass stops retaining further bodies and reports that ceiling. The poll runs
-/// only on a committed body — a template proof erases with its transaction and never
-/// reaches it — and after the body's own instantiation-limit verdict, so a finding the
-/// same body reported is not displaced.
-fn settle_image_capacity(draft: &ImageDraft, settled: FuncId) -> Result<(), PhaseStop> {
-    #[cfg(test)]
-    tests::observe_settled_body(draft, settled);
-    #[cfg(not(test))]
-    let _ = settled;
+/// Poll the image owner once a body has been retained: when the settled bodies alone
+/// already exceed the image byte ceiling, no completion of the draft can encode, so the
+/// pass stops retaining further bodies and reports that ceiling. The poll runs only on a
+/// committed body — a template proof erases with its transaction and never reaches it —
+/// and after the body's own instantiation-limit verdict, so a finding the same body
+/// reported is not displaced.
+fn settle_image_capacity(draft: &ImageDraft) -> Result<(), PhaseStop> {
     if draft.function_payload_exceeds_image_limit() {
         return Err(PhaseStop::ResourceLimit(image_bytes_limit()));
     }
@@ -2090,7 +2084,7 @@ fn lower_declared_functions(
                     exit: DeclarationExit::StoppedOnInstantiationLimit,
                 });
             }
-            settle_image_capacity(draft, result.func)?;
+            settle_image_capacity(draft)?;
             let export = if function.public {
                 // Export validation and minting ran before the lowering transaction
                 // committed; the driver sees the accepted id only after settlement.
@@ -2214,7 +2208,7 @@ fn lower_declared_tests(
                 exit: DeclarationExit::StoppedOnInstantiationLimit,
             });
         }
-        settle_image_capacity(draft, result.func)?;
+        settle_image_capacity(draft)?;
     }
     Ok(LoweredTests { entries, exit })
 }

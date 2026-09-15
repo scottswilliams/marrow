@@ -56,21 +56,6 @@ pub(crate) struct ConstRegistry {
 }
 
 impl ConstRegistry {
-    /// A registry with no declared constant, charging its retentions against the
-    /// pass's `budget`. There is no `Default`: a ledger that retains off the pass's
-    /// books would let the declared ceiling be crossed without reporting it.
-    ///
-    /// Production builds every registry through [`Self::build`]; this exists for
-    /// the lowering tests that need a scope with no constant in it.
-    #[cfg(test)]
-    pub(crate) fn empty(budget: DeclarationBudget) -> Self {
-        Self {
-            entries: DeclarationLedger::new(DeclarationNamespace::Constant, budget),
-        }
-    }
-}
-
-impl ConstRegistry {
     /// What the constant named `name` binds in `module`: its folded value, the
     /// refusal that stands in its place, or a genuine absence.
     pub(crate) fn lookup(

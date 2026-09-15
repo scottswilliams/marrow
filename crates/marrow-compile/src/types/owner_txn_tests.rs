@@ -2,8 +2,10 @@
 //! commits, what its inverse restores on every armed exit, and the enumerated owner
 //! failure points the phase names.
 
+use super::test_fixtures::*;
 use super::*;
 
+use crate::compile::admitted;
 use marrow_image::ImageDraft;
 
 /// The generic-owner custody law: an admitted batch's registry effects are inverted

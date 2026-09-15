@@ -517,18 +517,3 @@ pub(super) fn render_validated_arg(
     }
     result
 }
-
-/// The durable-anchor spelling of a bare value-type argument: the space-free,
-/// bracket-form opaque-ledger twin of [`garg_spelling`], recursing through nested
-/// generic instantiations.
-#[cfg(test)]
-pub(super) fn garg_anchor_spelling(
-    registry: &TypeRegistry,
-    arg: GArg,
-) -> Result<String, GenericInvariant> {
-    let view = registry.metadata_view();
-    let mut metadata = MetadataScratch::try_new(&view)?;
-    view.validate_args_with(std::slice::from_ref(&arg), None, &mut metadata)?;
-    let mut display = DisplayScratch::for_view(&view);
-    render_validated_arg(registry, &view, &metadata, arg, &mut display, ANCHOR)
-}

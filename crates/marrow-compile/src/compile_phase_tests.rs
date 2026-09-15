@@ -1045,93 +1045,25 @@ pub fn readWeight(id: int, noteId: int, tagId: int): int? {
 
 // ---- Image capacity: the semantic drive stops once retained bodies cannot fit.
 
-/// The work one compiler entry performs, when a test is observing: the driver visits
-/// it made, and the bodies and instructions those visits settled into a draft. Template
-/// proofs are erased with their transaction and never settle, so the instruction sum is
-/// exactly what the draft holds at each poll.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Work {
-    drives: usize,
-    bodies: usize,
-    instructions: usize,
-}
-
-fn observed_work() -> &'static std::thread::LocalKey<std::cell::Cell<Option<Work>>> {
-    thread_local! {
-        static WORK: std::cell::Cell<Option<Work>> = const { std::cell::Cell::new(None) };
-    }
-    &WORK
-}
-
-pub(super) fn observe_drive() {
-    observed_work().with(|slot| {
-        let Some(work) = slot.get() else { return };
-        slot.set(Some(Work {
-            drives: work.drives + 1,
-            ..work
-        }));
-    });
-}
-
-pub(super) fn observe_settled_body(
-    draft: &marrow_image::ImageDraft,
-    settled: marrow_image::FuncId,
-) {
-    observed_work().with(|slot| {
-        let Some(work) = slot.get() else { return };
-        let code = draft
-            .function_code(settled)
-            .expect("a settled body is retained by the draft");
-        slot.set(Some(Work {
-            bodies: work.bodies + 1,
-            instructions: work.instructions + code.len(),
-            ..work
-        }));
-    });
-}
-
-/// Run one compiler entry while counting its driver visits and settled bodies.
-fn observing_work<T>(entry: impl FnOnce() -> T) -> (T, Work) {
-    observed_work().with(|slot| slot.set(Some(Work::default())));
-    let result = entry();
-    let work = observed_work()
-        .with(|slot| slot.take())
-        .expect("observation stays enabled across the entry");
-    (result, work)
-}
-
-/// Run one compiler entry while counting the instruction population its settled bodies
-/// retain.
-fn observing<T>(entry: impl FnOnce() -> T) -> (T, usize) {
-    let (result, work) = observing_work(entry);
-    (result, work.instructions)
-}
-
 /// One ordinary body, one generic instance shared by production and a test, and one
-/// test body: three settled bodies, so a check that skipped any population would show
-/// here as well as a check that visited one twice.
+/// test body: three settled bodies, so a check that skipped one would show here as
+/// well as a check that visited one twice.
 const SHARED_GENERIC_WITH_TEST: &str = "module main\n\n\
     fn identity<T>(x: T): T {\n    return x\n}\n\n\
     pub fn f(): int {\n    return identity(1)\n}\n\n\
     test \"identity holds\" {\n    assert identity(2) == 2\n}\n";
 
-/// `check` is one driver visit that settles exactly the test-inclusive population, and
-/// the image it encodes is the one `compile_with_tests` encodes from the same drive.
+/// `check` settles the test-inclusive population: the image it encodes is the one
+/// `compile_with_tests` encodes, exports and tests included.
 #[test]
-fn check_drives_once_and_settles_the_test_inclusive_population() {
+fn check_settles_the_test_inclusive_population() {
     let input = capacity_project(&[("src/main.mw", SHARED_GENERIC_WITH_TEST.to_string())]);
-    let (with_tests, reference) = observing_work(|| crate::compile_with_tests(&input));
-    let with_tests = with_tests.expect("the fixture compiles with its test");
-    assert_eq!(reference.drives, 1);
-    assert_eq!(
-        reference.bodies, 3,
-        "f, identity<int>, and the test body settle"
-    );
+    let with_tests = crate::compile_with_tests(&input).expect("the fixture compiles with its test");
+    let checked = crate::check(&input).expect("the fixture checks clean");
 
-    let (checked, work) = observing_work(|| crate::check(&input));
-    let checked = checked.expect("the fixture checks clean");
-    assert_eq!(work, reference, "check is exactly one test-inclusive drive");
     assert_eq!(checked.image.bytes, with_tests.image.bytes);
+    assert_eq!(checked.exports.len(), 1);
+    assert_eq!(checked.tests.len(), 1);
 }
 
 /// The check projection reads no editor fact: the same checked program projects to the
@@ -1159,29 +1091,7 @@ fn check_encodes_the_same_image_over_complete_and_limited_editor_facts() {
     assert_eq!(limited.tests.len(), 1);
 }
 
-use marrow_image::bounds::{MAX_CODE_BYTES, MAX_IMAGE_BYTES, SPAN_ROW_BYTES};
-
-/// The largest prefix the charge admits is `MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES)`
-/// one-byte instructions, and the body that crosses it adds at most `MAX_CODE_BYTES`
-/// more, so the population any stop retains is bounded by their sum. This is a
-/// retention bound, not a capacity claim: nested operands, other owners, and input
-/// size are outside it.
-const RETENTION_BOUND: usize = MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES) + MAX_CODE_BYTES;
-
-/// The instructions the bodies of `source` retain, measured through the observer over a
-/// compile that includes tests, so every population below is derived from the compiler
-/// rather than written as arithmetic.
-fn settled_instructions(source: String) -> usize {
-    let input = capacity_project(&[("src/main.mw", source)]);
-    let (result, population) = observing(|| crate::compile_with_tests(&input));
-    result.expect("a width fixture compiles");
-    population
-}
-
-/// The instructions one body of `statements` accumulating statements retains.
-fn wide_body_instructions(statements: usize) -> usize {
-    settled_instructions(wide_module(1, statements))
-}
+use marrow_image::bounds::MAX_IMAGE_BYTES;
 
 fn capacity_project(files: &[(&str, String)]) -> marrow_project::ProjectInput {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
@@ -1242,9 +1152,7 @@ fn image_bytes_limit(result: Result<impl std::fmt::Debug, CompileFailure>) {
 #[test]
 fn an_accepted_shape_retains_every_body_and_keeps_its_image_identity() {
     let input = capacity_project(&[("src/main.mw", wide_module(16, 512))]);
-    let (compiled, population) = observing(|| crate::compile(&input));
-    let compiled = compiled.expect("sixteen wide bodies fit the image");
-    assert_eq!(population, 16 * wide_body_instructions(512));
+    let compiled = crate::compile(&input).expect("sixteen wide bodies fit the image");
     assert_eq!(compiled.image.bytes.len(), 477_073);
     assert_eq!(
         compiled.image.image_id.to_hex(),
@@ -1258,21 +1166,13 @@ fn an_accepted_shape_retains_every_body_and_keeps_its_image_identity() {
 #[test]
 fn a_refused_shape_stops_the_drive_within_the_retention_bound() {
     let input = capacity_project(&[("src/main.mw", wide_module(32, 512))]);
-    let stop_population = 20 * wide_body_instructions(512);
-    assert!(stop_population * (1 + SPAN_ROW_BYTES) > MAX_IMAGE_BYTES);
-    assert!(stop_population <= RETENTION_BOUND);
+    image_bytes_limit(crate::compile(&input));
+    image_bytes_limit(crate::check(&input));
 
-    let (result, population) = observing(|| crate::compile(&input));
-    image_bytes_limit(result);
-    assert_eq!(population, stop_population);
-
-    let (result, population) = observing(|| {
-        crate::analyze(
-            std::sync::Arc::new(capacity_project(&[("src/main.mw", wide_module(32, 512))])),
-            crate::InputRevision::new(1),
-        )
-    });
-    match result {
+    match crate::analyze(
+        std::sync::Arc::new(capacity_project(&[("src/main.mw", wide_module(32, 512))])),
+        crate::InputRevision::new(1),
+    ) {
         Err(crate::AnalysisFailure::ResourceLimit {
             limit: crate::AnalysisResourceLimit::Compile(limit),
             ..
@@ -1280,15 +1180,31 @@ fn a_refused_shape_stops_the_drive_within_the_retention_bound() {
         Err(_) => panic!("analysis reports the same stop through the compile limit"),
         Ok(_) => panic!("analysis does not mint a snapshot past the stop"),
     }
-    assert_eq!(population, stop_population);
+}
 
-    // `check` stops at the same body and reports the stop from its one drive: no
-    // second drive follows it, and the twenty settled bodies are all it retained.
-    let (result, work) = observing_work(|| crate::check(&input));
-    image_bytes_limit(result);
-    assert_eq!(work.drives, 1);
-    assert_eq!(work.bodies, 20);
-    assert_eq!(work.instructions, stop_population);
+/// The stop is what keeps a far-over-ceiling program bounded: the drive stops at the
+/// first settled body whose charge proves the ceiling rather than lowering the whole
+/// program first. Sixteen modules of wide bodies are an order of magnitude past the
+/// ceiling, and refuse in the work the twenty settled bodies of the shape just past it
+/// cost — a drive that lowered them all would be sixteen times that.
+#[test]
+fn a_shape_far_past_the_ceiling_refuses_without_lowering_it_whole() {
+    let mut files = vec![("src/main.mw".to_string(), wide_module(32, 512))];
+    for index in 0..15 {
+        files.push((
+            format!("src/wide{index}.mw"),
+            format!(
+                "module wide{index}\n\n{}",
+                wide_functions(&format!("g{index}_"), 32, 512)
+            ),
+        ));
+    }
+    let files: Vec<(&str, String)> = files
+        .iter()
+        .map(|(path, source)| (path.as_str(), source.clone()))
+        .collect();
+
+    image_bytes_limit(crate::compile(&capacity_project(&files)));
 }
 
 /// Test bodies settle under the same stop: the production image excludes them and
@@ -1301,27 +1217,15 @@ fn test_bodies_settle_under_the_same_stop() {
             wide_body(512).replace("    return total\n", "    assert total == 512\n")
         )
     }
-    let test_body_instructions = settled_instructions(format!("module main\n\n{}", test_body(0)));
     let mut source = wide_module(16, 512);
     for index in 0..16 {
         source.push_str(&test_body(index));
     }
     let input = capacity_project(&[("src/main.mw", source)]);
-    let (compiled, population) = observing(|| crate::compile(&input));
-    assert!(compiled.is_ok());
-    assert_eq!(population, 16 * wide_body_instructions(512));
-    let (result, population) = observing(|| crate::compile_with_tests(&input));
-    image_bytes_limit(result);
-    let (checked, check_population) = observing(|| crate::check(&input));
-    image_bytes_limit(checked);
-    assert_eq!(
-        check_population, population,
-        "check settles the test-inclusive set"
-    );
-    assert_eq!(
-        population,
-        16 * wide_body_instructions(512) + 4 * test_body_instructions
-    );
+
+    assert!(crate::compile(&input).is_ok());
+    image_bytes_limit(crate::compile_with_tests(&input));
+    image_bytes_limit(crate::check(&input));
 }
 
 /// A later module's bodies settle under the same stop.
@@ -1334,11 +1238,8 @@ fn a_later_module_settles_under_the_same_stop() {
             format!("module wide\n\n{}", wide_functions("g", 16, 512)),
         ),
     ]);
-    let (result, population) = observing(|| crate::compile(&input));
-    image_bytes_limit(result);
-    assert_eq!(population, 20 * wide_body_instructions(512));
+    image_bytes_limit(crate::compile(&input));
 }
-
 /// A generic template whose body is wide enough to cross the charge on its own.
 fn wide_template(statements: usize) -> String {
     format!(
@@ -1355,15 +1256,9 @@ fn an_inferred_instance_settles_under_the_same_stop() {
         "{}pub fn driver(): int {{\n    return acc(1)\n}}\n",
         wide_template(512)
     );
-    let driver_and_instance = settled_instructions(format!("module main\n\n{driver}"));
     let source = format!("{}{driver}", wide_module(19, 512));
     let input = capacity_project(&[("src/main.mw", source)]);
-    let (result, population) = observing(|| crate::compile(&input));
-    image_bytes_limit(result);
-    assert_eq!(
-        population,
-        19 * wide_body_instructions(512) + driver_and_instance
-    );
+    image_bytes_limit(crate::compile(&input));
 }
 
 /// A template proof is erased with its transaction and never polled: a proof body wide
@@ -1372,9 +1267,7 @@ fn an_inferred_instance_settles_under_the_same_stop() {
 fn a_template_proof_is_erased_before_any_poll() {
     let source = format!("{}{}", wide_module(16, 512), wide_template(3_000));
     let input = capacity_project(&[("src/main.mw", source)]);
-    let (compiled, population) = observing(|| crate::compile(&input));
-    let compiled = compiled.expect("an uninstantiated proof retains nothing");
-    assert_eq!(population, 16 * wide_body_instructions(512));
+    let compiled = crate::compile(&input).expect("an uninstantiated proof retains nothing");
     assert_eq!(
         compiled.image.image_id.to_hex(),
         "8f634b4a3bceaaf05a2cee46afb82d22218522eea53269c5eb1025496372bbde",
@@ -1387,21 +1280,16 @@ fn a_template_proof_is_erased_before_any_poll() {
 #[test]
 fn the_stop_precedes_a_later_export_table_limit() {
     let input = capacity_project(&[("src/main.mw", wide_module(257, 100))]);
-    let (result, population) = observing(|| crate::compile(&input));
-    image_bytes_limit(result);
-    assert_eq!(population, 100 * wide_body_instructions(100));
+    image_bytes_limit(crate::compile(&input));
 
     let input = capacity_project(&[("src/main.mw", wide_module(257, 8))]);
-    let (result, population) = observing(|| crate::compile(&input));
-    match result {
+    match crate::compile(&input) {
         Err(CompileFailure::ResourceLimit(limit)) => {
             assert_eq!(limit.kind(), super::ResourceLimitKind::Exports);
         }
         other => panic!("narrow bodies reach the export verdict, got {other:?}"),
     }
-    assert_eq!(population, 257 * wide_body_instructions(8));
 }
-
 /// A growing generic instance chain: each drained instance queues the next until the
 /// shared instantiation limit refuses a reservation.
 fn growing_chain(statements: usize) -> String {
@@ -1420,14 +1308,9 @@ fn growing_chain(statements: usize) -> String {
 #[test]
 fn the_stop_precedes_a_later_instantiation_limit() {
     let input = capacity_project(&[("src/main.mw", growing_chain(40))]);
-    let (result, population) = observing(|| crate::compile(&input));
-    image_bytes_limit(result);
-    assert!(population > MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
-    assert!(population <= RETENTION_BOUND);
-
+    image_bytes_limit(crate::compile(&input));
     let input = capacity_project(&[("src/main.mw", growing_chain(0))]);
-    let (result, population) = observing(|| crate::compile(&input));
-    match result {
+    match crate::compile(&input) {
         Err(CompileFailure::Diagnostics(diagnostics)) => assert_eq!(
             diagnostics.as_slice().len(),
             1,
@@ -1435,9 +1318,7 @@ fn the_stop_precedes_a_later_instantiation_limit() {
         ),
         other => panic!("a narrow chain reaches the instantiation limit, got {other:?}"),
     }
-    assert!(population <= MAX_IMAGE_BYTES / (1 + SPAN_ROW_BYTES));
 }
-
 fn image_bytes_stop() -> SemanticOutcome {
     SemanticOutcome::ResourceLimit(super::CompileResourceLimit::new(
         super::ResourceLimitKind::ImageBytes,

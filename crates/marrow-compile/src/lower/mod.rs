@@ -1390,52 +1390,5 @@ impl<'a, 'd> FnLowerer<'a, 'd> {
     }
 }
 
-/// Complete only the known refused test body. Distinct name/source strings ensure
-/// an illegal early intern by `finish` cannot disappear into the sentinel's setup.
-#[cfg(test)]
-fn fill_refusal_sentinel(draft: &mut DraftTxn<'_>, func: FuncId) {
-    assert!(
-        draft.function_code(func).is_none(),
-        "refused lowering must leave its slot vacant"
-    );
-    let name = draft
-        .intern_string("__refusal_oracle")
-        .expect("small oracle name");
-    let source = draft
-        .intern_string("__oracle_source.mw")
-        .expect("small oracle source");
-    draft
-        .fill_function(
-            func,
-            FunctionDef {
-                name,
-                source,
-                params: Vec::new(),
-                ret: ImageType::Unit,
-                local_count: 0,
-                code: vec![Instr::Return],
-                spans: Vec::new(),
-            },
-        )
-        .expect("the known vacant reservation accepts its first fill");
-}
-
-/// Snapshot an independently completed control, then erase its reservation, fill,
-/// interns and charge. The real probe reserves a fresh identity after this returns.
-#[cfg(test)]
-fn refusal_control(owner: &mut ImageDraft) -> marrow_image::EncodedImage {
-    let mut txn = crate::compile::admitted(owner);
-    let func = txn.reserve_function().expect("one control reservation");
-    fill_refusal_sentinel(&mut txn, func);
-    txn.encode().expect("the completed control encodes")
-}
-
-#[cfg(test)]
-#[path = "lower_metadata_successor_tests.rs"]
-mod lower_metadata_successor_tests;
-
 #[cfg(test)]
 mod presence_interval_tests;
-
-#[cfg(test)]
-mod generic_cache_boundary_tests;

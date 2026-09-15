@@ -15,8 +15,6 @@
 //! declare-then-fill so a field may name any other value type regardless of order; the
 //! sole nesting restriction is acyclicity.
 
-#[cfg(test)]
-use std::cell::Cell;
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
@@ -63,8 +61,6 @@ use metadata::{DeclaredCounts, RowDirectory, RowDirectoryGuard};
 pub(crate) use owner_txn::GenericOwnerTxn;
 use owner_txn::ProofIsolation;
 use owner_txn::RegistryInverse;
-#[cfg(test)]
-use render::garg_anchor_spelling;
 use render::{
     ANCHOR, DISPLAY, collection_spelling_for_display, garg_spelling_validated,
     inst_spelling_for_display, render_validated_arg,
@@ -1423,33 +1419,6 @@ pub(crate) struct TypeRegistry {
     coordinates: DeclarationCoordinates,
 }
 
-impl TypeRegistry {
-    /// A registry with no declared type, charging its retentions against the pass's
-    /// `budget`. There is no `Default`: a ledger that retains off the pass's books
-    /// would let the declared ceiling be crossed without reporting it.
-    ///
-    /// Production builds the registry through [`Self::build`]; this exists for the
-    /// lowering tests that need a registry holding only the reserved templates.
-    #[cfg(test)]
-    pub(crate) fn empty(budget: DeclarationBudget) -> Self {
-        Self {
-            named: DeclarationLedger::new(DeclarationNamespace::NamedType, budget.clone()),
-            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember, budget),
-            aliases: AliasTable::default(),
-            nominals: Vec::new(),
-            structs: Vec::new(),
-            enums: Vec::new(),
-            records: AdmittedRecords::default(),
-            type_templates: Vec::new(),
-            generics: RefCell::default(),
-            collections: RefCell::default(),
-            collection_index: RefCell::default(),
-            row_directory: RefCell::default(),
-            coordinates: DeclarationCoordinates::default(),
-        }
-    }
-}
-
 /// One immutable view of the generic and collection owners for a complete metadata
 /// validation walk. Keeping both `Ref`s here prevents recursive reborrowing and
 /// guarantees they are dropped before any cache or image mutation.
@@ -1806,15 +1775,6 @@ impl TypeRegistry {
             }
         }
         Ok(template)
-    }
-
-    /// The template index of a reserved toolchain generic.
-    #[cfg(test)]
-    fn reserved_template(&self, reserved: Reserved) -> usize {
-        match reserved {
-            Reserved::Option => 0,
-            Reserved::Result => 1,
-        }
     }
 
     /// The template index of a generic value type named `head` (a reserved
@@ -2893,22 +2853,6 @@ impl TypeRegistry {
             ));
     }
 
-    /// The template index and concrete arguments a minted type instantiation came
-    /// from, if `id` names one. Used by generic-function inference to unify a
-    /// parameter type `Pair<T, U>` against an argument's instantiation.
-    #[cfg(test)]
-    pub(crate) fn instantiation_of(
-        &self,
-        id: TypeInstId,
-    ) -> Result<Option<(usize, Vec<GArg>)>, GenericInvariant> {
-        let view = self.metadata_view();
-        let mut metadata = MetadataScratch::try_new(&view)?;
-        let Some((inst, _)) = view.ready_inst_header_by_id(id, &mut metadata)? else {
-            return Ok(None);
-        };
-        Ok(Some((inst.template, inst.args.clone())))
-    }
-
     /// The resolved member shape of a minted type instantiation, if `id` names one.
     fn type_inst_body(&self, id: TypeInstId) -> Result<Option<InstBody>, GenericInvariant> {
         let view = self.metadata_view();
@@ -2940,48 +2884,6 @@ impl TypeRegistry {
             }),
             None => Ok(self.enum_by_id(id).map(EnumInfo::resolved_variants)),
         }
-    }
-
-    /// The durable-ledger anchor spelling of an enum value: a concrete user `enum`
-    /// by its declared name, and a generic enum instantiation (`Option`, `Result`, a
-    /// user generic) by its space-free `Name[arg,...]` spelling. Space-free so the
-    /// result is a valid `.marrow/ids` anchor path (printable ASCII, no spaces). The
-    /// spelling is stable across appending an enum member, so an append preserves the
-    /// sum anchor while minting only the new member.
-    ///
-    /// The bracket, space-free-comma form is fixed by [`ANCHOR`], so changing a
-    /// user-facing diagnostic delimiter cannot move an opaque durable identity byte.
-    #[cfg(test)]
-    fn enum_anchor_spelling(&self, id: EnumId) -> Result<Option<String>, GenericInvariant> {
-        match self.inst_anchor_spelling(TypeInstId::Enum(id))? {
-            Some(spelling) => Ok(Some(spelling)),
-            None => Ok(self.enum_by_id(id).map(|info| info.name.clone())),
-        }
-    }
-
-    /// Validate all durable resource leaves through one metadata view and one
-    /// breadth-first expansion. A shared value is expanded at its shortest depth,
-    /// so deduplication cannot hide descendants that remain inside the image's
-    /// durable-value depth bound.
-    #[cfg(test)]
-    pub(crate) fn validate_durable_value_metadata(
-        &self,
-        roots: impl IntoIterator<Item = GArg>,
-    ) -> Result<(), GenericInvariant> {
-        self.with_metadata_session(|session| session.validate_durable_value_metadata(roots))
-    }
-
-    /// The durable-anchor spelling of a generic instantiation, `Name[arg,arg]` with a
-    /// space-free comma, or `None` if `id` names no instantiation.
-    #[cfg(test)]
-    fn inst_anchor_spelling(&self, id: TypeInstId) -> Result<Option<String>, GenericInvariant> {
-        let view = self.metadata_view();
-        let mut metadata = MetadataScratch::try_new(&view)?;
-        let Some((_, _)) = view.ready_inst_header_by_id(id, &mut metadata)? else {
-            return Ok(None);
-        };
-        let mut display = DisplayScratch::for_view(&view);
-        self.inst_anchor_spelling_validated(&view, &metadata, id, &mut display)
     }
 
     fn inst_anchor_spelling_validated(
@@ -3913,13 +3815,6 @@ struct ValueGraph {
 }
 
 impl ValueGraph {
-    #[cfg(test)]
-    fn build(registry: &TypeRegistry) -> Result<Self, GenericInvariant> {
-        let view = registry.metadata_view();
-        let mut metadata = MetadataScratch::try_new(&view)?;
-        Self::build_validated(registry, &view, &mut metadata)
-    }
-
     fn build_validated(
         registry: &TypeRegistry,
         view: &TypeMetadataView<'_>,
@@ -4157,9 +4052,6 @@ fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDi
 mod test_fixtures;
 
 #[cfg(test)]
-mod types_metadata_successor_tests;
-
-#[cfg(test)]
 mod generic_instantiation_tests;
 
 #[cfg(test)]
@@ -4169,7 +4061,7 @@ mod alias_cycle_tests;
 mod refusal_join_tests;
 
 #[cfg(test)]
-mod instantiation_state_tests;
+mod owner_txn_tests;
 
 #[cfg(test)]
 mod value_cycle_coords_tests;

@@ -124,22 +124,6 @@ pub(crate) struct TemplateProofOutcome {
 }
 
 impl FunctionRegistry {
-    /// The registry of a project with no modules, functions, or imports. Each ledger
-    /// carries its namespace tag and the pass's retention budget, so there is
-    /// neither an untagged nor an unbudgeted empty ledger.
-    ///
-    /// Production builds the registry through [`Self::build`]; this exists for the
-    /// lowering tests that need a scope with no function in it.
-    #[cfg(test)]
-    pub(crate) fn empty(budget: DeclarationBudget) -> Self {
-        Self {
-            sigs: DeclarationLedger::new(DeclarationNamespace::Function, budget.clone()),
-            declarations: Vec::new(),
-            modules: ModuleLedger::new(DeclarationNamespace::Module, budget),
-            imports: BTreeMap::new(),
-        }
-    }
-
     /// Resolve every function's signature in declaration order.
     ///
     /// A signature is refused whole: one parameter or return type the compiler
