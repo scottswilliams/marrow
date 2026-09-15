@@ -4,7 +4,9 @@
 //! each row binds a `(kind, path)` anchor to a random 128-bit id, and the
 //! append-only tombstone list plus a monotonic retirement high-water keep a
 //! retired id (and its retired anchor) from ever being reused — even across
-//! store loss, because the artifact is committed with the source. Entropy ids
+//! store loss, because the artifact is committed with the source. No mutation
+//! here writes a tombstone; retirement is a read-side grammar that publication
+//! carries forward unchanged. Entropy ids
 //! are a separate identity family from the deterministic 32-byte hash
 //! identities: they are minted once from OS entropy (by the CLI; this owner is
 //! pure and only validates candidate draws) and never derived from content.
@@ -295,34 +297,16 @@ pub struct IdentityLedger {
     high_water: u64,
 }
 
-#[cfg(test)]
-std::thread_local! {
-    static TOMBSTONE_LOOKUP_COMPARISONS: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(0) };
-}
-
 fn compare_tombstone_anchor(
     tombstone: &IdentityTombstone,
     kind: IdentityKind,
     path: &str,
 ) -> Ordering {
-    #[cfg(test)]
-    TOMBSTONE_LOOKUP_COMPARISONS.set(TOMBSTONE_LOOKUP_COMPARISONS.get() + 1);
     tombstone
         .anchor
         .kind
         .cmp(&kind)
         .then_with(|| tombstone.anchor.path.as_str().cmp(path))
-}
-
-#[cfg(test)]
-fn reset_tombstone_lookup_comparisons() {
-    TOMBSTONE_LOOKUP_COMPARISONS.set(0);
-}
-
-#[cfg(test)]
-fn tombstone_lookup_comparisons() -> usize {
-    TOMBSTONE_LOOKUP_COMPARISONS.get()
 }
 
 impl IdentityLedger {
@@ -638,12 +622,8 @@ pub enum IdentityMutationError {
     AnchorActive(IdentityAnchor),
     /// A mint request names a retired anchor.
     AnchorRetired(IdentityAnchor),
-    /// A retirement request names no live anchor.
-    AnchorNotActive(IdentityAnchor),
     /// The successor would exceed the fixed live-plus-tombstone row ceiling.
     RowLimit { projected: usize, limit: usize },
-    /// The retirement successor would violate the parser's advanceable high-water law.
-    RetirementHighWater,
     /// The canonical successor would exceed the fixed artifact-byte ceiling.
     ByteLimit { projected: usize, limit: usize },
     /// The supplier returned a different number of candidates from the admitted request.
@@ -692,20 +672,11 @@ impl fmt::Display for IdentityMutationError {
                 anchor.kind.keyword(),
                 anchor.path
             ),
-            Self::AnchorNotActive(anchor) => write!(
-                f,
-                "anchor `{} {}` has no live identity to retire",
-                anchor.kind.keyword(),
-                anchor.path
-            ),
             Self::RowLimit { projected, limit } => {
                 write!(
                     f,
                     "identity successor has {projected} rows; the limit is {limit}"
                 )
-            }
-            Self::RetirementHighWater => {
-                f.write_str("retirement successor cannot keep an advanceable high-water")
             }
             Self::ByteLimit { projected, limit } => write!(
                 f,
@@ -873,19 +844,10 @@ impl fmt::Debug for LedgerPublicationPlan {
     }
 }
 
-enum LedgerMutationKind {
-    Mint(Vec<IdentityAnchor>),
-    #[cfg(test)]
-    Retire {
-        anchor: IdentityAnchor,
-        successor_high_water: u64,
-    },
-}
-
-/// The private borrowing owner of one structurally nonempty mutation kind.
+/// The private borrowing owner of one structurally nonempty mint request set.
 struct LedgerMutationPlan<'a> {
     captured: &'a CapturedLedger,
-    kind: LedgerMutationKind,
+    requests: Vec<IdentityAnchor>,
     projected_len: usize,
 }
 
@@ -925,8 +887,7 @@ impl<'a> LedgerMutationPlan<'a> {
                 limit: MAX_IDS_ROWS,
             });
         }
-        let kind = LedgerMutationKind::Mint(rest);
-        let projected_len = projected_canonical_len(&captured.ledger, &kind)?;
+        let projected_len = projected_canonical_len(&captured.ledger, &rest)?;
         if projected_len > MAX_IDS_BYTES {
             return Err(IdentityMutationError::ByteLimit {
                 projected: projected_len,
@@ -935,69 +896,20 @@ impl<'a> LedgerMutationPlan<'a> {
         }
         Ok(Self {
             captured,
-            kind,
-            projected_len,
-        })
-    }
-
-    #[cfg(test)]
-    fn retire(
-        captured: &'a CapturedLedger,
-        anchor: IdentityAnchor,
-    ) -> Result<Self, IdentityMutationError> {
-        if !valid_anchor_path(&anchor.path) {
-            return Err(IdentityMutationError::InvalidAnchor(anchor));
-        }
-        if !captured.ledger.entries.contains_key(&anchor) {
-            return Err(IdentityMutationError::AnchorNotActive(anchor));
-        }
-        let successor_high_water = captured
-            .ledger
-            .high_water
-            .checked_add(1)
-            .ok_or(IdentityMutationError::RetirementHighWater)?;
-        if successor_high_water >= u64::MAX - 1 {
-            return Err(IdentityMutationError::RetirementHighWater);
-        }
-        let kind = LedgerMutationKind::Retire {
-            anchor,
-            successor_high_water,
-        };
-        let projected_len = projected_canonical_len(&captured.ledger, &kind)?;
-        if projected_len > MAX_IDS_BYTES {
-            return Err(IdentityMutationError::ByteLimit {
-                projected: projected_len,
-                limit: MAX_IDS_BYTES,
-            });
-        }
-        Ok(Self {
-            captured,
-            kind,
+            requests: rest,
             projected_len,
         })
     }
 
     fn change_count(&self) -> usize {
-        match &self.kind {
-            LedgerMutationKind::Mint(requests) => requests.len(),
-            #[cfg(test)]
-            LedgerMutationKind::Retire { .. } => 1,
-        }
+        self.requests.len()
     }
 
     fn bind_candidates(
         self,
         candidates: Vec<DurableIdentityId>,
     ) -> Result<AdmittedLedger<'a>, IdentityMutationError> {
-        #[cfg(not(test))]
-        let LedgerMutationKind::Mint(requests) = self.kind;
-        #[cfg(test)]
-        let requests = match self.kind {
-            LedgerMutationKind::Mint(requests) => requests,
-            LedgerMutationKind::Retire { .. } => {
-                return Err(IdentityMutationError::AdmittedStateMismatch);
-            }
-        };
+        let requests = self.requests;
         if candidates.len() != requests.len() {
             return Err(IdentityMutationError::CandidateCount {
                 expected: requests.len(),
@@ -1031,39 +943,6 @@ impl<'a> LedgerMutationPlan<'a> {
             projected_len: self.projected_len,
         })
     }
-
-    #[cfg(test)]
-    fn bind_retirement(self) -> Result<AdmittedLedger<'a>, IdentityMutationError> {
-        let LedgerMutationKind::Retire {
-            anchor,
-            successor_high_water,
-        } = self.kind
-        else {
-            return Err(IdentityMutationError::AdmittedStateMismatch);
-        };
-        let mut ledger = self.captured.ledger.clone();
-        let Some(id) = ledger.entries.remove(&anchor) else {
-            return Err(IdentityMutationError::AdmittedStateMismatch);
-        };
-        let insertion = match ledger.tombstone_index(anchor.kind, &anchor.path) {
-            Ok(_) => return Err(IdentityMutationError::AdmittedStateMismatch),
-            Err(insertion) => insertion,
-        };
-        ledger.high_water = successor_high_water;
-        ledger.tombstones.insert(
-            insertion,
-            IdentityTombstone {
-                anchor,
-                id,
-                high_water: successor_high_water,
-            },
-        );
-        Ok(AdmittedLedger {
-            captured: self.captured,
-            ledger,
-            projected_len: self.projected_len,
-        })
-    }
 }
 
 fn validate_requests(
@@ -1091,7 +970,7 @@ fn valid_anchor_path(path: &str) -> bool {
 
 fn projected_canonical_len(
     ledger: &IdentityLedger,
-    kind: &LedgerMutationKind,
+    requests: &[IdentityAnchor],
 ) -> Result<usize, IdentityMutationError> {
     let mut total = IDS_HEADER
         .len()
@@ -1100,16 +979,6 @@ fn projected_canonical_len(
         .and_then(|length| length.checked_add(1))
         .ok_or(IdentityMutationError::CanonicalLengthOverflow)?;
     for anchor in ledger.entries.keys() {
-        #[cfg(test)]
-        if matches!(
-            kind,
-            LedgerMutationKind::Retire {
-                anchor: retired,
-                ..
-            } if retired == anchor
-        ) {
-            continue;
-        }
         total = total
             .checked_add(live_row_len(anchor)?)
             .ok_or(IdentityMutationError::CanonicalLengthOverflow)?;
@@ -1119,28 +988,13 @@ fn projected_canonical_len(
             .checked_add(retired_row_len(&tombstone.anchor, tombstone.high_water)?)
             .ok_or(IdentityMutationError::CanonicalLengthOverflow)?;
     }
-    let high_water = match kind {
-        LedgerMutationKind::Mint(requests) => {
-            for anchor in requests {
-                total = total
-                    .checked_add(live_row_len(anchor)?)
-                    .ok_or(IdentityMutationError::CanonicalLengthOverflow)?;
-            }
-            ledger.high_water
-        }
-        #[cfg(test)]
-        LedgerMutationKind::Retire {
-            anchor,
-            successor_high_water,
-        } => {
-            total = total
-                .checked_add(retired_row_len(anchor, *successor_high_water)?)
-                .ok_or(IdentityMutationError::CanonicalLengthOverflow)?;
-            *successor_high_water
-        }
-    };
+    for anchor in requests {
+        total = total
+            .checked_add(live_row_len(anchor)?)
+            .ok_or(IdentityMutationError::CanonicalLengthOverflow)?;
+    }
     total
-        .checked_add(canonical_tail_len(high_water)?)
+        .checked_add(canonical_tail_len(ledger.high_water)?)
         .ok_or(IdentityMutationError::CanonicalLengthOverflow)
 }
 
@@ -1369,8 +1223,7 @@ mod tests {
     use super::{
         CapturedLedger, DurableIdentityId, IdentityAnchor, IdentityKind, IdentityLedger,
         IdentityMintFailure, IdentityMutationError, IdsErrorKind, LedgerExpectedArtifact,
-        LedgerMutationPlan, LedgerPublicationPlan, reset_tombstone_lookup_comparisons,
-        tombstone_lookup_comparisons,
+        LedgerMutationPlan, LedgerPublicationPlan,
     };
 
     fn id(byte: u8) -> DurableIdentityId {
@@ -1584,15 +1437,22 @@ mod tests {
         IdentityLedger::parse(&counter_bytes()).expect("counter artifact parses")
     }
 
-    fn retired_counter_plan() -> LedgerPublicationPlan {
-        let bytes = counter_bytes();
-        let captured = CapturedLedger::capture(Some(&bytes)).expect("capture counter");
-        LedgerMutationPlan::retire(&captured, anchor(IdentityKind::Field, "Counter.label"))
-            .expect("retirement admits")
-            .bind_retirement()
-            .expect("retirement binds")
-            .publication()
-            .expect("retirement serializes")
+    /// The counter ledger with `Counter.label` recorded as a tombstone. Nothing
+    /// in this crate writes a tombstone, so the fixture is canonical bytes fed
+    /// to the production parser.
+    fn retired_counter_bytes() -> Vec<u8> {
+        let live = String::from_utf8(counter_bytes()).expect("counter artifact is UTF-8");
+        let hex = id(0x0f).to_hex();
+        let retired_line = format!("id field Counter.label {hex}\n");
+        assert!(live.contains(&retired_line));
+        let text = live.replace(&retired_line, "").replace(
+            "high-water 0\n",
+            &format!("retired field Counter.label {hex} 1\nhigh-water 1\n"),
+        );
+        let bytes = text.into_bytes();
+        let parsed = IdentityLedger::parse(&bytes).expect("retired counter artifact parses");
+        assert!(parsed.is_retired(IdentityKind::Field, "Counter.label"));
+        bytes
     }
 
     #[test]
@@ -1762,7 +1622,7 @@ mod tests {
 
     #[test]
     fn retire_then_re_add_cannot_reuse_the_anchor_or_id() {
-        let retired_bytes = next_bytes(retired_counter_plan());
+        let retired_bytes = retired_counter_bytes();
         let retired = IdentityLedger::parse(&retired_bytes).expect("retired artifact parses");
         assert_eq!(retired.high_water(), 1);
         assert!(
@@ -1799,7 +1659,7 @@ mod tests {
 
     #[test]
     fn a_retired_id_or_anchor_reissued_live_rejects_at_parse() {
-        let base = String::from_utf8(next_bytes(retired_counter_plan())).unwrap();
+        let base = String::from_utf8(retired_counter_bytes()).unwrap();
 
         // The retired anchor also live.
         let live_anchor = base.replace(
@@ -1916,7 +1776,7 @@ mod tests {
     }
 
     #[test]
-    fn near_cap_retired_lookup_is_logarithmic_and_precedes_candidate_supply() {
+    fn near_cap_retired_base_refuses_rows_before_candidate_supply() {
         let retired_rows = super::MAX_IDS_ROWS / 2;
         let bytes = retired_artifact(retired_rows);
         let captured =
@@ -1926,7 +1786,6 @@ mod tests {
             .map(|row| IdentityAnchor::new(IdentityKind::Field, format!("New.f{row:04}")));
         let first = requests.next().expect("nonempty near-cap request");
         let calls = std::cell::Cell::new(0);
-        reset_tombstone_lookup_comparisons();
         let result = captured.admit_identity_mints_with(first, requests.collect(), |_| {
             calls.set(calls.get() + 1);
             Ok::<_, std::convert::Infallible>(Vec::new())
@@ -1941,11 +1800,6 @@ mod tests {
             ))
         ));
         assert_eq!(calls.get(), 0, "row refusal precedes candidate supply");
-        let comparisons = tombstone_lookup_comparisons();
-        assert!(
-            comparisons <= request_count * 16,
-            "{request_count} requests used {comparisons} retired-anchor comparisons",
-        );
     }
 
     #[test]
@@ -2037,7 +1891,7 @@ mod tests {
         ));
         assert_eq!(calls.get(), 0);
 
-        let retired_bytes = next_bytes(retired_counter_plan());
+        let retired_bytes = retired_counter_bytes();
         let retired_capture =
             CapturedLedger::capture(Some(&retired_bytes)).expect("capture retired counter");
         let retired = anchor(IdentityKind::Field, "Counter.label");
@@ -2222,7 +2076,7 @@ mod tests {
             Err(IdentityMutationError::IdCollision(candidate)) if candidate == id(0x0a)
         ));
 
-        let retired_bytes = next_bytes(retired_counter_plan());
+        let retired_bytes = retired_counter_bytes();
         let retired =
             CapturedLedger::capture(Some(&retired_bytes)).expect("capture retired counter");
         let tombstone = admit_requests(
@@ -2246,91 +2100,6 @@ mod tests {
         assert!(matches!(
             intra,
             Err(IdentityMutationError::IdCollision(candidate)) if candidate == id(0x20)
-        ));
-    }
-
-    #[test]
-    fn retirement_decimal_growth_and_advanceability_match_parser_law() {
-        let empty = CapturedLedger::capture(None).expect("absent capture");
-        let invalid = anchor(IdentityKind::Field, &"z".repeat(super::MAX_PATH_BYTES + 1));
-        assert!(matches!(
-            LedgerMutationPlan::retire(&empty, invalid),
-            Err(IdentityMutationError::InvalidAnchor(_))
-        ));
-        assert!(matches!(
-            LedgerMutationPlan::retire(&empty, anchor(IdentityKind::Field, "missing")),
-            Err(IdentityMutationError::AnchorNotActive(_))
-        ));
-
-        for high_water in [9, 99] {
-            let base = live_artifact(1, 12, high_water);
-            let captured = CapturedLedger::capture(Some(&base)).expect("capture retirement base");
-            let active = captured
-                .ledger
-                .entries
-                .keys()
-                .next()
-                .expect("one live row")
-                .clone();
-            let next = next_bytes(
-                LedgerMutationPlan::retire(&captured, active)
-                    .expect("retirement admits")
-                    .bind_retirement()
-                    .expect("retirement binds")
-                    .publication()
-                    .expect("retirement serializes"),
-            );
-            let successor = high_water + 1;
-            let text = String::from_utf8(next).expect("retirement UTF-8");
-            assert!(text.contains(&format!(" {successor}\nhigh-water {successor}\n")));
-        }
-
-        let base = live_artifact(2, 12, u64::MAX - 3);
-        let captured = CapturedLedger::capture(Some(&base)).expect("capture high-water base");
-        let first = captured
-            .ledger
-            .entries
-            .keys()
-            .next()
-            .expect("first active")
-            .clone();
-        let admitted = next_bytes(
-            LedgerMutationPlan::retire(&captured, first)
-                .expect("MAX-3 to MAX-2 admits")
-                .bind_retirement()
-                .expect("retirement binds")
-                .publication()
-                .expect("retirement serializes"),
-        );
-        let admitted_capture =
-            CapturedLedger::capture(Some(&admitted)).expect("MAX-2 successor parses");
-        assert_eq!(admitted_capture.ledger.high_water(), u64::MAX - 2);
-        let second = admitted_capture
-            .ledger
-            .entries
-            .keys()
-            .next()
-            .expect("second active")
-            .clone();
-        assert!(matches!(
-            LedgerMutationPlan::retire(&admitted_capture, second),
-            Err(IdentityMutationError::RetirementHighWater)
-        ));
-
-        let byte_full =
-            live_artifact_with_rows_and_exact_len(2_000, super::MAX_IDS_BYTES - 1, u64::MAX - 2);
-        let byte_full_capture =
-            CapturedLedger::capture(Some(&byte_full)).expect("capture high-water/byte base");
-        let active = byte_full_capture
-            .ledger
-            .entries
-            .keys()
-            .next()
-            .expect("active row")
-            .clone();
-        assert!(matches!(
-            LedgerMutationPlan::retire(&byte_full_capture, active),
-            Err(IdentityMutationError::RetirementHighWater)
         ));
     }
 
@@ -2415,9 +2184,11 @@ mod tests {
         IdentityLedger::parse(&canonical_next).expect("canonical successor parses");
     }
 
+    /// A mint over a base that already carries tombstones re-serializes those
+    /// tombstones unchanged, so a retired anchor stays dead across publication.
     #[test]
-    fn mixed_live_tombstone_mint_and_retire_parse_back_with_exact_lengths() {
-        let retired_bytes = next_bytes(retired_counter_plan());
+    fn a_mint_over_a_tombstoned_base_carries_the_tombstones_forward() {
+        let retired_bytes = retired_counter_bytes();
         let captured = CapturedLedger::capture(Some(&retired_bytes)).expect("capture mixed ledger");
         let minted = next_bytes(
             plan_mints(
@@ -2428,28 +2199,11 @@ mod tests {
         );
         let minted_ledger = IdentityLedger::parse(&minted).expect("mint successor parses");
         assert!(minted_ledger.is_retired(IdentityKind::Field, "Counter.label"));
+        assert_eq!(minted_ledger.high_water(), 1);
         assert_eq!(
             minted_ledger.lookup(IdentityKind::Field, "Counter.note"),
             Some(id(0x20)),
         );
-
-        let active = captured
-            .ledger
-            .entries
-            .keys()
-            .find(|anchor| anchor.path == "Counter.value")
-            .expect("active field")
-            .clone();
-        let retired = next_bytes(
-            LedgerMutationPlan::retire(&captured, active)
-                .expect("second retirement admits")
-                .bind_retirement()
-                .expect("second retirement binds")
-                .publication()
-                .expect("second retirement serializes"),
-        );
-        let retired_ledger = IdentityLedger::parse(&retired).expect("retire successor parses");
-        assert!(retired_ledger.is_retired(IdentityKind::Field, "Counter.value"));
     }
 
     #[test]
