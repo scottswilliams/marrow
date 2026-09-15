@@ -1,147 +1,321 @@
-//! End-to-end `marrow run` tests: source travels the real production path
-//! (capture → compile → encode → verify → VM) through the built binary.
+//! Language behavior through the production path, and the `marrow run` command
+//! surface.
+//!
+//! Semantics — control flow, arithmetic, the text floor, interpolation, module
+//! resolution, module constants — compile and run in process through the same
+//! capture -> compile -> verify -> VM pipeline the binary drives, asserting typed
+//! values, fault codes, and diagnostic codes. The tests that spawn the binary are
+//! the ones whose subject is the command surface itself: argument decoding, exit
+//! codes, rendered stdout/stderr shape, the `marrow run` identity mint, and the
+//! durable trough outcome.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+use common::{CallOutcome, Diagnostics, Project, conformance_dir, marrow_in};
+use marrow_vm::Value;
 
-struct TempDir {
-    root: PathBuf,
+/// A multi-module project: each `(path, source)` is placed at `src/<path>`.
+fn modules(files: &[(&str, &str)]) -> Project {
+    files
+        .iter()
+        .fold(Project::new(), |project, (path, source)| {
+            project.source(&format!("src/{path}"), source)
+        })
 }
 
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-t01-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
+/// The value one export of a single-source project returns.
+fn value(source: &str, export: &str, args: Vec<Value>) -> Option<Value> {
+    Project::single(source).session().call(export, args)
+}
+
+/// The stable code of the runtime fault one export raises.
+fn fault(source: &str, export: &str, args: Vec<Value>) -> String {
+    match Project::single(source).session().try_call(export, args) {
+        CallOutcome::Fault(code) => code,
+        other => panic!("expected `{export}` to fault, got {other:?}"),
     }
 }
 
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
+/// The typed diagnostics of a project the compiler must refuse.
+fn refused(project: Project) -> Diagnostics {
+    project
+        .try_image()
+        .expect_err("expected source diagnostics, got a compiled image")
 }
 
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
+fn text(value: &str) -> Value {
+    Value::Text(value.into())
 }
 
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
+// --- Command surface: argument decoding, exit codes, rendered output ---------
 
-/// Create a project rooted at `dir` with one source file at `src/main.mw`.
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
-
+/// The rendered text surface of a successful run: the canonical value and a
+/// trailing newline, nothing else.
 #[test]
-fn return_const_travels_the_full_production_path() {
-    let temp = TempDir::new("return-const");
-    project(
-        &temp,
-        r#"pub fn answer(): int {
-    return 42
-}
-"#,
-    );
-
-    let output = run_in(&temp, &["run", "answer"]);
-    assert!(
-        output.status.success(),
-        "run failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+fn run_renders_a_value_on_stdout() {
+    let outcome = Project::single("pub fn answer(): int {\n    return 42\n}\n")
+        .run_cli("return-const", &["run", "answer"]);
+    assert!(outcome.success(), "run failed: {}", outcome.stderr_text());
+    assert_eq!(outcome.stdout_text(), "42\n");
 }
 
+/// The JSONL surface is one canonical record per run.
 #[test]
 fn return_const_jsonl_is_canonical() {
-    let temp = TempDir::new("return-const-jsonl");
-    project(
-        &temp,
-        r#"pub fn answer(): int {
-    return 42
-}
-"#,
+    let outcome = Project::single("pub fn answer(): int {\n    return 42\n}\n").run_cli(
+        "return-const-jsonl",
+        &["run", "answer", "--format", "jsonl"],
     );
-
-    let output = run_in(&temp, &["run", "answer", "--format", "jsonl"]);
-    assert!(output.status.success(), "{output:?}");
+    assert!(outcome.success(), "{outcome:?}");
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
+        outcome.stdout_text(),
         "{\"data\":42,\"kind\":\"run\",\"outcome\":\"value\"}\n"
     );
 }
 
+/// A source diagnostic reaches the command as a `diagnostic` outcome carrying the
+/// typed code, not as a value or a panic.
 #[test]
 fn a_type_mismatch_is_a_source_diagnostic() {
-    let temp = TempDir::new("type-mismatch");
-    project(
-        &temp,
-        r#"pub fn answer(): int {
-    return true
-}
-"#,
-    );
-
-    let output = run_in(&temp, &["run", "answer", "--format", "jsonl"]);
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains(r#""outcome":"diagnostic""#),
-        "{output:?}"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("check.type"),
-        "{output:?}"
-    );
+    let outcome = Project::single("pub fn answer(): int {\n    return true\n}\n")
+        .run_cli("type-mismatch", &["run", "answer", "--format", "jsonl"]);
+    assert!(!outcome.success());
+    let stdout = outcome.stdout_text();
+    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{stdout}");
+    assert!(stdout.contains("check.type"), "{stdout}");
 }
 
+/// Naming an export the project does not declare is a usage error (exit 2), not a
+/// run failure.
 #[test]
 fn a_missing_export_is_a_usage_error() {
-    let temp = TempDir::new("missing-export");
-    project(
-        &temp,
-        r#"pub fn answer(): int {
-    return 42
+    let outcome = Project::single("pub fn answer(): int {\n    return 42\n}\n")
+        .run_cli("missing-export", &["run", "nope"]);
+    assert_eq!(outcome.code(), Some(2), "{outcome:?}");
+}
+
+/// A terminal value literal must be in canonical form: the `bytes` decoder admits
+/// only a `0x`-prefixed even-length lowercase-hex string, and the `bool` decoder
+/// only `true`/`false`. A noncanonical spelling — uppercase hex, a missing `0x`
+/// prefix, an odd hex length, or `1` for a bool — is a usage error (exit 2), never
+/// a silent coercion.
+#[test]
+fn a_noncanonical_terminal_value_literal_is_a_usage_error() {
+    let workspace = Project::single(
+        r#"pub fn firstByte(b: bytes): int {
+    return 0
+}
+
+pub fn flag(b: bool): bool {
+    return b
 }
 "#,
+    )
+    .materialize("noncanonical");
+    for (export, arg) in [
+        ("firstByte", "0xAB"),  // uppercase hex
+        ("firstByte", "abcd"),  // missing 0x prefix
+        ("firstByte", "0xabc"), // odd length
+        ("flag", "1"),          // bool spelled as an int
+        ("flag", "True"),       // bool wrong case
+    ] {
+        let outcome = workspace.marrow(&["run", export, "--", arg]);
+        assert_eq!(
+            outcome.code(),
+            Some(2),
+            "{export} {arg:?} must be a usage error: {outcome:?}"
+        );
+    }
+    // The canonical forms are accepted, so the rejection is of the spelling, not
+    // the type.
+    assert!(
+        workspace
+            .marrow(&["run", "firstByte", "--", "0xabcd"])
+            .success()
+    );
+    assert!(workspace.marrow(&["run", "flag", "--", "false"]).success());
+}
+
+/// `marrow run` prints an export's result in the canonical text a record, enum, or
+/// scalar renders as; `string(...)` admits a narrower domain, so a record is a
+/// `check.unsupported` there. The reference states both halves.
+#[test]
+fn export_output_and_scalar_conversion_rendering_are_distinct() {
+    let outcome = modules(&[(
+        "main.mw",
+        r#"module main
+
+resource Book {
+    required title: string
+    required author: string
+}
+
+pub fn draft(title: string, author: string): Book {
+    return Book(title: title, author: author)
+}
+"#,
+    )])
+    .run_cli(
+        "resource-export-rendering",
+        &["run", "main.draft", "--", "Small Gods", "Pratchett"],
+    );
+    assert!(outcome.success(), "{outcome:?}");
+    assert_eq!(
+        outcome.stdout_text(),
+        "{title: Small Gods, author: Pratchett}\n"
     );
 
-    let output = run_in(&temp, &["run", "nope"]);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let unsupported = refused(modules(&[(
+        "main.mw",
+        r#"module main
+
+resource Book {
+    required title: string
 }
+
+pub fn text(): string {
+    return string(Book(title: "Marrow"))
+}
+"#,
+    )]));
+    assert!(
+        unsupported.has_code("check.unsupported"),
+        "{:?}",
+        unsupported.all()
+    );
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let builtins = normalize(include_str!("../../../docs/language/builtins.md"));
+    assert!(
+        builtins.contains("`marrow run` prints an export's result in this same canonical text.")
+    );
+    assert!(builtins.contains(
+        "`string(...)` and interpolation use the same scalar, enum, and identity renderings but reject bare aggregates and presence optionals."
+    ));
+    assert!(!builtins.contains("Resources and local or durable trees have no direct rendering"));
+}
+
+/// Reaching an `unreachable` faults with `run.unreachable`; the text output carries
+/// the static author text, while the typed JSONL surface stays code and span.
+#[test]
+fn unreachable_faults_and_carries_static_text() {
+    let workspace = Project::single(
+        r#"pub fn boom(hit: bool): int {
+    if hit {
+        unreachable("the invariant broke")
+    }
+    return 0
+}
+"#,
+    )
+    .materialize("unreach-fault");
+
+    let jsonl = workspace.marrow(&["run", "boom", "--format", "jsonl", "--", "true"]);
+    assert!(!jsonl.success());
+    let jsonl_out = jsonl.stdout_text();
+    assert!(jsonl_out.contains(r#""outcome":"fault""#), "{jsonl_out}");
+    assert!(jsonl_out.contains("run.unreachable"), "{jsonl_out}");
+    assert!(
+        !jsonl_out.contains("the invariant broke"),
+        "static text stays out of the typed JSONL grammar: {jsonl_out}"
+    );
+
+    let text = workspace.marrow(&["run", "boom", "--", "true"]);
+    assert!(!text.success());
+    let text_out = text.stdout_text();
+    assert!(text_out.contains("run.unreachable"), "{text_out}");
+    assert!(text_out.contains("the invariant broke"), "{text_out}");
+}
+
+/// Reaching a `todo` faults with the distinct `run.todo` code; like `unreachable`,
+/// the author text rides the text surface only.
+#[test]
+fn todo_faults_carry_static_text_on_the_text_surface_only() {
+    let workspace = Project::single(
+        r#"pub fn classify(n: int): int {
+    if n > 0 { return 1 }
+    todo("handle non-positive inputs")
+}
+"#,
+    )
+    .materialize("todo");
+
+    let jsonl = workspace.marrow(&["run", "classify", "--format", "jsonl", "--", "-1"]);
+    assert!(!jsonl.success());
+    let jsonl_out = jsonl.stdout_text();
+    assert!(jsonl_out.contains(r#""outcome":"fault""#), "{jsonl_out}");
+    assert!(jsonl_out.contains("run.todo"), "{jsonl_out}");
+    assert!(
+        !jsonl_out.contains("handle non-positive"),
+        "static text stays out of the typed JSONL grammar: {jsonl_out}"
+    );
+
+    let text = workspace.marrow(&["run", "classify", "--", "-1"]);
+    let text_out = text.stdout_text();
+    assert!(text_out.contains("run.todo"), "{text_out}");
+    assert!(
+        text_out.contains("handle non-positive inputs"),
+        "{text_out}"
+    );
+}
+
+/// `Option`/`Result` values render through `marrow run` in the canonical enum text,
+/// aggregate payloads included, while JSONL preserves the structured value.
+#[test]
+fn generic_enum_payloads_render_through_the_command() {
+    let workspace = Project::single(
+        r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn retOpt(): Option<Point> {
+    return some(Point(x: 1, y: 2))
+}
+
+pub fn retNone(): Option<Point> {
+    return none
+}
+
+pub fn retResult(): Result<Point, string> {
+    return ok(Point(x: 3, y: 4))
+}
+
+pub fn retNested(): Option<Option<int>> {
+    return some(some(7))
+}
+"#,
+    )
+    .materialize("generic-enum-render");
+
+    for (export, expected) in [
+        ("retOpt", "Option::some({x: 1, y: 2})\n"),
+        ("retNone", "Option::none\n"),
+        ("retResult", "Result::ok({x: 3, y: 4})\n"),
+        ("retNested", "Option::some(Option::some(7))\n"),
+    ] {
+        let outcome = workspace.marrow(&["run", export]);
+        assert!(outcome.success(), "{export}: {outcome:?}");
+        assert_eq!(outcome.stdout_text(), expected, "{export}");
+    }
+
+    let jsonl = workspace.marrow(&["run", "retOpt", "--format", "jsonl"]);
+    assert!(
+        jsonl
+            .stdout_text()
+            .contains(r#""data":{"enum":"Option","member":"some","payload":[{"x":1,"y":2}]}"#),
+        "{jsonl:?}"
+    );
+}
+
+// --- Expressions, control flow, and the arithmetic faults -------------------
 
 #[test]
 fn locals_arithmetic_and_control_flow_compute_a_value() {
-    let temp = TempDir::new("compute");
-    project(
-        &temp,
-        r#"pub fn compute(): int {
+    // b = 12, 12 > 10, so returns 13.
+    assert_eq!(
+        value(
+            r#"pub fn compute(): int {
     const a = 3
     var b = 4
     b = b * a
@@ -149,24 +323,19 @@ fn locals_arithmetic_and_control_flow_compute_a_value() {
     return b
 }
 "#,
+            "compute",
+            vec![],
+        ),
+        Some(Value::Int(13))
     );
-
-    let output = run_in(&temp, &["run", "compute"]);
-    assert!(
-        output.status.success(),
-        "run failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // b = 12, 12 > 10, so returns 13.
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "13\n");
 }
 
 #[test]
 fn a_while_loop_sums() {
-    let temp = TempDir::new("sum-loop");
-    project(
-        &temp,
-        r#"pub fn total(): int {
+    // 0 + 1 + 2 + 3 + 4 = 10.
+    assert_eq!(
+        value(
+            r#"pub fn total(): int {
     var sum = 0
     var i = 0
     while i < 5 {
@@ -176,75 +345,110 @@ fn a_while_loop_sums() {
     return sum
 }
 "#,
+            "total",
+            vec![],
+        ),
+        Some(Value::Int(10))
     );
-
-    let output = run_in(&temp, &["run", "total"]);
-    assert!(output.status.success(), "{output:?}");
-    // 0 + 1 + 2 + 3 + 4 = 10.
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "10\n");
 }
 
 #[test]
 fn short_circuit_boolean_logic() {
-    let temp = TempDir::new("andor");
-    project(
-        &temp,
-        r#"pub fn andor(): bool {
+    assert_eq!(
+        value(
+            r#"pub fn andor(): bool {
     const t = true
     const f = false
     return t and (f or t)
 }
 "#,
+            "andor",
+            vec![],
+        ),
+        Some(Value::Bool(true))
     );
-
-    let output = run_in(&temp, &["run", "andor"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "true\n");
 }
 
 #[test]
 fn runtime_overflow_is_a_source_mapped_fault() {
-    let temp = TempDir::new("overflow");
-    project(
-        &temp,
-        r#"pub fn over(): int {
+    assert_eq!(
+        fault(
+            r#"pub fn over(): int {
     const big = 9223372036854775807
     return big + 1
 }
 "#,
+            "over",
+            vec![],
+        ),
+        "run.overflow"
     );
-
-    let output = run_in(&temp, &["run", "over", "--format", "jsonl"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""outcome":"fault""#), "{output:?}");
-    assert!(stdout.contains("run.overflow"), "{output:?}");
 }
 
-/// Integer `/` truncates toward zero through the full production path.
+#[test]
+fn integer_division_by_zero_is_a_source_mapped_fault() {
+    assert_eq!(
+        fault(
+            "pub fn q(a: int, b: int): int {\n    return a / b\n}\n",
+            "q",
+            vec![Value::Int(1), Value::Int(0)],
+        ),
+        "run.divide_by_zero"
+    );
+}
+
+/// Integer `/` truncates toward zero.
 #[test]
 fn integer_division_truncates_toward_zero() {
-    let temp = TempDir::new("div");
-    project(
-        &temp,
-        r#"pub fn q(a: int, b: int): int {
-    return a / b
-}
-"#,
+    assert_eq!(
+        value(
+            "pub fn q(a: int, b: int): int {\n    return a / b\n}\n",
+            "q",
+            vec![Value::Int(-7), Value::Int(2)],
+        ),
+        Some(Value::Int(-3))
     );
-    let output = run_in(&temp, &["run", "q", "--", "-7", "2"]);
-    assert!(output.status.success(), "run failed: {output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "-3\n");
 }
 
-/// The implemented `string` and `bytes` conversions travel the full path and
-/// render canonically.
+/// `string` comparisons order lexicographically.
+#[test]
+fn string_comparison_orders_lexicographically() {
+    const SOURCE: &str = "pub fn before(a: string, b: string): bool {\n    return a < b\n}\n";
+    assert_eq!(
+        value(SOURCE, "before", vec![text("apple"), text("banana")]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        value(SOURCE, "before", vec![text("banana"), text("apple")]),
+        Some(Value::Bool(false))
+    );
+}
+
+/// A non-terminating loop exhausts the per-invocation instruction budget and
+/// faults with `run.budget` — the VM's dynamic-limit backstop — rather than running
+/// forever. There is no runner or environment override.
+#[test]
+fn nonterminating_loop_faults_on_the_instruction_budget() {
+    assert_eq!(
+        fault(
+            r#"pub fn spin() {
+    var n: int = 0
+    while true {
+        n = n + 1
+    }
+}
+"#,
+            "spin",
+            vec![],
+        ),
+        "run.budget"
+    );
+}
+
+/// The implemented `string` and `bytes` conversions render canonically.
 #[test]
 fn implemented_scalar_conversions_travel_the_full_path() {
-    let temp = TempDir::new("conv");
-    project(
-        &temp,
-        r#"pub fn asString(n: int): string {
+    const SOURCE: &str = r#"pub fn asString(n: int): string {
     return string(n)
 }
 
@@ -255,54 +459,39 @@ pub fn flag(b: bool): string {
 pub fn asBytes(s: string): bytes {
     return bytes(s)
 }
-"#,
+"#;
+    assert_eq!(
+        value(SOURCE, "asString", vec![Value::Int(-7)]),
+        Some(text("-7"))
     );
-    let n = run_in(&temp, &["run", "asString", "--", "-7"]);
-    assert!(n.status.success(), "{n:?}");
-    assert_eq!(String::from_utf8_lossy(&n.stdout), "-7\n");
-
-    let b = run_in(&temp, &["run", "flag", "--", "true"]);
-    assert_eq!(String::from_utf8_lossy(&b.stdout), "true\n");
-
-    // "hi" is 0x6869; bytes render as 0x-prefixed lowercase hex.
-    let by = run_in(&temp, &["run", "asBytes", "--", "hi"]);
-    assert!(by.status.success(), "{by:?}");
-    assert_eq!(String::from_utf8_lossy(&by.stdout), "0x6869\n");
+    assert_eq!(
+        value(SOURCE, "flag", vec![Value::Bool(true)]),
+        Some(text("true"))
+    );
+    // "hi" is 0x6869.
+    assert_eq!(
+        value(SOURCE, "asBytes", vec![text("hi")]),
+        Some(Value::Bytes(b"hi"[..].into()))
+    );
 }
 
 /// Direct byte-literal spelling is parser-recognized but not executable; the
-/// current bytes constructor remains available through the production path.
+/// current bytes constructor remains available.
 #[test]
 fn byte_literal_boundary_and_reference_are_exact() {
-    let temp = TempDir::new("byte-literal-boundary");
-    project(
-        &temp,
-        r#"pub fn value(): bytes {
-    return b"key"
-}
-"#,
-    );
+    let literal = refused(Project::single(
+        "pub fn value(): bytes {\n    return b\"key\"\n}\n",
+    ));
+    assert!(literal.has_code("check.unsupported"), "{:?}", literal.all());
 
-    let literal = run_in(&temp, &["run", "value", "--format", "jsonl"]);
-    assert!(!literal.status.success(), "{literal:?}");
-    let stdout = String::from_utf8_lossy(&literal.stdout);
-    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{literal:?}");
-    assert!(
-        stdout.contains(r#""code":"check.unsupported""#),
-        "{literal:?}"
+    assert_eq!(
+        value(
+            "pub fn value(): bytes {\n    return bytes(\"key\")\n}\n",
+            "value",
+            vec![],
+        ),
+        Some(Value::Bytes(b"key"[..].into()))
     );
-
-    project(
-        &temp,
-        r#"pub fn value(): bytes {
-    return bytes("key")
-}
-"#,
-    );
-
-    let constructor = run_in(&temp, &["run", "value"]);
-    assert!(constructor.status.success(), "{constructor:?}");
-    assert_eq!(String::from_utf8_lossy(&constructor.stdout), "0x6b6579\n");
 
     let reference = include_str!("../../../docs/language/source-and-syntax.md");
     let normalized_reference = reference.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -325,305 +514,43 @@ fn byte_literal_boundary_and_reference_are_exact() {
     );
 }
 
-#[test]
-fn std_paths_use_ordinary_project_module_resolution() {
-    let missing = source_project(
-        "std-module-missing",
-        &[(
-            "main.mw",
-            r#"module main
-
-pub fn run(): string {
-    return std::text::decorate("Marrow")
-}
-"#,
-        )],
-    );
-    let diagnostic = run_diagnostic_code(&missing, "main.run");
-    assert!(
-        diagnostic.contains(r#""code":"check.type""#),
-        "{diagnostic}"
-    );
-
-    let declared = source_project(
-        "std-module-declared",
-        &[
-            (
-                "main.mw",
-                r#"module main
-
-pub fn run(): string {
-    return std::text::decorate("Marrow")
-}
-"#,
-            ),
-            (
-                "std/text.mw",
-                r#"module std::text
-
-pub fn decorate(value: string): string {
-    return $"[{value}]"
-}
-"#,
-            ),
-        ],
-    );
-    let output = run_in(&declared, &["run", "main.run"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "[Marrow]\n");
-
-    let private = source_project(
-        "std-module-private",
-        &[
-            (
-                "main.mw",
-                r#"module main
-
-pub fn run(): string {
-    return std::text::decorate("Marrow")
-}
-"#,
-            ),
-            (
-                "std/text.mw",
-                r#"module std::text
-
-fn decorate(value: string): string {
-    return $"[{value}]"
-}
-"#,
-            ),
-        ],
-    );
-    let diagnostic = run_diagnostic_code(&private, "main.run");
-    assert!(
-        diagnostic.contains(r#""code":"check.visibility""#),
-        "{diagnostic}"
-    );
-
-    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let standard = normalize(include_str!("../../../docs/language/builtins.md"));
-    let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
-    let functions = normalize(include_str!(
-        "../../../docs/language/modules-and-functions.md"
-    ));
-    let future = normalize(include_str!(
-        "../../../docs/future/general-purpose-language.md"
-    ));
-
-    assert!(standard.contains("The current toolchain supplies no `std::` modules."));
-    assert!(standard.contains(
-        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
-    ));
-    assert!(
-        standard
-            .contains("A project-declared `std::` path is project code, not an ambient library.")
-    );
-    assert!(!standard.contains("std::text::trim"));
-    assert!(!source.contains("declared library names"));
-    assert!(source.contains(
-        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
-    ));
-    assert!(!source.contains("std::text::contains"));
-    assert!(!functions.contains("`std::` operations"));
-    assert!(!functions.contains("host-provided standard-library function"));
-    assert!(!future.contains("current standard library is implemented"));
-}
-
-#[test]
-fn project_and_generic_function_arguments_are_positional() {
-    let positional = source_project(
-        "positional-project-call",
-        &[(
-            "main.mw",
-            r#"module main
-
-fn decorate(value: string): string {
-    return $"[{value}]"
-}
-
-pub fn run(): string {
-    return decorate("Marrow")
-}
-"#,
-        )],
-    );
-    let output = run_in(&positional, &["run", "main.run"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "[Marrow]\n");
-
-    for (name, source) in [
-        (
-            "named-project-call",
-            r#"module main
-
-fn decorate(value: string): string {
-    return $"[{value}]"
-}
-
-pub fn run(): string {
-    return decorate(value: "Marrow")
-}
-"#,
-        ),
-        (
-            "named-generic-call",
-            r#"module main
-
-fn identity<T>(value: T): T {
-    return value
-}
-
-pub fn run(): int {
-    return identity(value: 7)
-}
-"#,
-        ),
-    ] {
-        let temp = source_project(name, &[("main.mw", source)]);
-        let diagnostic = run_diagnostic_code(&temp, "main.run");
-        assert!(
-            diagnostic.contains(r#""code":"check.type""#),
-            "{name}: {diagnostic}"
-        );
-    }
-
-    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
-    let functions = normalize(include_str!(
-        "../../../docs/language/modules-and-functions.md"
-    ));
-
-    assert!(source.contains("Project and generic functions take positional arguments."));
-    assert!(functions.contains("Project and generic functions take positional arguments."));
-    assert!(!source.contains("project functions match argument labels"));
-    assert!(!source.contains("does not yet reject labels consistently"));
-    assert!(!functions.contains("Project-function arguments may be positional"));
-    assert!(!functions.contains("matched to project-function parameter names"));
-}
-
-#[test]
-fn export_output_and_scalar_conversion_rendering_are_distinct() {
-    let resource = source_project(
-        "resource-export-rendering",
-        &[(
-            "main.mw",
-            r#"module main
-
-resource Book {
-    required title: string
-    required author: string
-}
-
-pub fn draft(title: string, author: string): Book {
-    return Book(title: title, author: author)
-}
-"#,
-        )],
-    );
-    let output = run_in(
-        &resource,
-        &["run", "main.draft", "--", "Small Gods", "Pratchett"],
-    );
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "{title: Small Gods, author: Pratchett}\n"
-    );
-
-    let unsupported = source_project(
-        "resource-string-rejection",
-        &[(
-            "main.mw",
-            r#"module main
-
-resource Book {
-    required title: string
-}
-
-pub fn text(): string {
-    return string(Book(title: "Marrow"))
-}
-"#,
-        )],
-    );
-    let diagnostic = run_diagnostic_code(&unsupported, "main.text");
-    assert!(
-        diagnostic.contains(r#""code":"check.unsupported""#),
-        "{diagnostic}"
-    );
-
-    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let builtins = normalize(include_str!("../../../docs/language/builtins.md"));
-    assert!(
-        builtins.contains("`marrow run` prints an export's result in this same canonical text.")
-    );
-    assert!(builtins.contains(
-        "`string(...)` and interpolation use the same scalar, enum, and identity renderings but reject bare aggregates and presence optionals."
-    ));
-    assert!(!builtins.contains("Resources and local or durable trees have no direct rendering"));
-}
-
+/// `int("1")`, `bool(1)`, `decimal`, `ErrorCode`, and a decimal literal each carry
+/// an exact rejection code, and the reference states the same boundary.
 #[test]
 fn rejected_conversion_and_decimal_literal_codes_are_exact() {
     for (name, source, code) in [
         (
             "int-from-text",
-            r#"module main
-
-pub fn value(): int {
-    return int("1")
-}
-"#,
+            "module main\n\npub fn value(): int {\n    return int(\"1\")\n}\n",
             "check.unsupported",
         ),
         (
             "bool-from-int",
-            r#"module main
-
-pub fn value(): bool {
-    return bool(1)
-}
-"#,
+            "module main\n\npub fn value(): bool {\n    return bool(1)\n}\n",
             "check.unsupported",
         ),
         (
             "decimal-call",
-            r#"module main
-
-pub fn value(): int {
-    const converted = decimal(1)
-    return 0
-}
-"#,
+            "module main\n\npub fn value(): int {\n    const converted = decimal(1)\n    return 0\n}\n",
             "check.type",
         ),
         (
             "error-code-call",
-            r#"module main
-
-pub fn value(): int {
-    const converted = ErrorCode("run.example")
-    return 0
-}
-"#,
+            "module main\n\npub fn value(): int {\n    const converted = ErrorCode(\"run.example\")\n    return 0\n}\n",
             "check.type",
         ),
         (
             "decimal-literal",
-            r#"module main
-
-pub fn value(): int {
-    return 1.5
-}
-"#,
+            "module main\n\npub fn value(): int {\n    return 1.5\n}\n",
             "check.unsupported",
         ),
     ] {
-        let temp = source_project(name, &[("main.mw", source)]);
-        let diagnostic = run_diagnostic_code(&temp, "main.value");
-        let expected = format!(r#""code":"{code}""#);
-        assert!(diagnostic.contains(&expected), "{name}: {diagnostic}");
+        let diagnostics = refused(modules(&[("main.mw", source)]));
+        assert!(
+            diagnostics.has_code(code),
+            "{name}: {:?}",
+            diagnostics.all()
+        );
     }
 
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -640,11 +567,12 @@ pub fn value(): int {
     assert!(!types.contains("| `bool` | `bool`, or `int` equal to `0` or `1` |"));
 }
 
+/// `catch` and `throw` are ordinary identifiers, and the removed statement forms
+/// are parse errors. The reference carries no exception channel.
 #[test]
 fn reference_excludes_removed_throwable_channel_and_keywords() {
-    let identifiers = source_project(
-        "removed-channel-identifiers",
-        &[(
+    assert_eq!(
+        modules(&[(
             "main.mw",
             r#"module main
 
@@ -660,11 +588,11 @@ pub fn run(): int {
     return catch(throw(2))
 }
 "#,
-        )],
+        )])
+        .session()
+        .call("run", vec![]),
+        Some(Value::Int(4))
     );
-    let output = run_in(&identifiers, &["run", "main.run"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "4\n");
 
     for (name, statement) in [
         ("removed-throw-statement", "throw \"failure\""),
@@ -672,11 +600,11 @@ pub fn run(): int {
     ] {
         let source =
             format!("module main\n\npub fn run(): int {{\n    {statement}\n    return 1\n}}\n");
-        let temp = source_project(name, &[("main.mw", &source)]);
-        let diagnostic = run_diagnostic_code(&temp, "main.run");
+        let diagnostics = refused(modules(&[("main.mw", &source)]));
         assert!(
-            diagnostic.contains(r#""code":"parse.syntax""#),
-            "{name}: {diagnostic}"
+            diagnostics.has_code("parse.syntax"),
+            "{name}: {:?}",
+            diagnostics.all()
         );
     }
 
@@ -711,84 +639,13 @@ pub fn run(): int {
     assert!(types.contains("`Result<T, E>` models a recoverable failure"));
 }
 
-/// A terminal value literal must be in canonical form: the `bytes` decoder admits
-/// only a `0x`-prefixed even-length lowercase-hex string, and the `bool` decoder
-/// only `true`/`false`. A noncanonical spelling — uppercase hex, a missing `0x`
-/// prefix, an odd hex length, or `1` for a bool — is a usage error (exit 2), never
-/// a silent coercion.
-#[test]
-fn a_noncanonical_terminal_value_literal_is_a_usage_error() {
-    let temp = TempDir::new("noncanonical");
-    project(
-        &temp,
-        r#"pub fn firstByte(b: bytes): int {
-    return 0
-}
-
-pub fn flag(b: bool): bool {
-    return b
-}
-"#,
-    );
-    for (export, arg) in [
-        ("firstByte", "0xAB"),  // uppercase hex
-        ("firstByte", "abcd"),  // missing 0x prefix
-        ("firstByte", "0xabc"), // odd length
-        ("flag", "1"),          // bool spelled as an int
-        ("flag", "True"),       // bool wrong case
-    ] {
-        let output = run_in(&temp, &["run", export, "--", arg]);
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{export} {arg:?} must be a usage error: {output:?}"
-        );
-    }
-    // The canonical forms are accepted, so the rejection is of the spelling, not
-    // the type.
-    assert!(
-        run_in(&temp, &["run", "firstByte", "--", "0xabcd"])
-            .status
-            .success()
-    );
-    assert!(
-        run_in(&temp, &["run", "flag", "--", "false"])
-            .status
-            .success()
-    );
-}
-
-/// A non-terminating loop exhausts the per-invocation instruction budget and
-/// faults with `run.budget` — the VM's dynamic-limit backstop — rather than running
-/// forever. There is no runner or environment override.
-#[test]
-fn nonterminating_loop_faults_on_the_instruction_budget() {
-    let temp = TempDir::new("budget");
-    project(
-        &temp,
-        r#"pub fn spin() {
-    var n: int = 0
-    while true {
-        n = n + 1
-    }
-}
-"#,
-    );
-    let output = run_in(&temp, &["run", "spin", "--format", "jsonl"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""outcome":"fault""#), "{output:?}");
-    assert!(stdout.contains("run.budget"), "{output:?}");
-}
+// --- The checked-arithmetic form -------------------------------------------
 
 /// The checked-arithmetic form: the success path binds the result; each fault
 /// runs its diverging arm.
 #[test]
 fn checked_arithmetic_success_and_each_arm() {
-    let temp = TempDir::new("checked");
-    project(
-        &temp,
-        r#"pub fn safeMul(a: int, b: int): int {
+    const SOURCE: &str = r#"pub fn safeMul(a: int, b: int): int {
     const p: int = checked a * b
         on out_of_range return -1
     return p
@@ -800,39 +657,25 @@ pub fn safeDiv(a: int, b: int): int {
             return -1
         } on zero_divisor return 0
 }
-"#,
-    );
+"#;
+    let mut session = Project::single(SOURCE).session();
+    let call = |session: &mut common::Session, export: &str, a: i64, b: i64| {
+        session.call(export, vec![Value::Int(a), Value::Int(b)])
+    };
     // Success paths.
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "safeMul", "--", "6", "7"]).stdout),
-        "42\n"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "safeDiv", "--", "20", "4"]).stdout),
-        "5\n"
-    );
+    assert_eq!(call(&mut session, "safeMul", 6, 7), Some(Value::Int(42)));
+    assert_eq!(call(&mut session, "safeDiv", 20, 4), Some(Value::Int(5)));
     // out_of_range arm: 2^62 * 4 overflows.
     assert_eq!(
-        String::from_utf8_lossy(
-            &run_in(&temp, &["run", "safeMul", "--", "4611686018427387904", "4"]).stdout
-        ),
-        "-1\n"
+        call(&mut session, "safeMul", 4_611_686_018_427_387_904, 4),
+        Some(Value::Int(-1))
     );
     // zero_divisor arm.
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "safeDiv", "--", "1", "0"]).stdout),
-        "0\n"
-    );
+    assert_eq!(call(&mut session, "safeDiv", 1, 0), Some(Value::Int(0)));
     // out_of_range arm of division: i64::MIN / -1.
     assert_eq!(
-        String::from_utf8_lossy(
-            &run_in(
-                &temp,
-                &["run", "safeDiv", "--", "-9223372036854775808", "-1"]
-            )
-            .stdout
-        ),
-        "-1\n"
+        call(&mut session, "safeDiv", i64::MIN, -1),
+        Some(Value::Int(-1))
     );
 }
 
@@ -840,10 +683,7 @@ pub fn safeDiv(a: int, b: int): int {
 /// combinator ceremony: a running total that both guards overflow and short-circuits.
 #[test]
 fn checked_reads_clearly_in_nested_procedural_code() {
-    let temp = TempDir::new("checked-nested");
-    project(
-        &temp,
-        r#"pub fn boundedFactorial(n: int, cap: int): int {
+    const SOURCE: &str = r#"pub fn boundedFactorial(n: int, cap: int): int {
     var acc: int = 1
     var i: int = 2
     while i <= n {
@@ -855,38 +695,28 @@ fn checked_reads_clearly_in_nested_procedural_code() {
     }
     return acc
 }
-"#,
-    );
+"#;
+    let mut session = Project::single(SOURCE).session();
     assert_eq!(
-        String::from_utf8_lossy(
-            &run_in(&temp, &["run", "boundedFactorial", "--", "5", "1000000"]).stdout
+        session.call(
+            "boundedFactorial",
+            vec![Value::Int(5), Value::Int(1_000_000)]
         ),
-        "120\n"
+        Some(Value::Int(120))
     );
     // Overflow guard fires before native overflow: with the cap just below
     // i64::MAX, 20! (2.4e18) stays under it but 21! overflows and runs the arm.
     assert_eq!(
-        String::from_utf8_lossy(
-            &run_in(
-                &temp,
-                &[
-                    "run",
-                    "boundedFactorial",
-                    "--",
-                    "100",
-                    "9000000000000000000"
-                ]
-            )
-            .stdout
+        session.call(
+            "boundedFactorial",
+            vec![Value::Int(100), Value::Int(9_000_000_000_000_000_000)]
         ),
-        "-1\n"
+        Some(Value::Int(-1))
     );
     // Cap short-circuit.
     assert_eq!(
-        String::from_utf8_lossy(
-            &run_in(&temp, &["run", "boundedFactorial", "--", "20", "100"]).stdout
-        ),
-        "100\n"
+        session.call("boundedFactorial", vec![Value::Int(20), Value::Int(100)]),
+        Some(Value::Int(100))
     );
 }
 
@@ -894,10 +724,8 @@ fn checked_reads_clearly_in_nested_procedural_code() {
 /// source diagnostic.
 #[test]
 fn checked_form_arm_rules_are_diagnostics() {
-    let temp = TempDir::new("checked-bad");
     // Non-diverging out_of_range arm.
-    project(
-        &temp,
+    let non_diverging = refused(Project::single(
         r#"pub fn bad(a: int, b: int): int {
     const p: int = checked a + b
         on out_of_range {
@@ -906,27 +734,25 @@ fn checked_form_arm_rules_are_diagnostics() {
     return p
 }
 "#,
+    ));
+    assert!(
+        non_diverging.has_code("check.type"),
+        "{:?}",
+        non_diverging.all()
     );
-    let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1", "2"]);
-    assert!(!out.status.success());
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains(r#""outcome":"diagnostic""#), "{out:?}");
-    assert!(s.contains("check.type"), "{out:?}");
 
     // Missing zero_divisor arm on a checked division.
-    project(
-        &temp,
+    let missing_arm = refused(Project::single(
         r#"pub fn bad(a: int, b: int): int {
     return checked a / b
         on out_of_range return -1
 }
 "#,
-    );
-    let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1", "2"]);
-    assert!(!out.status.success());
+    ));
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("check.type"),
-        "{out:?}"
+        missing_arm.has_code("check.type"),
+        "{:?}",
+        missing_arm.all()
     );
 }
 
@@ -936,55 +762,38 @@ fn checked_form_arm_rules_are_diagnostics() {
 /// or literal-zero divisor still requires the arm.
 #[test]
 fn checked_division_by_a_nonzero_literal_drops_the_dead_zero_arm() {
-    let temp = TempDir::new("checked-litdiv");
-
     // No zero_divisor arm needed; runs.
-    project(
-        &temp,
-        r#"pub fn half(x: int): int {
+    assert_eq!(
+        value(
+            r#"pub fn half(x: int): int {
     const q: int = checked x / 100
         on out_of_range return -1
     return q
 }
 "#,
-    );
-    let out = run_in(&temp, &["run", "half", "--format", "jsonl", "--", "500"]);
-    assert!(out.status.success(), "{out:?}");
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains(r#""data":5"#),
-        "{out:?}"
+            "half",
+            vec![Value::Int(500)],
+        ),
+        Some(Value::Int(5))
     );
 
     // The out_of_range arm stays live: i64::MIN / -1 overflows into it.
-    project(
-        &temp,
-        r#"pub fn neg(x: int): int {
+    assert_eq!(
+        value(
+            r#"pub fn neg(x: int): int {
     const q: int = checked x / -1
         on out_of_range return 777
     return q
 }
 "#,
-    );
-    let out = run_in(
-        &temp,
-        &[
-            "run",
             "neg",
-            "--format",
-            "jsonl",
-            "--",
-            "-9223372036854775808",
-        ],
-    );
-    assert!(out.status.success(), "{out:?}");
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains(r#""data":777"#),
-        "{out:?}"
+            vec![Value::Int(i64::MIN)],
+        ),
+        Some(Value::Int(777))
     );
 
     // A supplied `on zero_divisor` arm on a literal-nonzero divisor is a dead arm.
-    project(
-        &temp,
+    let dead = refused(Project::single(
         r#"pub fn dead(x: int): int {
     const q: int = checked x / 100
         on out_of_range return -1
@@ -992,71 +801,60 @@ fn checked_division_by_a_nonzero_literal_drops_the_dead_zero_arm() {
     return q
 }
 "#,
-    );
-    let out = run_in(&temp, &["run", "dead", "--format", "jsonl", "--", "1"]);
-    assert!(!out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("check.type"),
-        "{out:?}"
-    );
+    ));
+    assert!(dead.has_code("check.type"), "{:?}", dead.all());
 
     // A non-literal divisor and a literal-zero divisor still require the arm.
     for body in [
         "pub fn f(x: int, d: int): int {\n    return checked x / d\n        on out_of_range return -1\n}\n",
         "pub fn f(x: int): int {\n    return checked x / 0\n        on out_of_range return -1\n}\n",
     ] {
-        project(&temp, body);
-        let out = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "1", "2"]);
-        assert!(!out.status.success(), "{body}");
+        let diagnostics = refused(Project::single(body));
         assert!(
-            String::from_utf8_lossy(&out.stdout).contains("check.type"),
-            "{body}"
+            diagnostics.has_code("check.type"),
+            "{body}: {:?}",
+            diagnostics.all()
         );
     }
 }
 
+// --- The text floor, interpolation, and the renderable-hole boundary --------
+
 /// The closed pure text floor: isEmpty / contains / trim.
 #[test]
 fn text_floor_builtins_travel_the_full_path() {
-    let temp = TempDir::new("textfloor");
-    project(
-        &temp,
-        r#"pub fn empty(s: string): bool {
+    const SOURCE: &str = r#"pub fn empty(s: string): bool {
     return isEmpty(trim(s))
 }
 
 pub fn has(h: string, n: string): bool {
     return contains(h, n)
 }
-"#,
+"#;
+    let mut session = Project::single(SOURCE).session();
+    assert_eq!(
+        session.call("empty", vec![text("   ")]),
+        Some(Value::Bool(true))
     );
     assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "empty", "--", "   "]).stdout),
-        "true\n"
+        session.call("empty", vec![text(" x ")]),
+        Some(Value::Bool(false))
     );
     assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "empty", "--", " x "]).stdout),
-        "false\n"
+        session.call("has", vec![text("hello"), text("ell")]),
+        Some(Value::Bool(true))
     );
     assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "has", "--", "hello", "ell"]).stdout),
-        "true\n"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "has", "--", "hello", "xyz"]).stdout),
-        "false\n"
+        session.call("has", vec![text("hello"), text("xyz")]),
+        Some(Value::Bool(false))
     );
 }
 
-/// Interpolated strings travel the full path: literal segments carry their
-/// decoded text and doubled-brace escapes, and scalar holes use the same
-/// canonical rendering as `string(value)`.
+/// Interpolated strings carry their decoded literal segments and doubled-brace
+/// escapes, and scalar holes use the same canonical rendering as `string(value)`.
 #[test]
 fn interpolation_renders_holes_and_escapes() {
-    let temp = TempDir::new("interp");
-    project(
-        &temp,
-        r#"pub fn greet(id: int, on: bool): string {
+    const SOURCE: &str = r#"pub fn greet(id: int, on: bool): string {
     return $"id: {id} ok={on}!"
 }
 
@@ -1067,313 +865,36 @@ pub fn braces(): string {
 pub fn empty(): string {
     return $""
 }
-"#,
-    );
+"#;
+    let mut session = Project::single(SOURCE).session();
     assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "greet", "--", "7", "true"]).stdout),
-        "id: 7 ok=true!\n"
+        session.call("greet", vec![Value::Int(7), Value::Bool(true)]),
+        Some(text("id: 7 ok=true!"))
     );
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "braces"]).stdout),
-        "a { b }\tc\n"
-    );
-    // The text renderer suppresses an empty line, so an empty interpolation
-    // compiles and runs but prints nothing.
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "empty"]).stdout),
-        ""
-    );
+    assert_eq!(session.call("braces", vec![]), Some(text("a { b }\tc")));
+    assert_eq!(session.call("empty", vec![]), Some(text("")));
 }
 
 /// A hole whose value has no current canonical rendering is a typed
 /// `check.unsupported`, matching the `string(value)` boundary.
 #[test]
 fn interpolation_rejects_an_unrenderable_hole() {
-    let temp = TempDir::new("interp-bad");
-    project(
-        &temp,
-        r#"pub fn bad(d: decimal): string {
-    return $"v: {d}"
-}
-"#,
-    );
-    let output = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1.5"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{output:?}");
-    assert!(stdout.contains("check.unsupported"), "{output:?}");
-}
-
-/// A chained `if const` proves each subject present left to right (short-circuit),
-/// scopes each binding rightward and into the then block, and takes the else tail
-/// when any subject is absent or the trailing condition is false.
-#[test]
-fn if_const_chain_short_circuits_and_scopes_rightward() {
-    let temp = TempDir::new("ifconst-chain");
-    project(
-        &temp,
-        r#"fn maybe(n: int): int? {
-    if n > 0 { return n }
-    return absent
-}
-
-pub fn f(a: int): int {
-    if const x = maybe(a) and const y = maybe(x + 1) and x > 2 {
-        return x * 100 + y
-    } else {
-        return -1
-    }
-}
-"#,
-    );
-    // present: x=5, y=maybe(6)=6, 5>2 true.
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "5"]).stdout),
-        "506\n"
-    );
-    // trailing condition false: x=2, 2>2 false.
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "2"]).stdout),
-        "-1\n"
-    );
-    // first subject absent short-circuits.
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "0"]).stdout),
-        "-1\n"
-    );
-}
-
-/// A let-else binding runs its diverging `else` when the subject is absent and
-/// otherwise binds the present value for the rest of the block; a `var` let-else
-/// binds mutably; a non-diverging `else` is a typed `check.type`.
-#[test]
-fn let_else_binds_present_and_requires_a_diverging_else() {
-    let temp = TempDir::new("let-else");
-    project(
-        &temp,
-        r#"fn maybe(n: int): int? {
-    if n > 0 { return n }
-    return absent
-}
-
-pub fn f(a: int): int {
-    var x = maybe(a) else {
-        return -1
-    }
-    x += 100
-    return x
-}
-"#,
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "5"]).stdout),
-        "105\n"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "0"]).stdout),
-        "-1\n"
-    );
-
-    let bad = TempDir::new("let-else-bad");
-    project(
-        &bad,
-        r#"fn maybe(n: int): int? {
-    if n > 0 { return n }
-    return absent
-}
-
-pub fn f(a: int): int {
-    const x = maybe(a) else {
-        const y = 1
-    }
-    return x
-}
-"#,
-    );
-    let output = run_in(&bad, &["run", "f", "--format", "jsonl", "--", "5"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("check.type"), "{stdout}");
-}
-
-/// A let-else binding is out of scope inside its own `else` — the absent edge,
-/// where the binding is never established. A reference to it there is a scoped
-/// unknown-name `check.type`, never an uninitialized-slot image rejection, and it
-/// does not shadow an outer binding of the same name that the `else` should see.
-#[test]
-fn let_else_binding_is_out_of_scope_in_its_own_else() {
-    // (a) referencing the binding in its own else is a clean check.type unknown
-    // name (a checker rejection), not an image.function artifact rejection.
-    let scoped = TempDir::new("let-else-scope");
-    project(
-        &scoped,
-        r#"fn maybe(n: int): int? {
-    if n > 0 { return n }
-    return absent
-}
-
-pub fn f(a: int): int {
-    const x = maybe(a) else {
-        return x
-    }
-    return x
-}
-"#,
-    );
-    let output = run_in(&scoped, &["run", "f", "--format", "jsonl", "--", "5"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("check.type"), "{stdout}");
-    assert!(!stdout.contains("image.function"), "{stdout}");
-    assert!(!stdout.contains("artifact_rejected"), "{stdout}");
-
-    // (b) the else sees the outer binding, not the not-yet-established inner one of
-    // the same name.
-    let shadow = TempDir::new("let-else-shadow");
-    project(
-        &shadow,
-        r#"fn maybe(n: int): int? {
-    if n > 0 { return n }
-    return absent
-}
-
-pub fn f(a: int): int {
-    const n = 7
-    const n = maybe(a) else {
-        return n
-    }
-    return n
-}
-"#,
-    );
-    // absent: the else returns the outer n (7).
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&shadow, &["run", "f", "--", "0"]).stdout),
-        "7\n"
-    );
-    // present: the inner binding is in scope for the continuation (5).
-    assert_eq!(
-        String::from_utf8_lossy(&run_in(&shadow, &["run", "f", "--", "5"]).stdout),
-        "5\n"
-    );
-}
-
-/// `string` comparisons order lexicographically through the full path.
-#[test]
-fn string_comparison_orders_lexicographically() {
-    let temp = TempDir::new("strcmp");
-    project(
-        &temp,
-        r#"pub fn before(a: string, b: string): bool {
-    return a < b
-}
-"#,
-    );
-    let yes = run_in(&temp, &["run", "before", "--", "apple", "banana"]);
-    assert!(yes.status.success(), "run failed: {yes:?}");
-    assert_eq!(String::from_utf8_lossy(&yes.stdout), "true\n");
-    let no = run_in(&temp, &["run", "before", "--", "banana", "apple"]);
-    assert_eq!(String::from_utf8_lossy(&no.stdout), "false\n");
-}
-
-#[test]
-fn integer_division_by_zero_is_a_source_mapped_fault() {
-    let temp = TempDir::new("divzero");
-    project(
-        &temp,
-        r#"pub fn q(a: int, b: int): int {
-    return a / b
-}
-"#,
-    );
-    let output = run_in(&temp, &["run", "q", "--format", "jsonl", "--", "1", "0"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""outcome":"fault""#), "{output:?}");
-    assert!(stdout.contains("run.divide_by_zero"), "{output:?}");
-}
-
-/// `unreachable(...)` diverges, so it stands as the final statement of a
-/// value-returning function whose earlier branches cover every real case, and it
-/// runs the returning path normally.
-#[test]
-fn unreachable_satisfies_exhaustive_return_and_runs_the_real_path() {
-    let temp = TempDir::new("unreach-ok");
-    project(
-        &temp,
-        r#"pub fn sign(n: int): int {
-    if n > 0 { return 1 }
-    if n < 0 { return -1 }
-    if n == 0 { return 0 }
-    unreachable("n is int, so one branch always returns")
-}
-"#,
-    );
-    let output = run_in(&temp, &["run", "sign", "--", "-5"]);
-    assert!(output.status.success(), "run failed: {output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "-1\n");
-}
-
-/// Reaching an `unreachable` faults with `run.unreachable`; the text output carries
-/// the static author text, while the typed JSONL surface stays code and span.
-#[test]
-fn unreachable_faults_and_carries_static_text() {
-    let temp = TempDir::new("unreach-fault");
-    let source = r#"pub fn boom(hit: bool): int {
-    if hit {
-        unreachable("the invariant broke")
-    }
-    return 0
-}
-"#;
-    project(&temp, source);
-
-    let jsonl = run_in(&temp, &["run", "boom", "--format", "jsonl", "--", "true"]);
-    assert!(!jsonl.status.success());
-    let jsonl_out = String::from_utf8_lossy(&jsonl.stdout);
-    assert!(jsonl_out.contains(r#""outcome":"fault""#), "{jsonl:?}");
-    assert!(jsonl_out.contains("run.unreachable"), "{jsonl:?}");
+    let diagnostics = refused(Project::single(
+        "pub fn bad(d: decimal): string {\n    return $\"v: {d}\"\n}\n",
+    ));
     assert!(
-        !jsonl_out.contains("the invariant broke"),
-        "static text stays out of the typed JSONL grammar: {jsonl:?}"
+        diagnostics.has_code("check.unsupported"),
+        "{:?}",
+        diagnostics.all()
     );
-
-    let text = run_in(&temp, &["run", "boom", "--", "true"]);
-    assert!(!text.status.success());
-    let text_out = String::from_utf8_lossy(&text.stdout);
-    assert!(text_out.contains("run.unreachable"), "{text:?}");
-    assert!(text_out.contains("the invariant broke"), "{text:?}");
-}
-
-/// `unreachable` requires a static string literal, so a computed argument is a
-/// source diagnostic, not a runtime value.
-#[test]
-fn unreachable_rejects_a_computed_argument() {
-    let temp = TempDir::new("unreach-arg");
-    project(
-        &temp,
-        r#"pub fn bad(s: string): int {
-    unreachable(s)
-}
-"#,
-    );
-    let output = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "x"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{output:?}");
-    assert!(stdout.contains("check.type"), "{output:?}");
 }
 
 /// Every canonically renderable value is an interpolation hole and rides
-/// `string(...)`: temporals, enums (with payloads), and bytes use the same
-/// canonical text as `marrow run`. A record, list, map, or optional hole is not
-/// renderable and is refused.
+/// `string(...)`: temporals, enums (with payloads), and bytes. A record, list, map,
+/// or optional hole is not renderable and is refused.
 #[test]
 fn interpolation_and_string_render_every_scalar_and_enum() {
-    let temp = TempDir::new("interp-canon");
-    project(
-        &temp,
-        r#"enum Shape {
+    const SOURCE: &str = r#"enum Shape {
     dot
     circle(radius: int)
 }
@@ -1395,51 +916,37 @@ pub fn asText(): string {
 pub fn bytesHole(s: string): string {
     return $"{bytes(s)}"
 }
-"#,
-    );
-
-    let temporal = run_in(&temp, &["run", "temporal"]);
-    assert!(temporal.status.success(), "{temporal:?}");
+"#;
+    let mut session = Project::single(SOURCE).session();
     assert_eq!(
-        String::from_utf8_lossy(&temporal.stdout),
-        "2026-08-01 2026-07-15T17:00:00Z in PT259200S\n"
+        session.call("temporal", vec![]),
+        Some(text("2026-08-01 2026-07-15T17:00:00Z in PT259200S"))
     );
-
-    let shape = run_in(&temp, &["run", "shape"]);
     assert_eq!(
-        String::from_utf8_lossy(&shape.stdout),
-        "Shape::circle(5) and Shape::dot\n"
+        session.call("shape", vec![]),
+        Some(text("Shape::circle(5) and Shape::dot"))
     );
-
-    let as_text = run_in(&temp, &["run", "asText"]);
-    assert_eq!(String::from_utf8_lossy(&as_text.stdout), "2026-08-01\n");
-
+    assert_eq!(session.call("asText", vec![]), Some(text("2026-08-01")));
     // "hi" is 0x6869; a bytes hole renders as canonical hex.
-    let bytes = run_in(&temp, &["run", "bytesHole", "--", "hi"]);
-    assert_eq!(String::from_utf8_lossy(&bytes.stdout), "0x6869\n");
+    assert_eq!(
+        session.call("bytesHole", vec![text("hi")]),
+        Some(text("0x6869"))
+    );
 
     // A list hole is not a renderable value.
-    project(
-        &temp,
+    let list = refused(modules(&[(
+        "main.mw",
         "module main\n\npub fn f(): string {\n    var xs: List<int> = List(1, 2)\n    return $\"{xs}\"\n}\n",
-    );
-    let list = run_in(&temp, &["run", "f", "--format", "jsonl"]);
-    assert!(!list.status.success());
-    assert!(
-        String::from_utf8_lossy(&list.stdout).contains("check.unsupported"),
-        "{list:?}"
-    );
+    )]));
+    assert!(list.has_code("check.unsupported"), "{:?}", list.all());
 }
 
-/// `Option`/`Result` are enums whose payload can be an aggregate. Interpolation
-/// and `marrow run` text use the canonical enum rendering, including aggregate
-/// payloads, without a runtime fault; JSONL preserves the structured value.
+/// Interpolation renders an aggregate enum payload through the canonical owner.
 #[test]
-fn generic_enum_payloads_render_totally() {
-    let temp = TempDir::new("generic-enum-render");
-    project(
-        &temp,
-        r#"struct Point {
+fn interpolation_renders_an_aggregate_enum_payload() {
+    assert_eq!(
+        value(
+            r#"struct Point {
     x: int
     y: int
 }
@@ -1448,51 +955,11 @@ pub fn interp(): string {
     const p: Option<Point> = some(Point(x: 1, y: 2))
     return $"p is {p}"
 }
-
-pub fn retOpt(): Option<Point> {
-    return some(Point(x: 1, y: 2))
-}
-
-pub fn retNone(): Option<Point> {
-    return none
-}
-
-pub fn retResult(): Result<Point, string> {
-    return ok(Point(x: 3, y: 4))
-}
-
-pub fn retNested(): Option<Option<int>> {
-    return some(some(7))
-}
 "#,
-    );
-
-    // Interpolation renders an aggregate enum payload through the canonical owner.
-    let interp = run_in(&temp, &["run", "interp"]);
-    assert!(interp.status.success(), "{interp:?}");
-    assert_eq!(
-        String::from_utf8_lossy(&interp.stdout),
-        "p is Option::some({x: 1, y: 2})\n"
-    );
-
-    // Returned generic-enum values use the same canonical text through `marrow run`.
-    for (export, expected) in [
-        ("retOpt", "Option::some({x: 1, y: 2})\n"),
-        ("retNone", "Option::none\n"),
-        ("retResult", "Result::ok({x: 3, y: 4})\n"),
-        ("retNested", "Option::some(Option::some(7))\n"),
-    ] {
-        let out = run_in(&temp, &["run", export]);
-        assert!(out.status.success(), "{export}: {out:?}");
-        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{export}");
-    }
-
-    // JSONL keeps the structured enum object.
-    let jsonl = run_in(&temp, &["run", "retOpt", "--format", "jsonl"]);
-    assert!(
-        String::from_utf8_lossy(&jsonl.stdout)
-            .contains(r#""data":{"enum":"Option","member":"some","payload":[{"x":1,"y":2}]}"#),
-        "{jsonl:?}"
+            "interp",
+            vec![],
+        ),
+        Some(text("p is Option::some({x: 1, y: 2})"))
     );
 }
 
@@ -1500,70 +967,212 @@ pub fn retNested(): Option<Option<int>> {
 /// or identity is a renderable hole; the `Option<T>` enum renders, the `T?` does not.
 #[test]
 fn a_bare_presence_optional_hole_is_still_refused() {
-    let temp = TempDir::new("optional-hole");
-    project(
-        &temp,
+    let diagnostics = refused(modules(&[(
+        "main.mw",
         "module main\n\nfn maybe(n: int): int? {\n    if n > 0 { return n }\n    return absent\n}\n\npub fn f(n: int): string {\n    return $\"{maybe(n)}\"\n}\n",
-    );
-    let out = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "1"]);
-    assert!(!out.status.success());
+    )]));
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("check.unsupported"),
-        "{out:?}"
+        diagnostics.has_code("check.unsupported"),
+        "{:?}",
+        diagnostics.all()
+    );
+}
+
+// --- Presence forms: `if const`, let-else, divergence -----------------------
+
+/// A chained `if const` proves each subject present left to right (short-circuit),
+/// scopes each binding rightward and into the then block, and takes the else tail
+/// when any subject is absent or the trailing condition is false.
+#[test]
+fn if_const_chain_short_circuits_and_scopes_rightward() {
+    const SOURCE: &str = r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    if const x = maybe(a) and const y = maybe(x + 1) and x > 2 {
+        return x * 100 + y
+    } else {
+        return -1
+    }
+}
+"#;
+    let mut session = Project::single(SOURCE).session();
+    // present: x=5, y=maybe(6)=6, 5>2 true.
+    assert_eq!(
+        session.call("f", vec![Value::Int(5)]),
+        Some(Value::Int(506))
+    );
+    // trailing condition false: x=2, 2>2 false.
+    assert_eq!(session.call("f", vec![Value::Int(2)]), Some(Value::Int(-1)));
+    // first subject absent short-circuits.
+    assert_eq!(session.call("f", vec![Value::Int(0)]), Some(Value::Int(-1)));
+}
+
+/// A let-else binding runs its diverging `else` when the subject is absent and
+/// otherwise binds the present value for the rest of the block; a `var` let-else
+/// binds mutably; a non-diverging `else` is a typed `check.type`.
+#[test]
+fn let_else_binds_present_and_requires_a_diverging_else() {
+    const SOURCE: &str = r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    var x = maybe(a) else {
+        return -1
+    }
+    x += 100
+    return x
+}
+"#;
+    let mut session = Project::single(SOURCE).session();
+    assert_eq!(
+        session.call("f", vec![Value::Int(5)]),
+        Some(Value::Int(105))
+    );
+    assert_eq!(session.call("f", vec![Value::Int(0)]), Some(Value::Int(-1)));
+
+    let diagnostics = refused(Project::single(
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    const x = maybe(a) else {
+        const y = 1
+    }
+    return x
+}
+"#,
+    ));
+    assert!(
+        diagnostics.has_code("check.type"),
+        "{:?}",
+        diagnostics.all()
+    );
+}
+
+/// A let-else binding is out of scope inside its own `else` — the absent edge,
+/// where the binding is never established. A reference to it there is a scoped
+/// unknown-name `check.type`, never an uninitialized-slot image rejection, and it
+/// does not shadow an outer binding of the same name that the `else` should see.
+#[test]
+fn let_else_binding_is_out_of_scope_in_its_own_else() {
+    // (a) referencing the binding in its own else is a clean check.type unknown
+    // name (a checker rejection), not an image.function artifact rejection.
+    let scoped = refused(Project::single(
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    const x = maybe(a) else {
+        return x
+    }
+    return x
+}
+"#,
+    ));
+    let codes = scoped.codes();
+    assert!(codes.contains(&"check.type"), "{codes:?}");
+    assert!(
+        !codes.iter().any(|code| code.starts_with("image.")),
+        "{codes:?}"
+    );
+
+    // (b) the else sees the outer binding, not the not-yet-established inner one of
+    // the same name.
+    let mut session = Project::single(
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    const n = 7
+    const n = maybe(a) else {
+        return n
+    }
+    return n
+}
+"#,
+    )
+    .session();
+    // absent: the else returns the outer n (7).
+    assert_eq!(session.call("f", vec![Value::Int(0)]), Some(Value::Int(7)));
+    // present: the inner binding is in scope for the continuation (5).
+    assert_eq!(session.call("f", vec![Value::Int(5)]), Some(Value::Int(5)));
+}
+
+/// `unreachable(...)` diverges, so it stands as the final statement of a
+/// value-returning function whose earlier branches cover every real case, and it
+/// runs the returning path normally.
+#[test]
+fn unreachable_satisfies_exhaustive_return_and_runs_the_real_path() {
+    assert_eq!(
+        value(
+            r#"pub fn sign(n: int): int {
+    if n > 0 { return 1 }
+    if n < 0 { return -1 }
+    if n == 0 { return 0 }
+    unreachable("n is int, so one branch always returns")
+}
+"#,
+            "sign",
+            vec![Value::Int(-5)],
+        ),
+        Some(Value::Int(-1))
+    );
+}
+
+/// `unreachable` requires a static string literal, so a computed argument is a
+/// source diagnostic, not a runtime value.
+#[test]
+fn unreachable_rejects_a_computed_argument() {
+    let diagnostics = refused(Project::single(
+        "pub fn bad(s: string): int {\n    unreachable(s)\n}\n",
+    ));
+    assert!(
+        diagnostics.has_code("check.type"),
+        "{:?}",
+        diagnostics.all()
     );
 }
 
 /// `todo("...")` mirrors `unreachable`: it diverges (so it satisfies exhaustive
 /// return), it requires a static string literal, and reaching it faults with the
-/// distinct `run.todo` code carrying the author text.
+/// distinct `run.todo` code.
 #[test]
 fn todo_diverges_and_faults_run_todo() {
-    let temp = TempDir::new("todo");
-
-    // Divergence satisfies the "all paths return" check and the real path runs.
-    project(
-        &temp,
-        r#"pub fn classify(n: int): int {
+    const SOURCE: &str = r#"pub fn classify(n: int): int {
     if n > 0 { return 1 }
     todo("handle non-positive inputs")
 }
-"#,
+"#;
+    // Divergence satisfies the "all paths return" check and the real path runs.
+    assert_eq!(
+        value(SOURCE, "classify", vec![Value::Int(7)]),
+        Some(Value::Int(1))
     );
-    let ok = run_in(&temp, &["run", "classify", "--", "7"]);
-    assert!(ok.status.success(), "{ok:?}");
-    assert_eq!(String::from_utf8_lossy(&ok.stdout), "1\n");
-
-    // Reaching it faults with run.todo; the typed surface stays code + span, the text
-    // surface carries the author string.
-    let jsonl = run_in(&temp, &["run", "classify", "--format", "jsonl", "--", "-1"]);
-    assert!(!jsonl.status.success());
-    let jsonl_out = String::from_utf8_lossy(&jsonl.stdout);
-    assert!(jsonl_out.contains(r#""outcome":"fault""#), "{jsonl:?}");
-    assert!(jsonl_out.contains("run.todo"), "{jsonl:?}");
-    assert!(
-        !jsonl_out.contains("handle non-positive"),
-        "static text stays out of the typed JSONL grammar: {jsonl:?}"
-    );
-    let text = run_in(&temp, &["run", "classify", "--", "-1"]);
-    let text_out = String::from_utf8_lossy(&text.stdout);
-    assert!(text_out.contains("run.todo"), "{text:?}");
-    assert!(text_out.contains("handle non-positive inputs"), "{text:?}");
+    assert_eq!(fault(SOURCE, "classify", vec![Value::Int(-1)]), "run.todo");
 
     // A computed argument is rejected, like `unreachable`.
-    project(
-        &temp,
-        r#"pub fn bad(s: string): int {
-    todo(s)
-}
-"#,
-    );
-    let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "x"]);
-    assert!(!out.status.success());
+    let diagnostics = refused(Project::single(
+        "pub fn bad(s: string): int {\n    todo(s)\n}\n",
+    ));
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("check.type"),
-        "{out:?}"
+        diagnostics.has_code("check.type"),
+        "{:?}",
+        diagnostics.all()
     );
 }
+
+// --- Records: constructors, field reads, optional coalescing ----------------
 
 /// A project whose resource, constructor, field reads, optional coalescing, and
 /// `if const` guard travel the full path. One source file drives several exports.
@@ -1600,497 +1209,409 @@ pub fn maybe(): string? {
 }
 "#;
 
-fn run_records(export: &str) -> String {
-    let temp = TempDir::new(&format!("records-{export}"));
-    project(&temp, RECORDS_SOURCE);
-    let output = run_in(&temp, &["run", export]);
-    assert!(
-        output.status.success(),
-        "run {export} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
 #[test]
-fn required_field_read() {
-    assert_eq!(run_records("titleOf"), "hello\n");
+fn record_field_reads_and_optional_coalescing_compute() {
+    let mut session = Project::single(RECORDS_SOURCE).session();
+    assert_eq!(session.call("titleOf", vec![]), Some(text("hello")));
+    assert_eq!(session.call("bodyOrDefault", vec![]), Some(text("there")));
+    assert_eq!(session.call("missingBody", vec![]), Some(text("none")));
+    assert_eq!(session.call("guardedBody", vec![]), Some(text("yo")));
+    assert_eq!(session.call("maybe", vec![]), Some(Value::Optional(None)));
 }
 
-#[test]
-fn present_sparse_field_coalesces_to_itself() {
-    assert_eq!(run_records("bodyOrDefault"), "there\n");
-}
-
-#[test]
-fn vacant_sparse_field_coalesces_to_default() {
-    assert_eq!(run_records("missingBody"), "none\n");
-}
-
-#[test]
-fn if_const_binds_a_present_optional() {
-    assert_eq!(run_records("guardedBody"), "yo\n");
-}
-
-#[test]
-fn an_absent_optional_return_renders_absent() {
-    assert_eq!(run_records("maybe"), "absent\n");
-}
-
-// --- Module constants (C00). ---
+// --- Module constants -------------------------------------------------------
 
 #[test]
 fn a_module_constant_folds_into_a_function() {
-    let temp = source_project(
-        "module-const",
-        &[(
+    assert_eq!(
+        modules(&[(
             "main.mw",
-            r#"module main
-
-const MAX: int = 100
-
-pub fn cap(): int {
-    return MAX + 1
-}
-"#,
-        )],
+            "module main\n\nconst MAX: int = 100\n\npub fn cap(): int {\n    return MAX + 1\n}\n",
+        )])
+        .session()
+        .call("cap", vec![]),
+        Some(Value::Int(101))
     );
-    let output = run_in(&temp, &["run", "main.cap"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "101\n");
 }
 
 #[test]
 fn a_negated_integer_constant_is_allowed() {
-    let temp = source_project(
-        "neg-const",
-        &[(
+    assert_eq!(
+        modules(&[(
             "main.mw",
-            r#"module main
-
-const MIN = -5
-
-pub fn floor(): int {
-    return MIN
-}
-"#,
-        )],
+            "module main\n\nconst MIN = -5\n\npub fn floor(): int {\n    return MIN\n}\n",
+        )])
+        .session()
+        .call("floor", vec![]),
+        Some(Value::Int(-5))
     );
-    let output = run_in(&temp, &["run", "main.floor"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "-5\n");
 }
 
 #[test]
 fn a_constant_type_annotation_must_match_its_value() {
-    let temp = source_project(
-        "const-type",
-        &[(
+    assert!(
+        refused(modules(&[(
             "main.mw",
-            r#"module main
-
-const FLAG: bool = 1
-
-pub fn run(): bool {
-    return FLAG
-}
-"#,
-        )],
+            "module main\n\nconst FLAG: bool = 1\n\npub fn run(): bool {\n    return FLAG\n}\n",
+        )]))
+        .has_code("check.type")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.type"));
 }
 
 #[test]
 fn a_non_literal_constant_is_unsupported() {
-    let temp = source_project(
-        "const-nonliteral",
-        &[(
+    assert!(
+        refused(modules(&[(
             "main.mw",
-            r#"module main
-
-const SUM = 1 + 2
-
-pub fn run(): int {
-    return SUM
-}
-"#,
-        )],
+            "module main\n\nconst SUM = 1 + 2\n\npub fn run(): int {\n    return SUM\n}\n",
+        )]))
+        .has_code("check.unsupported")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.unsupported"));
 }
 
 #[test]
 fn a_module_constant_is_private_to_its_module() {
     // `SECRET` is declared in `lib`; referencing it unqualified from `main` is not
     // in scope, and a qualified constant reference is not a supported form.
-    let temp = source_project(
-        "const-private",
-        &[
+    assert!(
+        refused(modules(&[
             ("lib.mw", "module lib\n\nconst SECRET = 7\n"),
             (
                 "main.mw",
-                r#"module main
-
-pub fn run(): int {
-    return SECRET
-}
-"#,
+                "module main\n\npub fn run(): int {\n    return SECRET\n}\n",
             ),
-        ],
+        ]))
+        .has_code("check.type")
     );
-    let stdout = run_diagnostic_code(&temp, "main.run");
-    assert!(stdout.contains("check.type"), "{stdout}");
 }
 
 #[test]
 fn a_duplicate_constant_in_one_module_conflicts() {
-    let temp = source_project(
-        "dup-const",
-        &[(
+    assert!(
+        refused(modules(&[(
+            "main.mw",
+            "module main\n\nconst K = 1\n\nconst K = 2\n\npub fn run(): int {\n    return K\n}\n",
+        )]))
+        .has_code("check.name_conflict")
+    );
+}
+
+// --- Module-scoped call resolution and `use` imports ------------------------
+
+/// A `std::` path is ordinary project module resolution, not an ambient library:
+/// an absent module is a `check.type` at the call, a project-declared one resolves
+/// and runs, and a private target is a `check.visibility`.
+#[test]
+fn std_paths_use_ordinary_project_module_resolution() {
+    const CALLER: &str = r#"module main
+
+pub fn run(): string {
+    return std::text::decorate("Marrow")
+}
+"#;
+    assert!(
+        refused(modules(&[("main.mw", CALLER)])).has_code("check.type"),
+        "an absent std module is unresolved at the call"
+    );
+
+    assert_eq!(
+        modules(&[
+            ("main.mw", CALLER),
+            (
+                "std/text.mw",
+                "module std::text\n\npub fn decorate(value: string): string {\n    return $\"[{value}]\"\n}\n",
+            ),
+        ])
+        .session()
+        .call("run", vec![]),
+        Some(text("[Marrow]"))
+    );
+
+    assert!(
+        refused(modules(&[
+            ("main.mw", CALLER),
+            (
+                "std/text.mw",
+                "module std::text\n\nfn decorate(value: string): string {\n    return $\"[{value}]\"\n}\n",
+            ),
+        ]))
+        .has_code("check.visibility")
+    );
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let standard = normalize(include_str!("../../../docs/language/builtins.md"));
+    let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
+    let functions = normalize(include_str!(
+        "../../../docs/language/modules-and-functions.md"
+    ));
+    let future = normalize(include_str!(
+        "../../../docs/future/general-purpose-language.md"
+    ));
+
+    assert!(standard.contains("The current toolchain supplies no `std::` modules."));
+    assert!(standard.contains(
+        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
+    ));
+    assert!(
+        standard
+            .contains("A project-declared `std::` path is project code, not an ambient library.")
+    );
+    assert!(!standard.contains("std::text::trim"));
+    assert!(!source.contains("declared library names"));
+    assert!(source.contains(
+        "An absent module reports `check.import` and an absent function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
+    ));
+    assert!(!source.contains("std::text::contains"));
+    assert!(!functions.contains("`std::` operations"));
+    assert!(!functions.contains("host-provided standard-library function"));
+    assert!(!future.contains("current standard library is implemented"));
+}
+
+/// Project and generic functions take positional arguments; a labelled argument is
+/// a `check.type`.
+#[test]
+fn project_and_generic_function_arguments_are_positional() {
+    assert_eq!(
+        modules(&[(
             "main.mw",
             r#"module main
 
-const K = 1
+fn decorate(value: string): string {
+    return $"[{value}]"
+}
 
-const K = 2
-
-pub fn run(): int {
-    return K
+pub fn run(): string {
+    return decorate("Marrow")
 }
 "#,
-        )],
+        )])
+        .session()
+        .call("run", vec![]),
+        Some(text("[Marrow]"))
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.name_conflict"));
+
+    for (name, source) in [
+        (
+            "named-project-call",
+            r#"module main
+
+fn decorate(value: string): string {
+    return $"[{value}]"
 }
 
-// --- Module-scoped call resolution and `use` imports (C00). ---
+pub fn run(): string {
+    return decorate(value: "Marrow")
+}
+"#,
+        ),
+        (
+            "named-generic-call",
+            r#"module main
 
-/// Write a `marrow.toml` and the named `(relative path, source)` files under a
-/// fresh temp project, returning it.
-fn source_project(name: &str, files: &[(&str, &str)]) -> TempDir {
-    let temp = TempDir::new(name);
-    write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
-    for (path, source) in files {
-        write(&temp.join("src").join(path), source);
+fn identity<T>(value: T): T {
+    return value
+}
+
+pub fn run(): int {
+    return identity(value: 7)
+}
+"#,
+        ),
+    ] {
+        let diagnostics = refused(modules(&[("main.mw", source)]));
+        assert!(
+            diagnostics.has_code("check.type"),
+            "{name}: {:?}",
+            diagnostics.all()
+        );
     }
-    temp
-}
 
-/// The first diagnostic code from a failed `marrow run --format jsonl`.
-fn run_diagnostic_code(dir: &Path, export: &str) -> String {
-    let output = run_in(dir, &["run", export, "--format", "jsonl"]);
-    assert!(!output.status.success(), "expected failure: {output:?}");
-    String::from_utf8_lossy(&output.stdout).into_owned()
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
+    let functions = normalize(include_str!(
+        "../../../docs/language/modules-and-functions.md"
+    ));
+
+    assert!(source.contains("Project and generic functions take positional arguments."));
+    assert!(functions.contains("Project and generic functions take positional arguments."));
+    assert!(!source.contains("project functions match argument labels"));
+    assert!(!source.contains("does not yet reject labels consistently"));
+    assert!(!functions.contains("Project-function arguments may be positional"));
+    assert!(!functions.contains("matched to project-function parameter names"));
 }
 
 #[test]
 fn a_use_import_resolves_a_cross_module_call() {
-    let temp = source_project(
-        "use-import",
-        &[
+    assert_eq!(
+        modules(&[
             (
                 "mathlib/ops.mw",
-                r#"module mathlib::ops
-
-pub fn double(n: int): int {
-    return n + n
-}
-"#,
+                "module mathlib::ops\n\npub fn double(n: int): int {\n    return n + n\n}\n",
             ),
             (
                 "main.mw",
-                r#"module main
-
-use mathlib::ops
-
-pub fn run(): int {
-    return ops::double(21)
-}
-"#,
+                "module main\n\nuse mathlib::ops\n\npub fn run(): int {\n    return ops::double(21)\n}\n",
             ),
-        ],
+        ])
+        .session()
+        .call("run", vec![]),
+        Some(Value::Int(42))
     );
-    let output = run_in(&temp, &["run", "main.run"]);
-    assert!(
-        output.status.success(),
-        "cross-module call failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
 }
 
 #[test]
 fn a_fully_qualified_call_resolves_without_a_use() {
-    let temp = source_project(
-        "fully-qualified",
-        &[
+    assert_eq!(
+        modules(&[
             (
                 "mathlib/ops.mw",
-                r#"module mathlib::ops
-
-pub fn triple(n: int): int {
-    return n + n + n
-}
-"#,
+                "module mathlib::ops\n\npub fn triple(n: int): int {\n    return n + n + n\n}\n",
             ),
             (
                 "main.mw",
-                r#"module main
-
-pub fn run(): int {
-    return mathlib::ops::triple(4)
-}
-"#,
+                "module main\n\npub fn run(): int {\n    return mathlib::ops::triple(4)\n}\n",
             ),
-        ],
+        ])
+        .session()
+        .call("run", vec![]),
+        Some(Value::Int(12))
     );
-    let output = run_in(&temp, &["run", "main.run"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "12\n");
 }
 
 #[test]
 fn a_same_name_function_in_another_module_does_not_conflict() {
     // Two modules each define `helper`; an unqualified call binds the caller's own.
-    let temp = source_project(
-        "same-name",
-        &[
-            (
-                "a.mw",
-                r#"module a
-
-pub fn helper(): int {
-    return 1
-}
-"#,
-            ),
+    assert_eq!(
+        modules(&[
+            ("a.mw", "module a\n\npub fn helper(): int {\n    return 1\n}\n"),
             (
                 "b.mw",
-                r#"module b
-
-fn helper(): int {
-    return 2
-}
-
-pub fn run(): int {
-    return helper()
-}
-"#,
+                "module b\n\nfn helper(): int {\n    return 2\n}\n\npub fn run(): int {\n    return helper()\n}\n",
             ),
-        ],
+        ])
+        .session()
+        .call("run", vec![]),
+        Some(Value::Int(2))
     );
-    let output = run_in(&temp, &["run", "b.run"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
 }
 
 #[test]
 fn a_bare_call_does_not_reach_a_function_in_another_module() {
     // `greet` exists only in `other`; an unqualified call from `main` resolves in
     // `main` alone and is unresolved, not silently bound across the boundary.
-    let temp = source_project(
-        "bare-foreign",
-        &[
+    assert!(
+        refused(modules(&[
             (
                 "other.mw",
-                r#"module other
-
-pub fn greet(): int {
-    return 1
-}
-"#,
+                "module other\n\npub fn greet(): int {\n    return 1\n}\n",
             ),
             (
                 "main.mw",
-                r#"module main
-
-pub fn run(): int {
-    return greet()
-}
-"#,
+                "module main\n\npub fn run(): int {\n    return greet()\n}\n",
             ),
-        ],
+        ]))
+        .has_code("check.type")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.type"));
 }
 
 #[test]
 fn a_qualified_call_to_an_own_module_private_function_resolves() {
     // Qualifying a call with the caller's own module reaches a private function
     // there; visibility only gates crossing a module boundary.
-    let temp = source_project(
-        "own-qualified-private",
-        &[(
+    assert_eq!(
+        modules(&[(
             "main.mw",
-            r#"module main
-
-fn secret(): int {
-    return 7
-}
-
-pub fn run(): int {
-    return main::secret()
-}
-"#,
-        )],
+            "module main\n\nfn secret(): int {\n    return 7\n}\n\npub fn run(): int {\n    return main::secret()\n}\n",
+        )])
+        .session()
+        .call("run", vec![]),
+        Some(Value::Int(7))
     );
-    let output = run_in(&temp, &["run", "main.run"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
 }
 
 #[test]
 fn calling_a_private_function_across_modules_is_a_visibility_error() {
-    let temp = source_project(
-        "visibility",
-        &[
+    assert!(
+        refused(modules(&[
             (
                 "lib.mw",
-                r#"module lib
-
-fn secret(): int {
-    return 1
-}
-"#,
+                "module lib\n\nfn secret(): int {\n    return 1\n}\n"
             ),
             (
                 "main.mw",
-                r#"module main
-
-pub fn run(): int {
-    return lib::secret()
-}
-"#,
+                "module main\n\npub fn run(): int {\n    return lib::secret()\n}\n",
             ),
-        ],
+        ]))
+        .has_code("check.visibility")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.visibility"));
 }
 
 #[test]
 fn a_use_of_an_unknown_module_is_an_import_error() {
-    let temp = source_project(
-        "unknown-import",
-        &[(
+    assert!(
+        refused(modules(&[(
             "main.mw",
-            r#"module main
-
-use nope::missing
-
-pub fn run(): int {
-    return 1
-}
-"#,
-        )],
+            "module main\n\nuse nope::missing\n\npub fn run(): int {\n    return 1\n}\n",
+        )]))
+        .has_code("check.import")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.import"));
 }
 
 #[test]
 fn a_headerless_script_export_runs_by_its_path_derived_name() {
-    let temp = source_project(
-        "headerless-script-export",
-        &[(
-            "tools/math.mw",
-            r#"pub fn two(): int {
-    return 2
-}
-"#,
-        )],
-    );
-    let output = run_in(&temp, &["run", "tools.math.two"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+    let outcome = modules(&[("tools/math.mw", "pub fn two(): int {\n    return 2\n}\n")])
+        .run_cli("headerless-script-export", &["run", "tools.math.two"]);
+    assert!(outcome.success(), "{outcome:?}");
+    assert_eq!(outcome.stdout_text(), "2\n");
 }
 
 #[test]
 fn a_headerless_script_is_not_importable_by_module_path() {
-    let temp = source_project(
-        "script-not-importable",
-        &[
-            (
-                "lib.mw",
-                r#"pub fn helper(): int {
-    return 1
-}
-"#,
-            ),
+    assert!(
+        refused(modules(&[
+            ("lib.mw", "pub fn helper(): int {\n    return 1\n}\n"),
             (
                 "main.mw",
-                r#"module main
-
-use lib
-
-pub fn run(): int {
-    return lib::helper()
-}
-"#,
+                "module main\n\nuse lib\n\npub fn run(): int {\n    return lib::helper()\n}\n",
             ),
-        ],
+        ]))
+        .has_code("check.import")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.import"));
 }
 
 #[test]
 fn a_module_header_that_disagrees_with_its_path_is_rejected() {
-    let temp = source_project(
-        "module-path",
-        &[(
+    assert!(
+        refused(modules(&[(
             "main.mw",
-            r#"module wrong
-
-pub fn run(): int {
-    return 1
-}
-"#,
-        )],
+            "module wrong\n\npub fn run(): int {\n    return 1\n}\n",
+        )]))
+        .has_code("check.module_path")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.module_path"));
 }
 
 #[test]
 fn a_duplicate_function_name_in_one_module_conflicts() {
-    let temp = source_project(
-        "dup-in-module",
-        &[(
+    assert!(
+        refused(modules(&[(
             "main.mw",
-            r#"module main
-
-fn helper(): int {
-    return 1
-}
-
-fn helper(): int {
-    return 2
-}
-
-pub fn run(): int {
-    return helper()
-}
-"#,
-        )],
+            "module main\n\nfn helper(): int {\n    return 1\n}\n\nfn helper(): int {\n    return 2\n}\n\npub fn run(): int {\n    return helper()\n}\n",
+        )]))
+        .has_code("check.name_conflict")
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.name_conflict"));
 }
 
 #[test]
 fn direct_calls_resolve_forward_and_compute() {
-    let temp = TempDir::new("calls");
     // `quad` is declared before `double`, exercising forward resolution.
-    project(
-        &temp,
-        r#"pub fn quad(): int {
-    return double(double(5))
-}
-
-fn double(n: int): int {
-    return n + n
-}
-"#,
+    assert_eq!(
+        value(
+            "pub fn quad(): int {\n    return double(double(5))\n}\n\nfn double(n: int): int {\n    return n + n\n}\n",
+            "quad",
+            vec![],
+        ),
+        Some(Value::Int(20))
     );
-    let output = run_in(&temp, &["run", "quad"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "20\n");
 }
 
 #[test]
@@ -2098,48 +1619,30 @@ fn mutual_recursion_is_a_check_time_diagnostic() {
     // Recursion is caught at check time as a source diagnostic, before an image is
     // produced. (The verifier still independently rejects a cyclic image it is
     // handed; that is covered by the verifier's own hostile suite.)
-    let temp = TempDir::new("recursion");
-    project(
-        &temp,
-        r#"pub fn ping(): int {
-    return pong()
-}
-
-fn pong(): int {
-    return ping()
-}
-"#,
+    assert!(
+        refused(Project::single(
+            "pub fn ping(): int {\n    return pong()\n}\n\nfn pong(): int {\n    return ping()\n}\n",
+        ))
+        .has_code("check.recursion")
     );
-    let output = run_in(&temp, &["run", "ping", "--format", "jsonl"]);
-    assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{output:?}");
-    assert!(stdout.contains("check.recursion"), "{output:?}");
 }
 
 #[test]
 fn direct_self_recursion_is_a_check_time_diagnostic() {
-    let temp = TempDir::new("self-recursion");
-    project(
-        &temp,
-        r#"pub fn loops(): int {
-    return loops()
-}
-"#,
-    );
-    let output = run_in(&temp, &["run", "loops", "--format", "jsonl"]);
-    assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("check.recursion"),
-        "{output:?}"
+        refused(Project::single(
+            "pub fn loops(): int {\n    return loops()\n}\n",
+        ))
+        .has_code("check.recursion")
     );
 }
 
-// --- Durable tracer: without `--store` the CLI compiles, verifies, and completes the
-// identity of a durable program but opens no store, so a storeless `run` of a durable export
-// reports the typed `cli.durable_unsupported` outcome. With `--store` (F02b) the persistent
-// companion path runs it against a provisioned store — one process writing, a fresh process
-// reading it back — spawned through a release-verified companion runner. ---
+// --- The durable trough: the command compiles, verifies, mints, and parks ----
+//
+// Without `--store` the CLI compiles, verifies, and completes the identity of a
+// durable program but opens no store, so a storeless `run` of a durable export
+// reports the typed `cli.durable_unsupported` outcome. Reaching that outcome is
+// positive evidence the durable image is well-formed and identity-complete.
 
 const COUNTER_SOURCE: &str = r#"resource Counter {
     required value: int
@@ -2159,102 +1662,9 @@ pub fn get(name: string): int? {
 }
 "#;
 
-/// A durable export compiles, verifies, mints its identity, and then parks: the
-/// CLI reports the typed `cli.durable_unsupported` trough outcome and never opens
-/// a store. The reads-or-writes export reaches this only after the whole pipeline
-/// (capture → compile → verify → resolve) succeeded, so a park is positive
-/// evidence the durable image is well-formed and identity-complete.
-#[test]
-fn a_durable_export_parks_in_the_trough() {
-    let temp = TempDir::new("counter-trough");
-    project(&temp, COUNTER_SOURCE);
-
-    // A read-only durable export: `run` mints the fresh identities, then parks.
-    let get = run_in(&temp, &["run", "get", "--format", "jsonl", "--", "hits"]);
-    assert!(!get.status.success(), "a durable run parks: {get:?}");
-    let out = String::from_utf8_lossy(&get.stdout);
-    assert!(out.contains(r#""outcome":"error""#), "{get:?}");
-    assert!(out.contains("cli.durable_unsupported"), "{get:?}");
-    assert!(
-        temp.join(".marrow/ids").exists(),
-        "the mint pre-pass published .marrow/ids before parking"
-    );
-
-    // A mutating durable export parks the same way.
-    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
-    assert!(!set.status.success(), "{set:?}");
-    assert!(
-        String::from_utf8_lossy(&set.stdout).contains("cli.durable_unsupported"),
-        "{set:?}"
-    );
-}
-
-/// `--store` returns at F02b as the persistent companion path: it is a recognized flag, not a
-/// usage error (exit 2). It also closes the run-mint window — with a persistent store a
-/// missing durable identity is a precise `check.durable_identity` failure, never the additive
-/// auto-mint the storeless path performs. (The `COUNTER_SOURCE` project has no committed
-/// `.marrow/ids`, so a storeless `run` would mint; `--store` refuses and reports the gap.)
-#[test]
-fn the_store_flag_is_recognized_and_closes_the_run_mint_window() {
-    let temp = TempDir::new("counter-store-flag");
-    project(&temp, COUNTER_SOURCE);
-    let output = run_in(&temp, &["run", "get", "--store", "s", "--", "hits"]);
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "--store is a recognized flag that fails precisely, not a usage error (2): {output:?}"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("check.durable_identity"),
-        "with --store a missing identity is a precise failure, not an auto-mint: {output:?}"
-    );
-    // The refusal wrote no ledger: the run-mint window is closed for a persistent store.
-    assert!(
-        !temp.join(".marrow/ids").exists(),
-        "no .marrow/ids may be minted on the persistent path: {output:?}"
-    );
-}
-
-/// `duration` is a span, not an identity, so it is not in the durable-key set: a
-/// duration-keyed store is a source diagnostic, not a runnable graph.
-#[test]
-fn a_duration_keyed_store_is_a_source_diagnostic() {
-    let temp = TempDir::new("dur-key");
-    project(
-        &temp,
-        r#"resource Span {
-    required n: int
-}
-
-store ^spans[d: duration]: Span
-
-pub fn get(d: duration): int? {
-    return ^spans[d].n
-}
-"#,
-    );
-    assert!(run_diagnostic_code(&temp, "get").contains("check.type"));
-}
-
-/// The checked-in tracer fixture stays a compile/verify/identity fixture: its
-/// committed `.marrow/ids` is complete, so a durable export travels the full
-/// pipeline and parks in the trough (its runtime journey returns at E01/F02b).
-#[test]
-fn tracer_fixture_compiles_verifies_and_parks() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/v01/conformance/tracer_counter");
-    let output = run_in(&fixture, &["run", "get", "--format", "jsonl", "--", "hits"]);
-    assert!(!output.status.success(), "{output:?}");
-    let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains(r#""outcome":"error""#), "{output:?}");
-    assert!(out.contains("cli.durable_unsupported"), "{output:?}");
-}
-
-// --- Named `place` bindings (D02): a source-local binding names one durable entry
-// address whose key tuple is evaluated once. A durable export using places travels
-// the whole pipeline (parse -> compile -> verify -> resolve) and parks in the
-// trough exactly like the inline address forms; execution returns at E01/F02b. ---
-
+/// A named `place` binding names one durable entry address whose key tuple is
+/// evaluated once. A durable export using places travels the whole pipeline and
+/// parks in the trough exactly like the inline address forms.
 const PLACE_SOURCE: &str = r#"resource Counter {
     required value: int
     label: string
@@ -2276,41 +1686,97 @@ pub fn get(name: string): int? {
 }
 "#;
 
-/// A durable export written with named `place` bindings compiles, verifies, mints
-/// its identities, and parks: the pipeline reaching the trough is positive evidence
-/// the place image is well-formed and identity-complete.
+/// A read-only durable export: `run` mints the fresh identities, then parks. A
+/// mutating durable export parks the same way.
 #[test]
-fn a_place_binding_export_parks_in_the_trough() {
-    let temp = TempDir::new("place-trough");
-    project(&temp, PLACE_SOURCE);
+fn a_durable_export_parks_in_the_trough() {
+    for (label, source) in [
+        ("counter-trough", COUNTER_SOURCE),
+        ("place-trough", PLACE_SOURCE),
+    ] {
+        let workspace = Project::single(source).materialize(label);
 
-    let get = run_in(&temp, &["run", "get", "--format", "jsonl", "--", "hits"]);
-    assert!(!get.status.success(), "a durable place run parks: {get:?}");
-    let out = String::from_utf8_lossy(&get.stdout);
-    assert!(out.contains(r#""outcome":"error""#), "{get:?}");
-    assert!(out.contains("cli.durable_unsupported"), "{get:?}");
-    assert!(
-        temp.join(".marrow/ids").exists(),
-        "the mint pre-pass published .marrow/ids before parking"
+        let get = workspace.marrow(&["run", "get", "--format", "jsonl", "--", "hits"]);
+        assert!(!get.success(), "{label}: a durable run parks: {get:?}");
+        let out = get.stdout_text();
+        assert!(out.contains(r#""outcome":"error""#), "{label}: {out}");
+        assert!(out.contains("cli.durable_unsupported"), "{label}: {out}");
+        assert!(
+            workspace.path(".marrow/ids").exists(),
+            "{label}: the mint pre-pass published .marrow/ids before parking"
+        );
+
+        let mutating = if source == COUNTER_SOURCE {
+            "set"
+        } else {
+            "bump"
+        };
+        let written = workspace.marrow(&["run", mutating, "--", "hits", "5"]);
+        assert!(!written.success(), "{label}: {written:?}");
+        assert!(
+            written.stdout_text().contains("cli.durable_unsupported"),
+            "{label}: {written:?}"
+        );
+    }
+}
+
+/// `--store` is a recognized flag that fails precisely, not a usage error (exit 2).
+/// It also closes the run-mint window — with a persistent store a missing durable
+/// identity is a precise `check.durable_identity` failure, never the additive
+/// auto-mint the storeless path performs.
+#[test]
+fn the_store_flag_is_recognized_and_closes_the_run_mint_window() {
+    let workspace = Project::single(COUNTER_SOURCE).materialize("counter-store-flag");
+    let outcome = workspace.marrow(&["run", "get", "--store", "s", "--", "hits"]);
+    assert_eq!(
+        outcome.code(),
+        Some(1),
+        "--store is a recognized flag that fails precisely, not a usage error (2): {outcome:?}"
     );
-
-    let bump = run_in(&temp, &["run", "bump", "--", "hits", "5"]);
-    assert!(!bump.status.success(), "{bump:?}");
     assert!(
-        String::from_utf8_lossy(&bump.stdout).contains("cli.durable_unsupported"),
-        "{bump:?}"
+        outcome.stdout_text().contains("check.durable_identity"),
+        "with --store a missing identity is a precise failure, not an auto-mint: {outcome:?}"
+    );
+    // The refusal wrote no ledger: the run-mint window is closed for a persistent store.
+    assert!(
+        !workspace.path(".marrow/ids").exists(),
+        "no .marrow/ids may be minted on the persistent path: {outcome:?}"
     );
 }
 
-/// The checked-in `place_counter` fixture: a complete `.marrow/ids`, so a place-based
-/// durable export travels the full pipeline and parks in the trough.
+/// The checked-in tracer and place fixtures each ship a complete `.marrow/ids`, so
+/// a durable export travels the full pipeline and parks in the trough.
 #[test]
-fn place_fixture_compiles_verifies_and_parks() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/v01/conformance/place_counter");
-    let output = run_in(&fixture, &["run", "get", "--format", "jsonl", "--", "hits"]);
-    assert!(!output.status.success(), "{output:?}");
-    let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains(r#""outcome":"error""#), "{output:?}");
-    assert!(out.contains("cli.durable_unsupported"), "{output:?}");
+fn the_checked_in_durable_fixtures_compile_verify_and_park() {
+    for name in ["tracer_counter", "place_counter"] {
+        let outcome = marrow_in(
+            &conformance_dir(name),
+            &["run", "get", "--format", "jsonl", "--", "hits"],
+        );
+        assert!(!outcome.success(), "{name}: {outcome:?}");
+        let out = outcome.stdout_text();
+        assert!(out.contains(r#""outcome":"error""#), "{name}: {out}");
+        assert!(out.contains("cli.durable_unsupported"), "{name}: {out}");
+    }
+}
+
+/// `duration` is a span, not an identity, so it is not in the durable-key set: a
+/// duration-keyed store is a source diagnostic, not a runnable graph.
+#[test]
+fn a_duration_keyed_store_is_a_source_diagnostic() {
+    assert!(
+        refused(Project::single(
+            r#"resource Span {
+    required n: int
+}
+
+store ^spans[d: duration]: Span
+
+pub fn get(d: duration): int? {
+    return ^spans[d].n
+}
+"#,
+        ))
+        .has_code("check.type")
+    );
 }
