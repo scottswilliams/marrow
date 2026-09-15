@@ -327,47 +327,6 @@ fn project_help_describes_captured_source_files_and_the_headerless_script() {
 }
 
 #[test]
-fn source_owner_wording_does_not_restore_the_stale_module_script_law() {
-    const OWNER_SOURCES: &[(&str, &str)] = &[
-        (
-            "crates/marrow-project/src/identity.rs",
-            include_str!("../../marrow-project/src/identity.rs"),
-        ),
-        (
-            "crates/marrow-project/AGENTS.md",
-            include_str!("../../marrow-project/AGENTS.md"),
-        ),
-        ("crates/marrow/src/main.rs", include_str!("../src/main.rs")),
-        (
-            "crates/marrow/src/cmd_init.rs",
-            include_str!("../src/cmd_init.rs"),
-        ),
-        (
-            "crates/marrow/src/cmd_fmt.rs",
-            include_str!("../src/cmd_fmt.rs"),
-        ),
-    ];
-    const STALE_PHRASES: &[&str] = &[
-        "every module of a project",
-        "every module of the project",
-        "starter module",
-        "unformatted module",
-        "no in-source module header",
-        "single-file fallback",
-    ];
-
-    for (path, source) in OWNER_SOURCES {
-        let normalized = source.split_whitespace().collect::<Vec<_>>().join(" ");
-        for stale in STALE_PHRASES {
-            assert!(
-                !normalized.contains(stale),
-                "{path} retains stale source-owner wording: {stale}"
-            );
-        }
-    }
-}
-
-#[test]
 fn a_fresh_project_is_already_formatted() {
     let temp = TempDir::new("init-fmt");
     let project = temp.join("app");

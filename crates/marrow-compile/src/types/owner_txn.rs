@@ -198,4 +198,3 @@ impl Drop for GenericOwnerTxn<'_, '_> {
         drop(self.draft.take());
     }
 }
-// drop-path audit sentinel: end of GenericOwnerTxn::drop

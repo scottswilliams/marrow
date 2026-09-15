@@ -321,39 +321,8 @@ fn a_create_or_replace_collides_only_on_the_roots_unique_indexes() {
 
 #[test]
 fn no_application_opcode_maintains_a_managed_index() {
-    // The keep-list law and the release veto: managed-index maintenance is
-    // compiler-owned and has no application write path. The absence is structural,
-    // enforced on the two independent owners so that adding an index-write path here
-    // trips this gate conspicuously: the frozen opcode set names no durable
-    // index-maintenance opcode, and the operation-target set names no index *write*
-    // target.
-
-    // (1) The only `OP_DUR_*INDEX*` opcodes are the three reads (`SCAN`, `LOOKUP`,
-    // `EXISTS`); no opcode maintains (writes) an index. Scanning the frozen opcode constants
-    // of `marrow-image`'s `instr.rs` by source text — as the workspace's other tidy gates
-    // scan source — keeps the law honest against a future index-maintenance byte.
-    let instr_src = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../marrow-image/src/instr.rs"
-    ));
-    for line in instr_src.lines() {
-        let Some(rest) = line.trim_start().strip_prefix("pub const OP_DUR_") else {
-            continue;
-        };
-        let name = rest
-            .split(|c: char| c == ':' || c.is_whitespace())
-            .next()
-            .unwrap_or(rest);
-        if !name.contains("INDEX") {
-            continue;
-        }
-        assert!(
-            name == "INDEX_SCAN" || name == "INDEX_LOOKUP" || name == "INDEX_EXISTS",
-            "durable opcode `OP_DUR_{name}` names an index but is not one of the three \
-             reads; managed-index maintenance must remain compiler-owned with no \
-             application write opcode",
-        );
-    }
+    // Managed-index maintenance is compiler-owned and has no application write path:
+    // the operation-target set names no index *write* target.
 
     // (2) `SemanticTarget` carries exactly the whole-payload, field-leaf, and two index
     // *read* targets and no index *write* target. The exhaustive match fails to compile

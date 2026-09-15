@@ -418,5 +418,4 @@ impl SiteDemandPlan {
         }
         self.receipt = receipt;
     }
-    // drop-path audit sentinel: end of SiteDemandPlan::pop_suffix_to
 }

@@ -1328,7 +1328,6 @@ impl<'d> DraftTxn<'d> {
         // authentication state outside the logical inverse.
     }
 }
-// drop-path audit sentinel: end of DraftTxn::rollback_armed
 
 impl Drop for DraftTxn<'_> {
     /// The armed inverse. A committed guard was disarmed and restores nothing.
@@ -1338,7 +1337,6 @@ impl Drop for DraftTxn<'_> {
         }
     }
 }
-// drop-path audit sentinel: end of DraftTxn::drop
 
 impl Default for ImageDraft {
     /// A fresh draft with a fresh identity. There is deliberately no derived `Default`:

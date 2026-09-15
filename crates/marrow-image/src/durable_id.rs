@@ -140,6 +140,23 @@ pub(crate) const IDREF_MEMBER: u8 = 6;
 const IDREF_GROUP: u8 = 7;
 const IDREF_INDEX: u8 = 8;
 
+// The mirror of `marrow_project::IdentityKind::tag`, held across a deliberate absence of
+// any dependency edge between the two crates. Editing a tag silently changes the identity
+// of every durable contract while producer and verifier still agree with each other, so
+// the frozen values are pinned here and in `marrow-project`'s own `identity_kind_tags`
+// case; a real kind-space change edits both in one transaction.
+const _: () = {
+    assert!(IDREF_APPLICATION == 0);
+    assert!(IDREF_PRODUCT == 1);
+    assert!(IDREF_FIELD == 2);
+    assert!(IDREF_ROOT == 3);
+    assert!(IDREF_KEY == 4);
+    assert!(IDREF_SUM == 5);
+    assert!(IDREF_MEMBER == 6);
+    assert!(IDREF_GROUP == 7);
+    assert!(IDREF_INDEX == 8);
+};
+
 /// The width of one raw ledger id, as the image's DURABLE section spells a reference.
 const LEDGER_ID_BYTES: usize = 16;
 

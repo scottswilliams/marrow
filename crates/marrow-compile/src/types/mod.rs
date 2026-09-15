@@ -3830,7 +3830,6 @@ impl TypeRegistry {
             *self.row_directory.get_mut() = None;
         }
     }
-    // drop-path audit sentinel: end of TypeRegistry::restore_generic_owners
 }
 
 /// Reject a cycle in the value-containment graph at check time: a struct, record,

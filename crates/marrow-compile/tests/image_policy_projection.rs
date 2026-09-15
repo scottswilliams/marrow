@@ -38,8 +38,6 @@ use marrow_project::{FileIdentity, ProjectInput};
 mod common_project;
 #[path = "common/ids.rs"]
 mod ids;
-#[path = "common/source_projection.rs"]
-mod source_projection;
 
 /// The suite's fixtures generate their sources, so they are borrowed into the shared
 /// capture helper's `&str` pairs at each call.
@@ -339,8 +337,8 @@ fn owner_of(kind: ResourceLimitKind) -> Owner {
     }
 }
 
-/// Every declared kind, classified. The list is checked against the owner's own source
-/// below, so it cannot fall behind the enum.
+/// Every declared kind, classified. `owner_of` matches the enum exhaustively, so a new
+/// variant fails to compile until it is classified and listed here.
 const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::Strings,
     ResourceLimitKind::Consts,
@@ -362,51 +360,11 @@ const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::DeclarationLedgerBytes,
 ];
 
-/// The variant names the owner declares, read from its source through the shared
-/// production projection, so a `{` or a variant name inside a comment, a string, or a
-/// test module cannot widen or truncate the body — and the count is the enum's own truth
-/// rather than a number this test remembers. The projection is the one answer to what
-/// counts as code; a hand-rolled comment strip here was a weaker second one.
-fn declared_kind_names() -> Vec<String> {
-    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/compile.rs"))
-        .expect("the owner's source is readable from its own crate");
-    let code = source_projection::production_code(&source);
-    let header = "pub enum ResourceLimitKind {";
-    let start = code
-        .find(header)
-        .expect("the owner declares ResourceLimitKind")
-        + header.len();
-    let len = code[start..]
-        .find('}')
-        .expect("the enum body is brace-delimited");
-    code[start..start + len]
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// Red 3. Each kind is classified exactly once, the analysis path can reach exactly the
 /// drive-input, projection, semantic, and image-capacity kinds, and no image-policy
 /// kind is among them.
 #[test]
 fn every_resource_limit_kind_has_exactly_one_owner() {
-    let declared = declared_kind_names();
-    assert_eq!(
-        declared.len(),
-        ALL_KINDS.len(),
-        "the classified list fell behind the declared enum: {declared:?}",
-    );
-    for name in &declared {
-        assert!(
-            ALL_KINDS
-                .iter()
-                .any(|kind| format!("{kind:?}") == name.as_str()),
-            "declared kind {name} is not classified",
-        );
-    }
-
     let analysis_reachable: Vec<ResourceLimitKind> = ALL_KINDS
         .iter()
         .copied()

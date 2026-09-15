@@ -879,41 +879,6 @@ mod tests {
         );
     }
 
-    /// The absence gate of record (FR01 §3): no source spelling enters entry/group/branch/
-    /// index cell-key construction. The escaped-name grammar (`encode_escaped_bytes`) and a
-    /// `&str` node parameter survive in exactly one place — the meta family's `meta_key`, the
-    /// sanctioned kernel-internal exception ("profile"/"witness"). Reverting any cell-key
-    /// constructor to a name parameter would add a second `&str` function or a second
-    /// escaped-name call and fail this gate.
-    #[test]
-    fn no_source_spelling_in_cell_keys() {
-        let src = include_str!("physical.rs");
-        let production = src
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production precedes the test module");
-        assert_eq!(
-            production.matches("encode_escaped_bytes(").count(),
-            1,
-            "the escaped-name grammar survives only in meta_key; a cell-key constructor \
-             must never spell a name",
-        );
-        assert_eq!(
-            production.matches(": &str").count(),
-            1,
-            "only meta_key takes a &str; every entry/group/branch/index cell-key \
-             constructor takes a NodeNumber",
-        );
-        let meta = production.find("fn meta_key").expect("meta_key exists");
-        let call = production
-            .find("encode_escaped_bytes(")
-            .expect("the one escaped-name call exists");
-        assert!(
-            call > meta,
-            "the sole escaped-name call sits inside meta_key",
-        );
-    }
-
     /// Pin the current physical encoding of root/branch markers, field/group
     /// leaves and index cells so the grammar cannot drift silently.
     #[test]

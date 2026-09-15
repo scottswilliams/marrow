@@ -320,7 +320,6 @@ impl CanonicalValueShapeDag {
         });
         self.store.truncate(len);
     }
-    // drop-path audit sentinel: end of CanonicalValueShapeDag::truncate
 
     /// Mint `node`, or return the id of the structurally identical node already held.
     ///
@@ -482,7 +481,6 @@ mod node_store {
             self.stamps.truncate(len);
             self.fingerprint_predecessors.truncate(len);
         }
-        // drop-path audit sentinel: end of ValueShapeNodeStore::truncate
 
         pub(super) fn stamps(&self) -> impl Iterator<Item = ValueShapeNodeStamp> + '_ {
             self.stamps.iter().copied()

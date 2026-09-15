@@ -760,7 +760,6 @@ impl ProductDeclarationTable {
             self.rows.pop();
         }
     }
-    // drop-path audit sentinel: end of ProductDeclarationTable::pop_suffix_to
 }
 
 /// One flat root-occurrence row: the occurrence facts of one `store` root, referencing
@@ -862,7 +861,6 @@ impl RootOccurrenceTable {
     pub(crate) fn truncate(&mut self, len: usize) {
         self.rows.truncate(len);
     }
-    // drop-path audit sentinel: end of RootOccurrenceTable::truncate
 
     /// The live row `selector` names, or `None` if it was discarded or never belonged to
     /// this table.
@@ -1501,7 +1499,6 @@ impl DurableContractGraph {
         self.values.truncate(at.values);
         self.application = at.application;
     }
-    // drop-path audit sentinel: end of DurableContractGraph::rewind_total
 
     /// Admit one Product declaration under `plan`, returning the declaration row it
     /// references and the first divergence a repeat of an already-bound identity states.

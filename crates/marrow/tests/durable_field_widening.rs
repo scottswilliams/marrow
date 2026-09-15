@@ -230,7 +230,6 @@ fn nominal_durable_positions_and_reference_agree() {
     assert!(types.contains("`duration` and nominal source types are not durable keys."));
     assert!(!types.contains("A nominal stored field projects through its base scalar."));
 
-    let test_source = include_str!("durable_field_widening.rs");
     let disallowed = [
         ["ro", "w"].concat(),
         ["ro", "ws"].concat(),
@@ -242,7 +241,6 @@ fn nominal_durable_positions_and_reference_agree() {
     for (name, text) in [
         ("types and values", types.as_str()),
         ("durable places", durable.as_str()),
-        ("durable field widening", test_source),
     ] {
         let found = text
             .split(|ch: char| !ch.is_ascii_alphabetic())

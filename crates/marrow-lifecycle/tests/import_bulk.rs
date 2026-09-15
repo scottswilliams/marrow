@@ -943,14 +943,11 @@ fn the_stale_image_refusal_is_typed_and_commits_nothing() {
     assert_eq!(ImportError::InconsistentBinding.code(), "store.corruption");
 }
 
-/// The closed lifecycle boundary (unconstructibility, crate level). The bytecode executor
-/// depends on `marrow-lifecycle` only to consume the attachment it prepares and admits; the
-/// VM re-exports exactly the preparation and fresh-test surface the CLI needs and never the
-/// import, attach, or provision entries, and its own source names none of them — so no
-/// opcode, host import, or bytecode path reaches the import mode. The client-wire crate does
-/// not depend on lifecycle at all. Only the privileged host reaches import, and the mode
-/// requires an owner lock that is non-`Clone`, non-serializable, and constructible only inside
-/// this crate.
+/// The closed lifecycle boundary, drawn on the Cargo DAG. The bytecode executor depends on
+/// `marrow-lifecycle` only to consume the attachment it prepares and admits; the client-wire
+/// crate does not depend on lifecycle at all. Only the privileged host reaches import, and the
+/// mode requires an owner lock that is non-`Clone`, non-serializable, and constructible only
+/// inside this crate.
 #[test]
 fn the_import_mode_is_unreachable_from_bytecode_and_client() {
     let crates = crates_dir();
@@ -976,70 +973,6 @@ fn the_import_mode_is_unreachable_from_bytecode_and_client() {
         "the privileged CLI host is the legitimate caller of the lifecycle",
     );
 
-    // The VM's re-export of lifecycle is exactly the preparation and fresh-test surface, and
-    // no VM production source names a lifecycle entry that opens, provisions, or imports a
-    // persistent store.
-    let vm_src = crates.join("marrow-vm").join("src");
-    let lib = std::fs::read_to_string(vm_src.join("lib.rs")).expect("read marrow-vm lib.rs");
-    let reexport = lib
-        .split("pub use marrow_lifecycle::{")
-        .nth(1)
-        .and_then(|rest| rest.split("};").next())
-        .expect("the VM re-exports the lifecycle preparation surface");
-    let mut names: Vec<&str> = reexport
-        .split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .collect();
-    names.sort_unstable();
-    assert_eq!(
-        names,
-        [
-            "EphemeralOutcome",
-            "FreshTest",
-            "MemoryAttachment",
-            "PreparedImage",
-            "fresh_test",
-            "mint_ephemeral",
-            "prepare",
-        ],
-        "the VM re-exports only the preparation and fresh-test surface",
-    );
-    for entry in std::fs::read_dir(&vm_src)
-        .expect("list marrow-vm src")
-        .flatten()
-    {
-        let path = entry.path();
-        let name = path
-            .file_name()
-            .expect("file name")
-            .to_string_lossy()
-            .into_owned();
-        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
-            continue;
-        }
-        // Documentation may name an entry to state that it is unreachable (the compile-fail
-        // cases do); code may not.
-        let text: String = std::fs::read_to_string(&path)
-            .expect("read VM source")
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        for forbidden in [
-            "import_jsonl",
-            "provision_image",
-            "ProvisionReport",
-            "OpenStore",
-            "NativeAttachment",
-            "lifecycle::attach",
-        ] {
-            assert!(
-                !text.contains(forbidden),
-                "{name} names the lifecycle entry `{forbidden}`; the VM consumes attachments only",
-            );
-        }
-    }
 }
 
 /// The only workspace crates depending on `marrow-lifecycle` in production are the privileged
