@@ -350,20 +350,21 @@ authority, apply proposes exactly the union of that demand and the standing
 ceiling. `--accept-ceiling` must name this union, which can differ from NEW's
 image ceiling. Missing required acceptance or any incorrect supplied ID returns
 `store.ceiling_unaccepted` with the old and proposed IDs and named added effects.
-Without an expansion, apply can activate immediately; it is not a preview command.
+Without an expansion, apply can activate immediately.
 
 Apply holds one read-only store owner through exact OLD admission, logical
 inspection and metadata publication. It writes no data cells and returns no
-service. Pending activation blocks ordinary access. Recovery uses the explicit
-image matching the Head actually present; it does not replay apply.
+service. Apply never opens the store for writing, so the next writable attach
+performs the ordinary physical check. Pending activation blocks ordinary access.
+Recovery uses the explicit image matching the Head actually present; it does not
+replay apply.
 
 JSONL output has `kind: "apply"`. Success has `outcome: "applied"`, `instance`,
 `old_image`, `new_image`, `old_ceiling` and `ceiling`. Failure has `code` and an
 `outcome` of `refused`, `metadata_failed` or `activation_uncertain`. Ceiling
 refusal adds `old_ceiling`, proposed `ceiling` and `added_effects` containing
 `export`, `effect` and nullable `place`. Activation uncertainty retains `instance`.
-Default text output displays these same fields. Earlier argument or image-read
-failures need not produce a lifecycle record.
+Default text output displays these same fields.
 
 Success exits `0`; companion or output-delivery failure exits `1`. Arguments
 rejected by the CLI parser exit `2`; companion validation, including a malformed

@@ -77,12 +77,6 @@ missing or cyclic bodies and their callers; an unfilled function slot cannot enc
 
 ## Not yet available
 
-- Native stores with two roots of the same resource. The compiler accepts the
-  declarations, but native provisioning cannot give repeated member declaration
-  IDs distinct accepted addresses and currently reports `store.corruption`
-  before creating the store. This is a native capability and diagnostic
-  limitation, not evidence of damaged stored data. The language's independent
-  root semantics remain the intended behavior ([durable places](language/durable-places.md#keys)).
 - Third-party packages ([packages](future/packages.md)).
 - Closures ([general-purpose language](future/general-purpose-language.md)).
 - Public aggregate inputs and bound durable values containing nominal integers;

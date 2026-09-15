@@ -69,8 +69,9 @@ pub(crate) fn numbered_node_ids(image: &VerifiedImage) -> Vec<LedgerIdBytes> {
 /// [`numbered_node_ids`].
 ///
 /// Returns a [`FormatError`] when the node count exceeds the head map's bound, and when the
-/// walk yields one declaration identity twice. Two roots sharing one resource
-/// share member identities, so this persisted map cannot provision them today.
+/// walk yields one ledger id twice — the map is a bijection over declaration identities, so
+/// a program whose durable nodes do not carry distinct ids (two store roots of one resource
+/// share their members' ids) has no head map and cannot be provisioned today.
 pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
     HeadMap::assign(&numbered_node_ids(image))
 }
