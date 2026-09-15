@@ -1,4 +1,4 @@
-//! DeclarationSite-name ledgers: the one way a declared key leaves the accepted set.
+//! Declared-name ledgers: the one way a declared key leaves the accepted set.
 //!
 //! A namespace that refuses a declaration must not forget it. Dropping the key
 //! makes every later lookup read as *never declared*, so the compiler reports a
@@ -32,7 +32,7 @@ use crate::diag::{
 
 /// The most owned bytes every declaration ledger in one pass may retain together.
 ///
-/// DeclarationSite, not derived from a length: the ledger is live concurrently with the
+/// Stated, not derived from a length: the ledger is live concurrently with the
 /// diagnostic collector, and no retained refusal is worth more than the report that
 /// accompanies it, so the ledger's budget is the collector's. The refused-key count
 /// is otherwise bounded only by the admitted source (`CaptureLimits::DEFAULT`

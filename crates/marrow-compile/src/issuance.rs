@@ -2,87 +2,39 @@
 //! non-function kind an admitted `ProjectInput` can drive into the draft, and why that
 //! count stays inside the private `u32` carrier.
 //!
-//! This is the half of the issuance derivation that needs both the source-capture
-//! ceiling and the compiler's own generic-instantiation bound, so it lives here rather
-//! than beside the carrier facts in `marrow-image`.
+//! It lives here rather than beside the carrier facts in `marrow-image` because it needs
+//! both the source-capture ceiling and the compiler's own generic-instantiation bound.
 //!
-//! # Two populations, bounded together
+//! Two populations bound it together. **Declared rows** — a string, constant, record,
+//! enum, collection, root, site, or type parameter written in source — are each minted
+//! from a construct occupying at least one distinct source byte, so they cannot exceed
+//! [`MAX_ADMITTED_SOURCE_BYTES`]. **Generated rows** are not charged to source bytes: one
+//! syntactic call can keep minting fresh instances when a generic recurses over an
+//! ever-growing type, so the compiler refuses the mint at [`MAX_INSTANTIATIONS`] instead.
 //!
-//! **Declared rows.** A string, constant, record, enum, collection, root, site, or type
-//! parameter written in source is minted from a construct occupying at least one distinct
-//! source byte at its declaration site. The capture owner admits at most
-//! [`MAX_ADMITTED_SOURCE_BYTES`] bytes across a whole project, so declared rows of any one
-//! kind cannot exceed that count. Rows minted at most once per admitted file are bounded
-//! by the capture owner's file count, which is itself no larger than that byte ceiling.
-//!
-//! **Generated rows.** Generic type and function instantiations are *not* charged to
-//! distinct source bytes. A single syntactic call can keep generating fresh instances when
-//! a generic recurses over an ever-growing type. The compiler instead refuses the mint once
-//! `type_insts.len() + fn_insts.len()` reaches [`MAX_INSTANTIATIONS`], before appending the
-//! row, and reports the located `check.instantiation_limit` diagnostic.
-//!
-//! # The two do multiply, and this is the term
-//!
-//! Interning is keyed — `intern_string` and the `intern_int`/`intern_text` family return
-//! the id already held and mutate nothing — so two instances of one template that lower the
-//! same body intern the same values. That much is additive, and it is what the previous
-//! derivation generalized from.
-//!
-//! It does not generalize. Filling one instance materializes the template's *declared*
-//! shape into per-instance draft and registry rows: a struct fill appends one field entry
-//! per declared field, an enum fill appends one variant entry per declared variant and one
-//! payload leaf per declared leaf, and each is retained in the instance body the registry
-//! holds. None of those entries is a repeated value that keying can absorb — each belongs
-//! to a distinct instance row — so for a template of declared width `W` the population is
-//! instances times `W`.
-//!
-//! A collection application inside a filled body is the sharper case. `List<T>`/`Map<K,V>`
-//! dedup by their *source* element type, and a divergent instance carries a different
-//! element type at every step, so each instantiation can mint fresh collection rows. The
-//! collection mint has no direct pre-mint ceiling; [`marrow_image::bounds::MAX_COLLECTIONS`]
-//! is a later image-policy verdict. Carrier safety therefore cannot use that lower policy
-//! maximum.
-//!
-//! It does not need to. Every source template belongs to exactly one admitted file, and
-//! every field, variant, payload leaf, or distinct collection application materialized
-//! from that template occupies syntax in that file. The materialized width of any one
-//! source instance is therefore at most [`MAX_PARSED_FILE_BYTES`]. The fileless built-in
-//! `Option` and `Result` templates have a current maximum per-kind width of two; that
-//! code-owned shape cannot be const-read, so the named fixed term below records it and the
-//! const derivation asserts that the file ceiling covers it. All generated type and
-//! function instances share [`MAX_INSTANTIATIONS`], so summing the width over every
-//! generated instance gives the honest per-kind statement
+//! The two multiply. Interning is keyed, so two instances that lower the same body share
+//! its values; but filling one instance materializes the template's *declared* shape into
+//! per-instance rows — one field entry per declared field, one variant and payload leaf
+//! per declared variant and leaf — and none of those is a repeated value keying can
+//! absorb. A collection application is the sharper case: `List<T>`/`Map<K,V>` dedup by
+//! source element type, and a divergent instance carries a different element type at every
+//! step. Every source template belongs to one admitted file and materializes into syntax
+//! in that file, so one instance's width is at most [`MAX_PARSED_FILE_BYTES`], giving
 //!
 //! ```text
 //! rows(kind) <= MAX_ADMITTED_SOURCE_BYTES
 //!            + MAX_INSTANTIATIONS * MAX_PARSED_FILE_BYTES
 //! ```
 //!
-//! This covers the width-one instance rows, record fields, enum variants and payloads,
-//! value-shape nodes, and distinct collection applications without pretending that the
-//! instantiation count alone bounds those populations.
+//! The `const` assert below holds that against the `u32` domain using the live capture,
+//! parse, and instantiation owners, so widening any one of them past the carrier breaks
+//! the build.
 //!
-//! # The carrier holds it
-//!
-//! The bound above is asserted at compile time against the `u32` domain using the live
-//! capture, parse, and instantiation owners. A widening of any one of them that invalidates
-//! the derivation breaks the build. A checked wide mint therefore cannot refuse admitted
-//! compiler input: the carrier-domain refusal on the hidden-public builder surface is
-//! reachable only by a caller outside that envelope, which is why the production compiler
-//! maps it to invariant.
-//!
-//! This carrier proof is not a per-kind image-admission proof. The direct table ceilings,
-//! including [`marrow_image::bounds::MAX_COLLECTIONS`], remain policy verdicts applied by
-//! the image measure/encode path after construction. Nor is it a peak-memory proof: no
-//! compiler-enforced working-set ceiling exists, and the separate issuance RSS gate records
-//! that evidence. Function instructions are outside this non-function identity population.
-//! Lowering checks each exact encoded width before retaining the crossing instruction and
-//! reports `check.resource_limit` at that source construct; the image independently uses
-//! checked wide accumulation and retains [`marrow_image::ImageBuildError::CodeTooLong`] as
-//! defense in depth against a hostile direct draft.
-//!
-//! `Layout` and lossless-widening facts for the carrier itself are asserted in
-//! `marrow-image`'s `issuance` module, on both supported targets.
+//! This is a carrier proof, not a per-kind image-admission proof — the direct table
+//! ceilings stay policy verdicts the image measure/encode path applies after construction
+//! — and not a peak-memory proof. Function instructions are outside this non-function
+//! identity population: lowering checks each encoded width before retaining the crossing
+//! instruction and reports `check.resource_limit` at that construct.
 
 use marrow_project::CaptureLimits;
 
@@ -107,12 +59,8 @@ const MAX_DERIVED_ROWS: usize =
     MAX_ADMITTED_SOURCE_BYTES + MAX_INSTANTIATIONS * MAX_PARSED_FILE_BYTES;
 
 /// The derivation's conclusion, as one named predicate: the population an admitted
-/// project can drive fits the wide carrier.
-///
-/// The envelope-implied maximum is inside the `u32` carrier domain, so a checked wide mint
-/// cannot refuse an admissible input. The multiplication deliberately sits in this const
-/// derivation: widening the parser or instantiation owner past the carrier breaks the
-/// build.
+/// project can drive fits the wide carrier, so a checked wide mint cannot refuse an
+/// admissible input.
 const fn population_fits_the_wide_carrier() -> bool {
     MAX_ADMITTED_FILES <= MAX_ADMITTED_SOURCE_BYTES
         && MAX_FILELESS_TEMPLATE_WIDTH <= MAX_PARSED_FILE_BYTES

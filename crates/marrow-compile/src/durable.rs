@@ -319,7 +319,7 @@ pub(crate) enum RootBinding<'a> {
     Executable(&'a DurableRoot),
     /// Admitted with a complete identity, but outside the executable subset.
     NotYetExecutable,
-    /// DeclarationSite and refused. The declaration reported the cause; a use reuses it,
+    /// Declared and refused. The declaration reported the cause; a use reuses it,
     /// carrying the handle that lets a type-resolution result name it.
     Refused(DeclarationRefusalId, &'a DeclarationRefusalSummary),
     /// No store of this name is declared — the one case a not-in-scope report may
@@ -1487,22 +1487,16 @@ fn build_one(
     )?;
     let root_id = admitted.root_id();
 
-    // Emit the eager, bounded per-node sites for the durable graph now: one
-    // whole-payload site per keyed placement (this root and every nested `branch`)
-    // and one whole-group site per static `group`. A site is named by the pair of the
-    // root occurrence and the canonical declaration path of the node it addresses, so
-    // the path owner projects the wire path from the same rows the member graph is
-    // written from. The verifier re-derives every site from its own reconstructed node
-    // set, so this claim is a producer claim, not a trusted address. Field-leaf sites are
-    // NOT emitted here: they are the per-declared-field width driver, so the lowerer
-    // binds and allocates (and deduplicates) one lazily on the first instruction that
-    // addresses a field. The graph therefore captures each stored field's canonical
-    // declaration path (below), and the site table scales with *referenced* fields, not
-    // with declared width — an untouched field mints no site.
+    // The eager, bounded per-node sites: one whole-payload site per keyed placement (this
+    // root and every nested `branch`) and one whole-group site per static `group`, each
+    // named by the pair of the root occurrence and the node's canonical declaration path.
+    // The verifier re-derives every site from its own reconstructed node set, so this is a
+    // producer claim, not a trusted address.
     //
-    // A Product carrying more than one occurrence pre-seeds neither: its member nodes are
-    // minted on first reference too, so the site cost of a declaration is its *referenced*
-    // graph rather than its declared graph multiplied by the roots over it.
+    // Field-leaf sites are deliberately absent: the lowerer binds and deduplicates one on
+    // the first instruction that addresses a field, so the site table scales with
+    // *referenced* fields rather than declared width. A Product carrying more than one
+    // occurrence pre-seeds no member node either, for the same reason.
     request_eager_site(
         draft,
         admitted.occurrence(),
@@ -1518,22 +1512,8 @@ fn build_one(
     let lowered_indexes = request_index_sites(draft, &admitted, &built_indexes)?;
 
     // Decide executability and capture the executable branch descriptors from the Product
-    // declaration the draft now holds.
-    //
-    // Executable durable operations exist for the flat keyed root whose top-level fields
-    // are each a scalar or a widened composite (a dense struct, or a closed
-    // `enum`/`Option`/`Result` — framed inline in the field cell by the durable value
-    // codec), together with its root-level groups of such fields and its field-only keyed
-    // branches — the shape the kernel serves. A singleton (keyless)
-    // root, a nominal field, or a group nested in a branch parks: it carries its
-    // identity and full site set, but lowering refuses operations. The compiler's
-    // nominal boundary check also refuses unused nominal-bearing bindings.
-    // Composite root keys and
-    // keyed branches (including composite-keyed) are executable for whole/field sites; a
-    // root-level group no longer parks, mirroring the verifier's independent
-    // `member_flat_at_root`.
-    // `record.fields` (the registry record) carries only the top-level value fields;
-    // its unkeyed groups live in `record.groups`, so a group value never appears here.
+    // declaration the draft now holds. A parked root carries its identity and full site
+    // set; lowering refuses operations over it.
     let executable = root_is_executable(draft, record, &key_scalars, &members)?;
     let (branches, groups) = if executable {
         (

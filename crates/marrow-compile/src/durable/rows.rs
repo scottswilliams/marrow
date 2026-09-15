@@ -75,30 +75,16 @@ impl<'a> ResourceDirectory<'a> {
         resources: &'a [(FileRef, FileIdentity, &'a ResourceDecl)],
         records: &'a TypeRegistry,
     ) -> Result<Self, GenericInvariant> {
-        // The declare pass already paired every admitted record with the declaration it was
-        // built from, by pushing both in lockstep, so this reads that pairing rather than
-        // rebuilding one. It used to rebuild it from resource name spellings, which was two
-        // defects in one: source spelling is not declaration identity, so a same-named
-        // declaration from elsewhere paired happily; and re-deriving a fact an earlier owner
-        // settled is the re-derivation the speed pillar forbids. Reading the ordinal is
-        // linear and admits no key at all.
+        // The declare pass paired every admitted record with the declaration it was built
+        // from by pushing both in lockstep; this reads that pairing rather than rebuilding
+        // it from resource name spellings, which is not declaration identity.
         //
-        // What the ordinal establishes: for the writer that recorded it — the declare pass,
-        // handed the same slice — an exact record-to-declaration pairing, derived once and
-        // never again. What the coordinate check below adds, exactly this: at each ordinal
-        // an admitted record cites, the declaration found there sits at the module position
-        // and name span the declare pass recorded, so a cited declaration that MOVED is
-        // refused rather than paired with whatever now sits at that index. A replacement is
-        // caught only when it moved something: neither declaration text nor `FileIdentity`
-        // is compared, so a same-length resource declared at the same position passes.
-        //
-        // What it does not reach: an ordinal no record cites. A slice carrying declarations
-        // appended past the last cited one, or altered at an uncited one, passes untouched.
-        // Nor is the slice authenticated: `FileRef` is snapshot-local and `FileIdentity` is
-        // not compared, and two parses of one project repeat every module position and name
-        // span, so a re-parse presenting those with its members mutated is accepted here.
-        // Carrying the declare pass's pairing out with the registry under one borrowed
-        // wrapper retires the ordinal and this check together; that is DURSYNTAX01's work.
+        // The coordinate check below adds this: at each ordinal an admitted record cites,
+        // the declaration found there must sit at the module position and name span the
+        // declare pass recorded, so a cited declaration that MOVED is refused rather than
+        // paired with whatever now sits at that index. It does not reach an ordinal no
+        // record cites, and it does not authenticate the slice — `FileRef` is
+        // snapshot-local and `FileIdentity` is not compared.
         let ordinals = records.record_declaration_ordinals();
         let admitted = records.admitted_resources();
         let mut rows = Vec::with_capacity(admitted.len());

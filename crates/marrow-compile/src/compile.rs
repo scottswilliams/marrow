@@ -719,12 +719,9 @@ impl From<Built> for CompiledTests {
 }
 
 /// The staged outcome of one analysis/lowering pass over a project. Diagnostics are
-/// bucketed by the stage that produced them, so a single traversal serves the
-/// production compile — which projects the first non-empty stage and thereby
-/// reproduces the historical staged early-return byte for byte — and the complete
-/// union the editor analysis snapshot and `check` consume. There is no mode flag
-/// forking control flow: the traversal is one and the same; only the projection
-/// differs.
+/// bucketed by the stage that produced them, so one traversal serves both the production
+/// compile, which projects the first non-empty stage, and the complete union the editor
+/// analysis snapshot and `check` consume. Only the projection differs.
 struct Driven {
     /// Invalid-UTF-8 and syntax diagnostics from every module, parseable or
     /// not: the parse stage's finished bounded terminal.
@@ -769,7 +766,7 @@ const OWNED_HEAP_BYTES: usize = 640 * 1024 * 1024;
 
 /// The heap one parse of one admitted file may allocate.
 ///
-/// **DeclarationSite, not derived from a length.** It is two thirds of the owned-heap ceiling,
+/// **Stated, not derived from a length.** It is two thirds of the owned-heap ceiling,
 /// which keeps a third in reserve for everything a query holds beside the parse. Stating
 /// it independently of any length is what makes the admission below a real gate: were it
 /// defined as what some chosen length costs, comparing a file's charge against it would
@@ -989,20 +986,18 @@ impl Driven {
         Ok(self.complete()?.encode()?)
     }
 
-    /// The production projection. The first logically non-empty stage in order —
-    /// parse, then structural, then semantic — is the failure, byte-identical to the
-    /// historical staged early-return (a stage's rows are never sorted, deduped, or
-    /// merged with a later stage's, so no cross-stage limit strengthening can occur: a
-    /// limit arises only within the stage whose own collector crossed it). The parse
-    /// and structural stages carry no stage tag: an empty terminal passes over and a
-    /// non-empty one is already the failure, so only a semantic stage can reach the
-    /// tagged empty boundary. A semantic diagnostics terminal that is complete and
-    /// empty is that empty-boundary invariant. A fully clean pass yields the checked
-    /// program.
+    /// The production projection: the first logically non-empty stage in order — parse,
+    /// then structural, then semantic — is the failure.
     ///
-    /// An invariant the semantic pass actually discovered is reported before any
-    /// stage's findings: it is a compiler-coherence failure over executed work, and a
-    /// precheck finding cannot make that work coherent.
+    /// A stage's rows are never sorted, deduped, or merged with another stage's, so a
+    /// limit arises only within the stage whose own collector crossed it. The parse and
+    /// structural stages carry no stage tag: an empty terminal passes over and a non-empty
+    /// one is already the failure, so only a semantic stage can reach the tagged empty
+    /// boundary, which is an invariant. A fully clean pass yields the checked program.
+    ///
+    /// An invariant the semantic pass discovered is reported before any stage's findings:
+    /// it is a compiler-coherence failure over executed work, and a precheck finding
+    /// cannot make that work coherent.
     fn production(self) -> Result<Box<CheckedProgram>, CompileFailure> {
         let Self {
             parse,

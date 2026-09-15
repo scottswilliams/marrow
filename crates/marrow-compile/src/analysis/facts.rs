@@ -188,24 +188,20 @@ impl AnalysisFactCollector {
 ///
 /// The split this carries is three-part, and each part is load-bearing.
 ///
-/// The **charge** is live. Every fact composes over the ledger's settled totals at the
-/// push that produced it and classifies through the ledger's own ceiling comparison,
-/// so a body whose facts cross the snapshot ceiling stops rendering displays
-/// *inside itself* rather than after it, and no fact population larger than a snapshot
-/// admits is ever materialized. The ledger cannot move underneath a running body: this
-/// value borrows it shared for the body's whole extent, so the totals a push composes
-/// over are the totals release will compose over.
+/// The **charge** is live: every fact composes over the ledger's settled totals at the
+/// push that produced it and classifies through the ledger's own ceiling comparison, so a
+/// body whose facts cross the snapshot ceiling stops rendering displays inside itself
+/// rather than after it. This value borrows the ledger shared for the body's whole
+/// extent, so the totals a push composes over are the totals release composes over.
 ///
-/// The **retain** is body-local. The rows and the charge they made live here, not in the
-/// ledger, and the private [`Self::finish`] is reachable only through the producer-owning
-/// aggregate that releases it.
+/// The **retain** is body-local: the rows and the charge they made live here, and the
+/// private [`Self::finish`] is reachable only through the producer-owning aggregate.
 ///
 /// The **inverse** is this value's drop, and it is total because it is structural rather
-/// than arithmetic: the ledger was never touched, so there is no state in which undoing
-/// the charge can fail, and a ceiling an abandoned body crossed cannot latch on a
-/// snapshot that body's facts never entered. Subtracting a charge back out could not be
-/// total — a crossing discards the ledger's whole retained payload, and no subtraction
-/// re-materializes it.
+/// than arithmetic: the ledger was never touched, so undoing the charge cannot fail.
+/// Subtracting a charge back out could not be total — a crossing discards the ledger's
+/// whole retained payload, and no subtraction re-materializes it.
+///
 /// This body's own contribution is what the owner holds, over and above the ledger's
 /// settled totals. A crossing discards this body's staged rows at once — the same
 /// whole-payload discard the ledger performs — and stops further rendering, while
